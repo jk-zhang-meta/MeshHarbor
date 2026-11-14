@@ -653,3 +653,82 @@ async fn the_owner_sees_and_ends_what_its_device_accepted_by_proof_only() {
     // The owner's own enrollment is untouched.
     assert_eq!(self_view(&app, &own_token).await["temporary"], false);
 }
+
+#[tokio::test]
+async fn only_the_inviter_and_its_roles_may_control_a_temporary_device() {
+    use bson::{doc, oid::ObjectId};
+    let app = enabled_app().await;
+    let s = app.seed_tenant("tinv-rc").await;
+    let e = ordinary_device(&app, &s, "tinv-rc-1").await;
+    let aid = e["agent_id"].as_str().unwrap().to_string();
+    let r = app
+        .auth_post(
+            &format!("/api/tenant/{}/agent/{aid}/temporary", s.tenant_id),
+            &s.admin.access_token,
+        )
+        .json(&json!({ "duration_secs": 86_400 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let remote = app
+        .state
+        .modules
+        .remote
+        .as_ref()
+        .expect("remote is mounted");
+    let admin = ObjectId::parse_str(&s.admin.id).unwrap();
+    let member = ObjectId::parse_str(&s.member.id).unwrap();
+    let agent = ObjectId::parse_str(&aid).unwrap();
+    let req =
+        json!({ "t": "rc:session.request", "agent_id": aid, "permissions": "VIEW" }).to_string();
+    // The admin invited it (and owns it): past the gate.
+    let ok = meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req).await;
+    assert!(ok.is_ok(), "the inviter: {:?}", ok.err());
+
+    // Someone else invited (and owns) it: even an ADMINISTRATOR is refused.
+    app.db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! { "_id": agent },
+            doc! { "$set": { "owner_user_id": member } },
+        )
+        .await
+        .unwrap();
+    let invites = app
+        .db
+        .collection::<bson::Document>(meshharbor_mod_fleet::device_invite::COLLECTION);
+    invites
+        .update_one(
+            doc! { "agent_id": agent },
+            doc! { "$set": { "inviter_user_id": member } },
+        )
+        .await
+        .unwrap();
+    let err = meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req)
+        .await
+        .err()
+        .expect("a non-inviter administrator is refused");
+    assert!(err.contains("temporary device"), "{err}");
+
+    // A role named on the invitation admits its members.
+    let me = app
+        .db
+        .collection::<bson::Document>("tenant_members")
+        .find_one(
+            doc! { "tenant_id": ObjectId::parse_str(&s.tenant_id).unwrap(), "user_id": admin },
+        )
+        .await
+        .unwrap()
+        .expect("the admin's membership");
+    let roles = me.get_array("role_ids").unwrap().clone();
+    invites
+        .update_one(
+            doc! { "agent_id": agent },
+            doc! { "$set": { "allow_role_ids": roles } },
+        )
+        .await
+        .unwrap();
+    let ok = meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req).await;
+    assert!(ok.is_ok(), "a member of an allowed role: {:?}", ok.err());
+}

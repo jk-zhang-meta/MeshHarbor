@@ -303,8 +303,8 @@ pub fn watch(
         }
     }
     outcome.finished_unix = Some(unix_now());
-    // Last act on Windows perMachine: whatever the verdict, never
-    // leave the host's SCM service stopped.
+    // Last act on Windows: whatever the verdict, never leave the daemon
+    // stopped (perMachine: the SCM service; perUser: the logon task).
     #[cfg(target_os = "windows")]
     ensure_service_running(&mut outcome, install_flavour(origin_exe.as_deref()));
     let _ = write_outcome(&outcome);
@@ -525,7 +525,10 @@ fn run_recovery_cmd(cmd: &str, args: &[&str]) {
     }
 }
 
-/// Make sure the perMachine SCM service is running before the watcher
+/// Make sure the daemon runs again before the watcher exits: a per-user
+/// install's logon task, or the perMachine SCM service.
+///
+/// perMachine: the SCM service must be running before the watcher
 /// exits. Every observed wedge left the service STOPPED (msiexec never
 /// reached StartServices), and nothing else restarts it until a
 /// reboot. `sc start` is effectively idempotent for our purpose:
@@ -542,6 +545,24 @@ fn ensure_service_running(
     outcome: &mut InstallOutcome,
     flavour: crate::updater::WindowsInstallFlavour,
 ) {
+    if flavour == crate::updater::WindowsInstallFlavour::PerUser {
+        // A per-user install runs from its logon Scheduled Task, which
+        // relaunches only a FAILED exit — and the updater's exit is a clean
+        // one. Field, 2026-11-14 (0.4.151 → 0.4.154): the MSI succeeded, the
+        // new binary verified, and nothing started it until the next logon.
+        // Start the task (harmless to repeat; the scheduler spawns the daemon,
+        // never this process).
+        let verdict = match crate::service::start() {
+            Ok(()) => "task started".to_string(),
+            Err(e) => format!("task start failed: {e}"),
+        };
+        tracing::info!(verdict, "post-install per-user task check");
+        if !outcome.note.is_empty() {
+            outcome.note.push_str("; ");
+        }
+        outcome.note.push_str(&format!("per-user task: {verdict}"));
+        return;
+    }
     if flavour != crate::updater::WindowsInstallFlavour::PerMachine {
         return;
     }
