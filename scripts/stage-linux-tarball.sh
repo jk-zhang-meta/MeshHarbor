@@ -48,6 +48,14 @@ if [ "$libs" -eq 0 ] && [ -z "${HEADLESS:-}" ]; then
     exit 1
 fi
 
+# Python 3.10 hosts need no system package install: ship the reviewed pure
+# TOML wheel inside the signed envelope. Do not download during installation.
+wheel="${MESHHARBOR_TOMLI_WHEEL:?set MESHHARBOR_TOMLI_WHEEL to the verified private tomli 2.2.1 wheel}"
+expected=cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc
+actual=$(sha256sum "$wheel" | awk '{print $1}')
+[ "$actual" = "$expected" ] || { echo "tomli wheel digest mismatch" >&2; exit 1; }
+install -D -m644 "$wheel" "$root/usr/share/meshharbor/update/tomli-2.2.1-py3-none-any.whl"
+
 # Units ship in the tarball but the INSTALLER only writes them when absent —
 # an upgrade must never revert a unit the operator edited.
 install -D -m644 "$pkg/packaging/linux/meshharbord.service" "$root/usr/lib/systemd/system/meshharbord.service"

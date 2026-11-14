@@ -90,6 +90,72 @@ class TransactionTests(unittest.TestCase):
     def rollback(self):
         return upgrade.rollback(self.args, self.service, fixture_paths)
 
+    def with_libraries(self):
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        original = self.binary
+        self.binary = bindir / "meshharbord"
+        original.rename(self.binary)
+        self.args.binary = str(self.binary)
+        self.service.binary = self.binary
+        self.libsrc = self.root / "payload-libs"
+        self.libsrc.mkdir()
+        (self.libsrc / "libcodec.so.1").write_bytes(b"new-codec")
+        (self.libsrc / "libnew.so.1").write_bytes(b"added-codec")
+        self.libdest = self.root / "lib/meshharbor"
+        self.libdest.mkdir(parents=True)
+        (self.libdest / "libcodec.so.1").write_bytes(b"old-codec")
+        (self.libdest / "unrelated.so.1").write_bytes(b"unrelated")
+        self.args.library_source = str(self.libsrc)
+
+    def test_library_set_activation_and_rollback_preserve_unrelated(self):
+        self.with_libraries()
+        self.apply()
+        self.assertEqual((self.libdest / "libcodec.so.1").read_bytes(), b"new-codec")
+        self.assertTrue((self.libdest / "libnew.so.1").exists())
+        self.rollback()
+        self.assertEqual((self.libdest / "libcodec.so.1").read_bytes(), b"old-codec")
+        self.assertFalse((self.libdest / "libnew.so.1").exists())
+        self.assertEqual((self.libdest / "unrelated.so.1").read_bytes(), b"unrelated")
+
+    def test_library_failure_restores_complete_previous_set(self):
+        self.with_libraries()
+        self.service.fail_new = True
+        with self.assertRaisesRegex(RuntimeError, "rolled_back"):
+            self.apply()
+        self.assertEqual((self.libdest / "libcodec.so.1").read_bytes(), b"old-codec")
+        self.assertFalse((self.libdest / "libnew.so.1").exists())
+        self.assertEqual(upgrade.digest(self.binary), self.args.old_sha)
+
+    def test_library_partial_write_failure_restores_binaries_and_libraries(self):
+        self.with_libraries()
+        original = upgrade.atomic_copy
+        failed = False
+        def fail_once(source, dest, metadata):
+            nonlocal failed
+            if str(source).endswith("libnew.so.1.new") and not failed:
+                failed = True
+                raise OSError("injected disk failure")
+            return original(source, dest, metadata)
+        with mock.patch.object(upgrade, "atomic_copy", side_effect=fail_once):
+            with self.assertRaisesRegex(RuntimeError, "rolled_back"):
+                self.apply()
+        self.assertEqual((self.libdest / "libcodec.so.1").read_bytes(), b"old-codec")
+        self.assertFalse((self.libdest / "libnew.so.1").exists())
+        self.assertEqual(upgrade.digest(self.binary), self.args.old_sha)
+
+    def test_library_third_state_during_stop_refuses_overwrite(self):
+        self.with_libraries()
+        stop = self.service.stop
+        def changed():
+            stop()
+            (self.libdest / "libcodec.so.1").write_bytes(b"third-party")
+        self.service.stop = changed
+        with self.assertRaisesRegex(RuntimeError, "recovery_required"):
+            self.apply()
+        self.assertEqual((self.libdest / "libcodec.so.1").read_bytes(), b"third-party")
+        self.assertEqual(upgrade.digest(self.binary), self.args.old_sha)
+
     def test_apply_then_independent_frozen_rollback_preserves_scope_identity_and_mode(self):
         before = upgrade.config_state(self.config)[0]
         baseline = subprocess.check_output([str(self.binary), "same-input"], text=True).strip()

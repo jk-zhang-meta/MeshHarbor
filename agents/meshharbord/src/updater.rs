@@ -15,6 +15,9 @@ use tunnel_core::env::node_env;
 
 #[path = "updater_origin.rs"]
 mod origin;
+#[cfg(target_os = "linux")]
+#[path = "updater_linux_user.rs"]
+mod linux_user;
 
 /// Unenrolled MeshHarbor fallback only; enrolled/custom centers retain their prefix.
 pub const DEFAULT_PROXY_URL: &str = "https://www.itachi.fans/meshharbor/api/agent/latest-release";
@@ -898,18 +901,15 @@ pub fn pick_asset_for_platform(assets: &[GithubAsset]) -> Option<&GithubAsset> {
 /// Pure Windows asset picker. Filters by the `-perMachine-` infix in
 /// the asset filename (cargo-wix names them
 /// `meshharbor-agent-<v>-perMachine-x86_64-…msi`; the perUser MSI uses
-/// `meshharbor-agent-<v>-x86_64-…msi` with no infix). Falls back to "any
-/// MSI" only if the matching flavour is missing — better to attempt a
-/// cross-flavour install (which will silently no-op) than to skip the
-/// update entirely on a release that, for whatever reason, only shipped
-/// one flavour.
+/// `meshharbor-agent-<v>-x86_64-…msi` with no infix). Missing matching
+/// assets fail closed: an unattended update must not change install scope.
 #[cfg(any(target_os = "windows", test))]
 pub fn pick_asset_for_windows(
     assets: &[GithubAsset],
     flavour: WindowsInstallFlavour,
 ) -> Option<&GithubAsset> {
     let want_per_machine = matches!(flavour, WindowsInstallFlavour::PerMachine);
-    // First pass: prefer the matching flavour.
+    // Only the existing installation's flavour is eligible.
     for a in assets {
         let lower = a.name.to_lowercase();
         if !lower.ends_with(".msi") {
@@ -917,18 +917,6 @@ pub fn pick_asset_for_windows(
         }
         let is_per_machine = lower.contains("-permachine-");
         if is_per_machine == want_per_machine {
-            return Some(a);
-        }
-    }
-    // Fallback: any MSI. Logged at warn so the field can see when the
-    // release is missing the matching flavour.
-    for a in assets {
-        if a.name.to_lowercase().ends_with(".msi") {
-            tracing::warn!(
-                asset = %a.name,
-                flavour = ?flavour,
-                "no MSI matching install flavour; falling back to any MSI"
-            );
             return Some(a);
         }
     }
@@ -961,6 +949,10 @@ pub fn pick_asset_for_unix(assets: &[GithubAsset]) -> Option<&GithubAsset> {
     }
     if !linux {
         return None;
+    }
+    #[cfg(target_os = "linux")]
+    if linux_user::current() {
+        return pick_linux_asset(assets, arch_tokens, false);
     }
     pick_linux_asset(assets, arch_tokens, host_has_debian_tooling())
 }
@@ -1670,7 +1662,15 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         }
         .await;
         let verdict = match asc {
-            Ok(asc) => crate::pgp_verify::verify_release_artifact(&bytes, &asc),
+            Ok(asc) => {
+                let checked = crate::pgp_verify::verify_release_artifact(&bytes, &asc);
+                #[cfg(target_os = "linux")]
+                if checked.is_ok() && linux_user::current() {
+                    std::fs::write(path.with_extension("gz.asc"), &asc)
+                        .context("retaining verified signature for same-user transaction")?;
+                }
+                checked
+            },
             Err(e) => Err(e.context(format!("fetching {asc_url}"))),
         };
         match verdict {
@@ -1912,6 +1912,11 @@ pub fn spawn_installer_with_watch(
     // detects the same pending update, spawns another installer, and
     // we get an install-storm. Field repro: operator 2026-05-02.
     record_update_attempt();
+    #[cfg(target_os = "linux")]
+    if linux_user::current() {
+        let config = UPDATE_CONFIG_PATH.get().context("same-user update needs resolved config path")?;
+        return linux_user::launch(installer_path, expected_version.context("same-user update requires expected version")?, config);
+    }
     let spawned = spawn_installer_inner(installer_path)?;
     if let Some(tag) = expected_version
         && let Err(e) = spawn_watcher(spawned, installer_path, tag)
@@ -3061,6 +3066,12 @@ fn act_on_outcome(outcome: CheckOutcome, shutdown_tx: &tokio::sync::watch::Sende
                 ));
                 return false;
             }
+            #[cfg(target_os = "linux")]
+            if linux_user::current() {
+                // The independent user service, not this updater, owns stop,
+                // restart and observed rollback. Submission is not completion.
+                return false;
+            }
             let _ = shutdown_tx.send(true);
             true
         }
@@ -3113,7 +3124,10 @@ pub async fn run_periodic(
         let euid = unsafe { libc::geteuid() };
         let enabled = helper_enable_link_in(&UPDATE_HELPER_ENABLE_LINKS.map(std::path::Path::new));
         let helper_switch = tunnel_core::env::flag("UPDATE_HELPER", true);
-        match decide_update_owner(euid, helper_switch, enabled) {
+        let owner = if linux_user::current() {
+            UpdateOwner::InProcess("same-user ~/.local installation")
+        } else { decide_update_owner(euid, helper_switch, enabled) };
+        match owner {
             UpdateOwner::Helper(link) => {
                 tracing::info!(
                     enabled_by = %link.display(),
@@ -3144,7 +3158,7 @@ pub async fn run_periodic(
             // helper instead. Not under the kill switch: that one is AC7's
             // "today's behaviour exactly".
             UpdateOwner::InProcess(_)
-                if helper_switch && !can_install_in_process(euid, no_new_privs()) =>
+                if !linux_user::current() && helper_switch && !can_install_in_process(euid, no_new_privs()) =>
             {
                 return wait_for_the_helper(shutdown, trigger_rx, interval).await;
             }
@@ -4093,6 +4107,7 @@ pub fn answer_capabilities_query() -> bool {
 /// who installs.
 #[cfg(target_os = "linux")]
 pub fn helper_owns_updates() -> Option<PathBuf> {
+    if linux_user::current() { return None; }
     // SAFETY: geteuid takes no arguments and cannot fail.
     let euid = unsafe { libc::geteuid() };
     let enabled = helper_enable_link_in(&UPDATE_HELPER_ENABLE_LINKS.map(std::path::Path::new));
@@ -6191,30 +6206,21 @@ mod tests {
         );
     }
 
-    /// Defensive fallback: if the release ships only one MSI flavour
-    /// (e.g. an old 0.2.0 tag that predates the perMachine MSI), the
-    /// agent should still self-update against the available MSI rather
-    /// than skip the release entirely. The cross-flavour install will
-    /// silently no-op against the launch condition; that's strictly
-    /// better than agents stuck on an old version forever.
+    /// An incomplete release must not migrate the installation's scope.
     #[test]
-    fn pick_asset_per_machine_falls_back_when_only_per_user_present() {
+    fn pick_asset_per_machine_refuses_when_only_per_user_present() {
         let assets = vec![mk_msi(
             "meshharbor-agent-0.2.0-x86_64-pc-windows-msvc-unsigned.msi",
         )];
-        let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerMachine)
-            .expect("fallback must produce something");
-        assert!(pick.name.to_lowercase().ends_with(".msi"));
+        assert!(pick_asset_for_windows(&assets, WindowsInstallFlavour::PerMachine).is_none());
     }
 
     #[test]
-    fn pick_asset_per_user_falls_back_when_only_per_machine_present() {
+    fn pick_asset_per_user_refuses_when_only_per_machine_present() {
         let assets = vec![mk_msi(
             "meshharbor-agent-0.2.5-perMachine-x86_64-pc-windows-msvc-unsigned.msi",
         )];
-        let pick = pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser)
-            .expect("fallback must produce something");
-        assert!(pick.name.to_lowercase().ends_with(".msi"));
+        assert!(pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser).is_none());
     }
 
     #[test]
@@ -6226,6 +6232,25 @@ mod tests {
             digest: None,
         }];
         assert!(pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser).is_none());
+    }
+
+    #[test]
+    fn pick_asset_per_scope_is_order_independent_and_case_insensitive() {
+        let user = "meshharbor-agent-0.4.158-x86_64-pc-windows-msvc.MSI";
+        let machine = "meshharbor-agent-0.4.158-PERMACHINE-x86_64-pc-windows-msvc.MSI";
+        for names in [[user, machine], [machine, user]] {
+            let assets = names.map(mk_msi);
+            assert_eq!(
+                pick_asset_for_windows(&assets, WindowsInstallFlavour::PerUser)
+                    .map(|a| a.name.as_str()),
+                Some(user)
+            );
+            assert_eq!(
+                pick_asset_for_windows(&assets, WindowsInstallFlavour::PerMachine)
+                    .map(|a| a.name.as_str()),
+                Some(machine)
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]

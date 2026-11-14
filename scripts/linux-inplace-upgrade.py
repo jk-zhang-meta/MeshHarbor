@@ -174,9 +174,9 @@ def checked_paths(scope, binary, config):
         require(os.geteuid() != 0, "user scope must run as actual non-root service owner")
         home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
         require(binary == home / ".local/bin/meshharbord", "unexpected per-user binary")
-        require(config.parent.parent == home / ".config/meshharbor", "expected named per-user config")
-        require(config.name == "config.toml" and config.parent.name in ("siat-63", "siat-228", "siat-45"),
-                "unexpected named config")
+        config_root = home / ".config/meshharbor"
+        require(config.name == "config.toml" and (config.parent == config_root or config.parent.parent == config_root),
+                "expected existing default or named per-user config")
     require(binary.stat().st_uid == os.geteuid() and config.stat().st_uid == os.geteuid(),
             "binary/config owner differs from service operator")
     return binary, config
@@ -276,23 +276,86 @@ def guard(manifest, service):
             "binary ownership/permissions/xattrs changed (not overwritten)")
 
 
+def library_snapshot(source, binary, directory):
+    if not source:
+        return []
+    source = Path(source)
+    require(source.is_absolute() and source.resolve() == source and source.is_dir(), "invalid library source")
+    dest = binary.parent.parent / "lib/meshharbor"
+    # Only the same user's relocatable installation supports this extension.
+    for parent in (binary.parent.parent, dest.parent, dest):
+        if parent.exists() or parent.is_symlink():
+            require(parent.resolve() == parent and parent.is_dir() and parent.stat().st_uid == os.geteuid(),
+                    "library directory is not owned by the service user")
+        else:
+            parent.mkdir(mode=0o755)
+    saved = directory / "libraries"
+    saved.mkdir(mode=0o700)
+    rows = []
+    for src in sorted(source.iterdir()):
+        regular(src)
+        require(".so" in src.name and src.name not in (".", ".."), "unexpected library payload")
+        dst = dest / src.name
+        old = digest(regular(dst)) if dst.exists() or dst.is_symlink() else None
+        metadata = file_metadata(dst) if old else dict(uid=os.geteuid(), gid=os.getegid(), mode=0o644, xattrs={})
+        require(metadata["uid"] == os.geteuid(), "library belongs to another account")
+        row = dict(name=src.name, path=str(dst), old_sha=old, new_sha=digest(src), metadata=metadata)
+        shutil.copyfile(src, saved / (src.name + ".new"))
+        if old:
+            shutil.copyfile(dst, saved / (src.name + ".old"))
+        rows.append(row)
+    return rows
+
+
+def library_guard(manifest, phase="either"):
+    for row in manifest.get("libraries", []):
+        path = Path(row["path"])
+        actual = digest(regular(path)) if path.exists() or path.is_symlink() else None
+        expected = [row[phase + "_sha"]] if phase in ("old", "new") else [row["old_sha"], row["new_sha"]]
+        require(actual in expected, "library has unrecorded bytes; manual recovery required")
+        if actual is not None:
+            require(file_metadata(path) == row["metadata"], "library metadata changed; refusing overwrite")
+
+
+def library_place(directory, manifest, phase):
+    library_guard(manifest)
+    for row in manifest.get("libraries", []):
+        # Recheck immediately before each mutation; no other writer is locked out.
+        library_guard(manifest)
+        target = Path(row["path"])
+        expected = row[phase + "_sha"]
+        if expected is None:
+            if target.exists():
+                target.unlink()
+                sync_directory(target.parent)
+        else:
+            source = directory / "libraries" / (row["name"] + (".old" if phase == "old" else ".new"))
+            same(source, expected, "saved library")
+            atomic_copy(source, target, row["metadata"])
+    library_guard(manifest, phase)
+
+
 def restore(directory, manifest, service):
     service.ensure_outside()
     same(directory / "baseline.bin", manifest["old_sha"], "baseline backup")
     guard(manifest, service)
     require(digest(regular(manifest["binary"])) in (manifest["old_sha"], manifest["new_sha"]),
             "current binary is neither recorded version; refusing overwrite")
+    library_guard(manifest)
     service.stop()
     guard(manifest, service)
+    library_guard(manifest)
     # stop may run arbitrary unit hooks; another updater does not hold our
     # cooperative lock. Recheck bytes immediately before replacing them.
     require(digest(regular(manifest["binary"])) in (manifest["old_sha"], manifest["new_sha"]),
             "binary changed during stop; manual recovery required, refusing overwrite")
+    library_place(directory, manifest, "old")
     atomic_copy(directory / "baseline.bin", manifest["binary"], manifest["metadata"])
     same(manifest["binary"], manifest["old_sha"], "restored binary")
     service.start()
     pid = service.ready(manifest["old_sha"])
     guard(manifest, service)
+    library_guard(manifest, "old")
     return pid
 
 
@@ -335,6 +398,7 @@ def _apply(args, service=None, validate=checked_paths):
         same(directory / "baseline.bin", args.old_sha, "copied baseline")
         same(directory / "baseline.config", args.config_sha, "copied config")
         same(directory / "candidate.bin", args.new_sha, "copied candidate")
+        manifest["libraries"] = library_snapshot(getattr(args, "library_source", None), binary, directory)
         manifest["parser_dependency"] = bundle_parser(directory)
         write_json(directory / "manifest.json", manifest)
         shutil.copyfile(__file__, directory / "upgrade.py")
@@ -354,7 +418,9 @@ def _apply(args, service=None, validate=checked_paths):
                             + ' "$here/upgrade.py" rollback --transaction "$here"\n')
         rollback.chmod(0o700)
         # Recovery material must reach disk BEFORE stopping the original.
-        for saved in directory.iterdir():
+        for saved in directory.rglob("*"):
+            if not saved.is_file():
+                continue
             with open(saved, "rb") as persisted:
                 os.fsync(persisted.fileno())
         sync_directory(directory)
@@ -364,15 +430,19 @@ def _apply(args, service=None, validate=checked_paths):
         write_json(directory / "result.json", result)
         try:
             guard(manifest, service)
+            library_guard(manifest, "old")
             service.stop()
             guard(manifest, service)
+            library_guard(manifest, "old")
             same(binary, args.old_sha, "old binary after stop")
+            library_place(directory, manifest, "new")
             atomic_copy(directory / "candidate.bin", binary, manifest["metadata"])
             same(binary, args.new_sha, "installed binary")
             service.start()
             new_pid = service.ready(args.new_sha)
             require(new_pid != old_pid, "replacement did not produce a new PID")
             guard(manifest, service)
+            library_guard(manifest, "new")
             result.update(state="activated", new_pid=new_pid, config_after_sha=digest(config),
                           config_semantics_unchanged=True)
         except Exception as error:
@@ -422,6 +492,7 @@ def main():
     install.add_argument("--scope", choices=("user", "system"), required=True)
     for name in ("binary", "config", "candidate", "old-sha", "new-sha", "config-sha", "transaction"):
         install.add_argument("--" + name, required=True)
+    install.add_argument("--library-source")
     undo = commands.add_parser("rollback")
     undo.add_argument("--transaction", required=True)
     args = parser.parse_args()

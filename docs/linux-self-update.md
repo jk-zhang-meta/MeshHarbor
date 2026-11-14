@@ -1,11 +1,57 @@
 # Linux self-update — design
 
-**Status:** shipped for **system** installs: the tarball path landed in #462 (2026-08-15), after
-[#456](https://github.com/jk-zhang-meta/MeshHarbor/pull/456) (the arch-aware picker and the aarch64 `.deb`). A
-**per-user** daemon cannot install its own update, whichever format, so a root update half installs for
-it: [FR-96](fr/FR-96-per-user-linux-installs-update-themselves.md) (#2052),
-[below](#the-update-half-of-a-per-user-install-fr-96). `install.sh` enables it for a per-user install (P3,
-0.4.137), and from 0.4.138 the `.deb` enables it too, however it was installed (P5).
+**Status:** system `/usr/bin` installations retain the package/root-helper path below.
+A daemon installed as its actual non-root account at `~/.local/bin/meshharbord`
+uses the same-user signed-tarball transaction instead. It never installs a second
+system instance, elevates, rewrites its user unit, or substitutes the default
+configuration for its resolved `--config` (including SIAT named configurations).
+
+## Same-user local installations
+
+The Linux picker requires the matching-architecture daemon `.tar.gz` even on a
+Debian host. The existing pinned release-key signature and claimed-version checks
+run before extraction or executable launch; the handoff repeats both. Missing
+signatures, versions, bundled libraries, the pinned TOML wheel, a usable user
+systemd manager, or a running matching original service are failures, not reasons
+to fall back to `.deb`, sudo or the root helper.
+
+A private durable `~/.local/state/meshharbor/updates/update-*/` directory contains
+the signed payload, frozen reviewed transaction script, log, and transaction.
+`systemd-run --user` starts a distinct **service**, never a scope inherited from
+the daemon. Submission is not completion. The script verifies it is outside the
+original `meshharbor.service` cgroup, checks its actual MainPID/executable/UID,
+LocalAPI PID/config/identity, exact binary/config hashes and unit definition.
+It backs up all affected library files, original binary/config/invitation
+sidecars, then stops that same user unit. Old/new CAS and metadata checks repeat
+after stop. Libraries map to `~/.local/lib/meshharbor`; the signed binary must
+already have relative `$ORIGIN/../lib/meshharbor` RPATH. No post-signing patching.
+
+After replacement it restarts the unchanged unit and observes a new MainPID,
+exact executable hash and LocalAPI identity/config/privilege scope. Failures
+restore old libraries and executable and restart the original unit; third-party
+bytes are never blindly overwritten and leave explicit `recovery_required`.
+`transaction/result.json` states `activated`, `rolled_back` or
+`recovery_required`; `transaction/ROLLBACK.sh` is independently runnable by the
+same user. Neither activation nor a version string substitutes for actual
+remote-function canary acceptance. Existing automatic-update policy is unchanged.
+
+Python 3.10 needs no global installation: packaging requires
+`MESHHARBOR_TOMLI_WHEEL` to name the official tomli 2.2.1 pure wheel, SHA256
+`cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc`.
+The tar contains it at `usr/share/meshharbor/update/`; native code checks that
+fixed hash before exposing it through process-only PYTHONPATH. The transaction
+copies the wheel for standalone rollback and checks its bytes before importing.
+
+### First update from old versions
+
+Old .154/.157 binaries do not contain this updater. They **cannot bootstrap
+this behavior themselves**. The first migration uses the independently reviewed
+`scripts/linux-inplace-upgrade.py` under the existing account, explicit active
+named config, old/new hashes and matching bundled-library set. It preserves the
+original per-user unit/scope. Only after that externally controlled bootstrap
+may the new native path run. Acceptance must subsequently exercise a real
+signed **next-version** native update and its observed service/remote-function
+checks; bootstrap alone is not proof that built-in updates work.
 
 ## The problem
 

@@ -118,3 +118,28 @@ The generated `ROLLBACK.sh` needs no inherited `PYTHONPATH`. The dependency
 fixture removes its original wheel copy and clears that environment before
 executing the generated shell verbatim with an isolated service adapter; it
 also verifies that a tampered transaction wheel is refused before import.
+
+## Native same-user updater integration
+
+The native updater embeds this same transaction implementation rather than a
+second replacement engine. A separately verified signed tarball supplies the
+candidate and optional `--library-source <payload/usr/lib/meshharbor>` directory.
+The library set maps beside the existing installation (`../lib/meshharbor`),
+backs up every overwritten member, preserves unrelated members, and participates
+in the same pre-stop/post-stop CAS, activation and rollback. Newly added members
+are removed on rollback only when still equal to the recorded candidate bytes.
+An unexpected third state leaves explicit manual recovery rather than overwriting
+another writer. Original metadata is preserved for existing members.
+
+The same-user source may be the existing default `~/.config/meshharbor/config.toml`
+or a direct named configuration beneath that directory. The original user unit
+must actually be running the exact explicit named path. No config path is
+invented, no unit is created or rewritten, and no enrollment is performed.
+
+The independent `systemd-run --user` service owns lifecycle; the daemon's update
+submission is not successful activation. Inspect the transaction's terminal
+result and then perform real remote-function acceptance. Native package signing
+and version validation occur before this script is invoked. This script itself
+remains an explicit local SHA-gated transaction, not a downloader/signature trust
+root. Older .154/.157 require a separately authorized external bootstrap first;
+that first upgrade does not prove the new built-in path works on the next update.
