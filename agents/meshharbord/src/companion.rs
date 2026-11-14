@@ -100,6 +100,74 @@ pub async fn launch_once_after_install(owner: LaunchOwner) {
     launch_once::run(owner).await
 }
 
+/// The file recording which verified update's companion reopen was done.
+#[cfg(target_os = "windows")]
+const REOPENED_AFTER_UPDATE: &str = "companion-reopened-after-update";
+
+/// Reopen the tray an UPDATE closed. A per-user install's MSI shuts the
+/// running companion down to replace its files, and nothing opened it again
+/// until the next logon (field, 2026-11-14: 0.4.154 -> 0.4.155, the device
+/// back on the mesh in 17 s, the tray gone). The FR-84 D6 launcher rightly
+/// never launches into an upgrade — it cannot tell an install's close from a
+/// person's quit — so this answers only the first start after a VERIFIED
+/// update (`last-install.json`, which every version's watcher writes), once
+/// per update, and only where the login start would open it anyway: the
+/// device switch on, the person's "start at login" on, none running. The
+/// tray opens as at login (`--autostart`: no window).
+#[cfg(target_os = "windows")]
+pub fn reopen_after_update(respawn: RespawnContext, companion_autostart: bool) {
+    if !companion_autostart || !matches!(respawn, RespawnContext::UserSession) {
+        return;
+    }
+    let Ok(Some(done)) = crate::post_install::read_outcome() else {
+        return;
+    };
+    if !matches!(
+        done.status,
+        crate::post_install::InstallStatus::SucceededVerified
+    ) {
+        return;
+    }
+    let Some(finished) = done.finished_unix else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.saturating_sub(finished) > 1800 {
+        return;
+    }
+    let Some(mark) = crate::post_install::outcome_path()
+        .and_then(|p| p.parent().map(|d| d.join(REOPENED_AFTER_UPDATE)))
+    else {
+        return;
+    };
+    let this_update = finished.to_string();
+    if std::fs::read_to_string(&mark).ok().as_deref() == Some(this_update.as_str()) {
+        return;
+    }
+    // Recorded BEFORE the spawn: once per update, whatever happens next.
+    if let Err(e) = std::fs::write(&mark, &this_update) {
+        tracing::debug!(error = %e, "companion reopen: could not record; not reopening");
+        return;
+    }
+    if meshharbor_node_core::desktop_state::load().autostart_opt_out || desktop_running() {
+        return;
+    }
+    let Some(dest) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(DESKTOP_EXE)))
+        .filter(|p| p.exists())
+    else {
+        return;
+    };
+    match crate::win_service::companion_spawn::spawn_detached_no_inherit(&dest, &["--autostart"]) {
+        Ok(pid) => tracing::info!(pid, "desktop companion reopened after the update"),
+        Err(e) => tracing::warn!(error = %e, "desktop companion reopen after the update failed"),
+    }
+}
+
 /// FR-84 D6 — what the SCM service host does for the companion at every
 /// start, after the version refresh: bring the machine-wide Run value in line
 /// with the device switch and the installed EXE (the self-heal), then run the

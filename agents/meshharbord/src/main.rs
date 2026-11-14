@@ -4553,7 +4553,9 @@ async fn run_cmd(
             #[cfg(target_os = "windows")]
             if !scm_owns_companion {
                 let _ = tokio::task::spawn_blocking(move || {
-                    meshharbord::companion::sync_user_autostart_logged(companion_autostart)
+                    meshharbord::companion::sync_user_autostart_logged(companion_autostart);
+                    // After the refresh above, so it opens the new companion.
+                    meshharbord::companion::reopen_after_update(respawn_ctx, companion_autostart);
                 })
                 .await;
             }
