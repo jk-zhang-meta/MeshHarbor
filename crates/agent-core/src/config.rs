@@ -2324,6 +2324,32 @@ pub struct Promotion {
     pub demoted_lost_mesh: bool,
 }
 
+/// [`promote_org_to_primary`] for a machine whose enrollments changed hands
+/// by itself (an invitation's end, an account signed in beside invitations):
+/// the MACHINE stays on the mesh as it was. The new primary is on if the
+/// machine was on (or the entry was on any mesh), and a demoted enrollment
+/// that lost its mesh goes to the userspace stack (no adapter, no routes)
+/// rather than off — an invitation's inviter must still reach the machine.
+pub fn promote_keeping_mesh(
+    cfg: &mut AgentConfig,
+    label: &str,
+    demoted_label: Option<&str>,
+) -> Result<Promotion> {
+    let was_on = cfg.overlay_enabled;
+    let entry_on = cfg
+        .find_org(label)
+        .is_some_and(|o| o.overlay_mode != OrgOverlayMode::Off);
+    let done = promote_org_to_primary(cfg, label, demoted_label)?;
+    cfg.overlay_enabled = was_on || entry_on;
+    if was_on
+        && let Some(d) = cfg.orgs.iter_mut().find(|o| o.label == done.demoted_label)
+        && d.overlay_mode == OrgOverlayMode::Off
+    {
+        d.overlay_mode = OrgOverlayMode::Netstack;
+    }
+    Ok(done)
+}
+
 /// Multi-org — swap a secondary enrollment into the PRIMARY (scalar) slot;
 /// the demoted primary takes the promoted org's `[[orgs]]` position, under
 /// `demoted_label` when given (sanitized, refused on a collision), else
@@ -4226,6 +4252,26 @@ tenant_id = "tid2"
             ..fixture()
         };
         assert!(clean.validate_orgs().is_empty());
+    }
+
+    #[test]
+    fn a_promotion_of_its_own_keeps_the_machine_on_the_mesh() {
+        // Field, Surface 2026-11-14: an account signed in beside an invitation
+        // (appended `off`) took the primary's place, and the machine fell off
+        // every mesh.
+        let mut cfg = fixture();
+        cfg.overlay_enabled = true;
+        cfg.orgs = vec![org_fixture("own", "tid-own")];
+        let done = promote_keeping_mesh(&mut cfg, "own", Some("invited")).unwrap();
+        assert!(cfg.overlay_enabled, "the machine stays on the mesh");
+        let demoted = cfg.find_org(&done.demoted_label).unwrap();
+        assert_eq!(demoted.overlay_mode, OrgOverlayMode::Netstack);
+        // A machine that was off stays off.
+        let mut cfg = fixture();
+        cfg.overlay_enabled = false;
+        cfg.orgs = vec![org_fixture("own", "tid-own")];
+        promote_keeping_mesh(&mut cfg, "own", None).unwrap();
+        assert!(!cfg.overlay_enabled);
     }
 
     #[test]

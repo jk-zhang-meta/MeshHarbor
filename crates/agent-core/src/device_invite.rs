@@ -530,7 +530,7 @@ pub fn end_enrollment_locally(config_path: &Path, agent_id: &str) -> Result<Loca
             .map(|o| o.label.clone())
             .expect("orgs is not empty");
         let demoted = format!("ended-{}", &agent_id[..agent_id.len().min(8)]);
-        crate::config::promote_org_to_primary(&mut cfg, &next, Some(&demoted))?;
+        crate::config::promote_keeping_mesh(&mut cfg, &next, Some(&demoted))?;
         cfg.orgs.retain(|o| o.agent_id != agent_id);
         LocalEnd::Promoted { label: next }
     } else if let Some(o) = cfg.orgs.iter().find(|o| o.agent_id == agent_id) {

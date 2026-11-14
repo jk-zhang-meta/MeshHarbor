@@ -1345,7 +1345,7 @@ async fn login_cmd(
         {
             let markers = device_invite::read_markers(config_path);
             let old_primary = cfg.agent_id.clone();
-            config::promote_org_to_primary(&mut cfg, &label, None)?;
+            config::promote_keeping_mesh(&mut cfg, &label, None)?;
             config::save(config_path, &cfg).context("saving the config")?;
             // The legacy marker key meant "the primary": it now names the
             // demoted invitation enrollment by its id (`true` drops the key).
