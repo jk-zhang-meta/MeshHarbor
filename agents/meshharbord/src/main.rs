@@ -2105,6 +2105,11 @@ fn main() -> Result<()> {
 /// exit (an auto-update, a SIGTERM) already gets. Nothing else changes.
 #[cfg(not(all(target_os = "macos", feature = "viewer-indicator-macos")))]
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    if let Some(result) = msi_task_transaction::run_if_requested() {
+        return result.map_err(Into::into);
+    }
+
     exit_for_cli_help_or_version();
     #[cfg(target_os = "macos")]
     if meshharbord::tcc_recovery::probe_if_requested()? {
@@ -7748,6 +7753,9 @@ fn peer_presence_status_cmd() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(any(windows, test))]
+mod msi_task_transaction;
 
 #[cfg(test)]
 mod tests {

@@ -21,17 +21,11 @@
   (written by the `directories` crate at runtime — deliberately NOT
   renamed: machine_id derives from the config path).
 
-  Autostart: registered automatically on every install + upgrade via the
-  RegisterAutostart custom action below. The action shells out to
-  `meshharbord service install` which writes a Schema 1.2 Task
-  Scheduler XML with restart-on-failure + battery-defeat settings (see
-  agents/meshharbord/src/service.rs::render_task_xml). Symmetric
-  UnregisterAutostart hook runs `service uninstall` before the EXE is
-  removed during uninstall. Both actions Return="ignore" so an
-  individual machine where the existing task has a tightened ACL (rare
-  Win11 quirk that bit us 2026-04-29) doesn't sink the whole MSI —
-  operator can still recover via the manual schtasks delete + service
-  install path documented in packaging/windows/README.txt.
+  Autostart: preserve the existing task XML, principal, enabled state and
+  DACL through major upgrades. Only a genuinely absent task gets the fresh
+  service-install defaults. Snapshot/restore errors fail the installation;
+  rollback retains original task semantics. Symmetric uninstall remains
+  best effort. The helper never changes a per-user task into an SCM service.
 
   Why this works without UAC: perUser MSIs run in the user's token
   context. Custom actions with Execute="deferred" Impersonate="yes"
@@ -75,7 +69,7 @@
         <Property Id='ARPPRODUCTICON' Value='MeshHarborProductIcon' />
 
         <MajorUpgrade
-            Schedule='afterInstallInitialize'
+            Schedule='afterInstallExecute'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
 
         <!--
@@ -343,42 +337,24 @@
         <Property Id='ARPHELPLINK' Value='https://meshharbor.itachi.fans/' />
         <Property Id='ARPURLINFOABOUT' Value='https://meshharbor.itachi.fans/' />
 
-        <!--
-          Postinstall hook: register the Scheduled Task auto-start
-          immediately after the EXE lands on disk. Runs deferred +
-          impersonated as the installing user (default for perUser
-          MSIs) so the task is registered against their account.
-          Return="ignore" so a registration failure (e.g. existing
-          task with a tightened ACL) doesn't fail the install — the
-          operator can recover with manual schtasks /Delete and
-          re-run `service install`.
-        -->
-        <CustomAction
-            Id='RegisterAutostart'
-            FileKey='meshharbor_agent_exe'
-            ExeCommand='service install'
-            Execute='deferred'
-            Impersonate='yes'
-            Return='ignore' />
-
-        <!--
-          Start the daemon once the install has SUCCEEDED (commit phase):
-          its logon task relaunches only a failed exit, and both the
-          self-updater (which exits cleanly to make room) and a plain
-          upgrade leave the daemon stopped. Field, 2026-11-14 (an unattended
-          0.4.151 -> 0.4.154 self-update): MSI success, new binary verified,
-          and the machine off the mesh until its next logon. In the package
-          rather than the updater because the updater that runs an upgrade is
-          the OLD version. `service start` is harmless to repeat (the task's
-          IgnoreNew) and the scheduler, not msiexec, spawns the daemon.
-        -->
-        <CustomAction
-            Id='StartAutostart'
-            FileKey='meshharbor_agent_exe'
-            ExeCommand='service start'
-            Execute='commit'
-            Impersonate='yes'
-            Return='ignore' />
+        <!-- Snapshot is immediate and precedes old-product removal. The embedded
+             NEW helper works when an old updater launches this MSI. afterInstallExecute
+             lets the rollback action be queued before RemoveExistingProducts, unlike
+             afterInstallInitialize (ICE63 forbids script-generating actions there).
+             Stable component identities above must be retained for this schedule. -->
+        <Binary Id='TaskTransactionHelper' SourceFile='target\release\meshharbor-msi-task-helper.exe' />
+        <CustomAction Id='SnapshotAutostart' BinaryKey='TaskTransactionHelper'
+            ExeCommand='msi-task-transaction snapshot &quot;[ProductCode]&quot;'
+            Execute='immediate' Return='check' />
+        <CustomAction Id='RollbackAutostart' BinaryKey='TaskTransactionHelper'
+            ExeCommand='msi-task-transaction rollback &quot;[ProductCode]&quot;'
+            Execute='rollback' Impersonate='yes' Return='check' />
+        <CustomAction Id='RegisterAutostart' FileKey='meshharbor_agent_exe'
+            ExeCommand='msi-task-transaction restore-or-create &quot;[ProductCode]&quot;'
+            Execute='deferred' Impersonate='yes' Return='check' />
+        <CustomAction Id='StartAutostart' FileKey='meshharbor_agent_exe'
+            ExeCommand='msi-task-transaction start-if-enabled &quot;[ProductCode]&quot;'
+            Execute='commit' Impersonate='yes' Return='check' />
 
         <!--
           Symmetric uninstall hook: tear down the Scheduled Task
@@ -427,24 +403,20 @@
             Return='ignore' />
 
         <InstallExecuteSequence>
-            <!--
-              Run RegisterAutostart on every fresh install, repair,
-              and MajorUpgrade. Skip during full uninstall — there's
-              nothing to register and the EXE is about to be deleted
-              anyway. The condition leaves it active for upgrade
-              installs (which are technically "REMOVE=ALL" of the
-              old + install of the new, scheduled separately).
-            -->
-            <Custom Action='RegisterAutostart' After='InstallFiles'>
+            <Custom Action='SnapshotAutostart' Before='InstallInitialize'>
+                NOT (REMOVE="ALL") AND NOT MESH_SKIP_AUTOSTART
+            </Custom>
+            <Custom Action='RollbackAutostart' After='InstallInitialize'>
+                NOT (REMOVE="ALL") AND NOT MESH_SKIP_AUTOSTART
+            </Custom>
+            <Custom Action='RegisterAutostart' After='RemoveExistingProducts'>
                 NOT (REMOVE="ALL") AND NOT MESH_SKIP_AUTOSTART
             </Custom>
             <!--
               rc.18: scrub stale artefacts AFTER the new EXE lands
               (so we can shell out to it). NB both this and
-              RegisterAutostart are After='InstallFiles'; WiX v3
-              breaks the tie in DOCUMENT order, so RegisterAutostart
-              actually runs FIRST (an earlier comment here claimed
-              the opposite). Ordering is immaterial: the helper's
+              RegisterAutostart now restores after old-product removal.
+              Cleanup remains before that removal: the helper's
               CA-reachable step only sweeps the vacated pre-rename
               install dir (P4b), and its cross-flavour arms — which
               touch the other flavour's task/service namespace — are
