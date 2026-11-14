@@ -2470,7 +2470,7 @@
     "renewFrom": "Extends from the current end ({until}).",
     "extendBy": "Extend by",
     "revokeConfirm": "End the invitation \"{name}\"? Its code stops working.",
-    "revokeConfirmDevice": "End \"{name}\" now? The device is removed and disconnected immediately.",
+    "revokeConfirmDevice": "End “{name}” now? If this is the device’s last invitation, it is removed and disconnected.",
     "dh": "{d} d {h} h",
     "hm": "{h} h {m} min",
     "m": "{m} min",
@@ -2486,7 +2486,8 @@
       "left": "the device left",
       "removed": "device removed",
       "unbound": "did not complete",
-      "made_permanent": "made ordinary"
+      "made_permanent": "made ordinary",
+      "ended_by_owner": "Ended by the device’s owner"
     },
     "unit": {
       "minute": "minutes",
@@ -2515,5 +2516,20 @@
     "notFound": "No pending request with that code. It may have expired (10 minutes) — run `mh login` again on the device.",
     "noPermission": "You do not have permission to add devices to that organization.",
     "failed": "Something went wrong. Try again."
+  },
+  "acceptedInvites": {
+    "title": "Invitations your devices accepted",
+    "intro": "Other people invited these devices of your organization for a while, and the devices accepted. Each invitation lets only its inviter reach and control the device until it ends; it never lets the device into their network. You can end any of them.",
+    "col": {
+      "device": "Your device",
+      "from": "Invited by"
+    },
+    "unknownDevice": "A device of this organization",
+    "someone": "Someone",
+    "inEffect": "In effect",
+    "accepted": "Accepted {when}",
+    "end": "End now",
+    "endConfirm": "End the invitation from {who} on “{name}” now? They lose access to the device immediately.",
+    "noneActive": "No invitation is in effect."
   }
 }

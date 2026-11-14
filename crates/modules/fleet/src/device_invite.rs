@@ -17,11 +17,23 @@
 //! - it is removed when the invitation's time is up (the reaper below), when
 //!   the inviter revokes the invitation, or when the device leaves itself.
 //!
-//! What this flow can never do: bind an EXISTING device (a redemption that
-//! would rehydrate a known machine is refused at enrollment), hand out a
+//! What this flow can never do: bind an EXISTING ordinary device (a redemption
+//! that would rehydrate a known machine is refused at enrollment), hand out a
 //! code twice (`open → redeemed` is a compare-and-set), or let anyone guess
 //! codes at speed (per-client and server-wide failure budgets). Codes are
 //! stored only as peppered hashes; the token itself is never stored.
+//!
+//! One device may hold SEVERAL invitations at once. Within one organization
+//! they are grants on the device's ONE enrollment there (a second code is
+//! redeemed with that enrollment's own credential and attaches to it); across
+//! organizations each is a separate enrollment the device holds side by side.
+//! The device's access is the union of its live grants, each ending on its
+//! own; the device is removed from an organization when its last grant there
+//! ends. Every redemption hands the device a private proof of that invitation,
+//! which it keeps: when the same machine is (or later becomes) a device of its
+//! own owner's organization, it presents the proofs from there, and that
+//! organization's admins see which invitations their device accepted. A
+//! self-reported machine id never links anything.
 use axum::{
     Json,
     extract::{ConnectInfo, Path, State},
@@ -65,6 +77,10 @@ pub const REASON_EXPIRED: &str = "temporary_expired";
 pub const REASON_REVOKED: &str = "temporary_revoked";
 pub const REASON_LEFT: &str = "temporary_left";
 pub const REASON_REMOVED: &str = "temporary_removed";
+/// Ended by an admin of the organization that owns the device (the proof link).
+pub const REASON_OWNER_ENDED: &str = "temporary_ended_by_owner";
+/// At most this many proofs in one link call.
+const MAX_PROOFS: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInviteRow {
@@ -108,6 +124,29 @@ pub struct DeviceInviteRow {
     /// had a code anyone could redeem).
     #[serde(default)]
     pub converted: bool,
+    /// `true` when the code was redeemed by a device ALREADY temporary in this
+    /// organization: the grant attached to its existing enrollment.
+    #[serde(default)]
+    pub attached: bool,
+    /// Hash of the proof the redeeming device holds (see the module docs).
+    #[serde(default)]
+    pub device_proof_hash: Option<String>,
+    /// The device's OWN organizations, proven by the device (`self/link`).
+    #[serde(default)]
+    pub hosts: Vec<HostLink>,
+    /// Ended, but whether its device stays (other grants) or goes (none
+    /// left) is not settled yet; the reaper retries until it is. While set,
+    /// a device with no live grant left admits nobody.
+    #[serde(default)]
+    pub removal_pending: bool,
+}
+
+/// An organization the invited machine belongs to by its own enrollment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostLink {
+    pub tenant_id: ObjectId,
+    pub agent_id: ObjectId,
+    pub linked_at: DateTime,
 }
 
 /// One extension of an invitation's access period.
@@ -123,17 +162,56 @@ pub struct Renewal {
 /// device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryGrant {
+    /// The oldest live invitation (or, while the device's end is being
+    /// settled, the one that ended last).
     pub invite_id: ObjectId,
+    /// That invitation's inviter — [`NOBODY`] while the end is being settled.
     pub inviter_user_id: ObjectId,
+    /// The inviters of the device's other live invitations.
+    pub also_inviter_user_ids: Vec<ObjectId>,
+    /// The union of every live invitation's extra roles.
     pub allow_role_ids: Vec<ObjectId>,
+    /// The latest deadline among them.
     pub access_until: DateTime,
 }
+
+/// No user has the all-zero id: a grant naming it admits nobody.
+pub const NOBODY: ObjectId = ObjectId::from_bytes([0; 12]);
 
 impl TemporaryGrant {
     /// May a member with this identity control / reach the device?
     pub fn allows(&self, user_id: Option<ObjectId>, role_ids: &[ObjectId]) -> bool {
-        user_id == Some(self.inviter_user_id)
-            || role_ids.iter().any(|r| self.allow_role_ids.contains(r))
+        user_id.is_some_and(|u| {
+            u != NOBODY && (u == self.inviter_user_id || self.also_inviter_user_ids.contains(&u))
+        }) || role_ids.iter().any(|r| self.allow_role_ids.contains(r))
+    }
+
+    /// The union of a device's live invitations, oldest first; `None` for none.
+    pub fn of(rows: &[DeviceInviteRow]) -> Option<Self> {
+        let first = rows.first()?;
+        let mut g = TemporaryGrant {
+            invite_id: first.id,
+            inviter_user_id: first.inviter_user_id,
+            also_inviter_user_ids: Vec::new(),
+            allow_role_ids: Vec::new(),
+            access_until: first.access_until,
+        };
+        for r in rows {
+            if r.inviter_user_id != g.inviter_user_id
+                && !g.also_inviter_user_ids.contains(&r.inviter_user_id)
+            {
+                g.also_inviter_user_ids.push(r.inviter_user_id);
+            }
+            for role in &r.allow_role_ids {
+                if !g.allow_role_ids.contains(role) {
+                    g.allow_role_ids.push(*role);
+                }
+            }
+            if r.access_until > g.access_until {
+                g.access_until = r.access_until;
+            }
+        }
+        Some(g)
     }
 }
 
@@ -153,6 +231,17 @@ pub struct Redeem {
     code: String,
     device_name: String,
     device_os: String,
+    /// The device's own agent credential IN THE INVITATION'S ORGANIZATION,
+    /// when it already holds one there (a temporary device taking a second
+    /// invitation from the same organization): the grant attaches to it.
+    #[serde(default)]
+    attach_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preview {
+    code: String,
 }
 
 macro_rules! coll {
@@ -295,6 +384,7 @@ fn row_view(r: &DeviceInviteRow) -> Value {
         "end_reason": r.end_reason,
         "ended_by": r.ended_by.map(|x| x.to_hex()),
         "converted": r.converted,
+        "attached": r.attached,
         "renewals": r.renewals.iter().map(|x| json!({
             "at_ms": x.at.timestamp_millis(),
             "by": x.by.to_hex(),
@@ -396,6 +486,10 @@ pub async fn create(
             ended_by: None,
             renewals: Vec::new(),
             converted: false,
+            attached: false,
+            device_proof_hash: None,
+            hosts: Vec::new(),
+            removal_pending: false,
         };
         if c.insert_one(&row).await.is_ok() {
             tracing::info!(invite = %row.id, tenant = %tid, inviter = %auth.user_id,
@@ -479,9 +573,10 @@ pub async fn revoke(
     Ok(Json(json!({ "ended": true, "device_removed": removed })))
 }
 
-/// End an invitation: remove its device first (the ONE removal sequence),
-/// then mark the row ended. Returns whether a device was removed. A removal
-/// that fails leaves the row as it was, so the reaper retries it.
+/// End an invitation (the reaper's, the device's own and the inviter's end).
+/// Returns whether its device was removed — it is when this was its last
+/// live grant in the organization; with others left it stays, admitting only
+/// what they admit. See [`end_invite_by`].
 pub async fn end_invite(
     state: &FleetState,
     row: &DeviceInviteRow,
@@ -491,6 +586,14 @@ pub async fn end_invite(
 }
 
 /// [`end_invite`], recording who ended it by hand.
+///
+/// The row ends FIRST, flagged `removal_pending`, and only then is the
+/// device's fate settled from what is left ([`settle_device`]). Two grants
+/// ending at once therefore cannot both see the other as still live and leave
+/// a device with none (each settles after its own end, so the last one sees
+/// zero). While the flag is set, a device with no live grant admits nobody
+/// ([`grant_for_agent`]); a settle that fails keeps the flag, and the reaper
+/// retries it.
 pub async fn end_invite_by(
     state: &FleetState,
     row: &DeviceInviteRow,
@@ -500,16 +603,8 @@ pub async fn end_invite_by(
     if row.state == STATE_ENDED {
         return Ok(false);
     }
-    let mut removed = false;
-    if let Some(aid) = row.agent_id
-        && let Ok(agent) = state.agents.base.find_by_id(aid).await
-        && agent.deleted_at.is_none()
-    {
-        crate::removal::remove_agent_device(state, &agent, reason).await?;
-        removed = true;
-    }
     let now = DateTime::now();
-    storage(
+    let r = storage(
         coll!(state)
             .update_one(
                 doc! { "_id": row.id, "state": { "$ne": STATE_ENDED } },
@@ -518,7 +613,52 @@ pub async fn end_invite_by(
                     "ended_at": now,
                     "end_reason": reason,
                     "ended_by": by,
+                    "removal_pending": row.agent_id.is_some(),
                 } },
+            )
+            .await,
+    )?;
+    if r.modified_count != 1 {
+        return Ok(false); // ended meanwhile, by someone else
+    }
+    match row.agent_id {
+        Some(aid) => settle_device(state, row.tenant_id, aid, reason).await,
+        None => Ok(false),
+    }
+}
+
+/// After a grant ended: the device goes if no live grant is left, else the
+/// organization's netmaps are fanned again so the ended inviter's devices
+/// lose it. Clears `removal_pending` only once that happened.
+pub async fn settle_device(
+    state: &FleetState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    reason: &str,
+) -> Result<bool, ApiError> {
+    let live = storage(
+        coll!(state)
+            .count_documents(doc! { "agent_id": agent_id, "state": STATE_ENROLLED })
+            .await,
+    )?;
+    let mut removed = false;
+    if live > 0 {
+        state
+            .hooks
+            .agent_updated(tenant_id, agent_id)
+            .await
+            .map_err(|e| ApiError::ServiceUnavailable(format!("netmaps not refreshed: {e}")))?;
+    } else if let Ok(agent) = state.agents.base.find_by_id(agent_id).await
+        && agent.deleted_at.is_none()
+    {
+        crate::removal::remove_agent_device(state, &agent, reason).await?;
+        removed = true;
+    }
+    storage(
+        coll!(state)
+            .update_many(
+                doc! { "agent_id": agent_id, "removal_pending": true },
+                doc! { "$set": { "removal_pending": false } },
             )
             .await,
     )?;
@@ -527,8 +667,124 @@ pub async fn end_invite_by(
 
 // ─── the device's redemption ────────────────────────────────────────────────
 
+/// The redemption's client key and throttle answer, shared by preview and
+/// redeem (both spend the same failure budget).
+fn client_key(
+    state: &FleetState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+) -> Result<String, ApiError> {
+    let client = meshharbor_core::client_ip::ConnectionOrigin::capture(
+        headers,
+        Some(peer),
+        &state.settings.app.business_trusted_proxy_cidrs,
+        state.settings.app.rate_limit_trusted_hops,
+    )
+    .client_ip()
+    .ok_or_else(|| ApiError::Forbidden("Invitation refused".into()))?;
+    Ok(hash_secret("device-invite-client", &client.to_string()))
+}
+
+fn slow_down() -> Response {
+    let mut r = no_store(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({ "error": "slow_down" }),
+    );
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("600"));
+    r
+}
+
+fn invalid_code() -> Response {
+    no_store(
+        StatusCode::NOT_FOUND,
+        json!({ "error": "invalid_code", "message": "This invite code is not valid (it may have expired or been used)" }),
+    )
+}
+
+/// The open, in-time invitation a code names, or `None` (a failure is
+/// recorded against the client).
+async fn open_for_code(
+    state: &FleetState,
+    raw: &str,
+    client: &str,
+    now: DateTime,
+) -> Result<Option<(String, DeviceInviteRow)>, ApiError> {
+    let now_ms = now.timestamp_millis();
+    let Some(code) = normalize_code(raw) else {
+        record_failure(client, now_ms);
+        return Ok(None);
+    };
+    let row = storage(
+        coll!(state)
+            .find_one(doc! {
+                "code_hash": code_hash(state, &code),
+                "state": STATE_OPEN,
+                "access_until": { "$gt": now },
+            })
+            .await,
+    )?;
+    if row.is_none() {
+        record_failure(client, now_ms);
+        tracing::info!("device-invite: an unknown or spent code was presented");
+    }
+    Ok(row.map(|r| (code, r)))
+}
+
+async fn org_display(state: &FleetState, tid: ObjectId) -> String {
+    state
+        .tenants
+        .base
+        .find_by_id(tid)
+        .await
+        .map(|t| t.name)
+        .unwrap_or_default()
+}
+
+/// A fresh proof for the redeeming device, and the hash the row keeps.
+fn new_proof() -> (String, String) {
+    let proof = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let h = hash_secret("device-invite-proof", &proof);
+    (proof, h)
+}
+
+/// `POST /api/native/device-invite/preview` — anonymous, like the redemption:
+/// who invites, from which organization, until when. Spends nothing; the
+/// device shows it and asks before it redeems.
+pub async fn preview(
+    State(state): State<FleetState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<Preview>,
+) -> Result<Response, ApiError> {
+    enabled(&state)?;
+    let client = client_key(&state, peer, &headers)?;
+    let now = DateTime::now();
+    if throttled(&client, now.timestamp_millis()) {
+        return Ok(slow_down());
+    }
+    let Some((_, row)) = open_for_code(&state, &body.code, &client, now).await? else {
+        return Ok(invalid_code());
+    };
+    Ok(no_store(
+        StatusCode::OK,
+        json!({
+            "tenant_id": row.tenant_id.to_hex(),
+            "org": org_display(&state, row.tenant_id).await,
+            "inviter": inviter_display(&state, row.inviter_user_id).await,
+            "access_until_ms": row.access_until.timestamp_millis(),
+        }),
+    ))
+}
+
 /// `POST /api/native/device-invite/redeem` — anonymous; the code is the
-/// credential. Answers a single-use enrollment token for the inviter's org.
+/// credential. Answers a single-use enrollment token for the inviter's org —
+/// or, when the device proves it is already temporary there
+/// (`attach_token`), attaches the grant to that enrollment.
 pub async fn redeem(
     State(state): State<FleetState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -539,58 +795,75 @@ pub async fn redeem(
     if !valid_device_name(&body.device_name) || !valid_os(&body.device_os) {
         return Err(ApiError::BadRequest("Invalid device".into()));
     }
-    let client = meshharbor_core::client_ip::ConnectionOrigin::capture(
-        &headers,
-        Some(peer),
-        &state.settings.app.business_trusted_proxy_cidrs,
-        state.settings.app.rate_limit_trusted_hops,
-    )
-    .client_ip()
-    .ok_or_else(|| ApiError::Forbidden("Invitation refused".into()))?;
-    let client_key = hash_secret("device-invite-client", &client.to_string());
+    let client = client_key(&state, peer, &headers)?;
     let now = DateTime::now();
-    let now_ms = now.timestamp_millis();
-    if throttled(&client_key, now_ms) {
-        let mut r = no_store(
-            StatusCode::TOO_MANY_REQUESTS,
-            json!({ "error": "slow_down" }),
-        );
-        r.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("600"));
-        return Ok(r);
+    if throttled(&client, now.timestamp_millis()) {
+        return Ok(slow_down());
     }
-    let invalid = || {
-        no_store(
-            StatusCode::NOT_FOUND,
-            json!({ "error": "invalid_code", "message": "This invite code is not valid (it may have expired or been used)" }),
-        )
+    let Some((code, found)) = open_for_code(&state, &body.code, &client, now).await? else {
+        return Ok(invalid_code());
     };
-    let Some(code) = normalize_code(&body.code) else {
-        record_failure(&client_key, now_ms);
-        return Ok(invalid());
+    // The device's existing enrollment in this organization, proven by its
+    // own credential. Checked BEFORE the code is spent: a device that is an
+    // ordinary member there keeps its code for someone else.
+    let attach_to = match body.attach_token.as_deref().filter(|t| !t.is_empty()) {
+        None => None,
+        Some(t) => {
+            let claims = state
+                .auth
+                .verify_agent_token(t)
+                .map_err(|_| ApiError::Unauthorized("Device credential refused".into()))?;
+            let (aid, tid, agent) = crate::auth_agent::accepted_agent(
+                &state,
+                &claims.sub,
+                &claims.tenant_id,
+                Some(claims.generation),
+            )
+            .await?;
+            if tid != found.tenant_id {
+                return Err(ApiError::BadRequest(
+                    "That credential is for another organization".into(),
+                ));
+            }
+            if grant_for_agent(&state, aid).await?.is_none() {
+                return Ok(no_store(
+                    StatusCode::CONFLICT,
+                    json!({ "error": "already_member", "message": "This device is already a regular device in that organization" }),
+                ));
+            }
+            Some((aid, agent))
+        }
     };
+    let (proof, proof_hash) = new_proof();
     // The one-time step: whoever wins this compare-and-set owns the code.
+    let mut set = doc! {
+        "state": if attach_to.is_some() { STATE_ENROLLED } else { STATE_REDEEMED },
+        "redeemed_at": now,
+        "device_name": &body.device_name,
+        "device_os": &body.device_os,
+        "device_proof_hash": &proof_hash,
+    };
+    if let Some((aid, agent)) = &attach_to {
+        set.insert("agent_id", *aid);
+        set.insert("attached", true);
+        set.insert("device_name", agent.name.clone());
+    }
     let won = storage(
         coll!(state)
             .find_one_and_update(
                 doc! {
+                    "_id": found.id,
                     "code_hash": code_hash(&state, &code),
                     "state": STATE_OPEN,
                     "access_until": { "$gt": now },
                 },
-                doc! { "$set": {
-                    "state": STATE_REDEEMED,
-                    "redeemed_at": now,
-                    "device_name": &body.device_name,
-                    "device_os": &body.device_os,
-                } },
+                doc! { "$set": set },
             )
             .await,
     )?;
     let Some(row) = won else {
-        record_failure(&client_key, now_ms);
-        tracing::info!("device-invite: redemption with an unknown or spent code refused");
-        return Ok(invalid());
+        record_failure(&client, now.timestamp_millis());
+        return Ok(invalid_code());
     };
     // The inviter must still be allowed to add devices at the moment the
     // credential is minted (a revocation since the invitation wins).
@@ -603,8 +876,35 @@ pub async fn redeem(
     )
     .await
     {
-        let _ = end_invite(&state, &row, REASON_REVOKED).await;
+        let mut ended = row.clone();
+        ended.agent_id = attach_to.as_ref().map(|(a, _)| *a);
+        let _ = end_invite(&state, &ended, REASON_REVOKED).await;
         return Err(e);
+    }
+    let inviter = inviter_display(&state, row.inviter_user_id).await;
+    let org = org_display(&state, row.tenant_id).await;
+    if let Some((aid, _)) = attach_to {
+        // The new inviter's devices learn of it on the re-fan; the live gates
+        // already admit them. A failed re-fan only delays that visibility.
+        if let Err(e) = state.hooks.agent_updated(row.tenant_id, aid).await {
+            tracing::warn!(invite = %row.id, agent = %aid, error = %e,
+                "device-invite: attached, but the netmaps were not refreshed");
+        }
+        tracing::info!(invite = %row.id, tenant = %row.tenant_id, agent = %aid,
+            "device-invite: redeemed onto the device's existing enrollment");
+        return Ok(no_store(
+            StatusCode::OK,
+            json!({
+                "attached": true,
+                "agent_id": aid.to_hex(),
+                "invite_id": row.id.to_hex(),
+                "device_proof": proof,
+                "tenant_id": row.tenant_id.to_hex(),
+                "access_until_ms": row.access_until.timestamp_millis(),
+                "inviter": inviter,
+                "org": org,
+            }),
+        ));
     }
     let (token, jti) = state
         .auth
@@ -633,7 +933,6 @@ pub async fn redeem(
     {
         tracing::warn!(invite = %row.id, %jti, error = %e, "device-invite: could not record the issued enrollment token");
     }
-    let inviter = inviter_display(&state, row.inviter_user_id).await;
     tracing::info!(invite = %row.id, tenant = %row.tenant_id, device = %body.device_name,
         os = %body.device_os, %jti, "device-invite: redeemed for a single-use enrollment token");
     Ok(no_store(
@@ -641,9 +940,12 @@ pub async fn redeem(
         json!({
             "enrollment_token": token,
             "expires_in": ENROLLMENT_TTL_SECS,
+            "invite_id": row.id.to_hex(),
+            "device_proof": proof,
             "tenant_id": row.tenant_id.to_hex(),
             "access_until_ms": row.access_until.timestamp_millis(),
             "inviter": inviter,
+            "org": org,
         }),
     ))
 }
@@ -695,39 +997,66 @@ pub async fn bind(
     Ok(r.modified_count == 1)
 }
 
-/// Is this device temporary, and on whose invitation? `Err` = the store could
-/// not answer — every caller fails CLOSED on it.
+/// The device's live invitations, oldest first.
+pub async fn live_for_agent(
+    state: &FleetState,
+    agent_id: ObjectId,
+) -> Result<Vec<DeviceInviteRow>, ApiError> {
+    use futures::TryStreamExt;
+    storage(
+        storage(
+            coll!(state)
+                .find(doc! { "agent_id": agent_id, "state": STATE_ENROLLED })
+                .sort(doc! { "created_at": 1 })
+                .limit(100)
+                .await,
+        )?
+        .try_collect()
+        .await,
+    )
+}
+
+/// Is this device temporary, and on whose invitations (their union)? `Err` =
+/// the store could not answer — every caller fails CLOSED on it. A device
+/// whose last grant ended but whose removal is not settled yet is still
+/// temporary, admitting nobody.
 pub async fn grant_for_agent(
     state: &FleetState,
     agent_id: ObjectId,
 ) -> Result<Option<TemporaryGrant>, ApiError> {
-    let row = storage(
+    let rows = live_for_agent(state, agent_id).await?;
+    if let Some(g) = TemporaryGrant::of(&rows) {
+        return Ok(Some(g));
+    }
+    let pending = storage(
         coll!(state)
-            .find_one(doc! { "agent_id": agent_id, "state": STATE_ENROLLED })
+            .find_one(doc! { "agent_id": agent_id, "removal_pending": true })
             .await,
     )?;
-    Ok(row.map(|r| TemporaryGrant {
+    Ok(pending.map(|r| TemporaryGrant {
         invite_id: r.id,
-        inviter_user_id: r.inviter_user_id,
-        allow_role_ids: r.allow_role_ids,
+        inviter_user_id: NOBODY,
+        also_inviter_user_ids: Vec::new(),
+        allow_role_ids: Vec::new(),
         access_until: r.access_until,
     }))
 }
 
 pub const REASON_MADE_PERMANENT: &str = "temporary_made_permanent";
 
-/// The device stays, as an ordinary one: end its invitation WITHOUT the
-/// removal (the network module unmarks its node and re-fans).
+/// The device stays, as an ordinary one: end EVERY live invitation of it
+/// WITHOUT the removal (the network module unmarks its node and re-fans).
+/// Returns how many ended.
 pub async fn end_keeping_device(
     state: &FleetState,
-    invite_id: ObjectId,
+    agent_id: ObjectId,
     by: ObjectId,
-) -> Result<bool, ApiError> {
+) -> Result<u64, ApiError> {
     let now = DateTime::now();
     let r = storage(
         coll!(state)
-            .update_one(
-                doc! { "_id": invite_id, "state": STATE_ENROLLED },
+            .update_many(
+                doc! { "agent_id": agent_id, "state": STATE_ENROLLED },
                 doc! { "$set": {
                     "state": STATE_ENDED,
                     "ended_at": now,
@@ -737,15 +1066,16 @@ pub async fn end_keeping_device(
             )
             .await,
     )?;
-    Ok(r.modified_count == 1)
+    Ok(r.modified_count)
 }
 
-/// The device left by itself (`self/unenroll`): end its invitation.
-pub async fn mark_left(state: &FleetState, invite_id: ObjectId) {
+/// The device left by itself (`self/unenroll`, already removed): end every
+/// invitation it held.
+pub async fn mark_left(state: &FleetState, agent_id: ObjectId) {
     let now = DateTime::now();
     if let Err(e) = coll!(state)
-        .update_one(
-            doc! { "_id": invite_id, "state": { "$ne": STATE_ENDED } },
+        .update_many(
+            doc! { "agent_id": agent_id, "state": { "$ne": STATE_ENDED } },
             doc! { "$set": {
                 "state": STATE_ENDED,
                 "ended_at": now,
@@ -754,7 +1084,7 @@ pub async fn mark_left(state: &FleetState, invite_id: ObjectId) {
         )
         .await
     {
-        tracing::warn!(invite = %invite_id, error = %e, "device-invite: could not mark the invitation left");
+        tracing::warn!(agent = %agent_id, error = %e, "device-invite: could not mark the invitations left");
     }
 }
 
@@ -876,6 +1206,10 @@ pub async fn create_bound(
         ended_by: None,
         renewals: Vec::new(),
         converted: true,
+        attached: false,
+        device_proof_hash: None,
+        hosts: Vec::new(),
+        removal_pending: false,
     };
     storage(coll!(state).insert_one(&row).await)?;
     tracing::info!(invite = %row.id, tenant = %tenant_id, agent = %agent_id, by = %by,
@@ -884,8 +1218,9 @@ pub async fn create_bound(
 }
 
 /// `GET /api/agent/self/temporary` — the device's own view: is it temporary,
-/// until when, on whose invitation. The tray shows it; a renewal reaches the
-/// device through it.
+/// until when, on whose invitations. The tray shows it; a renewal reaches the
+/// device through it. `access_until_ms` / `inviter` are the latest deadline and
+/// the first inviter (what a pre-multi-invitation device reads).
 pub async fn self_view(
     State(state): State<FleetState>,
     agent: crate::auth_agent::AuthAgent,
@@ -893,14 +1228,242 @@ pub async fn self_view(
     if !state.settings.auth.native_device_invite_enabled {
         return Ok(Json(json!({ "temporary": false })));
     }
-    match grant_for_agent(&state, agent.agent_id).await? {
-        None => Ok(Json(json!({ "temporary": false }))),
-        Some(g) => Ok(Json(json!({
-            "temporary": true,
-            "access_until_ms": g.access_until.timestamp_millis(),
-            "inviter": inviter_display(&state, g.inviter_user_id).await,
-        }))),
+    let rows = live_for_agent(&state, agent.agent_id).await?;
+    // No live grant but an end still settling: still temporary (the device
+    // keeps its marker, so the removal that follows is a planned end).
+    let Some(g) = (match TemporaryGrant::of(&rows) {
+        Some(g) => Some(g),
+        None => grant_for_agent(&state, agent.agent_id).await?,
+    }) else {
+        return Ok(Json(json!({ "temporary": false })));
+    };
+    let org = org_display(&state, agent.tenant_id).await;
+    let mut grants = Vec::new();
+    for r in &rows {
+        grants.push(json!({
+            "invite_id": r.id.to_hex(),
+            "inviter": inviter_display(&state, r.inviter_user_id).await,
+            "org": org,
+            "access_until_ms": r.access_until.timestamp_millis(),
+        }));
     }
+    Ok(Json(json!({
+        "temporary": true,
+        "access_until_ms": g.access_until.timestamp_millis(),
+        "inviter": inviter_display(&state, g.inviter_user_id).await,
+        "org": org,
+        "grants": grants,
+    })))
+}
+
+/// `POST /api/agent/self/temporary/{invite_id}/leave` — the person at the
+/// machine ends ONE invitation. The device stays while others are live.
+pub async fn self_leave(
+    State(state): State<FleetState>,
+    agent: crate::auth_agent::AuthAgent,
+    Path(invite_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    let iid =
+        ObjectId::parse_str(&invite_id).map_err(|_| ApiError::BadRequest("Invalid id".into()))?;
+    let Some(row) = storage(
+        coll!(state)
+            .find_one(doc! { "_id": iid, "agent_id": agent.agent_id, "state": STATE_ENROLLED })
+            .await,
+    )?
+    else {
+        return Err(ApiError::NotFound(
+            "No such invitation on this device".into(),
+        ));
+    };
+    let removed = end_invite(&state, &row, REASON_LEFT).await?;
+    tracing::info!(invite = %iid, agent = %agent.agent_id, removed, "device-invite: the device left one invitation");
+    Ok(Json(json!({ "ended": true, "device_removed": removed })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProofItem {
+    invite_id: String,
+    proof: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Link {
+    proofs: Vec<ProofItem>,
+}
+
+/// `POST /api/agent/self/link` — an ORDINARY device presents the proofs of
+/// the invitations its machine accepted (now or in the past): its own
+/// organization's admins may then see them. Only a proof links; idempotent.
+pub async fn self_link(
+    State(state): State<FleetState>,
+    agent: crate::auth_agent::AuthAgent,
+    Json(body): Json<Link>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    if body.proofs.len() > MAX_PROOFS {
+        return Err(ApiError::BadRequest("Too many proofs".into()));
+    }
+    if agent.agent.ephemeral || grant_for_agent(&state, agent.agent_id).await?.is_some() {
+        return Err(ApiError::Forbidden(
+            "Only a device of its own organization links invitations".into(),
+        ));
+    }
+    let mut linked = 0u64;
+    let link = storage(bson::to_bson(&HostLink {
+        tenant_id: agent.tenant_id,
+        agent_id: agent.agent_id,
+        linked_at: DateTime::now(),
+    }))?;
+    for p in &body.proofs {
+        let Ok(iid) = ObjectId::parse_str(&p.invite_id) else {
+            continue;
+        };
+        if p.proof.len() != 64 {
+            continue;
+        }
+        let r = storage(
+            coll!(state)
+                .update_one(
+                    doc! {
+                        "_id": iid,
+                        "device_proof_hash": hash_secret("device-invite-proof", &p.proof),
+                        "hosts.agent_id": { "$ne": agent.agent_id },
+                    },
+                    doc! { "$push": { "hosts": link.clone() } },
+                )
+                .await,
+        )?;
+        linked += r.modified_count;
+    }
+    if linked > 0 {
+        tracing::info!(agent = %agent.agent_id, tenant = %agent.tenant_id, linked,
+            "device-invite: the device linked the invitations its machine accepted");
+    }
+    Ok(Json(json!({ "linked": linked })))
+}
+
+// ─── the device owner's view ────────────────────────────────────────────────
+
+fn host_view(
+    r: &DeviceInviteRow,
+    tid: ObjectId,
+    inviter: String,
+    org: String,
+    names: &HashMap<ObjectId, String>,
+) -> Value {
+    let host = r.hosts.iter().find(|h| h.tenant_id == tid);
+    json!({
+        "id": r.id.to_hex(),
+        "host_agent_id": host.map(|h| h.agent_id.to_hex()),
+        "host_device_name": host.and_then(|h| names.get(&h.agent_id).cloned()),
+        "inviter": inviter,
+        "org": org,
+        "state": r.state,
+        "access_until_ms": r.access_until.timestamp_millis(),
+        "created_at_ms": r.created_at.timestamp_millis(),
+        "redeemed_at_ms": r.redeemed_at.map(|t| t.timestamp_millis()),
+        "ended_at_ms": r.ended_at.map(|t| t.timestamp_millis()),
+        "end_reason": r.end_reason,
+        "renewals": r.renewals.iter().map(|x| json!({
+            "at_ms": x.at.timestamp_millis(),
+            "previous_until_ms": x.previous_until.timestamp_millis(),
+            "until_ms": x.until.timestamp_millis(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// `GET /api/tenant/{tenant_id}/device-grants` — the invitations this
+/// organization's devices accepted from elsewhere (as their machines proved),
+/// current and past. Never shows the inviter's private label or ids.
+pub async fn host_list(
+    State(state): State<FleetState>,
+    auth: AuthUser,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    let tid = parse_tid(&tenant_id)?;
+    crate::agent::require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
+    use futures::TryStreamExt;
+    let rows: Vec<DeviceInviteRow> = storage(
+        storage(
+            coll!(state)
+                .find(doc! { "hosts.tenant_id": tid })
+                .sort(doc! { "created_at": -1 })
+                .limit(500)
+                .await,
+        )?
+        .try_collect()
+        .await,
+    )?;
+    let mut people: HashMap<ObjectId, String> = HashMap::new();
+    let mut orgs: HashMap<ObjectId, String> = HashMap::new();
+    let mut names: HashMap<ObjectId, String> = HashMap::new();
+    let mut items = Vec::new();
+    for r in &rows {
+        if let std::collections::hash_map::Entry::Vacant(e) = people.entry(r.inviter_user_id) {
+            e.insert(inviter_display(&state, r.inviter_user_id).await);
+        }
+        if let std::collections::hash_map::Entry::Vacant(e) = orgs.entry(r.tenant_id) {
+            e.insert(org_display(&state, r.tenant_id).await);
+        }
+        if let Some(h) = r.hosts.iter().find(|h| h.tenant_id == tid)
+            && !names.contains_key(&h.agent_id)
+            && let Ok(a) = state.agents.base.find_by_id(h.agent_id).await
+        {
+            names.insert(h.agent_id, a.name);
+        }
+        items.push(host_view(
+            r,
+            tid,
+            people[&r.inviter_user_id].clone(),
+            orgs[&r.tenant_id].clone(),
+            &names,
+        ));
+    }
+    Ok(Json(json!({ "items": items })))
+}
+
+/// `DELETE /api/tenant/{tenant_id}/device-grants/{id}` — the device's owner
+/// ends an invitation its machine accepted. The owner's word wins.
+pub async fn host_end(
+    State(state): State<FleetState>,
+    auth: AuthUser,
+    Path((tenant_id, invite_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    enabled(&state)?;
+    let tid = parse_tid(&tenant_id)?;
+    let iid =
+        ObjectId::parse_str(&invite_id).map_err(|_| ApiError::BadRequest("Invalid id".into()))?;
+    crate::agent::require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
+    let Some(row) = storage(
+        coll!(state)
+            .find_one(doc! { "_id": iid, "hosts.tenant_id": tid })
+            .await,
+    )?
+    else {
+        return Err(ApiError::NotFound("No such invitation".into()));
+    };
+    let removed = end_invite_by(&state, &row, REASON_OWNER_ENDED, Some(auth.user_id)).await?;
+    tracing::info!(invite = %iid, host_tenant = %tid, user = %auth.user_id, removed,
+        "device-invite: ended by the device's owner");
+    Ok(Json(json!({ "ended": true, "device_removed": removed })))
 }
 
 // ─── the reaper ─────────────────────────────────────────────────────────────
@@ -948,6 +1511,23 @@ pub async fn reap_once(state: &FleetState) -> anyhow::Result<usize> {
             }
         }
     }
+    // Ends whose device was not settled (a failed removal or re-fan).
+    let pending: Vec<DeviceInviteRow> = coll!(state)
+        .find(doc! { "state": STATE_ENDED, "removal_pending": true })
+        .limit(100)
+        .await?
+        .try_collect()
+        .await?;
+    for row in pending {
+        let Some(aid) = row.agent_id else { continue };
+        let reason = row
+            .end_reason
+            .clone()
+            .unwrap_or_else(|| REASON_REMOVED.into());
+        if let Err(e) = settle_device(state, row.tenant_id, aid, &reason).await {
+            tracing::warn!(invite = %row.id, error = ?e, "device-invite: device still not settled; retrying next cycle");
+        }
+    }
     Ok(ended)
 }
 
@@ -987,6 +1567,7 @@ mod tests {
         let g = TemporaryGrant {
             invite_id: ObjectId::new(),
             inviter_user_id: inviter,
+            also_inviter_user_ids: Vec::new(),
             allow_role_ids: vec![role],
             access_until: DateTime::now(),
         };
@@ -994,6 +1575,65 @@ mod tests {
         assert!(g.allows(Some(ObjectId::new()), &[role]));
         assert!(!g.allows(Some(ObjectId::new()), &[ObjectId::new()]));
         assert!(!g.allows(None, &[]));
+    }
+
+    fn row(inviter: ObjectId, roles: Vec<ObjectId>, until_ms: i64) -> DeviceInviteRow {
+        DeviceInviteRow {
+            id: ObjectId::new(),
+            tenant_id: ObjectId::new(),
+            inviter_user_id: inviter,
+            label: String::new(),
+            allow_role_ids: roles,
+            code_hash: String::new(),
+            state: STATE_ENROLLED.into(),
+            access_until: DateTime::from_millis(until_ms),
+            created_at: DateTime::now(),
+            redeemed_at: None,
+            token_jti: None,
+            agent_id: None,
+            device_name: None,
+            device_os: None,
+            ended_at: None,
+            end_reason: None,
+            ended_by: None,
+            renewals: Vec::new(),
+            converted: false,
+            attached: false,
+            device_proof_hash: None,
+            hosts: Vec::new(),
+            removal_pending: false,
+        }
+    }
+
+    #[test]
+    fn several_invitations_admit_the_union_and_keep_the_latest_deadline() {
+        let (a, b, role) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let g = TemporaryGrant::of(&[
+            row(a, vec![], 1_000),
+            row(b, vec![role], 5_000),
+            row(a, vec![], 2_000),
+        ])
+        .unwrap();
+        assert_eq!(g.inviter_user_id, a);
+        assert_eq!(g.also_inviter_user_ids, vec![b]);
+        assert_eq!(g.access_until.timestamp_millis(), 5_000);
+        assert!(g.allows(Some(a), &[]) && g.allows(Some(b), &[]));
+        assert!(g.allows(Some(ObjectId::new()), &[role]));
+        assert!(!g.allows(Some(ObjectId::new()), &[]));
+        assert!(TemporaryGrant::of(&[]).is_none());
+    }
+
+    #[test]
+    fn a_settling_device_admits_nobody() {
+        let g = TemporaryGrant {
+            invite_id: ObjectId::new(),
+            inviter_user_id: NOBODY,
+            also_inviter_user_ids: Vec::new(),
+            allow_role_ids: Vec::new(),
+            access_until: DateTime::now(),
+        };
+        assert!(!g.allows(Some(NOBODY), &[]));
+        assert!(!g.allows(Some(ObjectId::new()), &[ObjectId::new()]));
     }
 
     #[test]

@@ -422,19 +422,97 @@ pub struct LoginStarted {
     pub opened: bool,
 }
 
-/// Temporary devices — what the tray shows: `None` for an ordinary or
-/// unenrolled device. Read from `temporary.json`, which the daemon keeps
-/// current from the server (so a renewal shows up here too).
-pub(crate) fn temporary_info() -> Option<meshharbor_node_core::device_invite::TemporaryInfo> {
+/// What the tray shows about invitations: whether the machine has its own
+/// account (its primary enrollment is not an invitation's), and every
+/// invitation it holds, with the enrollment (agent id) holding it. Read from
+/// `temporary.json`, which the daemon keeps current from the server (so a
+/// renewal shows up here too). `None` = not enrolled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Invitations {
+    pub own_account: bool,
+    pub grants: Vec<(String, meshharbor_node_core::device_invite::GrantInfo)>,
+}
+
+pub(crate) fn invitations() -> Option<Invitations> {
+    use meshharbor_node_core::device_invite;
     for is_scm in [false, true] {
-        if let Ok(path) = active_config_path(is_scm)
-            && path.exists()
-            && let Some(info) = meshharbor_node_core::device_invite::read_marker(&path)
-        {
-            return Some(info);
+        let Ok(path) = active_config_path(is_scm) else {
+            continue;
+        };
+        if !path.exists() {
+            continue;
         }
+        let Ok(cfg) = meshharbor_node_core::config::load(&path) else {
+            continue;
+        };
+        let markers = device_invite::read_markers(&path);
+        let own_account = !(markers.contains_key(&cfg.agent_id)
+            || markers.contains_key(device_invite::PRIMARY_KEY));
+        let mut grants = Vec::new();
+        for (aid, info) in &markers {
+            let aid = if aid == device_invite::PRIMARY_KEY {
+                cfg.agent_id.clone()
+            } else {
+                aid.clone()
+            };
+            for g in info.each() {
+                grants.push((aid.clone(), g));
+            }
+        }
+        grants.sort_by_key(|(_, g)| g.access_until_ms);
+        return Some(Invitations {
+            own_account,
+            grants,
+        });
     }
     None
+}
+
+#[derive(Debug, Serialize)]
+pub struct JoinPreview {
+    pub from: String,
+    pub remaining: String,
+    pub access_until_ms: i64,
+}
+
+/// Look at an invite code before accepting it: who, from which organization,
+/// for how long. Spends nothing.
+#[tauri::command]
+pub async fn cmd_join_preview(code: String) -> Result<JoinPreview, String> {
+    use meshharbor_node_core::device_invite;
+    let code = device_invite::normalize_code(&code)
+        .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
+    // The server this machine already talks to, or the default one.
+    let server = tokio::task::spawn_blocking(|| {
+        [false, true].into_iter().find_map(|is_scm| {
+            let path = active_config_path(is_scm).ok()?;
+            meshharbor_node_core::config::load(&path)
+                .ok()
+                .map(|c| c.server_url)
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
+    let p = device_invite::preview(&server, &code)
+        .await
+        .map_err(|e| e.to_string())?;
+    let from = match (p.inviter.is_empty(), p.org.is_empty()) {
+        (false, false) => format!("{} ({})", p.inviter, p.org),
+        (false, true) => p.inviter.clone(),
+        (true, false) => p.org.clone(),
+        (true, true) => "Someone".to_string(),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Ok(JoinPreview {
+        from,
+        remaining: device_invite::remaining_words(p.access_until_ms, now),
+        access_until_ms: p.access_until_ms,
+    })
 }
 
 /// Run one daemon CLI verb (`join` / `leave`) with no window and answer its
@@ -462,16 +540,18 @@ fn run_daemon_verb(args: &[&str]) -> Result<String, String> {
     Err(line)
 }
 
-/// Join an organization as a TEMPORARY device with an invite code (no
-/// account): the daemon's own `join`, which enrolls a fresh identity, records
-/// the temporary marker and starts the service.
+/// Accept an invitation (after [`cmd_join_preview`] showed it and the person
+/// said yes): the daemon's own `join --yes`, which attaches it to this
+/// machine's enrollment in that organization, adds an enrollment beside the
+/// machine's others, or (signed in nowhere) enrolls a fresh identity; records
+/// the marker; and starts or restarts the service.
 #[tauri::command]
 pub async fn cmd_join(code: String, device_name: String) -> Result<StatusReport, String> {
     let code = meshharbor_node_core::device_invite::normalize_code(&code)
         .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
     let name = device_name.trim().to_string();
     tokio::task::spawn_blocking(move || {
-        let mut args = vec!["join", code.as_str()];
+        let mut args = vec!["join", code.as_str(), "--yes"];
         if !name.is_empty() {
             args.extend(["--name", name.as_str()]);
         }
@@ -484,13 +564,22 @@ pub async fn cmd_join(code: String, device_name: String) -> Result<StatusReport,
         .unwrap_or_else(|_| status_report()))
 }
 
-/// A temporary device ends its access now (`meshharbord leave`).
+/// End one invitation's access now (`meshharbord leave --invite <id>`), or,
+/// with no id, the machine's only one.
 #[tauri::command]
-pub async fn cmd_leave() -> Result<(), String> {
-    tokio::task::spawn_blocking(|| run_daemon_verb(&["leave"]))
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|_| ())
+pub async fn cmd_leave(invite_id: Option<String>) -> Result<(), String> {
+    if let Some(id) = &invite_id
+        && (id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err("not an invitation id".into());
+    }
+    tokio::task::spawn_blocking(move || match invite_id {
+        Some(id) => run_daemon_verb(&["leave", "--invite", id.as_str()]),
+        None => run_daemon_verb(&["leave"]),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map(|_| ())
 }
 
 /// Sign in with an account (`mh login` in the app): start a device login and

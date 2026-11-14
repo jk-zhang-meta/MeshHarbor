@@ -10,6 +10,7 @@
     <!-- Temporary devices: invitations, conversions and their history.
          Renders nothing on a server without the feature. -->
     <temporary-devices-section :tenant-id="tenantId" />
+    <accepted-invitations-section :tenant-id="tenantId" />
   </v-container>
 </template>
 
@@ -19,6 +20,7 @@ import { useRoute } from 'vue-router'
 import AgentsSection from '@/components/admin/AgentsSection.vue'
 import EnrollKeysSection from '@/components/admin/EnrollKeysSection.vue'
 import TemporaryDevicesSection from '@/components/admin/TemporaryDevicesSection.vue'
+import AcceptedInvitationsSection from '@/components/admin/AcceptedInvitationsSection.vue'
 
 const route = useRoute()
 const tenantId = computed(() => route.params.tenantId as string)

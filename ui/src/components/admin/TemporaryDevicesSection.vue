@@ -294,7 +294,7 @@ function stateColor(r: InviteRow): string {
 }
 function reasonText(r: InviteRow): string {
   const key = (r.end_reason || '').replace(/^temporary_/, '')
-  const known = ['expired', 'revoked', 'left', 'removed', 'unbound', 'made_permanent']
+  const known = ['expired', 'revoked', 'left', 'removed', 'unbound', 'made_permanent', 'ended_by_owner']
   return known.includes(key) ? t(`tempDevices.reason.${key}`) : r.end_reason || ''
 }
 function message(e: unknown): string {

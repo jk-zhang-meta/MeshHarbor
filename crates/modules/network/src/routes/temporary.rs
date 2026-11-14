@@ -83,6 +83,7 @@ pub async fn make_temporary(
         invite_id: row.id,
         inviter_user_id: row.inviter_user_id,
         allow_role_ids: row.allow_role_ids.clone(),
+        also_user_ids: Vec::new(),
     };
     let node = match state.overlay_nodes.find_live_by_agent(tid, aid).await {
         Ok(n) => n,
@@ -167,7 +168,8 @@ pub async fn make_permanent(
     let Some(grant) = device_invite::grant_for_agent(&state.fleet, aid).await? else {
         return Err(ApiError::Conflict("This device is not temporary".into()));
     };
-    if !device_invite::end_keeping_device(&state.fleet, grant.invite_id, auth.user_id).await? {
+    // Every live invitation ends (an ordinary device has none).
+    if device_invite::end_keeping_device(&state.fleet, aid, auth.user_id).await? == 0 {
         return Err(ApiError::Conflict(
             "The invitation changed meanwhile; retry".into(),
         ));

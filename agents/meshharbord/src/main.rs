@@ -168,13 +168,17 @@ enum Command {
         #[arg(long)]
         machine_global: bool,
     },
-    /// Join an organization as a TEMPORARY device with an invite code, no
-    /// account needed: only the person who invited this machine can reach
-    /// or control it, it can reach no one, and it leaves the organization
-    /// when the invitation's time is up. Also `mh join`.
+    /// Accept an invitation with its invite code, no account needed: only
+    /// the person who invited this machine can reach or control it there, it
+    /// can reach no one, and that access ends when the invitation's time is
+    /// up. Shows who invites and for how long, and asks first. A machine may
+    /// hold several invitations; an existing enrollment is kept. Also `mh join`.
     Join {
         /// The 8-digit invite code, like 1234-5678.
         code: String,
+        /// Accept without asking (the tray asks in its own window).
+        #[arg(long, short = 'y')]
+        yes: bool,
         /// MeshHarbor server the invitation is from.
         #[arg(long, default_value = meshharbor_node_core::device_login::DEFAULT_SERVER)]
         server: String,
@@ -183,9 +187,18 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// End this TEMPORARY device's access now: it leaves the organization
-    /// and is no longer signed in. Also `mh leave`.
-    Leave,
+    /// End an invitation's access now. With one invitation on this machine it
+    /// is that one; with several, name it (`--invite <id>`, listed by
+    /// `mh leave` itself) or end them all (`--all`). The machine's own
+    /// enrollment is never touched. Also `mh leave`.
+    Leave {
+        /// The invitation to leave (its id, as `mh leave` lists them).
+        #[arg(long)]
+        invite: Option<String>,
+        /// Leave every invitation this machine holds.
+        #[arg(long)]
+        all: bool,
+    },
     /// Refresh this machine's agent token using a fresh enrollment JWT.
     /// Preserves `server_url` and `machine_name` from the existing
     /// config, so the operator only needs the new token. Used after
@@ -1254,17 +1267,29 @@ async fn login_cmd(
     replace: bool,
     machine_global: bool,
 ) -> Result<()> {
-    use meshharbor_node_core::device_login;
+    use meshharbor_node_core::{device_invite, device_login};
+    // A machine that holds only invitations has no account of its own yet:
+    // signing in ADDS the owner's account beside them (and makes it the
+    // primary), keeping every invitation.
+    let mut beside_invitations = false;
     if !replace
         && config_path.exists()
         && let Ok(cfg) = config::load(config_path)
     {
-        println!(
-            "This machine is already signed in as {:?} ({}).\n\
-             Run `mh login --replace` to sign it in to another organization.",
-            cfg.machine_name, cfg.server_url
-        );
-        return Ok(());
+        let markers = device_invite::read_markers(config_path);
+        let all_temporary = enrollments(&cfg).iter().all(|(_, _, _, aid, _, primary)| {
+            markers.contains_key(aid)
+                || (*primary && markers.contains_key(device_invite::PRIMARY_KEY))
+        });
+        if !all_temporary {
+            println!(
+                "This machine is already signed in as {:?} ({}).\n\
+                 Run `mh login --replace` to sign it in to another organization.",
+                cfg.machine_name, cfg.server_url
+            );
+            return Ok(());
+        }
+        beside_invitations = true;
     }
     let name = match name {
         Some(n) => n.trim().to_string(),
@@ -1286,6 +1311,7 @@ async fn login_cmd(
     println!("Waiting for approval…");
     let approved = pending.wait().await?;
     println!("Approved. Enrolling…");
+    let before = config::load(config_path).ok();
     enroll_cmd(
         config_path,
         EnrollOptions {
@@ -1304,114 +1330,424 @@ async fn login_cmd(
             install_scope: None,
         },
     )
-    .await
+    .await?;
+    if beside_invitations {
+        // The new account is the added org: put it in the primary's place.
+        let mut cfg = config::load(config_path).context("reading the config")?;
+        let known: Vec<String> = before
+            .map(|b| enrollments(&b).into_iter().map(|e| e.3).collect())
+            .unwrap_or_default();
+        if let Some(label) = cfg
+            .orgs
+            .iter()
+            .find(|o| !known.contains(&o.agent_id))
+            .map(|o| o.label.clone())
+        {
+            let markers = device_invite::read_markers(config_path);
+            let old_primary = cfg.agent_id.clone();
+            config::promote_keeping_mesh(&mut cfg, &label, None)?;
+            config::save(config_path, &cfg).context("saving the config")?;
+            // The legacy marker key meant "the primary": it now names the
+            // demoted invitation enrollment by its id (`true` drops the key).
+            if let Some(info) = markers.get(device_invite::PRIMARY_KEY) {
+                let _ =
+                    device_invite::write_marker_for(config_path, &old_primary, true, Some(info));
+            }
+            println!("Signed in. The invitations this machine holds are kept.");
+        }
+        link_history(config_path).await;
+        restart_service(config_path).await;
+    }
+    Ok(())
 }
 
-/// `meshharbord join <code>` / `mh join`: redeem an invite code, then the
-/// ordinary enroll under a FRESH machine identity (a temporary device is a new
-/// device by definition), then bring the service up.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Restart the running daemon (an added or removed enrollment takes effect at
+/// a start): through the daemon's own supervised restart (`mh restart`), which
+/// waits for the new process; else stop and start the service. Best-effort:
+/// no service here is not an error.
+async fn restart_service(config_path: &std::path::Path) {
+    match meshharbor_cli::localclient::restart(
+        "an invitation changed this machine's enrollments",
+        false,
+        std::env::current_exe().ok(),
+    )
+    .await
+    {
+        Ok(()) => return,
+        Err(e) => {
+            tracing::debug!(error = %e, "supervised restart unavailable; stopping and starting")
+        }
+    }
+    match meshharbord::service::stop(config_path) {
+        Ok(what) => tracing::debug!(%what, "service stopped for a restart"),
+        Err(e) => tracing::debug!(error = %e, "no service to stop"),
+    }
+    match meshharbord::service::start() {
+        Ok(()) => println!("The MeshHarbor service is starting."),
+        Err(e) => tracing::debug!(error = %e, "service start not available here"),
+    }
+}
+
+/// Every enrollment of a config: (label, server, tenant, agent id, token, primary?).
+fn enrollments(cfg: &config::AgentConfig) -> Vec<(String, String, String, String, String, bool)> {
+    let mut v = vec![(
+        config::PRIMARY_ORG_LABEL.to_string(),
+        cfg.server_url.clone(),
+        cfg.tenant_id.clone(),
+        cfg.agent_id.clone(),
+        cfg.agent_token.clone(),
+        true,
+    )];
+    for o in &cfg.orgs {
+        v.push((
+            o.label.clone(),
+            o.server_url.clone(),
+            o.tenant_id.clone(),
+            o.agent_id.clone(),
+            o.agent_token.clone(),
+            false,
+        ));
+    }
+    v
+}
+
+/// Present this machine's invitation proofs from every ORDINARY enrollment on
+/// the same server (its owner's view). Best-effort.
+async fn link_history(config_path: &std::path::Path) {
+    use meshharbor_node_core::device_invite;
+    let history = device_invite::read_history(config_path);
+    if history.is_empty() {
+        return;
+    }
+    let Ok(cfg) = config::load(&config_path.to_path_buf()) else {
+        return;
+    };
+    let markers = device_invite::read_markers(config_path);
+    for (label, server, _, agent_id, token, primary) in enrollments(&cfg) {
+        let temporary = markers.contains_key(&agent_id)
+            || (primary && markers.contains_key(device_invite::PRIMARY_KEY));
+        if temporary {
+            continue;
+        }
+        match device_invite::link(&server, &token, &history).await {
+            Ok(n) if n > 0 => {
+                tracing::info!(org = %label, linked = n, "invitations linked to this machine's own organization")
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!(org = %label, error = %e, "link: no answer"),
+        }
+    }
+}
+
+/// `meshharbord join <code>` / `mh join`: look at the invitation, ask, then
+/// redeem it — onto the enrollment this machine already has in that
+/// organization, as an additional enrollment beside the ones it has, or (a
+/// machine signed in nowhere) as its first enrollment under a FRESH machine
+/// identity — and bring the service up.
 async fn join_cmd(
     config_path: &std::path::PathBuf,
     server: &str,
     code: &str,
     name: Option<&str>,
+    yes: bool,
 ) -> Result<()> {
     use meshharbor_node_core::device_invite;
-    if config_path.exists() {
-        let who = config::load(config_path)
-            .map(|c| format!("{:?} ({})", c.machine_name, c.server_url))
-            .unwrap_or_else(|_| config_path.display().to_string());
-        bail!(
-            "this machine is already signed in as {who}. A temporary device is a new \
-             device: run `mh leave` (temporary) or remove the existing enrollment first."
-        );
+    let existing = if config_path.exists() {
+        Some(config::load(config_path).context("reading this machine's enrollment")?)
+    } else {
+        None
+    };
+    // Where the invitation is from: the code's server, or the server this
+    // machine already talks to.
+    let server = match (&existing, server) {
+        (Some(cfg), s) if s == meshharbor_node_core::device_login::DEFAULT_SERVER => {
+            cfg.server_url.clone()
+        }
+        (_, s) => s.to_string(),
+    };
+    let pv = device_invite::preview(&server, code).await?;
+    let from = match (pv.inviter.is_empty(), pv.org.is_empty()) {
+        (false, false) => format!("{} ({})", pv.inviter, pv.org),
+        (false, true) => pv.inviter.clone(),
+        (true, false) => pv.org.clone(),
+        (true, true) => "Someone".to_string(),
+    };
+    println!(
+        "{from} invites this device for {} (until {}).",
+        device_invite::remaining_words(pv.access_until_ms, now_ms()),
+        chrono::DateTime::from_timestamp_millis(pv.access_until_ms)
+            .map(|t| t
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string())
+            .unwrap_or_default()
+    );
+    println!("They will be able to reach and control this device; it cannot reach theirs.");
+    if !yes {
+        use std::io::{BufRead, IsTerminal, Write};
+        if !std::io::stdin().is_terminal() {
+            bail!("not accepted: run `mh join {code} --yes` to accept without the question");
+        }
+        print!("Accept? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+            println!("Not accepted. The code still works until it expires.");
+            return Ok(());
+        }
     }
     let name = match name {
         Some(n) => n.trim().to_string(),
         None => meshharbord::machine::hostname().unwrap_or_else(|_| "my-device".to_string()),
     };
-    let redeemed = device_invite::redeem(server, code, &name).await?;
-    enroll_cmd(
-        config_path,
-        EnrollOptions {
-            server,
-            enrollment_token: &redeemed.enrollment_token,
-            machine_name: &name,
-            machine_global: false,
-            label: None,
-            replace: false,
-            ephemeral: false,
-            fresh_identity: true,
-            overlay: true,
-            relay_server: false,
-            archive_replica: false,
-            install_method: None,
-            install_scope: None,
-        },
+    // This machine's enrollment in that organization, if it has one.
+    let here = existing.as_ref().and_then(|cfg| {
+        enrollments(cfg).into_iter().find(|(_, s, t, ..)| {
+            device_invite::base(s) == device_invite::base(&server) && *t == pv.tenant_id
+        })
+    });
+    let redeemed = device_invite::redeem(
+        &server,
+        code,
+        &name,
+        here.as_ref().map(|(.., token, _)| token.as_str()),
     )
     .await?;
-    let info = device_invite::TemporaryInfo {
-        access_until_ms: redeemed.access_until_ms,
-        inviter: redeemed.inviter.clone(),
+    let (agent_id, primary) = if redeemed.attached {
+        let (_, _, _, aid, _, primary) = here.clone().expect("attached to an enrollment we sent");
+        (aid, primary)
+    } else {
+        let token = redeemed
+            .enrollment_token
+            .clone()
+            .context("the server sent no enrollment token")?;
+        enroll_cmd(
+            config_path,
+            EnrollOptions {
+                server: &server,
+                enrollment_token: &token,
+                machine_name: &name,
+                machine_global: false,
+                label: None,
+                replace: false,
+                ephemeral: false,
+                // A machine signed in nowhere is a new device by definition;
+                // beside an existing enrollment it is this machine.
+                fresh_identity: existing.is_none(),
+                overlay: true,
+                relay_server: false,
+                archive_replica: false,
+                install_method: None,
+                install_scope: None,
+            },
+        )
+        .await?;
+        let mut cfg = config::load(config_path).context("reading the new enrollment")?;
+        if existing.is_none() {
+            (cfg.agent_id.clone(), true)
+        } else {
+            // An additional enrollment: on its mesh through the userspace
+            // stack (no adapter, no routes), so the inviter's devices reach it.
+            let Some(org) = cfg.orgs.iter_mut().find(|o| {
+                o.tenant_id == redeemed.tenant_id
+                    && device_invite::base(&o.server_url) == device_invite::base(&server)
+            }) else {
+                bail!("the new enrollment is not in the config");
+            };
+            org.overlay_mode = config::OrgOverlayMode::Netstack;
+            let aid = org.agent_id.clone();
+            config::save(config_path, &cfg).context("saving the config")?;
+            (aid, false)
+        }
     };
-    if let Err(e) = device_invite::write_marker(config_path, Some(&info)) {
+    // What the tray shows until the daemon's own look refreshes it.
+    let mut info = device_invite::marker_for(config_path, &agent_id, primary).unwrap_or(
+        device_invite::TemporaryInfo {
+            access_until_ms: 0,
+            inviter: redeemed.inviter.clone(),
+            org: redeemed.org.clone(),
+            grants: Vec::new(),
+        },
+    );
+    info.grants
+        .retain(|g| g.invite_id != redeemed.invite_id && !g.invite_id.is_empty());
+    info.grants.push(device_invite::GrantInfo {
+        invite_id: redeemed.invite_id.clone(),
+        inviter: redeemed.inviter.clone(),
+        org: redeemed.org.clone(),
+        access_until_ms: redeemed.access_until_ms,
+    });
+    info.access_until_ms = info.access_until_ms.max(redeemed.access_until_ms);
+    if let Err(e) = device_invite::write_marker_for(config_path, &agent_id, primary, Some(&info)) {
         tracing::warn!(error = %e, "join: could not record the temporary marker");
     }
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    if !redeemed.invite_id.is_empty()
+        && let Err(e) = device_invite::append_history(
+            config_path,
+            device_invite::HistoryEntry {
+                invite_id: redeemed.invite_id.clone(),
+                proof: redeemed.device_proof.clone(),
+                server_url: server.clone(),
+                tenant_id: redeemed.tenant_id.clone(),
+                org: redeemed.org.clone(),
+                inviter: redeemed.inviter.clone(),
+                access_until_ms: redeemed.access_until_ms,
+                accepted_at_ms: now_ms(),
+            },
+        )
+    {
+        tracing::warn!(error = %e, "join: could not record the invitation in the history");
+    }
     println!();
     println!(
-        "Joined as a temporary device{}. Access ends in {}.",
-        if redeemed.inviter.is_empty() {
-            String::new()
-        } else {
-            format!(", managed by {}", redeemed.inviter)
-        },
-        device_invite::remaining_words(redeemed.access_until_ms, now_ms)
+        "Accepted. {from} can reach this device for {}.",
+        device_invite::remaining_words(redeemed.access_until_ms, now_ms())
     );
-    println!("Only the person who invited this machine can reach it. `mh leave` ends it now.");
-    match meshharbord::service::start() {
-        Ok(()) => println!("The MeshHarbor service is starting."),
-        Err(e) => tracing::debug!(error = %e, "join: service start not available here"),
+    println!("`mh leave` ends it now.");
+    if redeemed.attached {
+        // Same enrollment, one more grant: nothing to restart.
+        link_history(config_path).await;
+    } else if existing.is_none() {
+        match meshharbord::service::start() {
+            Ok(()) => println!("The MeshHarbor service is starting."),
+            Err(e) => tracing::debug!(error = %e, "join: service start not available here"),
+        }
+    } else {
+        link_history(config_path).await;
+        restart_service(config_path).await;
     }
     Ok(())
 }
 
-/// `meshharbord leave` / `mh leave`: a temporary device ends its own access.
-async fn leave_cmd(config_path: &std::path::PathBuf) -> Result<()> {
+/// `meshharbord leave` / `mh leave`: end invitations' access from the machine.
+async fn leave_cmd(
+    config_path: &std::path::PathBuf,
+    invite: Option<&str>,
+    all: bool,
+) -> Result<()> {
     use meshharbor_node_core::device_invite;
     let cfg = config::load(config_path).context("this machine is not signed in")?;
-    let token = cfg.agent_token.clone();
-    let status = device_invite::self_status(&cfg.server_url, &token).await;
-    match status {
-        Ok(Some(_)) => {}
-        Ok(None) => bail!(
-            "this is not a temporary device; removing it is the organization's call \
-             (an administrator removes it from the Devices page)"
-        ),
-        Err(e) => {
-            // No answer: only a device that recorded itself temporary leaves.
-            if device_invite::read_marker(config_path).is_none() {
-                return Err(e.context("could not ask the server whether this device is temporary"));
+    // Every invitation of every enrollment, as the server sees it now.
+    let mut held = Vec::new(); // (label, server, agent_id, token, primary, grant)
+    for (label, server, _, agent_id, token, primary) in enrollments(&cfg) {
+        let info = match device_invite::self_status(&server, &token).await {
+            Ok(i) => i,
+            // No answer: what the machine recorded.
+            Err(_) => device_invite::marker_for(config_path, &agent_id, primary),
+        };
+        if let Some(info) = info {
+            for g in info.each() {
+                held.push((
+                    label.clone(),
+                    server.clone(),
+                    agent_id.clone(),
+                    token.clone(),
+                    primary,
+                    g,
+                ));
             }
         }
     }
-    enrollment::self_unenroll(&cfg.server_url, &token)
-        .await
-        .context("the server did not accept the leave")?;
-    match meshharbord::service::stop(config_path) {
-        Ok(what) => tracing::info!(%what, "leave: service stopped"),
-        Err(e) => tracing::debug!(error = %e, "leave: no service to stop"),
+    if held.is_empty() {
+        bail!(
+            "this machine holds no invitation; removing its own enrollment is the \
+             organization's call (an administrator removes it from the Devices page)"
+        );
     }
-    let aside = device_invite::end_locally(config_path)?;
-    println!(
-        "Left. This machine is no longer part of the organization.{}",
-        aside
-            .map(|p| format!(" (The old enrollment was set aside at {}.)", p.display()))
-            .unwrap_or_default()
-    );
+    let chosen: Vec<_> = match (invite, all) {
+        (Some(id), _) => held.iter().filter(|h| h.5.invite_id == id).collect(),
+        (None, true) => held.iter().collect(),
+        (None, false) if held.len() == 1 => held.iter().collect(),
+        (None, false) => {
+            println!("This machine holds {} invitations:", held.len());
+            for h in &held {
+                println!(
+                    "  {}  {}{}  {} left",
+                    h.5.invite_id,
+                    h.5.inviter,
+                    if h.5.org.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", h.5.org)
+                    },
+                    device_invite::remaining_words(h.5.access_until_ms, now_ms())
+                );
+            }
+            println!("Leave one with `mh leave --invite <id>`, or all with `mh leave --all`.");
+            return Ok(());
+        }
+    };
+    if chosen.is_empty() {
+        bail!(
+            "this machine holds no invitation {:?}",
+            invite.unwrap_or("")
+        );
+    }
+    let mut ended_enrollments: Vec<(String, bool)> = Vec::new();
+    for h in &chosen {
+        let gone = if h.5.invite_id.is_empty() {
+            // A server older than several per device: the enrollment's only one.
+            enrollment::self_unenroll(&h.1, &h.3)
+                .await
+                .context("the server did not accept the leave")?;
+            true
+        } else {
+            device_invite::leave_one(&h.1, &h.3, &h.5.invite_id).await?
+        };
+        println!(
+            "Left the invitation from {}.",
+            if h.5.inviter.is_empty() {
+                "the organization"
+            } else {
+                &h.5.inviter
+            }
+        );
+        if gone && !ended_enrollments.iter().any(|(a, _)| a == &h.2) {
+            ended_enrollments.push((h.2.clone(), h.4));
+        }
+    }
+    // An enrollment that keeps other invitations: the tray shows the rest now,
+    // not at the daemon's next look.
+    for h in &chosen {
+        if ended_enrollments.iter().any(|(a, _)| a == &h.2) {
+            continue;
+        }
+        if let Ok(info) = device_invite::self_status(&h.1, &h.3).await {
+            let _ = device_invite::write_marker_for(config_path, &h.2, h.4, info.as_ref());
+        }
+    }
+    if ended_enrollments.is_empty() {
+        return Ok(());
+    }
+    // An enrollment with no invitation left ends here too.
+    let only = enrollments(&cfg).len() == ended_enrollments.len();
+    if only {
+        match meshharbord::service::stop(config_path) {
+            Ok(what) => tracing::info!(%what, "leave: service stopped"),
+            Err(e) => tracing::debug!(error = %e, "leave: no service to stop"),
+        }
+        let aside = device_invite::end_locally(config_path)?;
+        println!(
+            "This machine is no longer signed in.{}",
+            aside
+                .map(|p| format!(" (The old enrollment was set aside at {}.)", p.display()))
+                .unwrap_or_default()
+        );
+        return Ok(());
+    }
+    for (aid, _) in &ended_enrollments {
+        let done = device_invite::end_enrollment_locally(config_path, aid)?;
+        tracing::info!(?done, "leave: enrollment ended locally");
+    }
+    restart_service(config_path).await;
     Ok(())
 }
 
@@ -1911,10 +2247,13 @@ async fn daemon_main() -> Result<()> {
             )
             .await
         }
-        Command::Join { code, server, name } => {
-            join_cmd(&config_path, &server, &code, name.as_deref()).await
-        }
-        Command::Leave => leave_cmd(&config_path).await,
+        Command::Join {
+            code,
+            yes,
+            server,
+            name,
+        } => join_cmd(&config_path, &server, &code, name.as_deref(), yes).await,
+        Command::Leave { invite, all } => leave_cmd(&config_path, invite.as_deref(), all).await,
         Command::ReEnroll { token, org } => {
             re_enroll_cmd(&config_path, &token, org.as_deref()).await
         }

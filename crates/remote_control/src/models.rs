@@ -6527,12 +6527,20 @@ pub struct TemporaryMark {
     pub inviter_user_id: ObjectId,
     #[serde(default)]
     pub allow_role_ids: Vec<ObjectId>,
+    /// The inviters of the device's OTHER live invitations (one device may
+    /// hold several; the mark is their union).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_user_ids: Vec<ObjectId>,
 }
 
 impl TemporaryMark {
     /// Does a node owned by `owner` (holding `roles`) pair with the device?
+    /// The all-zero id (a device whose end is being settled) pairs with nobody.
     pub fn allows(&self, owner: Option<ObjectId>, roles: &[ObjectId]) -> bool {
-        owner == Some(self.inviter_user_id) || roles.iter().any(|r| self.allow_role_ids.contains(r))
+        owner.is_some_and(|o| {
+            o != ObjectId::from_bytes([0; 12])
+                && (o == self.inviter_user_id || self.also_user_ids.contains(&o))
+        }) || roles.iter().any(|r| self.allow_role_ids.contains(r))
     }
 }
 

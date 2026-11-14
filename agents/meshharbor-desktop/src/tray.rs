@@ -50,6 +50,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let devices = Submenu::with_id(app, "devices", "Network devices", true)?;
+    // Every invitation this machine holds, each with its own leave.
+    let invites = Submenu::with_id(app, "invites", "Invitations", false)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let open_status = MenuItem::with_id(app, "open_status", "Open MeshHarbor", true, None::<&str>)?;
     // S7 — the embedded web-app window (WebView2 on Windows; browser
@@ -85,6 +87,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             &account_status,
             &login,
             &join,
+            &invites,
             &devices,
             &sep,
             &open_status,
@@ -115,14 +118,11 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "quit" => {
             app.exit(0);
         }
-        LOGIN_ITEM_ID => {
-            if crate::commands::temporary_info().is_some() {
-                start_leave(app)
-            } else {
-                start_login(app)
-            }
-        }
+        LOGIN_ITEM_ID => start_login(app),
         JOIN_ITEM_ID => show_window(app, "/onboarding"),
+        id if id.starts_with(INVITE_ITEM_PREFIX) => {
+            start_leave(app, id[INVITE_ITEM_PREFIX.len()..].to_string())
+        }
         id if id.starts_with(DEVICE_ITEM_PREFIX) => show_window(app, "/devices"),
         _ => {}
     };
@@ -144,6 +144,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         account_status,
         login,
         join,
+        invites,
         devices,
         open_web.clone(),
     );
@@ -872,6 +873,8 @@ static LOGIN_UI: Mutex<LoginUi> = Mutex::new(LoginUi {
 pub(crate) const LOGIN_ITEM_ID: &str = "login";
 pub(crate) const JOIN_ITEM_ID: &str = "join";
 const DEVICE_ITEM_PREFIX: &str = "dev:";
+/// `inv:<invitation id>` — leave that invitation.
+const INVITE_ITEM_PREFIX: &str = "inv:";
 
 /// `Log in…`: start a device login, open the approval page in the browser,
 /// wait for the decision, enroll. The status line shows the code meanwhile.
@@ -911,8 +914,9 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// `Leave (end access now)` on a temporary device: the daemon's `leave`.
-fn start_leave<R: Runtime>(app: &AppHandle<R>) {
+/// `Leave · <who>` in the Invitations menu: the daemon's `leave --invite`
+/// (an empty id: a server older than several per device — the only one).
+fn start_leave<R: Runtime>(app: &AppHandle<R>, invite_id: String) {
     {
         let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
         if ui.busy {
@@ -923,12 +927,13 @@ fn start_leave<R: Runtime>(app: &AppHandle<R>) {
     }
     let _ = app;
     tauri::async_runtime::spawn(async move {
-        let outcome = crate::commands::cmd_leave().await;
+        let outcome =
+            crate::commands::cmd_leave((!invite_id.is_empty()).then_some(invite_id)).await;
         let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
         ui.busy = false;
         ui.code = None;
         match outcome {
-            Ok(()) => tracing::info!("tray: temporary device left"),
+            Ok(()) => tracing::info!("tray: left an invitation"),
             Err(e) => {
                 tracing::warn!(error = %e, "tray: leave did not complete");
                 ui.error = Some((e, std::time::Instant::now()));
@@ -944,9 +949,12 @@ struct AccountView {
     login_text: String,
     login_enabled: bool,
     join_enabled: bool,
-    /// A temporary device shows no device list and no admin console.
+    /// The machine holds only invitations (no account of its own): no device
+    /// list and no admin console.
     temporary: bool,
     devices: Vec<String>,
+    /// (invitation id, menu text), soonest end first.
+    invitations: Vec<(String, String)>,
 }
 
 fn account_view(
@@ -958,7 +966,7 @@ fn account_view(
         enrolled,
         node,
         peers,
-        crate::commands::temporary_info(),
+        crate::commands::invitations(),
         now_ms(),
     )
 }
@@ -970,14 +978,30 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn who(g: &meshharbor_node_core::device_invite::GrantInfo) -> String {
+    match (g.inviter.is_empty(), g.org.is_empty()) {
+        (false, false) => format!("{} ({})", g.inviter, g.org),
+        (false, true) => g.inviter.clone(),
+        (true, false) => g.org.clone(),
+        (true, true) => "an organization".to_string(),
+    }
+}
+
 fn account_view_at(
     enrolled: bool,
     node: Option<&meshharbor_localapi::NodeStatus>,
     peers: &[meshharbor_localapi::PeerInfo],
-    temporary: Option<meshharbor_node_core::device_invite::TemporaryInfo>,
+    invitations: Option<crate::commands::Invitations>,
     now_ms: i64,
 ) -> AccountView {
-    let temporary = temporary.filter(|_| enrolled);
+    use meshharbor_node_core::device_invite::remaining_words;
+    let invitations = invitations.filter(|_| enrolled);
+    let grants = invitations
+        .as_ref()
+        .map(|i| i.grants.clone())
+        .unwrap_or_default();
+    // Signed in nowhere but by invitations.
+    let temporary = invitations.as_ref().is_some_and(|i| !i.own_account);
     let ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
     let recent_error = ui
         .error
@@ -987,21 +1011,33 @@ fn account_view_at(
     let status = if ui.busy {
         match &ui.code {
             Some(code) => format!("Approve in your browser — code {code}"),
-            None => "Signing in…".to_string(),
+            None => "Working…".to_string(),
         }
     } else if let Some(e) = recent_error {
         let mut e = e;
         e.truncate(80);
-        format!("Sign-in failed: {e}")
+        format!("Failed: {e}")
     } else if !enrolled {
         "Not signed in".to_string()
-    } else if let Some(t) = &temporary {
-        let left = meshharbor_node_core::device_invite::remaining_words(t.access_until_ms, now_ms);
-        if t.inviter.is_empty() {
+    } else if temporary && grants.len() == 1 {
+        let g = &grants[0].1;
+        let left = remaining_words(g.access_until_ms, now_ms);
+        if g.inviter.is_empty() {
             format!("Temporary device · {left} left")
         } else {
-            format!("Managed by {} · {left} left", t.inviter)
+            format!("Managed by {} · {left} left", g.inviter)
         }
+    } else if temporary {
+        let next = grants
+            .iter()
+            .map(|(_, g)| g.access_until_ms)
+            .min()
+            .unwrap_or(now_ms);
+        format!(
+            "{} invitations · next ends in {}",
+            grants.len(),
+            remaining_words(next, now_ms)
+        )
     } else {
         match node {
             None => "MeshHarbor service is not running".to_string(),
@@ -1016,16 +1052,14 @@ fn account_view_at(
         }
     };
     let (login_text, login_enabled) = if ui.busy {
-        ("Waiting for approval…".to_string(), false)
-    } else if temporary.is_some() {
-        ("Leave (end access now)".to_string(), true)
-    } else if enrolled {
+        ("Waiting…".to_string(), false)
+    } else if enrolled && !temporary {
         ("Signed in".to_string(), false)
     } else {
+        // Signing in keeps every invitation this machine holds.
         ("Log in…".to_string(), true)
     };
-    let shown_peers: &[meshharbor_localapi::PeerInfo] =
-        if temporary.is_some() { &[] } else { peers };
+    let shown_peers: &[meshharbor_localapi::PeerInfo] = if temporary { &[] } else { peers };
     let mut devices: Vec<String> = shown_peers
         .iter()
         .map(|p| {
@@ -1035,13 +1069,27 @@ fn account_view_at(
         })
         .collect();
     devices.sort_by(|a, b| a.get(4..).cmp(&b.get(4..)));
+    let invitations = grants
+        .iter()
+        .map(|(_, g)| {
+            (
+                g.invite_id.clone(),
+                format!(
+                    "Leave · {} · {} left",
+                    who(g),
+                    remaining_words(g.access_until_ms, now_ms)
+                ),
+            )
+        })
+        .collect();
     AccountView {
         status,
         login_text,
         login_enabled,
-        join_enabled: !enrolled && !ui.busy,
-        temporary: temporary.is_some(),
+        join_enabled: !ui.busy,
+        temporary,
         devices,
+        invitations,
     }
 }
 
@@ -1050,6 +1098,7 @@ fn spawn_account_watch<R: Runtime>(
     status: MenuItem<R>,
     login: MenuItem<R>,
     join: MenuItem<R>,
+    invites: tauri::menu::Submenu<R>,
     devices: tauri::menu::Submenu<R>,
     admin: MenuItem<R>,
 ) {
@@ -1079,6 +1128,25 @@ fn spawn_account_watch<R: Runtime>(
                 let _ = join.set_enabled(view.join_enabled);
                 let _ = devices.set_enabled(!view.temporary);
                 let _ = admin.set_enabled(!view.temporary);
+                let _ = invites.set_enabled(!view.invitations.is_empty());
+                if shown.as_ref().map(|s| &s.invitations) != Some(&view.invitations) {
+                    if let Ok(items) = invites.items() {
+                        for item in items {
+                            let _ = invites.remove(&item);
+                        }
+                    }
+                    for (id, label) in &view.invitations {
+                        if let Ok(item) = MenuItem::with_id(
+                            &app,
+                            format!("{INVITE_ITEM_PREFIX}{id}"),
+                            label,
+                            true,
+                            None::<&str>,
+                        ) {
+                            let _ = invites.append(&item);
+                        }
+                    }
+                }
                 if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) {
                     if let Ok(items) = devices.items() {
                         for item in items {
@@ -1132,26 +1200,80 @@ mod account_tests {
             (v.login_text.as_str(), v.login_enabled),
             ("Signed in", false)
         );
-        assert!(!v.join_enabled && !v.temporary);
+        assert!(
+            v.join_enabled && !v.temporary,
+            "a signed-in machine may still accept an invitation"
+        );
+    }
+
+    fn grant(
+        id: &str,
+        who: &str,
+        until: i64,
+    ) -> (String, meshharbor_node_core::device_invite::GrantInfo) {
+        (
+            "agent".into(),
+            meshharbor_node_core::device_invite::GrantInfo {
+                invite_id: id.into(),
+                inviter: who.into(),
+                org: "Acme".into(),
+                access_until_ms: until,
+            },
+        )
     }
 
     #[test]
     fn a_temporary_device_shows_its_manager_and_time_and_no_devices() {
-        let t = meshharbor_node_core::device_invite::TemporaryInfo {
-            access_until_ms: 50 * 3_600_000,
-            inviter: "Alex".into(),
+        let t = crate::commands::Invitations {
+            own_account: false,
+            grants: vec![grant("aa", "Alex", 50 * 3_600_000)],
         };
         let v = account_view_at(true, None, &[], Some(t.clone()), 0);
         assert_eq!(v.status, "Managed by Alex · 2 d 2 h left");
         assert_eq!(
             (v.login_text.as_str(), v.login_enabled),
-            ("Leave (end access now)", true)
+            ("Log in…", true),
+            "signing in keeps it"
         );
-        assert!(v.temporary && !v.join_enabled && v.devices.is_empty());
+        assert!(v.temporary && v.join_enabled && v.devices.is_empty());
+        assert_eq!(
+            v.invitations,
+            vec![(
+                "aa".to_string(),
+                "Leave · Alex (Acme) · 2 d 2 h left".to_string()
+            )]
+        );
         // A marker left behind on a machine that is no longer enrolled is
         // not a temporary device.
         let v = account_view_at(false, None, &[], Some(t), 0);
         assert_eq!(v.status, "Not signed in");
-        assert!(v.join_enabled && !v.temporary);
+        assert!(v.join_enabled && !v.temporary && v.invitations.is_empty());
+    }
+
+    #[test]
+    fn several_invitations_are_listed_and_the_owners_account_stays_in_charge() {
+        let only = crate::commands::Invitations {
+            own_account: false,
+            grants: vec![
+                grant("aa", "Alex", 3_600_000),
+                grant("bb", "Bo", 50 * 3_600_000),
+            ],
+        };
+        let v = account_view_at(true, None, &[], Some(only), 0);
+        assert_eq!(v.status, "2 invitations · next ends in 1 h 0 min");
+        assert_eq!(v.invitations.len(), 2);
+        // Signed in with its own account: the account rows are the owner's,
+        // the invitations are still listed with their leave.
+        let own = crate::commands::Invitations {
+            own_account: true,
+            grants: vec![grant("aa", "Alex", 3_600_000)],
+        };
+        let v = account_view_at(true, None, &[], Some(own), 0);
+        assert_eq!(v.status, "MeshHarbor service is not running");
+        assert_eq!(
+            (v.login_text.as_str(), v.login_enabled),
+            ("Signed in", false)
+        );
+        assert!(!v.temporary && v.join_enabled && v.invitations.len() == 1);
     }
 }

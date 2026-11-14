@@ -589,11 +589,7 @@ async fn handle_overlay_join(
             match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, *agent_id)
                 .await
             {
-                Ok(g) => g.map(|g| meshharbor_remote_control::models::TemporaryMark {
-                    invite_id: g.invite_id,
-                    inviter_user_id: g.inviter_user_id,
-                    allow_role_ids: g.allow_role_ids,
-                }),
+                Ok(g) => g.as_ref().map(temporary_mark_of),
                 Err(_) => {
                     refuse(
                         OverlayJoinRefusal::StoreUnavailable,
@@ -616,13 +612,30 @@ async fn handle_overlay_join(
             let Some(id) = existing.id else { return };
             // A temporary device's node is born marked; an unmarked row under
             // its machine id is not its node.
-            if temporary_mark.is_some() && existing.temporary != temporary_mark {
+            if temporary_mark.is_some() && existing.temporary.is_none() {
                 refuse(
                     OverlayJoinRefusal::NetworkUnavailable,
                     "temporary device: existing node is not its own".to_string(),
                 )
                 .await;
                 warn!(%tenant_id, %machine_id, "overlay.join: temporary device met an unmarked node; refused");
+                return;
+            }
+            // Its invitations changed since the mark was written (one more,
+            // one fewer): the mark follows them before anything is fanned.
+            if temporary_mark.is_some()
+                && existing.temporary != temporary_mark
+                && state
+                    .overlay_nodes
+                    .set_temporary(id, temporary_mark.as_ref())
+                    .await
+                    .is_err()
+            {
+                refuse(
+                    OverlayJoinRefusal::StoreUnavailable,
+                    "temporary device: mark update failed".to_string(),
+                )
+                .await;
                 return;
             }
             // Keep the existing stable name (DNS mustn't churn on rejoin);
@@ -2792,6 +2805,50 @@ pub fn invalidate_tenant_acl_cache(tenant_id: ObjectId) {
 
 /// B3 — re-fan local sockets, rebuild local DERP ACL, and reconcile local
 /// org-relay state for `tenant_id` on this pod.
+/// A temporary device's overlay mark: the union of its live invitations.
+pub fn temporary_mark_of(
+    g: &meshharbor_mod_fleet::device_invite::TemporaryGrant,
+) -> meshharbor_remote_control::models::TemporaryMark {
+    meshharbor_remote_control::models::TemporaryMark {
+        invite_id: g.invite_id,
+        inviter_user_id: g.inviter_user_id,
+        allow_role_ids: g.allow_role_ids.clone(),
+        also_user_ids: g.also_inviter_user_ids.clone(),
+    }
+}
+
+/// Bring a temporary device's node mark in line with its live invitations
+/// (one attached, one ended). Only ever writes a mark, never clears one: a
+/// device with none left is being removed (or made ordinary, which unmarks
+/// explicitly). `Ok(true)` = the mark changed.
+pub async fn sync_temporary_mark(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) -> anyhow::Result<bool> {
+    if !state.settings.auth.native_device_invite_enabled {
+        return Ok(false);
+    }
+    let grant = meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("temporary-device lookup: {e:?}"))?;
+    let Some(grant) = grant else { return Ok(false) };
+    let mark = temporary_mark_of(&grant);
+    let Some(node) = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, agent_id)
+        .await?
+    else {
+        return Ok(false); // not on the overlay yet: born marked at its join
+    };
+    if node.temporary.as_ref() == Some(&mark) {
+        return Ok(false);
+    }
+    let nid = node.id.ok_or_else(|| anyhow::anyhow!("node missing _id"))?;
+    state.overlay_nodes.set_temporary(nid, Some(&mark)).await?;
+    Ok(true)
+}
+
 pub async fn refan_tenant_authority_local(state: &NetworkState, tenant_id: ObjectId, reason: &str) {
     // Invalidate pod-local org-relay mode and eligibility caches BEFORE
     // checking whether an `OverlayNetwork` row exists so tenants without an
@@ -6462,6 +6519,7 @@ mod tests {
             invite_id: ObjectId::new(),
             inviter_user_id: inviter,
             allow_role_ids: roles,
+            also_user_ids: Vec::new(),
         });
         // A temporary device that somehow offers routes must still offer none.
         n.approved_routes = vec!["10.9.0.0/24".into()];

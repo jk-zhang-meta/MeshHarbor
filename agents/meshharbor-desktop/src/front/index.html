@@ -871,14 +871,15 @@
           <div id="login-pending" class="banner" hidden></div>
         </div>
 
-        <!-- Temporary devices: someone invited this machine for a while. No
-             account: only the person who invited it can reach it. -->
+        <!-- Invitations: someone invited this machine for a while. No
+             account needed: only the person who invited it can reach it. -->
         <div class="card form-narrow" id="join-card">
           <h3 style="margin-top:0">Join with an invite code</h3>
           <p class="muted small">
-            Someone gave you an 8-digit code. This machine joins their
-            organization for the time they chose; only they can reach it, and
-            it leaves by itself when the time is up.
+            Someone gave you an 8-digit code. You see who it is from and for how
+            long before you accept. Only they can reach this machine, it cannot
+            reach theirs, and their access ends by itself when the time is up.
+            This machine keeps its own sign-in and any other invitations.
           </p>
           <label for="join-code">Invite code</label>
           <input type="text" id="join-code" inputmode="numeric" autocomplete="off"
