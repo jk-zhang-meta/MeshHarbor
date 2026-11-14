@@ -176,16 +176,28 @@ pub fn write_marker(config_path: &Path, info: Option<&TemporaryInfo>) -> Result<
 /// look at), and clear the marker. The machine is then simply not signed in.
 pub fn end_locally(config_path: &Path) -> Result<Option<PathBuf>> {
     let _ = write_marker(config_path, None);
-    if !config_path.exists() {
-        return Ok(None);
-    }
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut aside = config_path.as_os_str().to_owned();
-    aside.push(format!(".ended-{secs}"));
-    let aside = PathBuf::from(aside);
+    let beside = |suffix: &str| {
+        let mut p = config_path.as_os_str().to_owned();
+        p.push(suffix);
+        PathBuf::from(p)
+    };
+    // The recovery copy FIRST: `config::load` restores a missing config from
+    // `config.toml.prev` (field, Surface 2026-11-14: a load one second after
+    // the end brought the ended enrollment back). With it gone first, no
+    // load in between can resurrect anything.
+    let prev = config_path.with_extension("toml.prev");
+    if prev.exists() {
+        std::fs::rename(&prev, beside(&format!(".ended-{secs}.prev")))
+            .context("setting the previous config copy aside")?;
+    }
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let aside = beside(&format!(".ended-{secs}"));
     std::fs::rename(config_path, &aside).context("setting the enrollment aside")?;
     Ok(Some(aside))
 }
@@ -223,6 +235,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("config.toml");
         std::fs::write(&cfg, "agent_id = \"x\"\n").unwrap();
+        // The recovery copy a later `config::load` would restore from.
+        std::fs::write(dir.join("config.toml.prev"), "agent_id = \"x\"\n").unwrap();
         let info = TemporaryInfo {
             access_until_ms: 1_800_000_000_000,
             inviter: "Alex".into(),
@@ -231,6 +245,10 @@ mod tests {
         assert_eq!(read_marker(&cfg), Some(info));
         let aside = end_locally(&cfg).unwrap().expect("set aside");
         assert!(!cfg.exists() && aside.exists());
+        assert!(
+            !dir.join("config.toml.prev").exists(),
+            "no recovery copy is left to bring the ended enrollment back"
+        );
         assert_eq!(read_marker(&cfg), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
