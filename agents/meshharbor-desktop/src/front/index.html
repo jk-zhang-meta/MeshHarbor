@@ -856,6 +856,21 @@
           single-use and expires after 10 minutes.
         </p>
 
+        <!-- Device login: the Tailscale-style way in. The token form below
+             stays for admins who hand out tokens. -->
+        <div class="card form-narrow" id="login-card">
+          <h3 style="margin-top:0">Sign in with your account</h3>
+          <p class="muted small">
+            Opens the MeshHarbor website in your browser. Approve this device
+            there and it joins your organization; your devices then show under
+            Devices.
+          </p>
+          <div class="actions">
+            <button type="button" id="btn-login" class="primary">Sign in…</button>
+          </div>
+          <div id="login-pending" class="banner" hidden></div>
+        </div>
+
         <div class="card form-narrow">
           <!-- S1b: shown in re-enroll mode (device already enrolled). -->
           <div id="onboard-reenroll-note" class="banner banner-warn" hidden>

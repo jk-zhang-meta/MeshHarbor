@@ -44,6 +44,9 @@ tracing-subscriber = { workspace = true }
 tracing-appender = "0.2"
 directories = { workspace = true }
 reqwest = { workspace = true }
+# Device login (`mh login`): the PKCE verifier and its S256 challenge.
+rand = { workspace = true }
+base64 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 bson = { workspace = true }

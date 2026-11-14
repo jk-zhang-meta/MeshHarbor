@@ -369,6 +369,22 @@
       "methods": "POST"
     },
     {
+      "path": "/api/native/device-login",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/device-login/decision",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/device-login/exchange",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/device-login/preview",
+      "methods": "POST"
+    },
+    {
       "path": "/api/native/share-ssh/authorizations",
       "methods": "POST"
     },
@@ -1557,6 +1573,35 @@
               "name": 1
             },
             "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "device_login_requests",
+        "indexes": [
+          {
+            "key": {
+              "user_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "state": 1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
@@ -3941,6 +3986,35 @@
               "name": 1
             },
             "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "device_login_requests",
+        "indexes": [
+          {
+            "key": {
+              "user_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "device_code_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "client_hash": 1,
+              "state": 1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },

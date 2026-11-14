@@ -131,6 +131,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/account/PersonalDevicesView.vue'),
       },
       {
+        // `mh login` / the tray's sign-in lands here (`?code=XXXXX-XXXXX`).
+        path: 'device-login', name: 'device-login',
+        component: () => import('@/views/account/DeviceLoginView.vue'),
+      },
+      {
         path: 'device-shares', name: 'device-shares',
         component: () => import('@/views/account/DeviceSharesView.vue'),
       },

@@ -145,6 +145,29 @@ enum Command {
         #[arg(long, value_name = "SCOPE")]
         install_scope: Option<String>,
     },
+    /// Sign this machine in with your MeshHarbor account, like `tailscale
+    /// up`: opens the approval page in your browser (or prints its link), and
+    /// once you approve it there the machine enrolls into the organization you
+    /// chose and joins its mesh. Also `mh login`.
+    Login {
+        /// MeshHarbor server to sign in to.
+        #[arg(long, default_value = meshharbor_node_core::device_login::DEFAULT_SERVER)]
+        server: String,
+        /// Device name shown in your organization. Default: this machine's
+        /// hostname.
+        #[arg(long)]
+        name: Option<String>,
+        /// Only print the link; do not try to open a browser.
+        #[arg(long)]
+        no_browser: bool,
+        /// Sign in even though this machine is already enrolled, REBINDING
+        /// its primary enrollment to the organization you approve.
+        #[arg(long)]
+        replace: bool,
+        /// As `enroll --machine-global` (Windows, elevated).
+        #[arg(long)]
+        machine_global: bool,
+    },
     /// Refresh this machine's agent token using a fresh enrollment JWT.
     /// Preserves `server_url` and `machine_name` from the existing
     /// config, so the operator only needs the new token. Used after
@@ -1194,10 +1217,87 @@ fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config
 /// migration, `logging::init` — none of which the standalone `mh`
 /// binary does. Element 0 is re-labelled so usage text still reads
 /// `meshharbor ...` rather than `meshharbord ...`.
+/// `meshharbord cli login …` (what `mh login` execs) → `meshharbord login …`.
+/// Every other argv passes through unchanged.
+fn daemon_argv(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> = args.into_iter().collect();
+    if v.len() >= 3 && v[1] == "cli" && v[2] == "login" {
+        v.remove(1);
+    }
+    v
+}
+
+/// `meshharbord login` / `mh login`: device login, then the ordinary enroll.
+async fn login_cmd(
+    config_path: &std::path::PathBuf,
+    server: &str,
+    name: Option<&str>,
+    no_browser: bool,
+    replace: bool,
+    machine_global: bool,
+) -> Result<()> {
+    use meshharbor_node_core::device_login;
+    if !replace
+        && config_path.exists()
+        && let Ok(cfg) = config::load(config_path)
+    {
+        println!(
+            "This machine is already signed in as {:?} ({}).\n\
+             Run `mh login --replace` to sign it in to another organization.",
+            cfg.machine_name, cfg.server_url
+        );
+        return Ok(());
+    }
+    let name = match name {
+        Some(n) => n.trim().to_string(),
+        None => meshharbord::machine::hostname().unwrap_or_else(|_| "my-device".to_string()),
+    };
+    let pending = device_login::start(server, &name).await?;
+    println!();
+    println!("To sign in \"{name}\", open this link and approve the device:");
+    println!();
+    println!("    {}", pending.verification_uri_complete);
+    println!();
+    println!(
+        "Check that the page shows the code {}. (Or open {} and type it.)",
+        pending.user_code, pending.verification_uri
+    );
+    if !no_browser && device_login::open_browser(&pending.verification_uri_complete) {
+        println!("Opened it in your browser.");
+    }
+    println!("Waiting for approval…");
+    let approved = pending.wait().await?;
+    println!("Approved. Enrolling…");
+    enroll_cmd(
+        config_path,
+        EnrollOptions {
+            server: &pending.server_url,
+            enrollment_token: &approved.enrollment_token,
+            machine_name: &name,
+            machine_global,
+            label: None,
+            replace,
+            ephemeral: false,
+            overlay: true,
+            relay_server: false,
+            archive_replica: false,
+            install_method: None,
+            install_scope: None,
+        },
+    )
+    .await
+}
+
 fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     let mut it = std::env::args_os();
     let _exe = it.next()?;
     if it.next()? != "cli" {
+        return None;
+    }
+    let mut it = it.peekable();
+    // `mh login` enrolls THIS daemon: it is the daemon's own `login`
+    // command (`daemon_argv` drops the `cli`), not the tunnel CLI's.
+    if it.peek().is_some_and(|a| a == "login") {
         return None;
     }
     let mut argv = vec![std::ffi::OsString::from("mh")];
@@ -1469,7 +1569,7 @@ async fn daemon_main() -> Result<()> {
         };
     }
 
-    let cli = parse_cli_before_startup(std::env::args_os(), || {
+    let cli = parse_cli_before_startup(daemon_argv(std::env::args_os()), || {
         // RETIRED-NAME-ANCHOR: a migration note names BOTH halves by necessity.
         // docs/fr/FR-21
         // S1b — one-shot legacy-tree migration (`meshharbor-agent` → `meshharbor`).
@@ -1660,6 +1760,23 @@ async fn daemon_main() -> Result<()> {
                     install_method: install_method.as_deref(),
                     install_scope: install_scope.as_deref(),
                 },
+            )
+            .await
+        }
+        Command::Login {
+            server,
+            name,
+            no_browser,
+            replace,
+            machine_global,
+        } => {
+            login_cmd(
+                &config_path,
+                &server,
+                name.as_deref(),
+                no_browser,
+                replace,
+                machine_global,
             )
             .await
         }
@@ -6986,6 +7103,53 @@ mod tests {
             "bare invocation keeps its default run path"
         );
         assert_eq!(startup_calls.get(), 1);
+    }
+
+    /// `mh login` execs `meshharbord cli login …`: that is the DAEMON's own
+    /// `login` (it enrolls this install), never the embedded tunnel CLI. Every
+    /// other `cli …` argv is untouched.
+    #[test]
+    fn mh_login_is_the_daemons_own_login_command() {
+        use std::ffi::OsString;
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            daemon_argv(os(&["meshharbord", "cli", "login", "--no-browser"])),
+            os(&["meshharbord", "login", "--no-browser"])
+        );
+        for unchanged in [
+            &["meshharbord", "cli", "status"][..],
+            &["meshharbord", "login"][..],
+            &["meshharbord", "cli"][..],
+            &["meshharbord"][..],
+        ] {
+            assert_eq!(daemon_argv(os(unchanged)), os(unchanged));
+        }
+        let cli = parse_cli_before_startup(
+            daemon_argv(os(&[
+                "meshharbord",
+                "cli",
+                "login",
+                "--no-browser",
+                "--name",
+                "box",
+            ])),
+            || {},
+        )
+        .unwrap();
+        match cli.command {
+            Some(Command::Login {
+                server,
+                name,
+                no_browser,
+                replace,
+                ..
+            }) => {
+                assert_eq!(server, meshharbor_node_core::device_login::DEFAULT_SERVER);
+                assert_eq!(name.as_deref(), Some("box"));
+                assert!(no_browser && !replace);
+            }
+            _ => panic!("expected the daemon's Login command"),
+        }
     }
 
     #[test]

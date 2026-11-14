@@ -122,6 +122,8 @@
 
     on('status', (s) => {
       enrolledMode = !!s.enrolled;
+      const loginCard = $('login-card');
+      if (loginCard) loginCard.hidden = enrolledMode;
       const btn = $('btn-enroll');
       if (btn) btn.textContent = enrolledMode ? 'Re-enroll this device' : 'Enroll this device';
       const note = $('onboard-reenroll-note');
@@ -137,6 +139,49 @@
         if (enrolledMode && s.device_name && !name.matches(':focus')) {
           name.value = s.device_name;
         }
+      }
+    });
+
+    // Device login: start → show the code (and the link, if no browser
+    // opened) → wait for the approval → the same Enrolled banner.
+    const loginBtn = $('btn-login');
+    if (loginBtn) loginBtn.addEventListener('click', async () => {
+      const deviceName = ($('device-name').value || '').trim();
+      if (!deviceName) {
+        showError('Fill in the device name first.');
+        return;
+      }
+      const box = $('login-pending');
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Starting…';
+      try {
+        const started = await invoke('cmd_login_start', { server: '', deviceName });
+        box.hidden = false;
+        box.className = 'banner';
+        box.replaceChildren();
+        const p1 = document.createElement('p');
+        p1.textContent = started.opened
+          ? 'Approve this device in the browser window that just opened.'
+          : 'Open this link and approve the device:';
+        box.appendChild(p1);
+        const link = document.createElement('code');
+        link.textContent = started.url;
+        link.style.wordBreak = 'break-all';
+        box.appendChild(link);
+        const p2 = document.createElement('p');
+        p2.textContent = 'The page must show the code ' + started.user_code + '. Waiting for approval…';
+        box.appendChild(p2);
+        loginBtn.textContent = 'Waiting…';
+        const s = await invoke('cmd_login_wait', { deviceName });
+        box.hidden = true;
+        showEnrolled(s);
+        void refreshStatus();
+      } catch (e) {
+        box.hidden = true;
+        showError('Sign-in failed: ' + e);
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Sign in…';
       }
     });
 

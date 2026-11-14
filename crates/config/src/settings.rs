@@ -1146,6 +1146,11 @@ pub struct AuthSettings {
     /// Existing shared SSH and its account-login path are independent.
     #[serde(default)]
     pub native_share_ssh_authorization_enabled: bool,
+    /// `mh login` / the tray's sign-in: a device asks to join, a signed-in
+    /// person with `MANAGE_AGENTS` approves it in the browser, and the device
+    /// receives a standard single-use enrollment token. Default off.
+    #[serde(default)]
+    pub native_device_login_enabled: bool,
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
@@ -1184,6 +1189,7 @@ impl Default for AuthSettings {
             auto_verify: false,
             account_approval: AccountApprovalSettings::default(),
             native_share_ssh_authorization_enabled: false,
+            native_device_login_enabled: false,
             reconcile_managed_roles: default_true(),
         }
     }
@@ -1799,6 +1805,7 @@ impl Settings {
             .set_default("push.contact", "mailto:noreply@meshharbor.itachi.fans")?
             .set_default("auth.auto_verify", false)?
             .set_default("auth.native_share_ssh_authorization_enabled", false)?
+            .set_default("auth.native_device_login_enabled", false)?
             .build()?;
 
         config.try_deserialize()
