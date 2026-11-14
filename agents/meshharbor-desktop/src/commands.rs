@@ -1380,7 +1380,8 @@ fn remote_target(cfg: &AgentConfig, org: Option<&str>) -> Result<(String, String
 /// Initialization script injected into the Windows embedded WebView2 remote-control
 /// window ([`WEB_WINDOW_LABEL`]) so the remote-control page can request an RDP
 /// session (`window.__MESHHARBOR_DESKTOP_BRIDGE__.openRdp(...)`) without exposing
-/// full `__TAURI__` IPC to an external origin.
+/// full `__TAURI__` IPC to an external origin. Windows only, like that window.
+#[cfg(target_os = "windows")]
 pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
   if (typeof window === 'undefined') return;
   try {
@@ -1440,6 +1441,7 @@ pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
 
 /// Parsed request parameters from a same-origin `/__meshharbor_desktop__/open_rdp`
 /// bridge URL intercepted by [`open_web_window`].
+#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopBridgeOpenRdpRequest {
     pub target: String,
@@ -1451,6 +1453,7 @@ pub struct DesktopBridgeOpenRdpRequest {
 
 /// Parse and origin-validate a `/__meshharbor_desktop__/open_rdp` URL intercepted
 /// by [`open_web_window`]'s `on_new_window` handler.
+#[cfg(any(target_os = "windows", test))]
 pub fn parse_desktop_bridge_open_rdp_url(
     req_url: &tauri::Url,
     allowed_origin: &tauri::Url,
@@ -1525,6 +1528,7 @@ pub fn parse_desktop_bridge_open_rdp_url(
 /// `(NewWindowResponse::Allow, None)` so normal `target="_blank"` and
 /// `window.open` links inside the remote-control window keep their default
 /// Tauri behavior.
+#[cfg(any(target_os = "windows", test))]
 pub fn decide_web_window_new_window<R: tauri::Runtime>(
     req_url: &tauri::Url,
     allowed_origin: &tauri::Url,

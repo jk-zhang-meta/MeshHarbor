@@ -3888,7 +3888,8 @@ mod system {
                     // message (`ifconfig` says "File exists" for a duplicate,
                     // and that text is not a contract). Ask the interface.
                     Err(e) => {
-                        let listed = run("ifconfig", &[self.if_name.clone()]).unwrap_or_default();
+                        let listed = run("ifconfig", std::slice::from_ref(&self.if_name))
+                            .unwrap_or_default();
                         if listing_mentions_address(&listed, ip) {
                             Ok(())
                         } else {

@@ -301,7 +301,7 @@ mod imp {
                 let name = it.next()?;
                 let uid: u32 = it.next()?.parse().ok()?;
                 let login = !no_login.contains(&name);
-                (uid >= 501 && uid < 60000 && valid_name(name) && login).then(|| LocalAccount {
+                ((501..60000).contains(&uid) && valid_name(name) && login).then(|| LocalAccount {
                     name: name.to_string(),
                     uid,
                     admin: admins.contains(&name) || has_rule(name),

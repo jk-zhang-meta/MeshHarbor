@@ -51,6 +51,7 @@ pub(crate) fn windows_build() -> Option<u32> {
 }
 
 /// The one shape both platforms produce: `platform;os=<build>;hw=<sorted parts>`.
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 fn compose(platform: &str, os: &str, parts: &[String]) -> String {
     format!("{platform};os={os};hw={}", parts.join(";"))
 }
