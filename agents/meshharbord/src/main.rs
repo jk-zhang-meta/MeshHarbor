@@ -1356,7 +1356,7 @@ async fn login_cmd(
             println!("Signed in. The invitations this machine holds are kept.");
         }
         link_history(config_path).await;
-        restart_service(config_path);
+        restart_service(config_path).await;
     }
     Ok(())
 }
@@ -1368,9 +1368,23 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Stop the running daemon and start it again (an added enrollment's loop
-/// starts only at a start). Best-effort: no service here is not an error.
-fn restart_service(config_path: &std::path::Path) {
+/// Restart the running daemon (an added or removed enrollment takes effect at
+/// a start): through the daemon's own supervised restart (`mh restart`), which
+/// waits for the new process; else stop and start the service. Best-effort:
+/// no service here is not an error.
+async fn restart_service(config_path: &std::path::Path) {
+    match meshharbor_cli::localclient::restart(
+        "an invitation changed this machine's enrollments",
+        false,
+        std::env::current_exe().ok(),
+    )
+    .await
+    {
+        Ok(()) => return,
+        Err(e) => {
+            tracing::debug!(error = %e, "supervised restart unavailable; stopping and starting")
+        }
+    }
     match meshharbord::service::stop(config_path) {
         Ok(what) => tracing::debug!(%what, "service stopped for a restart"),
         Err(e) => tracing::debug!(error = %e, "no service to stop"),
@@ -1608,7 +1622,7 @@ async fn join_cmd(
         }
     } else {
         link_history(config_path).await;
-        restart_service(config_path);
+        restart_service(config_path).await;
     }
     Ok(())
 }
@@ -1700,6 +1714,16 @@ async fn leave_cmd(
             ended_enrollments.push((h.2.clone(), h.4));
         }
     }
+    // An enrollment that keeps other invitations: the tray shows the rest now,
+    // not at the daemon's next look.
+    for h in &chosen {
+        if ended_enrollments.iter().any(|(a, _)| a == &h.2) {
+            continue;
+        }
+        if let Ok(info) = device_invite::self_status(&h.1, &h.3).await {
+            let _ = device_invite::write_marker_for(config_path, &h.2, h.4, info.as_ref());
+        }
+    }
     if ended_enrollments.is_empty() {
         return Ok(());
     }
@@ -1723,7 +1747,7 @@ async fn leave_cmd(
         let done = device_invite::end_enrollment_locally(config_path, aid)?;
         tracing::info!(?done, "leave: enrollment ended locally");
     }
-    restart_service(config_path);
+    restart_service(config_path).await;
     Ok(())
 }
 

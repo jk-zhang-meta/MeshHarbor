@@ -1222,10 +1222,9 @@ pub async fn run(
                         Err(e) => warn!(org = %ctx.label, error = %e,
                             "temporary device: could not remove the ended enrollment"),
                     }
-                    return Err(SecondaryGoodbye {
+                    let _ = (reason, message);
+                    return Err(InvitationEnded {
                         label: ctx.label.clone(),
-                        reason,
-                        message,
                     }
                     .into());
                 }
@@ -1558,11 +1557,20 @@ pub struct SecondaryGoodbye {
     pub message: String,
 }
 
-/// Whether an org loop ended on a [`SecondaryGoodbye`] — an outcome the loop
-/// has already reported as its one WARN, not a fault. Sees through
-/// `anyhow::Context` layers.
+/// A temporary enrollment's planned end (its last invitation ended): the org
+/// was removed from the config already, nothing for anyone to fix. What
+/// `mh status` shows for it until the next start.
+#[derive(Debug, thiserror::Error)]
+#[error("the invitation access for org {label:?} ended; it was removed from this machine")]
+pub struct InvitationEnded {
+    pub label: String,
+}
+
+/// Whether an org loop ended on a [`SecondaryGoodbye`] (or a temporary
+/// enrollment's planned [`InvitationEnded`]) — an outcome the loop has
+/// already reported, not a fault. Sees through `anyhow::Context` layers.
 pub fn is_secondary_goodbye(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<SecondaryGoodbye>().is_some()
+    e.downcast_ref::<SecondaryGoodbye>().is_some() || e.downcast_ref::<InvitationEnded>().is_some()
 }
 
 #[derive(Debug, thiserror::Error)]
