@@ -18,6 +18,11 @@ The operator must obtain both hashes from the approved build/audit separately.
   private transaction; generated rollback validates its SHA before import and
   sets its own `PYTHONPATH`, so the original staging path is no longer needed.
   Do not install packages globally for this script.
+- Candidate must be a 64-bit little-endian Linux ELF for the actual host
+  (`uname.machine`: x86_64/e_machine62 or aarch64/e_machine183). Unknown hosts,
+  scripts, malformed headers and cross-architecture candidates are rejected
+  before creating even the lock/transaction files or touching the service.
+  A correct filename or SHA alone is not CPU compatibility evidence.
 - Existing running service and LocalAPI must answer. The script binds MainPID,
   `/proc/PID/exe` hash, process UID, actual `--config`, and LocalAPI PID, active
   config, agent/tenant identity and privilege scope. A supervisor/old version

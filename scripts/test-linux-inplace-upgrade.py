@@ -69,6 +69,11 @@ def fixture_paths(scope, binary, config):
 
 class TransactionTests(unittest.TestCase):
     def setUp(self):
+        # These existing file-transaction fixtures execute real shell scripts.
+        # CPU admission is tested independently below, without this mock.
+        patcher = mock.patch.object(upgrade, "require_candidate_architecture")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -278,6 +283,7 @@ class TransactionTests(unittest.TestCase):
             mode, script, tx = sys.argv[1:4]
             spec=importlib.util.spec_from_file_location('frozen_upgrade',script)
             m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+            m.require_candidate_architecture = lambda candidate: None  # shell-only parser/recovery fixture
             root=pathlib.Path(tx).parent
             binary=root/'meshharbord'; config=root/'config.toml'
             class FixtureService:
@@ -361,6 +367,68 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             upgrade.checked_paths("system", self.binary, self.config)
 
+
+
+class ArchitectureGateTests(unittest.TestCase):
+    def test_cross_arch_rejected_before_any_write_or_service_action(self):
+        for host, candidate_machine in [("x86_64", 183), ("aarch64", 62)]:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                binary, config, candidate = root / "daemon", root / "config.toml", root / "candidate"
+                binary.write_bytes(b"pristine old binary")
+                config.write_text('agent_id="preserved"\nssh_enabled=false\n')
+                candidate.write_bytes(self.elf(candidate_machine))
+                args = argparse.Namespace(scope="user", binary=str(binary), config=str(config),
+                    candidate=str(candidate), transaction=str(root / "transaction"))
+                service = Service(binary, config)
+                before = {p.name: p.read_bytes() for p in root.iterdir()}
+                with mock.patch.object(upgrade.os, "uname", return_value=types.SimpleNamespace(machine=host)):
+                    with self.assertRaisesRegex(RuntimeError, "architecture does not match"):
+                        upgrade.apply(args, service, fixture_paths)
+                self.assertEqual(service.calls, [])
+                self.assertTrue(service.active)
+                self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, before)
+
+    @staticmethod
+    def elf(machine):
+        header = bytearray(64)
+        header[:7] = b"\x7fELF\x02\x01\x01"
+        header[16:18] = (3).to_bytes(2, "little")
+        header[18:20] = machine.to_bytes(2, "little")
+        header[20:24] = (1).to_bytes(4, "little")
+        return bytes(header)
+
+    def test_matching_elf_reaches_transaction_without_arch_mock(self):
+        for host, machine in [("x86_64", 62), ("aarch64", 183)]:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                binary, config, candidate = root / "daemon", root / "config.toml", root / "candidate"
+                binary.write_bytes(self.elf(machine) + b"old")
+                candidate.write_bytes(self.elf(machine) + b"new")
+                config.write_text('agent_id="preserved"\nssh_enabled=false\n')
+                args = argparse.Namespace(scope="user", binary=str(binary), config=str(config),
+                    candidate=str(candidate), transaction=str(root / "transaction"),
+                    old_sha=upgrade.digest(binary), new_sha=upgrade.digest(candidate), config_sha=upgrade.digest(config))
+                service = Service(binary, config)
+                with mock.patch.object(upgrade.os, "uname", return_value=types.SimpleNamespace(machine=host)):
+                    result = upgrade.apply(args, service, fixture_paths)
+                self.assertEqual(result["state"], "activated")
+                self.assertEqual(service.calls, ["stop", "start"])
+
+    def test_matching_architecture_passes_and_malformed_headers_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "candidate"
+            for host, machine in [("x86_64", 62), ("aarch64", 183)]:
+                with self.subTest(host=host), mock.patch.object(upgrade.os, "uname", return_value=types.SimpleNamespace(machine=host)):
+                    candidate.write_bytes(self.elf(machine))
+                    upgrade.require_candidate_architecture(candidate)
+                    for bad in [b"#!/bin/sh\n", self.elf(machine)[:20], self.elf(machine).replace(b"ELF", b"BAD"), self.elf(machine)[:4] + b"\x01" + self.elf(machine)[5:]]:
+                        candidate.write_bytes(bad)
+                        with self.assertRaises(RuntimeError):
+                            upgrade.require_candidate_architecture(candidate)
+            with mock.patch.object(upgrade.os, "uname", return_value=types.SimpleNamespace(machine="unknown")):
+                with self.assertRaisesRegex(RuntimeError, "unsupported Linux host"):
+                    upgrade.require_candidate_architecture(candidate)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -359,8 +359,25 @@ def restore(directory, manifest, service):
     return pid
 
 
+def require_candidate_architecture(candidate):
+    """Fail before even creating the transaction lock: names/hashes aren't CPU proof."""
+    machine = os.uname().machine
+    expected = {"x86_64": 62, "aarch64": 183}.get(machine)
+    require(expected is not None, "unsupported Linux host architecture: " + machine)
+    with open(regular(candidate), "rb") as source:
+        header = source.read(64)
+    require(len(header) == 64 and header[:7] == b"\x7fELF\x02\x01\x01",
+            "candidate must be a 64-bit little-endian ELF executable")
+    require(int.from_bytes(header[16:18], "little") in (2, 3)
+            and int.from_bytes(header[20:24], "little") == 1,
+            "invalid ELF executable header")
+    require(int.from_bytes(header[18:20], "little") == expected,
+            "candidate ELF architecture does not match Linux host " + machine)
+
+
 def apply(args, service=None, validate=checked_paths):
     binary, _ = validate(args.scope, args.binary, args.config)
+    require_candidate_architecture(args.candidate)
     with target_lock(binary):
         return _apply(args, service, validate)
 
