@@ -27,6 +27,10 @@ except ImportError:
 
 # Audited agent-core config::{mark_run_starting,mark_clean_shutdown,
 # record_crash_at,record_clean_run_at,migrate}. No identity/permission/key exemptions.
+TOMLI_WHEEL = "tomli-2.2.1-py3-none-any.whl"
+TOMLI_SHA256 = "cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc"
+# Official pinned release: https://pypi.org/pypi/tomli/2.2.1/json (MIT).
+
 RUNTIME_FIELDS = {"last_run_unhealthy", "crash_count", "last_crash_unix",
                   "rollback_attempted", "last_known_good_version", "config_schema_version"}
 
@@ -38,6 +42,22 @@ def config_state(path):
     stable = {key: value for key, value in config.items() if key not in RUNTIME_FIELDS}
     semantic = hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
     return semantic, config.get("auto_update")
+
+
+def bundle_parser(directory):
+    if tomllib.__name__ == "tomllib":
+        return None
+    source = getattr(tomllib, "__file__", "")
+    wheel, separator, _ = source.partition(".whl/")
+    require(tomllib.__name__ == "tomli" and separator
+            and getattr(tomllib, "__version__", None) == "2.2.1",
+            "tomli must come from the reviewed pinned pure wheel for standalone rollback")
+    wheel = regular(wheel + ".whl")
+    same(wheel, TOMLI_SHA256, "official tomli wheel")
+    target = directory / TOMLI_WHEEL
+    shutil.copyfile(wheel, target)
+    same(target, TOMLI_SHA256, "transaction tomli wheel")
+    return dict(file=TOMLI_WHEEL, sha256=TOMLI_SHA256, license="MIT", version="2.2.1")
 
 
 def sidecars(config):
@@ -315,11 +335,23 @@ def _apply(args, service=None, validate=checked_paths):
         same(directory / "baseline.bin", args.old_sha, "copied baseline")
         same(directory / "baseline.config", args.config_sha, "copied config")
         same(directory / "candidate.bin", args.new_sha, "copied candidate")
+        manifest["parser_dependency"] = bundle_parser(directory)
         write_json(directory / "manifest.json", manifest)
         shutil.copyfile(__file__, directory / "upgrade.py")
         rollback = directory / "ROLLBACK.sh"
         import shlex
-        rollback.write_text('#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec ' + shlex.quote(sys.executable) + ' "$here/upgrade.py" rollback --transaction "$here"\n')
+        dependency = manifest["parser_dependency"]
+        parser_setup = ""
+        if dependency:
+            # Validate bytes before Python can execute imports from the wheel.
+            parser_setup = ("printf '%s  %s\\n' " + shlex.quote(dependency["sha256"]) + ' '
+                            + shlex.quote(dependency["file"])
+                            + ' | (cd "$here" && sha256sum --status -c -)\n'
+                            + 'export PYTHONPATH="$here/' + dependency["file"] + '"\n'
+                            + 'export PYTHONNOUSERSITE=1\n')
+        rollback.write_text('#!/bin/sh\nset -eu\nhere=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+                            + parser_setup + 'exec ' + shlex.quote(sys.executable)
+                            + ' "$here/upgrade.py" rollback --transaction "$here"\n')
         rollback.chmod(0o700)
         # Recovery material must reach disk BEFORE stopping the original.
         for saved in directory.iterdir():

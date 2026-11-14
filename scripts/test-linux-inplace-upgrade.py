@@ -6,9 +6,14 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
+import sys
+import textwrap
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+import types
 
 spec = importlib.util.spec_from_file_location("upgrade", Path(__file__).with_name("linux-inplace-upgrade.py"))
 upgrade = importlib.util.module_from_spec(spec)
@@ -193,6 +198,67 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(self.binary.read_bytes(), b"third-party executable with preserved metadata")
         self.assertFalse(self.service.active)
         self.assertEqual(stat.S_IMODE(self.binary.stat().st_mode), 0o751)
+
+    @unittest.skipUnless(os.environ.get("TOMLI_TEST_WHEEL"), "set TOMLI_TEST_WHEEL to the verified official wheel")
+    def test_bundled_wheel_rollback_without_original_wheel_or_pythonpath(self):
+        source = self.root / upgrade.TOMLI_WHEEL
+        shutil.copyfile(os.environ["TOMLI_TEST_WHEEL"], source)
+        upgrade.same(source, upgrade.TOMLI_SHA256, "test wheel")
+        driver = self.root / "driver.py"
+        wrapper = self.root / "fixture-python"
+        driver.write_text(textwrap.dedent(r"""
+            import argparse,importlib.util,json,os,pathlib,sys
+            sys.modules['tomllib']=None  # Python 3.10 compatibility branch
+            mode, script, tx = sys.argv[1:4]
+            spec=importlib.util.spec_from_file_location('frozen_upgrade',script)
+            m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+            root=pathlib.Path(tx).parent
+            binary=root/'meshharbord'; config=root/'config.toml'
+            class FixtureService:
+                def ensure_outside(self): pass
+                def fingerprint(self): return 'fixture'
+                def observe(self,sha): m.same(binary,sha,'fixture binary'); return 100
+                def ready(self,sha): m.same(binary,sha,'fixture binary'); return 101
+                def stop(self): pass
+                def start(self): pass
+            validate=lambda scope,b,c:(m.regular(b),m.regular(c))
+            if mode=='apply':
+                args=argparse.Namespace(scope='user',binary=str(binary),config=str(config),candidate=str(root/'candidate'),old_sha=m.digest(binary),new_sha=m.digest(root/'candidate'),config_sha=m.digest(config),transaction=tx)
+                sys.executable=str(root/'fixture-python')
+                m.apply(args,FixtureService(),validate)
+            else:
+                assert m.tomllib.__file__.startswith(tx+'/tomli-2.2.1-py3-none-any.whl/'),m.tomllib.__file__
+                m.rollback(argparse.Namespace(transaction=tx),FixtureService(),validate)
+                print('standalone rollback imported bundled wheel; original wheel absent; inherited PYTHONPATH absent')
+        """))
+        # The shell uses this test-only interpreter adapter rather than host
+        # systemd. It still executes the generated ROLLBACK.sh verbatim.
+        import shlex
+        wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable)
+                           + ' -B ' + shlex.quote(str(driver))
+                           + ' rollback "$1" "$4"\n')
+        wrapper.chmod(0o700)
+        env = dict(os.environ, PYTHONPATH=str(source), PYTHONDONTWRITEBYTECODE="1")
+        subprocess.run([sys.executable, "-B", str(driver), "apply", str(Path(upgrade.__file__)), self.args.transaction], env=env, check=True)
+        source.unlink()  # only our fixture copy, never the official artifact
+        env.pop("PYTHONPATH", None)
+        tx=Path(self.args.transaction)
+        result=subprocess.run([str(tx/'ROLLBACK.sh')],env=env,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('original wheel absent',result.stdout)
+        self.assertEqual(upgrade.digest(self.binary),self.args.old_sha)
+        print(result.stdout.strip())
+        # A changed bundled wheel is rejected by the shell before Python import.
+        (tx/upgrade.TOMLI_WHEEL).write_bytes(b'tampered dependency')
+        result=subprocess.run([str(tx/'ROLLBACK.sh')],env=env,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+
+    def test_unbundled_tomli_source_is_refused_without_downloading(self):
+        foreign = types.SimpleNamespace(__name__="tomli", __version__="2.2.1",
+                                        __file__="/unreviewed/site-packages/tomli/__init__.py")
+        with mock.patch.object(upgrade, "tomllib", foreign):
+            with self.assertRaisesRegex(RuntimeError, "reviewed pinned pure wheel"):
+                upgrade.bundle_parser(self.root)
 
     def test_per_target_lock_excludes_overlapping_transactions(self):
         with upgrade.target_lock(self.binary):

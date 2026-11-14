@@ -10,10 +10,14 @@ The operator must obtain both hashes from the approved build/audit separately.
 
 - Run from independent OS SSH or a console, not a command in the daemon's
   systemd cgroup: stopping that service would kill the upgrade controller.
-- Python 3.11+ (`tomllib`), or an existing Python with `tomli`. No dependency is
-  installed automatically. On Python 3.10 hosts use an approved task-private
-  interpreter or an already installed `tomli`; retain that interpreter until
-  rollback is no longer needed. Do not install packages globally for this script.
+- Python 3.11+ (`tomllib`), or Python 3.8+ with the reviewed pure wheel
+  `tomli-2.2.1-py3-none-any.whl` on `PYTHONPATH`. Its official PyPI SHA256 is
+  `cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc` (MIT).
+  No dependency is installed/downloaded automatically. An actual `tomli` import
+  from any other source fails closed. Apply copies the verified wheel into the
+  private transaction; generated rollback validates its SHA before import and
+  sets its own `PYTHONPATH`, so the original staging path is no longer needed.
+  Do not install packages globally for this script.
 - Existing running service and LocalAPI must answer. The script binds MainPID,
   `/proc/PID/exe` hash, process UID, actual `--config`, and LocalAPI PID, active
   config, agent/tenant identity and privilege scope. A supervisor/old version
@@ -73,8 +77,9 @@ that this procedure disables networking or publishes a candidate feed.
 /absolute/private/runtime/unique-upgrade-transaction/ROLLBACK.sh
 ```
 
-Rollback uses the frozen sibling script and the recorded interpreter, not the
-repository checkout or candidate download. Only the recorded old/new installed
+Rollback uses the frozen sibling script, recorded interpreter and (when needed)
+verified bundled TOML wheel, not the repository checkout, candidate download or
+original `PYTHONPATH`. Only the recorded old/new installed
 hashes are accepted. It restores pristine binary bytes and original binary
 ownership/permissions/xattrs, then verifies the same service/LocalAPI identity.
 It does **not** overwrite config or invitation records. Legitimate runtime
@@ -91,7 +96,8 @@ remote client and test its requested features before marking deployment complete
 ## Isolated validation
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-linux-inplace-upgrade.py
+TOMLI_TEST_WHEEL=/absolute/private/tomli-2.2.1-py3-none-any.whl \
+  PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-linux-inplace-upgrade.py
 ```
 
 Tests use disposable files and an injected in-process service fixture; they
@@ -100,3 +106,15 @@ the same input before/after/rollback, test failure recovery, hash/CAS gates,
 protected versus runtime config changes, invitation sidecars, xattrs/modes,
 per-target locks, and LocalAPI identity predicates. Real systemd restart and
 remote functional acceptance remain deployment-time checks.
+
+For a prepared Python 3.10 host, prepend only the local verified wheel for apply:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/absolute/private/tomli-2.2.1-py3-none-any.whl \
+  /usr/bin/python3 scripts/linux-inplace-upgrade.py apply ...
+```
+
+The generated `ROLLBACK.sh` needs no inherited `PYTHONPATH`. The dependency
+fixture removes its original wheel copy and clears that environment before
+executing the generated shell verbatim with an isolated service adapter; it
+also verifies that a tampered transaction wheel is refused before import.
