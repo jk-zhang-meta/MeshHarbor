@@ -229,13 +229,15 @@ fn main() {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-            if launch.autostart || !state.first_run_done {
-                tauri::async_runtime::spawn(first_run::startup_checks(
-                    app.handle().clone(),
-                    launch.autostart,
-                    state.first_run_done,
-                ));
-            }
+            // Every start, not only a login start or a first run: a person
+            // who double-clicks MeshHarbor while the device service is down
+            // expects it to come up (field, Surface 2026-11-14: a plain
+            // Start-menu open left the device off the mesh).
+            tauri::async_runtime::spawn(first_run::startup_checks(
+                app.handle().clone(),
+                launch.autostart,
+                state.first_run_done,
+            ));
             // Phase 3 — watch the shared consent dir; when the agent drops a new
             // `.pending` marker (a remote session awaiting approval), surface the
             // window so the operator sees the Approve/Deny modal the SPA renders
