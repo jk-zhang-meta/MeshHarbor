@@ -39,7 +39,20 @@ function New-PrivateDirectory([string]$Path) {
     }
     [IO.Directory]::CreateDirectory($Path, $acl) | Out-Null
     Assert-NoReparsePath $Path
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    # Set-Acl in Windows PowerShell 5 also attempts SACL persistence and fails
+    # under a filtered user token without SeSecurityPrivilege. Persist only
+    # the owner/DACL sections we changed; never request or modify audit rules.
+    $directory = [IO.DirectoryInfo]::new($Path)
+    $directory.SetAccessControl($acl)
+    $sections = [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Access
+    $observed = $directory.GetAccessControl($sections)
+    # Windows adds AI bookkeeping on persistence, without changing protected
+    # DACL semantics. Keep every ACE and the protection flag in the comparison.
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($observed.GetSecurityDescriptorSddlForm($sections))
+    $raw.SetFlags($raw.ControlFlags -band (-bnot [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInherited))
+    if ($raw.GetSddlForm($sections) -cne $acl.GetSecurityDescriptorSddlForm($sections)) {
+        throw 'Private transaction directory owner/DACL readback differs'
+    }
 }
 function Write-NewJson([string]$Path, $Value) {
     Assert-NoReparsePath $Path
