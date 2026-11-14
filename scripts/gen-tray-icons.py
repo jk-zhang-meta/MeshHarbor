@@ -33,6 +33,8 @@ TARGETS = {
 PRODUCT = "linux/hicolor/512x512/apps/meshharbor-desktop.png"
 ICO = "windows/meshharbor.ico"
 TRAY = "template/tray/black-48.png"
+# The idle tray on a dark Windows taskbar (macOS tints the black template).
+TRAY_WHITE = "template/tray/white-48.png"
 RECORDING = "linux/hicolor/48x48/apps/meshharbor-desktop.png"
 
 
@@ -108,6 +110,7 @@ def main(argv=None):
              "icon.ico": approved(assets, manifest, ICO)}
     if args.target == "desktop":
         files["tray.png"] = approved(assets, manifest, TRAY)
+        files["tray-white.png"] = approved(assets, manifest, TRAY_WHITE)
         approved(assets, manifest, RECORDING)
         if not ctypes.util.find_library("cairo"):
             parser.error("desktop recording icon needs system libcairo (X18 renderer)")

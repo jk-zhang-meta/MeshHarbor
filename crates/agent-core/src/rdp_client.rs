@@ -1822,11 +1822,11 @@ mod os_store {
         let mut acct = String::new();
         for line in stdout.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("\"acct\"<blob>=") {
-                if let Some((_, rhs)) = trimmed.split_once('=') {
-                    acct = rhs.trim().trim_matches('"').to_string();
-                    break;
-                }
+            if trimmed.starts_with("\"acct\"<blob>=")
+                && let Some((_, rhs)) = trimmed.split_once('=')
+            {
+                acct = rhs.trim().trim_matches('"').to_string();
+                break;
             }
         }
         let pw_out = Command::new("/usr/bin/security")

@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "derp-relay"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6163,7 +6163,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-api"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6217,7 +6217,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-cli"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6258,7 +6258,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-cli-shim"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "embed-resource",
  "libc",
@@ -6267,7 +6267,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-config"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "config",
  "serde",
@@ -6277,7 +6277,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-core"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6308,7 +6308,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-db"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "bson",
  "chrono",
@@ -6323,7 +6323,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-desktop"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "gethostname 0.5.0",
@@ -6349,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-hive-node"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "blake3",
  "rusqlite",
@@ -6362,7 +6362,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-localapi"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "async-trait",
  "libc",
@@ -6375,7 +6375,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-chat"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6396,7 +6396,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-conference"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6423,7 +6423,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-fleet"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6453,7 +6453,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-hive"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-network"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6506,7 +6506,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-remote"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6527,7 +6527,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-saas"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "axum",
@@ -6550,7 +6550,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-mod-vault"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "age",
  "anyhow",
@@ -6579,7 +6579,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-node-core"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6611,7 +6611,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-remote-control"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.1",
@@ -6635,7 +6635,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-services"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
@@ -6681,7 +6681,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-setup"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "directories",
@@ -6710,7 +6710,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-setup-core"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6733,7 +6733,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-tests"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "age",
  "anyhow",
@@ -6784,7 +6784,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbor-tunnel-core"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6832,7 +6832,7 @@ dependencies = [
 
 [[package]]
 name = "meshharbord"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "anyhow",
  "arboard",
@@ -11805,7 +11805,7 @@ dependencies = [
 
 [[package]]
 name = "tcp-turn-conn"
-version = "0.4.156"
+version = "0.4.157"
 dependencies = [
  "async-trait",
  "log",
