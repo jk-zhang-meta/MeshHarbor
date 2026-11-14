@@ -12,6 +12,7 @@ async fn fixture() -> (Database, OverlayNodeDao, OverlayNode) {
     let dao = OverlayNodeDao::new(&db);
     let node = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: ObjectId::new(),
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),
@@ -218,6 +219,7 @@ async fn known_gap_retired_key_reuse_by_new_row_is_not_yet_fenced() {
     dao.release(node.id.unwrap()).await.unwrap().unwrap();
     let reused = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: node.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),
@@ -248,6 +250,7 @@ async fn known_gap_retired_key_reuse_by_new_row_is_not_yet_fenced() {
     // Also verify the tombstoned node's final active key ("new-key") cannot be claimed by a new row.
     let reused_tombstone_key = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: node.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),
@@ -283,6 +286,7 @@ async fn known_gap_retired_key_reuse_by_new_row_is_not_yet_fenced() {
     // still be rejected even for the same `machine_id`.
     let same_machine_retired = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: node.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),
@@ -313,6 +317,7 @@ async fn known_gap_retired_key_reuse_by_new_row_is_not_yet_fenced() {
 
     let same_machine_rejoined = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: node.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),
@@ -446,6 +451,7 @@ async fn b4_immediate_key_revocation_fences_current_key_and_requires_fresh_rotat
 
     let peer_node = dao
         .create(NewOverlayNode {
+            temporary: None,
             tenant_id: node.tenant_id,
             node_ref: NodeRef::Agent {
                 agent_id: ObjectId::new(),

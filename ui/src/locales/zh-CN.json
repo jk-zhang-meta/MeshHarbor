@@ -2422,6 +2422,81 @@
       "play": "播放视频“{title}”（{n} 分钟，从 YouTube 播放）"
     }
   },
+  "tempDevices": {
+    "permanent": "恢复为普通设备",
+    "permanentConfirm": "把“{name}”恢复为普通设备？它保持注册状态，重新可以看到并连接组织内的设备，也不再有到期时间。",
+    "title": "临时设备",
+    "intro": "用 8 位邀请码临时邀请一台设备：对方无需账号即可加入。只有你（以及你额外勾选的角色成员）能连接和控制它，它不能主动连接任何设备，到期自动退出。所有邀请都会保留在下面的历史里。",
+    "invite": "邀请临时设备",
+    "convert": "设为临时设备",
+    "convertGo": "设为临时",
+    "convertWarn": "临时设备将不能再主动连接其他设备，也看不到设备列表；只有你（以及勾选的角色）能连接和控制它。到期后会被移除。",
+    "devices": "设备",
+    "convertedN": "已将 {n} 台设备设为临时设备。",
+    "filter": {
+      "active": "生效中",
+      "all": "全部历史"
+    },
+    "col": {
+      "device": "设备",
+      "state": "状态",
+      "until": "到期时间",
+      "history": "历史",
+      "actions": "操作"
+    },
+    "notJoined": "尚未加入",
+    "converted": "由已有设备转换",
+    "left": "剩余 {left}",
+    "created": "创建于 {when}",
+    "joined": "加入于 {when}",
+    "renewedLine": "{when} 续期至 {until}",
+    "renew": "续期",
+    "revoke": "立即失效",
+    "empty": "还没有邀请。",
+    "duration": "有效期",
+    "label": "备注（可选）",
+    "labelHint": "给谁用、做什么，例如“妈妈的笔记本”。",
+    "roles": "同时允许这些角色（可选）",
+    "rolesHint": "拥有其中任一角色的成员也能连接和控制它。",
+    "create": "生成邀请码",
+    "codeTitle": "邀请码",
+    "codeHow": "在对方电脑上，从托盘打开 MeshHarbor，选择“用邀请码加入…”，输入这个码。",
+    "codeCli": "或者在终端运行：",
+    "codeOnce": "邀请码只显示这一次，只能使用一次，有效期至 {until}。",
+    "copy": "复制邀请码",
+    "copied": "已复制",
+    "done": "完成",
+    "renewTitle": "续期",
+    "renewFrom": "从当前到期时间（{until}）往后延长。",
+    "extendBy": "延长",
+    "revokeConfirm": "让邀请“{name}”立即失效？邀请码将无法再使用。",
+    "revokeConfirmDevice": "让“{name}”立即失效？该设备会被立即移除并断开。",
+    "dh": "{d} 天 {h} 小时",
+    "hm": "{h} 小时 {m} 分钟",
+    "m": "{m} 分钟",
+    "state": {
+      "open": "等待加入",
+      "redeemed": "加入中",
+      "enrolled": "已加入",
+      "ended": "已结束"
+    },
+    "reason": {
+      "expired": "到期",
+      "revoked": "手动失效",
+      "left": "设备自行退出",
+      "removed": "设备已被删除",
+      "unbound": "未完成加入",
+      "made_permanent": "已恢复为普通设备"
+    },
+    "unit": {
+      "minute": "分钟",
+      "hour": "小时",
+      "day": "天",
+      "week": "周",
+      "month": "月（30 天）",
+      "year": "年（365 天）"
+    }
+  },
   "deviceLogin": {
     "title": "把设备加入 MeshHarbor",
     "intro": "有一台设备运行了 `mh login`（或在 MeshHarbor 应用里点了登录），请求加入你的组织。",

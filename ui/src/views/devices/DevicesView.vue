@@ -7,6 +7,9 @@
     <!-- FR-51 P4 — renders only when the org's ephemeral-key switch is ON
          (the component fetches the switch itself and stays empty otherwise). -->
     <enroll-keys-section :tenant-id="tenantId" />
+    <!-- Temporary devices: invitations, conversions and their history.
+         Renders nothing on a server without the feature. -->
+    <temporary-devices-section :tenant-id="tenantId" />
   </v-container>
 </template>
 
@@ -15,6 +18,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import AgentsSection from '@/components/admin/AgentsSection.vue'
 import EnrollKeysSection from '@/components/admin/EnrollKeysSection.vue'
+import TemporaryDevicesSection from '@/components/admin/TemporaryDevicesSection.vue'
 
 const route = useRoute()
 const tenantId = computed(() => route.params.tenantId as string)

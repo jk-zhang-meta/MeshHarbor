@@ -422,6 +422,77 @@ pub struct LoginStarted {
     pub opened: bool,
 }
 
+/// Temporary devices — what the tray shows: `None` for an ordinary or
+/// unenrolled device. Read from `temporary.json`, which the daemon keeps
+/// current from the server (so a renewal shows up here too).
+pub(crate) fn temporary_info() -> Option<meshharbor_node_core::device_invite::TemporaryInfo> {
+    for is_scm in [false, true] {
+        if let Ok(path) = active_config_path(is_scm)
+            && path.exists()
+            && let Some(info) = meshharbor_node_core::device_invite::read_marker(&path)
+        {
+            return Some(info);
+        }
+    }
+    None
+}
+
+/// Run one daemon CLI verb (`join` / `leave`) with no window and answer its
+/// last useful line on failure.
+fn run_daemon_verb(args: &[&str]) -> Result<String, String> {
+    let exe = agent_exe_path()?;
+    let out = no_window_command(&exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Starting {} ({}): {e}", args[0], exe.display()))?;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
+    if out.status.success() {
+        return Ok(text(&out.stdout));
+    }
+    let err = text(&out.stderr);
+    let line = err
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("failed")
+        .trim_start_matches("Error: ")
+        .to_string();
+    Err(line)
+}
+
+/// Join an organization as a TEMPORARY device with an invite code (no
+/// account): the daemon's own `join`, which enrolls a fresh identity, records
+/// the temporary marker and starts the service.
+#[tauri::command]
+pub async fn cmd_join(code: String, device_name: String) -> Result<StatusReport, String> {
+    let code = meshharbor_node_core::device_invite::normalize_code(&code)
+        .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
+    let name = device_name.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut args = vec!["join", code.as_str()];
+        if !name.is_empty() {
+            args.extend(["--name", name.as_str()]);
+        }
+        run_daemon_verb(&args)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(tokio::task::spawn_blocking(status_report)
+        .await
+        .unwrap_or_else(|_| status_report()))
+}
+
+/// A temporary device ends its access now (`meshharbord leave`).
+#[tauri::command]
+pub async fn cmd_leave() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| run_daemon_verb(&["leave"]))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|_| ())
+}
+
 /// Sign in with an account (`mh login` in the app): start a device login and
 /// open its approval page in the browser.
 #[tauri::command]

@@ -241,6 +241,10 @@
       "methods": "POST"
     },
     {
+      "path": "/api/agent/self/temporary",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/agent/self/unenroll",
       "methods": "POST"
     },
@@ -366,6 +370,10 @@
     },
     {
       "path": "/api/log/browser",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/device-invite/redeem",
       "methods": "POST"
     },
     {
@@ -625,6 +633,10 @@
       "methods": "PUT"
     },
     {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/temporary",
+      "methods": "DELETE,POST"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/agent/{agent_id}/update",
       "methods": "POST"
     },
@@ -635,6 +647,18 @@
     {
       "path": "/api/tenant/{tenant_id}/device",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/device-invite",
+      "methods": "GET,HEAD,POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/device-invite/{invite_id}",
+      "methods": "DELETE"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/device-invite/{invite_id}/renew",
+      "methods": "POST"
     },
     {
       "path": "/api/tenant/{tenant_id}/ephemeral-key-settings",
@@ -1573,6 +1597,43 @@
               "name": 1
             },
             "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "device_invites",
+        "indexes": [
+          {
+            "key": {
+              "code_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "state": "open"
+            }
+          },
+          {
+            "key": {
+              "token_jti": 1
+            }
+          },
+          {
+            "key": {
+              "agent_id": 1,
+              "state": 1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "created_at": -1
+            }
+          },
+          {
+            "key": {
+              "state": 1,
+              "access_until": 1
+            }
           }
         ]
       },
@@ -3986,6 +4047,43 @@
               "name": 1
             },
             "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "device_invites",
+        "indexes": [
+          {
+            "key": {
+              "code_hash": 1
+            },
+            "unique": true,
+            "partialFilterExpression": {
+              "state": "open"
+            }
+          },
+          {
+            "key": {
+              "token_jti": 1
+            }
+          },
+          {
+            "key": {
+              "agent_id": 1,
+              "state": 1
+            }
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "created_at": -1
+            }
+          },
+          {
+            "key": {
+              "state": 1,
+              "access_until": 1
+            }
           }
         ]
       },

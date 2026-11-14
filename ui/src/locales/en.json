@@ -2422,6 +2422,81 @@
       "play": "Play the video \"{title}\" ({n} minutes, plays from YouTube)"
     }
   },
+  "tempDevices": {
+    "permanent": "Make ordinary",
+    "permanentConfirm": "Make \"{name}\" an ordinary device again? It stays enrolled, sees the organization's devices again, and no longer ends on a date.",
+    "title": "Temporary devices",
+    "intro": "Invite a machine for a while with an 8-digit code: whoever sits at it joins without an account. Only you (and members of the roles you add) can reach or control it, it can reach no one, and it leaves by itself when the time is up. Every invitation stays in this history.",
+    "invite": "Invite a temporary device",
+    "convert": "Make devices temporary",
+    "convertGo": "Make temporary",
+    "convertWarn": "A temporary device can no longer reach other devices or see the device list; only you (and the roles you add) can reach or control it. When the time is up it is removed.",
+    "devices": "Devices",
+    "convertedN": "{n} device(s) are now temporary.",
+    "filter": {
+      "active": "In effect",
+      "all": "Full history"
+    },
+    "col": {
+      "device": "Device",
+      "state": "State",
+      "until": "Access until",
+      "history": "History",
+      "actions": "Actions"
+    },
+    "notJoined": "Not joined yet",
+    "converted": "converted",
+    "left": "{left} left",
+    "created": "Created {when}",
+    "joined": "Joined {when}",
+    "renewedLine": "Renewed {when} → {until}",
+    "renew": "Renew",
+    "revoke": "End now",
+    "empty": "No invitations yet.",
+    "duration": "Access for",
+    "label": "Note (optional)",
+    "labelHint": "Who or what it is for, e.g. \"Mum's laptop\".",
+    "roles": "Also allow these roles (optional)",
+    "rolesHint": "Members holding one of these roles can reach and control it too.",
+    "create": "Create code",
+    "codeTitle": "Invite code",
+    "codeHow": "On the other machine, open MeshHarbor from the tray and choose \"Join with an invite code…\", then type this code.",
+    "codeCli": "Or in a terminal:",
+    "codeOnce": "Shown only now. The code works once, until {until}.",
+    "copy": "Copy code",
+    "copied": "Copied",
+    "done": "Done",
+    "renewTitle": "Renew access",
+    "renewFrom": "Extends from the current end ({until}).",
+    "extendBy": "Extend by",
+    "revokeConfirm": "End the invitation \"{name}\"? Its code stops working.",
+    "revokeConfirmDevice": "End \"{name}\" now? The device is removed and disconnected immediately.",
+    "dh": "{d} d {h} h",
+    "hm": "{h} h {m} min",
+    "m": "{m} min",
+    "state": {
+      "open": "Waiting to join",
+      "redeemed": "Joining",
+      "enrolled": "Joined",
+      "ended": "Ended"
+    },
+    "reason": {
+      "expired": "time was up",
+      "revoked": "ended by hand",
+      "left": "the device left",
+      "removed": "device removed",
+      "unbound": "did not complete",
+      "made_permanent": "made ordinary"
+    },
+    "unit": {
+      "minute": "minutes",
+      "hour": "hours",
+      "day": "days",
+      "week": "weeks",
+      "month": "months (30 d)",
+      "year": "years (365 d)"
+    }
+  },
   "deviceLogin": {
     "title": "Add a device to MeshHarbor",
     "intro": "A device ran `mh login` (or chose Sign in in the MeshHarbor app) and is asking to join one of your organizations.",

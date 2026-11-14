@@ -6518,6 +6518,24 @@ pub struct RetiredWgKey {
 /// [`TunnelClient`], so a re-joining host keeps its overlay IP (and may
 /// register a rotated WG key). The WG **private** key never leaves the
 /// node; only `wg_public_key` is stored + distributed in the netmap.
+/// A TEMPORARY device's node (an invitation's, `fleet::device_invite`): who
+/// may see it and reach it. Written with the node's INSERT, so no netmap ever
+/// ships the node unmarked.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TemporaryMark {
+    pub invite_id: ObjectId,
+    pub inviter_user_id: ObjectId,
+    #[serde(default)]
+    pub allow_role_ids: Vec<ObjectId>,
+}
+
+impl TemporaryMark {
+    /// Does a node owned by `owner` (holding `roles`) pair with the device?
+    pub fn allows(&self, owner: Option<ObjectId>, roles: &[ObjectId]) -> bool {
+        owner == Some(self.inviter_user_id) || roles.iter().any(|r| self.allow_role_ids.contains(r))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OverlayNode {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -6736,6 +6754,10 @@ pub struct OverlayNode {
     pub last_seen_at: DateTime,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+    /// Temporary devices — `Some` for an invitation's device. Absent on
+    /// every ordinary node (`#[serde(default)]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporary: Option<TemporaryMark>,
     pub deleted_at: Option<DateTime>,
 }
 

@@ -1572,6 +1572,39 @@ async fn handle_forward_request(
         }
     }
 
+    // Temporary devices. Its OWNER is the inviter, so without this a
+    // temporary device originating a flow would match every policy granted
+    // to the inviter; it originates none. As a TARGET it takes flows from
+    // the inviter (or a member of one of the invitation's roles) only.
+    // Fails CLOSED on an unreadable store.
+    if state.settings.auth.native_device_invite_enabled
+        && let Some(why) = temporary_flow_refusal(state, s, orig).await
+    {
+        audit_tcp_reject(
+            state,
+            s,
+            orig,
+            flow_id,
+            dst_host,
+            dst_port,
+            RejectKind::AclDenied,
+            why,
+        )
+        .await;
+        send_msg(
+            &orig.outbound_tx,
+            forward_reject_msg(
+                proto,
+                request_session_id,
+                flow_id,
+                RejectKind::AclDenied,
+                why.into(),
+            ),
+        )
+        .await;
+        return;
+    }
+
     // Active policies for the agent's tenant. Server-side ACL is
     // the auth boundary; the agent runs its own minimal allowlist
     // as defence-in-depth (T2.6).
@@ -2743,6 +2776,40 @@ pub fn ws_upgrade_tunnel_client(
         )
         .await;
     })
+}
+
+/// Why a flow touching a temporary device is refused, or `None` to go on.
+async fn temporary_flow_refusal(
+    state: &NetworkState,
+    s: &TunnelSession,
+    orig: &Originator,
+) -> Option<&'static str> {
+    use meshharbor_mod_fleet::device_invite::grant_for_agent;
+    let origin_agent = match orig.principal {
+        Principal::Agent(id) => Some(id),
+        Principal::Session { agent_id, .. } => Some(agent_id),
+        Principal::TunnelClient(_) => None,
+    };
+    if let Some(id) = origin_agent {
+        match grant_for_agent(&state.fleet, id).await {
+            Ok(None) => {}
+            Ok(Some(_)) => return Some("temporary_device_origin"),
+            Err(_) => return Some("temporary_device_unverified"),
+        }
+    }
+    match grant_for_agent(&state.fleet, s.agent_id).await {
+        Ok(None) => None,
+        Ok(Some(grant)) => {
+            let user = s.flow_user(orig);
+            let roles = state
+                .tenants
+                .member_role_ids(s.agent_tenant_id, user)
+                .await
+                .unwrap_or_default();
+            (!grant.allows(Some(user), &roles)).then_some("temporary_device")
+        }
+        Err(_) => Some("temporary_device_unverified"),
+    }
 }
 
 #[cfg(test)]

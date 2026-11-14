@@ -65,6 +65,7 @@ pub mod auth_agent;
 pub mod consent;
 pub mod consent_consumer;
 pub mod ctrl;
+pub mod device_invite;
 pub mod device_login;
 pub mod enroll_key;
 pub mod exec_service;
@@ -492,6 +493,8 @@ impl Module for FleetState {
             .route("/installer/{flavour}", get(agent_release::installer_proxy))
             .route("/crash", post(agent_crash::ingest))
             .route("/self/unenroll", post(agent::self_unenroll))
+            // Temporary devices — the device's own deadline and inviter.
+            .route("/self/temporary", get(device_invite::self_view))
             // FR-103 — a device renews its own agent token (a bounded grace
             // past `exp`, the row checked like `AuthAgent`).
             .route("/self/renew", post(agent::self_renew))
@@ -591,6 +594,26 @@ impl Module for FleetState {
             .route(
                 "/native/device-login/exchange",
                 post(device_login::exchange).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            // Temporary devices: the inviter's create / list / revoke, and the
+            // device's anonymous redemption of the code.
+            .route(
+                "/tenant/{tenant_id}/device-invite",
+                get(device_invite::list)
+                    .post(device_invite::create)
+                    .layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/tenant/{tenant_id}/device-invite/{invite_id}",
+                delete(device_invite::revoke),
+            )
+            .route(
+                "/tenant/{tenant_id}/device-invite/{invite_id}/renew",
+                post(device_invite::renew).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/device-invite/redeem",
+                post(device_invite::redeem).layer(axum::extract::DefaultBodyLimit::max(4096)),
             )
             .with_state(self.clone())
     }
@@ -790,7 +813,45 @@ impl Module for FleetState {
                     index_ttl(bson::doc! { "expires_at": 1 }, 0),
                 ],
             },
+            // Temporary-device invitations: one OPEN code per hash, the
+            // enrollment's jti lookup, the per-device grant lookup. No TTL:
+            // the rows ARE the invitation history, kept for good.
+            IndexSet {
+                collection: device_invite::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique_partial(
+                        bson::doc! { "code_hash": 1 },
+                        bson::doc! { "state": device_invite::STATE_OPEN },
+                    ),
+                    index(bson::doc! { "token_jti": 1 }),
+                    index(bson::doc! { "agent_id": 1, "state": 1 }),
+                    index(bson::doc! { "tenant_id": 1, "created_at": -1 }),
+                    index(bson::doc! { "state": 1, "access_until": 1 }),
+                ],
+            },
         ]
+    }
+
+    /// Temporary devices end on time: the reaper ends every invitation whose
+    /// access period is over and removes its device. Off with the feature.
+    fn jobs(&self) -> Vec<meshharbor_core::job::Job> {
+        if !self.settings.auth.native_device_invite_enabled {
+            return Vec::new();
+        }
+        let state = self.clone();
+        vec![meshharbor_core::job::Job::every(
+            "device-invite-reap",
+            std::time::Duration::from_secs(30),
+            true,
+            move || {
+                let state = state.clone();
+                async move {
+                    device_invite::reap_once(&state).await?;
+                    Ok(())
+                }
+            },
+        )]
     }
 
     /// Phase A-1 graceful shutdown: make this pod's death honest BEFORE the

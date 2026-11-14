@@ -168,6 +168,24 @@ enum Command {
         #[arg(long)]
         machine_global: bool,
     },
+    /// Join an organization as a TEMPORARY device with an invite code, no
+    /// account needed: only the person who invited this machine can reach
+    /// or control it, it can reach no one, and it leaves the organization
+    /// when the invitation's time is up. Also `mh join`.
+    Join {
+        /// The 8-digit invite code, like 1234-5678.
+        code: String,
+        /// MeshHarbor server the invitation is from.
+        #[arg(long, default_value = meshharbor_node_core::device_login::DEFAULT_SERVER)]
+        server: String,
+        /// Device name shown to the person who invited it. Default: this
+        /// machine's hostname.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// End this TEMPORARY device's access now: it leaves the organization
+    /// and is no longer signed in. Also `mh leave`.
+    Leave,
     /// Refresh this machine's agent token using a fresh enrollment JWT.
     /// Preserves `server_url` and `machine_name` from the existing
     /// config, so the operator only needs the new token. Used after
@@ -1221,7 +1239,7 @@ fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config
 /// Every other argv passes through unchanged.
 fn daemon_argv(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let mut v: Vec<std::ffi::OsString> = args.into_iter().collect();
-    if v.len() >= 3 && v[1] == "cli" && v[2] == "login" {
+    if v.len() >= 3 && v[1] == "cli" && (v[2] == "login" || v[2] == "join" || v[2] == "leave") {
         v.remove(1);
     }
     v
@@ -1278,6 +1296,7 @@ async fn login_cmd(
             label: None,
             replace,
             ephemeral: false,
+            fresh_identity: false,
             overlay: true,
             relay_server: false,
             archive_replica: false,
@@ -1286,6 +1305,114 @@ async fn login_cmd(
         },
     )
     .await
+}
+
+/// `meshharbord join <code>` / `mh join`: redeem an invite code, then the
+/// ordinary enroll under a FRESH machine identity (a temporary device is a new
+/// device by definition), then bring the service up.
+async fn join_cmd(
+    config_path: &std::path::PathBuf,
+    server: &str,
+    code: &str,
+    name: Option<&str>,
+) -> Result<()> {
+    use meshharbor_node_core::device_invite;
+    if config_path.exists() {
+        let who = config::load(config_path)
+            .map(|c| format!("{:?} ({})", c.machine_name, c.server_url))
+            .unwrap_or_else(|_| config_path.display().to_string());
+        bail!(
+            "this machine is already signed in as {who}. A temporary device is a new \
+             device: run `mh leave` (temporary) or remove the existing enrollment first."
+        );
+    }
+    let name = match name {
+        Some(n) => n.trim().to_string(),
+        None => meshharbord::machine::hostname().unwrap_or_else(|_| "my-device".to_string()),
+    };
+    let redeemed = device_invite::redeem(server, code, &name).await?;
+    enroll_cmd(
+        config_path,
+        EnrollOptions {
+            server,
+            enrollment_token: &redeemed.enrollment_token,
+            machine_name: &name,
+            machine_global: false,
+            label: None,
+            replace: false,
+            ephemeral: false,
+            fresh_identity: true,
+            overlay: true,
+            relay_server: false,
+            archive_replica: false,
+            install_method: None,
+            install_scope: None,
+        },
+    )
+    .await?;
+    let info = device_invite::TemporaryInfo {
+        access_until_ms: redeemed.access_until_ms,
+        inviter: redeemed.inviter.clone(),
+    };
+    if let Err(e) = device_invite::write_marker(config_path, Some(&info)) {
+        tracing::warn!(error = %e, "join: could not record the temporary marker");
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    println!();
+    println!(
+        "Joined as a temporary device{}. Access ends in {}.",
+        if redeemed.inviter.is_empty() {
+            String::new()
+        } else {
+            format!(", managed by {}", redeemed.inviter)
+        },
+        device_invite::remaining_words(redeemed.access_until_ms, now_ms)
+    );
+    println!("Only the person who invited this machine can reach it. `mh leave` ends it now.");
+    match meshharbord::service::start() {
+        Ok(()) => println!("The MeshHarbor service is starting."),
+        Err(e) => tracing::debug!(error = %e, "join: service start not available here"),
+    }
+    Ok(())
+}
+
+/// `meshharbord leave` / `mh leave`: a temporary device ends its own access.
+async fn leave_cmd(config_path: &std::path::PathBuf) -> Result<()> {
+    use meshharbor_node_core::device_invite;
+    let cfg = config::load(config_path).context("this machine is not signed in")?;
+    let token = cfg.agent_token.clone();
+    let status = device_invite::self_status(&cfg.server_url, &token).await;
+    match status {
+        Ok(Some(_)) => {}
+        Ok(None) => bail!(
+            "this is not a temporary device; removing it is the organization's call \
+             (an administrator removes it from the Devices page)"
+        ),
+        Err(e) => {
+            // No answer: only a device that recorded itself temporary leaves.
+            if device_invite::read_marker(config_path).is_none() {
+                return Err(e.context("could not ask the server whether this device is temporary"));
+            }
+        }
+    }
+    enrollment::self_unenroll(&cfg.server_url, &token)
+        .await
+        .context("the server did not accept the leave")?;
+    match meshharbord::service::stop(config_path) {
+        Ok(what) => tracing::info!(%what, "leave: service stopped"),
+        Err(e) => tracing::debug!(error = %e, "leave: no service to stop"),
+    }
+    let aside = device_invite::end_locally(config_path)?;
+    println!(
+        "Left. This machine is no longer part of the organization.{}",
+        aside
+            .map(|p| format!(" (The old enrollment was set aside at {}.)", p.display()))
+            .unwrap_or_default()
+    );
+    Ok(())
 }
 
 fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
@@ -1297,7 +1424,10 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
     let mut it = it.peekable();
     // `mh login` enrolls THIS daemon: it is the daemon's own `login`
     // command (`daemon_argv` drops the `cli`), not the tunnel CLI's.
-    if it.peek().is_some_and(|a| a == "login") {
+    if it
+        .peek()
+        .is_some_and(|a| a == "login" || a == "join" || a == "leave")
+    {
         return None;
     }
     let mut argv = vec![std::ffi::OsString::from("mh")];
@@ -1754,6 +1884,7 @@ async fn daemon_main() -> Result<()> {
                     label: label.as_deref(),
                     replace,
                     ephemeral,
+                    fresh_identity: false,
                     overlay,
                     relay_server,
                     archive_replica,
@@ -1780,6 +1911,10 @@ async fn daemon_main() -> Result<()> {
             )
             .await
         }
+        Command::Join { code, server, name } => {
+            join_cmd(&config_path, &server, &code, name.as_deref()).await
+        }
+        Command::Leave => leave_cmd(&config_path).await,
         Command::ReEnroll { token, org } => {
             re_enroll_cmd(&config_path, &token, org.as_deref()).await
         }
@@ -2640,6 +2775,9 @@ struct EnrollOptions<'a> {
     /// FR-51 P3 — random machine fingerprint + refuse-if-config-exists; the
     /// server's response (not this flag) decides what the CONFIG records.
     ephemeral: bool,
+    /// Temporary devices — a random machine fingerprint (a new device), with
+    /// none of `ephemeral`'s self-removal.
+    fresh_identity: bool,
     overlay: bool,
     relay_server: bool,
     /// FR-90 P2h-1 — the archive replica's posture ([`meshharbord::archive_replica`]).
@@ -2659,6 +2797,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         label,
         replace,
         ephemeral,
+        fresh_identity,
         overlay,
         relay_server,
         archive_replica,
@@ -2730,7 +2869,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
             );
             cfg.machine_id.clone()
         }
-        None if ephemeral => {
+        None if ephemeral || fresh_identity => {
             // Random per enrollment, never derived: N replicas of one image
             // share hostname+OS+arch+path, so the derived fingerprint would
             // collapse them onto ONE server row displacing each other

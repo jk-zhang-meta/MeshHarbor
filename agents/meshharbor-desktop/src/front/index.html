@@ -871,6 +871,24 @@
           <div id="login-pending" class="banner" hidden></div>
         </div>
 
+        <!-- Temporary devices: someone invited this machine for a while. No
+             account: only the person who invited it can reach it. -->
+        <div class="card form-narrow" id="join-card">
+          <h3 style="margin-top:0">Join with an invite code</h3>
+          <p class="muted small">
+            Someone gave you an 8-digit code. This machine joins their
+            organization for the time they chose; only they can reach it, and
+            it leaves by itself when the time is up.
+          </p>
+          <label for="join-code">Invite code</label>
+          <input type="text" id="join-code" inputmode="numeric" autocomplete="off"
+                 maxlength="9" placeholder="1234-5678" />
+          <div class="actions">
+            <button type="button" id="btn-join" class="primary">Join</button>
+          </div>
+          <div id="join-pending" class="banner" hidden></div>
+        </div>
+
         <div class="card form-narrow">
           <!-- S1b: shown in re-enroll mode (device already enrolled). -->
           <div id="onboard-reenroll-note" class="banner banner-warn" hidden>

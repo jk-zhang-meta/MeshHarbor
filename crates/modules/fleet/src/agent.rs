@@ -240,6 +240,16 @@ pub async fn enroll_agent(
         return enroll_agent_ephemeral(&state, tid, admin_uid, &claims.jti, body).await;
     }
 
+    // Temporary devices — a token minted by an invitation's redemption
+    // enrolls a NEW device only, bound to that invitation. The lookup fails
+    // CLOSED: a temporary device that enrolled as an ordinary one would be
+    // visible to, and reachable by, the whole organization.
+    let invite = if state.settings.auth.native_device_invite_enabled {
+        crate::device_invite::redeemed_for_jti(&state, &claims.jti).await?
+    } else {
+        None
+    };
+
     // If a row already exists for (tenant_id, machine_id), rehydrate it —
     // refresh name / os / agent_version, clear `deleted_at` if soft-deleted,
     // and re-issue a token against the same _id. The unique index on
@@ -255,6 +265,13 @@ pub async fn enroll_agent(
     // purpose: a token burnt by a rejection the operator can only fix
     // elsewhere (upgrade the plan, remove a device) would fail their retry a
     // second time, for a new and confusing reason.
+    if invite.is_some() && existing.is_some() {
+        return Err(ApiError::Forbidden(
+            "This machine is already a device of this organization; an invite code \
+             adds a new temporary device only"
+                .to_string(),
+        ));
+    }
     if existing.is_none() {
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let used = state.agents.count_active_for_tenant(tid).await?;
@@ -335,6 +352,24 @@ pub async fn enroll_agent(
     let agent_id = agent
         .id
         .ok_or_else(|| ApiError::Internal("agent missing _id".to_string()))?;
+    if let Some(inv) = &invite {
+        let bound = crate::device_invite::bind(&state, inv.id, agent_id).await;
+        if !matches!(bound, Ok(true)) {
+            // Revoked meanwhile, or unrecordable: the row must not survive as
+            // an ordinary device.
+            if let Err(e) =
+                crate::removal::remove_agent_device(&state, &agent, "temporary_unbound").await
+            {
+                tracing::warn!(agent = %agent_id, error = %e, "device-invite: could not remove an unbound temporary device");
+            }
+            return Err(match bound {
+                Ok(_) => ApiError::Forbidden("This invitation was revoked".to_string()),
+                Err(e) => e,
+            });
+        }
+        tracing::info!(agent = %agent_id, invite = %inv.id, tenant = %tid,
+            "device-invite: temporary device enrolled");
+    }
     // Only the signed, single-use credential grants this policy. The narrow
     // update preserves endpoints and fails closed against removal/generation
     // changes. A failed write can leave an ordinary row and a consumed token;
@@ -601,7 +636,14 @@ pub async fn self_unenroll(
     State(state): State<FleetState>,
     agent: crate::auth_agent::AuthAgent,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !agent.agent.ephemeral {
+    // A TEMPORARY device (an invitation's) may leave too: ending its access
+    // early is the person-at-the-machine's call, the same as the deadline.
+    let temporary = if agent.agent.ephemeral || !state.settings.auth.native_device_invite_enabled {
+        None
+    } else {
+        crate::device_invite::grant_for_agent(&state, agent.agent_id).await?
+    };
+    if !agent.agent.ephemeral && temporary.is_none() {
         return Err(ApiError::Forbidden(
             "Only an ephemeral device may unenroll itself; removal of a permanent \
              device is an admin action"
@@ -616,9 +658,12 @@ pub async fn self_unenroll(
         crate::removal::SELF_UNENROLL_REASON,
     )
     .await?;
+    if let Some(g) = &temporary {
+        crate::device_invite::mark_left(&state, g.invite_id).await;
+    }
     tracing::info!(
         tenant_id = %agent.tenant_id, agent_id = %agent.agent_id, name = %agent.agent.name,
-        overlay_released = released.is_some(),
+        overlay_released = released.is_some(), temporary = temporary.is_some(),
         "fr-51: ephemeral device unenrolled itself"
     );
     Ok(Json(serde_json::json!({

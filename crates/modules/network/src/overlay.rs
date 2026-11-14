@@ -582,6 +582,31 @@ async fn handle_overlay_join(
         }
     }
 
+    // Temporary devices: the node carries its invitation's mark FROM ITS
+    // INSERT, so no netmap ever ships it unmarked. Fails CLOSED.
+    let temporary_mark = match &node_ref {
+        NodeRef::Agent { agent_id } if state.settings.auth.native_device_invite_enabled => {
+            match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, *agent_id)
+                .await
+            {
+                Ok(g) => g.map(|g| meshharbor_remote_control::models::TemporaryMark {
+                    invite_id: g.invite_id,
+                    inviter_user_id: g.inviter_user_id,
+                    allow_role_ids: g.allow_role_ids,
+                }),
+                Err(_) => {
+                    refuse(
+                        OverlayJoinRefusal::StoreUnavailable,
+                        "temporary-device lookup failed".to_string(),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        _ => None,
+    };
+
     let self_node = match state
         .overlay_nodes
         .find_live_by_tenant_and_machine(tenant_id, &machine_id)
@@ -589,6 +614,17 @@ async fn handle_overlay_join(
     {
         Ok(Some(existing)) => {
             let Some(id) = existing.id else { return };
+            // A temporary device's node is born marked; an unmarked row under
+            // its machine id is not its node.
+            if temporary_mark.is_some() && existing.temporary != temporary_mark {
+                refuse(
+                    OverlayJoinRefusal::NetworkUnavailable,
+                    "temporary device: existing node is not its own".to_string(),
+                )
+                .await;
+                warn!(%tenant_id, %machine_id, "overlay.join: temporary device met an unmarked node; refused");
+                return;
+            }
             // Keep the existing stable name (DNS mustn't churn on rejoin);
             // backfill a freshly-deduped one for a pre-Phase-0 empty row.
             let name = if existing.name.is_empty() {
@@ -748,6 +784,7 @@ async fn handle_overlay_join(
                         supports_org_relay,
                         advertised_routes: advertised_routes.clone(),
                         route_offer_withheld: route_offer_withheld.clone(),
+                        temporary: temporary_mark.clone(),
                     })
                     .await
                 {
@@ -1053,7 +1090,9 @@ async fn handle_overlay_join(
     for peer in all.iter().filter(|n| n.id != self_node.id) {
         let peer_src = overlay_source_of(state, peer).await;
         // The shaped peer here is the JOINER, whose identity we already have.
-        let joiner_ingress = acl.gating().then_some(&joiner_src);
+        let joiner_ingress =
+            (acl.gating() || peer.temporary.is_some() || self_node.temporary.is_some())
+                .then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
@@ -1341,7 +1380,9 @@ async fn try_complete_join_netmap(
             return false;
         }
         let peer_src = overlay_source_of(state, peer).await;
-        let joiner_ingress = acl.gating().then_some(&joiner_src);
+        let joiner_ingress =
+            (acl.gating() || peer.temporary.is_some() || self_node.temporary.is_some())
+                .then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
         let zones = lines.zones_for(
@@ -3006,7 +3047,10 @@ async fn fan_upsert_shaped(
     }
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
-    let node_src = if acl.gating() {
+    let node_src = if acl.gating()
+        || node.temporary.is_some()
+        || peers.iter().any(|p| p.temporary.is_some())
+    {
         Some(overlay_source_of(state, node).await)
     } else {
         None
@@ -3074,7 +3118,11 @@ async fn fan_upsert_shaped(
         // real presence, not the changed node's).
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
-            let peer_src_arg = if acl.gating() { Some(&src) } else { None };
+            let peer_src_arg = if acl.gating() || node.temporary.is_some() {
+                Some(&src)
+            } else {
+                None
+            };
             let back = lines.zones_for(
                 iso,
                 node,
@@ -3197,7 +3245,11 @@ async fn fan_pair_rows(
             a,
             &a_src,
             b,
-            if gating { Some(&b_src) } else { None },
+            if gating || a.temporary.is_some() {
+                Some(&b_src)
+            } else {
+                None
+            },
             b_reach,
             lines.zones_for(
                 iso,
@@ -3229,7 +3281,11 @@ async fn fan_pair_rows(
             b,
             &b_src,
             a,
-            if gating { Some(&a_src) } else { None },
+            if gating || b.temporary.is_some() {
+                Some(&a_src)
+            } else {
+                None
+            },
             true,
             lines.zones_for(
                 iso,
@@ -4165,7 +4221,7 @@ pub async fn shape_full_netmap_with_lines(
         // P4 / T9-3 — resolving the peer's own identity costs up to 2 reads, so do
         // it ONLY when the tenant is gating (`warn` ships `ingress_rules_preview`;
         // `enforce` ships `ingress_rules`). An `off` tenant's join path is unchanged.
-        let peer_src = if acl.gating() {
+        let peer_src = if acl.gating() || self_node.temporary.is_some() || n.temporary.is_some() {
             Some(overlay_source_of(state, n).await)
         } else {
             None
@@ -4264,6 +4320,12 @@ pub(crate) fn pair_any_direction_visible(
     b: &OverlayNode,
     b_src: &OverlaySource,
 ) -> bool {
+    match (&a.temporary, &b.temporary) {
+        (None, None) => {}
+        (Some(_), Some(_)) => return false,
+        (None, Some(mark)) => return mark.allows(a_src.owner_user_id, &a_src.role_ids),
+        (Some(mark), None) => return mark.allows(b_src.owner_user_id, &b_src.role_ids),
+    }
     let b_routes = b.effective_routes();
     if evaluate_overlay(
         policies,
@@ -4510,6 +4572,14 @@ fn shape_peer_zoned(
                 "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
         }
     }
+    // Temporary devices (an invitation's): a pair with one is visible only
+    // between the device and its inviter's devices (plus members of the
+    // invitation's roles), and one-way — the device answers, never opens.
+    // Decided BEFORE the org ACL, whatever its posture: the invitation is the
+    // policy for this pair.
+    if peer.temporary.is_some() || recipient.temporary.is_some() {
+        return shape_temporary_pair(recipient, src, peer, peer_src, reachable);
+    }
     // Two linked servers: the link IS the decision, both ways, every port —
     // the topology view shows exactly what connects. Only under `enforce`;
     // `warn` changes nothing but the log.
@@ -4586,6 +4656,46 @@ fn shape_peer_zoned(
         shaped.ingress_rules = Some(evaluate_overlay_ingress(&acl.policies, ps, src.node_id));
     }
     Some(shaped)
+}
+
+/// One row of a pair that involves a temporary device.
+///
+/// - Two temporary devices never see each other.
+/// - An allowed member's device sees the temporary device with an EMPTY
+///   ingress grant: it admits none of the device's new flows, while replies
+///   to the flows it opened itself still pass (the node's reply tracking).
+/// - The temporary device sees an allowed member's device, its own address
+///   only — never its subnet or exit routes. A peer whose owner is unknown is
+///   withheld.
+fn shape_temporary_pair(
+    recipient: &OverlayNode,
+    src: &OverlaySource,
+    peer: &OverlayNode,
+    peer_src: Option<&OverlaySource>,
+    reachable: bool,
+) -> Option<NetmapPeer> {
+    match (&recipient.temporary, &peer.temporary) {
+        (None, Some(mark)) => {
+            if !mark.allows(src.owner_user_id, &src.role_ids) {
+                return None;
+            }
+            let mut p = to_netmap_peer(peer, reachable);
+            p.routes = Vec::new();
+            p.ingress_rules = Some(Vec::new());
+            p.ingress_rules_preview = None;
+            Some(p)
+        }
+        (Some(mark), None) => {
+            let ps = peer_src?;
+            if !mark.allows(ps.owner_user_id, &ps.role_ids) {
+                return None;
+            }
+            let mut p = to_netmap_peer(peer, reachable);
+            p.routes = Vec::new();
+            Some(p)
+        }
+        _ => None,
+    }
 }
 
 /// Structural fields come from the row; `reachable` is the caller's presence
@@ -5018,6 +5128,7 @@ mod tests {
     fn node(name: &str, ip: &str) -> OverlayNode {
         let now = bson::DateTime::now();
         OverlayNode {
+            temporary: None,
             id: Some(ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap()),
             tenant_id: ObjectId::new(),
             node_ref: NodeRef::Agent {
@@ -6333,5 +6444,244 @@ mod tests {
         .unwrap();
         assert!(a_for_b_off.ingress_rules.is_none());
         assert!(a_for_b_off.ingress_rules_preview.is_none());
+    }
+
+    // ─── temporary devices (an invitation's) ────────────────────────────────
+
+    fn temp_src(owner: Option<ObjectId>, roles: Vec<ObjectId>) -> OverlaySource {
+        OverlaySource {
+            node_id: ObjectId::new(),
+            owner_user_id: owner,
+            role_ids: roles,
+        }
+    }
+
+    fn temporary_node(inviter: ObjectId, roles: Vec<ObjectId>) -> OverlayNode {
+        let mut n = node("helper-pc", "100.64.0.77");
+        n.temporary = Some(meshharbor_remote_control::models::TemporaryMark {
+            invite_id: ObjectId::new(),
+            inviter_user_id: inviter,
+            allow_role_ids: roles,
+        });
+        // A temporary device that somehow offers routes must still offer none.
+        n.approved_routes = vec!["10.9.0.0/24".into()];
+        n.advertised_routes = vec!["10.9.0.0/24".into()];
+        n
+    }
+
+    fn acl_modes() -> Vec<AclCtx> {
+        vec![
+            AclCtx::off(),
+            AclCtx {
+                mode: OverlayAclMode::Warn,
+                policies: Vec::new(),
+            },
+            // Enforcing, with a policy that would open everything to everyone:
+            // the invitation must still win.
+            AclCtx {
+                mode: OverlayAclMode::Enforce,
+                policies: vec![OverlayPolicy {
+                    id: None,
+                    tenant_id: ObjectId::new(),
+                    name: "everything".into(),
+                    enabled: true,
+                    sources: vec![meshharbor_remote_control::models::OverlaySelector::AllNodes],
+                    via: vec![meshharbor_remote_control::models::OverlayTarget::AllNodes],
+                    destinations: vec![meshharbor_remote_control::models::OverlayRule {
+                        cidr: "0.0.0.0/0".into(),
+                        port_range: meshharbor_remote_control::models::PortRange {
+                            low: 1,
+                            high: u16::MAX,
+                        },
+                        proto: meshharbor_remote_control::models::ProtocolKind::Any,
+                    }],
+                    created_at: bson::DateTime::now(),
+                    updated_at: bson::DateTime::now(),
+                    deleted_at: None,
+                }],
+            },
+        ]
+    }
+
+    /// The inviter's own device sees the temporary device, one-way: an EMPTY
+    /// ingress grant (its new flows are refused, replies to the inviter's own
+    /// flows pass) and none of its routes.
+    #[test]
+    fn the_inviters_device_sees_the_temporary_device_one_way() {
+        let inviter = ObjectId::new();
+        let temp = temporary_node(inviter, vec![]);
+        let mine = node("my-laptop", "100.64.0.5");
+        for acl in acl_modes() {
+            let row = shape_peer(
+                &acl,
+                &mine,
+                &temp_src(Some(inviter), vec![]),
+                &temp,
+                None,
+                true,
+                Zones::OFF,
+            )
+            .unwrap_or_else(|| panic!("visible to the inviter under {:?}", acl.mode));
+            assert_eq!(
+                row.ingress_rules,
+                Some(Vec::new()),
+                "deny new flows ({:?})",
+                acl.mode
+            );
+            assert!(row.ingress_rules_preview.is_none());
+            assert!(
+                row.routes.is_empty(),
+                "no routes through it ({:?})",
+                acl.mode
+            );
+        }
+    }
+
+    /// Anybody else's device — an administrator's included — never sees it.
+    #[test]
+    fn another_members_device_never_sees_the_temporary_device() {
+        let temp = temporary_node(ObjectId::new(), vec![]);
+        let theirs = node("admin-desktop", "100.64.0.6");
+        for acl in acl_modes() {
+            assert!(
+                shape_peer(
+                    &acl,
+                    &theirs,
+                    &temp_src(Some(ObjectId::new()), vec![ObjectId::new()]),
+                    &temp,
+                    None,
+                    true,
+                    Zones::OFF,
+                )
+                .is_none(),
+                "withheld under {:?}",
+                acl.mode
+            );
+            assert!(
+                shape_peer(
+                    &acl,
+                    &theirs,
+                    &temp_src(None, vec![]),
+                    &temp,
+                    None,
+                    true,
+                    Zones::OFF
+                )
+                .is_none(),
+                "an unknown owner is not the inviter ({:?})",
+                acl.mode
+            );
+        }
+    }
+
+    /// The temporary device sees the inviter's devices (their own address
+    /// only), nobody else's, and nothing whose owner it cannot tell.
+    #[test]
+    fn the_temporary_device_sees_only_the_inviters_devices() {
+        let inviter = ObjectId::new();
+        let temp = temporary_node(inviter, vec![]);
+        let mut mine = node("my-router", "100.64.0.5");
+        mine.approved_routes = vec!["192.168.1.0/24".into(), "0.0.0.0/0".into()];
+        mine.advertised_routes = mine.approved_routes.clone();
+        mine.is_exit_node = true;
+        let temp_self = temp_src(Some(inviter), vec![]);
+        for acl in acl_modes() {
+            let row = shape_peer(
+                &acl,
+                &temp,
+                &temp_self,
+                &mine,
+                Some(&temp_src(Some(inviter), vec![])),
+                true,
+                Zones::OFF,
+            )
+            .unwrap_or_else(|| panic!("the inviter's device is visible ({:?})", acl.mode));
+            assert!(
+                row.routes.is_empty(),
+                "never the inviter's subnets or exit ({:?})",
+                acl.mode
+            );
+            assert!(
+                shape_peer(
+                    &acl,
+                    &temp,
+                    &temp_self,
+                    &mine,
+                    Some(&temp_src(Some(ObjectId::new()), vec![])),
+                    true,
+                    Zones::OFF,
+                )
+                .is_none(),
+                "someone else's device is withheld ({:?})",
+                acl.mode
+            );
+            assert!(
+                shape_peer(&acl, &temp, &temp_self, &mine, None, true, Zones::OFF).is_none(),
+                "an owner it cannot tell is withheld ({:?})",
+                acl.mode
+            );
+        }
+    }
+
+    /// The invitation's extra roles pair too; two temporary devices never do.
+    #[test]
+    fn extra_roles_pair_and_two_temporary_devices_never_do() {
+        let role = ObjectId::new();
+        let temp = temporary_node(ObjectId::new(), vec![role]);
+        let colleague = node("colleague", "100.64.0.8");
+        let acl = AclCtx::off();
+        assert!(
+            shape_peer(
+                &acl,
+                &colleague,
+                &temp_src(Some(ObjectId::new()), vec![role]),
+                &temp,
+                None,
+                true,
+                Zones::OFF,
+            )
+            .is_some()
+        );
+        let other_temp = temporary_node(ObjectId::new(), vec![role]);
+        let src = temp_src(Some(ObjectId::new()), vec![role]);
+        assert!(shape_peer(&acl, &other_temp, &src, &temp, Some(&src), true, Zones::OFF).is_none());
+        assert!(!pair_any_direction_visible(
+            &[],
+            &other_temp,
+            &src,
+            &temp,
+            &src
+        ));
+    }
+
+    /// Relay / DERP pair gates follow the same invitation.
+    #[test]
+    fn pair_gates_follow_the_invitation() {
+        let inviter = ObjectId::new();
+        let temp = temporary_node(inviter, vec![]);
+        let mine = node("my-laptop", "100.64.0.5");
+        let theirs = node("their-laptop", "100.64.0.6");
+        let t_src = temp_src(Some(inviter), vec![]);
+        assert!(pair_any_direction_visible(
+            &[],
+            &mine,
+            &temp_src(Some(inviter), vec![]),
+            &temp,
+            &t_src
+        ));
+        assert!(pair_any_direction_visible(
+            &[],
+            &temp,
+            &t_src,
+            &mine,
+            &temp_src(Some(inviter), vec![])
+        ));
+        assert!(!pair_any_direction_visible(
+            &[],
+            &theirs,
+            &temp_src(Some(ObjectId::new()), vec![]),
+            &temp,
+            &t_src
+        ));
     }
 }

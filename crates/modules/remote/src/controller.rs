@@ -1000,6 +1000,32 @@ async fn resolve_session_authz_with_origin(
         .capped(org_session_cap));
     }
 
+    // Temporary devices — past the inviter (the device's owner, above), only
+    // a member holding one of the invitation's extra roles may control it,
+    // and an ADMINISTRATOR is no exception: "only the person who invited it"
+    // is the promise the invitation made. Fails CLOSED on an unreadable store.
+    if state.settings.auth.native_device_invite_enabled {
+        match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id).await {
+            Ok(None) => {}
+            Ok(Some(grant)) => {
+                let roles = state
+                    .tenants
+                    .member_role_ids(agent.tenant_id, controller_user_id)
+                    .await
+                    .unwrap_or_default();
+                if !grant.allows(Some(controller_user_id), &roles) {
+                    return Err(
+                        "this is a temporary device; only the person who invited it can control it"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(_) => {
+                return Err("could not verify this device's access; please retry".to_string());
+            }
+        }
+    }
+
     // The effective mode for an allowed non-owner controller (attended default).
     let mode = agent.access_policy.effective_consent_mode();
 

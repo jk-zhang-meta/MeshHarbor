@@ -93,6 +93,8 @@ pub struct NewOverlayNode {
     /// although the device was configured to offer routes. `None` = offering
     /// as configured.
     pub route_offer_withheld: Option<String>,
+    /// Temporary devices — the invitation's mark, inserted WITH the node.
+    pub temporary: Option<meshharbor_remote_control::models::TemporaryMark>,
 }
 
 /// B4 — Minimum allowed key authorization TTL (seconds), matching the HTTP API
@@ -248,6 +250,7 @@ impl OverlayNodeDao {
             supports_org_relay,
             advertised_routes,
             route_offer_withheld,
+            temporary,
         } = new;
         if wg_public_key.trim().is_empty() {
             return Err(DaoError::Validation("wg_public_key_empty".into()));
@@ -380,6 +383,7 @@ impl OverlayNodeDao {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            temporary,
         };
         let id = self.base.insert_one(&node).await?;
         self.base.find_by_id(id).await
@@ -1090,6 +1094,27 @@ impl OverlayNodeDao {
                     "name": name,
                     "updated_at": DateTime::now(),
                 } },
+            )
+            .await?;
+        self.base.find_by_id(node_id).await
+    }
+
+    /// Temporary devices — mark (or unmark) an existing node. Only the
+    /// conversion of an enrolled device takes this path; a new temporary
+    /// device's node is born marked.
+    pub async fn set_temporary(
+        &self,
+        node_id: ObjectId,
+        mark: Option<&meshharbor_remote_control::models::TemporaryMark>,
+    ) -> DaoResult<OverlayNode> {
+        let v = match mark {
+            Some(m) => bson::to_bson(m)?,
+            None => bson::Bson::Null,
+        };
+        self.base
+            .update_by_id(
+                node_id,
+                doc! { "$set": { "temporary": v, "updated_at": DateTime::now() } },
             )
             .await?;
         self.base.find_by_id(node_id).await
