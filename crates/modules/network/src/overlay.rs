@@ -1172,8 +1172,7 @@ async fn handle_overlay_join(
         let peer_src = overlay_source_of(state, peer).await;
         // The shaped peer here is the JOINER, whose identity we already have.
         let joiner_ingress =
-            (acl.gating() || peer.temporary.is_some() || self_node.temporary.is_some())
-                .then_some(&joiner_src);
+            peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
@@ -1492,8 +1491,7 @@ async fn try_complete_join_netmap(
         }
         let peer_src = overlay_source_of(state, peer).await;
         let joiner_ingress =
-            (acl.gating() || peer.temporary.is_some() || self_node.temporary.is_some())
-                .then_some(&joiner_src);
+            peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
         let zones = lines.zones_for(
@@ -3663,10 +3661,7 @@ async fn fan_upsert_shaped_mode(
     }
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
-    let node_src = if acl.gating()
-        || node.temporary.is_some()
-        || peers.iter().any(|p| p.temporary.is_some())
-    {
+    let node_src = if peers.iter().any(|p| peer_identity_required(&acl, p, node)) {
         Some(overlay_source_of(state, node).await)
     } else {
         None
@@ -3732,7 +3727,7 @@ async fn fan_upsert_shaped_mode(
         // real presence, not the changed node's).
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
-            let peer_src_arg = if acl.gating() || node.temporary.is_some() {
+            let peer_src_arg = if peer_identity_required(&acl, node, peer) {
                 Some(&src)
             } else {
                 None
@@ -3851,7 +3846,6 @@ async fn fan_pair_rows(
     // is on a live WS by construction; `b`'s presence comes from the
     // snapshot so a dead peer's row does not read dialable.
     let b_reach = is_reachable(&reach, b);
-    let gating = acl.gating();
     let iso = business_isolation::mode(state);
     let (a_zone, b_zone) = (
         business_isolation::zone_of(state, iso, a).await,
@@ -3873,7 +3867,7 @@ async fn fan_pair_rows(
             a,
             &a_src,
             b,
-            if gating || a.temporary.is_some() {
+            if peer_identity_required(&acl, a, b) {
                 Some(&b_src)
             } else {
                 None
@@ -3909,7 +3903,7 @@ async fn fan_pair_rows(
             b,
             &b_src,
             a,
-            if gating || b.temporary.is_some() {
+            if peer_identity_required(&acl, b, a) {
                 Some(&a_src)
             } else {
                 None
@@ -4874,10 +4868,9 @@ pub async fn shape_full_netmap_with_lines(
     for n in all.iter().filter(|n| n.id != self_node.id) {
         let peer_zone = business_isolation::zone_of(state, iso, n).await;
         let zones = lines.zones_for(iso, self_node, self_zone, n, peer_zone, rides);
-        // P4 / T9-3 — resolving the peer's own identity costs up to 2 reads, so do
-        // it ONLY when the tenant is gating (`warn` ships `ingress_rules_preview`;
-        // `enforce` ships `ingress_rules`). An `off` tenant's join path is unchanged.
-        let peer_src = if acl.gating() || self_node.temporary.is_some() || n.temporary.is_some() {
+        // Resolve identity for organization ACLs and device ceilings alike;
+        // personal owner-only ingress still needs it when the ACL is off.
+        let peer_src = if peer_identity_required(&acl, self_node, n) {
             Some(overlay_source_of(state, n).await)
         } else {
             None
@@ -5058,6 +5051,16 @@ fn pair_trial_visible_with(
     };
     let (ab, ba) = (sees(a_src, b), sees(b_src, a));
     if bidir { ab || ba } else { ab && ba }
+}
+
+// The recipient's personal ceiling needs the peer's authenticated owner even
+// when the organization ACL is off. Keep this predicate shared by full maps,
+// join/reattach deltas, and forward/reverse peer fan-out.
+fn peer_identity_required(acl: &AclCtx, recipient: &OverlayNode, peer: &OverlayNode) -> bool {
+    acl.gating()
+        || recipient.personal_access_owner_id.is_some()
+        || recipient.temporary.is_some()
+        || peer.temporary.is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7309,6 +7312,34 @@ mod tests {
                 assert!(row.routes.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn personal_acl_off_lazy_identity_preserves_owner_and_denies_unknown() {
+        let owner = ObjectId::new();
+        let mut target = node("personal", "100.64.0.9");
+        target.personal_access_owner_id = Some(owner);
+        let peer = node("peer", "100.64.0.8");
+        let acl = AclCtx::off();
+        let own = temp_src(Some(owner), vec![]);
+        for peer_owner in [Some(owner), Some(ObjectId::new()), None] {
+            let source = temp_src(peer_owner, vec![]);
+            // This is the same lazy gate used by full-map, join/reattach and
+            // forward/reverse delta fan-out; formerly Off omitted this source.
+            let resolved = peer_identity_required(&acl, &target, &peer).then_some(&source);
+            assert!(resolved.is_some());
+            let row = shape_peer(&acl, &target, &own, &peer, resolved, true, Zones::OFF).unwrap();
+            if peer_owner == Some(owner) {
+                assert!(row.ingress_rules.is_none());
+            } else {
+                assert!(row.ingress_rules.unwrap().is_empty());
+            }
+        }
+        assert!(!peer_identity_required(&acl, &peer, &target));
+        let temporary = temporary_node(owner, vec![]);
+        assert!(peer_identity_required(&acl, &peer, &temporary));
+        assert!(peer_identity_required(&acl, &temporary, &peer));
+        assert!(target.temporary.is_none());
     }
 
     #[test]
