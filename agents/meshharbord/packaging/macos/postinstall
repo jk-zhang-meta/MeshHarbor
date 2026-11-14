@@ -20,6 +20,12 @@
 
 set -euo pipefail
 
+# Installer runs as root: never redirect into a predictable shared /tmp file.
+# mktemp creates an owned private directory atomically; all error captures live
+# there, including retries and early-exit paths.
+INSTALL_TMP=$(mktemp -d /private/tmp/meshharbor-install.XXXXXX)
+trap 'rm -rf "$INSTALL_TMP"' EXIT
+
 CONSOLE_USER=$(stat -f "%Su" /dev/console)
 
 # Sweep the pre-rc.457 location. The daemon bundle used to live in
@@ -154,8 +160,8 @@ replace_launchd_service() {
   attempt=0
   while :; do
     attempt=$((attempt + 1))
-    if launchctl bootstrap "$domain" "$plist" 2>/tmp/meshharbor-bootstrap.err; then
-      rm -f /tmp/meshharbor-bootstrap.err
+    if launchctl bootstrap "$domain" "$plist" 2>"$INSTALL_TMP/bootstrap.err"; then
+      rm -f "$INSTALL_TMP/bootstrap.err"
       return 0
     fi
     [ "$attempt" -ge 5 ] && break
@@ -254,11 +260,11 @@ else
     echo "meshharbord installed and started for $CONSOLE_USER (uid=$CONSOLE_UID)"
   else
     echo "meshharbord installed for $CONSOLE_USER (uid=$CONSOLE_UID), but launchctl"
-    echo "  bootstrap failed after retries: $(cat /tmp/meshharbor-bootstrap.err 2>/dev/null)"
+    echo "  bootstrap failed after retries: $(cat "$INSTALL_TMP/bootstrap.err" 2>/dev/null)"
     echo "  The plist is in place, so it will start at the next login, or now via:"
     echo "    launchctl bootstrap gui/$CONSOLE_UID $PLIST_TARGET"
   fi
-  rm -f /tmp/meshharbor-bootstrap.err
+  rm -f "$INSTALL_TMP/bootstrap.err"
 fi
 
 # The desktop companion (menu-bar app), same user domain. It is a UI surface,
@@ -343,7 +349,7 @@ if [ -f "$DESKTOP_PLIST_SOURCE" ] && [ -d /Applications/MeshHarbor.app ]; then
       | grep -E 'state =|last exit code =' | head -2 | tr -s '\t\n ' ' ' || true)"
     echo "  still running elsewhere? pgrep -lf meshharbor-desktop"
   fi
-  rm -f /tmp/meshharbor-bootstrap.err
+  rm -f "$INSTALL_TMP/bootstrap.err"
 else
   echo "NOTE: the menu-bar companion is not in this package; skipping"
 fi
@@ -399,10 +405,10 @@ if daemon_is_enabled; then
     # under `set -e` — a drain-race EIO would have aborted postinstall halfway,
     # reported as an opaque install failure. Report-and-continue instead.
     if ! replace_launchd_service system fans.itachi.meshharbor.daemon "$DAEMON_PLIST_TARGET"; then
-      echo "WARNING: daemon bootstrap failed after retries: $(cat /tmp/meshharbor-bootstrap.err 2>/dev/null)"
+      echo "WARNING: daemon bootstrap failed after retries: $(cat "$INSTALL_TMP/bootstrap.err" 2>/dev/null)"
       echo "  Start it by hand: sudo launchctl bootstrap system $DAEMON_PLIST_TARGET"
     fi
-    rm -f /tmp/meshharbor-bootstrap.err
+    rm -f "$INSTALL_TMP/bootstrap.err"
 
     echo "meshharbor system daemon installed (overlay/tunnel run as root)."
     if [ ! -f /etc/meshharbor/config.toml ]; then
@@ -485,23 +491,23 @@ if [ ! -f /etc/meshharbor/disable-auto-update ] && [ ! -f /etc/meshharbor-agent/
         echo "meshharbor update helper is running (this very install) — leaving it; plist applies at its next load"
       else
         launchctl bootout system/fans.itachi.meshharbor.update 2>/dev/null || true
-        if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>/tmp/meshharbor-update-bootstrap.err; then
+        if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>"$INSTALL_TMP/update-bootstrap.err"; then
           echo "meshharbor update helper re-cycled (refreshed plist live; any failed-init latch cleared)"
         else
-          echo "WARNING: update helper bootout+bootstrap failed: $(cat /tmp/meshharbor-update-bootstrap.err 2>/dev/null)"
+          echo "WARNING: update helper bootout+bootstrap failed: $(cat "$INSTALL_TMP/update-bootstrap.err" 2>/dev/null)"
           echo "  Re-arm by hand: sudo launchctl bootstrap system $UPDATE_PLIST_TARGET"
         fi
-        rm -f /tmp/meshharbor-update-bootstrap.err
+        rm -f "$INSTALL_TMP/update-bootstrap.err"
       fi
     else
-      if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>/tmp/meshharbor-update-bootstrap.err; then
+      if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>"$INSTALL_TMP/update-bootstrap.err"; then
         echo "meshharbor update helper installed (unattended self-update, log: /var/log/meshharbor/update.log)"
       else
         echo "meshharbor update helper installed, but launchctl bootstrap failed:"
-        echo "  $(cat /tmp/meshharbor-update-bootstrap.err 2>/dev/null)"
+        echo "  $(cat "$INSTALL_TMP/update-bootstrap.err" 2>/dev/null)"
         echo "  It will load at next boot. Until then updates are manual."
       fi
-      rm -f /tmp/meshharbor-update-bootstrap.err
+      rm -f "$INSTALL_TMP/update-bootstrap.err"
     fi
   fi
 else
