@@ -623,20 +623,20 @@ async fn handle_overlay_join(
             }
             // Its invitations changed since the mark was written (one more,
             // one fewer): the mark follows them before anything is fanned.
-            if temporary_mark.is_some() && existing.temporary != temporary_mark {
-                if state
+            if temporary_mark.is_some()
+                && existing.temporary != temporary_mark
+                && state
                     .overlay_nodes
                     .set_temporary(id, temporary_mark.as_ref())
                     .await
                     .is_err()
-                {
-                    refuse(
-                        OverlayJoinRefusal::StoreUnavailable,
-                        "temporary device: mark update failed".to_string(),
-                    )
-                    .await;
-                    return;
-                }
+            {
+                refuse(
+                    OverlayJoinRefusal::StoreUnavailable,
+                    "temporary device: mark update failed".to_string(),
+                )
+                .await;
+                return;
             }
             // Keep the existing stable name (DNS mustn't churn on rejoin);
             // backfill a freshly-deduped one for a pre-Phase-0 empty row.

@@ -131,6 +131,7 @@ fn main() {
             commands::cmd_ping,
             commands::cmd_enroll,
             commands::cmd_login_start,
+            commands::cmd_join_preview,
             commands::cmd_join,
             commands::cmd_leave,
             commands::cmd_login_wait,

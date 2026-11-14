@@ -1065,16 +1065,17 @@ pub async fn run(
         ctx.renewal,
         ctx.renewal_connected.clone(),
     )));
-    // Temporary devices — the server's word on this device's deadline (a
-    // renewal moves it), kept in `temporary.json` beside the config so the
-    // goodbye at the end is told apart from a fault. Primary org only.
-    let _temporary_task = ctx.is_primary.then(|| {
-        AbortOnDrop(tokio::spawn(temporary_watch(
-            cfg.server_url.clone(),
-            ctx.token.clone(),
-            remote_cfg.config_path().to_path_buf(),
-        )))
-    });
+    // Temporary devices — the server's word on this enrollment's invitations
+    // (a renewal moves a deadline), kept in `temporary.json` beside the
+    // config so the goodbye at the end is told apart from a fault. Every
+    // enrollment: a machine may hold invitations in several organizations.
+    let _temporary_task = AbortOnDrop(tokio::spawn(temporary_watch(
+        cfg.server_url.clone(),
+        ctx.token.clone(),
+        remote_cfg.config_path().to_path_buf(),
+        cfg.agent_id.clone(),
+        ctx.is_primary,
+    )));
     // FR-103 — the previous attempt was a recovery's prompt retry (see the
     // `AuthRejected` arm): a second refusal in a row waits out the ladder.
     let mut recovered_last = false;
@@ -1202,6 +1203,32 @@ pub async fn run(
                 // primary's overlay owns those routes), no process exit —
                 // the supervisor in `run_cmd` records the terminal error
                 // for the LocalAPI `OrgStatus`.
+                if !ctx.is_primary
+                    && meshharbor_node_core::device_invite::marker_for(
+                        remote_cfg.config_path(),
+                        &cfg.agent_id,
+                        false,
+                    )
+                    .is_some()
+                {
+                    // A temporary enrollment's planned end: only this org
+                    // leaves the config; the machine's others stay.
+                    match meshharbor_node_core::device_invite::end_enrollment_locally(
+                        remote_cfg.config_path(),
+                        &cfg.agent_id,
+                    ) {
+                        Ok(done) => info!(org = %ctx.label, ?done, ?reason,
+                            "temporary device: this organization's access ended"),
+                        Err(e) => warn!(org = %ctx.label, error = %e,
+                            "temporary device: could not remove the ended enrollment"),
+                    }
+                    return Err(SecondaryGoodbye {
+                        label: ctx.label.clone(),
+                        reason,
+                        message,
+                    }
+                    .into());
+                }
                 if !ctx.is_primary {
                     // #1750 — the ONE line this org gets per start; the
                     // goodbye arm and the supervisor stay at DEBUG for it.
@@ -1221,21 +1248,41 @@ pub async fn run(
                 // revocation, a leave) — not a fault for anyone to fix. Set
                 // the enrollment aside and stop cleanly; nothing restarts a
                 // clean exit, and the machine is simply not signed in.
-                if meshharbor_node_core::device_invite::read_marker(remote_cfg.config_path())
-                    .is_some()
+                if meshharbor_node_core::device_invite::marker_for(
+                    remote_cfg.config_path(),
+                    &cfg.agent_id,
+                    true,
+                )
+                .is_some()
                 {
-                    match meshharbor_node_core::device_invite::end_locally(remote_cfg.config_path())
-                    {
-                        Ok(aside) => info!(
-                            aside = ?aside,
+                    use meshharbor_node_core::device_invite::LocalEnd;
+                    let done = meshharbor_node_core::device_invite::end_enrollment_locally(
+                        remote_cfg.config_path(),
+                        &cfg.agent_id,
+                    );
+                    crate::purge_exit_routes();
+                    match done {
+                        // Another enrollment took the primary's place: exit
+                        // as a failure so the service manager starts the
+                        // daemon again, running it.
+                        Ok(LocalEnd::Promoted { label }) => {
+                            info!(%label, ?reason,
+                                "temporary device: this organization's access ended; restarting with the next enrollment as primary");
+                            std::process::exit(75);
+                        }
+                        Ok(done) => info!(
+                            ?done,
                             ?reason,
                             "temporary device: access ended; this machine is no longer signed in"
                         ),
                         Err(e) => {
-                            warn!(error = %e, "temporary device: could not set the enrollment aside")
+                            warn!(error = %e, "temporary device: could not set the enrollment aside");
+                            // Never leave an ended enrollment to be run again.
+                            let _ = meshharbor_node_core::device_invite::end_locally(
+                                remote_cfg.config_path(),
+                            );
                         }
                     }
-                    crate::purge_exit_routes();
                     std::process::exit(0);
                 }
                 // rc.53: server told us to stop reconnecting. The
@@ -7766,29 +7813,48 @@ pub(crate) fn urlencode(s: &str) -> String {
         .replace('=', "%3D")
 }
 
-/// Temporary devices — ask the server, shortly after start and every 30
-/// minutes, whether this device is temporary and until when; record it in
-/// `temporary.json` (removed again for an ordinary device). Best-effort: a
-/// failed look keeps the last answer.
+/// Temporary devices — ask the server, shortly after start and every 10
+/// minutes, whether this enrollment is temporary and on whose invitations;
+/// record it in `temporary.json` (removed again for an ordinary one).
+/// An ORDINARY enrollment presents the machine's invitation proofs instead
+/// (`self/link`), so its own organization sees what the machine accepted.
+/// Best-effort: a failed look keeps the last answer.
 async fn temporary_watch(
     server_url: String,
     token: crate::token_slot::TokenSlot,
     config_path: std::path::PathBuf,
+    agent_id: String,
+    is_primary: bool,
 ) {
+    use meshharbor_node_core::device_invite;
     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
     loop {
         let current = token.get();
-        match meshharbor_node_core::device_invite::self_status(&server_url, &current).await {
+        match device_invite::self_status(&server_url, &current).await {
             Ok(info) => {
-                if let Err(e) =
-                    meshharbor_node_core::device_invite::write_marker(&config_path, info.as_ref())
-                {
+                if let Err(e) = device_invite::write_marker_for(
+                    &config_path,
+                    &agent_id,
+                    is_primary,
+                    info.as_ref(),
+                ) {
                     debug!(error = %e, "temporary watch: could not record the answer");
+                }
+                if info.is_none() {
+                    let history = device_invite::read_history(&config_path);
+                    match device_invite::link(&server_url, &current, &history).await {
+                        Ok(n) if n > 0 => info!(
+                            linked = n,
+                            "temporary watch: this machine's invitations linked to its own organization"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => debug!(error = %e, "temporary watch: link not answered"),
+                    }
                 }
             }
             Err(e) => debug!(error = %e, "temporary watch: no answer this round"),
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
     }
 }
 

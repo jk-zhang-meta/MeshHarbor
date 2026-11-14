@@ -124,8 +124,7 @@
       enrolledMode = !!s.enrolled;
       const loginCard = $('login-card');
       if (loginCard) loginCard.hidden = enrolledMode;
-      const joinCard = $('join-card');
-      if (joinCard) joinCard.hidden = enrolledMode;
+      // A machine may hold several invitations, signed in or not.
       const btn = $('btn-enroll');
       if (btn) btn.textContent = enrolledMode ? 'Re-enroll this device' : 'Enroll this device';
       const note = $('onboard-reenroll-note');
@@ -187,7 +186,7 @@
       }
     });
 
-    // Temporary devices: redeem an invite code (no account).
+    // Invitations: look at the code first (who, for how long), then accept.
     const joinBtn = $('btn-join');
     if (joinBtn) joinBtn.addEventListener('click', async () => {
       const code = ($('join-code').value || '').trim();
@@ -198,18 +197,57 @@
       const deviceName = ($('device-name').value || '').trim();
       const box = $('join-pending');
       joinBtn.disabled = true;
-      joinBtn.textContent = 'Joining…';
+      joinBtn.textContent = 'Checking…';
+      let p;
       try {
-        const s = await invoke('cmd_join', { code, deviceName });
-        box.hidden = true;
-        showEnrolled(s);
-        void refreshStatus();
+        p = await invoke('cmd_join_preview', { code });
       } catch (e) {
-        showError('Could not join: ' + e);
-      } finally {
+        showError('Could not check the code: ' + e);
         joinBtn.disabled = false;
         joinBtn.textContent = 'Join';
+        return;
       }
+      box.textContent = '';
+      const what = document.createElement('p');
+      what.textContent = p.from + ' invites this device for ' + p.remaining +
+        ' (until ' + new Date(p.access_until_ms).toLocaleString() + ').';
+      const how = document.createElement('p');
+      how.className = 'muted small';
+      how.textContent = 'They will be able to reach and control this device; it cannot reach theirs. ' +
+        'You can leave at any time from the tray menu.';
+      const row = document.createElement('div');
+      row.className = 'actions';
+      const accept = document.createElement('button');
+      accept.type = 'button';
+      accept.className = 'primary';
+      accept.textContent = 'Accept';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      row.append(accept, cancel);
+      box.append(what, how, row);
+      box.hidden = false;
+      const reset = () => {
+        box.hidden = true;
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Join';
+      };
+      cancel.addEventListener('click', reset);
+      accept.addEventListener('click', async () => {
+        accept.disabled = true;
+        cancel.disabled = true;
+        accept.textContent = 'Joining…';
+        try {
+          const s = await invoke('cmd_join', { code, deviceName });
+          reset();
+          $('join-code').value = '';
+          showEnrolled(s);
+          void refreshStatus();
+        } catch (e) {
+          reset();
+          showError('Could not join: ' + e);
+        }
+      });
     });
 
     $('enroll-form').addEventListener('submit', async (ev) => {

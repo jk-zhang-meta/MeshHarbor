@@ -1410,14 +1410,11 @@ pub async fn host_list(
     let mut names: HashMap<ObjectId, String> = HashMap::new();
     let mut items = Vec::new();
     for r in &rows {
-        if !people.contains_key(&r.inviter_user_id) {
-            people.insert(
-                r.inviter_user_id,
-                inviter_display(&state, r.inviter_user_id).await,
-            );
+        if let std::collections::hash_map::Entry::Vacant(e) = people.entry(r.inviter_user_id) {
+            e.insert(inviter_display(&state, r.inviter_user_id).await);
         }
-        if !orgs.contains_key(&r.tenant_id) {
-            orgs.insert(r.tenant_id, org_display(&state, r.tenant_id).await);
+        if let std::collections::hash_map::Entry::Vacant(e) = orgs.entry(r.tenant_id) {
+            e.insert(org_display(&state, r.tenant_id).await);
         }
         if let Some(h) = r.hosts.iter().find(|h| h.tenant_id == tid)
             && !names.contains_key(&h.agent_id)
