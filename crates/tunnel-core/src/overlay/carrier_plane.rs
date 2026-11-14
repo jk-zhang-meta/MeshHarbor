@@ -259,6 +259,9 @@ pub struct CarrierPlane {
     /// `direct::pick_same_subnet_endpoint`).
     #[cfg(test)]
     pub(crate) lan_only: Mutex<Option<Vec<Ipv4Addr>>>,
+    /// T13 — test-only override of [`direct::wsl_mirrored_guest`].
+    #[cfg(test)]
+    pub(crate) mirrored_guest: Mutex<Option<bool>>,
 }
 
 impl CarrierPlane {
@@ -292,7 +295,19 @@ impl CarrierPlane {
             blackhole: AtomicBool::new(false),
             #[cfg(test)]
             lan_only: Mutex::new(None),
+            #[cfg(test)]
+            mirrored_guest: Mutex::new(None),
         })
+    }
+
+    /// T13 — a node with no LAN identity whose public-dial socket still owns
+    /// a NAT mapping (a WSL2 mirrored guest): bind that socket alone.
+    fn public_dial_only(&self) -> bool {
+        #[cfg(test)]
+        if let Some(v) = *self.mirrored_guest.lock().unwrap() {
+            return v;
+        }
+        direct::wsl_mirrored_guest()
     }
 
     /// W5 — poke the plane srflx task (see the `regather` field). Sync and
@@ -365,7 +380,13 @@ impl CarrierPlane {
             None => ifaces,
         };
         let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
-        if my_ips.is_empty() {
+        // T13 — a WSL2 mirrored guest has no LAN interface BY DESIGN (binding
+        // the host's addresses starves the host agent), but it is not
+        // UDP-less: its wildcard public-dial socket is its srflx vantage.
+        // Without this every such guest was relay-only, so a pair whose
+        // other end refuses relays (DERP and TURN off) never connected.
+        let public_only = my_ips.is_empty() && self.public_dial_only();
+        if my_ips.is_empty() && !public_only {
             info!("carrier plane: no usable LAN interface; direct path off (relay only)");
             return None;
         }
@@ -387,7 +408,7 @@ impl CarrierPlane {
                 Err(e) => warn!(%ip, %e, "carrier plane: socket local_addr failed; skipping"),
             }
         }
-        if socks.is_empty() {
+        if socks.is_empty() && !public_only {
             info!("carrier plane: no bindable LAN interface; direct path off (relay only)");
             return None;
         }
@@ -414,6 +435,19 @@ impl CarrierPlane {
         } else {
             None
         };
+        if public_only {
+            if public_sock.is_none() {
+                info!(
+                    "carrier plane: WSL2 mirrored guest without a public-dial socket; direct \
+                     path off (relay only)"
+                );
+                return None;
+            }
+            info!(
+                "carrier plane: WSL2 mirrored guest — no LAN sockets; the public-dial socket \
+                 alone carries srflx and public-direct"
+            );
+        }
         let (v6, my_v6) = super::runtime::bind_v6_direct(stable_port).await;
         info!(
             endpoints = ?endpoints,
@@ -1658,7 +1692,9 @@ impl CarrierPlane {
         let Some(v) = self.view() else {
             return out;
         };
-        if v.socks.is_empty() {
+        // T13 — no LAN socket but a public dialer (WSL2 mirrored guest):
+        // the gather below asks the public dialer directly.
+        if v.socks.is_empty() && v.public_sock.is_none() {
             return out;
         }
         // W5(a) — walk the topologically-spread vantage list AT GATHER TIME.
@@ -1725,7 +1761,7 @@ impl CarrierPlane {
             // so a multi-dead-sock host still reaches it; bounded by the
             // query's own retry ceiling. Healthy hosts never get here.
             if pairs.is_empty()
-                && direct::vpn_vantage_enabled()
+                && (direct::vpn_vantage_enabled() || v.socks.is_empty())
                 && let Some(p) = v.public_sock.as_ref()
             {
                 match crate::transport::stun::srflx_query_via_sink(
@@ -1737,12 +1773,21 @@ impl CarrierPlane {
                 .await
                 {
                     Ok(SocketAddr::V4(s)) if direct::is_public_v4(*s.ip()) => {
-                        info!(
-                            mapped = %s,
-                            %server,
-                            "carrier plane: srflx RESCUED via the public-dial socket — every \
-                             LAN vantage was dead but the default-route (VPN) path answers"
-                        );
+                        if v.socks.is_empty() {
+                            info!(
+                                mapped = %s,
+                                %server,
+                                "carrier plane: srflx gathered on the public-dial socket (no LAN \
+                                 socket on this host)"
+                            );
+                        } else {
+                            info!(
+                                mapped = %s,
+                                %server,
+                                "carrier plane: srflx RESCUED via the public-dial socket — every \
+                                 LAN vantage was dead but the default-route (VPN) path answers"
+                            );
+                        }
                         out.via_public_dial = true;
                         pairs.push((SocketAddr::V4(s).to_string(), p.clone()));
                     }
@@ -2409,6 +2454,101 @@ mod tests {
         );
     }
 
+    /// T13 — a WSL2 mirrored guest gathers no LAN interface, but must still
+    /// bind its public dialer (its only srflx vantage) instead of going
+    /// relay-only. Negative control: a host that is NOT a mirrored guest and
+    /// has no LAN interface stays relay-only, as before.
+    #[tokio::test]
+    async fn t13_a_mirrored_guest_binds_the_public_dialer_alone() {
+        let guest = CarrierPlane::new();
+        *guest.lan_only.lock().unwrap() = Some(Vec::new());
+        *guest.mirrored_guest.lock().unwrap() = Some(true);
+        let v = guest
+            .ensure_bound()
+            .await
+            .expect("a mirrored guest keeps its public dialer");
+        assert!(v.socks.is_empty(), "no LAN socket on a mirrored guest");
+        assert!(v.endpoints.is_empty(), "nothing advertised as LAN");
+        assert!(v.my_ips.is_empty());
+        let public = v.public_sock.expect("the public dialer is bound");
+        assert!(
+            public.local_addr().unwrap().ip().is_unspecified(),
+            "the dialer is the wildcard socket, never a host address"
+        );
+
+        let plain = CarrierPlane::new();
+        *plain.lan_only.lock().unwrap() = Some(Vec::new());
+        *plain.mirrored_guest.lock().unwrap() = Some(false);
+        assert!(
+            plain.ensure_bound().await.is_none(),
+            "no LAN interface and not a mirrored guest: relay only, unchanged"
+        );
+    }
+
+    /// T13 — with no LAN socket at all, the gather asks the public dialer
+    /// directly (whatever the VPN-vantage flag says): the mapping it owns is
+    /// the candidate, and the punch rides it.
+    #[tokio::test]
+    async fn t13_gather_uses_the_public_dialer_when_there_is_no_lan_socket() {
+        let plane = CarrierPlane::new();
+        let public = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let public_port = public.local_addr().unwrap().port();
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            loop {
+                let Ok((n, from)) = server.recv_from(&mut buf).await else {
+                    break;
+                };
+                if n < 20 {
+                    continue;
+                }
+                let txn: [u8; 12] = buf[8..20].try_into().unwrap();
+                let magic = 0x2112A442u32.to_be_bytes();
+                let ip = Ipv4Addr::new(203, 0, 113, 9).octets();
+                let mut resp = Vec::with_capacity(32);
+                resp.extend_from_slice(&0x0101u16.to_be_bytes());
+                resp.extend_from_slice(&12u16.to_be_bytes());
+                resp.extend_from_slice(&magic);
+                resp.extend_from_slice(&txn);
+                resp.extend_from_slice(&0x0020u16.to_be_bytes());
+                resp.extend_from_slice(&8u16.to_be_bytes());
+                resp.push(0);
+                resp.push(1);
+                resp.extend_from_slice(&(5151u16 ^ 0x2112).to_be_bytes());
+                resp.extend_from_slice(&[
+                    ip[0] ^ magic[0],
+                    ip[1] ^ magic[1],
+                    ip[2] ^ magic[2],
+                    ip[3] ^ magic[3],
+                ]);
+                let _ = server.send_to(&resp, from).await;
+            }
+        });
+        let t_pub = plane.adopt_socket(public.clone());
+        {
+            let mut st = plane.lock();
+            st.binds = Some(PlaneBinds {
+                socks: Vec::new(),
+                public_sock: Some(public.clone()),
+                endpoints: Vec::new(),
+                my_ips: Vec::new(),
+                v6: None,
+                my_v6: Vec::new(),
+                tasks: vec![t_pub],
+                stats: Vec::new(),
+            });
+        }
+        let mut rx = plane.take_stun_events().unwrap();
+        let shared = plane
+            .gather_via_sink(&[format!("stun:{server_addr}")], &mut rx, false)
+            .await;
+        assert_eq!(shared.candidates, vec!["203.0.113.9:5151".to_string()]);
+        let (_, punch) = shared.punch.expect("punch pair");
+        assert_eq!(punch.local_addr().unwrap().port(), public_port);
+    }
+
     /// A peer installed on a RELAY carrier must still be reachable by
     /// receiver index on the plane.
     ///
@@ -3066,6 +3206,10 @@ mod tests {
     async fn ensure_bound_binds_once_under_concurrent_attach() {
         let _serial = REAL_PORT_BIND_LOCK.lock().await;
         let plane = CarrierPlane::new();
+        // T13 — these real-host tests are about the LAN socket set: on a
+        // WSL2 mirrored build host the plane would bind the public dialer
+        // alone, so pin the non-guest premise they were written against.
+        *plane.mirrored_guest.lock().unwrap() = Some(false);
         let (a, b) = tokio::join!(plane.ensure_bound(), plane.ensure_bound());
         assert!(
             plane.binds_performed.load(Ordering::Relaxed) <= 1,
@@ -3093,6 +3237,10 @@ mod tests {
     async fn rebuild_after_srflx_rebinds_same_port_with_zero_bind_walks() {
         let _serial = REAL_PORT_BIND_LOCK.lock().await;
         let plane = CarrierPlane::new();
+        // T13 — these real-host tests are about the LAN socket set: on a
+        // WSL2 mirrored build host the plane would bind the public dialer
+        // alone, so pin the non-guest premise they were written against.
+        *plane.mirrored_guest.lock().unwrap() = Some(false);
         let Some(v1) = plane.ensure_bound().await else {
             return; // CI container with no usable non-loopback LAN interface
         };

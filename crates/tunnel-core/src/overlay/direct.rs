@@ -670,6 +670,16 @@ pub fn wsl2_mirrored_networking() -> bool {
     false
 }
 
+/// T13 — this node is a WSL2 guest under MIRRORED networking with the guard
+/// on: it gathers no LAN interface (see `gather_lan_interfaces_named`), yet
+/// its outbound UDP leaves through the host's NIC like any other process on
+/// the host. Its wildcard public-dial socket therefore owns a real NAT
+/// mapping, and that socket alone carries srflx — the "guest keeps srflx"
+/// half of the guard, which the bind used to drop along with the LAN set.
+pub fn wsl_mirrored_guest() -> bool {
+    wsl_mirrored_guard_enabled() && wsl2_mirrored_networking()
+}
+
 /// rc.275 hygiene — `true` when an interface must NOT be advertised as a LAN
 /// endpoint (nor given a pinned per-interface direct socket): virtual
 /// switches, host-only NATs, container bridges, and OTHER VPNs' adapters.
