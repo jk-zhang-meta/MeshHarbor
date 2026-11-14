@@ -279,6 +279,24 @@ pub async fn startup_checks<R: tauri::Runtime>(
     if !first_run_done && device != Some(false) {
         let _ = tokio::task::spawn_blocking(ensure_user_login_start).await;
     }
+    ensure_device_service_running().await;
+}
+
+/// A person opened the app (a double-click, the Start menu, a login start)
+/// and the device service is not answering: start it the way the platform
+/// supervises it (`meshharbord service start`: the logon task on Windows,
+/// `launchctl kickstart` of the LaunchAgent on macOS, `systemctl --user
+/// start` on Linux), without a window or a terminal on any of them.
+async fn ensure_device_service_running() {
+    if meshharbor_localapi::connect().await.is_ok() {
+        return;
+    }
+    tracing::info!("device service not answering at app start — starting it");
+    match tokio::task::spawn_blocking(crate::commands::run_service_start).await {
+        Ok(Ok(())) => tracing::info!("device service start requested"),
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not start the device service"),
+        Err(e) => tracing::warn!(error = %e, "device service start task failed"),
+    }
 }
 
 #[tauri::command]

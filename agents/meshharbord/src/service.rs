@@ -1014,6 +1014,12 @@ mod windows {
     /// Build the Task Scheduler XML that `schtasks /XML` consumes.
     /// Pure function — no I/O — so the test suite can pin the shape
     /// without touching the registry.
+    /// The daemon is a console program, and an `InteractiveToken` task runs
+    /// it on the person's desktop: started directly, every logon opened a
+    /// console window full of log lines — and closing that window sent the
+    /// console a close event that ended the daemon (`0xC000013A`), taking
+    /// the device off the mesh (field, 2026-11-14). `conhost --headless`
+    /// gives it a console with no window: nothing to see, nothing to close.
     fn render_task_xml(exe_path: &str, user: &str) -> String {
         let exe_xml = xml_escape(exe_path);
         let user_xml = xml_escape(user);
@@ -1070,8 +1076,8 @@ mod windows {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{exe_xml}</Command>
-      <Arguments>run --supervisor task</Arguments>
+      <Command>%SystemRoot%\System32\conhost.exe</Command>
+      <Arguments>--headless "{exe_xml}" run --supervisor task</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -1179,8 +1185,28 @@ mod windows {
         fn xml_template_marks_the_worker_as_task_supervised() {
             let xml = render_task_xml("C:\\path\\agent.exe", "DOMAIN\\user");
             assert!(
-                xml.contains("<Arguments>run --supervisor task</Arguments>"),
+                xml.contains(
+                    r#"<Arguments>--headless "C:\path\agent.exe" run --supervisor task</Arguments>"#
+                ),
                 "the task action must carry the supervisor flag: {xml}"
+            );
+        }
+
+        /// 2026-11-14 — a logon must not open a console window on the
+        /// person's desktop (and closing one must not be able to end the
+        /// daemon): the action is the daemon under a HEADLESS console host.
+        #[test]
+        fn xml_template_runs_the_daemon_without_a_console_window() {
+            let xml = render_task_xml("C:\\Users\\Joe & Sons\\meshharbord.exe", "DOM\\joe");
+            assert!(
+                xml.contains(r"<Command>%SystemRoot%\System32\conhost.exe</Command>"),
+                "{xml}"
+            );
+            assert!(
+                xml.contains(
+                    r#"--headless "C:\Users\Joe &amp; Sons\meshharbord.exe" run --supervisor task"#
+                ),
+                "the daemon path is quoted (spaces) and escaped (XML): {xml}"
             );
         }
 

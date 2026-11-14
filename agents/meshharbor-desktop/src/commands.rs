@@ -454,12 +454,23 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         .take()
         .ok_or_else(|| "No sign-in is in progress".to_string())?;
     let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
-    enroll_with_token(
+    let status = enroll_with_token(
         pending.server_url.clone(),
         approved.enrollment_token,
         device_name,
     )
-    .await
+    .await?;
+    // Signed in: bring the device service up on its new enrollment now, the
+    // way it is supervised (logon task / LaunchAgent / systemd user unit),
+    // instead of at the next logon.
+    if let Err(e) = tokio::task::spawn_blocking(run_service_start)
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+    {
+        tracing::warn!(error = %e, "signed in, but the device service did not start");
+    }
+    Ok(status)
 }
 
 async fn enroll_with_token(
@@ -1829,7 +1840,7 @@ pub async fn cmd_restart_wait(
 
 /// `meshharbord service start`, the caller half of a restart under the Scheduled
 /// Task. Blocking; bounded at 20 s.
-fn run_service_start() -> Result<(), String> {
+pub(crate) fn run_service_start() -> Result<(), String> {
     let exe = agent_exe_path()?;
     #[cfg(windows)]
     {
@@ -2837,6 +2848,12 @@ fn refresh_ok(surface: &'static str) {
 /// ONLY the per-user path, so an SCM-service install (machine-global
 /// config, no per-user copy) showed "Not enrolled" while the service ran
 /// enrolled.
+/// Whether this device has an enrollment the daemon can read (per-user or
+/// machine-global). Cheap: two path probes and a parse, no CLI spawn.
+pub(crate) fn is_enrolled() -> bool {
+    load_optional_config(false).is_some() || load_optional_config(true).is_some()
+}
+
 fn load_optional_config(is_scm: bool) -> Option<AgentConfig> {
     let path = active_config_path(is_scm).ok()?;
     if !path.exists() {

@@ -293,12 +293,19 @@
             <Directory Id='ProgramMenuFolder'>
                 <Directory Id='ProgramMenuSubfolder' Name='MeshHarbor'>
                     <Component Id='ApplicationShortcut' Guid='6D3F4A02-8B5E-4D4C-B03F-9C4D5E6F7081'>
+                        <!-- 2026-11-14: what a person double-clicks is the
+                             desktop app (tray), never `meshharbord run`: the
+                             daemon is a console program, so the old target
+                             opened a console window of log lines, and closing
+                             it ended the daemon. The daemon itself runs from
+                             the logon task (RegisterAutostart), windowless.
+                             The app lives beside the daemon (the daemon fetches
+                             it from the release; install.ps1 places it). -->
                         <Shortcut
                             Id='AgentShortcut'
-                            Name='MeshHarbor Agent'
-                            Description='MeshHarbor Daemon — private mesh network + secure remote control'
-                            Target='[APPLICATIONFOLDER]meshharbord.exe'
-                            Arguments='run'
+                            Name='MeshHarbor'
+                            Description='MeshHarbor — private mesh network + secure remote control'
+                            Target='[APPLICATIONFOLDER]meshharbor-desktop.exe'
                             WorkingDirectory='APPLICATIONFOLDER' />
                         <RemoveFolder Id='CleanupProgramMenuSubfolder' On='uninstall' />
                         <RegistryValue
