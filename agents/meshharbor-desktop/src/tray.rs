@@ -342,16 +342,61 @@ const TRAY_IDLE: tauri::image::Image<'static> = tauri::include_image!("icons/tra
 const TRAY_RECORDING: tauri::image::Image<'static> =
     tauri::include_image!("icons/tray-recording.png");
 
+/// The idle tray for a DARK taskbar (Windows): the approved white template
+/// (`design/x18/assets/template/tray/white-48.png`). macOS needs none — it
+/// tints the black template to the menu bar itself.
+const TRAY_IDLE_WHITE: tauri::image::Image<'static> = tauri::include_image!("icons/tray-white.png");
+
+/// Is the Windows taskbar dark? Read each time the tray refreshes, so a
+/// theme switch shows within a poll. `SystemUsesLightTheme` = 0 is dark; an
+/// absent value is a Windows 10 before 1903, whose taskbar is always dark.
+#[cfg(target_os = "windows")]
+fn taskbar_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let sub: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+        .encode_utf16()
+        .collect();
+    let name: Vec<u16> = "SystemUsesLightTheme\0".encode_utf16().collect();
+    let mut data: u32 = 1;
+    let mut size: u32 = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both names are NUL-terminated UTF-16 that outlive the call;
+    // `data` / `size` describe a live, correctly sized DWORD buffer.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut data as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    if rc == 0 { data == 0 } else { true }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn taskbar_dark() -> bool {
+    false
+}
+
 /// FR-85 — the configured tray's icon for the recorder's state, and whether
 /// it is a macOS template. ⚠️ The red one is never a template: the system
 /// tints a template to the menu bar's colour, and a recording must read as
-/// red (docs/remote-control.md §11.3).
-fn tray_look(recording: bool) -> (tauri::image::Image<'static>, bool) {
+/// red (docs/remote-control.md §11.3). Idle on a dark Windows taskbar: the
+/// white mark (the black one is all but invisible there).
+fn tray_look_for(recording: bool, dark: bool) -> (tauri::image::Image<'static>, bool) {
     if recording {
         (TRAY_RECORDING, false)
+    } else if dark {
+        (TRAY_IDLE_WHITE, true)
     } else {
         (TRAY_IDLE, true)
     }
+}
+
+fn tray_look(recording: bool) -> (tauri::image::Image<'static>, bool) {
+    tray_look_for(recording, taskbar_dark())
 }
 
 /// FR-85 — the two things that turn the tray red, each learned by a poll:
@@ -374,7 +419,9 @@ static REMOTE_MARKED: AtomicBool = AtomicBool::new(false);
 static RECORDER_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Whether the tray is red now. Both watches apply it; the lock makes one
 /// change at a time.
-static SHOWN_RED: Mutex<bool> = Mutex::new(false);
+/// What the tray shows: (recording red, dark-taskbar white). Starts as the
+/// configured icon: black, not red.
+static SHOWN_RED: Mutex<(bool, bool)> = Mutex::new((false, false));
 
 /// FR-85 — the device service is not there at all: its pipe or socket is
 /// missing, or nobody listens on it. That is an ANSWER (nothing records
@@ -430,7 +477,9 @@ fn apply_red<R: Runtime>(app: &AppHandle<R>) {
     // Read UNDER the lock: read before it, a watch holding a stale pair
     // could apply it after the other watch had applied the fresh one.
     let want = REMOTE_MARKED.load(Ordering::Acquire) || RECORDER_RUNNING.load(Ordering::Acquire);
-    if *shown == want {
+    // The taskbar's colour only matters to the idle icon.
+    let dark = !want && taskbar_dark();
+    if *shown == (want, dark) {
         return;
     }
     let mut applied = false;
@@ -443,7 +492,8 @@ fn apply_red<R: Runtime>(app: &AppHandle<R>) {
     // restarting, a temp file that could not be written) is tried again at
     // the next poll, rather than leave a whole recording without the red.
     if applied {
-        *shown = want;
+        tracing::info!(recording = want, dark_taskbar = dark, "tray: icon updated");
+        *shown = (want, dark);
     }
 }
 
@@ -834,10 +884,33 @@ mod tests {
     /// and nowhere else; the idle one has no red at all; the red one is never
     /// a macOS template (the system would tint it) and is the idle one's
     /// size, so the menu bar does not jump.
+    /// A dark Windows taskbar gets the white mark, a light one the black;
+    /// a recording is red on either.
+    #[test]
+    fn the_idle_mark_follows_the_taskbar_and_the_recording_stays_red() {
+        fn lightness(img: &tauri::image::Image<'_>) -> u64 {
+            let (mut sum, mut n) = (0u64, 0u64);
+            for px in img.rgba().chunks(4) {
+                if px[3] > 128 {
+                    sum += u64::from(px[0]) + u64::from(px[1]) + u64::from(px[2]);
+                    n += 1;
+                }
+            }
+            sum / (3 * n.max(1))
+        }
+        let (dark, dark_template) = tray_look_for(false, true);
+        let (light, _) = tray_look_for(false, false);
+        assert!(dark_template);
+        assert!(lightness(&dark) > 200, "white on a dark taskbar");
+        assert!(lightness(&light) < 60, "black on a light one");
+        let (rec, rec_template) = tray_look_for(true, true);
+        assert!(!rec_template && red_pixels(&rec, true) > 100);
+    }
+
     #[test]
     fn a_recording_turns_the_tray_red() {
-        let (rec, rec_template) = tray_look(true);
-        let (idle, idle_template) = tray_look(false);
+        let (rec, rec_template) = tray_look_for(true, false);
+        let (idle, idle_template) = tray_look_for(false, false);
         assert!(!rec_template, "a template would be tinted, never red");
         assert!(idle_template, "the idle tray is the menu-bar template");
         assert!(

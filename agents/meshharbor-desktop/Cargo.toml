@@ -76,6 +76,8 @@ windows-sys = { version = "0.59", features = [
     # `CreateProcessW`'s signature names `SECURITY_ATTRIBUTES`.
     "Win32_Security",
     "Win32_System_Threading",
+    # The taskbar's light/dark setting, for the tray icon's colour.
+    "Win32_System_Registry",
 ] }
 
 # FR-27 P9 — the session banner shown WITHOUT taking key status
