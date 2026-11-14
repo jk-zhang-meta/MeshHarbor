@@ -2868,11 +2868,22 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
     let mut command = std::process::Command::new(launch);
     let config = UPDATE_CONFIG_PATH.get().context("install owner requires exact active config")?;
     command.arg("--config").arg(config).arg("post-install-owner").arg("--directory").arg(&dir)
-        // Never inherit a scheduler job that disappears with the old daemon.
-        // Failure is fail-closed BEFORE any installer has been launched.
+        // Prefer explicit job breakaway; the observed Scheduler ERROR5 case
+        // uses the detached-group fallback below. No MSI precedes readiness.
         .creation_flags(0x01000000 | 0x00000200 | 0x08000000)
         .stdin(std::process::Stdio::null()).stdout(stdout).stderr(stderr);
-    let mut child = command.spawn().context("starting independent install owner")?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        // Match the existing companion spawn policy. Task Scheduler can deny
+        // explicit breakaway while a detached child survives normal action
+        // exit (verified by direct-action fixtures, without an outer holder).
+        Err(error) if error.raw_os_error() == Some(5) => {
+            tracing::warn!(error = %error, "install owner explicit job breakaway denied; trying detached process group");
+            command.creation_flags(0x00000200 | 0x08000000);
+            command.spawn().context("starting detached install owner after denied job breakaway")?
+        }
+        Err(error) => return Err(error).context("starting independent install owner"),
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if dir.join("ready.json").is_file() {
