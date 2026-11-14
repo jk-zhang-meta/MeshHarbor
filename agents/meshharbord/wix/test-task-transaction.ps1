@@ -8,7 +8,10 @@ $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\')
 $definition = $scheduler.NewTask(0)
-$definition.RegistrationInfo.Description = 'Isolated fixture; never started'
+# Construct Unicode by code point so this test source also loads correctly in PS5.
+$unicode = ([string][char]0x2014) + ' ' + [char]0x4E2D + [char]0x6587 + ' ' + [char]0x00E9
+$definition.RegistrationInfo.Description = 'Isolated fixture; never started ' + $unicode
+$definition.RegistrationInfo.Author = 'Fixture user ' + $unicode
 $definition.Principal.UserId = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $definition.Principal.LogonType = 3
 $definition.Settings.Enabled = $false
@@ -21,7 +24,7 @@ $trigger.UserId = $definition.Principal.UserId
 $trigger.Repetition.Interval = 'PT1M'
 $action = $definition.Actions.Create(0)
 $action.Path = Join-Path $env:SystemRoot 'System32\wscript.exe'
-$action.Arguments = '"C:\fixture only\custom.vbs"'
+$action.Arguments = '"C:\fixture only\' + $unicode + '\custom.vbs"'
 $action.WorkingDirectory = 'C:\'
 try {
     $task = $folder.RegisterTaskDefinition($name, $definition, 2, $definition.Principal.UserId, $null, 3, $null)
@@ -35,7 +38,7 @@ try {
     if ((Get-TaskXmlIdentity $after.xml) -cne (Get-TaskXmlIdentity $before.xml) -or (Get-AclIdentity $after.file_sddl) -cne (Get-AclIdentity $before.file_sddl) -or $after.enabled) { throw 'custom/disabled task changed' }
     Invoke-TaskTransaction 'start-if-enabled' $product '' @($name)
     if ([int]$folder.GetTask($name).State -ne 1) { throw 'Disabled task was started' }
-    Write-Output 'PASS: custom WScript action/PT1M/principal/settings/disabled/XML/SDDL preserved; disabled not started'
+    Write-Output 'PASS: Unicode description/author/action path and custom WScript/PT1M/principal/disabled/XML/ACL preserved; disabled not started'
 
     $product = '{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     Invoke-TaskTransaction 'snapshot' $product '' @($name)

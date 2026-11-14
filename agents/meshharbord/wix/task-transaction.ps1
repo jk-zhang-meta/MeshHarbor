@@ -137,14 +137,16 @@ function Invoke-TaskTransaction([string]$Operation, [string]$ProductCode, [strin
         Write-NewJson $pointer @{ nonce=$nonce; sha256=(Get-FileHash -LiteralPath $journal -Algorithm SHA256).Hash }
         return
     }
-    $link = Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json
+    # Write-NewJson emits UTF-8 without a BOM; Windows PowerShell 5 defaults
+    # to the ANSI code page unless the matching encoding is explicit.
+    $link = Get-Content -LiteralPath $pointer -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$link.nonce -notmatch '^[0-9a-f]{32}$') { throw 'Invalid transaction identity' }
     $directory = Join-Path $base ([string]$link.nonce)
     Assert-NoReparsePath $directory
     $journal = Join-Path $directory 'tasks.json'
     Assert-NoReparsePath $journal
     if ((Get-FileHash -LiteralPath $journal -Algorithm SHA256).Hash -cne [string]$link.sha256) { throw 'Recovery material hash mismatch' }
-    $saved = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json
+    $saved = Get-Content -LiteralPath $journal -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($saved.product -cne $ProductCode -or $saved.sid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) { throw 'Transaction authority mismatch' }
     if ($Operation -eq 'restore-or-create') {
         if (@($saved.tasks).Count -eq 0) {
