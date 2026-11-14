@@ -19,7 +19,7 @@ function XmlIdentity([string]$xml){
 }
 $sd=New-Object Security.AccessControl.RawSecurityDescriptor($OldSddl)
 if($sd.Owner.Value -cne 'S-1-5-32-544' -or $sd.SystemAcl){throw 'unexpected original owner/SACL'}
-$matches=0
+$matches=0;$creatorOwner=0
 for($i=0;$i -lt $sd.DiscretionaryAcl.Count;$i++){
  $a=$sd.DiscretionaryAcl[$i]
  if($a.SecurityIdentifier.Value -ceq $sid){
@@ -27,8 +27,17 @@ for($i=0;$i -lt $sd.DiscretionaryAcl.Count;$i++){
   $sd.DiscretionaryAcl[$i]=New-Object Security.AccessControl.CommonAce($a.AceFlags,$a.AceQualifier,0x1f01ff,$a.SecurityIdentifier,$false,$null)
   $matches++
  }
+ if($a.SecurityIdentifier.Value -ceq 'S-1-5-32-544' -and [int]$a.AceFlags -eq 16 -and $a.AccessMask -eq 0x1f01ff){
+  # The Tasks parent has inheritable CREATOR_OWNER full control. Windows
+  # substitutes the new owner here; retain BA's old effective full rights
+  # with one explicit compensating ACE, not a protected DACL.
+  $sd.DiscretionaryAcl[$i]=New-Object Security.AccessControl.CommonAce($a.AceFlags,$a.AceQualifier,$a.AccessMask,(New-Object Security.Principal.SecurityIdentifier($sid)),$false,$null)
+  $creatorOwner++
+ }
 }
-if($matches -ne 1){throw 'expected exactly one explicit user read ACE'}
+if($matches -ne 1 -or $creatorOwner -ne 1){throw 'unexpected user/creator-owner ACE layout'}
+$ba=New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+$sd.DiscretionaryAcl.InsertAce(1,(New-Object Security.AccessControl.CommonAce([Security.AccessControl.AceFlags]::None,[Security.AccessControl.AceQualifier]::AccessAllowed,0x1f01ff,$ba,$false,$null)))
 $sd.Owner=New-Object Security.Principal.SecurityIdentifier($sid)
 $new=$sd.GetSddlForm([Security.AccessControl.AccessControlSections]::All)
 $expected=if($Operation -eq 'apply'){$OldSddl}else{$new}
@@ -40,7 +49,7 @@ $s=New-Object -ComObject Schedule.Service;$s.Connect();$folder=$s.GetFolder('\')
 if($task.Path -cne '\MeshHarbor'){throw 'wrong task'}
 $xml=XmlIdentity $task.Xml;$enabled=$task.Enabled
 # Native Task Scheduler metadata API only: no register, stop, start or XML write.
-$task.SetSecurityDescriptor($desired,0)
+$task.SetSecurityDescriptor($desired,16)
 $observed=$folder.GetTask('MeshHarbor')
 if((Identity (Get-Acl -LiteralPath $path).Sddl) -cne (Identity $desired) -or (XmlIdentity $observed.Xml) -cne $xml -or $observed.Enabled -ne $enabled){throw 'task metadata readback differs'}
 @{operation=$Operation;task=$observed.Path;old=$expected;new=(Get-Acl -LiteralPath $path).Sddl;xml_unchanged=$true;enabled=$observed.Enabled}|ConvertTo-Json -Compress
