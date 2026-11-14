@@ -2499,6 +2499,7 @@
     }
   },
   "deviceLogin": {
+    "personalAccess": "这是你的自有设备。默认向你的账号开放设备支持的桌面、文件、SSH 和远程命令，不是向所有组织成员开放。终端可能以 root 或 SYSTEM 身份运行。系统隐私授权、本机明确关闭的功能及已有邀请选择仍然有效。只批准自己的设备；他人的设备应通过邀请加入，并自行选择开放功能。",
     "title": "把设备加入 MeshHarbor",
     "intro": "有一台设备运行了 `mh login`（或在 MeshHarbor 应用里点了登录），请求加入你的组织。",
     "codeLabel": "设备上显示的验证码",
@@ -2516,6 +2517,22 @@
     "notFound": "找不到这个验证码对应的请求，可能已经过期（10 分钟）。请在设备上重新运行 `mh login`。",
     "noPermission": "你没有向该组织添加设备的权限。",
     "failed": "出了点问题，请重试。"
+  },
+  "deviceFeatures": {
+    "title": "设备选择开放的功能",
+    "legacy": "未报告功能选择（旧版），仍按原有策略控制",
+    "none": "未开放任何功能",
+    "revocationPending": "新授权已使用此选择，但尚未确认既有连接全部终止；权限收回仍待完成。",
+    "hostDecides": "由接受邀请的设备端选择开放哪些功能。续期不会增加权限；请在该设备上修改选择，管理策略不能替设备扩大授权。",
+    "desktop_view": "查看桌面",
+    "desktop_control": "控制桌面",
+    "clipboard": "剪贴板",
+    "files": "文件读写",
+    "ssh": "SSH 终端",
+    "exec": "远程命令",
+    "rdp": "RDP",
+    "network": "网络服务",
+    "networkWarning": "网络访问包含系统自带的 SSH、RDP 等服务；关闭应用功能不等于防火墙阻断这些服务，主机权限和身份验证仍然生效。"
   },
   "acceptedInvites": {
     "title": "本组织设备接受的邀请",

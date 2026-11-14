@@ -2499,6 +2499,7 @@
     }
   },
   "deviceLogin": {
+    "personalAccess": "This is your personal device. Supported desktop, files, SSH and remote-command services are enabled for your account by default, not for every organization member. Shells may run as root or SYSTEM. System privacy permissions, explicit local refusals and existing invitation choices still apply. Only approve your own device; another person's device should join by invitation and choose what to allow.",
     "title": "Add a device to MeshHarbor",
     "intro": "A device ran `mh login` (or chose Sign in in the MeshHarbor app) and is asking to join one of your organizations.",
     "codeLabel": "Code shown on the device",
@@ -2516,6 +2517,22 @@
     "notFound": "No pending request with that code. It may have expired (10 minutes) — run `mh login` again on the device.",
     "noPermission": "You do not have permission to add devices to that organization.",
     "failed": "Something went wrong. Try again."
+  },
+  "deviceFeatures": {
+    "title": "Device-selected features",
+    "legacy": "No feature selection reported (legacy); existing policies still apply",
+    "none": "No features allowed",
+    "revocationPending": "New authorization uses this selection. Termination of existing connections is NOT confirmed; access revocation is pending.",
+    "hostDecides": "The person accepting on the device selects its allowed features. Renewing an invitation does not add permissions. Change selections on that device, not by editing its administrator policy.",
+    "desktop_view": "View desktop",
+    "desktop_control": "Control desktop",
+    "clipboard": "Clipboard",
+    "files": "Files (read and write)",
+    "ssh": "SSH shell",
+    "exec": "Remote commands",
+    "rdp": "RDP",
+    "network": "Network services",
+    "networkWarning": "Network access includes system services such as SSH and RDP; disabling an app feature is not a firewall for those services. Host permissions and authentication still apply."
   },
   "acceptedInvites": {
     "title": "Invitations your devices accepted",

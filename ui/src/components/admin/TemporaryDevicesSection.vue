@@ -20,6 +20,7 @@
     </v-card-title>
     <v-card-text>
       <p class="text-body-2 text-medium-emphasis mb-3">{{ t('tempDevices.intro') }}</p>
+      <p class="text-body-2 text-medium-emphasis mb-3">{{ t('deviceFeatures.hostDecides') }}</p>
       <v-btn-toggle v-model="filter" density="compact" mandatory class="mb-3" color="primary" variant="outlined">
         <v-btn value="active" size="small">{{ t('tempDevices.filter.active') }}</v-btn>
         <v-btn value="all" size="small">{{ t('tempDevices.filter.all') }}</v-btn>
@@ -30,6 +31,7 @@
             <th>{{ t('tempDevices.col.device') }}</th>
             <th>{{ t('tempDevices.col.state') }}</th>
             <th>{{ t('tempDevices.col.until') }}</th>
+            <th>{{ t('deviceFeatures.title') }}</th>
             <th>{{ t('tempDevices.col.history') }}</th>
             <th class="text-right">{{ t('tempDevices.col.actions') }}</th>
           </tr>
@@ -49,11 +51,13 @@
               </div>
             </td>
             <td :data-label="t('tempDevices.col.until')">
+              <!-- State is independent: selected features do not claim the host is online. -->
               {{ fmt(r.access_until_ms) }}
               <div v-if="r.state !== 'ended'" class="text-caption text-medium-emphasis">
                 {{ t('tempDevices.left', { left: remaining(r.access_until_ms) }) }}
               </div>
             </td>
+            <td :data-label="t('deviceFeatures.title')"><DeviceFeatureSummary :features="r.features" :revocation-pending="r.revocation_pending" /></td>
             <td :data-label="t('tempDevices.col.history')" class="text-caption">
               <div>{{ t('tempDevices.created', { when: fmt(r.created_at_ms) }) }}</div>
               <div v-if="r.redeemed_at_ms">{{ t('tempDevices.joined', { when: fmt(r.redeemed_at_ms) }) }}</div>
@@ -184,6 +188,8 @@ import { api, ApiError } from '@/api/client'
 import { useAgentStore } from '@/stores/agents'
 import { useRoleStore } from '@/stores/role'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
+import DeviceFeatureSummary from './DeviceFeatureSummary.vue'
+import type { DeviceAccessFeatures } from '@/utils/deviceFeatures'
 
 interface Renewal { at_ms: number; by: string; previous_until_ms: number; until_ms: number }
 interface InviteRow {
@@ -203,6 +209,9 @@ interface InviteRow {
   ended_by: string | null
   converted: boolean
   renewals: Renewal[]
+  features?: DeviceAccessFeatures | null
+  features_revision?: number
+  revocation_pending?: boolean
 }
 interface Created extends InviteRow { code: string; join_command: string }
 

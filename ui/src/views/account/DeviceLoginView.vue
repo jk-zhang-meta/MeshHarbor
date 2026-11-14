@@ -48,6 +48,9 @@
             data-testid="device-login-org"
           />
           <p class="text-caption text-medium-emphasis mb-3">{{ t('deviceLogin.warning') }}</p>
+          <v-alert v-if="preview.personal_device === true" type="warning" variant="tonal" class="mb-3" data-testid="device-login-personal-access">
+            {{ t('deviceLogin.personalAccess') }}
+          </v-alert>
           <div class="d-flex ga-2">
             <v-btn color="primary" :loading="busy" :disabled="!tenantId" data-testid="device-login-approve" @click="decide(true)">
               {{ t('deviceLogin.approve') }}
@@ -70,6 +73,7 @@ import { api, ApiError } from '@/api/client'
 import { useTenantStore } from '@/stores/tenant'
 
 interface Preview {
+  personal_device?: boolean
   device: { name: string; os: string }
   client: string
   requested_at_ms: number

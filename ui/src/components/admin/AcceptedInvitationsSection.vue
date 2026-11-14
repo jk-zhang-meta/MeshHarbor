@@ -26,6 +26,7 @@
             <th>{{ t('acceptedInvites.col.from') }}</th>
             <th>{{ t('tempDevices.col.state') }}</th>
             <th>{{ t('tempDevices.col.until') }}</th>
+            <th>{{ t('deviceFeatures.title') }}</th>
             <th>{{ t('tempDevices.col.history') }}</th>
             <th class="text-right">{{ t('tempDevices.col.actions') }}</th>
           </tr>
@@ -51,6 +52,7 @@
                 {{ t('tempDevices.left', { left: remaining(r.access_until_ms) }) }}
               </div>
             </td>
+            <td :data-label="t('deviceFeatures.title')"><DeviceFeatureSummary :features="r.features" :revocation-pending="r.revocation_pending" /></td>
             <td :data-label="t('tempDevices.col.history')" class="text-caption">
               <div v-if="r.redeemed_at_ms">{{ t('acceptedInvites.accepted', { when: fmt(r.redeemed_at_ms) }) }}</div>
               <div v-for="(x, i) in r.renewals" :key="i">
@@ -82,6 +84,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError } from '@/api/client'
+import DeviceFeatureSummary from './DeviceFeatureSummary.vue'
+import type { DeviceAccessFeatures } from '@/utils/deviceFeatures'
 
 interface Renewal { at_ms: number; previous_until_ms: number; until_ms: number }
 interface GrantRow {
@@ -97,6 +101,9 @@ interface GrantRow {
   ended_at_ms: number | null
   end_reason: string | null
   renewals: Renewal[]
+  features?: DeviceAccessFeatures | null
+  features_revision?: number
+  revocation_pending?: boolean
 }
 
 const props = defineProps<{ tenantId: string }>()
