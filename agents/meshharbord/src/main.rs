@@ -865,6 +865,12 @@ enum Command {
     /// agent exits to make room for the installer; not intended for
     /// interactive use. Hidden from `--help` to avoid confusion.
     #[command(hide = true)]
+    #[cfg(target_os = "windows")]
+    PostInstallOwner {
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    #[command(hide = true)]
     PostInstallWatch {
         /// PID of the installer (msiexec / dpkg / installer(8))
         /// the parent agent just spawned.
@@ -2871,6 +2877,11 @@ async fn daemon_main() -> Result<()> {
             set_service_env_var_cmd(&name, value.as_deref())
         }
         Command::RestartService { timeout_secs } => restart_service_cmd(timeout_secs),
+        #[cfg(target_os = "windows")]
+        Command::PostInstallOwner { directory } => {
+            tokio::task::spawn_blocking(move || updater::run_windows_install_owner(&directory))
+                .await.context("install owner join")?
+        }
         Command::PostInstallWatch {
             installer_pid,
             installer_path,
@@ -4818,6 +4829,7 @@ async fn run_cmd(
             }
             #[cfg(target_os = "windows")]
             if !scm_owns_companion {
+                meshharbord::post_install::await_windows_update_receipt().await;
                 let _ = tokio::task::spawn_blocking(move || {
                     meshharbord::companion::sync_user_autostart_logged(companion_autostart);
                     // After the refresh above, so it opens the new companion.

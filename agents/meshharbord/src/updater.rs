@@ -1922,6 +1922,10 @@ pub fn spawn_installer_with_watch(
         let config = UPDATE_CONFIG_PATH.get().context("same-user update needs resolved config path")?;
         return linux_user::launch(installer_path, expected_version.context("same-user update requires expected version")?, config);
     }
+    #[cfg(target_os = "windows")]
+    if let Some(tag) = expected_version {
+        return spawn_windows_install_owner(installer_path, tag);
+    }
     let spawned = spawn_installer_inner(installer_path)?;
     if let Some(tag) = expected_version
         && let Err(e) = spawn_watcher(spawned, installer_path, tag)
@@ -2786,6 +2790,172 @@ fn strip_deleted_suffix(exe: &std::path::Path) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(stripped))
+}
+
+
+// The installer may terminate the install-directory daemon through Restart
+// Manager immediately. Its independent observer must own the launch, rather
+// than be spawned by a parent that the installer can already remove.
+#[cfg(target_os = "windows")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WindowsOwnerRequest {
+    installer: std::path::PathBuf,
+    origin: std::path::PathBuf,
+    expected_version: String,
+    digest: String,
+}
+
+#[cfg(target_os = "windows")]
+fn owner_record(dir: &std::path::Path, name: &str, value: &impl serde::Serialize) -> Result<()> {
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(dir.join(name))?;
+    Ok(())
+}
+
+// Serialize the small durable claim, not the whole install. The pointer
+// survives caller/daemon death; only an exact observed terminal releases it.
+#[cfg(target_os = "windows")]
+fn claim_windows_owner(journal: &std::path::Path, directory: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(journal)?;
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true)
+        .truncate(false).open(journal.join("install-owner.lock"))?;
+    lock.try_lock().context("another installer owner claim is in progress")?;
+    let active = journal.join("install-owner-active.json");
+    if active.exists() {
+        let previous: std::path::PathBuf = serde_json::from_slice(&std::fs::read(&active)?)?;
+        let request: WindowsOwnerRequest = serde_json::from_slice(&std::fs::read(previous.join("request.json"))?)?;
+        let terminal = std::fs::read(previous.join("terminal.json"))
+            .context("prior install owner is unresolved; refusing another installer, including after cooldown/restart")?;
+        let terminal: crate::post_install::InstallOutcome = serde_json::from_slice(&terminal)?;
+        anyhow::ensure!(terminal.finished_unix.is_some()
+            && terminal.installer_exit_code.is_some()
+            && !matches!(terminal.status, crate::post_install::InstallStatus::InProgress | crate::post_install::InstallStatus::Timeout)
+            && terminal.installer_path == request.installer.display().to_string()
+            && terminal.expected_version == request.expected_version,
+            "prior install owner has no exact terminal; manual reconciliation required");
+    }
+    let mut replacement = tempfile::NamedTempFile::new_in(journal)?;
+    replacement.write_all(&serde_json::to_vec(directory)?)?;
+    replacement.as_file().sync_all()?;
+    replacement.persist(&active)?;
+    Ok(()) // dropping the native file lock does not remove the durable pointer
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::os::windows::process::CommandExt;
+    let origin = std::env::current_exe()?.canonicalize()?;
+    let installer = installer.canonicalize()?;
+    let parent = installer.parent().context("installer has no staging directory")?;
+    let dir = tempfile::Builder::new().prefix("install-owner-").tempdir_in(parent)?.keep();
+    let launch = dir.join("meshharbord-owner.exe");
+    std::fs::copy(&origin, &launch).context("staging independent install owner")?;
+    let request = WindowsOwnerRequest {
+        installer: installer.clone(), origin,
+        expected_version: tag.to_owned(),
+        digest: format!("sha256:{:x}", Sha256::digest(std::fs::read(&installer)?)),
+    };
+    owner_record(&dir, "request.json", &request)?;
+    let journal = crate::post_install::outcome_path().context("install owner outcome location unavailable")?;
+    claim_windows_owner(journal.parent().context("outcome has no parent")?, &dir)?;
+    let stdout = std::fs::File::create(dir.join("stdout.log"))?;
+    let stderr = std::fs::File::create(dir.join("stderr.log"))?;
+    let mut command = std::process::Command::new(launch);
+    let config = UPDATE_CONFIG_PATH.get().context("install owner requires exact active config")?;
+    command.arg("--config").arg(config).arg("post-install-owner").arg("--directory").arg(&dir)
+        // Never inherit a scheduler job that disappears with the old daemon.
+        // Failure is fail-closed BEFORE any installer has been launched.
+        .creation_flags(0x01000000 | 0x00000200 | 0x08000000)
+        .stdin(std::process::Stdio::null()).stdout(stdout).stderr(stderr);
+    let mut child = command.spawn().context("starting independent install owner")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if dir.join("ready.json").is_file() {
+            let ready: u32 = serde_json::from_slice(&std::fs::read(dir.join("ready.json"))?)?;
+            anyhow::ensure!(ready == child.id(), "install owner readiness PID mismatch");
+            break;
+        }
+        if let Some(status) = child.try_wait()? {
+            bail!("install owner exited before readiness ({status}); diagnostics {}", dir.display());
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill(); let _ = child.wait();
+            bail!("install owner readiness timed out; no installer authorized; diagnostics {}", dir.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    owner_record(&dir, "authorize.json", &child.id())?;
+    // A launch error must not make the daemon exit. Once the MSI starts it may
+    // kill us before this acknowledgment; the already independent owner lives.
+    loop {
+        if dir.join("started.json").is_file() { return Ok(()); }
+        if let Some(status) = child.try_wait()? {
+            bail!("install owner exited before installer launch ({status}); diagnostics {}", dir.display());
+        }
+        if std::time::Instant::now() >= deadline {
+            // Authorization was issued: NEVER kill or retry an uncertain owner.
+            bail!("install owner launch acknowledgment missing; outcome unknown, do not retry; diagnostics {}", dir.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Internal staged Windows owner. Only this process starts the installer; it
+/// then performs the existing real installer/live-version verification.
+#[cfg(target_os = "windows")]
+pub fn run_windows_install_owner(dir: &std::path::Path) -> Result<()> {
+    let result = (|| -> Result<()> {
+        let request: WindowsOwnerRequest = serde_json::from_slice(&std::fs::read(dir.join("request.json"))?)?;
+        anyhow::ensure!(request.origin.is_file(), "install origin is missing");
+        verify_sha256(&std::fs::read(&request.installer)?, &request.digest)?;
+        // Fail before readiness if the ordinary outcome directory is unwritable.
+        let outcome = crate::post_install::outcome_path().context("outcome location unavailable")?;
+        let journal_dir = outcome.parent().context("outcome has no parent")?;
+        std::fs::create_dir_all(journal_dir)?;
+        if outcome.exists() {
+            let _existing = std::fs::OpenOptions::new().write(true).open(&outcome)
+                .context("existing outcome journal is not writable")?;
+        }
+        let _probe = tempfile::NamedTempFile::new_in(journal_dir)?;
+        // The new daemon must never start before a matching pending receipt
+        // exists. Failure here occurs before authorization and before MSI.
+        let mut prepared = crate::post_install::prepare_windows_outcome(&request.installer, &request.expected_version)?;
+        owner_record(dir, "ready.json", &std::process::id())?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if dir.join("authorize.json").is_file() {
+                let authorized: u32 = serde_json::from_slice(&std::fs::read(dir.join("authorize.json"))?)?;
+                anyhow::ensure!(authorized == std::process::id(), "install owner authorization mismatch");
+                break;
+            }
+            anyhow::ensure!(std::time::Instant::now() < deadline, "owner not authorized; no installer launched");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        verify_sha256(&std::fs::read(&request.installer)?, &request.digest)?;
+        let flavour = classify_install_flavour_from_path(&request.origin);
+        let pid = spawn_installer_as_flavour(&request.installer, flavour)?;
+        // If evidence IO fails after launch, still wait/verify the installer.
+        if let Err(error) = owner_record(dir, "started.json", &pid) {
+            tracing::error!(error = %error, pid, "install owner launch receipt failed");
+        }
+        prepared.installer_pid = pid;
+        let outcome = crate::post_install::watch_prepared(prepared, Some(request.origin), false)?;
+        owner_record(dir, "terminal.json", &outcome)?;
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        let detail = format!("{error:#}");
+        tracing::error!(error = %detail, "independent install owner failed");
+        if let Err(receipt_error) = owner_record(dir, "error.json", &detail) {
+            eprintln!("install owner: {detail}; recording error also failed: {receipt_error:#}");
+        }
+    }
+    result
 }
 
 fn spawn_watcher(
@@ -6768,3 +6938,63 @@ mod tests {
     }
 }
 // RETIRED-NAME-ANCHOR-END
+
+#[cfg(all(test, target_os = "windows"))]
+mod install_owner_tests {
+    use super::*;
+    #[test]
+    fn owner_receipts_are_atomic_and_cannot_reauthorize_or_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        owner_record(dir.path(), "ready.json", &41u32).unwrap();
+        assert_eq!(serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap()).unwrap(),41);
+        assert!(owner_record(dir.path(), "ready.json", &42u32).is_err());
+        assert_eq!(serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap()).unwrap(),41);
+        assert!(!dir.path().join("authorize.json").exists());
+        assert!(!dir.path().join("started.json").exists());
+    }
+    #[test]
+    fn owner_bad_request_fails_before_ready_authorization_or_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("request.json"),b"not-json").unwrap();
+        assert!(run_windows_install_owner(dir.path()).is_err());
+        assert!(dir.path().join("error.json").exists());
+        for marker in ["ready.json","authorize.json","started.json","terminal.json"] {
+            assert!(!dir.path().join(marker).exists());
+        }
+    }
+    #[test]
+    fn owner_real_origin_not_staged_temp_selects_machine_scope() {
+        assert_eq!(classify_install_flavour_from_path(std::path::Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe")),WindowsInstallFlavour::PerMachine);
+        assert_eq!(classify_install_flavour_from_path(std::path::Path::new(r"C:\Users\u\AppData\Local\Temp\install-owner-x\meshharbord-owner.exe")),WindowsInstallFlavour::PerUser);
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod install_owner_fence_tests {
+    use super::*;
+    #[test]
+    fn missing_started_receipt_stays_fenced_past_cooldown_and_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = root.path().join("journal");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir(&first).unwrap(); std::fs::create_dir(&second).unwrap();
+        let request = WindowsOwnerRequest { installer:first.join("fixture.msi"), origin:first.join("original.exe"), expected_version:"agent-v0.4.160".into(), digest:"sha256:fixture".into() };
+        owner_record(&first,"request.json",&request).unwrap();
+        claim_windows_owner(&journal,&first).unwrap();
+        owner_record(&first,"authorize.json",&17u32).unwrap();
+        let mut installer_spawns = 1;
+        // Caller disappeared after authorization; started.json write failed.
+        // A restart/old cooldown cannot release the persisted active pointer.
+        std::fs::write(journal.join("update-attempt"),b"0").unwrap();
+        for _elapsed_seconds in [301,601,1500] {
+            if claim_windows_owner(&journal,&second).is_ok() { installer_spawns += 1; }
+        }
+        assert_eq!(installer_spawns,1);
+        owner_record(&first,"error.json",&"unknown after authorization").unwrap();
+        assert!(claim_windows_owner(&journal,&second).is_err());
+        let terminal = crate::post_install::InstallOutcome { installer_pid:17,installer_path:request.installer.display().to_string(),expected_version:request.expected_version.clone(),started_unix:1,finished_unix:Some(1501),installer_exit_code:Some(0),new_binary_path:None,new_binary_version:None,status:crate::post_install::InstallStatus::SucceededUnverified,note:"fixture terminal observed, no live claim".into() };
+        owner_record(&first,"terminal.json",&terminal).unwrap();
+        claim_windows_owner(&journal,&second).unwrap();
+    }
+}
