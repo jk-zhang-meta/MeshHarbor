@@ -65,6 +65,7 @@ pub mod auth_agent;
 pub mod consent;
 pub mod consent_consumer;
 pub mod ctrl;
+pub mod device_login;
 pub mod enroll_key;
 pub mod exec_service;
 pub mod external_access;
@@ -573,6 +574,24 @@ impl Module for FleetState {
             .nest("/tunnel", public_tunnel_release)
             .nest("/setup", public_setup)
             .nest("/releases", releases)
+            // Device login (`mh login`): anonymous start + exchange, the
+            // approval pair behind a session. Bodies are tiny by contract.
+            .route(
+                "/native/device-login",
+                post(device_login::start).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/device-login/preview",
+                post(device_login::preview).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/device-login/decision",
+                post(device_login::decide).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/device-login/exchange",
+                post(device_login::exchange).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
             .with_state(self.clone())
     }
 
@@ -757,6 +776,18 @@ impl Module for FleetState {
                 indexes: vec![
                     index(bson::doc! { "tenant_id": 1, "at": -1 }),
                     index(bson::doc! { "tenant_id": 1, "agent_id": 1, "at": -1 }),
+                ],
+            },
+            // Device login (`mh login`) requests: codes only as hashes, gone
+            // at their 10-minute expiry.
+            IndexSet {
+                collection: device_login::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! { "user_code_hash": 1 }),
+                    index_unique(bson::doc! { "device_code_hash": 1 }),
+                    index(bson::doc! { "client_hash": 1, "state": 1 }),
+                    index_ttl(bson::doc! { "expires_at": 1 }, 0),
                 ],
             },
         ]

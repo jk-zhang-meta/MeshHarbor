@@ -2421,5 +2421,24 @@
       "fromYoutube": "按下播放后从 YouTube 播放。",
       "play": "播放视频“{title}”（{n} 分钟，从 YouTube 播放）"
     }
+  },
+  "deviceLogin": {
+    "title": "把设备加入 MeshHarbor",
+    "intro": "有一台设备运行了 `mh login`（或在 MeshHarbor 应用里点了登录），请求加入你的组织。",
+    "codeLabel": "设备上显示的验证码",
+    "lookup": "继续",
+    "device": "设备名（由设备自己上报）",
+    "os": "操作系统",
+    "from": "请求来源",
+    "codeCheck": "请核对设备上显示的是同一个验证码",
+    "org": "加入到组织",
+    "warning": "只批准你此刻正在亲手设置的设备。批准后，这台设备会加入该组织的私有网络。",
+    "approve": "批准",
+    "deny": "拒绝",
+    "approved": "已批准。回到设备上，几秒内会自动完成加入。",
+    "denied": "已拒绝，设备没有被加入。",
+    "notFound": "找不到这个验证码对应的请求，可能已经过期（10 分钟）。请在设备上重新运行 `mh login`。",
+    "noPermission": "你没有向该组织添加设备的权限。",
+    "failed": "出了点问题，请重试。"
   }
 }

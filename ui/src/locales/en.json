@@ -2421,5 +2421,24 @@
       "fromYoutube": "Plays from YouTube when you press play.",
       "play": "Play the video \"{title}\" ({n} minutes, plays from YouTube)"
     }
+  },
+  "deviceLogin": {
+    "title": "Add a device to MeshHarbor",
+    "intro": "A device ran `mh login` (or chose Sign in in the MeshHarbor app) and is asking to join one of your organizations.",
+    "codeLabel": "Code shown on the device",
+    "lookup": "Continue",
+    "device": "Device name (as the device reports it)",
+    "os": "Operating system",
+    "from": "Request came from",
+    "codeCheck": "Check that the device shows this same code",
+    "org": "Add it to organization",
+    "warning": "Approve only a device you are setting up yourself right now. An approved device joins the organization's private network.",
+    "approve": "Approve",
+    "deny": "Deny",
+    "approved": "Approved. Go back to the device; it finishes joining by itself within a few seconds.",
+    "denied": "Denied. The device was not added.",
+    "notFound": "No pending request with that code. It may have expired (10 minutes) — run `mh login` again on the device.",
+    "noPermission": "You do not have permission to add devices to that organization.",
+    "failed": "Something went wrong. Try again."
   }
 }
