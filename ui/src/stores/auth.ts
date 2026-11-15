@@ -10,6 +10,7 @@ import { api } from '@/api/client'
 import { useAccountApprovalStore } from '@/stores/accountApproval'
 import router from '@/plugins/router'
 import { subscribePush, unsubscribePush } from '@/composables/usePush'
+import { useSnackbar } from '@/composables/useSnackbar'
 import { markSignedIn, clearSignedIn, looksSignedIn } from '@/api/session'
 import type { SignupAttribution } from '@/utils/attribution'
 
@@ -236,14 +237,23 @@ export const useAuthStore = defineStore('auth', () => {
     cancelMeRetry()
     useAccountApprovalStore().reset()
     unsubscribePush().catch(() => {})
+    error.value = null
+    let unconfirmed: string | null = null
     try {
       await api.post('/auth/logout', {})
-    } catch {
-      /* clear locally regardless — see above */
+    } catch (e) {
+      const detail = (e as Error).message
+      unconfirmed = detail
+        ? `Could not confirm server sign-out (${detail}). Other signed-in browser or desktop sessions may remain active until you sign out while connected.`
+        : 'Could not confirm server sign-out. Other signed-in browser or desktop sessions may remain active until you sign out while connected.'
     }
     user.value = null
     signedIn.value = false
     clearSignedIn()
+    if (unconfirmed) {
+      error.value = unconfirmed
+      useSnackbar().showError(unconfirmed)
+    }
     router.push({ name: 'login' })
   }
 

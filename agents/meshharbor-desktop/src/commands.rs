@@ -641,9 +641,11 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
     } else {
         server
     };
-    // Already enrolled machines authorize only a GUI user session: no device
-    // identity/organization mutation and no daemon restart for web sign-in.
-    let purpose = if is_enrolled() { device_login::Purpose::UserSession } else { device_login::Purpose::EnrollmentAndUserSession };
+    // Machines with a personal enrollment authorize only a GUI user session:
+    // no device identity/organization mutation and no daemon restart for web
+    // sign-in. Fresh and invitation-only (SIAT) machines must request combined
+    // enrollment + user session so personal promotion completes too.
+    let purpose = login_purpose_for_personal_state(has_personal_enrollment());
     let pending = device_login::start_with_purpose(&server, device_name.trim(), purpose)
         .await
         .map_err(|e| format!("{e:#}"))?;
@@ -658,6 +660,58 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
 }
 
 /// Wait for the browser approval, then enroll exactly as `cmd_enroll` does.
+pub(crate) fn login_purpose_for_personal_state(
+    personally_enrolled: bool,
+) -> meshharbor_node_core::device_login::Purpose {
+    if personally_enrolled {
+        meshharbor_node_core::device_login::Purpose::UserSession
+    } else {
+        meshharbor_node_core::device_login::Purpose::EnrollmentAndUserSession
+    }
+}
+
+pub(crate) async fn finalize_approved_login<EnrollFut, SaveFut, RevokeFut>(
+    purpose: meshharbor_node_core::device_login::Purpose,
+    approved: meshharbor_node_core::device_login::Approved,
+    enroll_and_reload: impl FnOnce(String) -> EnrollFut,
+    save_session: impl FnOnce(meshharbor_node_core::user_session::NativeSession) -> SaveFut,
+    revoke_session: impl FnOnce(String) -> RevokeFut,
+) -> Result<(), String>
+where
+    EnrollFut: std::future::Future<Output = Result<(), String>>,
+    SaveFut: std::future::Future<Output = Result<(), String>>,
+    RevokeFut: std::future::Future<Output = Result<(), String>>,
+{
+    let Some(session) = approved.native_session else {
+        return Err(
+            "This server did not grant a user session; device enrollment alone is not a user login"
+                .into(),
+        );
+    };
+    if purpose != meshharbor_node_core::device_login::Purpose::UserSession
+        && let Err(err) = enroll_and_reload(approved.enrollment_token).await
+    {
+        if let Err(revoke_err) = revoke_session(session.access_token).await {
+            tracing::warn!(
+                error = %revoke_err,
+                "failed to revoke unpersisted user session after personal enrollment failure"
+            );
+        }
+        return Err(err);
+    }
+    let revoke_token = session.access_token.clone();
+    if let Err(err) = save_session(session).await {
+        if let Err(revoke_err) = revoke_session(revoke_token).await {
+            tracing::warn!(
+                error = %revoke_err,
+                "failed to revoke user session after OS credential store failure"
+            );
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String> {
     let pending = LOGIN
@@ -666,47 +720,51 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         .take()
         .ok_or_else(|| "No sign-in is in progress".to_string())?;
     let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
-    if let Some(session) = approved.native_session {
-        crate::user_account::save_login(pending.server_url.clone(), session).await?;
-    } else {
-        return Err("This server did not grant a user session; device enrollment alone is not a user login".into());
-    }
-    if pending.purpose == meshharbor_node_core::device_login::Purpose::UserSession {
-        return Ok(cmd_status().await);
-    }
-    enroll_with_token(
-        pending.server_url.clone(),
-        approved.enrollment_token,
-        device_name,
-        true,
+    let server_for_enroll = pending.server_url.clone();
+    let server_for_save = pending.server_url.clone();
+    let server_for_revoke = pending.server_url.clone();
+    finalize_approved_login(
+        pending.purpose,
+        approved,
+        move |enrollment_token| async move {
+            enroll_with_token(server_for_enroll, enrollment_token, device_name, true).await?;
+            // A running service must reload the merged enrollment, not just receive a
+            // no-op `service start`. Never report a refused restart as online success.
+            if localapi::connect().await.is_ok() {
+                let restart =
+                    cmd_restart_daemon("personal account enrollment changed".into()).await?;
+                if !restart.started {
+                    return Err(format!(
+                        "Device enrolled, but the device service could not reload: {}",
+                        restart
+                            .refusal
+                            .as_deref()
+                            .unwrap_or("upgrade or restart the service manually")
+                    ));
+                }
+                cmd_restart_wait(
+                    restart.pid,
+                    restart.started_at_ms,
+                    restart.restart_by,
+                    restart.restart_within_s,
+                )
+                .await?;
+            } else {
+                tokio::task::spawn_blocking(run_service_start)
+                    .await
+                    .map_err(|e| format!("Service start task: {e}"))?
+                    .map_err(|e| format!("Service start failed: {e}"))?;
+            }
+            Ok(())
+        },
+        move |session| crate::user_account::save_login(server_for_save, session),
+        move |access_token| async move {
+            meshharbor_node_core::user_session::revoke(&server_for_revoke, &access_token)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        },
     )
     .await?;
-    // A running service must reload the merged enrollment, not just receive a
-    // no-op `service start`. Never report a refused restart as online success.
-    if localapi::connect().await.is_ok() {
-        let restart = cmd_restart_daemon("personal account enrollment changed".into()).await?;
-        if !restart.started {
-            return Err(format!(
-                "Account saved, but the device service could not reload: {}",
-                restart
-                    .refusal
-                    .as_deref()
-                    .unwrap_or("upgrade or restart the service manually")
-            ));
-        }
-        cmd_restart_wait(
-            restart.pid,
-            restart.started_at_ms,
-            restart.restart_by,
-            restart.restart_within_s,
-        )
-        .await?;
-    } else {
-        tokio::task::spawn_blocking(run_service_start)
-            .await
-            .map_err(|e| format!("Account saved; service start task: {e}"))?
-            .map_err(|e| format!("Account saved; service start failed: {e}"))?;
-    }
     Ok(cmd_status().await)
 }
 
@@ -3148,6 +3206,39 @@ pub(crate) fn is_enrolled() -> bool {
     load_optional_config(false).is_some() || load_optional_config(true).is_some()
 }
 
+/// Whether `path` holds a personal (non-invitation) primary enrollment.
+/// Invitation-only SIAT configs have `is_enrolled() == true`, but their primary
+/// `agent_id` is marked in `temporary.json`, so account login must still run
+/// personal enrollment + promotion rather than storing an orphaned user session.
+pub(crate) fn has_personal_enrollment_at(path: &std::path::PathBuf) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let Ok(cfg) = config::load(path) else {
+        return false;
+    };
+    if cfg.server_url.trim().is_empty()
+        || cfg.tenant_id.trim().is_empty()
+        || cfg.agent_token.trim().is_empty()
+    {
+        return false;
+    }
+    let markers = meshharbor_node_core::device_invite::read_markers(path);
+    !(markers.contains_key(&cfg.agent_id)
+        || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY))
+}
+
+pub(crate) fn has_personal_enrollment() -> bool {
+    for is_scm in [false, true] {
+        if let Ok(path) = active_config_path(is_scm)
+            && has_personal_enrollment_at(&path)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn load_optional_config(is_scm: bool) -> Option<AgentConfig> {
     let path = active_config_path(is_scm).ok()?;
     if !path.exists() {
@@ -4228,5 +4319,168 @@ mod tests {
         drop(guard_b);
         assert!(!registry.is_active(&dev_a));
         assert!(!registry.is_active(&dev_b));
+    }
+
+    #[tokio::test]
+    async fn invitation_only_login_promotes_before_saving_and_revokes_on_failure() {
+        use meshharbor_node_core::{
+            config::{self, AgentConfig, OrgOverlayMode},
+            device_invite::{self, GrantInfo, PRIMARY_KEY, TemporaryInfo},
+            device_login::{Approved, Purpose},
+            enrollment::{self, EnrollOutcome},
+            user_session::{NativeSession, UserProfile},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg_path = dir.path().join("config.toml");
+
+        let invite_cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "server_url": "https://mesh.example/meshharbor",
+            "tenant_id": "611111111111111111111111",
+            "agent_id": "622222222222222222222222",
+            "agent_token": "invite-agent-token",
+            "machine_id": "mach-siat-1",
+            "machine_name": "siat-host"
+        }))
+        .unwrap();
+        config::save(&cfg_path, &invite_cfg).expect("save invite cfg");
+
+        let temp_info = TemporaryInfo {
+            access_until_ms: 1_900_000_000_000,
+            inviter: "Inviter".into(),
+            org: "GuestOrg".into(),
+            grants: vec![GrantInfo {
+                invite_id: "633333333333333333333333".into(),
+                inviter: "Inviter".into(),
+                org: "GuestOrg".into(),
+                access_until_ms: 1_900_000_000_000,
+                features: None,
+                features_revision: 1,
+                revocation_pending: false,
+            }],
+        };
+        device_invite::write_marker_for(&cfg_path, PRIMARY_KEY, true, Some(&temp_info))
+            .expect("write temporary marker");
+
+        // Invitation-only config is NOT personally enrolled -> must request combined purpose.
+        assert!(!has_personal_enrollment_at(&cfg_path));
+        assert_eq!(
+            login_purpose_for_personal_state(has_personal_enrollment_at(&cfg_path)),
+            Purpose::EnrollmentAndUserSession
+        );
+
+        let mk_approved = || Approved {
+            enrollment_token: "enroll-tok-123".into(),
+            tenant_id: "6af73601241993a1ecbaa1f9".into(),
+            native_session: Some(NativeSession {
+                access_token: "native-access-tok".into(),
+                refresh_token: "native-refresh-tok".into(),
+                expires_in: 900,
+                user: UserProfile {
+                    id: "6ad98b618c7a3357a7f9ef69".into(),
+                    email: "jk.zhang.meta@gmail.com".into(),
+                    email_verified: true,
+                },
+            }),
+        };
+
+        // Case 1: Conversion fails -> revokes issued session and never saves to OS vault.
+        let saved = Arc::new(AtomicBool::new(false));
+        let revoked = Arc::new(AtomicBool::new(false));
+        let saved_ref = Arc::clone(&saved);
+        let revoked_ref = Arc::clone(&revoked);
+        let res = finalize_approved_login(
+            Purpose::EnrollmentAndUserSession,
+            mk_approved(),
+            |_tok| async move { Err("daemon reload refused".into()) },
+            move |_sess| {
+                let saved_ref = Arc::clone(&saved_ref);
+                async move {
+                    saved_ref.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+            move |access| {
+                let revoked_ref = Arc::clone(&revoked_ref);
+                async move {
+                    assert_eq!(access, "native-access-tok");
+                    revoked_ref.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        assert!(res.is_err());
+        assert!(!saved.load(Ordering::SeqCst), "failed conversion must leave no stored session");
+        assert!(revoked.load(Ordering::SeqCst), "failed conversion must revoke issued session");
+        assert!(!has_personal_enrollment_at(&cfg_path));
+
+        // Case 2: Successful conversion promotes personal enrollment, preserves invitation, then saves session.
+        let order = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let order_enroll = Arc::clone(&order);
+        let order_save = Arc::clone(&order);
+        let cfg_for_enroll = cfg_path.clone();
+        finalize_approved_login(
+            Purpose::EnrollmentAndUserSession,
+            mk_approved(),
+            move |_tok| async move {
+                let existing = config::load(&cfg_for_enroll).unwrap();
+                let markers = device_invite::read_markers(&cfg_for_enroll);
+                let old_primary = existing.agent_id.clone();
+                let personal: AgentConfig = serde_json::from_value(serde_json::json!({
+                    "server_url": "https://mesh.example/meshharbor",
+                    "tenant_id": "6af73601241993a1ecbaa1f9",
+                    "agent_id": "644444444444444444444444",
+                    "agent_token": "personal-agent-token",
+                    "machine_id": existing.machine_id,
+                    "machine_name": existing.machine_name
+                }))
+                .unwrap();
+                let (mut merged, outcome) =
+                    enrollment::apply_enrollment(Some(existing), personal, None, false).unwrap();
+                if let EnrollOutcome::AppendedOrg { label } = outcome {
+                    if let Some(org) = merged.orgs.iter_mut().find(|o| o.label == label) {
+                        org.overlay_mode = OrgOverlayMode::Netstack;
+                    }
+                    config::promote_keeping_mesh(&mut merged, &label, None).unwrap();
+                    if let Some(info) = markers.get(PRIMARY_KEY) {
+                        device_invite::write_marker_for(
+                            &cfg_for_enroll,
+                            &old_primary,
+                            true,
+                            Some(info),
+                        )
+                        .unwrap();
+                    }
+                }
+                config::save(&cfg_for_enroll, &merged).unwrap();
+                order_enroll.lock().unwrap().push("enrolled_and_reloaded");
+                Ok(())
+            },
+            move |_sess| async move {
+                order_save.lock().unwrap().push("session_saved");
+                Ok(())
+            },
+            |_access| async move {
+                panic!("revoke must not run on successful conversion");
+            },
+        )
+        .await
+        .expect("conversion succeeded");
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["enrolled_and_reloaded", "session_saved"]
+        );
+        assert!(has_personal_enrollment_at(&cfg_path));
+        let final_markers = device_invite::read_markers(&cfg_path);
+        assert!(
+            final_markers.contains_key("622222222222222222222222"),
+            "existing invitation marker must be preserved on secondary org"
+        );
     }
 }

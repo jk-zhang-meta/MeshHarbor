@@ -569,6 +569,16 @@ impl AuthService {
         self.decode_any::<Claims>(token, &self.validation())
     }
 
+    /// Signature- and issuer-verified decode that tolerates `exp` in the past.
+    /// Strictly for revocation-only flows (`POST /api/auth/logout`) so an
+    /// expired access token still identifies and revokes its `native_sid`
+    /// lineage; never use for admission or resource access.
+    pub fn verify_token_allow_expired(&self, token: &str) -> Result<Claims, AuthError> {
+        let mut validation = self.validation();
+        validation.validate_exp = false;
+        self.decode_any::<Claims>(token, &validation)
+    }
+
     pub fn verify_access_token(&self, token: &str) -> Result<Claims, AuthError> {
         let claims = self.verify_token(token)?;
         if claims.token_type != TokenType::Access {

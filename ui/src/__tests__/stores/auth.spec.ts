@@ -121,17 +121,23 @@ describe('useAuthStore', () => {
       expect(mockRouter.push).toHaveBeenCalledWith({ name: 'login' })
     })
 
-    it('still clears locally when the server call fails', async () => {
+    it('still clears locally and surfaces unconfirmed server revocation when the server call fails', async () => {
       // Offline or server down: do not trap the user inside a session they
-      // asked to leave.
+      // asked to leave, and explicitly warn that server revocation was not confirmed.
+      const { useSnackbar } = await import('@/composables/useSnackbar')
+      const snackbar = useSnackbar()
+      snackbar.hideSnackbar()
       localStorage.setItem(SIGNED_IN, '1')
       const store = useAuthStore()
-      mockApi.post.mockRejectedValueOnce(new Error('network'))
+      mockApi.post.mockRejectedValueOnce(new Error('Could not confirm session revocation'))
 
       await store.logout()
 
       expect(store.isAuthenticated).toBe(false)
       expect(localStorage.getItem(SIGNED_IN)).toBeNull()
+      expect(store.error).toContain('Could not confirm server sign-out')
+      expect(snackbar.state.show).toBe(true)
+      expect(snackbar.state.text).toContain('Could not confirm server sign-out')
       expect(mockRouter.push).toHaveBeenCalledWith({ name: 'login' })
     })
   })

@@ -298,7 +298,7 @@ impl TestApp {
         let owners = Arc::new(AtomicUsize::new(0));
         let run = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let (db1, pod1) = (shared_db.clone(), format!("testpod1-{run}"));
-        let app1 = Self::spawn_inner(
+        let app1 = Box::pin(Self::spawn_inner(
             move |s| {
                 s.database.name = db1.clone();
                 // C-1: distinct stable pod identities per in-process app (env
@@ -308,10 +308,10 @@ impl TestApp {
             },
             reqwest::Client::builder().cookie_store(true),
             Arc::clone(&owners),
-        )
+        ))
         .await;
         let (db2, pod2) = (shared_db, format!("testpod2-{run}"));
-        let app2 = Self::spawn_inner(
+        let app2 = Box::pin(Self::spawn_inner(
             move |s| {
                 s.database.name = db2.clone();
                 s.app.pod_id = Some(pod2.clone());
@@ -319,9 +319,19 @@ impl TestApp {
             },
             reqwest::Client::builder().cookie_store(true),
             owners,
-        )
+        ))
         .await;
         (app1, app2)
+    }
+
+    /// Sever this pod's loopback MongoDB gate while keeping the shared database
+    /// lease alive until `Drop`, allowing deterministic storage-failure tests.
+    pub fn sever_db(&self) {
+        if let Some(gate) = &self.db_lease.gate {
+            for s in gate.sever() {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+        }
     }
 
     /// Spawn a test server with customized settings.

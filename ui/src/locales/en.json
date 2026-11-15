@@ -771,7 +771,7 @@
         "device": "Shared device: {name} ({id})",
         "base": "Server base URL:",
         "hostKey": "Public host key (the native client verifies this identity):",
-        "run": "Run the native CLI locally, replacing the server URL and account-name placeholders:",
+        "run": "Run the native CLI locally, replacing the server URL and account-email placeholders:",
         "warning": "The CLI still needs a local SSH client. With --login, enter your MeshHarbor account password at its hidden terminal prompt; the token remains in process memory. This page does not export your HttpOnly web session or launch a command. Never put a password or access token in a command, URL, or shared clipboard. MFA-required native access fails closed until a supported MFA handoff is available.",
         "scope": "SSH grants shell/exec as the device’s configured OS account, not a sandbox. This share does not grant SFTP, SSH forwarding, LAN access, or organization membership. The CLI rechecks authorization when it connects; revocation or expiry refuses new access and terminates share-bound sessions."
       },

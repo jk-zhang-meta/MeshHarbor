@@ -1209,13 +1209,17 @@ fn spawn_account_watch<R: Runtime>(
             };
             let mut view = account_view(enrolled, node.as_ref(), &peers);
             let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.ok().and_then(Result::ok).unwrap_or_else(||meshharbor_node_core::device_login::DEFAULT_SERVER.into());
-            crate::user_account::load_cached_identity(server.clone()).await;
             let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
-            if !busy_now {
-                let (label, enabled) =
-                    crate::user_account::label(&server, node.as_ref().is_some_and(|n| n.connected));
-                view.login_text = label;
-                view.login_enabled = enabled;
+            if !view.temporary {
+                crate::user_account::load_cached_identity(server.clone()).await;
+                if !busy_now {
+                    let (label, enabled) = crate::user_account::label(
+                        &server,
+                        node.as_ref().is_some_and(|n| n.connected),
+                    );
+                    view.login_text = label;
+                    view.login_enabled = enabled;
+                }
             }
             view.sign_out_enabled =
                 !busy_now && !view.temporary && crate::user_account::has_identity(&server);

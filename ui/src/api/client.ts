@@ -3,7 +3,7 @@
 import { appPath } from '@/utils/deployment'
 import router from '@/plugins/router'
 import { useSnackbar } from '@/composables/useSnackbar'
-import { clearSignedIn } from '@/api/session'
+import { clearSignedIn, looksSignedIn } from '@/api/session'
 
 const BASE_URL = appPath('/api')
 
@@ -137,6 +137,9 @@ async function request<T>(path: string, options: RequestOptions = {}, retried = 
   const fetchHeaders: Record<string, string> = {
     ...headers,
   }
+  if (path === '/auth/logout' && !retried && looksSignedIn()) {
+    fetchHeaders['X-Require-Session'] = '1'
+  }
 
   if (body && !(body instanceof FormData)) {
     fetchHeaders['Content-Type'] = 'application/json'
@@ -178,6 +181,7 @@ async function request<T>(path: string, options: RequestOptions = {}, retried = 
         if (outcome === 'ok') return request<T>(path, options, true)
         if (outcome === 'failed') {
           endSessionLocally()
+          if (path === '/auth/logout') return request<T>(path, options, true)
         } else {
           // Keep the session: we never learned whether it was still valid.
           const { showError } = useSnackbar()

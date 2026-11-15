@@ -146,7 +146,16 @@ pub async fn authorize_claims(core: &Core, claims: &Claims) -> Result<(), ApiErr
     let id = ObjectId::parse_str(&claims.sub)
         .map_err(|_| ApiError::Unauthorized("Invalid user ID".into()))?;
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        let user = core.users.base.find_by_id(id).await?;
+        let user = match core.users.base.find_by_id(id).await {
+            Ok(u) => u,
+            Err(meshharbor_services::dao::base::DaoError::NotFound) => {
+                return Err(ApiError::Unauthorized("Account unavailable".into()));
+            }
+            Err(meshharbor_services::dao::base::DaoError::Mongo(_)) => {
+                return Err(ApiError::ServiceUnavailable("Account lookup failed".into()));
+            }
+            Err(other) => return Err(other.into()),
+        };
         require_user(core, &user, Some(claims.approval_revision))?;
         if let Some(ref sid_raw) = claims.native_sid {
             if !has_verified_account_email(&user) {

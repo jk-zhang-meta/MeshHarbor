@@ -2153,4 +2153,40 @@ mod tests {
         );
         assert!(Cli::try_parse_from(base.into_iter().chain(["--browser-approve"])).is_ok());
     }
+
+    #[test]
+    fn shared_ssh_ui_instruction_parses_with_email_and_omits_username() {
+        let vue = include_str!("../../../ui/src/views/account/DeviceSharesView.vue");
+        let marker = r#"data-testid="shared-ssh-command">"#;
+        let start = vue.find(marker).expect("shared-ssh-command in Vue view") + marker.len();
+        let end = vue[start..].find("</pre>").expect("closing pre") + start;
+        let rendered = vue[start..end]
+            .replace("YOUR_SERVER_BASE_URL", "https://mesh.example/meshharbor")
+            .replace("{{ sshShare?.id }}", "656565656565656565656565")
+            .replace("YOUR_ACCOUNT_EMAIL", "alice@example.com");
+        assert!(
+            !rendered.contains("--username"),
+            "shared SSH command must not advertise --username: {rendered}"
+        );
+        let tokens: Vec<&str> = rendered.split_whitespace().collect();
+        assert_eq!(&tokens[..2], &["meshharbord", "cli"]);
+        let mut cli_args = vec!["mh"];
+        cli_args.extend_from_slice(&tokens[2..]);
+        let parsed = Cli::try_parse_from(cli_args).expect("rendered UI command must parse");
+        match parsed.command {
+            Command::ShareSsh {
+                server,
+                share,
+                login,
+                email,
+                ..
+            } => {
+                assert_eq!(server, "https://mesh.example/meshharbor");
+                assert_eq!(share, "656565656565656565656565");
+                assert!(login);
+                assert_eq!(email.as_deref(), Some("alice@example.com"));
+            }
+            other => panic!("expected ShareSsh, got {other:?}"),
+        }
+    }
 }

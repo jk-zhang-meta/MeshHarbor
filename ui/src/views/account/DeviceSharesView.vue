@@ -65,7 +65,7 @@
             <p class="mt-2">{{ $t('mh.shares.ssh.hostKey') }}</p>
             <pre class="text-wrap" data-testid="shared-ssh-host-key">{{ sshDevice.host_pubkey }}</pre>
             <p class="mt-3">{{ $t('mh.shares.ssh.run') }}</p>
-            <pre class="text-wrap" data-testid="shared-ssh-command">meshharbord cli share-ssh --server YOUR_SERVER_BASE_URL --share {{ sshShare?.id }} --login --username YOUR_ACCOUNT_USERNAME</pre>
+            <pre class="text-wrap" data-testid="shared-ssh-command">meshharbord cli share-ssh --server YOUR_SERVER_BASE_URL --share {{ sshShare?.id }} --login --email YOUR_ACCOUNT_EMAIL</pre>
             <v-alert type="warning" variant="tonal" class="mt-3">{{ $t('mh.shares.ssh.warning') }}</v-alert>
             <p class="mt-2">{{ $t('mh.shares.ssh.scope') }}</p>
           </template>

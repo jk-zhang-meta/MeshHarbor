@@ -5,7 +5,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use bson::oid::ObjectId;
 use futures::{SinkExt, StreamExt};
@@ -164,11 +164,8 @@ async fn ws_upgrade_user(
 
     // A valid signature is not current account admission. This is deliberately
     // shared with HTTP/OAuth/refresh, rather than a separate socket policy.
-    if meshharbor_core::admission::authorize_claims(&state.core, &claims)
-        .await
-        .is_err()
-    {
-        return forbidden("account admission denied");
+    if let Err(err) = meshharbor_core::admission::authorize_claims(&state.core, &claims).await {
+        return err.into_response();
     }
 
     // S6 — user JWTs carry no tenant claim, so a present `tid` is

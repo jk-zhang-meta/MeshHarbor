@@ -470,6 +470,26 @@ describe('api client', () => {
     })
   })
 
+  describe('logout refresh-before-revoke when access cookie expired', () => {
+    it('refreshes and retries /auth/logout when signed-in hint is set and initial logout gets 401', async () => {
+      localStorage.setItem('meshharbor-signed-in', '1')
+      mockFetch
+        .mockResolvedValueOnce(mockJsonResponse(401, { error: 'unauthorized' }, false))
+        .mockResolvedValueOnce(mockJsonResponse(200, {}))
+        .mockResolvedValueOnce(mockJsonResponse(200, {}))
+
+      await api.post('/auth/logout', {})
+
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(mockFetch.mock.calls[0][0]).toBe('/api/auth/logout')
+      expect((mockFetch.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+        'X-Require-Session': '1',
+      })
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/auth/refresh')
+      expect(mockFetch.mock.calls[2][0]).toBe('/api/auth/logout')
+    })
+  })
+
   describe('base URL', () => {
     it('should prepend /api to all paths', async () => {
       mockFetch.mockResolvedValueOnce(mockJsonResponse(200, {}))

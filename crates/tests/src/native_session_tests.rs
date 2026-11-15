@@ -1015,3 +1015,396 @@ async fn real_node_core_user_session_and_browser_handoff_roundtrip_against_test_
 
     edge_task.abort();
 }
+
+
+#[tokio::test]
+async fn logout_propagates_db_failure_supports_refresh_before_revoke_and_rejects_empty_refresh_body() {
+    let (app1, app2) = Box::pin(TestApp::spawn_pair(|s| {
+        s.auth.native_device_login_enabled = true;
+        s.app.frontend_url = "https://www.itachi.fans/meshharbor".into();
+        // Fast Mongo failure detection once DbGate is severed so the test stays snappy.
+        if !s.database.url.contains('?') {
+            s.database.url.push_str("?serverSelectionTimeoutMS=400&connectTimeoutMS=400");
+        }
+    }))
+    .await;
+
+    let owner = app2
+        .register_user(
+            "logout-lineage@example.test",
+            "internal_logout_lineage",
+            "Logout Owner",
+            "LogoutPass#2026!",
+            None,
+            None,
+        )
+        .await;
+    let granted = grant(&app2, &owner.access_token).await;
+    let native_access = granted["access_token"].as_str().unwrap();
+    let native_refresh = granted["refresh_token"].as_str().unwrap();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Browser handoff on app2 yields access + refresh cookies sharing native_sid.
+    let handoff: Value = app2
+        .auth_post("/api/native/handoff", native_access)
+        .json(&json!({"purpose": "dashboard", "form_origin": "http://127.0.0.1:45210"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let consumed = no_redirect
+        .post(app2.url("/api/native/handoff/consume"))
+        .header("Origin", "http://127.0.0.1:45210")
+        .form(&[("ticket", handoff["ticket"].as_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consumed.status().as_u16(), 303);
+    let access_cookie = cookie_value(&consumed, "access_token").unwrap();
+    let refresh_cookie = cookie_value(&consumed, "refresh_token").unwrap();
+
+    // Fix #5 verification: valid refresh cookie + explicit empty refresh_token body -> 401 (no cookie fallback).
+    let empty_body_refresh = no_redirect
+        .post(app2.url("/api/auth/refresh"))
+        .header("Cookie", format!("refresh_token={refresh_cookie}"))
+        .json(&json!({"refresh_token": ""}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(empty_body_refresh.status().as_u16(), 401);
+
+    // Open an active WS connection carrying the native_sid browser cookie on app2.
+    let ws_url = format!(
+        "{}?token={}",
+        app2.base_url.replacen("http://", "ws://", 1) + "/ws",
+        access_cookie
+    );
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connected");
+    let _ = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("connected frame");
+
+    // Fix #1a verification: sever app1's Mongo gate -> logout on app1 must return 503 and NOT clear cookies or revoke.
+    app1.sever_db();
+    let failed_logout = no_redirect
+        .post(app1.url("/api/auth/logout"))
+        .header("Cookie", format!("access_token={access_cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed_logout.status().as_u16(), 503);
+    assert!(cookie_value(&failed_logout, "access_token").is_none());
+    assert_eq!(
+        no_redirect
+            .get(app2.url("/api/auth/me"))
+            .header("Cookie", format!("access_token={access_cookie}"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200,
+        "failed logout must leave session unrevoked until confirmed"
+    );
+
+    // Fix #1b verification: browser whose access_token cookie was evicted sends X-Require-Session: 1 -> 401,
+    // refreshes via refresh_token cookie, and retries /api/auth/logout -> revokes entire native_sid lineage.
+    let require_sess = no_redirect
+        .post(app2.url("/api/auth/logout"))
+        .header("X-Require-Session", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(require_sess.status().as_u16(), 401);
+
+    let refreshed_resp = no_redirect
+        .post(app2.url("/api/auth/refresh"))
+        .header("Cookie", format!("refresh_token={refresh_cookie}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refreshed_resp.status().as_u16(), 200);
+    let rotated_access = cookie_value(&refreshed_resp, "access_token").unwrap();
+
+    let ok_logout = no_redirect
+        .post(app2.url("/api/auth/logout"))
+        .header("Cookie", format!("access_token={rotated_access}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok_logout.status().as_u16(), 200);
+
+    // Native refresh, browser refresh, HTTP /auth/me, and existing WS connection are all invalidated!
+    assert_eq!(
+        app2.client
+            .post(app2.url("/api/auth/refresh"))
+            .json(&json!({"refresh_token": native_refresh}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        no_redirect
+            .post(app2.url("/api/auth/refresh"))
+            .header("Cookie", format!("refresh_token={refresh_cookie}"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        no_redirect
+            .get(app2.url("/api/auth/me"))
+            .header("Cookie", format!("access_token={access_cookie}"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    let _ = ws.send(Message::Text(r#"{"type":"ping"}"#.into())).await;
+    let ws_closed = tokio::time::timeout(Duration::from_secs(7), async {
+        while let Some(frame) = ws.next().await {
+            if matches!(frame, Ok(Message::Close(_)) | Err(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ws_closed.is_ok(), "existing WS must close after logout revokes native_sid");
+}
+
+#[tokio::test]
+async fn logout_with_genuinely_expired_access_token_revokes_native_sid_lineage() {
+    let app = TestApp::spawn_with_settings(|s| {
+        s.auth.native_device_login_enabled = true;
+        s.app.frontend_url = "https://www.itachi.fans/meshharbor".into();
+    })
+    .await;
+
+    let owner = app
+        .register_user(
+            "expired-access-logout@example.test",
+            "internal_exp_logout",
+            "Expired Logout",
+            "ExpiredPass#2026!",
+            None,
+            None,
+        )
+        .await;
+    let granted = grant(&app, &owner.access_token).await;
+    let live_access = granted["access_token"].as_str().unwrap();
+    let live_refresh = granted["refresh_token"].as_str().unwrap().to_owned();
+
+    // Sign an access token carrying the exact same Claims & native_sid, expired beyond 60s leeway.
+    let mut claims = app.state.auth.verify_access_token(live_access).unwrap();
+    claims.iat -= 600;
+    claims.exp = chrono::Utc::now().timestamp() - 180;
+    let expired_access = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(app.settings.jwt.secret.as_bytes()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        app.auth_get("/api/auth/me", &expired_access)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401,
+        "access token must be genuinely expired before logout"
+    );
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let logout_resp = no_redirect
+        .post(app.url("/api/auth/logout"))
+        .header("Cookie", format!("access_token={expired_access}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout_resp.status().as_u16(), 200);
+
+    // Even though refresh_token TTL was 7 days, logout via expired access_token revoked native_sid!
+    assert_eq!(
+        no_redirect
+            .post(app.url("/api/auth/refresh"))
+            .json(&json!({"refresh_token": live_refresh}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+}
+
+#[tokio::test]
+async fn ws_upgrade_preserves_403_401_and_503_admission_statuses() {
+    use meshharbor_db::models::AccountApprovalState;
+
+    let (app1, app2) = Box::pin(TestApp::spawn_pair(|s| {
+        s.auth.native_device_login_enabled = true;
+        s.auth.account_approval.enabled = true;
+        s.auth.account_approval.owner_user_id = Some("6ad98b618c7a3357a7f9ef69".to_owned());
+        s.app.frontend_url = "https://www.itachi.fans/meshharbor".into();
+        if !s.database.url.contains('?') {
+            s.database
+                .url
+                .push_str("?serverSelectionTimeoutMS=400&connectTimeoutMS=400");
+        }
+    }))
+    .await;
+
+    let hash = app2
+        .state
+        .auth
+        .hash_password("WsFixturePass#2026!")
+        .unwrap();
+
+    // 1. Pending (policy-denied) user -> WS upgrade must be 403
+    let mut pending = app2
+        .state
+        .users
+        .create(
+            "ws-pending@example.test".into(),
+            "internal_ws_pending".into(),
+            "WS Pending".into(),
+            hash.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    let pending_id = pending.id.unwrap();
+    pending.is_verified = true;
+    pending.account_approval.state = AccountApprovalState::Pending;
+    app2.db
+        .collection::<User>("users")
+        .replace_one(doc! {"_id": pending_id}, &pending)
+        .await
+        .unwrap();
+    let pending_tokens = app2
+        .state
+        .auth
+        .generate_tokens_at_revision(pending_id, &pending.email, &pending.username, 0)
+        .unwrap();
+
+    let pending_ws = app2
+        .client
+        .get(app2.url(&format!("/ws?token={}", pending_tokens.access_token)))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pending_ws.status().as_u16(), 403);
+
+    // 2. Approved user -> revoked native_sid (401), DB outage/timeout (503), stale revision (401)
+    let mut approved = app2
+        .state
+        .users
+        .create(
+            "ws-approved@example.test".into(),
+            "internal_ws_approved".into(),
+            "WS Approved".into(),
+            hash,
+            None,
+        )
+        .await
+        .unwrap();
+    let approved_id = approved.id.unwrap();
+    approved.is_verified = true;
+    approved.account_approval.state = AccountApprovalState::Approved;
+    app2.db
+        .collection::<User>("users")
+        .replace_one(doc! {"_id": approved_id}, &approved)
+        .await
+        .unwrap();
+    let approved_tokens = app2
+        .state
+        .auth
+        .generate_tokens_at_revision(approved_id, &approved.email, &approved.username, 0)
+        .unwrap();
+
+    let granted = grant(&app2, &approved_tokens.access_token).await;
+    let native_access = granted["access_token"].as_str().unwrap();
+
+    // Revoke native_sid -> WS upgrade must be 401 (NOT 403!)
+    assert_eq!(
+        app2.auth_post("/api/native/session/revoke", native_access)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        204
+    );
+    let revoked_sid_ws = app2
+        .client
+        .get(app2.url(&format!("/ws?token={native_access}")))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked_sid_ws.status().as_u16(), 401);
+
+    // 3. Sever app1's DB gate -> WS upgrade must be 503 (NOT 403!)
+    app1.sever_db();
+    let outage_ws = app1
+        .client
+        .get(app1.url(&format!("/ws?token={}", approved_tokens.access_token)))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(outage_ws.status().as_u16(), 503);
+
+    // 4. Bump approval_revision on approved user -> stale token WS upgrade must be 401 (NOT 403!)
+    app2.db
+        .collection::<bson::Document>("users")
+        .update_one(
+            doc! {"_id": approved_id},
+            doc! {"$inc": {"account_approval.revision": 1_i32}},
+        )
+        .await
+        .unwrap();
+    let stale_rev_ws = app2
+        .client
+        .get(app2.url(&format!("/ws?token={}", approved_tokens.access_token)))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale_rev_ws.status().as_u16(), 401);
+}

@@ -135,7 +135,9 @@ describe('single-device SSH share authorization and truthful native instructions
     expect(wrapper!.get('[data-testid="shared-ssh-host-key"]').text()).toBe(metadata.host_pubkey)
     const text = wrapper!.get('[data-testid="shared-ssh-instructions"]').text()
     expect(text).toContain('not an SSH session or a browser terminal'); expect(text).toContain('hidden terminal prompt'); expect(text).not.toContain('Native login / automatic handoff is not implemented here')
-    expect(wrapper!.get('[data-testid="shared-ssh-command"]').text()).toContain(`--share ${grant} --login --username YOUR_ACCOUNT_USERNAME`)
+    const cmdText = wrapper!.get('[data-testid="shared-ssh-command"]').text()
+    expect(cmdText).toContain(`--share ${grant} --login --email YOUR_ACCOUNT_EMAIL`)
+    expect(cmdText).not.toContain('--username')
     expect(api.post).not.toHaveBeenCalled()
   })
   it('disables SSH entry for expired/revoked grants and omits it without explicit SSH permission', async () => {

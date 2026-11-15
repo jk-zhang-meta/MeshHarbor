@@ -576,21 +576,50 @@ pub async fn logout(
     State(state): State<Core>,
     req_headers: HeaderMap,
 ) -> Result<HeaderMap, ApiError> {
+    let require_session = req_headers
+        .get("x-require-session")
+        .and_then(|v| v.to_str().ok())
+        == Some("1");
     let candidate = req_headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty())
         .map(str::to_owned)
-        .or_else(|| crate::cookies::get(&req_headers, "access_token"))
-        .or_else(|| crate::cookies::get(&req_headers, REFRESH_COOKIE));
-    if let Some(token) = candidate
-        && let Ok(claims) = state.auth.verify_token(&token)
-        && let (Ok(uid), Some(Ok(sid))) = (
-            bson::oid::ObjectId::parse_str(&claims.sub),
-            claims.native_sid.as_deref().map(bson::oid::ObjectId::parse_str),
-        )
-    {
-        let _ = meshharbor_services::dao::native_session::revoke_session(&state.db, sid, uid).await;
+        .or_else(|| crate::cookies::get(&req_headers, "access_token").filter(|t| !t.is_empty()))
+        .or_else(|| crate::cookies::get(&req_headers, REFRESH_COOKIE).filter(|t| !t.is_empty()));
+    match candidate {
+        Some(token) => match state.auth.verify_token_allow_expired(&token) {
+            Ok(claims) => {
+                if let Some(sid_raw) = claims.native_sid.as_deref() {
+                    let uid = bson::oid::ObjectId::parse_str(&claims.sub)
+                        .map_err(|_| ApiError::Unauthorized("Invalid user ID".to_string()))?;
+                    let sid = bson::oid::ObjectId::parse_str(sid_raw).map_err(|_| {
+                        ApiError::Unauthorized("Invalid native session".to_string())
+                    })?;
+                    meshharbor_services::dao::native_session::revoke_session(&state.db, sid, uid)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, "native session logout revocation failed");
+                            ApiError::ServiceUnavailable(
+                                "Could not confirm session revocation".to_string(),
+                            )
+                        })?;
+                }
+            }
+            Err(_) if require_session => {
+                return Err(ApiError::Unauthorized(
+                    "Session verification required".to_string(),
+                ));
+            }
+            Err(_) => {}
+        },
+        None if require_session => {
+            return Err(ApiError::Unauthorized(
+                "Session verification required".to_string(),
+            ));
+        }
+        None => {}
     }
     Ok(clear_auth_cookies(&state))
 }
@@ -611,12 +640,15 @@ pub async fn refresh(
     // `/ws` work: the server has to accept the cookie BEFORE the UI stops
     // putting the token in the body, because during a rolling deploy a browser
     // can hit either pod.
-    let presented = body
-        .refresh_token
-        .clone()
-        .filter(|t| !t.is_empty())
-        .or_else(|| crate::cookies::get(&req_headers, REFRESH_COOKIE))
-        .ok_or_else(|| ApiError::Unauthorized("No refresh token in cookie or body".to_string()))?;
+    let presented = match body.refresh_token.as_deref() {
+        Some("") => {
+            return Err(ApiError::Unauthorized("Invalid refresh token".to_string()));
+        }
+        Some(token) => token.to_owned(),
+        None => crate::cookies::get(&req_headers, REFRESH_COOKIE).ok_or_else(|| {
+            ApiError::Unauthorized("No refresh token in cookie or body".to_string())
+        })?,
+    };
     let claims = state.auth.verify_refresh_token(&presented)?;
     meshharbor_core::admission::authorize_claims(&state, &claims).await?;
 
