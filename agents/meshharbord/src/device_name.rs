@@ -21,6 +21,18 @@ pub struct CanonicalName {
     pub name: String,
 }
 
+fn transient_http_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<reqwest::Error>().is_some_and(|e| {
+        if let Some(status) = e.status() {
+            status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        } else {
+            !e.is_decode()
+                && !e.is_builder()
+                && (e.is_timeout() || e.is_connect() || e.is_body() || e.is_request())
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,12 +191,7 @@ mod tests {
             .await
             .unwrap();
         names.propose("accepted").await.unwrap();
-        let old = config::load(&path)
-            .unwrap()
-            .name_sync
-            .unwrap()
-            .pending
-            .unwrap();
+        let old = config::load(&path).unwrap().name_sync.unwrap();
         names
             .apply(&cfg, &canonical(&cfg, "1", "accepted"))
             .await
@@ -196,7 +203,7 @@ mod tests {
         assert!(names.snapshot().unwrap().1.proposed_name.is_none());
         names.propose("newer-proposal").await.unwrap();
         names
-            .fail_pending(&cfg, Some(&old), "name_revision_conflict")
+            .fail_pending(&cfg, &old, "name_revision_conflict")
             .await
             .unwrap();
         assert_eq!(names.snapshot().unwrap().1.state, "pending");
@@ -215,15 +222,20 @@ mod tests {
 
     #[tokio::test]
     async fn real_http_cas_persists_then_acknowledges_without_reconnect() {
-        http_cas_case(false).await;
+        http_cas_case(false, false).await;
     }
 
     #[tokio::test]
     async fn second_local_proposal_during_http_preserves_latest_intent_as_conflict() {
-        http_cas_case(true).await;
+        http_cas_case(true, false).await;
     }
 
-    async fn http_cas_case(second_proposal: bool) {
+    #[tokio::test]
+    async fn transient_http_transport_recovers_on_same_worker_without_ws_reconnect() {
+        http_cas_case(false, true).await;
+    }
+
+    async fn http_cas_case(second_proposal: bool, transient_disconnect: bool) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_dir, path, mut cfg, _) = fixture();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -237,6 +249,15 @@ mod tests {
         let server_cfg = cfg.clone();
         let server_names = names.clone();
         let server = tokio::spawn(async move {
+            if transient_disconnect {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                let n = stream.read(&mut buffer).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&buffer[..n]).starts_with("GET /api/agent/self/name ")
+                );
+                drop(stream); // Real transport failure: no HTTP status/body.
+            }
             for (verb, rev, name) in [("GET", "0", "host"), ("POST", "1", "local-choice")] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
@@ -288,10 +309,14 @@ mod tests {
             }
         });
         let (tx, mut rx) = mpsc::channel(4);
+        let began = std::time::Instant::now();
         names
-            .reconcile_once(&cfg, "fixture-token", &tx)
+            .reconcile_bounded(&cfg, "fixture-token", &tx)
             .await
             .unwrap();
+        if transient_disconnect {
+            assert!(began.elapsed() >= Duration::from_millis(250));
+        }
         server.await.unwrap();
         assert_eq!(config::load(&path).unwrap().machine_name, "local-choice");
         let status = names.snapshot().unwrap().1;
@@ -339,7 +364,7 @@ mod tests {
         });
         let (tx, mut rx) = mpsc::channel(4);
         names
-            .reconcile_once(&cfg, "fixture-token", &tx)
+            .reconcile_bounded(&cfg, "fixture-token", &tx)
             .await
             .unwrap();
         server.await.unwrap();
@@ -362,6 +387,157 @@ mod tests {
                 .error
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn transient_status_retries_are_bounded_to_five_attempts() {
+        for status in [429, 503] {
+            http_error_case(status, 0).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_status_never_retries_and_new_intent_fences_old_backoff() {
+        for status in [401, 403, 404, 409] {
+            http_error_case(status, 0).await;
+        }
+        http_error_case(503, 1).await;
+        http_error_case(503, 2).await;
+    }
+
+    #[tokio::test]
+    async fn late_permanent_get_failure_cannot_poison_replacement_proposal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (status, initial_proposal) in [(403, true), (404, true), (404, false)] {
+            let (_dir, path, mut cfg, _) = fixture();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            cfg.server_url = format!("http://{}", listener.local_addr().unwrap());
+            config::save(&path, &cfg).unwrap();
+            let names = Arc::new(DeviceNames::new(
+                path.clone(),
+                Arc::new(tokio::sync::Mutex::new(())),
+            ));
+            if initial_proposal {
+                names.propose("intent-A").await.unwrap();
+            }
+            let server_names = names.clone();
+            let server_cfg = cfg.clone();
+            let server = tokio::spawn(async move {
+                for step in 0..3 {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = [0; 4096];
+                    let n = stream.read(&mut bytes).await.unwrap();
+                    let request = String::from_utf8_lossy(&bytes[..n]);
+                    assert!(request.starts_with(if step == 2 {
+                        "POST /api/agent/self/name "
+                    } else {
+                        "GET /api/agent/self/name "
+                    }));
+                    if step == 0 {
+                        server_names.propose("intent-B").await.unwrap();
+                        stream.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                    } else {
+                        let body = serde_json::to_string(&canonical(
+                            &server_cfg,
+                            if step == 1 { "0" } else { "1" },
+                            if step == 1 { "host" } else { "intent-B" },
+                        ))
+                        .unwrap();
+                        stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+                    }
+                }
+            });
+            let (tx, mut rx) = mpsc::channel(4);
+            names
+                .reconcile_bounded(&cfg, "fixture-token", &tx)
+                .await
+                .unwrap();
+            let pending = names.snapshot().unwrap().1;
+            assert_eq!(pending.proposed_name.as_deref(), Some("intent-B"));
+            assert_eq!(pending.state, "pending");
+            assert!(pending.error.is_none());
+            // The newer proposal's existing worker wakeup can now submit it.
+            names
+                .reconcile_bounded(&cfg, "fixture-token", &tx)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(names.snapshot().unwrap().0, "intent-B");
+            assert!(names.snapshot().unwrap().1.proposed_name.is_none());
+            assert!(
+                matches!(rx.recv().await,Some(ClientMsg::DeviceNameAck {outcome,..}) if outcome=="applied")
+            );
+            assert!(
+                matches!(rx.recv().await,Some(ClientMsg::DeviceNameAck {outcome,..}) if outcome=="applied")
+            );
+        }
+    }
+
+    async fn http_error_case(status: u16, change_intent: u8) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, path, mut cfg, _) = fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        cfg.server_url = format!("http://{}", listener.local_addr().unwrap());
+        config::save(&path, &cfg).unwrap();
+        let names = Arc::new(DeviceNames::new(
+            path.clone(),
+            Arc::new(tokio::sync::Mutex::new(())),
+        ));
+        names.propose("intent-A").await.unwrap();
+        let server_names = names.clone();
+        let server_cfg = cfg.clone();
+        let count = if [429, 503].contains(&status) && change_intent == 0 {
+            5
+        } else {
+            1
+        };
+        let server = tokio::spawn(async move {
+            for i in 0..count {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let n = stream.read(&mut bytes).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&bytes[..n]).starts_with("GET /api/agent/self/name ")
+                );
+                if i == 0 && change_intent == 1 {
+                    server_names.propose("intent-B").await.unwrap();
+                }
+                if i == 0 && change_intent == 2 {
+                    server_names
+                        .apply(&server_cfg, &canonical(&server_cfg, "4", "web-newer"))
+                        .await
+                        .unwrap();
+                }
+                stream.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "unexpected replay beyond attempt fence"
+            );
+        });
+        let (tx, mut rx) = mpsc::channel(4);
+        let result = names.reconcile_bounded(&cfg, "fixture-token", &tx).await;
+        if [429, 503].contains(&status) {
+            assert!(result.is_err());
+        } else {
+            assert!(result.is_ok());
+        }
+        server.await.unwrap();
+        assert!(rx.try_recv().is_err());
+        let (name, state) = names.snapshot().unwrap();
+        if change_intent == 1 {
+            assert_eq!(state.proposed_name.as_deref(), Some("intent-B"));
+            assert_eq!(state.state, "pending");
+        }
+        if change_intent == 2 {
+            assert_eq!(name, "web-newer");
+            assert_eq!(state.error.as_deref(), Some("name_revision_conflict"));
+        }
+        if change_intent == 0 && status == 404 {
+            assert_eq!(state.state, "unsupported");
+        }
     }
 }
 
@@ -567,8 +743,8 @@ impl DeviceNames {
         };
         let this = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = this.reconcile_once(&cfg, &token, &tx).await {
-                tracing::debug!(error = %error, "name proposal remains queued until reconnect or explicit retry");
+            if let Err(error) = this.reconcile_bounded(&cfg, &token, &tx).await {
+                tracing::debug!(error = %error, "name synchronization attempt stopped; inspect current proposal status");
             }
             drop(guard);
             if this.rerun.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -577,12 +753,61 @@ impl DeviceNames {
         });
     }
 
+    async fn retry_state(&self, connection: &AgentConfig) -> Result<DeviceNameJournal> {
+        let _guard = self.lock.lock().await;
+        let cfg = config::load(&self.path)?;
+        if cfg.server_url != connection.server_url
+            || cfg.agent_id != connection.agent_id
+            || cfg.tenant_id != connection.tenant_id
+        {
+            bail!("primary changed");
+        }
+        Ok(journal(&cfg))
+    }
+
+    /// At most five attempts, with no config lock held over network or backoff.
+    /// A newer local proposal or server revision fences every delayed attempt.
+    async fn reconcile_bounded(
+        &self,
+        cfg: &AgentConfig,
+        token: &str,
+        tx: &mpsc::Sender<ClientMsg>,
+    ) -> Result<()> {
+        let mut before = self.retry_state(cfg).await?;
+        const DELAYS_MS: [u64; 4] = [250, 1000, 2000, 4000];
+        for attempt in 0..=DELAYS_MS.len() {
+            let error = match self.reconcile_once(cfg, token, tx).await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            if attempt == DELAYS_MS.len() || !transient_http_error(&error) {
+                return Err(error);
+            }
+            let after = self.retry_state(cfg).await?;
+            // GET may have established revision zero before POST failed. It is
+            // safe to retry that SAME proposal, not a replacement/conflict.
+            if before.pending != after.pending
+                || after.pending.as_ref().is_some_and(|p| p.error.is_some())
+                || (before.pending.is_none() && before.revision != after.revision)
+            {
+                return Err(error);
+            }
+            tokio::time::sleep(Duration::from_millis(DELAYS_MS[attempt])).await;
+            if self.retry_state(cfg).await? != after {
+                return Err(error);
+            }
+            before = after;
+        }
+        unreachable!("bounded retry loop returns on its final attempt")
+    }
+
     async fn reconcile_once(
         &self,
         cfg: &AgentConfig,
         token: &str,
         tx: &mpsc::Sender<ClientMsg>,
     ) -> Result<()> {
+        let get_attempt = self.retry_state(cfg).await?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
@@ -593,41 +818,42 @@ impl DeviceNames {
         );
         let response = client.get(&url).bearer_auth(token).send().await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return self.fail_pending(cfg, None, "unsupported").await;
+            return self.fail_pending(cfg, &get_attempt, "unsupported").await;
+        }
+        if response.status().is_client_error()
+            && response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            return self
+                .fail_pending(cfg, &get_attempt, "name_proposal_rejected")
+                .await;
         }
         let canonical: CanonicalName = response.error_for_status()?.json().await?;
         if !self.apply_and_ack(cfg, canonical, tx).await {
             bail!("canonical name was not persisted; proposal was not submitted");
         }
-        let proposal = {
-            let _guard = self.lock.lock().await;
-            let current = config::load(&self.path)?;
-            if current.server_url != cfg.server_url
-                || current.agent_id != cfg.agent_id
-                || current.tenant_id != cfg.tenant_id
-            {
-                bail!("primary changed");
-            }
-            journal(&current).pending.filter(|p| p.error.is_none())
-        };
-        let Some(proposal) = proposal else {
+        let post_attempt = self.retry_state(cfg).await?;
+        let Some(proposal) = post_attempt.pending.as_ref().filter(|p| p.error.is_none()) else {
             return Ok(());
         };
         let response = client.post(&url).bearer_auth(token)
             .json(&serde_json::json!({"expected_revision": proposal.base_revision, "name": proposal.name}))
             .send().await?;
         let status = response.status();
+        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            response.error_for_status()?;
+            unreachable!("transient HTTP status is an error");
+        }
         if status.is_success() || status == reqwest::StatusCode::CONFLICT {
             let canonical: CanonicalName = response.json().await?;
             self.apply_and_ack(cfg, canonical, tx).await;
             if status == reqwest::StatusCode::CONFLICT {
-                self.fail_pending(cfg, Some(&proposal), "name_revision_conflict")
+                self.fail_pending(cfg, &post_attempt, "name_revision_conflict")
                     .await?;
             }
         } else {
             self.fail_pending(
                 cfg,
-                Some(&proposal),
+                &post_attempt,
                 if status == reqwest::StatusCode::NOT_FOUND {
                     "unsupported"
                 } else {
@@ -642,7 +868,7 @@ impl DeviceNames {
     async fn fail_pending(
         &self,
         connection: &AgentConfig,
-        expected: Option<&DeviceNameProposal>,
+        expected: &DeviceNameJournal,
         error: &str,
     ) -> Result<()> {
         let _guard = self.lock.lock().await;
@@ -654,17 +880,19 @@ impl DeviceNames {
             bail!("primary changed");
         }
         let mut j = journal(&cfg);
+        // Late permanent failures belong only to the GET/POST that issued
+        // them, never to a replacement proposal or a newer applied push.
+        if &j != expected {
+            return Ok(());
+        }
         let mut changed = false;
-        if expected.is_none() && error == "unsupported" {
+        if error == "unsupported" {
             j.error = Some(error.into());
             changed = true;
         }
         if let Some(p) = &mut j.pending {
-            if expected.is_none_or(|old| old.name == p.name && old.base_revision == p.base_revision)
-            {
-                p.error = Some(error.into());
-                changed = true;
-            }
+            p.error = Some(error.into());
+            changed = true;
         }
         if changed {
             cfg.name_sync = Some(j);
