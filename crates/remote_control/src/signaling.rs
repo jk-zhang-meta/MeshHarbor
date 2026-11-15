@@ -4647,6 +4647,17 @@ pub enum ServerMsg {
     },
 
     // ─── server → overlay node (rc:overlay.*) ────────────────────────
+    /// Revision-fenced DNS projection metadata; never changes tunnels or the
+    /// global display name. Revision belongs to this exact overlay node.
+    #[serde(rename = "rc:overlay.self_name")]
+    OverlaySelfName {
+        agent_id: String,
+        tenant_id: String,
+        #[serde(with = "oid_hex")]
+        node_id: ObjectId,
+        revision: String,
+        name: String,
+    },
     /// Full network map sent to a node on join. Carries the node's own
     /// `self_ip`, the network parameters, and every peer it may reach.
     /// `epoch` monotonically increases per network so a node can detect
@@ -6657,13 +6668,20 @@ pub struct OverlayNetworkInfo {
     /// the node's existing system resolvers.
     #[serde(default)]
     pub nameservers: Vec<String>,
-    /// W2 MagicDNS — THIS node's own display name, so its local resolver can
+    /// W2 MagicDNS — THIS node's de-duplicated DNS label, so its local resolver can
     /// answer `<own-name>.<domain>` (the netmap's peer list excludes self,
     /// and the agent has no other authoritative source for its server-side
     /// name). `#[serde(default)]` + skip-when-None keeps both directions
     /// compatible with pre-W2 peers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_name: Option<String>,
+    /// Identity and revision of the same persisted DNS projection snapshot.
+    /// Older servers omit these; once a revision is observed an unversioned
+    /// map must not roll the local self-name back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_node_id: Option<ObjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_name_revision: Option<String>,
     /// NAT-traversal Phase B — STUN server URLs the node queries (on each of its
     /// own traffic sockets) to discover its server-reflexive candidates — its
     /// public `ip:port` as seen through the NAT. Lets a peer/exit behind a 1:1
