@@ -53,6 +53,7 @@ impl Applied {
 
 #[derive(Clone)]
 pub struct RemoteConfigServices {
+    pub names: Arc<crate::device_name::DeviceNames>,
     path: PathBuf,
     lock: crate::config::WriteLock,
     /// The LIVE `exec_enabled`, read by the `rc:rpc.exec` gate. Seeded from
@@ -115,6 +116,7 @@ impl RemoteConfigServices {
         remote_config_enabled: bool,
     ) -> Self {
         Self {
+            names: Arc::new(crate::device_name::DeviceNames::new(path.clone(), lock.clone())),
             path,
             lock,
             exec_enabled: Arc::new(AtomicBool::new(exec_enabled)),

@@ -511,6 +511,7 @@ fn windows_per_session_loopback_is_unique_and_shared_localhost_is_refused() {
 #[test]
 fn resolve_peer_scope_enforces_real_tenant_id_and_node_id_and_fails_closed() {
     let status = NodeStatus {
+        name_sync: None,
         path_trials: None,
         node_id: "local-node-00".to_string(),
         name: "local-box".to_string(),

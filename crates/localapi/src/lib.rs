@@ -142,9 +142,20 @@ pub struct HostFirewallStatus {
     pub admits: Vec<String>,
 }
 
+/// Name synchronization is independent of managed remote configuration.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DeviceNameStatus {
+    pub state: String,
+    pub revision: Option<String>,
+    pub proposed_name: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Snapshot of the local node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct NodeStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_sync: Option<DeviceNameStatus>,
     /// Owner-local bounded path-trial observation. Absent on old/off/detached runtimes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_trials: Option<PathTrialStatus>,
@@ -1820,6 +1831,8 @@ pub enum Response {
     /// carries the effective (trimmed) name.
     DeviceNameSet {
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name_sync: Option<DeviceNameStatus>,
     },
     /// Result of [`Request::ConfigCleanupStale`] — `ok=true` means the
     /// stale copy was archived; `detail` explains either outcome
@@ -4975,7 +4988,20 @@ impl Client {
             })
             .await?
         {
-            Response::DeviceNameSet { name } => Ok(name),
+            Response::DeviceNameSet { name, .. } => Ok(name),
+            other => Err(unexpected_response(other)),
+        }
+    }
+
+    /// Require revision-aware support BEFORE issuing a proposal. Never let a
+    /// new UI silently fall back to an old daemon's eager canonical write.
+    pub async fn propose_device_name(&mut self, name: &str) -> std::io::Result<(String, DeviceNameStatus)> {
+        if self.status().await?.name_sync.is_none() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,
+                "device name synchronization requires a newer daemon"));
+        }
+        match self.request(&Request::SetDeviceName { name: name.to_owned() }).await? {
+            Response::DeviceNameSet { name, name_sync: Some(state) } => Ok((name, state)),
             other => Err(unexpected_response(other)),
         }
     }
@@ -5690,6 +5716,7 @@ mod tests {
     impl LocalApiState for Mock {
         fn status(&self) -> NodeStatus {
             NodeStatus {
+                name_sync: None,
                 path_trials: None,
                 node_id: "n1".into(),
                 name: "devbox".into(),
@@ -6187,7 +6214,7 @@ mod tests {
             r#"{"t":"set_device_name","d":{"name":"neo"}}"#
         );
         assert_eq!(
-            serde_json::to_string(&Response::DeviceNameSet { name: "neo".into() }).unwrap(),
+            serde_json::to_string(&Response::DeviceNameSet { name: "neo".into(), name_sync: None }).unwrap(),
             r#"{"t":"device_name_set","d":{"name":"neo"}}"#
         );
         // Trait default: unsupported — a node without a config writer (mocks,
@@ -6202,6 +6229,58 @@ mod tests {
             handle(&Request::SetDeviceName { name: "neo".into() }, &s),
             Response::Error { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn new_name_client_refuses_old_daemon_before_sending_mutation() {
+        let (stream, server) = tokio::io::duplex(8192);
+        let task = tokio::spawn(async move {
+            let mut server = tokio::io::BufReader::new(server);
+            let mut line = String::new();
+            server.read_line(&mut line).await.unwrap();
+            assert!(matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::Status));
+            let response = serde_json::to_string(&Response::Status(Box::new(Mock.status()))).unwrap() + "\n";
+            server.write_all(response.as_bytes()).await.unwrap();
+            line.clear();
+            // Dropping the client must yield EOF: no SetDeviceName was sent.
+            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+        });
+        let mut client = Client::new(Box::new(stream));
+        assert_eq!(client.propose_device_name("new").await.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        drop(client);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_name_client_reports_pending_and_preserves_old_wire_compatibility() {
+        let pending = DeviceNameStatus { state: "pending".into(), revision: Some("7".into()),
+            proposed_name: Some("new".into()), error: None };
+        let (stream, server) = tokio::io::duplex(8192);
+        let expected = pending.clone();
+        let task = tokio::spawn(async move {
+            let mut server = tokio::io::BufReader::new(server);
+            for i in 0..2 {
+                let mut line = String::new();
+                server.read_line(&mut line).await.unwrap();
+                let response = if i == 0 {
+                    assert!(matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::Status));
+                    let mut status = Mock.status(); status.name_sync = Some(pending.clone());
+                    Response::Status(Box::new(status))
+                } else {
+                    assert!(matches!(serde_json::from_str::<Request>(&line).unwrap(), Request::SetDeviceName {name} if name=="new"));
+                    Response::DeviceNameSet { name: "old-canonical".into(), name_sync: Some(pending.clone()) }
+                };
+                server.write_all((serde_json::to_string(&response).unwrap()+"\n").as_bytes()).await.unwrap();
+            }
+        });
+        let mut client = Client::new(Box::new(stream));
+        let (name, status) = client.propose_device_name("new").await.unwrap();
+        assert_eq!(name, "old-canonical"); assert_eq!(status, expected);
+        task.await.unwrap();
+        #[derive(serde::Deserialize)]
+        struct LegacyName { name: String }
+        let old: LegacyName = serde_json::from_value(serde_json::json!({"name":name, "name_sync":status})).unwrap();
+        assert_eq!(old.name, "old-canonical");
     }
 
     /// FR-84 D3 — the restart verb's wire shape, locked as JSON TEXT so the

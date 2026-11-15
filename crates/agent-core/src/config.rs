@@ -21,6 +21,29 @@ use std::path::PathBuf;
 
 use crate::acl::AgentForwardAcl;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceNameJournal {
+    pub server_url: String,
+    pub tenant_id: String,
+    pub agent_id: String,
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<DeviceNameProposal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceNameProposal {
+    pub name: String,
+    pub base_revision: String,
+    /// Retain a failed proposal for an explicit user retry, never auto-rebase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Base URL of the MeshHarbor API, e.g. `https://meshharbor.itachi.fans`. No trailing slash.
@@ -43,6 +66,9 @@ pub struct AgentConfig {
     pub machine_id: String,
     /// User-friendly name shown in the admin UI.
     pub machine_name: String,
+    /// Primary name journal; proposals do not replace the canonical name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_sync: Option<DeviceNameJournal>,
     /// FR-51 P3 — this enrollment declared itself temporary (it arrived on an
     /// ephemeral enrollment key): the server reaps the row after silence, and
     /// the daemon de-enrolls itself on SIGTERM/SIGINT so a clean stop removes
@@ -2849,6 +2875,7 @@ pub fn test_fixture() -> AgentConfig {
         tenant_id: "tid".into(),
         machine_id: "mid".into(),
         machine_name: "host".into(),
+        name_sync: None,
         ephemeral: false,
         encoder_preference: EncoderPreferenceChoice::Auto,
         update_check_interval_h: None,
