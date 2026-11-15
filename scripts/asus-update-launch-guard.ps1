@@ -19,6 +19,16 @@ function ReadState([string]$journal,[string]$daemon){
  $pointer=Join-Path $journal 'install-owner-active.json'
  if(!(Test-Path -LiteralPath $pointer)){return @{exists=$false}}
  $dir=PlainPath ([IO.File]::ReadAllText($pointer,[Text.Encoding]::UTF8)|ConvertFrom-Json)
+ # Successful installers remove their private TEMP tree. The durable outcome
+ # is usable only for this exact staging parent, after this pointer was written.
+ if(!(Test-Path -LiteralPath $dir)){
+  $v=[IO.File]::ReadAllText((Join-Path $journal 'last-install.json'),[Text.Encoding]::UTF8)|ConvertFrom-Json
+  $pointerTime=([DateTimeOffset](Get-Item -Force -LiteralPath $pointer).LastWriteTimeUtc).ToUnixTimeSeconds()
+  if($v.status -cne 'SucceededVerified' -or $v.installer_exit_code -notin @(0,3010) -or !$v.finished_unix -or $v.finished_unix -lt $v.started_unix -or $v.started_unix -lt $pointerTime -or (PlainPath $v.new_binary_path) -ine $daemon -or $v.expected_version -notmatch '^agent-v[0-9]+\.[0-9]+\.[0-9]+$' -or $v.new_binary_version -cne ('meshharbord '+$v.expected_version.Substring(7)) -or (Split-Path $dir -Leaf) -notlike 'install-owner-*' -or (Split-Path $dir -Parent) -ine (Split-Path (PlainPath $v.installer_path) -Parent)){throw 'missing owner TEMP lacks exact durable success'}
+  $active=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -match '^meshharbord-(owner|watch[^.]*)[.]exe$' -or $_.CommandLine -match 'post-install-(owner|watch)' -or ($_.Name -ieq 'msiexec.exe' -and (!$_.CommandLine -or $_.CommandLine -notmatch '^"?C:\\Windows\\System32\\msiexec[.]exe"? /V$'))})
+  if($active.Count){throw 'missing owner TEMP has active or unknown installer/owner'}
+  return @{exists=$true;terminal=$true}
+ }
  $requestPath=Join-Path $dir 'request.json';$r=[IO.File]::ReadAllText($requestPath,[Text.Encoding]::UTF8)|ConvertFrom-Json
  if((PlainPath $r.origin) -ine $daemon){return @{exists=$false}}
  $start=(Get-Item -Force -LiteralPath $requestPath).LastWriteTimeUtc

@@ -33,5 +33,20 @@ try{
  $script:process.CreationDate=[DateTime]::UtcNow.AddSeconds(-1);$script:process.CommandLine='msiexec /i "C:\unrelated.msi"';Check 'unrelated-msi' $false
  WriteJson (Join-Path $dir 'terminal.json') @{finished_unix=123;installer_exit_code=1603;status='InstallerFailed';expected_version=$request.expected_version;installer_path=$request.installer}
  Check 'known-terminal' $false
- Write-Output 'ALL 13 FIXTURES PASS; NO INSTALLER OR TASK MUTATION'
+ # A removed private TEMP tree must not disable the recurring launcher forever.
+ $missing=Join-Path (Join-Path $root 'cleaned-update') 'install-owner-exact'
+ WriteJson (Join-Path $root 'install-owner-active.json') $missing
+ $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+ $success=@{status='SucceededVerified';installer_exit_code=0;started_unix=$now;finished_unix=$now+1;new_binary_path='\\?\C:\fixture\meshharbord.exe';new_binary_version='meshharbord 0.4.160';expected_version='agent-v0.4.160';installer_path=(Join-Path (Split-Path $missing -Parent) 'package.msi')}
+ $ordinary=Join-Path $root 'last-install.json';WriteJson $ordinary $success;$script:process=$null
+ Check 'cleaned-temp-durable-success' $false
+ function RejectMissing($name){$rejected=$false;try{ReadState $root 'C:\fixture\meshharbord.exe'|Out-Null}catch{$rejected=$true};if(!$rejected){throw ($name+' must fail closed')};Write-Output ($name+' PASS failclosed')}
+ $script:process=[pscustomobject]@{Name='meshharbord-owner.exe';CommandLine='owner'};RejectMissing 'cleaned-temp-active-owner'
+ $script:process=[pscustomobject]@{Name='msiexec.exe';CommandLine=$null};RejectMissing 'cleaned-temp-unknown-msi'
+ $script:process=$null;$success.status='InProgress';WriteJson $ordinary $success;RejectMissing 'cleaned-temp-inprogress'
+ $success.status='SucceededVerified';$success.started_unix=$now-10;WriteJson $ordinary $success;RejectMissing 'cleaned-temp-older-journal'
+ $success.started_unix=$now;$success.installer_path='C:\other\package.msi';WriteJson $ordinary $success;RejectMissing 'cleaned-temp-other-attempt'
+ $success.installer_path=Join-Path (Split-Path $missing -Parent) 'package.msi';$success.new_binary_path='C:\other\meshharbord.exe';WriteJson $ordinary $success;RejectMissing 'cleaned-temp-other-origin'
+ Remove-Item $ordinary;RejectMissing 'cleaned-temp-no-durable-outcome'
+ Write-Output 'ALL 21 FIXTURES PASS; NO INSTALLER OR TASK MUTATION'
 }finally{Remove-Item -LiteralPath $root -Recurse -Force}
