@@ -1047,7 +1047,14 @@ async fn resolve_session_authz_with_origin(
     }
 
     // The effective mode for an allowed non-owner controller (attended default).
-    let mode = agent.access_policy.effective_consent_mode();
+    let mode = meshharbor_mod_fleet::device_invite::invite_consent_mode(
+        &state.fleet,
+        agent_id,
+        controller_user_id,
+        agent.access_policy.consent_mode,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let perms = state
         .tenants
@@ -1190,7 +1197,14 @@ async fn resolve_file_child_policy_snapshot(
         let effective_mode = if agent.owner_user_id == controller_user_id {
             agent.access_policy.owner_consent_mode()
         } else {
-            agent.access_policy.effective_consent_mode()
+            meshharbor_mod_fleet::device_invite::invite_consent_mode(
+                &state.fleet,
+                agent_id,
+                controller_user_id,
+                agent.access_policy.consent_mode,
+            )
+            .await
+            .ok()?
         };
         if tenant.settings.rc_session.files == RcFeaturePolicy::Ask
             && effective_mode != ConsentMode::Prompt

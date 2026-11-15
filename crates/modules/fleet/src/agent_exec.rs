@@ -460,7 +460,19 @@ pub async fn dispatch(
             deny(audit, reason, message)
         }
         Ok(()) => {
-            let consent_mode = agent.exec_policy.effective_consent_mode();
+            let mut policy = agent.exec_policy.clone();
+            // A failed consent lookup never becomes unattended approval.
+            policy.consent_mode = Some(
+                crate::device_invite::invite_consent_mode(
+                    state,
+                    agent_id,
+                    caller.user_id,
+                    policy.consent_mode,
+                )
+                .await
+                .unwrap_or(meshharbor_remote_control::models::ConsentMode::Prompt),
+            );
+            let consent_mode = policy.effective_consent_mode();
             // FR-94 — a Windows device anchored for SYSTEM exec gets the
             // command through its service; every other device, as before.
             let via_service = crate::exec_service::routes_via_service(state, agent);

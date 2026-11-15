@@ -538,6 +538,15 @@ async fn device_share_live_lookup_rejects_owner_change_quarantine_and_recipient_
 /// This proves server signaling/lifecycle, NOT native capture/WebRTC payload throughput.
 #[tokio::test]
 async fn device_share_remote_real_ws_session_and_live_revoke() {
+    shared_session_consent_and_revoke(false).await;
+}
+
+#[tokio::test]
+async fn invitation_consent_default_shared_files_stay_live_until_revoked() {
+    shared_session_consent_and_revoke(true).await;
+}
+
+async fn shared_session_consent_and_revoke(temporary: bool) {
     use futures::{SinkExt, StreamExt};
     use meshharbor_remote_control::signaling::ServerMsg;
     use std::time::Duration;
@@ -559,6 +568,20 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
         .await
         .unwrap();
     let id = grant["id"].as_str().unwrap();
+    if temporary {
+        let fleet = f.app.state.fleet();
+        let agent = fleet.agents.base.find_by_id(f.device).await.unwrap();
+        meshharbor_mod_fleet::device_invite::create_bound(
+            fleet,
+            f.tenant,
+            f.recipient.id,
+            &agent,
+            3600,
+            vec![],
+        )
+        .await
+        .unwrap();
+    }
     // Public signing identity of this ONE device; never its private signing key.
     let public_key = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
     f.app
@@ -626,10 +649,17 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
                 permissions,
                 rc_overlay,
                 shared_lease,
+                consent_mode,
                 ..
             }) = agent_rx.recv().await
             {
-                break (session_id, permissions, rc_overlay, shared_lease);
+                break (
+                    session_id,
+                    permissions,
+                    rc_overlay,
+                    shared_lease,
+                    consent_mode,
+                );
             }
         }
     })
@@ -641,6 +671,14 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
             .contains(meshharbor_remote_control::permissions::Permissions::FILES)
     );
     assert!(!request.2);
+    assert_eq!(
+        request.4,
+        Some(if temporary {
+            meshharbor_remote_control::models::ConsentMode::Auto
+        } else {
+            meshharbor_remote_control::models::ConsentMode::Prompt
+        })
+    );
     assert_eq!(
         request.3.as_ref().and_then(|l| l.account.as_deref()),
         Some("alice"),
@@ -668,6 +706,10 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
         None,
     )
     .unwrap();
+    if temporary {
+        // The periodic share/file scope verifier must use the same default.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
     assert!(hub.session_grant(request.0).is_some());
     let status = f
         .app

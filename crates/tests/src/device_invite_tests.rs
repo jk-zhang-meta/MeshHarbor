@@ -782,6 +782,92 @@ async fn only_the_inviter_and_its_roles_may_control_a_temporary_device() {
         .unwrap();
     let ok = meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req).await;
     assert!(ok.is_ok(), "a member of an allowed role: {:?}", ok.err());
+    assert_eq!(
+        ok.unwrap().mode,
+        meshharbor_remote_control::models::ConsentMode::Auto,
+        "an assigned invitation is already approved when consent is unset"
+    );
+    use meshharbor_remote_control::models::{ConsentMode, DeviceAccessFeatures};
+    let agents = app.db.collection::<bson::Document>("agents");
+    // Explicit policy is never overridden by an invitation's default.
+    for (wire, mode) in [
+        ("prompt", ConsentMode::Prompt),
+        ("email", ConsentMode::Email),
+        ("push", ConsentMode::Push),
+        ("prompt_then_email", ConsentMode::PromptThenEmail),
+    ] {
+        agents
+            .update_one(
+                doc! { "_id": agent },
+                doc! { "$set": { "access_policy.consent_mode": wire } },
+            )
+            .await
+            .unwrap();
+        let actual = meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req)
+            .await
+            .unwrap();
+        assert_eq!(actual.mode, mode);
+    }
+    agents
+        .update_one(
+            doc! { "_id": agent },
+            doc! {
+                "$unset": { "access_policy.consent_mode": "" },
+                "$set": { "access_policy.prompt_owner": true }
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        meshharbor_mod_remote::controller::resolve_session_authz(remote, member, &req)
+            .await
+            .unwrap()
+            .mode,
+        ConsentMode::Prompt,
+        "explicit owner prompt survives"
+    );
+    // Default Auto never substitutes for the selected capability ceiling.
+    invites
+        .update_one(
+            doc! { "agent_id": agent },
+            doc! { "$set": {
+                "features": bson::to_bson(&DeviceAccessFeatures::none()).unwrap()
+            }},
+        )
+        .await
+        .unwrap();
+    assert!(
+        meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req)
+            .await
+            .is_err()
+    );
+    invites
+        .update_one(
+            doc! { "agent_id": agent },
+            doc! { "$unset": { "features": "" },
+            "$set": { "revocation_pending": true } },
+        )
+        .await
+        .unwrap();
+    assert!(
+        meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req)
+            .await
+            .is_err()
+    );
+    invites
+        .update_one(
+            doc! { "agent_id": agent },
+            doc! { "$set": {
+                "revocation_pending": false, "access_until": bson::DateTime::from_millis(1)
+            }},
+        )
+        .await
+        .unwrap();
+    assert!(
+        meshharbor_mod_remote::controller::resolve_session_authz(remote, admin, &req)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

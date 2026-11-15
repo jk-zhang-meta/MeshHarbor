@@ -371,3 +371,67 @@ async fn an_agent_without_the_verb_is_answered_at_once() {
     );
     drop(dev);
 }
+
+#[tokio::test]
+async fn invitation_consent_default_is_auto_on_the_actual_ssh_wire() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("invite-ssh-consent").await;
+    enable_org_ssh(&app, &seeded).await;
+    let mut dev = device(&app, &seeded, "invite-ssh-consent", "100.64.0.71", ACKING).await;
+    for (temporary, explicit, expected) in [
+        (false, None, "prompt"),
+        (true, None, "auto"),
+        (true, Some("prompt"), "prompt"),
+    ] {
+        if temporary && explicit.is_none() {
+            let fleet = app.state.fleet();
+            let aid = ObjectId::parse_str(&dev.agent_id).unwrap();
+            let agent = fleet.agents.base.find_by_id(aid).await.unwrap();
+            meshharbor_mod_fleet::device_invite::create_bound(
+                &fleet,
+                agent.tenant_id,
+                ObjectId::parse_str(&seeded.admin.id).unwrap(),
+                &agent,
+                3600,
+                vec![],
+            )
+            .await
+            .unwrap();
+        }
+        if let Some(mode) = explicit {
+            let r = app
+                .auth_put(
+                    &format!(
+                        "/api/tenant/{}/agent/{}/ssh-policy",
+                        seeded.tenant_id, dev.agent_id
+                    ),
+                    &seeded.admin.access_token,
+                )
+                .json(&json!({"mode":"on", "account_mode":"daemon", "consent_mode":mode}))
+                .send()
+                .await
+                .unwrap();
+            assert!(r.status().is_success());
+        }
+        let caller = request_session(&app, &seeded, &dev.agent_id);
+        let target = async {
+            loop {
+                let frame = tokio::time::timeout(Duration::from_secs(10), dev.ws.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                if let Message::Text(t) = frame {
+                    let value: Value = serde_json::from_str(&t).unwrap();
+                    if value["t"] == "rc:ssh.grant" {
+                        assert_eq!(value["consent_mode"], expected);
+                        send_ack(&mut dev.ws, value["grant_id"].as_str().unwrap(), None).await;
+                        break;
+                    }
+                }
+            }
+        };
+        let (response, _) = tokio::join!(caller, target);
+        assert!(response["error"].is_null(), "{response}");
+    }
+}

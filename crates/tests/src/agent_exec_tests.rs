@@ -755,3 +755,42 @@ async fn long_output_is_capped_and_flagged() {
     let _ = stop_tx.send(true);
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
+
+#[tokio::test]
+async fn invitation_consent_default_runs_exec_without_an_approval() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("invite-exec-consent").await;
+    let mut cfg = enrol(&app, &seeded, "invite-exec-consent").await;
+    cfg.exec_enabled = true;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let task = spawn_agent(cfg.clone(), stop_rx);
+    wait_online(&app, &seeded, &cfg.agent_id).await;
+    set_org_exec(&app, &seeded, true).await;
+    set_device_policy(&app, &seeded, &cfg.agent_id, json!({"mode":"on"})).await;
+    let fleet = app.state.fleet();
+    let aid = bson::oid::ObjectId::parse_str(&cfg.agent_id).unwrap();
+    let agent = fleet.agents.base.find_by_id(aid).await.unwrap();
+    meshharbor_mod_fleet::device_invite::create_bound(
+        &fleet,
+        agent.tenant_id,
+        bson::oid::ObjectId::parse_str(&seeded.admin.id).unwrap(),
+        &agent,
+        3600,
+        vec![],
+    )
+    .await
+    .unwrap();
+    let out = run_exec(
+        &app,
+        &seeded,
+        &seeded.admin.access_token,
+        &cfg.agent_id,
+        echo_hello(),
+    )
+    .await;
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    assert_eq!(out["error"], Value::Null, "{out}");
+    assert_eq!(out["exit_code"], 0);
+    assert!(out["stdout"].as_str().unwrap().contains("hello"));
+}

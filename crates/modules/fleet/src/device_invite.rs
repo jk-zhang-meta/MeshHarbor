@@ -43,7 +43,7 @@ use axum::{
 use bson::{DateTime, doc, oid::ObjectId};
 use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use meshharbor_db::models::role::permissions;
-use meshharbor_remote_control::models::{DeviceAccessFeature, DeviceAccessFeatures};
+use meshharbor_remote_control::models::{ConsentMode, DeviceAccessFeature, DeviceAccessFeatures};
 use meshharbor_services::dao::native_ssh_authorization::hash_secret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1181,6 +1181,39 @@ fn selected_for_caller(
         selected.network |= f.network;
     }
     selected
+}
+
+/// An accepted, live invitation already consents to its assigned capabilities.
+/// This only fills an unset policy; callers must still enforce all feature,
+/// identity, organization and local-agent gates. Ordinary devices stay attended.
+pub async fn invite_consent_mode(
+    state: &FleetState,
+    agent_id: ObjectId,
+    user: ObjectId,
+    configured: Option<ConsentMode>,
+) -> Result<ConsentMode, ApiError> {
+    if let Some(mode) = configured {
+        return Ok(mode);
+    }
+    if host_revocation_pending(state, agent_id).await? {
+        return Ok(ConsentMode::Prompt);
+    }
+    let rows = live_for_agent(state, agent_id).await?;
+    if rows.is_empty() {
+        return Ok(ConsentMode::Prompt);
+    }
+    let roles = state
+        .tenants
+        .member_role_ids(rows[0].tenant_id, user)
+        .await
+        .map_err(|_| ApiError::ServiceUnavailable("Could not verify invitation roles".into()))?;
+    Ok(
+        if selected_for_caller(&rows, user, &roles) != DeviceAccessFeatures::none() {
+            ConsentMode::Auto
+        } else {
+            ConsentMode::Prompt
+        },
+    )
 }
 
 pub async fn allows_feature(

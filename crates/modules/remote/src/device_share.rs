@@ -20,6 +20,28 @@ use meshharbor_remote_control::{
 use meshharbor_services::dao::device_share::DeviceShareDao;
 use serde::Serialize;
 
+async fn consent_mode(
+    state: &RemoteState,
+    agent: &meshharbor_remote_control::models::Agent,
+    user: ObjectId,
+) -> Result<ConsentMode, ApiError> {
+    let policy = &agent.access_policy;
+    let configured = if agent.owner_user_id == user && policy.prompt_owner.unwrap_or(false) {
+        Some(policy.owner_consent_mode())
+    } else {
+        policy.consent_mode
+    };
+    meshharbor_mod_fleet::device_invite::invite_consent_mode(
+        &state.fleet,
+        agent
+            .id
+            .ok_or_else(|| ApiError::Forbidden("Missing device identity".into()))?,
+        user,
+        configured,
+    )
+    .await
+}
+
 #[derive(Clone)]
 pub(crate) struct ShareScope {
     pub grant_id: ObjectId,
@@ -184,7 +206,9 @@ pub(crate) async fn scope_for_request(
             recipient: user,
             device: *agent_id,
             asked: *permissions,
-            consent_mode: policy.effective_consent_mode(),
+            consent_mode: consent_mode(state, &access.agent, user)
+                .await
+                .map_err(|e| e.to_string())?,
         },
         access,
     )))
@@ -194,7 +218,7 @@ pub(crate) async fn session_authz(
     user: ObjectId,
     msg: &ClientMsg,
 ) -> Result<SessionAuthz, String> {
-    let Some((_, access)) = scope_for_request(state, user, msg).await? else {
+    let Some((scope, access)) = scope_for_request(state, user, msg).await? else {
         return Err("Missing explicit device share".into());
     };
     let tenant = state
@@ -222,7 +246,7 @@ pub(crate) async fn session_authz(
         None
     };
     Ok(SessionAuthz {
-        mode: access.agent.access_policy.effective_consent_mode(),
+        mode: scope.consent_mode,
         override_reason: None,
         input_mode: access.agent.access_policy.input_mode,
         tenant_name: Some(tenant.name.clone()),
@@ -256,7 +280,7 @@ pub(crate) async fn live_scope_valid(
             .has_rpc(meshharbor_remote_control::models::RpcCap::SharedSessionLease)
             || a.grant.revision != scope.revision
             || !within_grant(&a.grant, scope.asked)
-            || policy.effective_consent_mode() != scope.consent_mode
+            || consent_mode(state, &a.agent, scope.recipient).await? != scope.consent_mode
             || ((!policy.allowed_user_ids.is_empty() || !policy.allowed_role_ids.is_empty())
                 && !policy.allowed_user_ids.contains(&scope.recipient))
         {

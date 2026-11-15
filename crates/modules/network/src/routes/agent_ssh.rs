@@ -581,7 +581,15 @@ async fn decide(
     // FR-105 — who serves this grant: the device's SYSTEM service, or its
     // worker (on an attended Windows install, the signed-in user).
     let via_service = routes_ssh_via_service(state, agent, account_mode, session.is_some());
-    let consent_mode = Some(effective_wire_consent(consent_mode));
+    let consent_mode = meshharbor_mod_fleet::device_invite::invite_consent_mode(
+        &state.fleet,
+        agent_id,
+        caller.user_id,
+        consent_mode,
+    )
+    .await
+    .map_err(|_| SshDenyReason::CallerNotAllowed)?;
+    let consent_mode = Some(effective_wire_consent(Some(consent_mode)));
     let msg = ServerMsg::SshGrant {
         grant_id: grant_id.clone(),
         public_key: public_key.to_string(),
