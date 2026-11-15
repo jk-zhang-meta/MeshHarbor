@@ -64,6 +64,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agents'
 import { useTunnelClientStore } from '@/stores/tunnelClients'
+import { useDeviceStore } from '@/stores/devices'
 import DeviceNameSyncStatus from './DeviceNameSyncStatus.vue'
 import { nameSyncPresentation, shouldAcceptNameSync, type NameSync } from '@/utils/nameSync'
 
@@ -97,6 +98,7 @@ const emit = defineEmits<{
       dnsName?: string
       nameSync?: NameSync
       nameSyncUnverified?: boolean
+      nameSyncBefore?: NameSync
     },
   ]
 }>()
@@ -104,6 +106,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const agentStore = useAgentStore()
 const tunnelClientStore = useTunnelClientStore()
+const deviceStore = useDeviceStore()
 
 const name = ref('')
 const displayName = ref('')
@@ -196,6 +199,7 @@ async function retryNameSync() {
   error.value = null
   const generation = dialogGeneration
   const tenant = props.tenantId
+  const nameSyncBefore = deviceStore.items.find(row => row.id === d.id && row.kind === d.kind)?.name_sync ?? d.name_sync
   try {
     const canonical = agentStore.agents.find(a => a.id === d.id && a.tenant_id === tenant)?.name ?? savedSnapshot.value?.name ?? d.name
     const result = await agentStore.updateDevice(tenant, d.id, { name: canonical })
@@ -203,6 +207,8 @@ async function retryNameSync() {
     savedName.value = true
     savedSync.value = result.nameSync
     pollUntilAcknowledged()
+    const snapshot = savedSnapshot.value ?? d
+    emit('saved', { id: d.id, kind: 'agent', name: canonical, display_name: snapshot.display_name, tags: [...(snapshot.tags ?? [])], nameSync: result.nameSync, nameSyncUnverified: result.nameSyncUnverified, nameSyncBefore, dnsName: result.dnsName, dnsRenamed: result.dnsRenamed })
   } catch (e) { if (generation === dialogGeneration) error.value = (e as Error).message }
   finally { if (generation === dialogGeneration) saving.value = false }
 }
@@ -221,6 +227,7 @@ async function save() {
   const tenant = props.tenantId
   const submittedDisplayName = displayName.value.trim()
   const submittedTags = [...tags.value]
+  const nameSyncBefore = deviceStore.items.find(row => row.id === d.id && row.kind === d.kind)?.name_sync ?? d.name_sync
   try {
     const previous = savedSnapshot.value ?? d
     const fields: { name?: string; display_name?: string; tags?: string[] } = {}
@@ -258,6 +265,7 @@ async function save() {
       dnsName: result.dnsName,
       nameSync,
       nameSyncUnverified: 'nameSyncUnverified' in result ? result.nameSyncUnverified as boolean : undefined,
+      nameSyncBefore,
     })
     // Keep the dialog open only when there's a DNS note worth reading.
     if (!dnsNote.value && !savedName.value) emit('update:modelValue', false)

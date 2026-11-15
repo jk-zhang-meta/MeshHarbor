@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAgentStore, type Agent } from '@/stores/agents'
 import { useDeviceStore, type DeviceRow } from '@/stores/devices'
 import { api } from '@/api/client'
+import { sameNameSyncSnapshot } from '@/utils/nameSync'
 vi.mock('@/api/client', () => ({ api: { get: vi.fn(), put: vi.fn() } }))
 const pending = { revision: '2', acked_revision: null, event_seq: '3', state: 'pending' as const }
 const applied = { ...pending, acked_revision: '2', event_seq: '4', state: 'synced' as const }
@@ -73,5 +74,32 @@ describe('name synchronization across HTTP and realtime updates', () => {
     await saving
     expect(s.agents[0]!.name).toBe('newer-event')
     expect(s.agents[0]!.name_sync).toEqual(newer)
+  })
+  it('clears legacy ACK evidence for a grid-only row missing from the rich agent cache', async () => {
+    const agents = useAgentStore()
+    const grid = useDeviceStore()
+    grid.items = [{ ...row(), kind: 'agent' } as unknown as DeviceRow]
+    const before = grid.items[0]!.name_sync
+    vi.mocked(api.put).mockResolvedValue({ updated: true })
+    const result = await agents.updateDevice('t', 'a', { name: 'grid-only-save' })
+    expect(result.nameSyncUnverified).toBe(true)
+    grid.patchRow({ id: 'a', name: 'grid-only-save' }, result.nameSyncUnverified && sameNameSyncSnapshot(grid.items[0]!.name_sync, before))
+    expect(grid.items[0]!.name).toBe('grid-only-save')
+    expect(grid.items[0]!.name_sync).toBeUndefined()
+  })
+  it('does not erase a newer same-name ACK in the grid when an older save returns no evidence', async () => {
+    const agents = useAgentStore()
+    const grid = useDeviceStore()
+    grid.items = [{ ...row(), kind: 'agent' } as unknown as DeviceRow]
+    const before = grid.items[0]!.name_sync
+    let complete!: (value: unknown) => void
+    vi.mocked(api.put).mockImplementation(() => new Promise(resolve => { complete = resolve }) as never)
+    const saving = agents.updateDevice('t', 'a', { name: 'latest' })
+    const newer = { ...applied, revision: '3', acked_revision: '3', event_seq: '5' }
+    grid.patchRow({ id: 'a', name: 'latest', name_sync: newer })
+    complete({ updated: true })
+    const result = await saving
+    grid.patchRow({ id: 'a', name: 'latest' }, result.nameSyncUnverified && sameNameSyncSnapshot(grid.items[0]!.name_sync, before))
+    expect(grid.items[0]!.name_sync).toEqual(newer)
   })
 })
