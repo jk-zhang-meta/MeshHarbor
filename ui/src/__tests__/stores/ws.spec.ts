@@ -112,6 +112,7 @@ import { useRoomStore } from '@/stores/rooms'
 import { useTenantStore } from '@/stores/tenant'
 import { useOrgBadgesStore } from '@/stores/orgBadges'
 import { useAgentStore } from '@/stores/agents'
+import { useDeviceStore } from '@/stores/devices'
 import { useConferenceStore } from '@/stores/conference'
 import { useSnackbar } from '@/composables/useSnackbar'
 
@@ -505,6 +506,23 @@ describe('useWsStore', () => {
 
       expect(spy).toHaveBeenCalledWith('org-b', 'mention')
       expect(badges.summaries['org-b']?.mentions).toBe(1)
+    })
+
+    it('routes device-name evidence to both stores without accepting foreign or stale events', () => {
+      openSocketWithActiveOrg('org-a')
+      const agents = useAgentStore()
+      const devices = useDeviceStore()
+      const sync = { revision: '2', acked_revision: null, event_seq: '2', state: 'pending' as const }
+      agents.agents = [{ id: 'ag1', tenant_id: 'org-a', name: 'old', name_sync: sync } as never]
+      devices.items = [{ kind: 'agent', id: 'ag1', name: 'old', name_sync: sync } as never]
+      const data = { tenant_id: 'org-a', agent_id: 'ag1', name: 'new', name_sync: { ...sync, acked_revision: '2', event_seq: '3', state: 'synced' } }
+      mockWsInstance.simulateMessage({ type: 'device:name', data })
+      expect(agents.agents[0]!.name).toBe('new')
+      expect(devices.items[0]!.name_sync?.state).toBe('synced')
+      mockWsInstance.simulateMessage({ type: 'device:name', data: { ...data, name: 'stale', name_sync: sync } })
+      mockWsInstance.simulateMessage({ type: 'device:name', data: { ...data, tenant_id: 'org-b', name: 'foreign', name_sync: { ...data.name_sync, event_seq: '4' } } })
+      expect(agents.agents[0]!.name).toBe('new')
+      expect(devices.items[0]!.name).toBe('new')
     })
 
     it('patches the agents store for active-org device:presence and badges foreign orgs', () => {

@@ -1316,6 +1316,21 @@
       "mo": "{n}mo ago",
       "y": "{n}y ago"
     },
+    "nameSync": {
+      "retry": "Retry name sync",
+      "synced": "Name synced",
+      "syncedHint": "The device confirmed that its new name was saved locally. No restart was needed.",
+      "pending": "Name sync pending",
+      "pendingHint": "The server saved the name. Waiting for the device to save and confirm it; offline devices catch up when they connect.",
+      "failed": "Name sync failed",
+      "failedHint": "The device could not confirm this name. The server name is saved; check the device's connection, configuration write access, or a conflicting local rename.",
+      "unsupported": "Device update needed",
+      "unsupportedHint": "This client does not support live name synchronization. The server name has changed, but local synchronization is not confirmed.",
+      "unverified": "Local name unverified",
+      "unverifiedHint": "There is no device acknowledgement for this name. A saved server name is not proof that the local name changed.",
+      "organizationAlias": "Organization alias saved",
+      "organizationAliasHint": "This is the name within this organization. A secondary organization does not rename the device globally."
+    },
     "devEdit": {
       "title": "Edit device",
       "name": "Device name",
@@ -1323,10 +1338,10 @@
       "displayNameHint": "Friendly label shown in lists — never propagates anywhere. Leave empty to show the device name.",
       "tags": "Tags",
       "tagsHint": "Free-form labels for filtering and search (max 16, 40 chars each). Press Enter to add.",
-      "nameHintAgent": "Propagates to the overlay + MagicDNS label. Peers selecting this device as an exit node BY NAME must update their config — pin by node-id hex to be rename-proof.",
+      "nameHintAgent": "Updates the server and network name. Supported devices save the name live and confirm below; offline devices catch up on connection. Existing sessions are not restarted.",
       "nameHintClient": "Propagates to the overlay + MagicDNS label (server-side rename — the CLI keeps its local machine name).",
       "nameEmpty": "Device name must not be empty.",
-      "dnsRenamed": "MagicDNS label is now \"{name}\" — peers resolve it immediately; the device itself picks up its new self-name on its next reconnect.",
+      "dnsRenamed": "Network name is now \"{name}\". Device-local acknowledgement is shown separately below.",
       "dnsKept": "The fleet name changed, but the overlay DNS label could not be updated (kept its old value)."
     },
     "policy": {
