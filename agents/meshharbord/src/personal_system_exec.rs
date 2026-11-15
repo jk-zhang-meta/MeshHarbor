@@ -50,21 +50,14 @@ async fn execute(request_file: &Path) -> Result<()> {
     #[cfg(not(windows))]
     let (target_path, existing_sys) = {
         use std::os::unix::fs::PermissionsExt;
-        if let Some(link) = meshharbor_node_core::recording_dir::link_component(Path::new(
-            crate::service::system::CONFIG,
-        )) {
-            bail!(
-                "system config path {} contains symbolic link {}",
-                crate::service::system::CONFIG,
-                link.display()
-            );
-        }
         let p = PathBuf::from(crate::service::system::CONFIG);
+        ensure_trusted_unix_config_paths(&p)?;
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
         }
+        ensure_trusted_unix_config_paths(&p)?;
         let existing = if p.exists() {
             Some(crate::config::load(&p).context("reading existing system config")?)
         } else {
@@ -137,6 +130,8 @@ async fn execute(request_file: &Path) -> Result<()> {
         cfg.macos_supervise_gui_worker = true;
     }
 
+    #[cfg(not(windows))]
+    ensure_trusted_unix_config_paths(&target_path)?;
     crate::config::save(&target_path, &cfg).context("saving system config")?;
     #[cfg(windows)]
     win_security::harden_saved_config_subtree(&target_path)?;
@@ -149,6 +144,70 @@ async fn execute(request_file: &Path) -> Result<()> {
     }
 
     activate_platform_system_service(&req, &target_path, &enrolled_agent_id).await
+}
+
+#[cfg(not(windows))]
+fn ensure_trusted_unix_config_paths(config_path: &Path) -> Result<()> {
+    for candidate in [
+        config_path.to_path_buf(),
+        config_path.with_extension("toml.prev"),
+        config_path.with_extension("toml.tmp"),
+        device_invite::marker_path(config_path),
+        device_invite::history_path(config_path),
+    ] {
+        if let Some(link) = personal_system::untrusted_promotion_link_component(&candidate) {
+            bail!(
+                "system config path {} contains untrusted symbolic link {}",
+                candidate.display(),
+                link.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Pure cross-OS helper: given `exe` and candidate `%ProgramFiles%` roots, returns
+/// `(matched_pf_root, subdirs_strictly_between_pf_root_and_exe)` in top-down order.
+/// Returns `None` if `exe` is outside `pf_roots` OR sits directly in `pf_root` with
+/// no application subdirectory (`C:\Program Files\meshharbord.exe`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pf_subdirs_between_root_and_exe(
+    exe: &Path,
+    pf_roots: &[PathBuf],
+) -> Option<(PathBuf, Vec<PathBuf>)> {
+    fn norm_parts(p: &Path) -> Vec<String> {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .split('\\')
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect()
+    }
+    let exe_parts = norm_parts(exe);
+    for root in pf_roots {
+        let root_parts = norm_parts(root);
+        if root_parts.is_empty() || exe_parts.len() <= root_parts.len() + 1 {
+            continue;
+        }
+        let prefix_matches = root_parts
+            .iter()
+            .zip(exe_parts.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !prefix_matches {
+            continue;
+        }
+        let mut cur = root_parts.join("\\");
+        let mut subdirs = Vec::new();
+        for seg in &exe_parts[root_parts.len()..exe_parts.len() - 1] {
+            cur.push('\\');
+            cur.push_str(seg);
+            subdirs.push(PathBuf::from(&cur));
+        }
+        if !subdirs.is_empty() {
+            return Some((PathBuf::from(root_parts.join("\\")), subdirs));
+        }
+    }
+    None
 }
 
 struct ParsedSeedInputs {
@@ -402,12 +461,14 @@ mod win_security {
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
     use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, LUID, LocalFree};
+    use std::path::PathBuf;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+        GetSecurityInfo, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
         ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AdjustTokenPrivileges,
-        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, IsWellKnownSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, IsWellKnownSid,
         LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
         PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
         SE_PRIVILEGE_ENABLED, SetFileSecurityW, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
@@ -416,8 +477,8 @@ mod win_security {
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ATTRIBUTE_DEVICE,
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType,
-        READ_CONTROL,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, READ_CONTROL,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -504,6 +565,29 @@ mod win_security {
         is_well_known(sid, WinLocalSystemSid) || is_well_known(sid, WinBuiltinAdministratorsSid)
     }
 
+    fn is_trusted_installer_sid(sid: PSID) -> bool {
+        if sid.is_null() {
+            return false;
+        }
+        // NT SERVICE\TrustedInstaller: S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464
+        const TI_SDDL_SID: &str =
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        let wsid: Vec<u16> = TI_SDDL_SID.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut ti_psid: PSID = std::ptr::null_mut();
+        // SAFETY: NUL-terminated string SID; `ti_psid` freed via LocalFree on success.
+        let ok = unsafe { ConvertStringSidToSidW(wsid.as_ptr(), &mut ti_psid) };
+        if ok == 0 || ti_psid.is_null() {
+            return false;
+        }
+        let eq = unsafe { EqualSid(sid, ti_psid) != 0 };
+        unsafe { LocalFree(ti_psid as _) };
+        eq
+    }
+
+    fn is_pf_trusted_sid(sid: PSID) -> bool {
+        is_trusted_sid(sid) || is_trusted_installer_sid(sid)
+    }
+
     pub(super) fn enable_admin_security_privileges() {
         unsafe {
             let mut token: HANDLE = std::ptr::null_mut();
@@ -548,6 +632,30 @@ mod win_security {
         what: &Path,
         require_no_untrusted_writers: bool,
     ) -> Result<()> {
+        check_security_handle_with(handle, what, require_no_untrusted_writers, false)
+    }
+
+    fn check_pf_security_handle(
+        handle: HANDLE,
+        what: &Path,
+        require_no_untrusted_writers: bool,
+    ) -> Result<()> {
+        check_security_handle_with(handle, what, require_no_untrusted_writers, true)
+    }
+
+    fn check_security_handle_with(
+        handle: HANDLE,
+        what: &Path,
+        require_no_untrusted_writers: bool,
+        allow_trusted_installer: bool,
+    ) -> Result<()> {
+        let sid_ok = |sid: PSID| {
+            if allow_trusted_installer {
+                is_pf_trusted_sid(sid)
+            } else {
+                is_trusted_sid(sid)
+            }
+        };
         let mut owner: PSID = std::ptr::null_mut();
         let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -571,9 +679,9 @@ mod win_security {
             );
         }
         let verdict = (|| -> Result<()> {
-            if !is_trusted_sid(owner) {
+            if !sid_ok(owner) {
                 bail!(
-                    "{} is not owned by SYSTEM or Administrators; refusing untrusted pre-created object",
+                    "{} is not owned by a trusted system/administrator principal; refusing untrusted object",
                     what.display()
                 );
             }
@@ -616,7 +724,7 @@ mod win_security {
                             std::ptr::read_unaligned((ace as *const u8).add(4) as *const u32)
                         };
                         let sid = unsafe { (ace as *mut u8).add(8) } as PSID;
-                        if mask & WRITE_LIKE != 0 && !is_trusted_sid(sid) {
+                        if mask & WRITE_LIKE != 0 && !sid_ok(sid) {
                             bail!(
                                 "{} grants write-like access (mask 0x{mask:08x}) to a non-admin principal; refusing untrusted object",
                                 what.display()
@@ -847,6 +955,162 @@ mod win_security {
         }
         Ok(())
     }
+
+    pub(super) fn verify_pf_root_readonly(pf_root: &Path) -> Result<()> {
+        if let Some(link) = meshharbor_node_core::recording_dir::link_component(pf_root) {
+            bail!(
+                "ProgramFiles root {} contains symbolic link or junction {}",
+                pf_root.display(),
+                link.display()
+            );
+        }
+        let handle = open_plain_dir_handle(pf_root)?
+            .ok_or_else(|| anyhow::anyhow!("ProgramFiles root {} does not exist", pf_root.display()))?;
+        check_pf_security_handle(handle.as_raw_handle() as HANDLE, pf_root, true)
+    }
+
+    pub(super) fn ensure_trusted_pf_directory(dir: &Path) -> Result<()> {
+        if let Some(link) = meshharbor_node_core::recording_dir::link_component(dir) {
+            bail!(
+                "refusing symbolic link or junction component {} on {}",
+                link.display(),
+                dir.display()
+            );
+        }
+        if let Some(existing_handle) = open_plain_dir_handle(dir)? {
+            check_pf_security_handle(existing_handle.as_raw_handle() as HANDLE, dir, true)?;
+            drop(existing_handle);
+            apply_sddl_to_path(dir, PF_DIR_SDDL)?;
+        } else {
+            if let Some(parent) = dir.parent()
+                && !parent.exists()
+            {
+                bail!("parent directory {} does not exist", parent.display());
+            }
+            let mut sd = Sddl::new(PF_DIR_SDDL)
+                .with_context(|| format!("compiling PF_DIR_SDDL for {}", dir.display()))?;
+            let wdir = wide(dir);
+            if unsafe { CreateDirectoryW(wdir.as_ptr(), sd.attributes()) } == 0 {
+                let err = std::io::Error::last_os_error();
+                bail!("creating secure ProgramFiles directory {}: {err}", dir.display());
+            }
+        }
+        let verified = open_plain_dir_handle(dir)?.ok_or_else(|| {
+            anyhow::anyhow!("ProgramFiles directory {} disappeared after hardening", dir.display())
+        })?;
+        check_security_handle(verified.as_raw_handle() as HANDLE, dir, true)
+    }
+
+    fn verify_and_harden_pf_file(path: &Path) -> Result<()> {
+        if let Some(link) = meshharbor_node_core::recording_dir::link_component(path) {
+            bail!(
+                "refusing symbolic link or junction component {} on {}",
+                link.display(),
+                path.display()
+            );
+        }
+        // Allow FILE_SHARE_READ | FILE_SHARE_DELETE so an executing service/CLI binary
+        // can be inspected without ERROR_SHARING_VIOLATION, while still denying
+        // FILE_SHARE_WRITE so any open writer handle fails closed immediately.
+        let open_pf_readonly = || -> Result<std::fs::File> {
+            let f = std::fs::OpenOptions::new()
+                .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)
+                .with_context(|| format!("opening ProgramFiles binary/asset {}", path.display()))?;
+            let raw_h = f.as_raw_handle() as HANDLE;
+            if unsafe { GetFileType(raw_h) } != FILE_TYPE_DISK {
+                bail!("{} is not a regular disk file", path.display());
+            }
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            if unsafe { GetFileInformationByHandle(raw_h, &mut info) } == 0 {
+                bail!(
+                    "GetFileInformationByHandle({}): {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                );
+            }
+            const FORBIDDEN: u32 =
+                FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE;
+            if (info.dwFileAttributes & FORBIDDEN) != 0 || info.nNumberOfLinks != 1 {
+                bail!(
+                    "{} must be a single-link non-reparse regular file",
+                    path.display()
+                );
+            }
+            Ok(f)
+        };
+
+        let pre = open_pf_readonly()?;
+        check_pf_security_handle(pre.as_raw_handle() as HANDLE, path, true)?;
+        drop(pre);
+
+        apply_sddl_to_path(path, PF_FILE_SDDL)?;
+
+        let post = open_pf_readonly()?;
+        check_security_handle(post.as_raw_handle() as HANDLE, path, true)
+    }
+
+    pub(super) fn verify_and_harden_pf_dir_entries(dir: &Path, depth: usize) -> Result<()> {
+        if depth > 4 {
+            bail!(
+                "ProgramFiles install directory {} exceeds maximum nesting depth",
+                dir.display()
+            );
+        }
+        for entry in std::fs::read_dir(dir)
+            .with_context(|| format!("reading ProgramFiles directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let p = entry.path();
+            let meta = std::fs::symlink_metadata(&p)
+                .with_context(|| format!("stat {}", p.display()))?;
+            if meta.file_type().is_symlink()
+                || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+            {
+                bail!("refusing reparse point {} inside {}", p.display(), dir.display());
+            }
+            if meta.is_dir() {
+                ensure_trusted_pf_directory(&p)?;
+                verify_and_harden_pf_dir_entries(&p, depth + 1)?;
+            } else if meta.is_file() {
+                verify_and_harden_pf_file(&p)?;
+            } else {
+                bail!("refusing non-regular entry {} inside {}", p.display(), dir.display());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_and_harden_program_files_install(
+        exe: &Path,
+        pf_roots: &[PathBuf],
+    ) -> Result<()> {
+        if let Some(link) = meshharbor_node_core::recording_dir::link_component(exe) {
+            bail!(
+                "ProgramFiles executable {} contains symbolic link or junction {}",
+                exe.display(),
+                link.display()
+            );
+        }
+        let (pf_root, subdirs) = super::pf_subdirs_between_root_and_exe(exe, pf_roots)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} is not inside a dedicated subdirectory under ProgramFiles",
+                    exe.display()
+                )
+            })?;
+        verify_pf_root_readonly(&pf_root)?;
+        for sub in &subdirs {
+            ensure_trusted_pf_directory(sub)?;
+        }
+        verify_and_harden_pf_file(exe)?;
+        if let Some(install_dir) = subdirs.last() {
+            verify_and_harden_pf_dir_entries(install_dir, 0)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -855,25 +1119,41 @@ fn stage_windows_service_binary() -> Result<PathBuf> {
     let current = std::env::current_exe().context("locating current meshharbord.exe")?;
     let pf_roots = meshharbor_node_core::companion_autostart::program_files_dirs();
     if personal_system::is_trusted_windows_service_exe(&current, &pf_roots)
+        && pf_subdirs_between_root_and_exe(&current, &pf_roots).is_some()
         && meshharbor_node_core::recording_dir::link_component(&current).is_none()
     {
+        win_security::verify_and_harden_program_files_install(&current, &pf_roots)?;
         return Ok(current);
     }
+
     let pf_base = std::env::var_os("ProgramW6432")
         .or_else(|| std::env::var_os("ProgramFiles"))
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("ProgramFiles environment variable is missing"))?;
+    win_security::verify_pf_root_readonly(&pf_base)?;
+
     let install_dir = pf_base.join("MeshHarbor");
-    win_security::ensure_trusted_directory(&install_dir, win_security::PF_DIR_SDDL, true)?;
+    win_security::ensure_trusted_pf_directory(&install_dir)?;
+    win_security::verify_and_harden_pf_dir_entries(&install_dir, 0)?;
 
     let staged_exe = install_dir.join("meshharbord.exe");
     copy_replacing_windows_file(&current, &staged_exe)?;
 
     if let Some(src_dir) = current.parent() {
-        for sibling in ["meshharbor.exe", "mh.exe", "meshharbor-desktop.exe", "wintun.dll"] {
+        for sibling in [
+            "meshharbor.exe",
+            "meshharbor-agent.exe",
+            "mh.exe",
+            "meshharbor-shim.exe",
+            "meshharbor-desktop.exe",
+            "wintun.dll",
+            "msvcp140.dll",
+            "vcruntime140.dll",
+            "vcruntime140_1.dll",
+        ] {
             let s = src_dir.join(sibling);
             if s.is_file() {
-                let _ = copy_replacing_windows_file(&s, &install_dir.join(sibling));
+                copy_replacing_windows_file(&s, &install_dir.join(sibling))?;
             }
         }
     }
@@ -885,6 +1165,7 @@ fn stage_windows_service_binary() -> Result<PathBuf> {
             staged_exe.display()
         );
     }
+    win_security::verify_and_harden_program_files_install(&staged_exe, &refreshed_roots)?;
     Ok(staged_exe)
 }
 
@@ -896,18 +1177,26 @@ fn copy_replacing_windows_file(src: &Path, dst: &Path) -> Result<()> {
             link.display()
         );
     }
-    let tmp = dst.with_extension("exe.staging");
+    let fname = dst
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("destination {} has no file name", dst.display()))?
+        .to_string_lossy();
+    let tmp = dst.with_file_name(format!("{fname}.staging"));
     let _ = std::fs::remove_file(&tmp);
     std::fs::copy(src, &tmp)
         .with_context(|| format!("staging {} -> {}", src.display(), tmp.display()))?;
     win_security::apply_sddl_to_path(&tmp, win_security::PF_FILE_SDDL)?;
     if dst.exists() {
-        let old = dst.with_extension("exe.old");
+        let old = dst.with_file_name(format!("{fname}.old"));
         let _ = std::fs::remove_file(&old);
         let _ = std::fs::rename(dst, &old);
+        std::fs::rename(&tmp, dst)
+            .with_context(|| format!("activating staged binary {}", dst.display()))?;
+        let _ = std::fs::remove_file(&old);
+    } else {
+        std::fs::rename(&tmp, dst)
+            .with_context(|| format!("activating staged binary {}", dst.display()))?;
     }
-    std::fs::rename(&tmp, dst)
-        .with_context(|| format!("activating staged binary {}", dst.display()))?;
     Ok(())
 }
 
@@ -1591,5 +1880,94 @@ mod tests {
         let cyc = ancestor_pids_from_proc(&dir, 500);
         assert_eq!(cyc, HashSet::from([500, 600]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pf_subdirs_helper_requires_application_subdir_below_program_files() {
+        let roots = vec![
+            PathBuf::from(r"C:\Program Files"),
+            PathBuf::from(r"C:\Program Files (x86)"),
+        ];
+        let (root, subs) = pf_subdirs_between_root_and_exe(
+            Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
+            &roots,
+        )
+        .unwrap();
+        assert_eq!(root, PathBuf::from(r"C:\Program Files"));
+        assert_eq!(subs, vec![PathBuf::from(r"C:\Program Files\MeshHarbor")]);
+
+        // Directly inside Program Files root (no subdirectory) must return None!
+        assert!(
+            pf_subdirs_between_root_and_exe(
+                Path::new(r"C:\Program Files\meshharbord.exe"),
+                &roots
+            )
+            .is_none()
+        );
+
+        // Outside Program Files must return None!
+        assert!(
+            pf_subdirs_between_root_and_exe(
+                Path::new(r"C:\Users\alice\MeshHarbor\meshharbord.exe"),
+                &roots
+            )
+            .is_none()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_config_paths_reject_symlink_config_and_sidecars() {
+        let raw_base = std::env::temp_dir().join(format!(
+            "mh-unix-cfg-paths-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        std::fs::create_dir_all(&raw_base).unwrap();
+        let dir = std::fs::canonicalize(&raw_base).unwrap().join("meshharbor");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config.toml");
+        std::fs::write(&cfg_path, r#"machine_id = "m""#).unwrap();
+        assert!(ensure_trusted_unix_config_paths(&cfg_path).is_ok());
+
+        let victim = raw_base.join("victim.json");
+        std::fs::write(&victim, "{}").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("temporary.json")).unwrap();
+        assert!(
+            ensure_trusted_unix_config_paths(&cfg_path).is_err(),
+            "symlink sidecar temporary.json must be rejected"
+        );
+        std::fs::remove_file(dir.join("temporary.json")).unwrap();
+
+        std::os::unix::fs::symlink(&victim, dir.join("invites.json")).unwrap();
+        assert!(
+            ensure_trusted_unix_config_paths(&cfg_path).is_err(),
+            "symlink sidecar invites.json must be rejected"
+        );
+
+        let _ = std::fs::remove_dir_all(&raw_base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn real_program_files_passes_and_user_dir_is_rejected_by_win_security() {
+        if let Some(pf) = std::env::var_os("ProgramW6432").or_else(|| std::env::var_os("ProgramFiles")) {
+            let pf_path = PathBuf::from(pf);
+            if pf_path.is_dir() {
+                win_security::verify_pf_root_readonly(&pf_path)
+                    .expect("real Windows ProgramFiles root must pass PF security check (including TrustedInstaller)");
+            }
+        }
+        let user_dir = std::env::temp_dir().join(format!(
+            "mh-win-sec-untrusted-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        std::fs::create_dir_all(&user_dir).unwrap();
+        if !personal_system::is_process_elevated() {
+            assert!(
+                win_security::verify_pf_root_readonly(&user_dir).is_err(),
+                "unprivileged user temp directory must be rejected by PF security check"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&user_dir);
     }
 }

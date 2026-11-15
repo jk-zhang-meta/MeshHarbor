@@ -168,6 +168,159 @@ pub fn is_process_elevated() -> bool {
     }
 }
 
+/// First untrusted symlink/junction component along `path` (or `None` if clean).
+///
+/// - On Windows: identical to [`crate::recording_dir::link_component`] — every
+///   symlink or directory junction at any depth is rejected.
+/// - On Linux/other Unix: every symlink at any depth is rejected.
+/// - On macOS: standard APFS root layout exposes `/etc -> private/etc`,
+///   `/var -> private/var`, and `/tmp -> private/tmp` as OS-managed root-owned
+///   symlinks directly under `/`. Only that exact top-level alias (`depth == 0`,
+///   non-leaf, root-owned symlink in root-owned non-group/world-writable `/`
+///   pointing to `private/<name>` or `/private/<name>`, where `/private` and
+///   `/private/<name>` are root-owned real directories) is resolved onto
+///   `/private/<name>`; EVERY symlink below that prefix (including
+///   `/etc/meshharbor`, `/etc/meshharbor/config.toml`, any subdirectory under
+///   `/var` or `/tmp`, or any leaf component) is rejected.
+pub fn untrusted_promotion_link_component(path: &Path) -> Option<PathBuf> {
+    #[cfg(not(unix))]
+    {
+        crate::recording_dir::link_component(path)
+    }
+    #[cfg(unix)]
+    {
+        untrusted_promotion_link_unix(path, Path::new("/"), cfg!(target_os = "macos"), true)
+    }
+}
+
+#[cfg(unix)]
+fn untrusted_promotion_link_unix(
+    path: &Path,
+    fs_root: &Path,
+    allow_macos_root_aliases: bool,
+    require_root_uid: bool,
+) -> Option<PathBuf> {
+    use std::path::Component;
+
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Some(path.to_path_buf());
+    }
+    let Ok(rel) = path.strip_prefix(fs_root) else {
+        return Some(path.to_path_buf());
+    };
+    let mut normals = Vec::new();
+    for c in rel.components() {
+        match c {
+            Component::Normal(s) => normals.push(s),
+            _ => return Some(path.to_path_buf()),
+        }
+    }
+    if normals.is_empty() {
+        return match std::fs::symlink_metadata(fs_root) {
+            Ok(m) if m.file_type().is_symlink() => Some(fs_root.to_path_buf()),
+            Ok(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => Some(fs_root.to_path_buf()),
+        };
+    }
+
+    let mut cur = fs_root.to_path_buf();
+    for (depth, &comp) in normals.iter().enumerate() {
+        let is_leaf = depth + 1 == normals.len();
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => {
+                if allow_macos_root_aliases
+                    && depth == 0
+                    && !is_leaf
+                    && let Some(alias_target) =
+                        verified_macos_root_alias(fs_root, &cur, comp, &m, require_root_uid)
+                {
+                    cur = alias_target;
+                    continue;
+                }
+                return Some(cur);
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => return Some(cur),
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn verified_macos_root_alias(
+    fs_root: &Path,
+    link_path: &Path,
+    comp: &std::ffi::OsStr,
+    link_meta: &std::fs::Metadata,
+    require_root_uid: bool,
+) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let name = comp.to_str()?;
+    if !matches!(name, "etc" | "var" | "tmp") {
+        return None;
+    }
+    if require_root_uid && link_meta.uid() != 0 {
+        return None;
+    }
+
+    let root_meta = std::fs::symlink_metadata(fs_root).ok()?;
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        return None;
+    }
+    if require_root_uid && root_meta.uid() != 0 {
+        return None;
+    }
+    if (root_meta.mode() & 0o022) != 0 {
+        return None;
+    }
+
+    let raw_target = std::fs::read_link(link_path).ok()?;
+    let expected_rel = PathBuf::from("private").join(name);
+    let expected_abs = fs_root.join("private").join(name);
+    if raw_target != expected_rel && raw_target != expected_abs {
+        return None;
+    }
+
+    let private_dir = fs_root.join("private");
+    let private_meta = std::fs::symlink_metadata(&private_dir).ok()?;
+    if private_meta.file_type().is_symlink() || !private_meta.is_dir() {
+        return None;
+    }
+    if require_root_uid && private_meta.uid() != 0 {
+        return None;
+    }
+    if (private_meta.mode() & 0o022) != 0 {
+        return None;
+    }
+
+    let target_meta = std::fs::symlink_metadata(&expected_abs).ok()?;
+    if target_meta.file_type().is_symlink() || !target_meta.is_dir() {
+        return None;
+    }
+    if require_root_uid && target_meta.uid() != 0 {
+        return None;
+    }
+    let target_mode = target_meta.mode();
+    let mode_ok = if name == "tmp" {
+        (target_mode & 0o022) == 0 || (target_mode & 0o1000) != 0
+    } else {
+        (target_mode & 0o022) == 0
+    };
+    if !mode_ok {
+        return None;
+    }
+
+    Some(expected_abs)
+}
+
 /// Pure check that a candidate Windows SCM service binary lives under a
 /// trusted `%ProgramFiles%` root (never a user-writable directory).
 pub fn is_trusted_windows_service_exe(exe: &Path, program_files: &[PathBuf]) -> bool {
@@ -184,6 +337,16 @@ pub struct TempPromotionFiles {
 
 impl TempPromotionFiles {
     pub fn create_in(dir: &Path, req: &SystemEnrollRequest) -> std::io::Result<Self> {
+        if let Some(link) = untrusted_promotion_link_component(dir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "promotion directory {} contains untrusted symbolic link or junction {}",
+                    dir.display(),
+                    link.display()
+                ),
+            ));
+        }
         std::fs::create_dir_all(dir)?;
         #[cfg(unix)]
         {
@@ -334,7 +497,7 @@ fn scrub_request_writer<W: Write + Seek>(
 /// points or unlinking paths in user-controlled directories. Any scrub or sync
 /// error fails closed before parsing or network I/O.
 pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> {
-    if let Some(link) = crate::recording_dir::link_component(path) {
+    if let Some(link) = untrusted_promotion_link_component(path) {
         anyhow::bail!(
             "promotion request path {} contains symbolic link or junction {}",
             path.display(),
@@ -434,7 +597,7 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 /// Best-effort; silently refuses symlinks, junctions, hardlinks, or missing
 /// targets so root/SYSTEM can never be tricked into overwriting an unintended file.
 pub fn write_status_error(status_file: &Path, message: &str) {
-    if crate::recording_dir::link_component(status_file).is_some() {
+    if untrusted_promotion_link_component(status_file).is_some() {
         return;
     }
     let trimmed = truncate_utf8(message.trim(), MAX_STATUS_BYTES);
@@ -1075,5 +1238,143 @@ mod tests {
             .is_err()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_root_alias_allows_trusted_system_prefix_and_rejects_deeper_or_spoofed_links() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let raw_base = std::env::temp_dir().join(format!(
+            "mh-ps-macos-layout-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        std::fs::create_dir_all(&raw_base).unwrap();
+        let fake_root = std::fs::canonicalize(&raw_base).unwrap();
+        std::fs::set_permissions(&fake_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let priv_dir = fake_root.join("private");
+        let priv_etc = priv_dir.join("etc");
+        let priv_var = priv_dir.join("var");
+        let priv_tmp = priv_dir.join("tmp");
+        std::fs::create_dir_all(&priv_etc).unwrap();
+        std::fs::create_dir_all(priv_var.join("folders/T")).unwrap();
+        std::fs::create_dir_all(&priv_tmp).unwrap();
+        std::fs::set_permissions(&priv_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&priv_etc, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&priv_var, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&priv_tmp, std::fs::Permissions::from_mode(0o1777)).unwrap();
+
+        std::os::unix::fs::symlink("private/etc", fake_root.join("etc")).unwrap();
+        std::os::unix::fs::symlink("private/var", fake_root.join("var")).unwrap();
+        std::os::unix::fs::symlink("private/tmp", fake_root.join("tmp")).unwrap();
+
+        let sys_cfg = fake_root.join("etc/meshharbor/config.toml");
+
+        // 1. Linux mode (`allow_macos_root_aliases = false`) still rejects `/etc` symlink.
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, false, false),
+            Some(fake_root.join("etc"))
+        );
+
+        // 2. macOS mode (`allow_macos_root_aliases = true`) accepts `/etc -> private/etc`
+        //    both before `/private/etc/meshharbor` exists and after `config.toml` exists.
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
+            None
+        );
+        std::fs::create_dir_all(priv_etc.join("meshharbor")).unwrap();
+        std::fs::write(priv_etc.join("meshharbor/config.toml"), r#"machine_id = "m""#).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
+            None
+        );
+
+        // 3. `/var -> private/var` and `/tmp -> private/tmp` prefixes also work cleanly.
+        assert_eq!(
+            untrusted_promotion_link_unix(
+                &fake_root.join("var/folders/T/promote-req.json"),
+                &fake_root,
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            untrusted_promotion_link_unix(
+                &fake_root.join("tmp/promote-req.json"),
+                &fake_root,
+                true,
+                false
+            ),
+            None
+        );
+
+        // 4. Leaf `/etc` itself is still rejected.
+        assert_eq!(
+            untrusted_promotion_link_unix(&fake_root.join("etc"), &fake_root, true, false),
+            Some(fake_root.join("etc"))
+        );
+
+        // 5. Symlink at `/etc/meshharbor/config.toml` (leaf under `/private/etc`) is rejected!
+        let victim = fake_root.join("victim.toml");
+        std::fs::write(&victim, "secret").unwrap();
+        std::fs::remove_file(priv_etc.join("meshharbor/config.toml")).unwrap();
+        std::os::unix::fs::symlink(&victim, priv_etc.join("meshharbor/config.toml")).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
+            Some(priv_etc.join("meshharbor/config.toml"))
+        );
+
+        // 6. Directory symlink at `/etc/meshharbor` (depth 1 under `/private/etc`) is rejected!
+        std::fs::remove_dir_all(priv_etc.join("meshharbor")).unwrap();
+        let outside_dir = fake_root.join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, priv_etc.join("meshharbor")).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
+            Some(priv_etc.join("meshharbor"))
+        );
+
+        // 7. Deeper symlink under `/var/folders/T` is rejected!
+        std::os::unix::fs::symlink(&outside_dir, priv_var.join("folders/T/evil")).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(
+                &fake_root.join("var/folders/T/evil/promote-req.json"),
+                &fake_root,
+                true,
+                false
+            ),
+            Some(priv_var.join("folders/T/evil"))
+        );
+
+        // 8. Non-allowlisted top-level alias (`opt -> private/opt`) and spoofed target (`etc -> outside`) are rejected!
+        std::fs::create_dir_all(priv_dir.join("opt")).unwrap();
+        std::os::unix::fs::symlink("private/opt", fake_root.join("opt")).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(
+                &fake_root.join("opt/meshharbor/config.toml"),
+                &fake_root,
+                true,
+                false
+            ),
+            Some(fake_root.join("opt"))
+        );
+
+        std::fs::remove_file(fake_root.join("etc")).unwrap();
+        std::os::unix::fs::symlink("outside", fake_root.join("etc")).unwrap();
+        assert_eq!(
+            untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
+            Some(fake_root.join("etc"))
+        );
+
+        // 9. On real macOS hosts, verify `/etc/meshharbor/config.toml` passes live `untrusted_promotion_link_component`.
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            untrusted_promotion_link_component(Path::new("/etc/meshharbor/config.toml")),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&fake_root);
     }
 }
