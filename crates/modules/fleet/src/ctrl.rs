@@ -89,6 +89,29 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 let _ = hub.send_to_agent_in_tenant(aid, tid, message);
             }
         }
+        Some("overlay_self_name") => {
+            let (Some(tid), Some(aid), Some(msg)) = (
+                ctrl["tenant_id"]
+                    .as_str()
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl["agent_id"]
+                    .as_str()
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("message"),
+            ) else {
+                return;
+            };
+            if let Ok(
+                message @ meshharbor_remote_control::signaling::ServerMsg::OverlaySelfName {
+                    ..
+                },
+            ) = serde_json::from_value(msg.clone())
+            {
+                if msg["agent_id"] == aid.to_hex() && msg["tenant_id"] == tid.to_hex() {
+                    let _ = hub.send_to_agent_in_tenant(aid, tid, message);
+                }
+            }
+        }
         Some("keep_busy_policy") => {
             let (Some(tid), Some(denied)) = (
                 ctrl.get("tenant_id")

@@ -49,8 +49,8 @@ impl FleetLifecycle for NetworkHooks {
     }
 
     /// Best-effort propagation onto the live overlay node: peers see the new
-    /// MagicDNS label immediately (delta re-fan); the device itself re-learns
-    /// its self-name on its next reconnect.
+    /// MagicDNS label immediately (delta re-fan); capable devices receive
+    /// revision-fenced self-DNS metadata without reconnecting.
     async fn agent_renamed(
         &self,
         tenant_id: ObjectId,

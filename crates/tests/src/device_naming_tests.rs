@@ -341,6 +341,11 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
 
     let renamed = nodes.base.find_by_id(node.id.unwrap()).await.unwrap();
     assert_eq!(renamed.name, "shiny-new-name-2");
+    let self_dns = next_self_name(&mut ws, "1").await;
+    assert_eq!(self_dns["agent_id"], aid);
+    assert_eq!(self_dns["tenant_id"], t.tenant_id);
+    assert_eq!(self_dns["node_id"], node.id.unwrap().to_hex());
+    assert_eq!(self_dns["name"], "shiny-new-name-2");
 
     // No-op rename: the label must stay put (exclude-self in the de-dup),
     // not walk to `-3`.
@@ -473,6 +478,8 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
     }
     let repaired = repaired.expect("heartbeat must repair committed, already ACKed DNS intent");
     assert_eq!(repaired.get_str("name").unwrap(), "recover-name-2");
+    assert_eq!(next_self_name(&mut ws, "3").await["name"], "recover-name-2");
+
     // Once committed, freeing the base label must not rename a stable suffix.
     projected
         .delete_one(bson::doc! {"machine_id":"recover-collision"})
@@ -487,6 +494,7 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
     ))
     .await
     .unwrap();
+    assert_eq!(next_self_name(&mut ws, "3").await["name"], "recover-name-2");
     // A following explicit ACK is a serial WS barrier after the heartbeat.
     let before_seq = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"]
         ["event_seq"]
@@ -525,6 +533,24 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .unwrap()
         .unwrap();
     assert_eq!(after_cas.get("updated_at"), stable.get("updated_at"));
+    // The canonical row can be newer than its DNS projection. A metadata
+    // resend must bind the actual stored DNS label/revision, not that newer
+    // intent. This is a real server→device WebSocket frame.
+    agents
+        .rename(tid_oid, aid_oid, "Not Projected Yet")
+        .await
+        .unwrap();
+    meshharbor_mod_network::overlay::send_projected_self_name(
+        app.state.modules.network.as_ref().unwrap(),
+        &node,
+    )
+    .await;
+    let projected_only = next_self_name(&mut ws, "3").await;
+    assert_eq!(projected_only["name"], "recover-name-2");
+    assert_eq!(
+        get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"]["revision"],
+        "4"
+    );
 
     // A genuinely empty legacy name still receives its initial backfill;
     // normal key/epoch and join refresh semantics remain unchanged.
@@ -1000,6 +1026,20 @@ async fn next_name(ws: &mut NameWs, revision: &str) -> Value {
     })
     .await
     .expect("name sync delivery without reconnect")
+}
+async fn next_self_name(ws: &mut NameWs, revision: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = ws.next().await {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v["t"] == "rc:overlay.self_name" && v["revision"] == revision {
+                    return v;
+                }
+            }
+        }
+    })
+    .await
+    .expect("deduplicated self DNS delivered without reconnect")
 }
 async fn name_state(app: &TestApp, tenant: &str, aid: &str, admin: &str, expected: &str) -> Value {
     for _ in 0..80 {

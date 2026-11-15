@@ -1086,6 +1086,7 @@ async fn handle_overlay_join(
     // near it, and a node that grew the space during its own join would hold a
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
+    let self_name_projection = state.overlay_nodes.name_projection(&self_node).await.ok().flatten();
     let epoch = next_epoch();
 
     if state
@@ -1136,7 +1137,9 @@ async fn handle_overlay_join(
                 // W2 MagicDNS — the joiner's own name, for self-resolution
                 // (`<own-name>.<domain>`): peers exclude self, so without
                 // this the node's resolver NXDOMAINs its own name.
-                self_name: (!self_node.name.is_empty()).then(|| self_node.name.clone()),
+                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_node_id: self_node.id,
+                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
                 // NAT-traversal Phase B — the STUN endpoints a node queries to
                 // gather its srflx candidates, derived from the configured
                 // coturn workers (a `turn:host:port` UDP listener also answers
@@ -1422,6 +1425,7 @@ async fn try_complete_join_netmap(
         Err(_) => (None, Vec::new()),
     };
     let join_blocks = state.overlay_networks.block_list(&network).await;
+    let self_name_projection = state.overlay_nodes.name_projection(&self_node).await.ok().flatten();
     let relay_probe_targets =
         crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
     let backbone_probe_targets =
@@ -1467,7 +1471,9 @@ async fn try_complete_join_netmap(
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
-                self_name: (!self_node.name.is_empty()).then(|| self_node.name.clone()),
+                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_node_id: self_node.id,
+                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
                 stun_urls: stun_urls_from_turn(state),
                 relay_probe_targets,
                 backbone_probe_targets,
@@ -2607,10 +2613,8 @@ pub async fn refan_node(state: &NetworkState, node: &OverlayNode) -> bool {
 /// `None` when even the index-race retry lost — the fleet rename stands
 /// either way, only the DNS label kept its old value.
 ///
-/// ⚠️ Deliberately does NOT push a full netmap at the renamed node itself:
-/// `self_name` rides only `ServerMsg::OverlayNetmap` (join-time), and the
-/// client's mid-session full-netmap arm is field-untested. The device serves
-/// its own new self-name after its next reconnect; its PEERS see it live.
+/// Self resolution is updated by scoped metadata only, not a disruptive full
+/// netmap. Old clients retain their existing join-time self-name behavior.
 pub async fn propagate_node_rename(
     state: &NetworkState,
     node: &OverlayNode,
@@ -2636,7 +2640,10 @@ pub async fn propagate_node_rename(
         .map(|a| a.name_sync.as_ref().map_or(0, |s| s.revision));
     if let Some(r) = revision {
         match state.overlay_nodes.name_projected_at_least(node_id, r).await {
-            Ok(Some(projected)) => return Some(projected.name),
+            Ok(Some(projected)) => {
+                send_projected_self_name(state, &projected).await;
+                return Some(projected.name);
+            },
             Ok(None) => {},
             Err(error) => {
                 tracing::warn!(%error, "name projection revision read failed");
@@ -2696,7 +2703,28 @@ pub async fn propagate_node_rename(
     tracing::info!(node = %node_id.to_hex(), old = %node.name, new = %label,
         "overlay node renamed — refanning peers");
     refan_node(state, &updated).await;
+    send_projected_self_name(state, &updated).await;
     Some(label)
+}
+
+/// Deliver only self-DNS metadata; never rebuild routes, keys, peers or sessions.
+/// Repeated delivery is revision-idempotent and also repairs a missed push.
+pub async fn send_projected_self_name(state: &NetworkState, node: &OverlayNode) {
+    use meshharbor_remote_control::models::RpcCap;
+    let NodeRef::Agent { agent_id } = node.node_ref else { return; };
+    let Ok(agent) = state.fleet.agents.find_live_in_tenant(node.tenant_id, agent_id).await else { return; };
+    if !agent.capabilities.has_rpc(RpcCap::DeviceNameSync)
+        && !agent.capabilities.has_rpc(RpcCap::OrganizationNameAlias) { return; }
+    let Ok(Some((name, Some(revision)))) = state.overlay_nodes.name_projection(node).await else { return; };
+    let Some(node_id) = node.id else { return; };
+    let message = ServerMsg::OverlaySelfName {
+        agent_id: agent_id.to_hex(), tenant_id: node.tenant_id.to_hex(), node_id,
+        revision: revision.to_string(), name,
+    };
+    let _ = state.fleet.rc_hub.send_to_agent_in_tenant(agent_id, node.tenant_id, message.clone());
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(state, "overlay_self_name", serde_json::json!({
+        "tenant_id":node.tenant_id.to_hex(),"agent_id":agent_id.to_hex(),"message":message
+    })).await;
 }
 
 /// What a successful [`release_overlay_node`] freed — for the route responses
