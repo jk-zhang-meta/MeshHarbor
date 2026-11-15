@@ -162,10 +162,10 @@ pub enum WebTarget {
 }
 impl WebTarget {
     pub fn validate(&self) -> Result<()> {
-        if let Self::DeviceShareRemote { share_id } = self {
-            if share_id.len() != 24 || !share_id.bytes().all(|c| c.is_ascii_hexdigit()) {
-                bail!("invalid shared device target identity");
-            }
+        if let Self::DeviceShareRemote { share_id } = self
+            && (share_id.len() != 24 || !share_id.bytes().all(|c| c.is_ascii_hexdigit()))
+        {
+            bail!("invalid shared device target identity");
         }
         if let Self::Remote {
             tenant_id,

@@ -871,3 +871,147 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
         401
     );
 }
+
+
+#[tokio::test]
+async fn real_node_core_user_session_and_browser_handoff_roundtrip_against_test_app() {
+    let edge_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let edge_port = edge_listener.local_addr().unwrap().port();
+    let edge_base = format!("http://127.0.0.1:{edge_port}/meshharbor");
+    let frontend_for_settings = edge_base.clone();
+
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.auth.native_device_login_enabled = true;
+        s.app.frontend_url = frontend_for_settings;
+    })
+    .await;
+
+    // Mount real API behind /meshharbor subpath (mirroring production reverse-proxy prefix)
+    let edge_router = axum::Router::new().nest(
+        "/meshharbor",
+        meshharbor_api::build_router(app.state.clone()),
+    );
+    let edge_task = tokio::spawn(async move {
+        let _ = axum::serve(edge_listener, edge_router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
+    });
+
+    let owner = app
+        .register_user(
+            "nodecore-sso@example.test",
+            "internal_sso",
+            "SSO Owner",
+            "NativeSsoPass#2026!",
+            None,
+            None,
+        )
+        .await;
+
+    let session = grant(&app, &owner.access_token).await;
+    let init_refresh = session["refresh_token"].as_str().unwrap();
+
+    // 1. Real meshharbor_node_core::user_session::refresh against /meshharbor subpath
+    let refreshed = meshharbor_node_core::user_session::refresh(&edge_base, init_refresh)
+        .await
+        .expect("node_core refresh succeeded");
+    assert_eq!(refreshed.user.id, owner.id);
+    assert_eq!(refreshed.user.email, "nodecore-sso@example.test");
+    assert!(refreshed.user.email_verified);
+
+    // 2. Real BrowserHandoff::bind + user_session::handoff + BrowserHandoff::serve
+    let listener = meshharbor_node_core::user_session::BrowserHandoff::bind()
+        .await
+        .unwrap();
+    let port = listener.port().unwrap();
+    let launch_url = listener.launch_url();
+    let handoff = meshharbor_node_core::user_session::handoff(
+        &edge_base,
+        &refreshed.access_token,
+        &meshharbor_node_core::user_session::WebTarget::MyDevices,
+        port,
+    )
+    .await
+    .expect("node_core handoff succeeded");
+    assert_eq!(
+        handoff.post_url,
+        format!("{edge_base}/api/native/handoff/consume")
+    );
+    let serve_handle = listener.serve(handoff);
+
+    // 3. Simulated local browser fetches loopback launch_url, parses form, POSTs to post_url with exact Origin
+    let html_resp = reqwest::Client::new()
+        .get(&launch_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(html_resp.status().as_u16(), 200);
+    let html = html_resp.text().await.unwrap();
+    serve_handle.await.unwrap().unwrap();
+
+    let action_marker = "action=\"";
+    let action_start = html.find(action_marker).unwrap() + action_marker.len();
+    let action_url = &html[action_start..action_start + html[action_start..].find('"').unwrap()];
+    let val_marker = "name=ticket value=\"";
+    let val_start = html.find(val_marker).unwrap() + val_marker.len();
+    let ticket_val = &html[val_start..val_start + html[val_start..].find('"').unwrap()];
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let consume_resp = no_redirect
+        .post(action_url)
+        .header("Origin", format!("http://127.0.0.1:{port}"))
+        .form(&[("ticket", ticket_val)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consume_resp.status().as_u16(), 303);
+    let location = consume_resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(location.starts_with(&format!("{edge_base}/native-session-complete?handoff_id=")));
+    let handoff_id = location.split("handoff_id=").nth(1).unwrap();
+    let access_cookie = cookie_value(&consume_resp, "access_token").unwrap();
+
+    // 4. Complete browser handoff with cookie only on the same origin
+    let origin_only = format!("http://127.0.0.1:{edge_port}");
+    let complete_resp = no_redirect
+        .post(format!("{edge_base}/api/native/handoff/complete"))
+        .header("Origin", &origin_only)
+        .header("Cookie", format!("access_token={access_cookie}"))
+        .json(&json!({"handoff_id": handoff_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(complete_resp.status().as_u16(), 200);
+    let complete_body: Value = complete_resp.json().await.unwrap();
+    assert_eq!(complete_body["user"]["id"], owner.id);
+    assert_eq!(complete_body["target"], json!({"purpose": "my_devices"}));
+
+    // 5. Real meshharbor_node_core::user_session::revoke invalidates both native refresh and browser cookie
+    meshharbor_node_core::user_session::revoke(&edge_base, &refreshed.access_token)
+        .await
+        .expect("node_core revoke succeeded");
+    assert!(
+        meshharbor_node_core::user_session::refresh(&edge_base, &refreshed.refresh_token)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        no_redirect
+            .get(format!("{edge_base}/api/auth/me"))
+            .header("Cookie", format!("access_token={access_cookie}"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+
+    edge_task.abort();
+}
