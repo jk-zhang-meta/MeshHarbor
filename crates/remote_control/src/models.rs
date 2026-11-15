@@ -873,6 +873,10 @@ impl VideoCell {
 /// name it by variant and can no longer misspell it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RpcCap {
+    /// Primary enrollment persists revision-fenced canonical device names.
+    DeviceNameSync,
+    /// Secondary enrollment names are organization aliases, not host names.
+    OrganizationNameAlias,
     /// `rc:rpc.exec` — run a bounded command (Fleet RPC).
     Exec,
     /// This device's LocalAPI may ORIGINATE a session against another device
@@ -1302,6 +1306,8 @@ impl RpcCap {
     /// support it" rather than as an error. Locked by test.
     pub const fn wire(self) -> &'static str {
         match self {
+            Self::DeviceNameSync => "device-name-sync",
+            Self::OrganizationNameAlias => "organization-name-alias",
             Self::Exec => "exec",
             Self::Originate => "originate",
             Self::Ssh => "ssh",
@@ -1350,7 +1356,9 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 44] = [
+    pub const ALL: [RpcCap; 46] = [
+        Self::DeviceNameSync,
+        Self::OrganizationNameAlias,
         Self::Exec,
         Self::Originate,
         Self::Ssh,
