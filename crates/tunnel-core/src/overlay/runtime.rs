@@ -1367,6 +1367,13 @@ pub(crate) const SRFLX_GATHER_BUDGET: Duration = Duration::from_secs(4);
 /// signaling loop (the `ServerMsg::Overlay*` handlers forward these).
 #[derive(Debug, Clone)]
 pub enum OverlayEvent {
+    /// Already authenticated agent/org scope; node identity is fenced again
+    /// against the full map before touching this runtime's DNS table.
+    SelfName {
+        node_id: ObjectId,
+        revision: String,
+        name: String,
+    },
     /// Full snapshot — carries the node's own `self_ip`, so the first one
     /// triggers TUN bring-up.
     Netmap {
@@ -1516,6 +1523,84 @@ fn prefix_of_cidr(cidr: &str) -> Option<u8> {
 /// self-inclusion that never existed). `self_name` comes from the server's
 /// `OverlayNetworkInfo.self_name` (`None` from a pre-W2 server ⇒ peers-only,
 /// the old behaviour).
+#[derive(Clone, Debug)]
+struct SelfNameUpdate {
+    node_id: ObjectId,
+    revision: u64,
+    name: String,
+}
+
+impl SelfNameUpdate {
+    fn parse(node_id: ObjectId, revision: &str, name: String) -> Option<Self> {
+        let value = revision.parse::<u64>().ok()?;
+        if value > i64::MAX as u64
+            || value.to_string() != revision
+            || name.is_empty()
+            || name.len() > 63
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || name.starts_with('-')
+            || name.ends_with('-')
+        {
+            return None;
+        }
+        Some(Self {
+            node_id,
+            revision: value,
+            name,
+        })
+    }
+
+    fn apply(&self, network: &mut OverlayNetworkInfo) -> bool {
+        if network.self_node_id != Some(self.node_id) {
+            return false;
+        }
+        if let Some(old) = network.self_name_revision.as_deref() {
+            let Ok(old) = old.parse::<u64>() else {
+                return false;
+            };
+            if self.revision < old {
+                return false;
+            }
+            if self.revision == old {
+                // Duplicate is harmless. Conflicting same-revision metadata
+                // never replaces the already accepted projection.
+                return false;
+            }
+        }
+        network.self_name = Some(self.name.clone());
+        network.self_name_revision = Some(self.revision.to_string());
+        true
+    }
+}
+
+/// Merge only DNS metadata. A stale/unversioned full map still carries other
+/// useful state but cannot roll back a newer self-name frame.
+fn merge_self_name(network: &mut OverlayNetworkInfo, incoming: &OverlayNetworkInfo) -> bool {
+    if network.self_node_id.is_some() && network.self_node_id != incoming.self_node_id {
+        return false;
+    }
+    if network.self_node_id.is_none() {
+        network.self_node_id = incoming.self_node_id;
+    }
+    match (
+        incoming.self_node_id,
+        incoming.self_name_revision.as_deref(),
+        incoming.self_name.clone(),
+    ) {
+        (Some(node), Some(revision), Some(name)) => {
+            SelfNameUpdate::parse(node, revision, name).is_some_and(|update| update.apply(network))
+        }
+        (_, None, name) if network.self_name_revision.is_none() => {
+            let changed = network.self_name != name;
+            network.self_name = name;
+            changed
+        }
+        _ => false,
+    }
+}
+
 async fn sync_name_map(
     names: &dns::NameMap,
     peers: &HashMap<ObjectId, NetmapPeer>,
@@ -3217,7 +3302,8 @@ impl OverlayRuntime {
         }
 
         // Phase 1 — wait for the first full netmap (it carries self_ip).
-        let (self_ip, network, first_peers, mut server_org_discovery, mut server_path_trial_v1) = loop {
+        let mut pending_self_name: Option<SelfNameUpdate> = None;
+        let (self_ip, mut network, first_peers, mut server_org_discovery, mut server_path_trial_v1) = loop {
             let event = tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
                     if changed {
@@ -3228,6 +3314,21 @@ impl OverlayRuntime {
                 event = events.recv() => event,
             };
             match event {
+                Some(OverlayEvent::SelfName {
+                    node_id,
+                    revision,
+                    name,
+                }) => {
+                    if let Some(update) = SelfNameUpdate::parse(node_id, &revision, name) {
+                        if pending_self_name
+                            .as_ref()
+                            .is_none_or(|old| update.revision > old.revision)
+                        {
+                            pending_self_name = Some(update);
+                        }
+                    }
+                    continue;
+                }
                 Some(OverlayEvent::Netmap {
                     self_ip,
                     network,
@@ -3265,6 +3366,10 @@ impl OverlayRuntime {
                 None => return,
             }
         };
+
+        if let Some(update) = pending_self_name {
+            update.apply(&mut network);
+        }
 
         let mut server_org_fallback = network.org_relay_fallback_v1;
         let mut server_org_loss = network.org_relay_loss_v1;
@@ -3655,6 +3760,8 @@ impl OverlayRuntime {
         // (`mh status` / the desktop's DNS section). `answer_aaaa`
         // recomputes the same expression the resolver was configured with.
         self.dns_status = dns_magic.clone().map(|magic_domain| DnsStatus {
+            self_name: network.self_name.clone(),
+            self_name_revision: network.self_name_revision.clone(),
             magic_domain,
             resolver_bound: dns_bound,
             os_steer_active: _dns_os_guard.as_ref().is_some_and(|g| g.active()),
@@ -4527,6 +4634,8 @@ impl OverlayRuntime {
                         // The exit-DNS "." steer is gated on the same fact.
                         exit_state.dns_bound = true;
                         self.dns_status = Some(DnsStatus {
+                            self_name: network.self_name.clone(),
+                            self_name_revision: network.self_name_revision.clone(),
                             magic_domain: magic_domain.clone(),
                             resolver_bound: true,
                             os_steer_active: _dns_os_guard.as_ref().is_some_and(|g| g.active()),
@@ -5445,6 +5554,22 @@ impl OverlayRuntime {
                     // Re-sync: a full netmap is the reconcile point — today it
                     // arrives on every rc.307 re-join (reattach), and the arm
                     // below applies it AUTHORITATIVELY against live state.
+                    Some(OverlayEvent::SelfName { node_id, revision, name }) => {
+                        if SelfNameUpdate::parse(node_id, &revision, name).is_some_and(|update| update.apply(&mut network)) {
+                            if let Some(names) = &dns_names {
+                                sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                            }
+                            if let Some(status) = &mut self.dns_status {
+                                status.self_name = network.self_name.clone();
+                                status.self_name_revision = network.self_name_revision.clone();
+                            }
+                            if let Some(view) = &self.peer_view {
+                                view.send_modify(|view| view.dns = self.dns_status.clone());
+                            }
+                            info!(node_id = %node_id, revision = %revision, name = ?network.self_name,
+                                "overlay: applied self DNS name metadata without rebuilding the data plane");
+                        }
+                    }
                     Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers, org_relay_discovery, path_trial_v1 }) => {
                         let t_arm = Instant::now();
                         if !accept_netmap_version(
@@ -5488,6 +5613,11 @@ impl OverlayRuntime {
                             warn!(old = %self_ip, new = %new_self_ip,
                                 "overlay: re-join returned a different identity/network — exiting for a clean rebuild");
                             break;
+                        }
+                        merge_self_name(&mut network, &new_network);
+                        if let Some(status) = &mut self.dns_status {
+                            status.self_name = network.self_name.clone();
+                            status.self_name_revision = network.self_name_revision.clone();
                         }
                         #[cfg(test)]
                         {
@@ -6189,6 +6319,100 @@ mod tests {
     use std::time::Duration;
     use tokio::net::UdpSocket;
     use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn live_self_dns_name_resolves_without_rebuilding_resolver() {
+        let names: dns::NameMap = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let me = Ipv4Addr::new(100, 65, 4, 2);
+        sync_name_map(&names, &HashMap::new(), Some("old-self"), me).await;
+        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let resolver = tokio::spawn(dns::run(
+            dns::DnsConfig {
+                bind: addr,
+                magic_domain: "test.meshharbor.net".into(),
+                upstream: "127.0.0.1:0".parse().unwrap(),
+                names: names.clone(),
+                answer_aaaa: true,
+            },
+            tx,
+        ));
+        rx.changed().await.unwrap();
+        assert!(*rx.borrow_and_update());
+        let node = ObjectId::new();
+        let mut network = net();
+        network.self_node_id = Some(node);
+        network.self_name = Some("old-self".into());
+        network.self_name_revision = Some("1".into());
+        let stale = network.clone();
+        assert!(
+            SelfNameUpdate::parse(node, "2", "new-self".into())
+                .unwrap()
+                .apply(&mut network)
+        );
+        assert!(!merge_self_name(&mut network, &stale));
+        sync_name_map(&names, &HashMap::new(), network.self_name.as_deref(), me).await;
+        assert!(!names.read().await.contains_key("old-self"));
+        let mut query = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in "new-self.test.meshharbor.net".split('.') {
+            query.push(label.len() as u8);
+            query.extend_from_slice(label.as_bytes());
+        }
+        query.extend_from_slice(&[0, 0, 1, 0, 1]);
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.send_to(&query, addr).await.unwrap();
+        let mut buf = [0u8; 512];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(3), client.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(len >= 12);
+        assert_eq!(
+            buf[3] & 15,
+            0,
+            "new self DNS label must resolve without reconnect"
+        );
+        assert_eq!(&buf[len - 4..len], &me.octets());
+        // Same wire length; ask the very same resolver for the removed label.
+        query[13..21].copy_from_slice(b"old-self");
+        client.send_to(&query, addr).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), client.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        resolver.abort();
+        assert_eq!(buf[3] & 15, 3, "old self DNS label must no longer resolve");
+    }
+
+    #[test]
+    fn self_dns_revision_and_node_scope_fence() {
+        let node = ObjectId::new();
+        let mut network = net();
+        network.self_node_id = Some(node);
+        let update = SelfNameUpdate::parse(node, "9007199254740993", "new-self".into()).unwrap();
+        assert!(update.apply(&mut network));
+        assert!(!update.apply(&mut network));
+        assert!(
+            !SelfNameUpdate::parse(node, "9007199254740993", "conflict".into())
+                .unwrap()
+                .apply(&mut network)
+        );
+        assert!(
+            !SelfNameUpdate::parse(ObjectId::new(), "9007199254740994", "wrong-node".into())
+                .unwrap()
+                .apply(&mut network)
+        );
+        assert!(!merge_self_name(&mut network, &net()));
+        assert_eq!(network.self_name.as_deref(), Some("new-self"));
+        for revision in ["01", "-1", "9223372036854775808"] {
+            assert!(SelfNameUpdate::parse(node, revision, "label".into()).is_none());
+        }
+        for name in ["", "Display Name", "bad.name", "-label", "label-"] {
+            assert!(SelfNameUpdate::parse(node, "1", name.into()).is_none());
+        }
+    }
 
     /// rc.307 — the stable-port bind helper: prefers the base, WALKS THE BAND
     /// when the base is swallowed (the Hyper-V/WSL reservation case that ate
@@ -10678,6 +10902,8 @@ mod tests {
             magic_domain: None,
             nameservers: vec![],
             self_name: None,
+            self_node_id: None,
+            self_name_revision: None,
             stun_urls: vec![],
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
@@ -10779,12 +11005,27 @@ mod tests {
         ));
 
         // Server pushes each its netmap (the other node as the one peer).
+        let self_node = ObjectId::new();
+        // A rename can precede the full map in the same socket. It must be
+        // cached, not wait for a runtime whose map is behind it in the queue.
+        evt_a
+            .send(OverlayEvent::SelfName {
+                node_id: self_node,
+                revision: "2".into(),
+                name: "early-name".into(),
+            })
+            .await
+            .unwrap();
+        let mut network_a = net();
+        network_a.self_node_id = Some(self_node);
+        network_a.self_name_revision = Some("1".into());
+        network_a.self_name = Some("old-self".into());
         evt_a
             .send(OverlayEvent::Netmap {
                 org_relay_discovery: false,
                 path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
-                network: net(),
+                network: network_a,
                 peers: vec![peer(&b, "100.64.0.2")],
             })
             .await
@@ -10803,16 +11044,34 @@ mod tests {
         // App on A sends to B's overlay IP; assert it arrives on B's TUN.
         // Re-inject (best-effort send drops until the WG session is up).
         let pkt = synthetic_ipv4(IP_A, IP_B, b"runtime-loopback");
+        let mut before = false;
         for _ in 0..100 {
             let _ = inject_a.send(pkt.clone());
             if let Ok(Some(got)) =
                 tokio::time::timeout(Duration::from_millis(150), del_b.recv()).await
             {
                 assert_eq!(got, pkt, "packet must traverse the overlay runtime intact");
-                return;
+                before = true;
+                break;
             }
         }
-        panic!("packet did not traverse the runtime in time");
+        assert!(before, "packet did not traverse the runtime in time");
+        evt_a
+            .send(OverlayEvent::SelfName {
+                node_id: self_node,
+                revision: "3".into(),
+                name: "live-name".into(),
+            })
+            .await
+            .unwrap();
+        // The existing WG session and carrier must keep carrying packets.
+        let after = synthetic_ipv4(IP_A, IP_B, b"same-carrier-after-name");
+        inject_a.send(after.clone()).unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(3), del_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, after);
     }
 
     /// rc.307 (B) — the reattach flow end to end: a runtime whose control-WS
