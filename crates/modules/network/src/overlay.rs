@@ -1171,8 +1171,7 @@ async fn handle_overlay_join(
     for peer in all.iter().filter(|n| n.id != self_node.id) {
         let peer_src = overlay_source_of(state, peer).await;
         // The shaped peer here is the JOINER, whose identity we already have.
-        let joiner_ingress =
-            peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
+        let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
@@ -1490,8 +1489,7 @@ async fn try_complete_join_netmap(
             return false;
         }
         let peer_src = overlay_source_of(state, peer).await;
-        let joiner_ingress =
-            peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
+        let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
         let zones = lines.zones_for(
@@ -2619,19 +2617,57 @@ pub async fn propagate_node_rename(
     new_display_name: &str,
 ) -> Option<String> {
     let node_id = node.id?;
-    let base = dns_label(new_display_name, &node.machine_id);
+    // An old HTTP/hook invocation must use the current canonical row, not
+    // overwrite a later rename with its captured request body.
+    let current = if let NodeRef::Agent { agent_id } = node.node_ref {
+        Some(
+            state
+                .fleet
+                .agents
+                .find_live_in_tenant(node.tenant_id, agent_id)
+                .await
+                .ok()?,
+        )
+    } else {
+        None
+    };
+    let revision = current
+        .as_ref()
+        .map(|a| a.name_sync.as_ref().map_or(0, |s| s.revision));
+    let base = dns_label(
+        current
+            .as_ref()
+            .map_or(new_display_name, |a| a.name.as_str()),
+        &node.machine_id,
+    );
     let wanted =
         unique_node_name(state, node.tenant_id, node.network_id, &base, Some(node_id)).await;
-    if wanted == node.name {
+    if wanted == node.name && revision.is_none() {
         return Some(wanted); // label unchanged — nothing to write or fan
     }
-    let updated = match state.overlay_nodes.set_name(node_id, &wanted).await {
+    let write = if let Some(r) = revision {
+        state
+            .overlay_nodes
+            .set_name_revision(node_id, &wanted, r)
+            .await
+    } else {
+        state.overlay_nodes.set_name(node_id, &wanted).await
+    };
+    let updated = match write {
         Ok(n) => n,
         Err(DaoError::DuplicateKey(_)) => {
             // Lost the in-flight race the best-effort de-dup couldn't see —
             // an epoch suffix is unique by construction.
             let fallback = format!("{base}-{}", next_epoch());
-            match state.overlay_nodes.set_name(node_id, &fallback).await {
+            let write = if let Some(r) = revision {
+                state
+                    .overlay_nodes
+                    .set_name_revision(node_id, &fallback, r)
+                    .await
+            } else {
+                state.overlay_nodes.set_name(node_id, &fallback).await
+            };
+            match write {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::warn!(%e, node = %node_id.to_hex(),

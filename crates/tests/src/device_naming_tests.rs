@@ -336,6 +336,13 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .await
         .unwrap();
     assert_eq!(resp["dns_name"].as_str(), Some("shiny-new-name-2"));
+    // The same-name revision 2 still advances the projection fence. A
+    // delayed writer from revision 1 cannot change it after that no-op.
+    let delayed = nodes
+        .set_name_revision(node.id.unwrap(), "stale-name", 1)
+        .await
+        .unwrap();
+    assert_eq!(delayed.name, "shiny-new-name-2");
 }
 
 #[tokio::test]
@@ -670,4 +677,303 @@ async fn an_update_the_device_said_it_will_not_act_on_is_refused_with_why() {
     assert_eq!(code_of(&resp, secondary), "primary_org");
     assert!(code_of(&resp, acts).is_null(), "{resp}");
     assert_eq!(resp["refused"].as_u64(), Some(1), "{resp}");
+}
+
+#[tokio::test]
+async fn rename_records_durable_revision_without_claiming_old_client_synced() {
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("name-sync-old").await;
+    let aid = enroll(
+        &app,
+        &t.tenant_id,
+        &t.admin.access_token,
+        "name-sync-old",
+        "before",
+        "0.4.160",
+    )
+    .await;
+    let before = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await;
+    assert_eq!(before["name_sync"]["state"], "unverified");
+    let url = format!("/api/tenant/{}/agent/{aid}", t.tenant_id);
+    let changed: Value = app
+        .auth_put(&url, &t.admin.access_token)
+        .json(&json!({"name":"after"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(changed["agent"]["name_sync"]["revision"], "1");
+    assert_eq!(changed["agent"]["name_sync"]["state"], "unsupported");
+    assert!(changed["agent"]["name_sync"]["acked_revision"].is_null());
+    let fetched = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await;
+    assert_eq!(changed["agent"]["name_sync"], fetched["name_sync"]);
+}
+
+use futures::{SinkExt, StreamExt};
+use std::time::Duration;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+type NameWs = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn name_ws(app: &TestApp, token: &str, cap: &str) -> NameWs {
+    let (mut ws, _) = connect_async(format!("ws://{}/ws?token={token}&role=agent", app.addr))
+        .await
+        .unwrap();
+    ws.send(Message::Text(json!({"t":"rc:agent.hello","machine_name":"old-local","os":"linux","agent_version":"0.4.160",
+        "displays":[],"caps":{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,"supports_clipboard":false,
+        "supports_file_transfer":false,"max_simultaneous_sessions":4,"rpc":[cap]}}).to_string().into())).await.unwrap();
+    ws
+}
+async fn next_name(ws: &mut NameWs, revision: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = ws.next().await {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v["t"] == "rc:agent.name" && v["revision"] == revision {
+                    return v;
+                }
+            }
+        }
+    })
+    .await
+    .expect("name sync delivery without reconnect")
+}
+async fn name_state(app: &TestApp, tenant: &str, aid: &str, admin: &str, expected: &str) -> Value {
+    for _ in 0..80 {
+        let a = get_agent(app, tenant, aid, admin).await;
+        if a["name_sync"]["state"] == expected {
+            return a;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("expected name state {expected}")
+}
+async fn ack_name(ws: &mut NameWs, mut frame: Value, outcome: &str) {
+    frame["t"] = json!("rc:agent.name.ack");
+    frame["outcome"] = json!(outcome);
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn live_name_ack_is_revision_name_identity_and_connection_fenced() {
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("live-name-ack").await;
+    let (aid, token) = crate::tunnel_tests::enroll_agent(&app, &t, "name-ack", "original").await;
+    let mut ws = name_ws(&app, &token, "device-name-sync").await;
+    let initial = next_name(&mut ws, "0").await;
+    assert_eq!(initial["name"], "original");
+    ack_name(&mut ws, initial, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+    let url = format!("/api/tenant/{}/agent/{aid}", t.tenant_id);
+    for (name, rev) in [("first", "1"), ("second", "2")] {
+        let p: Value = app
+            .auth_put(&url, &t.admin.access_token)
+            .json(&json!({"name":name}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(p["agent"]["name_sync"]["revision"], rev);
+    }
+    let old = next_name(&mut ws, "1").await;
+    let current = next_name(&mut ws, "2").await;
+    ack_name(&mut ws, old, "applied").await;
+    let mut wrong = current.clone();
+    wrong["name"] = json!("wrong");
+    ack_name(&mut ws, wrong, "applied").await;
+    let mut other = current.clone();
+    other["agent_id"] = json!(ObjectId::new().to_hex());
+    ack_name(&mut ws, other, "applied").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let pending = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await;
+    assert_eq!(pending["name_sync"]["state"], "pending");
+    assert_eq!(pending["name"], "second");
+    ack_name(&mut ws, current.clone(), "failed").await;
+    let failed = name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "failed").await;
+    ack_name(&mut ws, current.clone(), "applied").await;
+    let synced = name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+    assert!(
+        synced["name_sync"]["event_seq"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > failed["name_sync"]["event_seq"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+    );
+    ack_name(&mut ws, current, "failed").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"],
+        synced["name_sync"]
+    );
+    ws.close(None).await.unwrap();
+    let changed: Value = app
+        .auth_put(&url, &t.admin.access_token)
+        .json(&json!({"name":"offline-new"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(changed["agent"]["name_sync"]["state"], "pending");
+    let mut ws = name_ws(&app, &token, "device-name-sync").await;
+    let latest = next_name(&mut ws, "3").await;
+    assert_eq!(latest["name"], "offline-new");
+    ack_name(&mut ws, latest, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+}
+
+#[tokio::test]
+async fn local_name_proposal_cas_and_secondary_alias_cannot_write_global_name() {
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("name-proposal").await;
+    let (aid, token) =
+        crate::tunnel_tests::enroll_agent(&app, &t, "name-proposal", "original").await;
+    let mut ws = name_ws(&app, &token, "device-name-sync").await;
+    next_name(&mut ws, "0").await;
+    let url = app.url("/api/agent/self/name");
+    assert_eq!(
+        app.client
+            .post(&url)
+            .json(&json!({"name":"bad","expected_revision":"0"}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    let post = app
+        .client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&json!({"name":"local-new","expected_revision":"0"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(post.status().as_u16(), 200);
+    let accepted: Value = post.json().await.unwrap();
+    assert_eq!(accepted["revision"], "1");
+    assert_eq!(accepted["agent_id"], aid);
+    let stale = app
+        .client
+        .post(&url)
+        .bearer_auth(&token)
+        .json(&json!({"name":"stale","expected_revision":"0"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status().as_u16(), 409);
+    let conflict: Value = stale.json().await.unwrap();
+    assert_eq!(conflict["name"], "local-new");
+    assert_eq!(conflict["revision"], "1");
+    ws.close(None).await.unwrap();
+    let _secondary = name_ws(&app, &token, "organization-name-alias").await;
+    let row = name_state(
+        &app,
+        &t.tenant_id,
+        &aid,
+        &t.admin.access_token,
+        "unsupported",
+    )
+    .await;
+    assert_eq!(row["name_sync"]["scope"], "organization_alias");
+    assert_eq!(
+        app.client
+            .post(&url)
+            .bearer_auth(&token)
+            .json(&json!({"name":"bad","expected_revision":"1"}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+    assert_eq!(
+        get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name"],
+        "local-new"
+    );
+}
+
+#[tokio::test]
+async fn name_ack_connection_cas_big_revision_and_explicit_retry() {
+    use bson::doc;
+    use meshharbor_services::dao::agent::AgentDao;
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("name-conn-fence").await;
+    let (aid, token) = crate::tunnel_tests::enroll_agent(&app, &t, "name-conn", "original").await;
+    let mut ws = name_ws(&app, &token, "device-name-sync").await;
+    next_name(&mut ws, "0").await;
+    let a = ObjectId::parse_str(&aid).unwrap();
+    let tenant = ObjectId::parse_str(&t.tenant_id).unwrap();
+    let collection = app.db.collection::<bson::Document>("agents");
+    let before = collection.find_one(doc! {"_id":a}).await.unwrap().unwrap();
+    let old_conn = before.get_str("conn_id").unwrap().to_owned();
+    ws.close(None).await.unwrap();
+    let mut current = name_ws(&app, &token, "device-name-sync").await;
+    next_name(&mut current, "0").await;
+    let dao = AgentDao::new(&app.db);
+    assert!(
+        dao.acknowledge_name(tenant, a, &old_conn, 0, "original", true, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let untouched = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await;
+    assert_ne!(untouched["name_sync"]["state"], "synced");
+    collection
+        .update_one(
+            doc! {"_id":a},
+            doc! {"$set":{"name_sync.revision":9007199254740992_i64}},
+        )
+        .await
+        .unwrap();
+    let url = format!("/api/tenant/{}/agent/{aid}", t.tenant_id);
+    let response: Value = app
+        .auth_put(&url, &t.admin.access_token)
+        .json(&json!({"name":"original"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        response["agent"]["name_sync"]["revision"],
+        "9007199254740993"
+    );
+    assert_eq!(response["agent"]["name_sync"]["state"], "pending");
+    let frame = next_name(&mut current, "9007199254740993").await;
+    ack_name(&mut current, frame, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+    assert!(
+        dao.rename_if_revision(tenant, a, "wrong-generation", Some((9007199254740993, 999)))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for name in ["\n", "a\nb", &"é".repeat(33)] {
+        let p = app
+            .auth_put(&url, &t.admin.access_token)
+            .json(&json!({"name":name}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(p.status().as_u16(), 400);
+    }
+    assert_eq!(
+        get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"]["revision"],
+        "9007199254740993"
+    );
 }
