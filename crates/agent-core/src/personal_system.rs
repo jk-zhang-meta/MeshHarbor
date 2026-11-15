@@ -8,14 +8,17 @@
 //! - Enrollment tokens NEVER appear on CLI `argv` or environment variables.
 //! - Request and status files are created with `create_new(true)` (`0600` on
 //!   Unix) inside the caller's private config directory and removed on `Drop`.
-//! - The elevated helper opens both files without following symlinks
-//!   (`O_NOFOLLOW` + `fstat` regular-file `nlink == 1` on Unix; non-reparse
-//!   `create(false)` on Windows), zeroes the request file on disk immediately
-//!   before parsing or network I/O, and NEVER creates or unlinks paths inside
-//!   unprivileged user directories.
+//! - The elevated helper rejects symlink/junction components along the path,
+//!   opens both files without following symlinks/reparse points (`O_NOFOLLOW` +
+//!   `fstat` regular-file `nlink == 1` on Unix; `FILE_FLAG_OPEN_REPARSE_POINT`
+//!   + `share_mode(0)` + `GetFileInformationByHandle` non-reparse disk file
+//!   `nNumberOfLinks == 1` on Windows), overwrites + truncates + fsyncs the
+//!   request file on disk (failing closed on any scrub error) BEFORE parsing or
+//!   network I/O, and NEVER creates or unlinks paths inside unprivileged user
+//!   directories.
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Maximum serialized `SystemEnrollRequest` payload accepted by the elevated
@@ -40,10 +43,10 @@ pub struct SystemEnrollRequest {
     #[serde(default)]
     pub calling_uid: Option<u32>,
     /// Existing per-user `config.toml` snapshot captured by the unprivileged
-    /// caller before elevation, used ONLY to seed `/etc/meshharbor/config.toml`
-    /// or `%PROGRAMDATA%\meshharbor\meshharbor\config.toml` when no system
-    /// config exists yet (preserving `machine_id`, WireGuard keys, and SIAT
-    /// invitations without root/SYSTEM touching user-owned directories).
+    /// caller before elevation, merged into `/etc/meshharbor/config.toml` or
+    /// `%PROGRAMDATA%\meshharbor\meshharbor\config.toml` so `machine_id`,
+    /// WireGuard keys, secondary orgs, and SIAT invitations survive promotion
+    /// without root/SYSTEM touching user-owned directories.
     #[serde(default)]
     pub seed_config_toml: Option<String>,
     #[serde(default)]
@@ -52,17 +55,27 @@ pub struct SystemEnrollRequest {
     pub seed_history_json: Option<String>,
 }
 
+fn read_optional_utf8(path: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 impl SystemEnrollRequest {
     /// Build a promotion request, snapshotting any existing non-system user
     /// config and SIAT invitation sidecars from `user_config_path` in the
-    /// caller's own unprivileged context.
+    /// caller's own unprivileged context. Fails closed if an existing user
+    /// config or sidecar cannot be read, preventing post-promotion retirement
+    /// from ever deleting unread credentials.
     pub fn from_user_config_path(
         server_url: String,
         enrollment_token: String,
         device_name: String,
         replace: bool,
         user_config_path: Option<&Path>,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         #[cfg(unix)]
         // SAFETY: libc::geteuid has no preconditions.
         let calling_uid = Some(unsafe { libc::geteuid() });
@@ -73,19 +86,13 @@ impl SystemEnrollRequest {
         let mut seed_temporary_json = None;
         let mut seed_history_json = None;
 
-        if let Some(p) = user_config_path.filter(|p| !is_system_config_path(p) && p.exists()) {
-            seed_config_toml = std::fs::read_to_string(p).ok();
-            let temp_path = crate::device_invite::marker_path(p);
-            if temp_path.exists() {
-                seed_temporary_json = std::fs::read_to_string(&temp_path).ok();
-            }
-            let hist_path = crate::device_invite::history_path(p);
-            if hist_path.exists() {
-                seed_history_json = std::fs::read_to_string(&hist_path).ok();
-            }
+        if let Some(p) = user_config_path.filter(|p| !is_system_config_path(p)) {
+            seed_config_toml = read_optional_utf8(p)?;
+            seed_temporary_json = read_optional_utf8(&crate::device_invite::marker_path(p))?;
+            seed_history_json = read_optional_utf8(&crate::device_invite::history_path(p))?;
         }
 
-        Self {
+        Ok(Self {
             server_url,
             enrollment_token,
             device_name,
@@ -94,7 +101,7 @@ impl SystemEnrollRequest {
             seed_config_toml,
             seed_temporary_json,
             seed_history_json,
-        }
+        })
     }
 }
 
@@ -250,10 +257,91 @@ impl Drop for TempPromotionFiles {
     }
 }
 
-/// Read and immediately scrub (`set_len(0)` + `sync_all`) a single-use
-/// `SystemEnrollRequest` file without following symlinks or unlinking paths in
-/// user-controlled directories.
+#[cfg(windows)]
+fn open_single_link_plain_file_win(
+    path: &Path,
+    read: bool,
+    write: bool,
+) -> std::io::Result<(std::fs::File, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_TYPE_DISK,
+        GetFileInformationByHandle, GetFileType,
+    };
+
+    if let Some(link) = crate::recording_dir::link_component(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is a symbolic link or junction", link.display()),
+        ));
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .read(read)
+        .write(write)
+        .create(false)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+
+    let raw_handle = file.as_raw_handle() as HANDLE;
+    // SAFETY: `raw_handle` is a live handle owned by `file`.
+    if unsafe { GetFileType(raw_handle) } != FILE_TYPE_DISK {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "promotion file is not a regular disk file",
+        ));
+    }
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `raw_handle` is live and `info` is sized for BY_HANDLE_FILE_INFORMATION.
+    if unsafe { GetFileInformationByHandle(raw_handle, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    const FORBIDDEN_ATTRS: u32 =
+        FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE;
+    if (info.dwFileAttributes & FORBIDDEN_ATTRS) != 0 || info.nNumberOfLinks != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "promotion file must be a single-link non-reparse regular file",
+        ));
+    }
+    let size = ((info.nFileSizeHigh as u64) << 32) | (info.nFileSizeLow as u64);
+    Ok((file, size))
+}
+
+fn scrub_request_writer<W: Write + Seek>(
+    writer: &mut W,
+    len: usize,
+    truncate_zero: impl FnOnce(&mut W) -> std::io::Result<()>,
+    sync: impl FnOnce(&mut W) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if len > 0 {
+        writer.seek(SeekFrom::Start(0))?;
+        let zeros = vec![0u8; len];
+        writer.write_all(&zeros)?;
+        writer.flush()?;
+    }
+    truncate_zero(writer)?;
+    sync(writer)?;
+    Ok(())
+}
+
+/// Read and immediately scrub (zero-overwrite + `set_len(0)` + `sync_all`) a
+/// single-use `SystemEnrollRequest` file without following symlinks/reparse
+/// points or unlinking paths in user-controlled directories. Any scrub or sync
+/// error fails closed before parsing or network I/O.
 pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> {
+    if let Some(link) = crate::recording_dir::link_component(path) {
+        anyhow::bail!(
+            "promotion request path {} contains symbolic link or junction {}",
+            path.display(),
+            link.display()
+        );
+    }
+
     #[cfg(unix)]
     let mut file = {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -287,40 +375,47 @@ pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> 
 
     #[cfg(windows)]
     let mut file = {
-        let meta = std::fs::symlink_metadata(path)
-            .map_err(|e| anyhow::anyhow!("stat promotion request {}: {e}", path.display()))?;
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            anyhow::bail!("promotion request {} must be a regular non-reparse file", path.display());
-        }
-        if meta.len() == 0 {
+        let (f, size) = open_single_link_plain_file_win(path, true, true)
+            .map_err(|e| anyhow::anyhow!("opening promotion request {}: {e}", path.display()))?;
+        if size == 0 {
             anyhow::bail!("promotion request {} was already consumed or empty", path.display());
         }
-        if meta.len() > MAX_REQUEST_BYTES {
+        if size > MAX_REQUEST_BYTES {
             anyhow::bail!("promotion request {} exceeds maximum allowed size", path.display());
         }
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(false)
-            .open(path)
-            .map_err(|e| anyhow::anyhow!("opening promotion request {}: {e}", path.display()))?
+        f
     };
 
     let mut raw = Vec::new();
-    (&mut file)
-        .take(MAX_REQUEST_BYTES + 1)
-        .read_to_end(&mut raw)
-        .map_err(|e| anyhow::anyhow!("reading promotion request: {e}"))?;
+    if let Err(e) = (&mut file).take(MAX_REQUEST_BYTES + 1).read_to_end(&mut raw) {
+        raw.fill(0);
+        return Err(anyhow::anyhow!("reading promotion request: {e}"));
+    }
+
     // Scrub the bearer enrollment token from disk BEFORE parsing or network I/O.
-    let _ = file.set_len(0);
-    let _ = file.sync_all();
+    let scrub_res = scrub_request_writer(
+        &mut file,
+        raw.len(),
+        |f| f.set_len(0),
+        |f| f.sync_all(),
+    );
     drop(file);
+    if let Err(e) = scrub_res {
+        raw.fill(0);
+        return Err(anyhow::anyhow!(
+            "scrubbing promotion request {}: {e}",
+            path.display()
+        ));
+    }
 
     if raw.is_empty() || (raw.len() as u64) > MAX_REQUEST_BYTES {
+        raw.fill(0);
         anyhow::bail!("promotion request size out of bounds");
     }
-    serde_json::from_slice(&raw)
-        .map_err(|e| anyhow::anyhow!("decoding promotion request payload: {e}"))
+    let parsed = serde_json::from_slice(&raw)
+        .map_err(|e| anyhow::anyhow!("decoding promotion request payload: {e}"));
+    raw.fill(0);
+    parsed
 }
 
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
@@ -334,11 +429,14 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-/// Write a bounded error string into an existing non-symlink `status_file`
-/// (`create(false)`, `O_NOFOLLOW` + `nlink == 1` on Unix). Best-effort; silently
-/// refuses symlinks, hardlinks, or missing targets so root/SYSTEM can never be
-/// tricked into overwriting an arbitrary file.
+/// Write a bounded error string into an existing single-link non-symlink
+/// `status_file` (`create(false)`, handle-validated on both Unix and Windows).
+/// Best-effort; silently refuses symlinks, junctions, hardlinks, or missing
+/// targets so root/SYSTEM can never be tricked into overwriting an unintended file.
 pub fn write_status_error(status_file: &Path, message: &str) {
+    if crate::recording_dir::link_component(status_file).is_some() {
+        return;
+    }
     let trimmed = truncate_utf8(message.trim(), MAX_STATUS_BYTES);
     #[cfg(unix)]
     {
@@ -363,17 +461,7 @@ pub fn write_status_error(status_file: &Path, message: &str) {
     }
     #[cfg(windows)]
     {
-        let Ok(meta) = std::fs::symlink_metadata(status_file) else {
-            return;
-        };
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return;
-        }
-        let Ok(mut f) = std::fs::OpenOptions::new()
-            .write(true)
-            .create(false)
-            .open(status_file)
-        else {
+        let Ok((mut f, _size)) = open_single_link_plain_file_win(status_file, false, true) else {
             return;
         };
         let _ = f.set_len(0);
@@ -789,6 +877,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn scrub_failure_propagates_and_zeros_payload() {
+        let mut backing = std::io::Cursor::new(b"secret-bearer-token".to_vec());
+        scrub_request_writer(&mut backing, 19, |_| Ok(()), |_| Ok(())).unwrap();
+        assert_eq!(backing.get_ref().as_slice(), &[0u8; 19]);
+
+        let mut backing_trunc_err = std::io::Cursor::new(b"secret".to_vec());
+        let err = scrub_request_writer(
+            &mut backing_trunc_err,
+            6,
+            |_| Err(std::io::Error::other("truncate failed")),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("truncate failed"), "{err}");
+
+        let mut backing_sync_err = std::io::Cursor::new(b"secret".to_vec());
+        let err = scrub_request_writer(
+            &mut backing_sync_err,
+            6,
+            |_| Ok(()),
+            |_| Err(std::io::Error::other("fsync failed")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("fsync failed"), "{err}");
+    }
+
+    #[test]
+    fn hardlink_request_and_status_files_are_refused() {
+        let dir = std::env::temp_dir().join(format!(
+            "mh-ps-hlink-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "UNTAMPERED").unwrap();
+        let hard_status = dir.join("status-hard.txt");
+        std::fs::hard_link(&victim, &hard_status).unwrap();
+
+        write_status_error(&hard_status, "OVERWRITTEN");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "UNTAMPERED");
+
+        let temp = TempPromotionFiles::create_in(&dir, &sample_req()).unwrap();
+        let hard_req = dir.join("req-hard.json");
+        std::fs::hard_link(&temp.request_path, &hard_req).unwrap();
+        assert!(
+            consume_request_file(&temp.request_path).is_err(),
+            "request file with nlink > 1 must be refused"
+        );
+        assert!(
+            consume_request_file(&hard_req).is_err(),
+            "hardlinked request alias must be refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_request_and_status_files_are_refused() {
@@ -821,12 +965,46 @@ mod tests {
         std::os::unix::fs::symlink(&real_req, &sym_req).unwrap();
         assert!(consume_request_file(&sym_req).is_err());
 
+        let sym_dir = dir.join("dir-link");
+        std::os::unix::fs::symlink(&dir, &sym_dir).unwrap();
+        assert!(
+            consume_request_file(&sym_dir.join("real-req.json")).is_err(),
+            "ancestor directory symlink must be refused"
+        );
+
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&real_req, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
         assert!(consume_request_file(&real_req).is_err());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_ancestor_on_windows_is_refused() {
+        let dir = std::env::temp_dir().join(format!(
+            "mh-ps-junc-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let real_dir = dir.join("real");
+        let junc_dir = dir.join("junc");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let temp = TempPromotionFiles::create_in(&real_dir, &sample_req()).unwrap();
+        let st = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junc_dir)
+            .arg(&real_dir)
+            .status()
+            .unwrap();
+        assert!(st.success(), "mklink /J failed");
+
+        let via_junc_req = junc_dir.join(temp.request_path.file_name().unwrap());
+        let via_junc_st = junc_dir.join(temp.status_path.file_name().unwrap());
+        assert!(consume_request_file(&via_junc_req).is_err());
+        write_status_error(&via_junc_st, "THROUGH_JUNCTION");
+        assert!(read_status_error(&temp.status_path).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -855,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_and_retire_user_config_uses_canonical_sidecars() {
+    fn snapshot_and_retire_user_config_uses_canonical_sidecars_and_fails_closed_on_io_err() {
         let dir = std::env::temp_dir().join(format!(
             "mh-ps-sidecar-{}",
             hex::encode(rand::random::<[u8; 8]>())
@@ -872,7 +1050,8 @@ mod tests {
             "box".into(),
             false,
             Some(&cfg_path),
-        );
+        )
+        .unwrap();
         assert_eq!(req.seed_config_toml.as_deref(), Some("machine_id = \"m1\"\n"));
         assert_eq!(req.seed_temporary_json.as_deref(), Some("{\"access_until_ms\":123}"));
         assert_eq!(req.seed_history_json.as_deref(), Some("[{\"invite_id\":\"inv1\"}]"));
@@ -881,6 +1060,20 @@ mod tests {
         assert!(!cfg_path.exists());
         assert!(!dir.join("temporary.json").exists());
         assert!(!dir.join("invites.json").exists());
+
+        // An unreadable config path (e.g. a directory where config.toml is expected)
+        // must fail closed rather than returning None and allowing retirement.
+        std::fs::create_dir_all(&cfg_path).unwrap();
+        assert!(
+            SystemEnrollRequest::from_user_config_path(
+                "https://mh.example".into(),
+                "tok".into(),
+                "box".into(),
+                false,
+                Some(&cfg_path),
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

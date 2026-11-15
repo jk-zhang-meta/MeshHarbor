@@ -1385,7 +1385,8 @@ async fn login_cmd(
             name.clone(),
             replace,
             Some(config_path.as_path()),
-        );
+        )
+        .context("reading existing user config before system promotion")?;
         let interactive_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
         personal_system::invoke_elevated_enroll_system(&exe, &req, interactive_tty)
             .map_err(anyhow::Error::msg)?;

@@ -833,7 +833,8 @@ async fn promote_personal_device_to_system(
             resolved_name,
             false,
             user_cfg.as_deref(),
-        );
+        )
+        .map_err(|e| format!("reading existing user config before system promotion: {e}"))?;
         personal_system::invoke_elevated_enroll_system(&exe, &req, false)?;
         if !personal_system::is_process_elevated() {
             let _ = no_window_command(&exe)

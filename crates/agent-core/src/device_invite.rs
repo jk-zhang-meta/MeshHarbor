@@ -518,21 +518,39 @@ fn beside_config(config_path: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// Parse raw `temporary.json` content strictly (accepting empty/whitespace,
+/// `{ "enrollments": { ... } }`, or a legacy single [`TemporaryInfo`] object
+/// mapped under [`PRIMARY_KEY`]; rejecting malformed JSON or unrecognized shapes).
+pub fn parse_markers_strict(raw: &str) -> Result<BTreeMap<String, TemporaryInfo>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(trimmed).context("parsing temporary.json marker")?;
+    let Some(obj) = val.as_object() else {
+        bail!("temporary.json root must be a JSON object");
+    };
+    if obj.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if obj.contains_key("enrollments") {
+        let f: MarkerFile =
+            serde_json::from_value(val).context("parsing keyed temporary.json marker")?;
+        return Ok(f.enrollments);
+    }
+    let one: TemporaryInfo =
+        serde_json::from_value(val).context("parsing legacy temporary.json marker")?;
+    Ok(BTreeMap::from([(PRIMARY_KEY.to_string(), one)]))
+}
+
 /// Every temporary enrollment of this machine, keyed by agent id (an old
 /// single-entry marker reads as [`PRIMARY_KEY`]).
 pub fn read_markers(config_path: &Path) -> BTreeMap<String, TemporaryInfo> {
     let Ok(s) = std::fs::read_to_string(marker_path(config_path)) else {
         return BTreeMap::new();
     };
-    if let Ok(f) = serde_json::from_str::<MarkerFile>(&s)
-        && !f.enrollments.is_empty()
-    {
-        return f.enrollments;
-    }
-    match serde_json::from_str::<TemporaryInfo>(&s) {
-        Ok(one) => BTreeMap::from([(PRIMARY_KEY.to_string(), one)]),
-        Err(_) => BTreeMap::new(),
-    }
+    parse_markers_strict(&s).unwrap_or_default()
 }
 
 /// The marker of one enrollment (`is_primary` also reads the legacy entry).
@@ -585,6 +603,11 @@ pub fn write_marker_for(
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec(&MarkerFile { enrollments: all })?)
         .context("writing temporary.json")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
     std::fs::rename(&tmp, &path).context("placing temporary.json")?;
     Ok(())
 }

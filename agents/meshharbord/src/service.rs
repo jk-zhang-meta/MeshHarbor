@@ -430,10 +430,12 @@ pub mod system {
     pub const CONFIG: &str = "/etc/meshharbor/config.toml";
     /// The system unit the `.deb` and the tarball ship.
     pub const LINUX_UNIT: &str = "meshharbord.service";
-    /// Where that unit file is, on a usr-merged host and a split one.
-    pub const LINUX_UNIT_FILES: [&str; 2] = [
+    /// Where that unit file is: usr-merged vendor, split vendor, or standalone
+    /// `/etc/systemd/system` fallback written during personal system promotion.
+    pub const LINUX_UNIT_FILES: [&str; 3] = [
         "/usr/lib/systemd/system/meshharbord.service",
         "/lib/systemd/system/meshharbord.service",
+        "/etc/systemd/system/meshharbord.service",
     ];
     // FR-96's update helper (`meshharbor-update.timer` + `.path`) is left as it
     // is, both ways: it steps aside by itself while this unit is enabled
@@ -2087,6 +2089,15 @@ mod tests {
     use super::*;
 
     // ── FR-97 P6c: the system service's decisions, on every OS ──
+
+    #[test]
+    fn linux_unit_files_recognizes_vendor_and_etc_fallback_paths() {
+        assert!(
+            system::LINUX_UNIT_FILES.contains(&"/usr/lib/systemd/system/meshharbord.service")
+        );
+        assert!(system::LINUX_UNIT_FILES.contains(&"/lib/systemd/system/meshharbord.service"));
+        assert!(system::LINUX_UNIT_FILES.contains(&"/etc/systemd/system/meshharbord.service"));
+    }
 
     #[test]
     fn a_system_install_is_refused_in_order_root_then_the_unit_then_the_config() {

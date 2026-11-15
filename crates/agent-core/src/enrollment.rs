@@ -689,7 +689,7 @@ pub fn apply_enrollment(
 /// Pick a unique label for a new secondary org: the sanitized requested
 /// label if given (hard error when invalid/taken — the operator named it
 /// deliberately), else the server host sanitized + `-2`/`-3`… uniquifier.
-fn unique_org_label(
+pub fn unique_org_label(
     cfg: &AgentConfig,
     requested: Option<&str>,
     server_url: &str,
