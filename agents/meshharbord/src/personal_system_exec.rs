@@ -1502,7 +1502,7 @@ async fn activate_platform_system_service(
     // Check LaunchDaemon installation preflight BEFORE stopping the user LaunchAgent.
     if let Some(why) = crate::service::system::install_refusal(
         crate::service::system::Os::MacOs,
-        crate::appdirs::running_as_root(),
+        personal_system::is_process_elevated(),
         Path::new(crate::service::system::MACOS_PLIST_SOURCE).exists(),
         target_path.exists(),
     ) {
