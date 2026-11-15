@@ -56,6 +56,11 @@ pub fn verdict(
 }
 
 pub fn require_user(core: &Core, user: &User, revision: Option<u32>) -> Result<(), ApiError> {
+    if revision.is_some_and(|v| v != user.account_approval.revision) {
+        return Err(ApiError::Unauthorized(
+            "Account session revoked; sign in again".into(),
+        ));
+    }
     let id = user
         .id
         .ok_or_else(|| ApiError::Unauthorized("Account missing identity".into()))?;
@@ -69,15 +74,21 @@ pub fn require_user(core: &Core, user: &User, revision: Option<u32>) -> Result<(
     )
 }
 
-/// Existing disabled deployments perform no extra query. Enabled mode fails closed
-/// on missing rows/storage errors instead of trusting a formerly issued JWT.
+/// Credential rotation revokes old revisions even when account approval is disabled.
+/// Missing rows/storage errors fail closed.
 pub async fn authorize_claims(core: &Core, claims: &Claims) -> Result<(), ApiError> {
-    if !core.settings.auth.account_approval.enabled {
-        return Ok(());
-    }
     let id = ObjectId::parse_str(&claims.sub)
         .map_err(|_| ApiError::Unauthorized("Invalid user ID".into()))?;
-    authorize_user_id(core, id, Some(claims.approval_revision)).await
+    let user = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        core.users.base.find_by_id(id),
+    )
+    .await
+    .map_err(|_| ApiError::ServiceUnavailable("Account lookup timed out".into()))??;
+    if user.deleted_at.is_some() {
+        return Err(ApiError::Unauthorized("Account unavailable".into()));
+    }
+    require_user(core, &user, Some(claims.approval_revision))
 }
 
 /// Live account gate for delegated credentials. No tenant-wide assumption:

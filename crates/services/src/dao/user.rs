@@ -283,7 +283,9 @@ impl UserDao {
 
     pub async fn find_by_email(&self, email: &str) -> DaoResult<User> {
         self.base
-            .find_one(doc! { "email": email, "deleted_at": null })
+            .collection()
+            .find_one(doc! { "email": email.trim().to_lowercase(), "deleted_at": null })
+            .collation(meshharbor_db::indexes::email_identity_collation())
             .await?
             .ok_or(DaoError::NotFound)
     }

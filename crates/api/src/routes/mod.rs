@@ -46,3 +46,5 @@ pub mod device_share;
 pub mod account_devices;
 #[cfg(feature = "fleet")]
 pub mod local_accounts;
+
+pub mod email_change;

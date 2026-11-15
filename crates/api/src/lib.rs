@@ -144,6 +144,7 @@ pub fn build_router(state: AppState) -> Router {
     let credential_routes = Router::new()
         .route("/register", post(routes::auth::register))
         .route("/login", post(routes::auth::login))
+        .route("/email-change/request", post(routes::email_change::request))
         .route(
             "/native/share-ssh/login",
             post(routes::auth::native_share_ssh_login),
@@ -165,6 +166,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/logout", post(routes::auth::logout))
         .route("/refresh", post(routes::auth::refresh))
         .route("/activate", post(routes::auth::activate))
+        .route("/email-change/confirm", post(routes::email_change::confirm))
         .route("/me", get(routes::auth::me))
         .route("/me", put(routes::auth::me))
         .merge(credential_routes);

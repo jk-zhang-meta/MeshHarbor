@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use mongodb::{Database, IndexModel, options::IndexOptions};
+use mongodb::{
+    Database, IndexModel,
+    options::{Collation, CollationStrength, IndexOptions},
+};
+
+/// The public account identity is case-insensitive email, including all writers.
+pub fn email_identity_collation() -> Collation {
+    Collation::builder()
+        .locale("en")
+        .strength(CollationStrength::Secondary)
+        .build()
+}
 use serde::Serialize;
 use tracing::info;
 
@@ -139,6 +150,21 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
         "users",
         vec![
             index_unique(bson::doc! { "email": 1 }),
+            IndexModel::builder()
+                .keys(bson::doc! { "email": 1 })
+                .options(
+                    IndexOptions::builder()
+                        .name("email_identity_ci".to_owned())
+                        .unique(true)
+                        .collation(email_identity_collation())
+                        .build(),
+                )
+                .build(),
+            // Expiry is checked in CAS. NEVER TTL-index user documents.
+            IndexModel::builder()
+                .keys(bson::doc! { "pending_email_change.request_id": 1 })
+                .options(IndexOptions::builder().unique(true).sparse(true).build())
+                .build(),
             index_unique(bson::doc! { "username": 1 }),
             index_text(bson::doc! { "display_name": "text", "username": "text" }),
             // FR-88 P1a — the activation view reads sign-ups by creation

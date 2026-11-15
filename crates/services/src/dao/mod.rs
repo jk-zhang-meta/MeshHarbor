@@ -63,3 +63,5 @@ pub use base::BaseDao;
 
 pub mod device_share;
 pub mod native_ssh_authorization;
+
+pub mod email_change;
