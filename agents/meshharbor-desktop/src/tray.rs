@@ -1058,6 +1058,20 @@ fn who(g: &meshharbor_node_core::device_invite::GrantInfo) -> String {
     }
 }
 
+fn resolve_tray_server(
+    file_enrolled: bool,
+    file_server: String,
+    node: Option<&meshharbor_localapi::NodeStatus>,
+) -> String {
+    if file_enrolled {
+        return file_server;
+    }
+    node.and_then(|n| n.orgs.iter().find(|o| o.primary))
+        .map(|o| o.server_url.trim().trim_end_matches('/').to_string())
+        .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+        .unwrap_or(file_server)
+}
+
 fn account_view_at(
     enrolled: bool,
     node: Option<&meshharbor_localapi::NodeStatus>,
@@ -1066,13 +1080,20 @@ fn account_view_at(
     now_ms: i64,
 ) -> AccountView {
     use meshharbor_node_core::device_invite::remaining_words;
-    let invitations = invitations.filter(|_| enrolled);
+    let daemon_enrolled = node.is_some_and(|n| {
+        !n.node_id.is_empty() && n.tenant_id.as_deref().is_some_and(|t| !t.is_empty())
+    });
+    let file_enrolled = enrolled;
+    let enrolled = file_enrolled || daemon_enrolled;
+    let invitations = invitations.filter(|_| file_enrolled);
     let grants = invitations
         .as_ref()
         .map(|i| i.grants.clone())
         .unwrap_or_default();
-    // Signed in nowhere but by invitations.
-    let temporary = invitations.as_ref().is_some_and(|i| !i.own_account);
+    // Signed in nowhere but by invitations (either from readable temporary.json
+    // or reported over LocalAPI by a root/SYSTEM daemon whose config is 0600).
+    let temporary = invitations.as_ref().is_some_and(|i| !i.own_account)
+        || (!file_enrolled && node.is_some_and(|n| n.personal_enrolled == Some(false)));
     let ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
     let recent_error = ui
         .error
@@ -1200,6 +1221,7 @@ fn spawn_account_watch<R: Runtime>(
                 }
                 Err(_) => (None, Vec::new()),
             };
+            let server = resolve_tray_server(enrolled, server, node.as_ref());
             let mut view = account_view_at(enrolled, node.as_ref(), &peers, active_invites, now_ms());
             let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
             if !view.temporary {
@@ -1293,6 +1315,48 @@ fn spawn_account_watch<R: Runtime>(
 #[cfg(test)]
 mod account_tests {
     use super::*;
+
+    #[test]
+    fn root_or_system_daemon_with_unreadable_config_still_shows_signed_in() {
+        let mut st: meshharbor_localapi::NodeStatus = serde_json::from_value(serde_json::json!({
+            "node_id": "65f000000000000000000099",
+            "name": "root-workstation",
+            "version": "0.4.162",
+            "mode": "service",
+            "privileged": true,
+            "personal_enrolled": true,
+            "system_privileged": true,
+            "tenant_id": "65f000000000000000000001",
+            "overlay_ip": "100.64.0.42",
+            "connected": true,
+            "orgs": [{
+                "label": "primary",
+                "server_url": "https://custom.meshharbor.example/",
+                "tenant_id": "65f000000000000000000001",
+                "agent_id": "65f000000000000000000099",
+                "primary": true,
+                "enabled": true,
+                "connected": true,
+                "updates_ignored": 0,
+                "overlay_mode": "tun"
+            }]
+        }))
+        .unwrap();
+        let v = account_view_at(false, Some(&st), &[], None, 0);
+        assert_eq!(v.status, "root-workstation · 100.64.0.42");
+        assert!(!v.temporary);
+        assert_eq!(v.login_text, "Signed in");
+        assert_eq!(
+            resolve_tray_server(false, "https://www.itachi.fans/meshharbor".into(), Some(&st)),
+            "https://custom.meshharbor.example"
+        );
+
+        st.personal_enrolled = Some(false);
+        let v_temp = account_view_at(false, Some(&st), &[], None, 0);
+        assert!(v_temp.temporary);
+        assert_eq!(v_temp.login_text, "Log in…");
+        assert!(v_temp.login_enabled);
+    }
 
     #[test]
     fn the_status_line_follows_the_account_like_tailscale() {

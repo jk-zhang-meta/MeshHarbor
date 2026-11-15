@@ -291,6 +291,15 @@ async fn ensure_device_service_running() {
     if meshharbor_localapi::connect().await.is_ok() {
         return;
     }
+    if tokio::task::spawn_blocking(crate::commands::is_system_service_installed)
+        .await
+        .unwrap_or(false)
+    {
+        tracing::info!(
+            "system device service is installed; skipping per-user service start at app launch"
+        );
+        return;
+    }
     tracing::info!("device service not answering at app start — starting it");
     match tokio::task::spawn_blocking(crate::commands::run_service_start).await {
         Ok(Ok(())) => tracing::info!("device service start requested"),

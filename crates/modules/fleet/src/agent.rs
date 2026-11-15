@@ -456,6 +456,8 @@ pub async fn enroll_agent(
                 set.insert("personal_access_owner_id", admin_uid);
                 set.insert("ssh_policy.allowed_user_ids", vec![admin_uid]);
                 set.insert("exec_policy.allowed_user_ids", vec![admin_uid]);
+                set.insert("ssh_policy.account_mode", "daemon");
+                set.insert("exec_policy.run_as", "system");
             }
             let initialized = state
                 .core

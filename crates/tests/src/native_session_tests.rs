@@ -1408,3 +1408,263 @@ async fn ws_upgrade_preserves_403_401_and_503_admission_statuses() {
         .unwrap();
     assert_eq!(stale_rev_ws.status().as_u16(), 401);
 }
+
+
+#[tokio::test]
+async fn personal_device_login_mints_anchor_token_and_defaults_to_system_privileges() {
+    let app = TestApp::spawn_with_settings(|s| {
+        s.auth.native_device_login_enabled = true;
+        s.auth.account_approval.enabled = false;
+    })
+    .await;
+    let owner = app
+        .register_user(
+            "sys-default-owner@example.com",
+            "sys_default_owner",
+            "Owner",
+            "Owner.Pass.123",
+            Some("Sys Org"),
+            Some("sys-org"),
+        )
+        .await;
+    let tenants: Vec<Value> = app
+        .auth_get("/api/tenant", &owner.access_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tid = tenants[0]["id"].as_str().unwrap();
+
+    let started: Value = app
+        .client
+        .post(app.url("/api/native/device-login"))
+        .json(&json!({
+            "device_name": "Personal Workstation",
+            "device_os": "windows",
+            "purpose": "enrollment_and_user_session",
+            "code_challenge": challenge(VERIFIER),
+            "code_challenge_method": "S256"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let decide = app
+        .auth_post("/api/native/device-login/decision", &owner.access_token)
+        .header("Origin", &app.settings.app.frontend_url)
+        .json(&json!({
+            "user_code": started["user_code"],
+            "approve": true,
+            "tenant_id": tid
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(decide.status().as_u16(), 200);
+
+    let exchanged: Value = app
+        .client
+        .post(app.url("/api/native/device-login/exchange"))
+        .json(&json!({
+            "device_code": started["device_code"],
+            "code_verifier": VERIFIER
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let enrollment_token = exchanged["enrollment_token"]
+        .as_str()
+        .expect("enrollment_token minted")
+        .to_string();
+
+    let claims = app
+        .state
+        .auth
+        .verify_enrollment_token(&enrollment_token)
+        .expect("valid enrollment claims");
+    assert!(claims.anchor, "personal device login must mint anchor=true");
+    let first_jti = claims.jti.clone();
+
+    let enrolled_resp = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&json!({
+            "enrollment_token": enrollment_token,
+            "machine_id": "mid-personal-win-sys-001",
+            "machine_name": "Personal Workstation",
+            "os": "windows",
+            "agent_version": "0.4.162"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(enrolled_resp.status().as_u16(), 200);
+    let enrolled: Value = enrolled_resp.json().await.unwrap();
+    let agent_id_str = enrolled["agent_id"].as_str().unwrap().to_string();
+    let agent_oid = ObjectId::parse_str(&agent_id_str).unwrap();
+
+    // Verify raw MongoDB document has explicit system/daemon defaults.
+    let raw_doc = app
+        .state
+        .core
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(doc! { "_id": agent_oid })
+        .await
+        .unwrap()
+        .expect("agent row exists");
+    assert_eq!(
+        raw_doc
+            .get_document("exec_policy")
+            .unwrap()
+            .get_str("run_as")
+            .unwrap(),
+        "system"
+    );
+    assert_eq!(
+        raw_doc
+            .get_document("ssh_policy")
+            .unwrap()
+            .get_str("account_mode")
+            .unwrap(),
+        "daemon"
+    );
+    assert_eq!(raw_doc.get_str("enrolled_with_jti").unwrap(), first_jti);
+
+    // Second use: POST /api/agent/anchor with the SAME enrollment token succeeds
+    // for Windows SYSTEM exec + SYSTEM SSH ceiling.
+    let anchor_resp = app
+        .client
+        .post(app.url("/api/agent/anchor"))
+        .json(&json!({
+            "enrollment_token": enrollment_token,
+            "agent_id": agent_id_str,
+            "host_name": "Personal Workstation",
+            "force": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        anchor_resp.status().as_u16(),
+        200,
+        "anchor second_use must succeed on personal device enrollment token"
+    );
+
+    // Admin subsequently vetoes exec_policy.mode -> "off" and run_as -> "console_user".
+    app.state
+        .core
+        .db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! { "_id": agent_oid },
+            doc! { "$set": { "exec_policy.mode": "off", "exec_policy.run_as": "console_user" } },
+        )
+        .await
+        .unwrap();
+
+    // Re-login (`Purpose::Enrollment`, e.g. `mh login --replace` or promotion of
+    // an unprivileged personal install) updates `enrolled_with_jti` for anchoring
+    // while preserving the admin's explicit policy veto!
+    let relogin_started: Value = app
+        .client
+        .post(app.url("/api/native/device-login"))
+        .json(&json!({
+            "device_name": "Personal Workstation",
+            "device_os": "windows",
+            "purpose": "enrollment",
+            "code_challenge": challenge(VERIFIER),
+            "code_challenge_method": "S256"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    app.auth_post("/api/native/device-login/decision", &owner.access_token)
+        .header("Origin", &app.settings.app.frontend_url)
+        .json(&json!({
+            "user_code": relogin_started["user_code"],
+            "approve": true,
+            "tenant_id": tid
+        }))
+        .send()
+        .await
+        .unwrap();
+    let relogin_exchanged: Value = app
+        .client
+        .post(app.url("/api/native/device-login/exchange"))
+        .json(&json!({
+            "device_code": relogin_started["device_code"],
+            "code_verifier": VERIFIER
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let relogin_token = relogin_exchanged["enrollment_token"].as_str().unwrap();
+    let relogin_claims = app
+        .state
+        .auth
+        .verify_enrollment_token(relogin_token)
+        .unwrap();
+    assert!(relogin_claims.anchor);
+    assert_ne!(relogin_claims.jti, first_jti);
+
+    let re_enrolled = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&json!({
+            "enrollment_token": relogin_token,
+            "machine_id": "mid-personal-win-sys-001",
+            "machine_name": "Personal Workstation",
+            "os": "windows",
+            "agent_version": "0.4.162"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(re_enrolled.status().as_u16(), 200);
+
+    let raw_after = app
+        .state
+        .core
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(doc! { "_id": agent_oid })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        raw_after
+            .get_document("exec_policy")
+            .unwrap()
+            .get_str("mode")
+            .unwrap(),
+        "off",
+        "re-login must preserve explicit admin veto"
+    );
+    assert_eq!(
+        raw_after
+            .get_document("exec_policy")
+            .unwrap()
+            .get_str("run_as")
+            .unwrap(),
+        "console_user"
+    );
+    assert_eq!(
+        raw_after.get_str("enrolled_with_jti").unwrap(),
+        relogin_claims.jti
+    );
+}

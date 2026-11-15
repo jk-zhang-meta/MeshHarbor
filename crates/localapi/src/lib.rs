@@ -170,6 +170,21 @@ pub struct NodeStatus {
     /// an older daemon, and an older CLI ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
+    /// Whether this node's primary enrollment is a personal/ordinary account
+    /// enrollment (`Some(true)`) rather than temporary invitation-only access
+    /// (`Some(false)`). Lets unprivileged clients (`mh`, `meshharbor-desktop`)
+    /// tell personal enrollment from SIAT-only state when the system config is
+    /// root/SYSTEM-owned (`0600` / `%PROGRAMDATA%` ACL). Additive (`None` on
+    /// older daemons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_enrolled: Option<bool>,
+    /// Whether this installation has full machine-level (`root` / `SYSTEM`)
+    /// execution privileges: on Unix, `geteuid() == 0`; on Windows, either the
+    /// answering worker itself runs as `LocalSystem` or it is supervised by the
+    /// `MeshHarbor` SCM service with a live SYSTEM service anchor (`exec-system`
+    /// / `ssh-system`). Additive (`None` on older daemons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_privileged: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4610,6 +4625,23 @@ pub async fn connect() -> std::io::Result<Client> {
                 Err(e) => last = Some(e),
             }
         }
+        // On macOS single-daemon root installs (`macos_supervise_gui_worker = true`),
+        // `/var/run/meshharbor/meshharbor.sock` is `0600 root:wheel` while the root
+        // daemon serves the signed-in console user on `/var/run/meshharbor-person/<uid>.sock`
+        // (verified peer UID == 0). Falling back here makes unprivileged `mh` and
+        // `meshharbor-desktop` reach the root daemon seamlessly.
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: libc::geteuid has no preconditions.
+            let euid = unsafe { libc::geteuid() };
+            if euid != 0 {
+                match connect_unix_served_by_root(person_socket_path(euid)).await {
+                    Ok(client) => return Ok(client),
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => last = Some(e),
+                    Err(_) => {}
+                }
+            }
+        }
         Err(last.unwrap_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "no LocalAPI socket")
         }))
@@ -5728,6 +5760,8 @@ mod tests {
                 version: "0.3.0-rc.154".into(),
                 mode: DaemonMode::Service,
                 privileged: None,
+                personal_enrolled: None,
+                system_privileged: None,
                 tenant_id: Some("t1".into()),
                 overlay_ip: Some("100.64.0.2".into()),
                 overlay_ip6: None,
@@ -9354,6 +9388,37 @@ mod tests {
                 .unwrap()
                 .path_trials
                 .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod personal_system_status_tests {
+    use super::*;
+
+    #[test]
+    fn node_status_personal_and_system_privileged_roundtrip_and_person_view() {
+        let mut s: NodeStatus = serde_json::from_value(serde_json::json!({
+            "node_id": "n1",
+            "name": "devbox",
+            "version": "0.4.162",
+            "mode": "service",
+            "connected": true
+        }))
+        .unwrap();
+        let json_none = serde_json::to_string(&s).unwrap();
+        assert!(!json_none.contains("personal_enrolled"));
+        assert!(!json_none.contains("system_privileged"));
+
+        s.personal_enrolled = Some(true);
+        s.system_privileged = Some(true);
+        let json_some = serde_json::to_string(&s).unwrap();
+        let decoded: NodeStatus = serde_json::from_str(&json_some).unwrap();
+        assert_eq!(decoded.personal_enrolled, Some(true));
+        assert_eq!(decoded.system_privileged, Some(true));
+        assert_eq!(
+            person_view(Response::Status(Box::new(decoded.clone()))),
+            Response::Status(Box::new(decoded))
         );
     }
 }

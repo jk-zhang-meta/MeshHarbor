@@ -65,6 +65,12 @@ pub async fn cmd_status() -> StatusReport {
         .unwrap_or_else(|_| status_report());
     // #1701 — the file said "not enrolled"; ask the daemon before believing it.
     if let Some(status) = daemon_node_status().await {
+        report.service_running = true;
+        if report.service_kind == "none"
+            && status.system_privileged.or(status.privileged) == Some(true)
+        {
+            report.service_kind = "scmService".to_string();
+        }
         if let Some(id) = daemon_identity(&status) {
             apply_daemon_identity(&mut report, id);
         }
@@ -650,29 +656,50 @@ pub async fn cmd_leave(invite_id: Option<String>) -> Result<(), String> {
 #[tauri::command]
 pub async fn cmd_login_start(server: String, device_name: String) -> Result<LoginStarted, String> {
     use meshharbor_node_core::device_login;
+    let live_node = daemon_node_status().await;
     // Resolve the active service flavour once on the blocking pool so neither
     // a stale cross-flavour Windows config nor an invitation-only (SIAT) active
     // config can misclassify `purpose` as `UserSession` and skip conversion.
-    let (server, personally_enrolled) = tokio::task::spawn_blocking(move || {
+    let (file_server, file_personal) = tokio::task::spawn_blocking(move || {
         let is_scm = probe_service_state().0 == "scmService";
         let active_path = active_config_path(is_scm).ok();
-        let resolved_server = if server.trim().is_empty() {
-            active_path
-                .as_ref()
-                .and_then(|path| config::load(path).ok())
-                .map(|cfg| cfg.server_url.trim().trim_end_matches('/').to_string())
-                .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
-                .unwrap_or_else(|| device_login::DEFAULT_SERVER.to_string())
-        } else {
-            server
-        };
+        let disk_server = active_path
+            .as_ref()
+            .and_then(|path| config::load(path).ok())
+            .map(|cfg| cfg.server_url.trim().trim_end_matches('/').to_string())
+            .filter(|s| s.starts_with("https://") || s.starts_with("http://"));
         let personally_enrolled = has_personal_enrollment_for(is_scm);
-        (resolved_server, personally_enrolled)
+        (disk_server, personally_enrolled)
     })
     .await
     .map_err(|e| format!("task join: {e}"))?;
-    let purpose = login_purpose_for_personal_state(personally_enrolled);
-    let pending = device_login::start_with_purpose(&server, device_name.trim(), purpose)
+
+    let resolved_server = if !server.trim().is_empty() {
+        server
+    } else if let Some(s) = file_server {
+        s
+    } else if let Some(s) = live_node
+        .as_ref()
+        .and_then(|n| n.orgs.iter().find(|o| o.primary))
+        .map(|o| o.server_url.trim().trim_end_matches('/').to_string())
+        .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+    {
+        s
+    } else {
+        device_login::DEFAULT_SERVER.to_string()
+    };
+
+    let personally_enrolled = live_node
+        .as_ref()
+        .and_then(|n| n.personal_enrolled)
+        .unwrap_or(file_personal);
+    let system_privileged = live_node
+        .as_ref()
+        .and_then(|n| n.system_privileged.or(n.privileged))
+        .unwrap_or(false);
+
+    let purpose = login_purpose_for_system_personal_state(personally_enrolled, system_privileged);
+    let pending = device_login::start_with_purpose(&resolved_server, device_name.trim(), purpose)
         .await
         .map_err(|e| format!("{e:#}"))?;
     let opened = device_login::open_browser(&pending.verification_uri_complete);
@@ -694,6 +721,16 @@ pub(crate) fn login_purpose_for_personal_state(
     } else {
         meshharbor_node_core::device_login::Purpose::EnrollmentAndUserSession
     }
+}
+
+/// Personal desktop sign-in skips device enrollment ONLY when this machine is
+/// ALREADY personally enrolled AND running with full Administrator (`SYSTEM`) /
+/// `root` system privileges; otherwise sign-in auto-enrolls/promotes it.
+pub(crate) fn login_purpose_for_system_personal_state(
+    personally_enrolled: bool,
+    system_privileged: bool,
+) -> meshharbor_node_core::device_login::Purpose {
+    login_purpose_for_personal_state(personally_enrolled && system_privileged)
 }
 
 pub(crate) async fn finalize_approved_login<EnrollFut, SaveFut, RevokeFut>(
@@ -753,35 +790,8 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         pending.purpose,
         approved,
         move |enrollment_token| async move {
-            enroll_with_token(server_for_enroll, enrollment_token, device_name, true).await?;
-            // A running service must reload the merged enrollment, not just receive a
-            // no-op `service start`. Never report a refused restart as online success.
-            if localapi::connect().await.is_ok() {
-                let restart =
-                    cmd_restart_daemon("personal account enrollment changed".into()).await?;
-                if !restart.started {
-                    return Err(format!(
-                        "Device enrolled, but the device service could not reload: {}",
-                        restart
-                            .refusal
-                            .as_deref()
-                            .unwrap_or("upgrade or restart the service manually")
-                    ));
-                }
-                cmd_restart_wait(
-                    restart.pid,
-                    restart.started_at_ms,
-                    restart.restart_by,
-                    restart.restart_within_s,
-                )
-                .await?;
-            } else {
-                tokio::task::spawn_blocking(run_service_start)
-                    .await
-                    .map_err(|e| format!("Service start task: {e}"))?
-                    .map_err(|e| format!("Service start failed: {e}"))?;
-            }
-            Ok(())
+            promote_personal_device_to_system(server_for_enroll, enrollment_token, device_name)
+                .await
         },
         move |session| crate::user_account::save_login(server_for_save, session),
         move |access_token| async move {
@@ -794,6 +804,68 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
     Ok(cmd_status().await)
 }
 
+async fn promote_personal_device_to_system(
+    server: String,
+    enrollment_token: String,
+    device_name: String,
+) -> Result<(), String> {
+    use meshharbor_node_core::personal_system;
+    let trimmed_token = enrollment_token.trim().to_string();
+    if trimmed_token.is_empty() {
+        return Err("Enrollment token is empty".to_string());
+    }
+    let resolved_name = {
+        let t = device_name.trim();
+        if t.is_empty() {
+            meshharbor_node_core::machine::hostname()
+                .unwrap_or_else(|_| "my-device".to_string())
+        } else {
+            t.to_string()
+        }
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let exe = agent_exe_path()?;
+        let user_cfg = config::default_config_path().ok();
+        let req = personal_system::SystemEnrollRequest::from_user_config_path(
+            server,
+            trimmed_token,
+            resolved_name,
+            false,
+            user_cfg.as_deref(),
+        );
+        personal_system::invoke_elevated_enroll_system(&exe, &req, false)?;
+        if !personal_system::is_process_elevated() {
+            let _ = no_window_command(&exe)
+                .args(["service", "uninstall"])
+                .stdin(std::process::Stdio::null())
+                .status();
+            if let Some(ref p) = user_cfg {
+                personal_system::retire_migrated_user_config(p);
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("System promotion task failed: {e}"))??;
+
+    // Wait up to 20s for the elevated root/SYSTEM service to answer LocalAPI.
+    for _ in 0..40 {
+        if let Some(st) = daemon_node_status().await
+            && !st.node_id.is_empty()
+            && st.system_privileged.or(st.privileged) == Some(true)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err(
+        "System service was configured, but did not become reachable with Administrator / root privileges in time."
+            .to_string(),
+    )
+}
+
+#[allow(dead_code)]
 async fn enroll_with_token(
     server: String,
     token: String,
@@ -3311,7 +3383,50 @@ pub(crate) fn no_window_command(program: impl AsRef<std::ffi::OsStr>) -> Command
 /// Probe service state via the agent's own `service status` CLI.
 /// Returns (kind, running). `kind` is "scheduledTask" on perUser and
 /// "scmService" on perMachine. "none" when neither is registered.
+/// Whether a machine-wide (`SYSTEM` / `root`) MeshHarbor service is registered
+/// on this host across Windows (`scmService`), Linux (`meshharbord.service`),
+/// and macOS (`fans.itachi.meshharbor.daemon`).
+pub(crate) fn is_system_service_installed() -> bool {
+    #[cfg(windows)]
+    {
+        probe_service_state().0 == "scmService"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        no_window_command("systemctl")
+            .args(["is-enabled", "--quiet", "meshharbord.service"])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::path::Path::new("/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist").exists()
+            && std::path::Path::new("/etc/meshharbor/enable-daemon").exists()
+    }
+}
+
 fn probe_service_state() -> (String, bool) {
+    #[cfg(target_os = "linux")]
+    if is_system_service_installed() {
+        let active = no_window_command("systemctl")
+            .args(["is-active", "--quiet", "meshharbord.service"])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        return ("scmService".to_string(), active);
+    }
+    #[cfg(target_os = "macos")]
+    if is_system_service_installed() {
+        let active = no_window_command("launchctl")
+            .args(["print", "system/fans.itachi.meshharbor.daemon"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        return ("scmService".to_string(), active);
+    }
     let Ok(exe) = agent_exe_path() else {
         return ("none".to_string(), false);
     };
@@ -4654,5 +4769,33 @@ mod tests {
         let scm_invites = invitations_from(true, Some(mg_cfg_path), per_user_cfg_path)
             .expect("active SCM SIAT invitations load");
         assert!(!scm_invites.own_account);
+    }
+}
+
+#[cfg(test)]
+mod system_login_purpose_tests {
+    use super::*;
+    use meshharbor_node_core::device_login::Purpose;
+
+    #[test]
+    fn login_purpose_requires_both_personal_enrollment_and_system_privileges() {
+        assert_eq!(
+            login_purpose_for_system_personal_state(false, false),
+            Purpose::EnrollmentAndUserSession
+        );
+        assert_eq!(
+            login_purpose_for_system_personal_state(false, true),
+            Purpose::EnrollmentAndUserSession
+        );
+        assert_eq!(
+            login_purpose_for_system_personal_state(true, false),
+            Purpose::EnrollmentAndUserSession,
+            "unprivileged per-user personal enrollment must promote to system privileges on sign-in"
+        );
+        assert_eq!(
+            login_purpose_for_system_personal_state(true, true),
+            Purpose::UserSession,
+            "already-privileged personal system install only needs a user session"
+        );
     }
 }

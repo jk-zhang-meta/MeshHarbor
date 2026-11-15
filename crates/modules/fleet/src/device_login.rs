@@ -620,9 +620,12 @@ pub async fn exchange(
             "MANAGE_AGENTS",
         )
         .await?;
+        // Personal device login mints `anchor = true` so Windows personal
+        // promotion can also anchor the SYSTEM service (`exec-system` +
+        // `ssh-system`) with the same single-approval enrollment token.
         let (token, jti) = state
             .auth
-            .issue_enrollment_token_with_relay(approver, tenant, ENROLLMENT_TTL_SECS, false, false)
+            .issue_enrollment_token_with_relay(approver, tenant, ENROLLMENT_TTL_SECS, true, false)
             .map_err(|_| {
                 ApiError::ServiceUnavailable("Could not mint an enrollment token".into())
             })?;

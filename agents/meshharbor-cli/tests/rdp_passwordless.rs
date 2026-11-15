@@ -518,6 +518,8 @@ fn resolve_peer_scope_enforces_real_tenant_id_and_node_id_and_fails_closed() {
         version: "0.4.59".to_string(),
         mode: DaemonMode::Service,
         privileged: Some(true),
+        personal_enrolled: None,
+        system_privileged: None,
         tenant_id: Some("65f000000000000000000001".to_string()),
         overlay_ip: Some("100.64.0.1".to_string()),
         overlay_ip6: None,

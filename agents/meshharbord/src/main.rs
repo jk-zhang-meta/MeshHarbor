@@ -167,6 +167,18 @@ enum Command {
         /// As `enroll --machine-global` (Windows, elevated).
         #[arg(long)]
         machine_global: bool,
+        /// Sign in only as an unprivileged per-user agent without promoting
+        /// this device to Administrator / root privileges.
+        #[arg(long)]
+        user: bool,
+    },
+    /// Internal elevated helper for personal account system-service promotion.
+    #[command(hide = true)]
+    EnrollPersonalSystem {
+        #[arg(long)]
+        request_file: PathBuf,
+        #[arg(long)]
+        status_file: PathBuf,
     },
     /// Accept an invitation with its invite code, no account needed: only
     /// the person who invited this machine can reach or control it there, it
@@ -1283,7 +1295,8 @@ fn daemon_argv(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::f
     v
 }
 
-/// `meshharbord login` / `mh login`: device login, then the ordinary enroll.
+/// `meshharbord login` / `mh login`: device login, defaulting to Administrator
+/// (`SYSTEM`) / `root` system-service promotion unless `--user` is passed.
 async fn login_cmd(
     config_path: &std::path::PathBuf,
     server: &str,
@@ -1291,11 +1304,34 @@ async fn login_cmd(
     no_browser: bool,
     replace: bool,
     machine_global: bool,
+    user: bool,
 ) -> Result<()> {
-    use meshharbor_node_core::{device_invite, device_login};
-    // A machine that holds only invitations has no account of its own yet:
-    // signing in ADDS the owner's account beside them (and makes it the
-    // primary), keeping every invitation.
+    use meshharbor_node_core::{device_invite, device_login, personal_system};
+    let promote_system = !user;
+
+    let live_status = match tunnel_core::localapi::connect().await {
+        Ok(mut c) => c.status().await.ok(),
+        Err(_) => None,
+    };
+    if !replace
+        && let Some(ref st) = live_status
+        && st.personal_enrolled == Some(true)
+        && (!promote_system || st.system_privileged == Some(true))
+    {
+        let server_label = st
+            .orgs
+            .iter()
+            .find(|o| o.primary)
+            .map(|o| o.server_url.as_str())
+            .unwrap_or(server);
+        println!(
+            "This machine is already signed in as {:?} ({server_label}).\n\
+             Run `mh login --replace` to sign it in to another organization.",
+            st.name
+        );
+        return Ok(());
+    }
+
     let mut beside_invitations = false;
     if !replace
         && config_path.exists()
@@ -1306,7 +1342,9 @@ async fn login_cmd(
             markers.contains_key(aid)
                 || (*primary && markers.contains_key(device_invite::PRIMARY_KEY))
         });
-        if !all_temporary {
+        let already_target_scope =
+            !promote_system || personal_system::is_system_config_path(config_path);
+        if !all_temporary && already_target_scope {
             println!(
                 "This machine is already signed in as {:?} ({}).\n\
                  Run `mh login --replace` to sign it in to another organization.",
@@ -1314,7 +1352,9 @@ async fn login_cmd(
             );
             return Ok(());
         }
-        beside_invitations = true;
+        if all_temporary {
+            beside_invitations = true;
+        }
     }
     let name = match name {
         Some(n) => n.trim().to_string(),
@@ -1335,7 +1375,31 @@ async fn login_cmd(
     }
     println!("Waiting for approval…");
     let approved = pending.wait().await?;
-    println!("Approved. Enrolling…");
+
+    if promote_system {
+        println!("Approved. Configuring system service with Administrator / root privileges…");
+        let exe = std::env::current_exe().context("locating meshharbord executable")?;
+        let req = personal_system::SystemEnrollRequest::from_user_config_path(
+            pending.server_url.clone(),
+            approved.enrollment_token.clone(),
+            name.clone(),
+            replace,
+            Some(config_path.as_path()),
+        );
+        let interactive_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+        personal_system::invoke_elevated_enroll_system(&exe, &req, interactive_tty)
+            .map_err(anyhow::Error::msg)?;
+        if !personal_system::is_process_elevated() {
+            let _ = meshharbord::service::uninstall();
+            personal_system::retire_migrated_user_config(config_path);
+        }
+        println!(
+            "Signed in with Administrator / root privileges. The MeshHarbor system service is active."
+        );
+        return Ok(());
+    }
+
+    println!("Approved. Enrolling (user mode)…");
     let before = config::load(config_path).ok();
     enroll_cmd(
         config_path,
@@ -1357,7 +1421,6 @@ async fn login_cmd(
     )
     .await?;
     if beside_invitations {
-        // The new account is the added org: put it in the primary's place.
         let mut cfg = config::load(config_path).context("reading the config")?;
         let known: Vec<String> = before
             .map(|b| enrollments(&b).into_iter().map(|e| e.3).collect())
@@ -1372,8 +1435,6 @@ async fn login_cmd(
             let old_primary = cfg.agent_id.clone();
             config::promote_keeping_mesh(&mut cfg, &label, None)?;
             config::save(config_path, &cfg).context("saving the config")?;
-            // The legacy marker key meant "the primary": it now names the
-            // demoted invitation enrollment by its id (`true` drops the key).
             if let Some(info) = markers.get(device_invite::PRIMARY_KEY) {
                 let _ =
                     device_invite::write_marker_for(config_path, &old_primary, true, Some(info));
@@ -2484,6 +2545,7 @@ async fn daemon_main() -> Result<()> {
             no_browser,
             replace,
             machine_global,
+            user,
         } => {
             login_cmd(
                 &config_path,
@@ -2492,8 +2554,15 @@ async fn daemon_main() -> Result<()> {
                 no_browser,
                 replace,
                 machine_global,
+                user,
             )
             .await
+        }
+        Command::EnrollPersonalSystem {
+            request_file,
+            status_file,
+        } => {
+            meshharbord::personal_system_exec::run_cli(&request_file, &status_file).await
         }
         Command::Join {
             code,
@@ -7959,14 +8028,42 @@ mod tests {
                 name,
                 no_browser,
                 replace,
+                user,
                 ..
             }) => {
                 assert_eq!(server, meshharbor_node_core::device_login::DEFAULT_SERVER);
                 assert_eq!(name.as_deref(), Some("box"));
-                assert!(no_browser && !replace);
+                assert!(no_browser && !replace && !user);
             }
             _ => panic!("expected the daemon's Login command"),
         }
+
+        let user_cli = parse_cli_before_startup(
+            daemon_argv(os(&["mh", "cli", "login", "--user"])),
+            || {},
+        )
+        .unwrap();
+        assert!(matches!(
+            user_cli.command,
+            Some(Command::Login { user: true, .. })
+        ));
+
+        let sys_cli = parse_cli_before_startup(
+            os(&[
+                "meshharbord",
+                "enroll-personal-system",
+                "--request-file",
+                "/tmp/req.json",
+                "--status-file",
+                "/tmp/status.txt",
+            ]),
+            || {},
+        )
+        .unwrap();
+        assert!(matches!(
+            sys_cli.command,
+            Some(Command::EnrollPersonalSystem { .. })
+        ));
     }
 
     #[test]

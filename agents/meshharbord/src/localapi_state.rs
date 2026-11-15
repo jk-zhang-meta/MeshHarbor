@@ -653,6 +653,24 @@ impl DaemonState {
 impl LocalApiState for DaemonState {
     fn status(&self) -> NodeStatus {
         let connected = self.connected.load(Ordering::Relaxed);
+        let personal_enrolled = self.config_persist.as_ref().map(|(path, _)| {
+            if self.node_id.is_empty() {
+                false
+            } else {
+                let markers = meshharbor_node_core::device_invite::read_markers(path);
+                !(markers.contains_key(&self.node_id)
+                    || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY))
+            }
+        });
+        #[cfg(unix)]
+        let system_privileged = Some(self.privileged);
+        #[cfg(windows)]
+        let system_privileged = Some(
+            self.privileged
+                || (self.restart.as_ref().is_some_and(|r| {
+                    matches!(r.supervision(), crate::supervision::Supervision::WindowsScm)
+                }) && crate::exec_service::advertised_for(&self.node_id)),
+        );
         NodeStatus {
             name_sync: self.remote_config.as_ref().and_then(|r| r.names.snapshot()).map(|s| s.1),
             path_trials: connected
@@ -664,6 +682,8 @@ impl LocalApiState for DaemonState {
             version: self.version.clone(),
             mode: self.mode,
             privileged: Some(self.privileged),
+            personal_enrolled,
+            system_privileged,
             tenant_id: self.tenant_id.clone(),
             // The overlay IP the runtime last assigned us — a stable identity,
             // so it's kept even across a brief disconnect.

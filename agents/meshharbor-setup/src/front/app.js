@@ -125,6 +125,13 @@ async function probeAndRender() {
     showSnackbar(`Detection failed: ${err}`);
   }
 
+  // Clean Windows Setup Wizard installs default to full machine-wide
+  // Administrator (`NT AUTHORITY\SYSTEM`) mode ("daemon-system") while
+  // keeping all other roles selectable.
+  if (!state.role && state.detection?.agent?.supported && state.detection.agent.kind === "clean") {
+    state.role = "daemon-system";
+  }
+
   // Default server URL + device name come from the lib helpers when
   // the persisted state didn't already supply values.
   if (!state.server) {

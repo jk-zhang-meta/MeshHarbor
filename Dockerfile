@@ -98,6 +98,8 @@ RUN cargo build --release -p meshharbor-api -p derp-relay --no-default-features 
 
 # --- Stage 2: Vue SPA build ---
 FROM oven/bun:1 AS ui-builder
+ARG VITE_BASE_PATH=/
+ENV VITE_BASE_PATH=${VITE_BASE_PATH}
 WORKDIR /app/ui
 COPY ui/package.json ui/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -116,6 +118,7 @@ FROM debian:trixie-slim AS runtime
 # advertises the wrong terms to every registry that lists us.
 ARG VERSION=dev
 ARG GIT_SHA=unknown
+ARG VITE_BASE_PATH=/
 LABEL org.opencontainers.image.title="MeshHarbor" \
       org.opencontainers.image.description="Remote desktop in a browser tab + WireGuard mesh VPN. Self-hosted, end-to-end encrypted." \
       org.opencontainers.image.url="https://meshharbor.itachi.fans" \
@@ -130,6 +133,10 @@ RUN apt-get update && apt-get install -y ca-certificates nginx && rm -rf /var/li
 COPY --from=builder /app/target/release/meshharbor-api /usr/local/bin/
 COPY --from=builder /app/target/release/derp-relay /usr/local/bin/
 COPY --from=ui-builder /app/ui/dist /var/www/meshharbor
+# When built for a subpath (e.g. VITE_BASE_PATH=/meshharbor/), remove the
+# root-anchored static marketing homepage (/home/index.html) so location = /
+# serves the subpath-aware SPA shell (/index.html) cleanly.
+RUN if [ "$VITE_BASE_PATH" != "/" ]; then rm -rf /var/www/meshharbor/home; fi
 COPY files/nginx-pod.conf /etc/nginx/conf.d/default.conf
 # FR-91: the security headers live in one file that the pod nginx and the blog
 # lane's server both include. Outside conf.d/ on purpose: nginx.conf includes

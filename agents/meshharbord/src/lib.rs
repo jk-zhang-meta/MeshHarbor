@@ -15,7 +15,7 @@
 // `tunnel/mod.rs` so `crate::tunnel::acl::…` still resolves.
 pub use meshharbor_node_core::{
     appdirs, config, config_surface, crash_recorder, enrollment, files_dir, logging, logs_upload,
-    machine, token_slot,
+    machine, personal_system, token_slot,
 };
 
 pub mod apps;
@@ -39,6 +39,7 @@ pub mod consent;
 pub mod crash_uploader;
 pub mod delegate;
 pub mod device_name;
+pub mod personal_system_exec;
 #[cfg(unix)]
 pub mod delegate_worker;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
