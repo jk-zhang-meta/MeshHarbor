@@ -199,22 +199,32 @@ fn resolve_log_dir_string(is_scm: bool) -> String {
 fn active_config_path(is_scm: bool) -> Result<PathBuf, String> {
     let default = config::default_config_path().map_err(|e| format!("Config path: {e}"))?;
     #[cfg(windows)]
-    {
-        let mg = config::machine_global_config_path();
-        let mg_exists = mg.exists();
-        Ok(choose_config_path(is_scm, mg_exists, mg, default))
-    }
+    let machine_global = Some(config::machine_global_config_path());
     #[cfg(not(windows))]
-    {
-        let _ = is_scm;
-        Ok(default)
+    let machine_global = None;
+    Ok(active_config_path_from(is_scm, machine_global, default))
+}
+
+pub(crate) fn active_config_path_from(
+    is_scm: bool,
+    machine_global: Option<PathBuf>,
+    default: PathBuf,
+) -> PathBuf {
+    match machine_global {
+        Some(mg) => {
+            let mg_exists = mg.exists();
+            choose_config_path(is_scm, mg_exists, mg, default)
+        }
+        None => {
+            let _ = is_scm;
+            default
+        }
     }
 }
 
 /// Machine-global only for an SCM-service flavour AND when the file exists
 /// (an SCM install briefly runs on a per-user config until the daemon
 /// self-heals it to machine-global); per-user in every other case.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn choose_config_path(
     is_scm: bool,
     machine_global_exists: bool,
@@ -433,39 +443,50 @@ pub struct Invitations {
     pub grants: Vec<(String, meshharbor_node_core::device_invite::GrantInfo)>,
 }
 
-pub(crate) fn invitations() -> Option<Invitations> {
+pub(crate) fn invitations_at(path: &PathBuf) -> Option<Invitations> {
     use meshharbor_node_core::device_invite;
-    for is_scm in [false, true] {
-        let Ok(path) = active_config_path(is_scm) else {
-            continue;
-        };
-        if !path.exists() {
-            continue;
-        }
-        let Ok(cfg) = meshharbor_node_core::config::load(&path) else {
-            continue;
-        };
-        let markers = device_invite::read_markers(&path);
-        let own_account = !(markers.contains_key(&cfg.agent_id)
-            || markers.contains_key(device_invite::PRIMARY_KEY));
-        let mut grants = Vec::new();
-        for (aid, info) in &markers {
-            let aid = if aid == device_invite::PRIMARY_KEY {
-                cfg.agent_id.clone()
-            } else {
-                aid.clone()
-            };
-            for g in info.each() {
-                grants.push((aid.clone(), g));
-            }
-        }
-        grants.sort_by_key(|(_, g)| g.access_until_ms);
-        return Some(Invitations {
-            own_account,
-            grants,
-        });
+    if !path.exists() {
+        return None;
     }
-    None
+    let cfg = meshharbor_node_core::config::load(path).ok()?;
+    let markers = device_invite::read_markers(path);
+    let own_account = !(markers.contains_key(&cfg.agent_id)
+        || markers.contains_key(device_invite::PRIMARY_KEY));
+    let mut grants = Vec::new();
+    for (aid, info) in &markers {
+        let aid = if aid == device_invite::PRIMARY_KEY {
+            cfg.agent_id.clone()
+        } else {
+            aid.clone()
+        };
+        for g in info.each() {
+            grants.push((aid.clone(), g));
+        }
+    }
+    grants.sort_by_key(|(_, g)| g.access_until_ms);
+    Some(Invitations {
+        own_account,
+        grants,
+    })
+}
+
+pub(crate) fn invitations_from(
+    is_scm: bool,
+    machine_global: Option<PathBuf>,
+    default: PathBuf,
+) -> Option<Invitations> {
+    let path = active_config_path_from(is_scm, machine_global, default);
+    invitations_at(&path)
+}
+
+pub(crate) fn invitations() -> Option<Invitations> {
+    let is_scm = probe_service_state().0 == "scmService";
+    let default = config::default_config_path().ok()?;
+    #[cfg(windows)]
+    let machine_global = Some(config::machine_global_config_path());
+    #[cfg(not(windows))]
+    let machine_global = None;
+    invitations_from(is_scm, machine_global, default)
 }
 
 #[tauri::command]
@@ -518,18 +539,11 @@ pub async fn cmd_join_preview(code: String) -> Result<JoinPreview, String> {
     let code = device_invite::normalize_code(&code)
         .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
     // The server this machine already talks to, or the default one.
-    let server = tokio::task::spawn_blocking(|| {
-        [false, true].into_iter().find_map(|is_scm| {
-            let path = active_config_path(is_scm).ok()?;
-            meshharbor_node_core::config::load(&path)
-                .ok()
-                .map(|c| c.server_url)
-        })
-    })
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
+    let server = tokio::task::spawn_blocking(server_origin_blocking)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_else(|| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
     let p = device_invite::preview(&server, &code)
         .await
         .map_err(|e| e.to_string())?;
@@ -636,16 +650,28 @@ pub async fn cmd_leave(invite_id: Option<String>) -> Result<(), String> {
 #[tauri::command]
 pub async fn cmd_login_start(server: String, device_name: String) -> Result<LoginStarted, String> {
     use meshharbor_node_core::device_login;
-    let server = if server.trim().is_empty() {
-        server_origin_blocking().unwrap_or_else(|_|device_login::DEFAULT_SERVER.to_string())
-    } else {
-        server
-    };
-    // Machines with a personal enrollment authorize only a GUI user session:
-    // no device identity/organization mutation and no daemon restart for web
-    // sign-in. Fresh and invitation-only (SIAT) machines must request combined
-    // enrollment + user session so personal promotion completes too.
-    let purpose = login_purpose_for_personal_state(has_personal_enrollment());
+    // Resolve the active service flavour once on the blocking pool so neither
+    // a stale cross-flavour Windows config nor an invitation-only (SIAT) active
+    // config can misclassify `purpose` as `UserSession` and skip conversion.
+    let (server, personally_enrolled) = tokio::task::spawn_blocking(move || {
+        let is_scm = probe_service_state().0 == "scmService";
+        let active_path = active_config_path(is_scm).ok();
+        let resolved_server = if server.trim().is_empty() {
+            active_path
+                .as_ref()
+                .and_then(|path| config::load(path).ok())
+                .map(|cfg| cfg.server_url.trim().trim_end_matches('/').to_string())
+                .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+                .unwrap_or_else(|| device_login::DEFAULT_SERVER.to_string())
+        } else {
+            server
+        };
+        let personally_enrolled = has_personal_enrollment_for(is_scm);
+        (resolved_server, personally_enrolled)
+    })
+    .await
+    .map_err(|e| format!("task join: {e}"))?;
+    let purpose = login_purpose_for_personal_state(personally_enrolled);
     let pending = device_login::start_with_purpose(&server, device_name.trim(), purpose)
         .await
         .map_err(|e| format!("{e:#}"))?;
@@ -3200,17 +3226,27 @@ fn refresh_ok(surface: &'static str) {
 /// ONLY the per-user path, so an SCM-service install (machine-global
 /// config, no per-user copy) showed "Not enrolled" while the service ran
 /// enrolled.
-/// Whether this device has an enrollment the daemon can read (per-user or
-/// machine-global). Cheap: two path probes and a parse, no CLI spawn.
-pub(crate) fn is_enrolled() -> bool {
-    load_optional_config(false).is_some() || load_optional_config(true).is_some()
+/// Snapshot of the active service flavour's enrollment, invitations, and server
+/// origin for the tray account watcher (single service-state probe on the
+/// blocking pool so active per-user vs SCM configurations never mix).
+pub(crate) fn active_account_probe() -> (bool, Option<Invitations>, String) {
+    let is_scm = probe_service_state().0 == "scmService";
+    let path = active_config_path(is_scm).ok();
+    let cfg = path.as_ref().and_then(|p| config::load(p).ok());
+    let enrolled = cfg.is_some();
+    let invites = path.as_ref().and_then(invitations_at);
+    let server = cfg
+        .map(|c| c.server_url.trim().trim_end_matches('/').to_string())
+        .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+        .unwrap_or_else(|| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
+    (enrolled, invites, server)
 }
 
 /// Whether `path` holds a personal (non-invitation) primary enrollment.
-/// Invitation-only SIAT configs have `is_enrolled() == true`, but their primary
+/// Invitation-only SIAT configs have a readable config file, but their primary
 /// `agent_id` is marked in `temporary.json`, so account login must still run
 /// personal enrollment + promotion rather than storing an orphaned user session.
-pub(crate) fn has_personal_enrollment_at(path: &std::path::PathBuf) -> bool {
+pub(crate) fn has_personal_enrollment_at(path: &PathBuf) -> bool {
     if !path.exists() {
         return false;
     }
@@ -3228,15 +3264,24 @@ pub(crate) fn has_personal_enrollment_at(path: &std::path::PathBuf) -> bool {
         || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY))
 }
 
-pub(crate) fn has_personal_enrollment() -> bool {
-    for is_scm in [false, true] {
-        if let Ok(path) = active_config_path(is_scm)
-            && has_personal_enrollment_at(&path)
-        {
-            return true;
-        }
-    }
-    false
+pub(crate) fn has_personal_enrollment_from(
+    is_scm: bool,
+    machine_global: Option<PathBuf>,
+    default: PathBuf,
+) -> bool {
+    let path = active_config_path_from(is_scm, machine_global, default);
+    has_personal_enrollment_at(&path)
+}
+
+pub(crate) fn has_personal_enrollment_for(is_scm: bool) -> bool {
+    let Ok(default) = config::default_config_path() else {
+        return false;
+    };
+    #[cfg(windows)]
+    let machine_global = Some(config::machine_global_config_path());
+    #[cfg(not(windows))]
+    let machine_global = None;
+    has_personal_enrollment_from(is_scm, machine_global, default)
 }
 
 fn load_optional_config(is_scm: bool) -> Option<AgentConfig> {
@@ -4482,5 +4527,132 @@ mod tests {
             final_markers.contains_key("622222222222222222222222"),
             "existing invitation marker must be preserved on secondary org"
         );
+    }
+
+    #[test]
+    fn windows_active_per_user_siat_ignores_stale_machine_global_personal_config() {
+        use meshharbor_node_core::{
+            device_invite::{self, GrantInfo, PRIMARY_KEY, TemporaryInfo},
+            device_login::Purpose,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let per_user_dir = tmp.path().join("appdata").join("meshharbor");
+        let machine_global_dir = tmp.path().join("programdata").join("meshharbor");
+        std::fs::create_dir_all(&per_user_dir).unwrap();
+        std::fs::create_dir_all(&machine_global_dir).unwrap();
+
+        let per_user_cfg_path = per_user_dir.join("config.toml");
+        let mg_cfg_path = machine_global_dir.join("config.toml");
+
+        // Active per-user installation holds ONLY a temporary SIAT invitation.
+        let siat_cfg: AgentConfig = serde_json::from_value(serde_json::json!({
+            "server_url": "https://mesh.example/meshharbor",
+            "tenant_id": "611111111111111111111111",
+            "agent_id": "622222222222222222222222",
+            "agent_token": "siat-agent-token",
+            "machine_id": "mid-win-siat-1",
+            "machine_name": "siat-laptop"
+        }))
+        .unwrap();
+        config::save(&per_user_cfg_path, &siat_cfg).unwrap();
+        device_invite::write_marker_for(
+            &per_user_cfg_path,
+            PRIMARY_KEY,
+            true,
+            Some(&TemporaryInfo {
+                access_until_ms: 4_102_444_800_000,
+                inviter: "owner@example.com".into(),
+                org: "GuestOrg".into(),
+                grants: vec![GrantInfo {
+                    invite_id: "633333333333333333333333".into(),
+                    inviter: "owner@example.com".into(),
+                    org: "GuestOrg".into(),
+                    access_until_ms: 4_102_444_800_000,
+                    features: None,
+                    features_revision: 1,
+                    revocation_pending: false,
+                }],
+            }),
+        )
+        .unwrap();
+
+        // Stale, readable machine-global personal config left behind from an older install.
+        let stale_mg_personal: AgentConfig = serde_json::from_value(serde_json::json!({
+            "server_url": "https://mesh.example/meshharbor",
+            "tenant_id": "6af73601241993a1ecbaa1f9",
+            "agent_id": "644444444444444444444444",
+            "agent_token": "stale-personal-token",
+            "machine_id": "mid-win-old-mg",
+            "machine_name": "old-machine-install"
+        }))
+        .unwrap();
+        config::save(&mg_cfg_path, &stale_mg_personal).unwrap();
+        assert!(has_personal_enrollment_at(&mg_cfg_path));
+
+        // Active flavour is per-user (`is_scm == false`): must ignore stale machine-global
+        // config, classify as temporary SIAT (`own_account == false`), and require full
+        // `EnrollmentAndUserSession` conversion!
+        let per_user_personal = has_personal_enrollment_from(
+            false,
+            Some(mg_cfg_path.clone()),
+            per_user_cfg_path.clone(),
+        );
+        assert!(
+            !per_user_personal,
+            "active per-user SIAT install must ignore stale machine-global personal config"
+        );
+        assert_eq!(
+            login_purpose_for_personal_state(per_user_personal),
+            Purpose::EnrollmentAndUserSession
+        );
+        let per_user_invites =
+            invitations_from(false, Some(mg_cfg_path.clone()), per_user_cfg_path.clone())
+                .expect("active per-user SIAT invitations load");
+        assert!(!per_user_invites.own_account);
+
+        // Conversely, when SCM IS the active flavour (`is_scm == true`) and machine-global
+        // holds a SIAT config while per-user holds a stale personal config, SCM must also
+        // ignore the stale per-user personal config and require conversion!
+        device_invite::write_marker_for(
+            &mg_cfg_path,
+            PRIMARY_KEY,
+            true,
+            Some(&TemporaryInfo {
+                access_until_ms: 4_102_444_800_000,
+                inviter: "owner@example.com".into(),
+                org: "ScmGuestOrg".into(),
+                grants: vec![GrantInfo {
+                    invite_id: "655555555555555555555555".into(),
+                    inviter: "owner@example.com".into(),
+                    org: "ScmGuestOrg".into(),
+                    access_until_ms: 4_102_444_800_000,
+                    features: None,
+                    features_revision: 1,
+                    revocation_pending: false,
+                }],
+            }),
+        )
+        .unwrap();
+        config::save(&per_user_cfg_path, &stale_mg_personal).unwrap();
+        std::fs::remove_file(per_user_dir.join("temporary.json")).unwrap();
+        assert!(has_personal_enrollment_at(&per_user_cfg_path));
+
+        let scm_personal = has_personal_enrollment_from(
+            true,
+            Some(mg_cfg_path.clone()),
+            per_user_cfg_path.clone(),
+        );
+        assert!(
+            !scm_personal,
+            "active SCM SIAT install must ignore stale per-user personal config"
+        );
+        assert_eq!(
+            login_purpose_for_personal_state(scm_personal),
+            Purpose::EnrollmentAndUserSession
+        );
+        let scm_invites = invitations_from(true, Some(mg_cfg_path), per_user_cfg_path)
+            .expect("active SCM SIAT invitations load");
+        assert!(!scm_invites.own_account);
     }
 }

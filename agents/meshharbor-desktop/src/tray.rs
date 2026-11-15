@@ -1042,20 +1042,6 @@ struct AccountView {
     invitations: Vec<(String, String)>,
 }
 
-fn account_view(
-    enrolled: bool,
-    node: Option<&meshharbor_localapi::NodeStatus>,
-    peers: &[meshharbor_localapi::PeerInfo],
-) -> AccountView {
-    account_view_at(
-        enrolled,
-        node,
-        peers,
-        crate::commands::invitations(),
-        now_ms(),
-    )
-}
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1192,9 +1178,16 @@ fn spawn_account_watch<R: Runtime>(
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<AccountView> = None;
         loop {
-            let enrolled = tokio::task::spawn_blocking(crate::commands::is_enrolled)
-                .await
-                .unwrap_or(false);
+            let (enrolled, active_invites, server) =
+                tokio::task::spawn_blocking(crate::commands::active_account_probe)
+                    .await
+                    .unwrap_or_else(|_| {
+                        (
+                            false,
+                            None,
+                            meshharbor_node_core::device_login::DEFAULT_SERVER.to_string(),
+                        )
+                    });
             let (node, peers) = match meshharbor_localapi::connect().await {
                 Ok(mut c) => {
                     let node = c.status().await.ok();
@@ -1207,8 +1200,7 @@ fn spawn_account_watch<R: Runtime>(
                 }
                 Err(_) => (None, Vec::new()),
             };
-            let mut view = account_view(enrolled, node.as_ref(), &peers);
-            let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.ok().and_then(Result::ok).unwrap_or_else(||meshharbor_node_core::device_login::DEFAULT_SERVER.into());
+            let mut view = account_view_at(enrolled, node.as_ref(), &peers, active_invites, now_ms());
             let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
             if !view.temporary {
                 crate::user_account::load_cached_identity(server.clone()).await;

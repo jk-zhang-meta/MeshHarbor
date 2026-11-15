@@ -3,7 +3,7 @@
 import { appPath } from '@/utils/deployment'
 import router from '@/plugins/router'
 import { useSnackbar } from '@/composables/useSnackbar'
-import { clearSignedIn, looksSignedIn } from '@/api/session'
+import { clearSignedIn } from '@/api/session'
 
 const BASE_URL = appPath('/api')
 
@@ -125,8 +125,19 @@ async function doRefresh(): Promise<RefreshOutcome> {
   }
 }
 
-/** `retried`: this call is the one retry after a successful refresh. */
-async function request<T>(path: string, options: RequestOptions = {}, retried = false): Promise<T> {
+/**
+ * `retried`: this call is the one retry after a refresh attempt.
+ * `requireLogoutSession`: require server-verified session revocation on `/auth/logout`;
+ * cleared only after `/auth/refresh` has already answered 401/403 so stale cookies
+ * can still be expired without masking a live refresh session when localStorage is
+ * empty or disabled.
+ */
+async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+  retried = false,
+  requireLogoutSession = true,
+): Promise<T> {
   const { method = 'GET', body, headers = {} } = options
 
   // No Authorization header. `BASE_URL` is `/api`, so every call here is
@@ -137,7 +148,7 @@ async function request<T>(path: string, options: RequestOptions = {}, retried = 
   const fetchHeaders: Record<string, string> = {
     ...headers,
   }
-  if (path === '/auth/logout' && !retried && looksSignedIn()) {
+  if (path === '/auth/logout' && requireLogoutSession) {
     fetchHeaders['X-Require-Session'] = '1'
   }
 
@@ -178,10 +189,10 @@ async function request<T>(path: string, options: RequestOptions = {}, retried = 
         // one. And the retry's own failure is handled as what it is (a 429
         // as a 429, a 403 as a 403), not as a failed session. #1788: a retry
         // throttled right after a SUCCESSFUL refresh used to log the user out.
-        if (outcome === 'ok') return request<T>(path, options, true)
+        if (outcome === 'ok') return request<T>(path, options, true, true)
         if (outcome === 'failed') {
           endSessionLocally()
-          if (path === '/auth/logout') return request<T>(path, options, true)
+          if (path === '/auth/logout') return request<T>(path, options, true, false)
         } else {
           // Keep the session: we never learned whether it was still valid.
           const { showError } = useSnackbar()

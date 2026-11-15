@@ -470,9 +470,9 @@ describe('api client', () => {
     })
   })
 
-  describe('logout refresh-before-revoke when access cookie expired', () => {
-    it('refreshes and retries /auth/logout when signed-in hint is set and initial logout gets 401', async () => {
-      localStorage.setItem('meshharbor-signed-in', '1')
+  describe('logout refresh-before-revoke independent of localStorage', () => {
+    it('refreshes and revokes /auth/logout when localStorage is empty, access cookie was evicted (401), and refresh cookie is live', async () => {
+      expect(localStorage.getItem('meshharbor-signed-in')).toBeNull()
       mockFetch
         .mockResolvedValueOnce(mockJsonResponse(401, { error: 'unauthorized' }, false))
         .mockResolvedValueOnce(mockJsonResponse(200, {}))
@@ -487,6 +487,103 @@ describe('api client', () => {
       })
       expect(mockFetch.mock.calls[1][0]).toBe('/api/auth/refresh')
       expect(mockFetch.mock.calls[2][0]).toBe('/api/auth/logout')
+      expect((mockFetch.mock.calls[2][1] as RequestInit).headers).toMatchObject({
+        'X-Require-Session': '1',
+      })
+    })
+
+    it('refreshes and revokes /auth/logout when localStorage throws SecurityError (storage disabled)', async () => {
+      const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      const rmSpy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      try {
+        mockFetch
+          .mockResolvedValueOnce(mockJsonResponse(401, { error: 'unauthorized' }, false))
+          .mockResolvedValueOnce(mockJsonResponse(200, {}))
+          .mockResolvedValueOnce(mockJsonResponse(200, {}))
+
+        await api.post('/auth/logout', {})
+
+        expect(mockFetch).toHaveBeenCalledTimes(3)
+        expect((mockFetch.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+          'X-Require-Session': '1',
+        })
+        expect(mockFetch.mock.calls[1][0]).toBe('/api/auth/refresh')
+        expect((mockFetch.mock.calls[2][1] as RequestInit).headers).toMatchObject({
+          'X-Require-Session': '1',
+        })
+      } finally {
+        getSpy.mockRestore()
+        setSpy.mockRestore()
+        rmSpy.mockRestore()
+      }
+    })
+
+    it('propagates 503 revocation failure to useAuthStore().logout() with auth.error and snackbar when localStorage is disabled', async () => {
+      const { createPinia, setActivePinia } = await import('pinia')
+      const { useAuthStore } = await import('@/stores/auth')
+      setActivePinia(createPinia())
+
+      const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      const rmSpy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new DOMException('Storage disabled', 'SecurityError')
+      })
+      try {
+        mockFetch
+          .mockResolvedValueOnce(mockJsonResponse(401, { error: 'unauthorized' }, false))
+          .mockResolvedValueOnce(mockJsonResponse(200, {}))
+          .mockResolvedValueOnce(
+            mockJsonResponse(
+              503,
+              { error: 'service_unavailable', message: 'Could not confirm session revocation' },
+              false,
+            ),
+          )
+
+        const auth = useAuthStore()
+        await auth.logout()
+
+        expect(mockFetch).toHaveBeenCalledTimes(3)
+        expect(auth.error).toContain('Could not confirm server sign-out')
+        expect(auth.error).toContain('Could not confirm session revocation')
+        expect(mockShowError).toHaveBeenLastCalledWith(
+          expect.stringContaining('Could not confirm server sign-out'),
+        )
+        expect(mockRouter.push).toHaveBeenCalledWith({ name: 'login' })
+      } finally {
+        getSpy.mockRestore()
+        setSpy.mockRestore()
+        rmSpy.mockRestore()
+      }
+    })
+
+    it('falls back to unguarded cookie clearing when both /auth/logout and /auth/refresh answer 401', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockJsonResponse(401, { error: 'unauthorized' }, false))
+        .mockResolvedValueOnce(mockJsonResponse(401, { error: 'no refresh token' }, false))
+        .mockResolvedValueOnce(mockJsonResponse(200, {}))
+
+      await api.post('/auth/logout', {})
+
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect((mockFetch.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+        'X-Require-Session': '1',
+      })
+      expect(mockFetch.mock.calls[1][0]).toBe('/api/auth/refresh')
+      expect((mockFetch.mock.calls[2][1] as RequestInit).headers).not.toHaveProperty(
+        'X-Require-Session',
+      )
     })
   })
 
