@@ -497,7 +497,7 @@ pub async fn handle_agent_socket(
         .name_connected(tenant_id, agent_id, &conn_id)
         .await
     {
-        crate::name_sync::push(&state, &row).await;
+        crate::name_sync::reconcile(&state, tenant_id, agent_id).await;
         crate::name_sync::broadcast(&state, &row).await;
     }
     // P4 — announce the online transition (`agents.last_presence` ledger

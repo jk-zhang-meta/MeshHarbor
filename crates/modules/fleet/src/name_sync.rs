@@ -186,6 +186,11 @@ pub async fn after_change(state: &FleetState, a: &Agent) {
 
 pub async fn reconcile(state: &FleetState, tenant: ObjectId, agent: ObjectId) {
     if let Ok(a) = state.agents.find_live_in_tenant(tenant, agent).await {
+        // DNS projection can fail after canonical storage and even after the
+        // device ACK. The hook revision gate skips already completed writes.
+        if let Err(error) = state.hooks.agent_renamed(tenant, agent, &a.name).await {
+            tracing::warn!(%error, "name DNS reconciliation pending");
+        }
         if matches!(view(&a).state, "pending" | "unverified") {
             push(state, &a).await;
         }

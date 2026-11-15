@@ -296,6 +296,27 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .await
         .unwrap();
 
+    // A missing legacy projection revision must initialize to zero, and an
+    // equal-revision writer is a successful no-op, not an error or overwrite.
+    assert!(
+        nodes
+            .name_projected_at_least(node.id.unwrap(), 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    nodes
+        .set_name_revision(node.id.unwrap(), "mesh-box", 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        nodes
+            .set_name_revision(node.id.unwrap(), "must-not-win", 0)
+            .await
+            .unwrap()
+            .name,
+        "mesh-box"
+    );
     // Capture the old join name before the website commits a new revision.
     let captured_join_name = node.name.clone();
     let mut ws = name_ws(&app, &token, "device-name-sync").await;
@@ -401,6 +422,110 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .find(|r| r["id"] == aid)
         .unwrap();
     assert_eq!(row["magic_dns_name"], "shiny-new-name-2");
+    // Simulate a committed intent whose projection hook failed. The device
+    // already ACKed persistence, so repair cannot depend on a pending ACK.
+    let agents = meshharbor_services::dao::agent::AgentDao::new(&app.db);
+    agents
+        .rename(tid_oid, aid_oid, "Recover Name")
+        .await
+        .unwrap();
+    nodes
+        .create(mk_node(
+            NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            "recover-collision",
+            "recover-name",
+            "100.64.0.12",
+        ))
+        .await
+        .unwrap();
+    let frame = json!({"t":"rc:agent.name", "agent_id":aid, "tenant_id":t.tenant_id,
+        "revision":"3", "name":"Recover Name"});
+    ack_name(&mut ws, frame, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+    assert_eq!(
+        nodes.base.find_by_id(node.id.unwrap()).await.unwrap().name,
+        "shiny-new-name-2"
+    );
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        json!({
+            "t":"rc:agent.heartbeat", "rss_mb":1,"cpu_pct":0.0,"active_sessions":0
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let projected = app.db.collection::<bson::Document>("overlay_nodes");
+    let mut repaired = None;
+    for _ in 0..100 {
+        let d = projected
+            .find_one(bson::doc! {"_id":node.id.unwrap()})
+            .await
+            .unwrap()
+            .unwrap();
+        if d.get_i64("name_sync_revision").ok() == Some(3) {
+            repaired = Some(d);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let repaired = repaired.expect("heartbeat must repair committed, already ACKed DNS intent");
+    assert_eq!(repaired.get_str("name").unwrap(), "recover-name-2");
+    // Once committed, freeing the base label must not rename a stable suffix.
+    projected
+        .delete_one(bson::doc! {"machine_id":"recover-collision"})
+        .await
+        .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        json!({
+            "t":"rc:agent.heartbeat", "rss_mb":2,"cpu_pct":0.0,"active_sessions":0
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    // A following explicit ACK is a serial WS barrier after the heartbeat.
+    let before_seq = get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"]
+        ["event_seq"]
+        .clone();
+    ack_name(
+        &mut ws,
+        json!({"agent_id":aid,"tenant_id":t.tenant_id,"revision":"3","name":"Recover Name"}),
+        "applied",
+    )
+    .await;
+    for _ in 0..100 {
+        if get_agent(&app, &t.tenant_id, &aid, &t.admin.access_token).await["name_sync"]["event_seq"]
+            != before_seq
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let stable = projected
+        .find_one(bson::doc! {"_id":node.id.unwrap()})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stable.get_str("name").unwrap(), "recover-name-2");
+    // Heartbeats independently refresh overlay presence timestamps; the
+    // projection oracle is the stable collision label and strict DAO CAS.
+
+    let concurrent = nodes
+        .set_name_revision(node.id.unwrap(), "same-revision-stale", 3)
+        .await
+        .unwrap();
+    assert_eq!(concurrent.name, "recover-name-2");
+    let after_cas = projected
+        .find_one(bson::doc! {"_id":node.id.unwrap()})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_cas.get("updated_at"), stable.get("updated_at"));
+
     // A genuinely empty legacy name still receives its initial backfill;
     // normal key/epoch and join refresh semantics remain unchanged.
     let empty = nodes
