@@ -29,6 +29,7 @@ pub struct StatusReport {
     pub tenant_id: Option<String>,
     pub server_url: Option<String>,
     pub device_name: Option<String>,
+    pub name_sync: Option<localapi::DeviceNameStatus>,
     pub agent_version: String,
     pub config_schema_version: Option<String>,
     pub service_running: bool,
@@ -63,13 +64,11 @@ pub async fn cmd_status() -> StatusReport {
         .await
         .unwrap_or_else(|_| status_report());
     // #1701 — the file said "not enrolled"; ask the daemon before believing it.
-    if !report.enrolled
-        && let Some(id) = daemon_node_status()
-            .await
-            .as_ref()
-            .and_then(daemon_identity)
-    {
-        apply_daemon_identity(&mut report, id);
+    if let Some(status) = daemon_node_status().await {
+        if let Some(id) = daemon_identity(&status) {
+            apply_daemon_identity(&mut report, id);
+        }
+        report.name_sync = status.name_sync;
     }
     report
 }
@@ -93,6 +92,7 @@ fn status_report() -> StatusReport {
         tenant_id: cfg.as_ref().map(|c| c.tenant_id.clone()),
         server_url: cfg.as_ref().map(|c| c.server_url.clone()),
         device_name: cfg.as_ref().map(|c| c.machine_name.clone()),
+        name_sync: None,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         config_schema_version: cfg.as_ref().and_then(|c| c.config_schema_version.clone()),
         service_running,
@@ -1843,47 +1843,20 @@ pub async fn cmd_tail_log(source: String, max_bytes: Option<u64>) -> Result<LogT
 /// writes ITS OWN config, which is profile-correct AND needs no elevation
 /// even for a machine-global SCM install (the split-brain fix's final
 /// piece — an unelevated desktop app can't write `%PROGRAMDATA%` itself).
-/// Falls back to the direct file write when no daemon is listening or it
-/// predates the verb.
+/// No direct-file fallback: it cannot safely arbitrate server revisions or
+/// share the daemon's named-config lock. An offline daemon is an explicit error.
 #[tauri::command]
 pub async fn cmd_set_device_name(name: String) -> Result<StatusReport, String> {
     let trimmed = name.trim().to_string();
     if trimmed.is_empty() {
         return Err("Device name is empty".to_string());
     }
-    // Daemon not running ⇒ skip to the direct write (the only path left).
-    if let Ok(mut client) = localapi::connect().await {
-        match client.set_device_name(&trimmed).await {
-            Ok(_) => {
-                return tokio::task::spawn_blocking(status_report)
-                    .await
-                    .map_err(|e| format!("task join: {e}"));
-            }
-            Err(e) => {
-                // Old daemon without the verb (or a daemon-side failure) —
-                // fall back to the direct write so a legacy install still
-                // renames; the write path reports its own honest errors.
-                tracing::warn!(%e, "daemon rename verb unavailable — using direct config write");
-            }
-        }
-    }
-    tokio::task::spawn_blocking(move || set_device_name_blocking(trimmed))
-        .await
-        .map_err(|e| format!("task join: {e}"))?
-}
-
-fn set_device_name_blocking(name: String) -> Result<StatusReport, String> {
-    let trimmed = name.trim().to_string();
-    if trimmed.is_empty() {
-        return Err("Device name is empty".to_string());
-    }
-    let is_scm = probe_service_state().0 == "scmService";
-    let path = active_config_path(is_scm)?;
-    let machine_global = is_machine_global(&path);
-    let mut cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
-    cfg.machine_name = trimmed;
-    config::save(&path, &cfg).map_err(|e| explain_save_error(e, &path, machine_global))?;
-    Ok(status_report())
+    let mut client = localapi::connect().await.map_err(|e| format!("Daemon unavailable; name was not changed: {e}"))?;
+    let (canonical, state) = client.propose_device_name(&trimmed).await.map_err(|e| e.to_string())?;
+    let mut report = cmd_status().await;
+    report.device_name = Some(canonical);
+    report.name_sync = Some(state);
+    Ok(report)
 }
 
 /// Default device name for first enrollment — the local hostname.
@@ -3403,6 +3376,7 @@ mod tests {
             tenant_id: enrolled.then(|| "tenant-from-file".to_string()),
             server_url: enrolled.then(|| "https://file.example".to_string()),
             device_name: enrolled.then(|| "file-name".to_string()),
+            name_sync: None,
             agent_version: "0.4.104".to_string(),
             config_schema_version: None,
             service_running: true,

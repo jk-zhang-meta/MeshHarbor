@@ -9,7 +9,7 @@
  */
 (function () {
   'use strict';
-  const { $, invoke, show, hide, setText, on, navigate, refreshStatus } = window.MeshHarbor;
+  const { $, invoke, show, hide, setText, on, get, navigate, refreshStatus } = window.MeshHarbor;
 
   function showResult(text, isError) {
     const el = $('settings-result');
@@ -20,9 +20,17 @@
 
   function paintStatus(s) {
     const rename = $('rename-input');
-    if (rename && !rename.matches(':focus') && s.device_name && !rename.value) {
-      rename.value = s.device_name;
+    if (rename && !rename.matches(':focus') && s.device_name) {
+      rename.value = s.name_sync?.proposed_name || s.device_name;
     }
+    const ns = s.name_sync;
+    setText('rename-sync-state', ns?.state === 'pending'
+      ? 'Name proposal queued; waiting for the server. Current name: ' + s.device_name
+      : ns?.state === 'failed'
+        ? 'Name not changed: ' + (ns.error || 'synchronization failed') + '. Review and submit again. Current name: ' + s.device_name
+        : ns?.state === 'unsupported' ? 'Server does not support name synchronization; proposal not applied.'
+          : ns?.state === 'synced' ? 'Name synchronized with the server.'
+          : 'Live synchronization requires a connected, compatible daemon.');
     setText(
       'st-service',
       s.service_kind === 'scmService'
@@ -635,14 +643,22 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     on('status', paintStatus);
+    // Reuse the existing 2-second LocalAPI poll, not an extra service probe.
+    on('deviceView', dv => {
+      const s = get('status');
+      if (s && dv.available && dv.status) {
+        paintStatus({ ...s, device_name: dv.status.name, name_sync: dv.status.name_sync });
+      }
+    });
 
     $('rename-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const name = $('rename-input').value.trim();
       if (!name) return;
       try {
-        await invoke('cmd_set_device_name', { name });
-        showResult('Device name updated to “' + name + '”.', false);
+        const report = await invoke('cmd_set_device_name', { name });
+        paintStatus(report);
+        showResult('Name proposal queued; the canonical name changes after server acceptance.', false);
         void refreshStatus();
       } catch (e) {
         showResult('Rename failed: ' + e, true);

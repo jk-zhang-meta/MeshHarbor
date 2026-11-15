@@ -654,11 +654,13 @@ impl LocalApiState for DaemonState {
     fn status(&self) -> NodeStatus {
         let connected = self.connected.load(Ordering::Relaxed);
         NodeStatus {
+            name_sync: self.remote_config.as_ref().and_then(|r| r.names.snapshot()).map(|s| s.1),
             path_trials: connected
                 .then(|| self.overlay.borrow().path_trials.clone())
                 .flatten(),
             node_id: self.node_id.clone(),
-            name: self.name.lock().map(|n| n.clone()).unwrap_or_default(),
+            name: self.remote_config.as_ref().and_then(|r| r.names.snapshot()).map(|s| s.0)
+                .unwrap_or_else(|| self.name.lock().map(|n| n.clone()).unwrap_or_default()),
             version: self.version.clone(),
             mode: self.mode,
             privileged: Some(self.privileged),
@@ -1096,48 +1098,14 @@ impl LocalApiState for DaemonState {
     }
 
     async fn set_device_name(&self, name: &str) -> Response {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Response::Error {
-                message: "device name is empty".into(),
-            };
-        }
-        if trimmed.len() > 64 {
-            return Response::Error {
-                message: "device name is too long (max 64 characters)".into(),
-            };
-        }
-        let Some((path, lock)) = self.config_persist.as_ref() else {
+        let Some(services) = self.remote_config.as_ref() else {
             return Response::Error {
                 message: "renaming is not supported on this node".into(),
             };
         };
-        // Same discipline as the route reconciler: hold the daemon-wide write
-        // lock across load→mutate→save so a concurrent config writer (route
-        // add, graceful shutdown) can't have its field dropped by our
-        // full-struct save. Load FRESH — the boot-time snapshot may be stale.
-        let _guard = lock.lock().await;
-        let path = path.clone();
-        let new_name = trimmed.to_string();
-        let saved = tokio::task::spawn_blocking(move || {
-            let mut cfg = crate::config::load(&path)
-                .map_err(|e| format!("loading config for rename: {e:#}"))?;
-            cfg.machine_name = new_name.clone();
-            crate::config::save(&path, &cfg)
-                .map_err(|e| format!("saving renamed config: {e:#}"))?;
-            Ok::<String, String>(new_name)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("rename task join: {e}")));
-        match saved {
-            Ok(name) => {
-                if let Ok(mut live) = self.name.lock() {
-                    live.clone_from(&name);
-                }
-                tracing::info!(%name, "localapi: device renamed (announced on next reconnect)");
-                Response::DeviceNameSet { name }
-            }
-            Err(message) => Response::Error { message },
+        match services.names.propose(name).await {
+            Ok((name, state)) => Response::DeviceNameSet { name, name_sync: Some(state) },
+            Err(error) => Response::Error { message: format!("device name proposal: {error}") },
         }
     }
 
@@ -2591,7 +2559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_device_name_persists_and_updates_status() {
+    async fn local_name_proposal_is_durable_without_claiming_server_acceptance() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let mut cfg = crate::config::test_fixture();
@@ -2599,6 +2567,7 @@ mod tests {
         crate::config::save(&path, &cfg).unwrap();
 
         let (_tx, rx) = watch::channel(view());
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
         let st = DaemonState::new(
             "aid".into(),
             "old-name".into(),
@@ -2611,7 +2580,10 @@ mod tests {
             crate::tunnel::client_mgr::TunnelClientHub::new("test".into()),
             empty_rtt_cache(),
         )
-        .with_config_persist(path.clone(), Arc::new(tokio::sync::Mutex::new(())));
+        .with_config_persist(path.clone(), lock.clone())
+        .with_remote_config(crate::remote_config::RemoteConfigServices::new(
+            path.clone(), lock, false, false,
+        ));
 
         // Rejections: empty + oversized names never touch the config.
         assert!(matches!(
@@ -2624,13 +2596,14 @@ mod tests {
         ));
         assert_eq!(crate::config::load(&path).unwrap().machine_name, "old-name");
 
-        // Happy path: trimmed, persisted, and live in status() immediately.
+        // Offline proposals must be durable but cannot claim a server rename.
         match st.set_device_name("  new-name  ").await {
-            Response::DeviceNameSet { name } => assert_eq!(name, "new-name"),
+            Response::DeviceNameSet { name, .. } => assert_eq!(name, "old-name"),
             other => panic!("expected DeviceNameSet, got {other:?}"),
         }
-        assert_eq!(st.status().name, "new-name");
-        assert_eq!(crate::config::load(&path).unwrap().machine_name, "new-name");
+        assert_eq!(st.status().name, "old-name");
+        assert_eq!(crate::config::load(&path).unwrap().machine_name, "old-name");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("new-name"));
 
         // Without a persist target the verb is a clean unsupported error.
         let (_tx2, rx2) = watch::channel(view());

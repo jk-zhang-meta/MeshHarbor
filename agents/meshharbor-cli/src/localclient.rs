@@ -859,12 +859,13 @@ pub async fn flows(json: bool) -> Result<()> {
 
 /// `mh rename <name>` — persist a new device name through the running
 /// daemon (it writes its OWN config, so this works unelevated even when the
-/// daemon is a SYSTEM service). Announced on the next server reconnect. An old
-/// daemon that predates the verb reports a clean error.
+/// daemon is a SYSTEM service). The server arbitrates the proposal immediately
+/// when connected, or on reconnect; the canonical name is not changed offline.
 pub async fn rename(name: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
-    let effective = client.set_device_name(name).await.map_err(daemon_err)?;
-    println!("device renamed to \u{201c}{effective}\u{201d} — announced on the next reconnect");
+    let (effective, state) = client.propose_device_name(name).await.map_err(daemon_err)?;
+    println!("device name proposal queued: {} (canonical: {effective}; state: {})",
+        state.proposed_name.as_deref().unwrap_or(name), state.state);
     Ok(())
 }
 

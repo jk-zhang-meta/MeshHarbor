@@ -279,6 +279,7 @@ pub async fn enroll_with_existing_identity(
         tenant_id: body.tenant_id,
         machine_id: inputs.machine_id.to_string(),
         machine_name: inputs.machine_name.to_string(),
+        name_sync: None,
         // FR-51 — the server's answer, not the caller's flag: the credential
         // decides what was minted, and the config must not disagree.
         ephemeral: body.ephemeral,
@@ -743,6 +744,12 @@ fn unique_org_label(
 /// signaling connection, and the default derivation from `server_url` is
 /// correct in every ordinary setup.
 pub fn preserve_operator_config(fresh: AgentConfig, existing: AgentConfig) -> AgentConfig {
+    let same_primary = fresh.server_url == existing.server_url
+        && fresh.tenant_id == existing.tenant_id && fresh.agent_id == existing.agent_id;
+    let machine_name = if same_primary && existing.name_sync.is_some() {
+        existing.machine_name.clone()
+    } else { fresh.machine_name };
+    let name_sync = if same_primary { existing.name_sync.clone() } else { None };
     AgentConfig {
         server_url: fresh.server_url,
         ws_url: fresh.ws_url,
@@ -750,7 +757,8 @@ pub fn preserve_operator_config(fresh: AgentConfig, existing: AgentConfig) -> Ag
         agent_id: fresh.agent_id,
         tenant_id: fresh.tenant_id,
         machine_id: fresh.machine_id,
-        machine_name: fresh.machine_name,
+        machine_name,
+        name_sync,
         config_schema_version: fresh.config_schema_version,
         ..existing
     }
@@ -1239,6 +1247,29 @@ mod tests {
     }
 
     // ---- Multi-org P1: apply_enrollment dispatch --------------------------
+
+    #[test]
+    fn preserve_name_journal_only_for_same_primary_identity() {
+        let mut existing = crate::config::test_fixture();
+        existing.machine_name = "canonical".into();
+        existing.name_sync = Some(crate::config::DeviceNameJournal {
+            server_url: existing.server_url.clone(), tenant_id: existing.tenant_id.clone(),
+            agent_id: existing.agent_id.clone(), revision: Some("9".into()),
+            canonical_name: Some("canonical".into()), error: None,
+            pending: Some(crate::config::DeviceNameProposal {
+                name: "queued".into(), base_revision: "9".into(), error: None,
+            }),
+        });
+        let mut fresh = crate::config::test_fixture();
+        fresh.machine_name = "stale-login-name".into();
+        let merged = preserve_operator_config(fresh.clone(), existing.clone());
+        assert_eq!(merged.machine_name, "canonical");
+        assert_eq!(merged.name_sync, existing.name_sync);
+        fresh.server_url = "https://another.example".into();
+        let rebound = preserve_operator_config(fresh, existing);
+        assert!(rebound.name_sync.is_none());
+        assert_eq!(rebound.machine_name, "stale-login-name");
+    }
 
     fn fresh_for(server: &str, tenant: &str, token: &str) -> AgentConfig {
         let mut f = crate::config::test_fixture();

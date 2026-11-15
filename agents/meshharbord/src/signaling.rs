@@ -1816,7 +1816,9 @@ async fn connect_once(
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let (arch, arch_emulated) = crate::arch::native();
     let hello = ClientMsg::AgentHello {
-        machine_name: cfg.machine_name.clone(),
+        machine_name: if ctx.is_primary {
+            remote_cfg.names.snapshot().map(|s| s.0).unwrap_or_else(|| cfg.machine_name.clone())
+        } else { cfg.machine_name.clone() },
         os: detect_os(),
         // FR-97 P0d — the hardware's architecture, not this build's.
         arch,
@@ -1864,6 +1866,9 @@ async fn connect_once(
     // locally-gathered ICE candidates and state-change terminates here;
     // the main loop flushes them to the WS.
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientMsg>(PEER_OUTBOUND_CAP);
+    if ctx.is_primary {
+        remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
+    }
     // Multi-region relay probing: the server's last region push (per
     // connection) + the periodic re-prober (exits with the connection —
     // its sends fail once `outbound_rx` drops).
@@ -2156,6 +2161,9 @@ async fn connect_once(
     drop(setup_stage);
     loop {
         tokio::select! {
+            _ = remote_cfg.names.changed.notified(), if ctx.is_primary => {
+                remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
+            }
             changed = relay_listener_changed(&mut relay_readiness) => {
                 if changed {
                     // Reuse the existing authenticated heartbeat/caps path,
@@ -5532,6 +5540,13 @@ async fn handle_server_msg(
         // from one that never received the frame, and the two refusals here
         // are the ones they will actually hit — each with a concrete next
         // action they can only take if somebody tells them.
+        ServerMsg::DeviceNameSync { agent_id, tenant_id, revision, name } => {
+            if ctx.is_primary {
+                remote_cfg.names.apply_and_ack(agent_cfg, crate::device_name::CanonicalName {
+                    agent_id, tenant_id, revision, name,
+                }, outbound_tx).await;
+            }
+        }
         ServerMsg::ConfigPush { revision, desired } => {
             use meshharbor_remote_control::models::ConfigOutcome;
 
@@ -7619,6 +7634,11 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     // the server persists into the agents collection and surfaces in
     // the admin UI (2A.2).
     let mut caps = crate::encode::caps::detect();
+    caps.rpc.push(if is_primary {
+        meshharbor_remote_control::models::RpcCap::DeviceNameSync.wire()
+    } else {
+        meshharbor_remote_control::models::RpcCap::OrganizationNameAlias.wire()
+    }.to_owned());
     // FR-67 P7 — whether this enrollment acts on a pushed `rc:agent.update`
     // (`self`), ignores it (`primary_org`, a secondary enrollment) or drops it
     // (`off`, auto-update off), so the server refuses the push, and says why,
