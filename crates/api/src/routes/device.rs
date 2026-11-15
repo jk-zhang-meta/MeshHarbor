@@ -72,6 +72,8 @@ pub struct DeviceRow {
     pub owner_user_id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_sync: Option<meshharbor_mod_fleet::name_sync::NameSyncView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -394,6 +396,7 @@ pub(crate) fn agent_row(
     dns_domain: Option<&str>,
 ) -> DeviceRow {
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
+    let name_sync = Some(meshharbor_mod_fleet::name_sync::view(&a));
     let (rdp_available, rdp_port, rdp_cert_sha256) = if a.capabilities.rdp_available == Some(true) {
         (
             Some(true),
@@ -409,6 +412,7 @@ pub(crate) fn agent_row(
         kind: "agent",
         id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
         owner_user_id: a.owner_user_id.to_hex(),
+        name_sync,
         name: a.name,
         display_name: a.display_name,
         tags: a.tags,
@@ -445,6 +449,7 @@ pub(crate) fn client_row(
         kind: "tunnel_client",
         id: c.id.map(|i| i.to_hex()).unwrap_or_default(),
         owner_user_id: c.owner_user_id.to_hex(),
+        name_sync: None,
         name: c.name,
         display_name: c.display_name,
         tags: c.tags,

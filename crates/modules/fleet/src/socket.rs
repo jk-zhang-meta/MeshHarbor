@@ -490,6 +490,16 @@ pub async fn handle_agent_socket(
             desired_config = Some(row.desired_config);
         }
     }
+    // Durable name reconciliation is independent of remote feature config.
+    // A missing ACK is never inferred from the hello's display text.
+    if let Ok(Some(row)) = state
+        .agents
+        .name_connected(tenant_id, agent_id, &conn_id)
+        .await
+    {
+        crate::name_sync::push(&state, &row).await;
+        crate::name_sync::broadcast(&state, &row).await;
+    }
     // P4 — announce the online transition (`agents.last_presence` ledger
     // CAS: a reconnect that was already broadcast as online stays silent).
     crate::presence::note_transition(
@@ -819,6 +829,16 @@ pub async fn handle_agent_socket(
                                     // ⚠️ `tenant_id` / `agent_id` come from the
                                     // authenticated WS, never the frame, so a
                                     // device can only report about itself.
+                                    ClientMsg::DeviceNameAck { agent_id: claimed_agent, tenant_id: claimed_tenant, revision, name, outcome, detail } => {
+                                        if claimed_agent == agent_id.to_hex() && claimed_tenant == tenant_id.to_hex()
+                                            && caps.has_rpc(RpcCap::DeviceNameSync)
+                                            && !caps.has_rpc(RpcCap::OrganizationNameAlias)
+                                            && matches!(outcome.as_str(), "applied" | "failed") {
+                                            crate::name_sync::acknowledge(&state,tenant_id,agent_id,&conn_id,&revision,&name,
+                                                outcome == "applied",detail).await;
+                                        }
+                                        continue;
+                                    }
                                     ClientMsg::ConfigStatus {
                                         revision,
                                         outcome,
@@ -865,6 +885,7 @@ pub async fn handle_agent_socket(
                                     ..
                                 } = &parsed
                                 {
+                                    crate::name_sync::reconcile(&state,tenant_id,agent_id).await;
                                     Some((
                                         *active_sessions,
                                         sys.clone(),

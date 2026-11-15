@@ -1105,6 +1105,24 @@ impl OverlayNodeDao {
         self.base.find_by_id(node_id).await
     }
 
+    /// Canonical agent-name revisions cannot be projected backwards by a
+    /// delayed admin request. Tunnel-client names retain their original path.
+    pub async fn set_name_revision(
+        &self,
+        node_id: ObjectId,
+        name: &str,
+        revision: i64,
+    ) -> DaoResult<OverlayNode> {
+        let updated = self.base.collection().find_one_and_update(doc! {
+            "_id":node_id,"$or":[{"name_sync_revision":{"$exists":false}},{"name_sync_revision":{"$lte":revision}}]
+        },doc! {"$set":{"name":name,"name_sync_revision":revision,"updated_at":DateTime::now()}})
+            .return_document(mongodb::options::ReturnDocument::After).await?;
+        match updated {
+            Some(n) => Ok(n),
+            None => self.base.find_by_id(node_id).await,
+        }
+    }
+
     /// Temporary devices — mark (or unmark) an existing node. Only the
     /// conversion of an enrolled device takes this path; a new temporary
     /// device's node is born marked.

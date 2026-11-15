@@ -131,6 +131,7 @@ impl AgentDao {
             display_name: None,
             tags: Vec::new(),
             name_admin_set: false,
+            name_sync: None,
             machine_id,
             // FR-51 — permanent unless the ENROLLMENT CREDENTIAL said
             // otherwise (`create_ephemeral` overrides these three from the
@@ -507,7 +508,17 @@ impl AgentDao {
             set.insert("arch", arch);
             set.insert("arch_emulated", arch_emulated);
         }
-        self.base.update_by_id(agent_id, doc! { "$set": set }).await
+        // New connection invalidates the old connection's ACK in the SAME
+        // write that installs conn_id, even if later reconciliation fails.
+        self.base
+            .update_by_id(
+                agent_id,
+                doc! { "$set": set,
+                    "$inc":{"name_sync.event_seq":1_i64},
+                    "$unset":{"name_sync.acked_revision":"","name_sync.error":""}
+                },
+            )
+            .await
     }
 
     /// #2552 — a connection's teardown: `Offline`, but only while the row
@@ -1252,20 +1263,111 @@ impl AgentDao {
             .await
     }
 
-    pub async fn rename(
+    pub async fn rename(&self, tenant: ObjectId, agent: ObjectId, name: &str) -> DaoResult<bool> {
+        Ok(self
+            .rename_if_revision(tenant, agent, name, None)
+            .await?
+            .is_some())
+    }
+
+    /// Canonical name and revision change in ONE Mongo write. None is the
+    /// administrator's unconditional new intent; Some is a host's CAS proposal.
+    pub async fn rename_if_revision(
         &self,
-        tenant_id: ObjectId,
-        agent_id: ObjectId,
+        tenant: ObjectId,
+        agent: ObjectId,
         name: &str,
-    ) -> DaoResult<bool> {
-        // The flag is what stops the next re-enroll's `rehydrate`
-        // from clobbering this rename with the machine-reported name.
-        self.base
-            .update_one(
-                Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "name": name, "name_admin_set": true } },
+        expected: Option<(i64, u32)>,
+    ) -> DaoResult<Option<Agent>> {
+        let mut filter = Self::live_row(tenant, agent);
+        filter.insert(
+            "$or",
+            bson::to_bson(&vec![
+                doc! {"name_sync.revision":{"$exists":false}},
+                doc! {"name_sync.revision":{"$lt":i64::MAX}},
+            ])?,
+        );
+        if let Some((rev, generation)) = expected {
+            if rev < 0 || rev == i64::MAX {
+                return Ok(None);
+            }
+            filter.insert("$and", bson::to_bson(&vec![
+                if rev == 0 {doc! {"$or":[{"name_sync.revision":0_i64},{"name_sync.revision":{"$exists":false}}]}} else {doc! {"name_sync.revision":rev}},
+                if generation == 0 {doc! {"$or":[{"token_gen":0_i64},{"token_gen":{"$exists":false}}]}} else {doc! {"token_gen":i64::from(generation)}},
+                doc! {"capabilities.rpc":{"$all":["device-name-sync"],"$nin":["organization-name-alias"]}}
+            ])?);
+        }
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(
+                filter,
+                doc! {
+                    "$set":{"name":name,"name_admin_set":true,"updated_at":DateTime::now()},
+                    "$inc":{"name_sync.revision":1_i64,"name_sync.event_seq":1_i64},
+                    "$unset":{"name_sync.error":""}
+                },
             )
-            .await
+            .return_document(mongodb::options::ReturnDocument::After)
+            .await?)
+    }
+
+    /// Only the current authenticated socket can acknowledge the CURRENT
+    /// canonical name; a late failed ACK cannot downgrade a successful one.
+    pub async fn acknowledge_name(
+        &self,
+        tenant: ObjectId,
+        agent: ObjectId,
+        conn: &str,
+        revision: i64,
+        name: &str,
+        applied: bool,
+        error: Option<String>,
+    ) -> DaoResult<Option<Agent>> {
+        let mut filter = Self::live_row(tenant, agent);
+        filter.insert("conn_id", conn);
+        filter.insert("name", name);
+        if revision == 0 {
+            filter.insert(
+                "$or",
+                bson::to_bson(&vec![
+                    doc! {"name_sync.revision":0_i64},
+                    doc! {"name_sync.revision":{"$exists":false}},
+                ])?,
+            );
+        } else {
+            filter.insert("name_sync.revision", revision);
+        }
+        if !applied {
+            filter.insert("name_sync.acked_revision", doc! {"$ne":revision});
+        }
+        let update = if applied {
+            doc! {
+                "$set":{"name_sync.revision":revision,"name_sync.acked_revision":revision},
+                "$unset":{"name_sync.error":""},"$inc":{"name_sync.event_seq":1_i64}
+            }
+        } else {
+            doc! {
+                "$set":{"name_sync.revision":revision,"name_sync.error":error.unwrap_or_else(||"device persistence failed".into())},
+                "$inc":{"name_sync.event_seq":1_i64}
+            }
+        };
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(filter, update)
+            .return_document(mongodb::options::ReturnDocument::After)
+            .await?)
+    }
+    pub async fn name_connected(
+        &self,
+        tenant: ObjectId,
+        agent: ObjectId,
+        conn: &str,
+    ) -> DaoResult<Option<Agent>> {
+        let mut filter = Self::live_row(tenant, agent);
+        filter.insert("conn_id", conn);
+        self.base.find_one(filter).await
     }
 
     /// Set/clear the friendly display label. Display-only — never propagates

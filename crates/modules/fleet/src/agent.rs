@@ -833,6 +833,7 @@ pub struct AgentResponse {
     pub tenant_id: String,
     pub owner_user_id: String,
     pub name: String,
+    pub name_sync: crate::name_sync::NameSyncView,
     /// Admin-set friendly label; display-only (the technical `name` is what
     /// the overlay/MagicDNS label derives from). Absent = show `name`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1453,14 +1454,14 @@ pub async fn update_agent(
     // Rename outcome for the response: was there a live overlay node, and
     // what label does it carry now? Additive next to `updated` — nothing
     // read the old body, but a shape swap would still be a needless hazard.
+    let body_name_changed = body.name.is_some();
     let mut dns_renamed: Option<bool> = None;
     let mut dns_name: Option<String> = None;
     if let Some(name) = body.name {
-        let name = name.trim().to_string();
-        if name.is_empty() {
-            return Err(ApiError::BadRequest("name must not be empty".to_string()));
+        let name = crate::name_sync::valid_name(&name)?;
+        if !state.agents.rename(tid, aid, &name).await? {
+            return Err(ApiError::Conflict("name revision exhausted".into()));
         }
-        state.agents.rename(tid, aid, &name).await?;
         // Best-effort propagation onto the live overlay node — network's, so
         // through the core hooks (FR-69 D6): peers see the new MagicDNS label
         // immediately (delta re-fan); the device itself re-learns its
@@ -1511,6 +1512,10 @@ pub async fn update_agent(
     // Hand back the refreshed row so the UI can patch without a refetch —
     // additive around the legacy `{"updated": true}`.
     let agent = state.agents.find_live_in_tenant(tid, aid).await?;
+    if body_name_changed {
+        crate::name_sync::push(&state, &agent).await;
+        crate::name_sync::broadcast(&state, &agent).await;
+    }
     let redis_fresh = agent_presence_batch(&state, std::slice::from_ref(&agent)).await;
     let fresh = agent.id.map(|i| redis_fresh.contains(&i)).unwrap_or(false);
     Ok(Json(serde_json::json!({
@@ -1968,6 +1973,7 @@ fn to_agent_response(
     let (presence, is_online) = derive_agent_presence(state, &a, redis_fresh);
     // Resolved before the struct literal moves `capabilities`: the
     // remote-config state depends on which verbs this device advertises.
+    let name_sync = crate::name_sync::view(&a);
     let remote_config = remote_config_view(a.desired_config, a.config_report, &a.capabilities);
     // FR-40 — same rule: resolved before `capabilities` moves.
     let key_rotation = key_rotation_view(
@@ -1991,6 +1997,7 @@ fn to_agent_response(
         id,
         tenant_id: a.tenant_id.to_hex(),
         owner_user_id: a.owner_user_id.to_hex(),
+        name_sync,
         name: a.name,
         display_name: a.display_name,
         tags: a.tags,

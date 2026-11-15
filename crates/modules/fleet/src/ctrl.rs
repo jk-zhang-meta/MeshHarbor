@@ -70,6 +70,25 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
     match ctrl.get("evt").and_then(|v| v.as_str()) {
         // FR-92 — an org admin changed the keep-busy deny on another pod:
         // push it to this pod's agents of that tenant (the ones that parse it).
+        Some("device_name_sync") => {
+            let (Some(tid), Some(aid), Some(msg)) = (
+                ctrl["tenant_id"]
+                    .as_str()
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl["agent_id"]
+                    .as_str()
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("message"),
+            ) else {
+                return;
+            };
+            if let Ok(
+                message @ meshharbor_remote_control::signaling::ServerMsg::DeviceNameSync { .. },
+            ) = serde_json::from_value(msg.clone())
+            {
+                let _ = hub.send_to_agent_in_tenant(aid, tid, message);
+            }
+        }
         Some("keep_busy_policy") => {
             let (Some(tid), Some(denied)) = (
                 ctrl.get("tenant_id")

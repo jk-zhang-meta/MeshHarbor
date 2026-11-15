@@ -2143,6 +2143,19 @@ impl KeepBusyEvent {
     pub const COLLECTION: &'static str = "keep_busy_events";
 }
 
+/// Monotonic canonical-name intent and the last persisted host acknowledgement.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeviceNameState {
+    #[serde(default)]
+    pub revision: i64,
+    #[serde(default)]
+    pub event_seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acked_revision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Agent {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -2167,6 +2180,8 @@ pub struct Agent {
     #[serde(default)]
     pub enrolled_by: Option<ObjectId>,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_sync: Option<DeviceNameState>,
     /// Friendly label an admin sets purely for display. Never propagates —
     /// `name` is what the overlay/MagicDNS label derives from. `None` = the
     /// UI shows `name`.
