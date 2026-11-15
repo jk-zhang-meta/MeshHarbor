@@ -33,6 +33,7 @@ pub mod crash_recorder;
 pub mod desktop_state;
 pub mod device_invite;
 pub mod device_login;
+pub mod user_session;
 pub mod enrollment;
 /// FR-84 D4 — the `files_dir` validator: shape (shared with the config
 /// surface), placement (the SYSTEM/root-inside-the-active-profile rule) and

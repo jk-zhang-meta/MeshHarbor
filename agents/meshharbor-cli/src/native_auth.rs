@@ -80,19 +80,18 @@ struct LoginResponse {
     user_id: String,
 }
 /// Caller supplies a secret in memory only. Never Debug/Serialize the response.
-async fn login(server: &str, share: &str, username: &str, password: String) -> Result<String> {
+async fn login(server: &str, share: &str, email: &str, password: String) -> Result<String> {
     let server = server_base(server)?;
     let share = bson::oid::ObjectId::parse_str(share)
         .map_err(|_| anyhow::anyhow!("Exact share ID required"))?;
-    if username.trim().is_empty()
-        || username.len() > 254
+    if !valid_email(email)
         || password.is_empty()
         || password.len() > 4096
     {
-        bail!("Bounded account name and nonempty password required");
+        bail!("Account email and nonempty password required");
     }
     let response=http_client(&server)?.post(format!("{server}/api/auth/native/share-ssh/login"))
-        .json(&serde_json::json!({"username":username,"password":password,"share_grant_id":share.to_hex()}))
+        .json(&serde_json::json!({"email":email.trim(),"password":password,"share_grant_id":share.to_hex()}))
         .send().await.map_err(|_|anyhow::anyhow!("Native authentication request failed"))?;
     if !response.status().is_success() {
         bail!("Native authentication refused (HTTP {})", response.status());
@@ -107,18 +106,19 @@ async fn login(server: &str, share: &str, username: &str, password: String) -> R
     }
     Ok(body.access_token)
 }
+fn valid_email(email:&str)->bool { let email=email.trim();email.len()<=254 && email.split_once('@').is_some_and(|(a,b)|!a.is_empty() && b.contains('.')) && !email.chars().any(|c|c.is_control()||c.is_whitespace()) }
 pub async fn interactive(
     server: &str,
     share: &str,
-    username: &str,
+    email: &str,
     session_secs: u64,
     args: &[String],
 ) -> Result<i32> {
     let server = server_base(server)?;
     bson::oid::ObjectId::parse_str(share)
         .map_err(|_| anyhow::anyhow!("Exact share ID required"))?;
-    if username.trim().is_empty() || username.len() > 254 {
-        bail!("Bounded account name required");
+    if !valid_email(email) {
+        bail!("Account email required (--email)");
     }
     eprintln!(
         "One-shot account login: no credential is saved. Required MFA is unsupported and refused. SSH shell is not a sandbox."
@@ -128,7 +128,7 @@ pub async fn interactive(
             .await
             .map_err(|_| anyhow::anyhow!("Password prompt failed"))?
             .map_err(|_| anyhow::anyhow!("Password terminal input failed"))?;
-    let token = login(&server, share, username, password).await?;
+    let token = login(&server, share, email, password).await?;
     crate::share_sshcmd::run_with_token(&server, share, token, session_secs, args).await
 }
 
@@ -336,7 +336,7 @@ mod tests {
         let err = login(
             &url,
             "111111111111111111111111",
-            "recipient",
+            "recipient@example.com",
             "fixture-password".into(),
         )
         .await
@@ -348,6 +348,8 @@ mod tests {
         let request = String::from_utf8(worker.await.unwrap()).unwrap();
         assert!(request.starts_with("POST /meshharbor/api/auth/native/share-ssh/login "));
         assert!(!request.to_ascii_lowercase().contains("cookie:"));
+        assert!(request.contains("\"email\":\"recipient@example.com\""));
+        assert!(!request.contains("\"username\""));
     }
     #[tokio::test]
     async fn native_auth_real_http_redirect_is_not_followed() {
@@ -357,7 +359,7 @@ mod tests {
         let err = login(
             &url,
             "111111111111111111111111",
-            "recipient",
+            "recipient@example.com",
             "fixture-password".into(),
         )
         .await
@@ -388,7 +390,7 @@ mod tests {
             let err = login(
                 &url,
                 "111111111111111111111111",
-                "recipient",
+                "recipient@example.com",
                 "fixture-password".into(),
             )
             .await
@@ -412,7 +414,7 @@ mod tests {
             login(
                 &url,
                 "111111111111111111111111",
-                "recipient",
+                "recipient@example.com",
                 "fixture-password".into()
             )
             .await
@@ -435,7 +437,7 @@ mod tests {
         let err = login(
             &url,
             "111111111111111111111111",
-            "recipient",
+            "recipient@example.com",
             "fixture-password".into(),
         )
         .await
@@ -468,7 +470,7 @@ mod tests {
         let token = login(
             &server,
             "111111111111111111111111",
-            "recipient",
+            "recipient@example.com",
             "synthetic-loopback-password".into(),
         )
         .await
