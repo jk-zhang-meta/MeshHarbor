@@ -10,6 +10,14 @@ use super::base::{BaseDao, DaoError, DaoResult};
 /// Overlay membership rows — one per host (agent or tunnel-client) that
 /// has joined a tenant's virtual LAN. Keyed for rehydrate by
 /// `(tenant_id, machine_id)` like `agents` / `tunnel_clients`.
+#[derive(serde::Deserialize)]
+struct NameProjection {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    name_sync_revision: Option<i64>,
+}
+
 pub struct OverlayNodeDao {
     pub base: BaseDao<OverlayNode>,
 }
@@ -1109,6 +1117,23 @@ impl OverlayNodeDao {
             )
             .await?;
         self.base.find_by_id(node_id).await
+    }
+
+    /// One read binds the DNS label to its actual projected revision. Never
+    /// pair a captured node name with a newer canonical Agent revision.
+    pub async fn name_projection(
+        &self,
+        node: &OverlayNode,
+    ) -> DaoResult<Option<(String, Option<i64>)>> {
+        let row = self
+            .base
+            .collection()
+            .clone_with_type::<NameProjection>()
+            .find_one(doc! {"_id":node.id.ok_or(DaoError::NotFound)?,
+            "tenant_id":node.tenant_id,"node_ref":bson::to_bson(&node.node_ref)?,"deleted_at":null})
+            .projection(doc! {"name":1,"name_sync_revision":1})
+            .await?;
+        Ok(row.map(|r| (r.name, r.name_sync_revision)))
     }
 
     /// Return a completed name projection without re-running collision naming.
