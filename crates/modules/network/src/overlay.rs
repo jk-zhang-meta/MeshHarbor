@@ -2634,6 +2634,16 @@ pub async fn propagate_node_rename(
     let revision = current
         .as_ref()
         .map(|a| a.name_sync.as_ref().map_or(0, |s| s.revision));
+    if let Some(r) = revision {
+        match state.overlay_nodes.name_projected_at_least(node_id, r).await {
+            Ok(Some(projected)) => return Some(projected.name),
+            Ok(None) => {},
+            Err(error) => {
+                tracing::warn!(%error, "name projection revision read failed");
+                return None;
+            }
+        }
+    }
     let base = dns_label(
         current
             .as_ref()

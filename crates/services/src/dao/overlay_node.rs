@@ -1111,6 +1111,18 @@ impl OverlayNodeDao {
         self.base.find_by_id(node_id).await
     }
 
+    /// Return a completed name projection without re-running collision naming.
+    /// Missing legacy revisions are deliberately not treated as revision zero.
+    pub async fn name_projected_at_least(
+        &self,
+        node_id: ObjectId,
+        revision: i64,
+    ) -> DaoResult<Option<OverlayNode>> {
+        self.base
+            .find_one(doc! {"_id": node_id, "name_sync_revision": {"$gte": revision}})
+            .await
+    }
+
     /// Canonical agent-name revisions cannot be projected backwards by a
     /// delayed admin request. Tunnel-client names retain their original path.
     pub async fn set_name_revision(
@@ -1120,7 +1132,7 @@ impl OverlayNodeDao {
         revision: i64,
     ) -> DaoResult<OverlayNode> {
         let updated = self.base.collection().find_one_and_update(doc! {
-            "_id":node_id,"$or":[{"name_sync_revision":{"$exists":false}},{"name_sync_revision":{"$lte":revision}}]
+            "_id":node_id,"$or":[{"name_sync_revision":{"$exists":false}},{"name_sync_revision":{"$lt":revision}}]
         },doc! {"$set":{"name":name,"name_sync_revision":revision,"updated_at":DateTime::now()}})
             .return_document(mongodb::options::ReturnDocument::After).await?;
         match updated {
