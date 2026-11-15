@@ -1171,6 +1171,19 @@ pub enum ClientMsg {
     /// there, and "has not answered yet" on a newer device.
     ///
     /// [`RpcCap::ConfigReport`]: crate::models::RpcCap::ConfigReport
+    #[serde(rename = "rc:agent.name.ack")]
+    DeviceNameAck {
+        agent_id: String,
+        tenant_id: String,
+        /// Canonical decimal string; avoids loss of precision in JSON clients.
+        revision: String,
+        name: String,
+        /// `applied` only after durable persistence, otherwise `failed`.
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+
     #[serde(rename = "rc:agent.config_status")]
     ConfigStatus {
         /// The `desired_config.revision` being reported on, echoed from the
@@ -3031,6 +3044,7 @@ impl ClientMsg {
             ClientMsg::PrivacyActivity { .. } => "rc:privacy.activity",
             ClientMsg::SshGrantAck { .. } => "rc:ssh.grant_ack",
             ClientMsg::ConfigStatus { .. } => "rc:agent.config_status",
+            ClientMsg::DeviceNameAck { .. } => "rc:agent.name.ack",
             ClientMsg::KeyRotated { .. } => "rc:agent.key_rotated",
             ClientMsg::HiveStartAck { .. } => "rc:hive.start_ack",
             ClientMsg::HiveState { .. } => "rc:hive.state",
@@ -3135,6 +3149,7 @@ impl ClientMsg {
             | ClientMsg::RpcResult { .. }
             | ClientMsg::RpcExecRequest { .. }
             | ClientMsg::ConfigStatus { .. }
+            | ClientMsg::DeviceNameAck { .. }
             | ClientMsg::Consent { .. }
             | ClientMsg::ConsentPending { .. }
             | ClientMsg::Ping { .. }
@@ -4083,6 +4098,15 @@ pub enum ServerMsg {
     /// [`RpcCap::Config`] and surface "device too old" instead.
     ///
     /// [`RpcCap::Config`]: crate::models::RpcCap::Config
+    #[serde(rename = "rc:agent.name")]
+    DeviceNameSync {
+        agent_id: String,
+        tenant_id: String,
+        /// Canonical decimal string in the signed 64-bit nonnegative range.
+        revision: String,
+        name: String,
+    },
+
     #[serde(rename = "rc:agent.config")]
     ConfigPush {
         /// The `desired_config.revision` this frame carries. The agent echoes
@@ -13724,4 +13748,25 @@ pub struct ManagedForwardStatusWire {
     pub listening: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod device_name_wire_tests {
+    use super::*;
+
+    #[test]
+    fn live_name_sync_round_trips_without_js_integer_loss() {
+        let value = serde_json::json!({"t":"rc:agent.name","agent_id":"agent-a",
+            "tenant_id":"tenant-a","revision":"9223372036854775807","name":"Device 新名"});
+        let decoded: ServerMsg = serde_json::from_value(value.clone()).expect("name-sync frame");
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        let ack = serde_json::json!({"t":"rc:agent.name.ack","agent_id":"agent-a",
+            "tenant_id":"tenant-a","revision":"9223372036854775807","name":"Device 新名",
+            "outcome":"applied"});
+        let decoded: ClientMsg = serde_json::from_value(ack.clone()).expect("durable name ACK");
+        assert_eq!(decoded.wire_tag(), "rc:agent.name.ack");
+        assert_eq!(serde_json::to_value(decoded).unwrap(), ack);
+        assert!(crate::models::RpcCap::ALL.iter().any(|c| c.wire()=="device-name-sync"));
+        assert!(crate::models::RpcCap::ALL.iter().any(|c| c.wire()=="organization-name-alias"));
+    }
 }
