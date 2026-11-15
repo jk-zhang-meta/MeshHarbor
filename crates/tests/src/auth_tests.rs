@@ -260,7 +260,7 @@ async fn me_endpoint_returns_current_user() {
 
     let json: Value = resp.json().await.unwrap();
     assert_eq!(json["email"], "me@test.com");
-    assert_eq!(json["username"], "meuser");
+    assert!(json["username"].as_str().unwrap().starts_with("user_"));
 }
 
 #[tokio::test]
@@ -333,7 +333,7 @@ async fn refresh_token_generates_new_access_token() {
 }
 
 #[tokio::test]
-async fn login_with_username_only_succeeds() {
+async fn login_with_username_only_is_not_a_public_identity() {
     let app = TestApp::spawn().await;
 
     // Register first
@@ -365,11 +365,7 @@ async fn login_with_username_only_succeeds() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status().as_u16(), 200);
-
-    let json: Value = resp.json().await.unwrap();
-    assert!(json["access_token"].is_string());
-    assert_eq!(json["user"]["username"], "usernameonly");
+    assert_eq!(resp.status().as_u16(), 400);
 }
 
 #[tokio::test]

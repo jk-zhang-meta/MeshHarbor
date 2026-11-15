@@ -16,8 +16,8 @@ use crate::{core_state::Core, error::ApiError, extractors::auth::AuthUser};
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
     pub email: String,
-    pub username: String,
-    pub display_name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub password: String,
     pub tenant_name: Option<String>,
     pub tenant_slug: Option<String>,
@@ -52,6 +52,7 @@ pub struct InviteTenantResponse {
 pub struct UserResponse {
     pub id: String,
     pub email: String,
+    pub email_verified: bool,
     pub username: String,
     pub display_name: String,
     pub avatar: Option<String>,
@@ -80,6 +81,8 @@ impl UserResponse {
     pub fn of(user: User, is_platform_admin: bool) -> Self {
         Self {
             id: user.id.map(|id| id.to_hex()).unwrap_or_default(),
+            email_verified: user.is_verified
+                && !user.email.to_ascii_lowercase().ends_with(".invalid"),
             email: user.email,
             username: user.username,
             display_name: user.display_name,
@@ -168,6 +171,19 @@ pub async fn register(
     State(state): State<Core>,
     Json(mut body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, HeaderMap, Json<RegisterResponse>), ApiError> {
+    use validator::ValidateEmail;
+    body.email = body.email.trim().to_lowercase();
+    if !body.email.validate_email() {
+        return Err(ApiError::BadRequest("Valid email is required".into()));
+    }
+    let display_name = body
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Member")
+        .to_owned();
+    let username = format!("user_{}", bson::oid::ObjectId::new().to_hex());
     let password_hash = state.auth.hash_password(&body.password)?;
 
     // FR-88 — sanitised here, stored with the row, never touched again. Not
@@ -179,8 +195,8 @@ pub async fn register(
         .users
         .create(
             body.email.clone(),
-            body.username.clone(),
-            body.display_name.clone(),
+            username,
+            display_name.clone(),
             password_hash,
             signup_attribution,
         )
@@ -230,7 +246,7 @@ pub async fn register(
             token
         );
         let to_email = body.email.clone();
-        let display_name = body.display_name.clone();
+        let display_name = display_name.clone();
         let ttl = state.settings.email.activation_token_ttl_minutes;
         tokio::spawn(async move {
             if let Err(e) = email_svc
@@ -331,15 +347,15 @@ pub async fn register(
 /// Credential proof only, also used by the read-only approval status endpoint.
 /// It issues no token and does not accept OAuth provider assertions from a caller.
 pub(super) async fn password_identity(state: &Core, body: &LoginRequest) -> Result<User, ApiError> {
-    let lookup = if let Some(ref username) = body.username {
-        state.users.find_by_username(username).await
-    } else if let Some(ref email) = body.email {
-        state.users.find_by_email(email).await
-    } else {
-        return Err(ApiError::BadRequest(
-            "Either username or email is required".to_string(),
-        ));
-    };
+    // Legacy handles remain internal references, never a second login identity.
+    let email = body
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("Email is required".into()))?
+        .to_lowercase();
+    let lookup = state.users.find_by_email(&email).await;
 
     // Every failure below answers with the SAME error after doing the SAME
     // work. Previously an unknown account returned before any Argon2 verify

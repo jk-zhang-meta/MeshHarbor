@@ -183,6 +183,7 @@ async fn oauth_user_dao_links_existing_user() {
     // social login" case.
     app.activate_user("existing@test.com").await;
 
+    let original = meshharbor_services::dao::user::UserDao::new(&app.db).find_by_email("existing@test.com").await.unwrap();
     // Now use OAuth with the same email
     let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
     let user = dao
@@ -201,7 +202,8 @@ async fn oauth_user_dao_links_existing_user() {
 
     // Should be the same user, with OAuth linked
     assert_eq!(user.email, "existing@test.com");
-    assert_eq!(user.username, "existing"); // keeps original username
+    assert_eq!(user.username, original.username); // keeps original internal reference
+    assert_eq!(user.id, original.id);
     assert_eq!(user.oauth_providers.len(), 1);
     assert_eq!(user.oauth_providers[0].provider, "github");
     assert_eq!(user.oauth_providers[0].provider_id, "gh-456");
