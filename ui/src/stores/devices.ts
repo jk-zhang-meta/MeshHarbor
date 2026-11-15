@@ -3,6 +3,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
+import { mergeNameSync, type NameSync } from '@/utils/nameSync'
 
 /**
  * The unified devices-grid feed (`GET /tenant/{tid}/device`): agents +
@@ -22,6 +23,7 @@ export interface DeviceRow {
   id: string
   owner_user_id: string
   name: string
+  name_sync?: NameSync
   display_name?: string
   tags?: string[]
   machine_id: string
@@ -90,7 +92,10 @@ export const useDeviceStore = defineStore('devices', () => {
         `/tenant/${tenantId}/device?${params.toString()}`,
       )
       if (seq !== fetchSeq) return // a newer fetch superseded this one
-      items.value = data.items
+      items.value = data.items.map((incoming) => {
+        const current = items.value.find((row) => row.id === incoming.id && row.kind === incoming.kind)
+        return current ? mergeNameSync(current, incoming) : incoming
+      })
       total.value = data.total
       page.value = data.page
       perPage.value = data.per_page
@@ -120,7 +125,7 @@ export const useDeviceStore = defineStore('devices', () => {
   /** Merge a fresh row (e.g. from an edit response) into the current page. */
   function patchRow(partial: Partial<DeviceRow> & { id: string }) {
     const row = items.value.find((r) => r.id === partial.id)
-    if (row) Object.assign(row, partial)
+    if (row) Object.assign(row, mergeNameSync(row, partial))
   }
 
   return {

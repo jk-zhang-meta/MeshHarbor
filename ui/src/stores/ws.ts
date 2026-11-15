@@ -16,6 +16,7 @@ import { useAgentStore } from './agents'
 import { useDeviceStore } from './devices'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { callEndedByPlanMessage, callEndingSoonMessage } from '@/utils/meetingCap'
+import type { NameSync } from '@/utils/nameSync'
 
 type WsStatus = 'disconnected' | 'connecting' | 'connected'
 
@@ -295,6 +296,13 @@ export const useWsStore = defineStore('ws', () => {
       case 'notification:unread_count': {
         const ncData = msg.data as { count: number }
         notificationStore.setUnreadCount(ncData.count)
+        break
+      }
+      case 'device:name': {
+        const update = msg.data as { tenant_id: string; agent_id: string; name: string; name_sync: NameSync }
+        if (update?.tenant_id !== useTenantStore().current?.id || !update.agent_id || typeof update.name !== 'string' || !update.name_sync) break
+        useAgentStore().applyNameSync(update)
+        useDeviceStore().patchRow({ id: update.agent_id, name: update.name, name_sync: update.name_sync })
         break
       }
       case 'device:presence': {

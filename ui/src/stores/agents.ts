@@ -7,6 +7,7 @@ import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'
 import { isKeepBusyPattern, type KeepBusyPattern } from '@/composables/keepBusy'
 import type { AgentReleaseBrief } from '@/utils/updateStall'
+import { mergeNameSync, type NameSync } from '@/utils/nameSync'
 
 /**
  * The three org-level switches (`exec-settings`, `ssh-settings`,
@@ -300,6 +301,7 @@ export interface Agent {
   tenant_id: string
   owner_user_id: string
   name: string
+  name_sync?: NameSync
   /** Admin-set friendly label; display-only (the technical `name` is what
    *  MagicDNS derives from). Absent = show `name`. */
   display_name?: string
@@ -954,7 +956,10 @@ export const useAgentStore = defineStore('agents', () => {
       // agents the rich-store lookups degrade again; the unified /device
       // endpoint is the paginated path for that scale.
       const resp = await api.get<AgentListResponse>(`/tenant/${tenantId}/agent?per_page=100`)
-      agents.value = resp.items
+      agents.value = resp.items.map((incoming) => {
+        const current = agents.value.find((a) => a.id === incoming.id && a.tenant_id === incoming.tenant_id)
+        return current ? mergeNameSync(current, incoming) : incoming
+      })
       total.value = resp.total
     } catch (e) {
       error.value = (e as Error).message
@@ -1022,7 +1027,7 @@ export const useAgentStore = defineStore('agents', () => {
       agents.value.push(fetched)
       return agents.value[agents.value.length - 1]!
     }
-    agents.value[idx] = { ...agents.value[idx]!, ...fetched }
+    agents.value[idx] = mergeNameSync(agents.value[idx]!, fetched)
     return agents.value[idx]!
   }
 
@@ -1039,9 +1044,7 @@ export const useAgentStore = defineStore('agents', () => {
   }
 
   async function rename(tenantId: string, agentId: string, name: string) {
-    await api.put(`/tenant/${tenantId}/agent/${agentId}`, { name })
-    const idx = agents.value.findIndex((a) => a.id === agentId)
-    if (idx !== -1) agents.value[idx]!.name = name
+    await updateDevice(tenantId, agentId, { name })
   }
 
   /** Name / display_name / tags in one PUT (the device edit dialog). Reads
@@ -1054,28 +1057,36 @@ export const useAgentStore = defineStore('agents', () => {
     tenantId: string,
     agentId: string,
     fields: { name?: string; display_name?: string; tags?: string[] },
-  ): Promise<{ dnsRenamed?: boolean; dnsName?: string }> {
+  ): Promise<{ dnsRenamed?: boolean; dnsName?: string; nameSync?: NameSync }> {
     const resp = await api.put<{
       updated?: boolean
       agent?: Agent
       dns_renamed?: boolean | null
       dns_name?: string | null
+      name_sync?: NameSync
     }>(`/tenant/${tenantId}/agent/${agentId}`, fields)
     const idx = agents.value.findIndex((a) => a.id === agentId)
     if (idx !== -1) {
       if (resp?.agent) {
-        agents.value[idx] = { ...agents.value[idx]!, ...resp.agent }
+        agents.value[idx] = mergeNameSync(agents.value[idx]!, resp.agent)
       } else {
         if (fields.name !== undefined) agents.value[idx]!.name = fields.name
         if (fields.display_name !== undefined)
           agents.value[idx]!.display_name = fields.display_name || undefined
         if (fields.tags !== undefined) agents.value[idx]!.tags = fields.tags
+        if (resp?.name_sync) agents.value[idx]!.name_sync = resp.name_sync
       }
     }
     return {
       dnsRenamed: resp?.dns_renamed ?? undefined,
       dnsName: resp?.dns_name ?? undefined,
+      nameSync: resp?.name_sync ?? resp?.agent?.name_sync,
     }
+  }
+
+  function applyNameSync(update: { tenant_id: string; agent_id: string; name: string; name_sync: NameSync }) {
+    const idx = agents.value.findIndex((a) => a.id === update.agent_id && a.tenant_id === update.tenant_id)
+    if (idx !== -1) agents.value[idx] = mergeNameSync(agents.value[idx]!, { name: update.name, name_sync: update.name_sync })
   }
 
   async function updateAccessPolicy(
@@ -1877,6 +1888,7 @@ export const useAgentStore = defineStore('agents', () => {
     issueEnrollmentToken,
     rename,
     updateDevice,
+    applyNameSync,
     updateAccessPolicy,
     updateRoutes,
     updateOwner,

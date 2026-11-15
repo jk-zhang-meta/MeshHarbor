@@ -187,6 +187,7 @@
                 {{ rowPresenceIcon(item) }}
               </v-icon>
               <span class="font-weight-medium">{{ deviceLabel(item) }}</span>
+              <DeviceNameSyncStatus v-if="item.kind === 'agent' && item.name_sync" :sync="item.name_sync" class="ml-2" />
               <!-- FR-51 — the vanishing must never be a surprise: this device
                    removes itself (reaped after silence; immediately on a clean
                    stop), and a later enrollment is a NEW device. -->
@@ -552,6 +553,7 @@
                 </v-icon>
                 <div class="flex-grow-1 device-card__head">
                   <div class="font-weight-medium text-break">{{ deviceLabel(item) }}</div>
+                  <DeviceNameSyncStatus v-if="item.kind === 'agent' && item.name_sync" :sync="item.name_sync" />
                   <div class="text-caption text-medium-emphasis text-break">
                     <span v-if="secondaryDeviceName(item, hideNameWhenDisplay)">{{ item.name }} · </span>
                     <v-icon size="x-small" :icon="osIcon(item.os)" class="mr-1" />{{ item.os }}
@@ -1335,7 +1337,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
@@ -1380,6 +1382,9 @@ import {
 } from '@/composables/useHideDeviceName'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import DeviceEditDialog, { type EditableDevice } from '@/components/admin/DeviceEditDialog.vue'
+import DeviceNameSyncStatus from '@/components/admin/DeviceNameSyncStatus.vue'
+import type { NameSync } from '@/utils/nameSync'
+import { usePolling } from '@/composables/usePolling'
 import DeviceActionsMenu, { type DeviceAction } from './DeviceActionsMenu.vue'
 import DeviceAccessPolicyFields from './DeviceAccessPolicyFields.vue'
 import { policySummary } from './devicePolicy'
@@ -1470,7 +1475,7 @@ const {
 })
 
 function fetchGrid() {
-  deviceStore
+  return deviceStore
     .fetchDevices(props.tenantId, {
       page: gridPage.value,
       perPage: gridPerPage.value,
@@ -1481,6 +1486,19 @@ function fetchGrid() {
     })
     .catch(() => {})
 }
+
+// WebSocket is the live path; only pending rows need polling to recover a
+// dropped acknowledgement event. Hidden tabs and concurrent fetches are skipped.
+usePolling(() => {
+  if (!deviceStore.loading && deviceStore.items.some(row => row.name_sync?.state === 'pending')) return fetchGrid()
+}, 5000)
+function reconcileNameRows() {
+  if (!document.hidden) void fetchGrid()
+}
+onUnmounted(() => {
+  window.removeEventListener('ws:reconnected', reconcileNameRows)
+  document.removeEventListener('visibilitychange', reconcileNameRows)
+})
 
 watch(gridKind, () => {
   if (gridPage.value !== 1) gridPage.value = 1 // options handler fetches
@@ -1652,6 +1670,7 @@ function openEdit(row: DeviceRow) {
     name: row.name,
     display_name: row.display_name,
     tags: row.tags,
+    name_sync: row.name_sync,
   }
   editDialogOpen.value = true
 }
@@ -1662,12 +1681,14 @@ function onDeviceSaved(result: {
   tags: string[]
   dnsRenamed?: boolean
   dnsName?: string
+  nameSync?: NameSync
 }) {
   deviceStore.patchRow({
     id: result.id,
     name: result.name,
     display_name: result.display_name,
     tags: result.tags,
+    ...(result.nameSync ? { name_sync: result.nameSync } : {}),
     ...(result.dnsName ? { magic_dns_name: result.dnsName } : {}),
   })
   // Refetch so sort/search reflect the new values server-side.
@@ -2584,6 +2605,8 @@ function loadNetworkStores(tid: string) {
 }
 
 onMounted(() => {
+  window.addEventListener('ws:reconnected', reconcileNameRows)
+  document.addEventListener('visibilitychange', reconcileNameRows)
   // The GRID's own fetch fires from @update:options on mount; the cards have
   // no such event, so below md the first page is fetched here.
   if (mobile.value) fetchGrid()

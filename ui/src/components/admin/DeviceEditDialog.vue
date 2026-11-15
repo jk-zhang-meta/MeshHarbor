@@ -7,6 +7,7 @@
       <v-card-text>
         <v-text-field
           v-model="name"
+          :disabled="saving"
           :label="t('mh.devEdit.name')"
           density="comfortable"
           :hint="nameHint"
@@ -15,6 +16,7 @@
         />
         <v-text-field
           v-model="displayName"
+          :disabled="saving"
           :label="t('mh.devEdit.displayName')"
           density="comfortable"
           :hint="t('mh.devEdit.displayNameHint')"
@@ -23,6 +25,7 @@
         />
         <v-combobox
           v-model="tags"
+          :disabled="saving"
           :label="t('mh.devEdit.tags')"
           multiple
           chips
@@ -34,6 +37,13 @@
         <v-alert v-if="dnsNote" type="info" variant="tonal" density="compact" class="mt-3">
           {{ dnsNote }}
         </v-alert>
+        <div v-if="device.kind === 'agent' && (savedName || device.name_sync)" class="mt-3">
+          <DeviceNameSyncStatus :sync="currentSync" />
+          <p class="text-caption mt-2">{{ t(`mh.nameSync.${syncPresentation.key}Hint`) }}</p>
+          <v-btn v-if="syncPresentation.key === 'failed'" variant="text" size="small" :disabled="dirty || saving" :loading="saving" @click="retryNameSync">
+            {{ t('mh.nameSync.retry') }}
+          </v-btn>
+        </div>
         <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-3">
           {{ error }}
         </v-alert>
@@ -50,10 +60,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agents'
 import { useTunnelClientStore } from '@/stores/tunnelClients'
+import DeviceNameSyncStatus from './DeviceNameSyncStatus.vue'
+import { nameSyncPresentation, shouldAcceptNameSync, type NameSync } from '@/utils/nameSync'
 
 /** The subset of a device row the dialog edits — works for both kinds. */
 export interface EditableDevice {
@@ -62,6 +74,7 @@ export interface EditableDevice {
   name: string
   display_name?: string
   tags?: string[]
+  name_sync?: NameSync
 }
 
 const props = defineProps<{
@@ -82,6 +95,7 @@ const emit = defineEmits<{
       tags: string[]
       dnsRenamed?: boolean
       dnsName?: string
+      nameSync?: NameSync
     },
   ]
 }>()
@@ -96,16 +110,47 @@ const tags = ref<string[]>([])
 const saving = ref(false)
 const error = ref<string | null>(null)
 const dnsNote = ref<string | null>(null)
+const savedName = ref(false)
+const savedSync = ref<NameSync>()
+const savedSnapshot = ref<{ name: string; display_name?: string; tags?: string[] }>()
+const currentSync = computed(() => {
+  const live = agentStore.agents.find((a) => a.id === props.device?.id && a.tenant_id === props.tenantId)?.name_sync
+  const base = savedSync.value ?? props.device?.name_sync
+  return live && shouldAcceptNameSync(base, live) ? live : base
+})
+const syncPresentation = computed(() => nameSyncPresentation(currentSync.value))
+let poll: ReturnType<typeof setTimeout> | undefined
+let pollGeneration = 0
+function stopPolling() { pollGeneration++; clearTimeout(poll) }
+function pollUntilAcknowledged() {
+  stopPolling()
+  const generation = pollGeneration
+  const target = props.device
+  const tenant = props.tenantId
+  let attempts = 0
+  async function check() {
+    if (generation !== pollGeneration || !props.modelValue || !target || syncPresentation.value.key !== 'pending' || attempts++ >= 30) return
+    try { await agentStore.fetchAgent(tenant, target.id) } catch { /* Leave pending, never invent acknowledgement. */ }
+    if (generation === pollGeneration) poll = setTimeout(check, 2000)
+  }
+  poll = setTimeout(check, 2000)
+}
+onUnmounted(stopPolling)
 
 watch(
   () => [props.modelValue, props.device] as const,
   ([open, device]) => {
+    stopPolling()
     if (open && device) {
       name.value = device.name
       displayName.value = device.display_name ?? ''
       tags.value = [...(device.tags ?? [])]
       error.value = null
       dnsNote.value = null
+      savedName.value = false
+      savedSync.value = undefined
+      savedSnapshot.value = undefined
+      if (device.kind === 'agent') pollUntilAcknowledged()
     }
   },
   { immediate: true },
@@ -118,7 +163,7 @@ const nameHint = computed(() =>
 )
 
 const dirty = computed(() => {
-  const d = props.device
+  const d = savedSnapshot.value ?? props.device
   if (!d) return false
   return (
     name.value.trim() !== d.name ||
@@ -126,6 +171,21 @@ const dirty = computed(() => {
     JSON.stringify(tags.value) !== JSON.stringify(d.tags ?? [])
   )
 })
+
+async function retryNameSync() {
+  const d = props.device
+  if (!d || d.kind !== 'agent' || saving.value || dirty.value) return
+  saving.value = true
+  error.value = null
+  try {
+    const canonical = agentStore.agents.find(a => a.id === d.id && a.tenant_id === props.tenantId)?.name ?? savedSnapshot.value?.name ?? d.name
+    const result = await agentStore.updateDevice(props.tenantId, d.id, { name: canonical })
+    savedName.value = true
+    savedSync.value = result.nameSync
+    pollUntilAcknowledged()
+  } catch (e) { error.value = (e as Error).message }
+  finally { saving.value = false }
+}
 
 async function save() {
   const d = props.device
@@ -138,16 +198,23 @@ async function save() {
   saving.value = true
   error.value = null
   try {
+    const previous = savedSnapshot.value ?? d
     const fields: { name?: string; display_name?: string; tags?: string[] } = {}
-    if (trimmed !== d.name) fields.name = trimmed
+    if (trimmed !== previous.name) fields.name = trimmed
     // Empty string CLEARS the display name (the server's convention).
-    if (displayName.value.trim() !== (d.display_name ?? ''))
+    if (displayName.value.trim() !== (previous.display_name ?? ''))
       fields.display_name = displayName.value.trim()
-    if (JSON.stringify(tags.value) !== JSON.stringify(d.tags ?? [])) fields.tags = tags.value
+    if (JSON.stringify(tags.value) !== JSON.stringify(previous.tags ?? [])) fields.tags = tags.value
     const result =
       d.kind === 'agent'
         ? await agentStore.updateDevice(props.tenantId, d.id, fields)
         : await tunnelClientStore.updateClient(props.tenantId, d.id, fields)
+    const nameSync = 'nameSync' in result ? result.nameSync as NameSync | undefined : undefined
+    if (d.kind === 'agent' && fields.name !== undefined) {
+      savedName.value = true
+      savedSync.value = nameSync
+      pollUntilAcknowledged()
+    }
     if (fields.name !== undefined) {
       if (result.dnsRenamed && result.dnsName) {
         dnsNote.value = t('mh.devEdit.dnsRenamed', { name: result.dnsName })
@@ -155,6 +222,7 @@ async function save() {
         dnsNote.value = t('mh.devEdit.dnsKept')
       }
     }
+    savedSnapshot.value = { name: trimmed, display_name: displayName.value.trim(), tags: [...tags.value] }
     emit('saved', {
       id: d.id,
       kind: d.kind,
@@ -163,9 +231,10 @@ async function save() {
       tags: tags.value,
       dnsRenamed: result.dnsRenamed,
       dnsName: result.dnsName,
+      nameSync,
     })
     // Keep the dialog open only when there's a DNS note worth reading.
-    if (!dnsNote.value) emit('update:modelValue', false)
+    if (!dnsNote.value && !savedName.value) emit('update:modelValue', false)
   } catch (e) {
     error.value = (e as Error).message
   } finally {
