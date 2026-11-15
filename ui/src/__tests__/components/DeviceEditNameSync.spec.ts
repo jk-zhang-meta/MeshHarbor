@@ -30,6 +30,10 @@ async function openAndSave() {
   await flushPromises()
   return agents
 }
+async function switchToAnotherDevice() {
+  await wrapper!.setProps({ modelValue: false })
+  await wrapper!.setProps({ modelValue: true, tenantId: 'other-tenant', device: { kind: 'agent', id: 'b', name: 'device-B' } })
+}
 describe('rename dialog acknowledgement lifecycle', () => {
   it('keeps pending visible after save, then reflects live device acknowledgement', async () => {
     const agents = await openAndSave()
@@ -61,5 +65,61 @@ describe('rename dialog acknowledgement lifecycle', () => {
     await flushPromises()
     expect(api.put).toHaveBeenLastCalledWith('/tenant/t/agent/a', { name: 'new' })
     expect(wrapper!.text()).toContain('Name sync pending')
+  })
+  it.each(['success', 'failure'] as const)('isolates a delayed %s response from a different open device and tenant', async outcome => {
+    await openAndSave()
+    let resolve!: (value: unknown) => void
+    let reject!: (reason: Error) => void
+    vi.mocked(api.put).mockImplementation(() => new Promise((yes, no) => { resolve = yes; reject = no }) as never)
+    await wrapper!.findAll('input')[0]!.setValue('A-second-name')
+    await wrapper!.findAll('button').find(b => b.text() === 'Save')!.trigger('click')
+    const events = wrapper!.emitted('saved')!.length
+    await switchToAnotherDevice()
+    if (outcome === 'success') resolve({ name_sync: { ...pending, revision: '3', acked_revision: '3', state: 'synced' } })
+    else reject(new Error('A-only-error'))
+    await flushPromises()
+    expect((wrapper!.findAll('input')[0]!.element as HTMLInputElement).value).toBe('device-B')
+    expect(wrapper!.text()).not.toContain('Name synced')
+    expect(wrapper!.text()).not.toContain('A-only-error')
+    expect(wrapper!.emitted('saved')!.length).toBe(events)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(api.get).not.toHaveBeenCalled()
+  })
+  it('isolates a delayed retry result from the next dialog', async () => {
+    const agents = await openAndSave()
+    agents.applyNameSync({ tenant_id: 't', agent_id: 'a', name: 'new', name_sync: { ...pending, event_seq: '4', state: 'failed' } })
+    await flushPromises()
+    let resolve!: (value: unknown) => void
+    vi.mocked(api.put).mockImplementation(() => new Promise(yes => { resolve = yes }) as never)
+    await wrapper!.findAll('button').find(b => b.text() === 'Retry name sync')!.trigger('click')
+    await switchToAnotherDevice()
+    resolve({ name_sync: { revision: '3', acked_revision: '3', event_seq: '5', state: 'synced' } })
+    await flushPromises()
+    expect(wrapper!.text()).not.toContain('Name synced')
+    expect((wrapper!.findAll('input')[0]!.element as HTMLInputElement).value).toBe('device-B')
+  })
+  it('recovers an acknowledgement after a device has been offline for more than a minute', async () => {
+    await openAndSave()
+    vi.mocked(api.get).mockResolvedValue({ id: 'a', tenant_id: 't', name: 'new', name_sync: pending })
+    await vi.advanceTimersByTimeAsync(65000)
+    expect(wrapper!.text()).toContain('Name sync pending')
+    vi.mocked(api.get).mockResolvedValue({ id: 'a', tenant_id: 't', name: 'new', name_sync: { ...pending, acked_revision: '2', event_seq: '4', state: 'synced' } })
+    await vi.advanceTimersByTimeAsync(15000)
+    await flushPromises()
+    expect(wrapper!.text()).toContain('Name synced')
+  })
+  it('skips hidden-tab reads and resumes on visibility and websocket recovery', async () => {
+    await openAndSave()
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(api.get).not.toHaveBeenCalled()
+    hidden.mockReturnValue(false)
+    vi.mocked(api.get).mockResolvedValue({ id: 'a', tenant_id: 't', name: 'new', name_sync: { ...pending, acked_revision: '2', event_seq: '4', state: 'synced' } })
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('ws:reconnected'))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(wrapper!.text()).toContain('Name synced')
+    hidden.mockRestore()
   })
 })

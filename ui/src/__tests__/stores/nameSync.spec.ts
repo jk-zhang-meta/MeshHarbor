@@ -44,4 +44,34 @@ describe('name synchronization across HTTP and realtime updates', () => {
     expect(result.nameSync?.state).toBe('pending')
     expect(s.agents[0]!.name_sync).toEqual(next)
   })
+  it('does not reuse the previous name acknowledgement when an older server only acknowledges its write', async () => {
+    const s = useAgentStore()
+    s.agents = [row()]
+    vi.mocked(api.put).mockResolvedValue({ updated: true })
+    const result = await s.updateDevice('t', 'a', { name: 'legacy-save' })
+    expect(result.nameSync).toBeUndefined()
+    expect(result.nameSyncUnverified).toBe(true)
+    expect(s.agents[0]!.name).toBe('legacy-save')
+    expect(s.agents[0]!.name_sync).toBeUndefined()
+  })
+  it('clears the previous grid acknowledgement only for an explicit unverified save', () => {
+    const s = useDeviceStore()
+    s.items = [{ ...row(), kind: 'agent' } as unknown as DeviceRow]
+    s.patchRow({ id: 'a', name: 'legacy-save' }, true)
+    expect(s.items[0]!.name).toBe('legacy-save')
+    expect(s.items[0]!.name_sync).toBeUndefined()
+  })
+  it('keeps a newer realtime rename if a legacy-shaped save response arrives afterwards', async () => {
+    const s = useAgentStore()
+    s.agents = [row()]
+    let complete!: (value: unknown) => void
+    vi.mocked(api.put).mockImplementation(() => new Promise(resolve => { complete = resolve }) as never)
+    const saving = s.updateDevice('t', 'a', { name: 'older-save' })
+    const newer = { ...applied, revision: '3', acked_revision: '3', event_seq: '5' }
+    s.applyNameSync({ tenant_id: 't', agent_id: 'a', name: 'newer-event', name_sync: newer })
+    complete({ updated: true })
+    await saving
+    expect(s.agents[0]!.name).toBe('newer-event')
+    expect(s.agents[0]!.name_sync).toEqual(newer)
+  })
 })
