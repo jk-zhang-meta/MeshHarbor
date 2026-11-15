@@ -1383,7 +1383,7 @@ import {
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import DeviceEditDialog, { type EditableDevice } from '@/components/admin/DeviceEditDialog.vue'
 import DeviceNameSyncStatus from '@/components/admin/DeviceNameSyncStatus.vue'
-import type { NameSync } from '@/utils/nameSync'
+import { sameNameSyncSnapshot, type NameSync } from '@/utils/nameSync'
 import { usePolling } from '@/composables/usePolling'
 import DeviceActionsMenu, { type DeviceAction } from './DeviceActionsMenu.vue'
 import DeviceAccessPolicyFields from './DeviceAccessPolicyFields.vue'
@@ -1683,9 +1683,10 @@ function onDeviceSaved(result: {
   dnsName?: string
   nameSync?: NameSync
   nameSyncUnverified?: boolean
+  nameSyncBefore?: NameSync
 }) {
   const row = deviceStore.items.find(row => row.id === result.id)
-  const unverifiedSave = result.nameSyncUnverified && (!row || row.name === result.name || row.name_sync === editTarget.value?.name_sync)
+  const unverifiedSave = result.nameSyncUnverified && sameNameSyncSnapshot(row?.name_sync, result.nameSyncBefore)
   deviceStore.patchRow({
     id: result.id,
     name: result.name,

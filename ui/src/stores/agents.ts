@@ -1067,7 +1067,7 @@ export const useAgentStore = defineStore('agents', () => {
       name_sync?: NameSync
     }>(`/tenant/${tenantId}/agent/${agentId}`, fields)
     const idx = agents.value.findIndex((a) => a.id === agentId)
-    let nameSyncUnverified = false
+    let nameSyncUnverified = fields.name !== undefined && !resp?.name_sync && !resp?.agent?.name_sync
     if (idx !== -1) {
       if (resp?.agent) {
         agents.value[idx] = mergeNameSync(agents.value[idx]!, resp.agent)
@@ -1085,6 +1085,7 @@ export const useAgentStore = defineStore('agents', () => {
         agents.value[idx]!.name_sync = undefined
         nameSyncUnverified = true
       }
+      else if (nameSyncUnverified && agents.value[idx]!.name_sync !== beforeSync) nameSyncUnverified = false
     }
     return {
       dnsRenamed: resp?.dns_renamed ?? undefined,

@@ -39,6 +39,12 @@ export function mergeNameSync<T extends { name: string; name_sync?: NameSync }>(
   return merged
 }
 
+/** Only clear evidence captured before this save, never a newer live ACK. */
+export function sameNameSyncSnapshot(current?: NameSync, before?: NameSync): boolean {
+  return current === before || !!(current && before && current.event_seq !== undefined &&
+    current.event_seq === before.event_seq && current.revision === before.revision)
+}
+
 export function nameSyncPresentation(sync?: NameSync) {
   const key = sync?.scope === 'organization_alias' ? 'organizationAlias'
     : !sync || revision(sync.revision) === null ? 'unverified'
