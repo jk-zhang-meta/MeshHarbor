@@ -11254,6 +11254,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
     async fn member(
         mut ws: Ws,
         agent: String,
+        tenant: String,
         other_agent: ObjectId,
         endpoint: String,
         key: WgKeypair,
@@ -11339,7 +11340,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                         if let ServerMsg::OverlayRelayGrant{peer_node_id,..}|ServerMsg::OverlayForceDerp{peer_node_id,..}=&message {
                             assert_ne!(Some(*peer_node_id),*expected_peer.lock().unwrap(),"server offered forbidden fallback for cross-zone pair");
                         }
-                        let _=meshharbord::overlay::intercept(&pump_events,message,true,&agent);
+                        let _=meshharbord::overlay::intercept(&pump_events,message,true,&agent,&tenant);
                     }
                     Some(Ok(Message::Ping(data)))=>ws.send(Message::Pong(data)).await.unwrap(),
                     Some(Ok(Message::Pong(_)))=>{},
@@ -11727,8 +11728,8 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         assert_observed(&rig.app,&a_agent,Some(CN_A)).await;
         assert_observed(&rig.app,&b_agent,Some(US_A)).await;
         let a_agent_id=ObjectId::parse_str(&a_agent).unwrap();let b_agent_id=ObjectId::parse_str(&b_agent).unwrap();
-        let a=member(a_ws,a_agent,b_agent_id,"223.5.5.5:41641".into(),WgKeypair::generate(),&mut tasks,("memberA",trace.0.clone())).await;
-        let b=member(b_ws,b_agent,a_agent_id,"8.8.8.8:41641".into(),WgKeypair::generate(),&mut tasks,("memberB",trace.0.clone())).await;
+        let a=member(a_ws,a_agent,rig.seeded.tenant_id.clone(),b_agent_id,"223.5.5.5:41641".into(),WgKeypair::generate(),&mut tasks,("memberA",trace.0.clone())).await;
+        let b=member(b_ws,b_agent,rig.seeded.tenant_id.clone(),a_agent_id,"8.8.8.8:41641".into(),WgKeypair::generate(),&mut tasks,("memberB",trace.0.clone())).await;
         let a_node=rig.node(&format!("{slug}-a")).await;let b_node=rig.node(&format!("{slug}-b")).await;
         trace.0.bind("memberA",&a_node);trace.0.bind("memberB",&b_node);
         let a_id=ObjectId::parse_str(&a_node).unwrap();let b_id=ObjectId::parse_str(&b_node).unwrap();
