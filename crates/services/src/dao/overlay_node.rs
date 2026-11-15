@@ -463,7 +463,7 @@ impl OverlayNodeDao {
                     .retired_wg_keys
                     .iter()
                     .any(|k| k.public_key == current.wg_public_key);
-            let filter = cas_row_filter(
+            let mut filter = cas_row_filter(
                 node_id,
                 &current.wg_public_key,
                 current.key_epoch,
@@ -475,10 +475,6 @@ impl OverlayNodeDao {
             let node_ref_bson = bson::to_bson(node_ref).unwrap_or(bson::Bson::Null);
             let mut set_doc = doc! {
                 "node_ref": node_ref_bson,
-                // Phase 0 — the join handler passes the stable name
-                // (existing name reused, or a freshly deduped one when
-                // backfilling a pre-Phase-0 row).
-                "name": name,
                 // Phase 1 — refresh the CLAIMED routes on each join.
                 // `approved_routes` is admin-controlled and intentionally
                 // NOT touched here, so approvals survive a rejoin.
@@ -539,6 +535,16 @@ impl OverlayNodeDao {
                 "last_seen_at": now,
                 "updated_at": now,
             };
+            // A normal join carries a possibly stale captured DNS name.
+            // Preserve the current nonempty database name atomically: omit it
+            // from the update entirely. Only legacy empty/missing names can
+            // be backfilled, guarded in the SAME predicate as the key CAS.
+            if current.name.is_empty() {
+                filter = doc! { "$and": [filter, { "$or": [
+                    {"name": ""}, {"name": {"$exists": false}}
+                ] }] };
+                set_doc.insert("name", name);
+            }
             if wg_public_key != current.wg_public_key {
                 let effective_ttl = current.key_ttl_secs.or_else(default_key_ttl_secs);
                 set_doc.insert("key_issued_at", now);
