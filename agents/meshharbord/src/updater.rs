@@ -1508,13 +1508,15 @@ fn is_stale(age: Duration) -> bool {
 /// [`discard_staging`].
 #[cfg(target_os = "windows")]
 pub fn sweep_stale_update_staging_at_start() {
-    let journal = crate::post_install::outcome_path()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
-    sweep_stale_update_staging_in(
-        &std::env::temp_dir(),
-        journal.as_deref(),
-        STALE_STAGING_DIR_AGE,
-    );
+    let Some(journal) = crate::post_install::outcome_path()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
+        tracing::debug!(
+            "update: skipping staging sweep because install-owner journal path is unavailable"
+        );
+        return;
+    };
+    sweep_stale_update_staging_in(&std::env::temp_dir(), &journal, STALE_STAGING_DIR_AGE);
 }
 
 #[cfg(target_os = "windows")]
@@ -1527,76 +1529,119 @@ fn is_staging_dir_in(base: &std::path::Path, dir: &std::path::Path) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn can_sweep_windows_staging_dir(
+fn acquire_windows_owner_lock(
+    journal: &std::path::Path,
+    wait: Duration,
+) -> Result<std::fs::File> {
+    std::fs::create_dir_all(journal)?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(journal.join("install-owner.lock"))?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                return Err(err).context("another installer owner claim or sweep is in progress");
+            }
+        }
+    }
+}
+
+/// Inspect, retire any matching terminal active pointer, and delete `dir` while
+/// continuously holding `install-owner.lock` so a concurrent `self-update`
+/// cannot create or claim an owner inside `dir` across inspection and removal.
+#[cfg(target_os = "windows")]
+fn try_sweep_windows_staging_dir(
     dir: &std::path::Path,
-    journal: Option<&std::path::Path>,
+    journal: &std::path::Path,
 ) -> bool {
+    let Ok(_lock) = acquire_windows_owner_lock(journal, Duration::ZERO) else {
+        return false;
+    };
+    let Ok(dir_meta) = std::fs::symlink_metadata(dir) else {
+        return false;
+    };
+    if !dir_meta.is_dir() {
+        return false;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    let mut has_owner_entries = false;
     for item in entries {
         let Ok(entry) = item else {
             return false;
         };
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|n| n.starts_with("install-owner-"))
-        {
-            has_owner_entries = true;
-            if !entry.file_type().is_ok_and(|t| t.is_dir())
-                || verify_windows_owner_terminal(&entry.path()).is_err()
-            {
-                return false;
-            }
-        }
-    }
-    if has_owner_entries && journal.is_none() {
-        return false;
-    }
-    if let Some(journal) = journal
-        && journal.exists()
-    {
-        let Ok(lock) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(journal.join("install-owner.lock"))
-        else {
+        let Ok(ft) = entry.file_type() else {
             return false;
         };
-        if lock.try_lock().is_err() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with("install-owner-")
+            && (!ft.is_dir() || verify_windows_owner_terminal(&entry.path()).is_err())
+        {
             return false;
         }
-        let active = journal.join("install-owner-active.json");
-        if active.exists() {
-            let Ok(bytes) = std::fs::read(&active) else {
-                return false;
-            };
+    }
+
+    let active = journal.join("install-owner-active.json");
+    match std::fs::read(&active) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            // Non-NotFound error (sharing violation, permission denied, I/O error):
+            // preserve staging rather than risk creating a dangling pointer.
+            return false;
+        }
+        Ok(bytes) => {
             let Ok(previous) = serde_json::from_slice::<std::path::PathBuf>(&bytes) else {
                 return false;
             };
-            let prev_key = normalize_windows_path_key(&previous);
-            let dir_key = normalize_windows_path_key(dir);
-            if prev_key.starts_with(&dir_key) {
+            if normalize_windows_path_key(&previous)
+                .starts_with(normalize_windows_path_key(dir))
+            {
                 if verify_windows_owner_terminal(&previous).is_err() {
                     return false;
                 }
-                if std::fs::remove_file(&active).is_err() {
+                if let Err(e) = std::fs::remove_file(&active)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
                     return false;
                 }
             }
         }
     }
-    true
+
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => {
+            tracing::info!(
+                dir = %dir.display(),
+                "update: removed a staging dir left by a prior update"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                dir = %dir.display(),
+                "update: could not remove a stale staging dir"
+            );
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn sweep_stale_update_staging_in(
     base: &std::path::Path,
-    journal: Option<&std::path::Path>,
+    journal: &std::path::Path,
     min_age: Duration,
 ) {
     let entries = match std::fs::read_dir(base) {
@@ -1625,23 +1670,11 @@ fn sweep_stale_update_staging_in(
         if !age.is_some_and(|a| a >= min_age) {
             continue;
         }
-        if !can_sweep_windows_staging_dir(&dir, journal) {
+        if !try_sweep_windows_staging_dir(&dir, journal) {
             tracing::debug!(
                 dir = %dir.display(),
                 "update: keeping staging dir referenced by an unresolved or locked install owner"
             );
-            continue;
-        }
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => tracing::info!(
-                dir = %dir.display(),
-                "update: removed a staging dir left by a prior update"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                dir = %dir.display(),
-                "update: could not remove a stale staging dir"
-            ),
         }
     }
 }
@@ -2918,9 +2951,24 @@ fn owner_record(dir: &std::path::Path, name: &str, value: &impl serde::Serialize
 }
 
 #[cfg(target_os = "windows")]
+fn strip_windows_verbatim_prefix(raw: &str) -> String {
+    if let Some(unc) = raw
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| raw.strip_prefix(r"\\?\unc\"))
+    {
+        format!(r"\\{unc}")
+    } else if let Some(local) = raw.strip_prefix(r"\\?\") {
+        local.to_owned()
+    } else {
+        raw.to_owned()
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn normalize_windows_path_key(path: &std::path::Path) -> std::path::PathBuf {
+    let cleaned = std::path::PathBuf::from(strip_windows_verbatim_prefix(&path.to_string_lossy()));
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut cur = path;
+    let mut cur = cleaned.as_path();
     let resolved = loop {
         if let Ok(canon) = cur.canonicalize() {
             let mut full = canon;
@@ -2930,17 +2978,18 @@ fn normalize_windows_path_key(path: &std::path::Path) -> std::path::PathBuf {
             break full;
         }
         let Some(name) = cur.file_name() else {
-            break path.to_path_buf();
+            break cleaned.clone();
         };
         tail.push(name.to_os_string());
         let Some(parent) = cur.parent() else {
-            break path.to_path_buf();
+            break cleaned.clone();
         };
         cur = parent;
     };
-    let raw = resolved.to_string_lossy();
-    let stripped = raw.strip_prefix(r"\?").unwrap_or(&raw);
-    std::path::PathBuf::from(stripped.to_lowercase())
+    let stripped = strip_windows_verbatim_prefix(&resolved.to_string_lossy());
+    std::path::Path::new(&stripped.to_lowercase())
+        .components()
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -2980,13 +3029,15 @@ fn swept_windows_owner_verified_via_outcome(
     journal: &std::path::Path,
     previous: &std::path::Path,
 ) -> bool {
-    if previous.exists() {
-        return false;
+    match std::fs::symlink_metadata(previous) {
+        Ok(_) => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
     }
     if !previous
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("install-owner-"))
+        .is_some_and(|n| n.to_ascii_lowercase().starts_with("install-owner-"))
     {
         return false;
     }
@@ -2996,9 +3047,17 @@ fn swept_windows_owner_verified_via_outcome(
     if !prev_stage
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with(STAGING_DIR_PREFIX))
+        .is_some_and(|n| {
+            n.to_ascii_lowercase()
+                .starts_with(&STAGING_DIR_PREFIX.to_ascii_lowercase())
+        })
     {
         return false;
+    }
+    match std::fs::symlink_metadata(prev_stage) {
+        Ok(_) => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
     }
     let Ok(bytes) = std::fs::read(journal.join("last-install.json")) else {
         return false;
@@ -3015,25 +3074,67 @@ fn swept_windows_owner_verified_via_outcome(
     normalize_windows_path_key(prev_stage) == normalize_windows_path_key(last_stage)
 }
 
+#[cfg(target_os = "windows")]
+fn create_windows_owner_dir_locked(
+    journal: &std::path::Path,
+    installer: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let _lock = acquire_windows_owner_lock(journal, Duration::from_millis(500))?;
+    let meta = std::fs::symlink_metadata(installer)
+        .context("staged installer missing before creating install owner")?;
+    anyhow::ensure!(meta.is_file(), "staged installer is not a regular file");
+    let parent = installer
+        .parent()
+        .context("installer has no staging directory")?;
+    Ok(tempfile::Builder::new()
+        .prefix("install-owner-")
+        .tempdir_in(parent)?
+        .keep())
+}
+
 // Serialize the small durable claim, not the whole install. The pointer
 // survives caller/daemon death; only an exact observed terminal releases it.
 #[cfg(target_os = "windows")]
 fn claim_windows_owner(journal: &std::path::Path, directory: &std::path::Path) -> Result<()> {
     use std::io::Write;
-    std::fs::create_dir_all(journal)?;
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(journal.join("install-owner.lock"))?;
-    lock.try_lock()
-        .context("another installer owner claim is in progress")?;
+    let _lock = acquire_windows_owner_lock(journal, Duration::from_millis(500))?;
+    let dir_meta = std::fs::symlink_metadata(directory)
+        .context("candidate install owner directory missing before claim")?;
+    anyhow::ensure!(
+        dir_meta.is_dir(),
+        "candidate install owner path is not a directory"
+    );
+    if directory
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| {
+            n.to_ascii_lowercase()
+                .starts_with(&STAGING_DIR_PREFIX.to_ascii_lowercase())
+        })
+    {
+        let req_bytes = std::fs::read(directory.join("request.json"))
+            .context("candidate install owner request.json missing before claim")?;
+        let req: WindowsOwnerRequest = serde_json::from_slice(&req_bytes)
+            .context("candidate install owner request.json invalid")?;
+        let inst_meta = std::fs::symlink_metadata(&req.installer)
+            .context("candidate staged installer missing before claim")?;
+        anyhow::ensure!(
+            inst_meta.is_file(),
+            "candidate staged installer path is not a regular file"
+        );
+    }
+
     let active = journal.join("install-owner-active.json");
-    if active.exists() {
-        let previous: std::path::PathBuf = serde_json::from_slice(&std::fs::read(&active)?)?;
-        if !swept_windows_owner_verified_via_outcome(journal, &previous) {
-            verify_windows_owner_terminal(&previous)?;
+    match std::fs::read(&active) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("reading active install owner pointer"),
+        Ok(bytes) => {
+            let previous: std::path::PathBuf =
+                serde_json::from_slice(&bytes).context("parsing active install owner pointer")?;
+            if !swept_windows_owner_verified_via_outcome(journal, &previous) {
+                verify_windows_owner_terminal(&previous)?;
+            }
         }
     }
     let mut replacement = tempfile::NamedTempFile::new_in(journal)?;
@@ -3049,8 +3150,10 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
     use std::os::windows::process::CommandExt;
     let origin = std::env::current_exe()?.canonicalize()?;
     let installer = installer.canonicalize()?;
-    let parent = installer.parent().context("installer has no staging directory")?;
-    let dir = tempfile::Builder::new().prefix("install-owner-").tempdir_in(parent)?.keep();
+    let journal = crate::post_install::outcome_path()
+        .context("install owner outcome location unavailable")?;
+    let journal_dir = journal.parent().context("outcome has no parent")?;
+    let dir = create_windows_owner_dir_locked(journal_dir, &installer)?;
     let launch = dir.join("meshharbord-owner.exe");
     std::fs::copy(&origin, &launch).context("staging independent install owner")?;
     let request = WindowsOwnerRequest {
@@ -3059,8 +3162,7 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
         digest: format!("sha256:{:x}", Sha256::digest(std::fs::read(&installer)?)),
     };
     owner_record(&dir, "request.json", &request)?;
-    let journal = crate::post_install::outcome_path().context("install owner outcome location unavailable")?;
-    claim_windows_owner(journal.parent().context("outcome has no parent")?, &dir)?;
+    claim_windows_owner(journal_dir, &dir)?;
     let stdout = std::fs::File::create(dir.join("stdout.log"))?;
     let stderr = std::fs::File::create(dir.join("stderr.log"))?;
     let mut command = std::process::Command::new(launch);
@@ -7236,16 +7338,13 @@ mod install_owner_fence_tests {
             .tempdir_in(&base)
             .unwrap()
             .keep();
-        let owner = tempfile::Builder::new()
-            .prefix("install-owner-")
-            .tempdir_in(&stage)
-            .unwrap()
-            .keep();
         let installer = stage.join("meshharbor-0.4.162-x86_64-pc-windows-msvc.msi");
         std::fs::write(&installer, b"msi").unwrap();
+        let installer_canon = installer.canonicalize().unwrap();
+        let owner = create_windows_owner_dir_locked(&journal, &installer_canon).unwrap();
         let request = WindowsOwnerRequest {
-            installer: installer.canonicalize().unwrap(),
-            origin: installer.canonicalize().unwrap(),
+            installer: installer_canon.clone(),
+            origin: installer_canon,
             expected_version: "agent-v0.4.162".into(),
             digest: "sha256:fixture".into(),
         };
@@ -7254,7 +7353,7 @@ mod install_owner_fence_tests {
         claim_windows_owner(&journal, &owner_canon).unwrap();
 
         // Unresolved owner (no terminal.json): sweep must keep both stage and active pointer.
-        sweep_stale_update_staging_in(&base, Some(&journal), Duration::ZERO);
+        sweep_stale_update_staging_in(&base, &journal, Duration::ZERO);
         assert!(stage.exists(), "unresolved owner staging dir must not be swept");
         assert!(journal.join("install-owner-active.json").exists());
 
@@ -7273,7 +7372,7 @@ mod install_owner_fence_tests {
             note: "verified".into(),
         };
         owner_record(&owner, "terminal.json", &terminal).unwrap();
-        sweep_stale_update_staging_in(&base, Some(&journal), Duration::ZERO);
+        sweep_stale_update_staging_in(&base, &journal, Duration::ZERO);
         assert!(!stage.exists(), "terminal owner staging dir should be swept");
         assert!(
             !journal.join("install-owner-active.json").exists(),
@@ -7292,36 +7391,71 @@ mod install_owner_fence_tests {
         let journal = root.path().join("journal");
         std::fs::create_dir_all(&base).unwrap();
         let swept_stage = base.join(format!("{STAGING_DIR_PREFIX}yuDSCa"));
-        let swept_owner = swept_stage.join("install-owner-jJkQJA");
-        std::fs::create_dir_all(&swept_owner).unwrap();
-        let swept_canon = swept_owner.canonicalize().unwrap();
-        let swept_msi = swept_stage
-            .canonicalize()
-            .unwrap()
-            .join("meshharbor-0.4.161-x86_64-pc-windows-msvc.msi");
-        claim_windows_owner(&journal, &swept_canon).unwrap();
-        // Simulate pre-0.4.163 sweep deleting the staging dir while leaving active pointer behind.
-        std::fs::remove_dir_all(&swept_stage).unwrap();
+        std::fs::create_dir_all(&swept_stage).unwrap();
+        let swept_msi_raw = swept_stage.join("meshharbor-0.4.161-x86_64-pc-windows-msvc.msi");
+        std::fs::write(&swept_msi_raw, b"msi").unwrap();
+        let swept_msi = swept_msi_raw.canonicalize().unwrap();
+        assert!(
+            swept_msi.to_string_lossy().starts_with(r"\\?\"),
+            "canonicalized Windows path should exercise verbatim prefix stripping"
+        );
+        let swept_owner = create_windows_owner_dir_locked(&journal, &swept_msi).unwrap();
+        let request = WindowsOwnerRequest {
+            installer: swept_msi.clone(),
+            origin: swept_msi.clone(),
+            expected_version: "agent-v0.4.161".into(),
+            digest: "sha256:fixture".into(),
+        };
+        owner_record(&swept_owner, "request.json", &request).unwrap();
+        claim_windows_owner(&journal, &swept_owner).unwrap();
 
+        // Non-verbatim path key must equal verbatim canonicalized path key.
+        let non_verbatim_stage = swept_stage;
+        assert_eq!(
+            normalize_windows_path_key(&non_verbatim_stage),
+            normalize_windows_path_key(swept_msi.parent().unwrap())
+        );
+
+        // If ONLY owner dir was deleted while staging dir still exists -> stays fenced (not a sweep).
+        std::fs::remove_dir_all(&swept_owner).unwrap();
         let next_owner = root.path().join("next-owner");
         std::fs::create_dir_all(&next_owner).unwrap();
+        let mut outcome = crate::post_install::InstallOutcome {
+            installer_pid: 99,
+            installer_path: non_verbatim_stage
+                .join("meshharbor-0.4.161-x86_64-pc-windows-msvc.msi")
+                .display()
+                .to_string(),
+            expected_version: "agent-v0.4.161".into(),
+            started_unix: 1,
+            finished_unix: Some(2),
+            installer_exit_code: Some(0),
+            new_binary_path: None,
+            new_binary_version: None,
+            status: crate::post_install::InstallStatus::SucceededVerified,
+            note: "verified".into(),
+        };
+        std::fs::write(
+            journal.join("last-install.json"),
+            serde_json::to_vec(&outcome).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            claim_windows_owner(&journal, &next_owner).is_err(),
+            "missing owner inside a still-existing staging dir must stay fenced"
+        );
+
+        // Now simulate pre-0.4.163 sweep deleting the entire staging dir while leaving active pointer behind.
+        std::fs::remove_dir_all(&non_verbatim_stage).unwrap();
+        std::fs::remove_file(journal.join("last-install.json")).unwrap();
 
         // Without last-install.json -> stays fenced.
         assert!(claim_windows_owner(&journal, &next_owner).is_err());
 
         // With InProgress last-install.json -> stays fenced.
-        let mut outcome = crate::post_install::InstallOutcome {
-            installer_pid: 99,
-            installer_path: swept_msi.display().to_string(),
-            expected_version: "agent-v0.4.161".into(),
-            started_unix: 1,
-            finished_unix: None,
-            installer_exit_code: None,
-            new_binary_path: None,
-            new_binary_version: None,
-            status: crate::post_install::InstallStatus::InProgress,
-            note: "in progress".into(),
-        };
+        outcome.finished_unix = None;
+        outcome.installer_exit_code = None;
+        outcome.status = crate::post_install::InstallStatus::InProgress;
         std::fs::write(
             journal.join("last-install.json"),
             serde_json::to_vec(&outcome).unwrap(),
@@ -7342,13 +7476,157 @@ mod install_owner_fence_tests {
         .unwrap();
         assert!(claim_windows_owner(&journal, &next_owner).is_err());
 
-        // With terminal last-install.json for the EXACT swept staging dir -> heals and claims!
-        outcome.installer_path = swept_msi.display().to_string();
+        // With terminal last-install.json (non-verbatim path vs verbatim active pointer!) -> heals and claims!
+        outcome.installer_path = non_verbatim_stage
+            .join("meshharbor-0.4.161-x86_64-pc-windows-msvc.msi")
+            .display()
+            .to_string();
         std::fs::write(
             journal.join("last-install.json"),
             serde_json::to_vec(&outcome).unwrap(),
         )
         .unwrap();
         claim_windows_owner(&journal, &next_owner).unwrap();
+    }
+
+    #[test]
+    fn sweep_and_claim_are_serialized_under_owner_lock_without_dangling_pointer() {
+        let root = tempfile::tempdir().unwrap();
+        for round in 0..24 {
+            let iter_dir = root.path().join(format!("round-{round}"));
+            let base = iter_dir.join("temp");
+            let journal = iter_dir.join("journal");
+            std::fs::create_dir_all(&base).unwrap();
+            let stage = tempfile::Builder::new()
+                .prefix(STAGING_DIR_PREFIX)
+                .tempdir_in(&base)
+                .unwrap()
+                .keep();
+            let installer = stage.join("meshharbor-0.4.163-x86_64-pc-windows-msvc.msi");
+            std::fs::write(&installer, b"msi").unwrap();
+            let installer_canon = installer.canonicalize().unwrap();
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let b_sweep = std::sync::Arc::clone(&barrier);
+            let base_sweep = base.clone();
+            let journal_sweep = journal.clone();
+            let sweep_thread = std::thread::spawn(move || {
+                b_sweep.wait();
+                sweep_stale_update_staging_in(&base_sweep, &journal_sweep, Duration::ZERO);
+            });
+
+            let b_claim = std::sync::Arc::clone(&barrier);
+            let journal_claim = journal.clone();
+            let claim_thread = std::thread::spawn(move || -> Result<std::path::PathBuf> {
+                b_claim.wait();
+                let owner = create_windows_owner_dir_locked(&journal_claim, &installer_canon)?;
+                let req = WindowsOwnerRequest {
+                    installer: installer_canon.clone(),
+                    origin: installer_canon,
+                    expected_version: "agent-v0.4.163".into(),
+                    digest: "sha256:fixture".into(),
+                };
+                owner_record(&owner, "request.json", &req)?;
+                claim_windows_owner(&journal_claim, &owner)?;
+                Ok(owner)
+            });
+
+            sweep_thread.join().unwrap();
+            let claim_res = claim_thread.join().unwrap();
+            let active = journal.join("install-owner-active.json");
+            match claim_res {
+                Ok(owner) => {
+                    assert!(
+                        owner.join("request.json").is_file() && stage.is_dir(),
+                        "claimed owner and staging dir must survive concurrent sweep"
+                    );
+                    assert!(
+                        active.is_file(),
+                        "successful claim must persist active pointer"
+                    );
+                    let recorded: std::path::PathBuf =
+                        serde_json::from_slice(&std::fs::read(&active).unwrap()).unwrap();
+                    assert_eq!(recorded, owner);
+                }
+                Err(_) => {
+                    assert!(
+                        !active.exists(),
+                        "aborted claim after sweep must never leave a dangling active pointer"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_and_heal_fail_closed_on_non_not_found_metadata_errors() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("temp");
+        let journal = root.path().join("journal");
+        std::fs::create_dir_all(&base).unwrap();
+        let stage = tempfile::Builder::new()
+            .prefix(STAGING_DIR_PREFIX)
+            .tempdir_in(&base)
+            .unwrap()
+            .keep();
+        let installer = stage.join("meshharbor-0.4.163.msi");
+        std::fs::write(&installer, b"msi").unwrap();
+        let installer_canon = installer.canonicalize().unwrap();
+        let owner = create_windows_owner_dir_locked(&journal, &installer_canon).unwrap();
+        let req = WindowsOwnerRequest {
+            installer: installer_canon.clone(),
+            origin: installer_canon,
+            expected_version: "agent-v0.4.163".into(),
+            digest: "sha256:fixture".into(),
+        };
+        owner_record(&owner, "request.json", &req).unwrap();
+        let terminal = crate::post_install::InstallOutcome {
+            installer_pid: 77,
+            installer_path: req.installer.display().to_string(),
+            expected_version: req.expected_version.clone(),
+            started_unix: 10,
+            finished_unix: Some(20),
+            installer_exit_code: Some(0),
+            new_binary_path: None,
+            new_binary_version: None,
+            status: crate::post_install::InstallStatus::SucceededVerified,
+            note: "verified".into(),
+        };
+        owner_record(&owner, "terminal.json", &terminal).unwrap();
+        claim_windows_owner(&journal, &owner).unwrap();
+
+        let active = journal.join("install-owner-active.json");
+        {
+            // Hold an exclusive (share_mode = 0) handle on install-owner-active.json so
+            // std::fs::read(&active) fails with ERROR_SHARING_VIOLATION (not NotFound).
+            let _exclusive = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0)
+                .open(&active)
+                .unwrap();
+            sweep_stale_update_staging_in(&base, &journal, Duration::ZERO);
+            assert!(
+                stage.is_dir(),
+                "sweep must preserve terminal stage when active pointer read fails with sharing violation"
+            );
+            let next_owner = root.path().join("next-owner");
+            std::fs::create_dir_all(&next_owner).unwrap();
+            assert!(
+                claim_windows_owner(&journal, &next_owner).is_err(),
+                "claim must fail closed when active pointer read fails with sharing violation"
+            );
+        }
+
+        // Non-NotFound metadata error (invalid NTFS stream syntax -> ERROR_INVALID_NAME) in swept heal check:
+        let malformed_prev = base
+            .join(format!("{STAGING_DIR_PREFIX}bad"))
+            .join("install-owner-bad:stream:extra");
+        assert!(!swept_windows_owner_verified_via_outcome(
+            &journal,
+            &malformed_prev
+        ));
     }
 }
