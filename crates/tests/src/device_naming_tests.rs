@@ -239,15 +239,8 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
     let app = TestApp::spawn().await;
     let t = app.seed_tenant("devname4").await;
 
-    let aid = enroll(
-        &app,
-        &t.tenant_id,
-        &t.admin.access_token,
-        "mach-devname-4",
-        "Mesh Box",
-        "0.3.0",
-    )
-    .await;
+    let (aid, token) =
+        crate::tunnel_tests::enroll_agent(&app, &t, "mach-devname-4", "Mesh Box").await;
     let aid_oid = ObjectId::parse_str(&aid).unwrap();
     let tid_oid = ObjectId::parse_str(&t.tenant_id).unwrap();
 
@@ -303,6 +296,13 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .await
         .unwrap();
 
+    // Capture the old join name before the website commits a new revision.
+    let captured_join_name = node.name.clone();
+    let mut ws = name_ws(&app, &token, "device-name-sync").await;
+    let initial = next_name(&mut ws, "0").await;
+    ack_name(&mut ws, initial, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+
     let resp: Value = app
         .auth_put(
             &format!("/api/tenant/{}/agent/{aid}", t.tenant_id),
@@ -343,6 +343,143 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
         .await
         .unwrap();
     assert_eq!(delayed.name, "shiny-new-name-2");
+    let latest = next_name(&mut ws, "2").await;
+    ack_name(&mut ws, latest, "applied").await;
+    name_state(&app, &t.tenant_id, &aid, &t.admin.access_token, "synced").await;
+    // Resume the original join with its already-captured old DNS name.
+    // Real Mongo rehydrate must preserve the newly committed/ACKed name.
+    let joined = nodes
+        .rehydrate(
+            node.id.unwrap(),
+            &node.node_ref,
+            &captured_join_name,
+            &node.wg_public_key,
+            node.key_epoch,
+            &[],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        joined.name, "shiny-new-name-2",
+        "late normal join must not overwrite a renamed node"
+    );
+    assert_eq!(joined.wg_public_key, node.wg_public_key);
+    assert_eq!(joined.key_epoch, node.key_epoch);
+    let doc = app
+        .db
+        .collection::<bson::Document>("overlay_nodes")
+        .find_one(bson::doc! {"_id":node.id.unwrap()})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(doc.get_i64("name_sync_revision").unwrap(), 2);
+    let mapped: Value = app
+        .auth_get(
+            &format!("/api/tenant/{}/device", t.tenant_id),
+            &t.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = mapped["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == aid)
+        .unwrap();
+    assert_eq!(row["magic_dns_name"], "shiny-new-name-2");
+    // A genuinely empty legacy name still receives its initial backfill;
+    // normal key/epoch and join refresh semantics remain unchanged.
+    let empty = nodes
+        .create(mk_node(
+            NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            "empty-name",
+            "",
+            "100.64.0.10",
+        ))
+        .await
+        .unwrap();
+    let filled = nodes
+        .rehydrate(
+            empty.id.unwrap(),
+            &empty.node_ref,
+            "legacy-backfilled",
+            &empty.wg_public_key,
+            empty.key_epoch,
+            &[],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(filled.name, "legacy-backfilled");
+    assert_eq!(filled.key_epoch, empty.key_epoch);
+    assert_eq!(filled.wg_public_key, empty.wg_public_key);
+    let missing = nodes
+        .create(mk_node(
+            NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            "missing-name",
+            "",
+            "100.64.0.11",
+        ))
+        .await
+        .unwrap();
+    app.db
+        .collection::<bson::Document>("overlay_nodes")
+        .update_one(
+            bson::doc! {"_id":missing.id.unwrap()},
+            bson::doc! {"$unset":{"name":""}},
+        )
+        .await
+        .unwrap();
+    let filled = nodes
+        .rehydrate(
+            missing.id.unwrap(),
+            &missing.node_ref,
+            "missing-backfilled",
+            &missing.wg_public_key,
+            missing.key_epoch,
+            &[],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(filled.name, "missing-backfilled");
+    assert_eq!(filled.key_epoch, missing.key_epoch);
 }
 
 #[tokio::test]
