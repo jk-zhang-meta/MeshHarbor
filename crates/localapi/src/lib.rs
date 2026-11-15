@@ -521,6 +521,11 @@ fn is_zero_u32(v: &u32) -> bool {
 /// per-node facts.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DnsStatus {
+    /// Actual resolver self-label projection, independent of display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_name_revision: Option<String>,
     /// The magic domain in effect (e.g. `tenant.meshharbor.net`).
     pub magic_domain: String,
     /// The local resolver bound `<overlay-ip>:53` (the split-DNS target).
