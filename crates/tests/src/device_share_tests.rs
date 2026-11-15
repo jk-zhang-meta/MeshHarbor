@@ -1715,10 +1715,15 @@ async fn native_ssh_login(
     password: &str,
     grant: &str,
 ) -> reqwest::Response {
+    let email = if username.contains('@') {
+        username.to_owned()
+    } else {
+        format!("{username}@share.example.test")
+    };
     f.app
         .client
         .post(f.app.url("/api/auth/native/share-ssh/login"))
-        .json(&json!({"username":username,"password":password,"share_grant_id":grant}))
+        .json(&json!({"email":email,"password":password,"share_grant_id":grant}))
         .send()
         .await
         .unwrap()
@@ -3194,7 +3199,7 @@ async fn native_shared_ssh_login_real_http_credential_rate_limit_is_wired() {
         s.app.auth_rate_limit_per_min = 1;
     })
     .await;
-    let body = json!({"username":"native_rate_fixture","password":"wrong","share_grant_id":ObjectId::new().to_hex()});
+    let body = json!({"email":"native_rate_fixture@share.example.test","password":"wrong","share_grant_id":ObjectId::new().to_hex()});
     let first = app
         .client
         .post(app.url("/api/auth/native/share-ssh/login"))

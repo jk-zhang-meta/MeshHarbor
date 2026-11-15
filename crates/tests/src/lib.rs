@@ -386,6 +386,8 @@ mod device_invite_tests;
 #[cfg(test)]
 mod device_login_tests;
 
+#[cfg(test)]
 mod email_change_tests;
 
+#[cfg(test)]
 mod native_session_tests;

@@ -117,11 +117,32 @@ fn account_key(body: &Bytes) -> String {
     let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) else {
         return String::new();
     };
-    json.get("username")
-        .or_else(|| json.get("email"))
+    json.get("email")
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_lowercase())
         .unwrap_or_default()
+}
+
+fn caller_credential_key(headers: &axum::http::HeaderMap) -> String {
+    use sha2::{Digest, Sha256};
+    let raw = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| crate::cookies::get(headers, "access_token"));
+    match raw.filter(|s| !s.is_empty()) {
+        Some(token) => format!("auth:{:x}", Sha256::digest(token.as_bytes())),
+        None => String::new(),
+    }
+}
+
+fn rate_limit_subject(parts: &axum::http::request::Parts, body: &Bytes) -> String {
+    if parts.uri.path().ends_with("/email-change/request") {
+        caller_credential_key(&parts.headers)
+    } else {
+        account_key(body)
+    }
 }
 
 fn too_many_requests(retry_after: u64) -> Response {
@@ -163,7 +184,7 @@ pub async fn auth_rate_limit(
     // No address at all means the request reached us outside the expected
     // chain; charge those to one shared bucket rather than waving them past.
     let ip = ip.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-    if let Err(retry_after) = state.limiter.check(ip, &account_key(&bytes)) {
+    if let Err(retry_after) = state.limiter.check(ip, &rate_limit_subject(&parts, &bytes)) {
         tracing::warn!(
             %ip,
             path = %parts.uri.path(),
@@ -236,10 +257,10 @@ mod tests {
     }
 
     #[test]
-    fn account_key_reads_username_or_email_case_folded() {
+    fn account_key_reads_email_only_case_folded() {
         assert_eq!(
             account_key(&Bytes::from(r#"{"username":"Alice","password":"x"}"#)),
-            "alice"
+            String::new()
         );
         assert_eq!(
             account_key(&Bytes::from(

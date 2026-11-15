@@ -241,12 +241,24 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/agent/self/name",
+      "methods": "GET,HEAD,POST"
+    },
+    {
       "path": "/api/agent/self/renew",
       "methods": "POST"
     },
     {
       "path": "/api/agent/self/temporary",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/agent/self/temporary/{invite_id}/features",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/agent/self/temporary/{invite_id}/features/ack",
+      "methods": "POST"
     },
     {
       "path": "/api/agent/self/temporary/{invite_id}/leave",
@@ -277,6 +289,10 @@
       "methods": "POST"
     },
     {
+      "path": "/api/agent/service/temporary/{invite_id}/features/pending",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/auth/activate",
       "methods": "POST"
     },
@@ -294,6 +310,14 @@
     },
     {
       "path": "/api/auth/approval/{user_id}",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/auth/email-change/confirm",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/auth/email-change/request",
       "methods": "POST"
     },
     {
@@ -402,6 +426,22 @@
     },
     {
       "path": "/api/native/device-login/preview",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/handoff",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/handoff/complete",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/handoff/consume",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/native/session/revoke",
       "methods": "POST"
     },
     {
@@ -2236,6 +2276,28 @@
         ]
       },
       {
+        "collection": "native_handoff_tickets",
+        "indexes": [
+          {
+            "key": {
+              "ticket_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "native_sid": 1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
         "collection": "native_ssh_audit",
         "indexes": [
           {
@@ -2319,6 +2381,23 @@
               "grant_hash": {
                 "$type": "string"
               }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "native_user_sessions",
+        "indexes": [
+          {
+            "key": {
+              "user_id": 1,
+              "revoked_at": 1
             }
           },
           {
@@ -3455,6 +3534,24 @@
             "key": {
               "email": 1
             },
+            "unique": true
+          },
+          {
+            "key": {
+              "email": 1
+            },
+            "name": "email_identity_ci",
+            "unique": true,
+            "collation": {
+              "locale": "en",
+              "strength": 2
+            }
+          },
+          {
+            "key": {
+              "pending_email_change.request_id": 1
+            },
+            "sparse": true,
             "unique": true
           },
           {
@@ -4686,6 +4783,28 @@
         ]
       },
       {
+        "collection": "native_handoff_tickets",
+        "indexes": [
+          {
+            "key": {
+              "ticket_hash": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "native_sid": 1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
         "collection": "native_ssh_audit",
         "indexes": [
           {
@@ -4769,6 +4888,23 @@
               "grant_hash": {
                 "$type": "string"
               }
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "native_user_sessions",
+        "indexes": [
+          {
+            "key": {
+              "user_id": 1,
+              "revoked_at": 1
             }
           },
           {
@@ -5907,6 +6043,24 @@
           },
           {
             "key": {
+              "email": 1
+            },
+            "name": "email_identity_ci",
+            "unique": true,
+            "collation": {
+              "locale": "en",
+              "strength": 2
+            }
+          },
+          {
+            "key": {
+              "pending_email_change.request_id": 1
+            },
+            "sparse": true,
+            "unique": true
+          },
+          {
+            "key": {
               "username": 1
             },
             "unique": true
@@ -6177,6 +6331,7 @@
     "rc:privacy.activity",
     "rc:ssh.activity",
     "rc:ssh.grant_ack",
+    "rc:agent.name.ack",
     "rc:agent.config_status",
     "rc:agent.key_rotated",
     "rc:hive.start_ack",
@@ -6287,6 +6442,7 @@
     "rc:error",
     "rc:goodbye",
     "rc:agent.update",
+    "rc:agent.name",
     "rc:agent.config",
     "rc:forward.set",
     "rc:forward.confirm",
@@ -6316,6 +6472,7 @@
     "rc:tunnel.quic.setup",
     "rc:tunnel.quic.ready",
     "rc:tunnel.quic.candidate",
+    "rc:overlay.self_name",
     "rc:overlay.netmap",
     "rc:overlay.netmap_delta",
     "rc:overlay.relay_grant",

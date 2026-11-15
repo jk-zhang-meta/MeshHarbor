@@ -48,3 +48,4 @@ pub mod account_devices;
 pub mod local_accounts;
 
 pub mod email_change;
+pub mod native_session;

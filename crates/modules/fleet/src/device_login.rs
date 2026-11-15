@@ -54,10 +54,54 @@ const INTERVAL_SECS: u64 = 2;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 const USER_CODE_LEN: usize = 10;
 
+fn default_purpose() -> String {
+    "enrollment".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Enrollment,
+    UserSession,
+    EnrollmentAndUserSession,
+}
+
+impl Purpose {
+    fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw.unwrap_or("enrollment") {
+            "enrollment" => Some(Self::Enrollment),
+            "user_session" => Some(Self::UserSession),
+            "enrollment_and_user_session" => Some(Self::EnrollmentAndUserSession),
+            _ => None,
+        }
+    }
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Enrollment => "enrollment",
+            Self::UserSession => "user_session",
+            Self::EnrollmentAndUserSession => "enrollment_and_user_session",
+        }
+    }
+    fn needs_enrollment(self) -> bool {
+        self != Self::UserSession
+    }
+    fn needs_user_session(self) -> bool {
+        self != Self::Enrollment
+    }
+    fn scopes(self) -> &'static [&'static str] {
+        match self {
+            Self::Enrollment => &["enrollment"],
+            Self::UserSession => &["user_session"],
+            Self::EnrollmentAndUserSession => &["enrollment", "user_session"],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceLoginRow {
     #[serde(rename = "_id")]
     pub id: ObjectId,
+    #[serde(default = "default_purpose")]
+    pub purpose: String,
     pub user_code_hash: String,
     pub device_code_hash: String,
     pub code_challenge: String,
@@ -88,6 +132,8 @@ pub struct Start {
     device_os: String,
     code_challenge: String,
     code_challenge_method: String,
+    #[serde(default)]
+    purpose: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -263,6 +309,9 @@ pub async fn start(
     Json(body): Json<Start>,
 ) -> Result<Response, ApiError> {
     enabled(&state)?;
+    let Some(purpose) = Purpose::parse(body.purpose.as_deref()) else {
+        return Err(ApiError::BadRequest("Invalid device login purpose".into()));
+    };
     if !valid_device_name(&body.device_name)
         || !valid_os(&body.device_os)
         || body.code_challenge_method != "S256"
@@ -308,6 +357,7 @@ pub async fn start(
     let normalized = normalize_user_code(&user_code).expect("generated codes are well-formed");
     let row = DeviceLoginRow {
         id: ObjectId::new(),
+        purpose: purpose.wire().into(),
         user_code_hash: hash_secret("device-login-user", &normalized),
         device_code_hash: hash_secret("device-login-device", &device_code),
         code_challenge: body.code_challenge,
@@ -378,12 +428,16 @@ pub async fn preview(
             "No pending device login with that code (it may have expired)".into(),
         ));
     };
+    let purpose = Purpose::parse(Some(&row.purpose))
+        .ok_or_else(|| ApiError::BadRequest("Invalid device login purpose".into()))?;
     Ok(response(
         StatusCode::OK,
         json!({
+            "purpose": purpose.wire(),
+            "requested_scopes": purpose.scopes(),
             "device": { "name": row.device_name, "os": row.device_os },
             "client": row.client_display,
-            "personal_device": true,
+            "personal_device": purpose.needs_enrollment(),
             "requested_at_ms": row.created_at.timestamp_millis(),
             "expires_at_ms": row.expires_at.timestamp_millis(),
         }),
@@ -391,8 +445,9 @@ pub async fn preview(
 }
 
 /// `POST /api/native/device-login/decision` — approve into one organization
-/// (needs `MANAGE_AGENTS` there, the bit an admin needs to issue an
-/// enrollment token by hand), or deny.
+/// (needs `MANAGE_AGENTS` when enrollment is requested), authorize a GUI user
+/// session (needs a verified non-placeholder email when `user_session` is
+/// requested), or deny.
 pub async fn decide(
     State(state): State<FleetState>,
     auth: AuthUser,
@@ -403,26 +458,47 @@ pub async fn decide(
     if !trusted_origin(&state, &headers) {
         return Err(ApiError::Forbidden("Device login refused".into()));
     }
-    let Some(code) = normalize_user_code(&body.user_code) else {
+    let Some(pending) = pending_by_user_code(&state, &body.user_code).await? else {
         return Err(ApiError::NotFound(
-            "No pending device login with that code".into(),
+            "No pending device login with that code (it may have expired)".into(),
         ));
     };
+    let purpose = Purpose::parse(Some(&pending.purpose))
+        .ok_or_else(|| ApiError::BadRequest("Invalid device login purpose".into()))?;
     let tenant = if body.approve {
-        let tid = body
-            .tenant_id
-            .as_deref()
-            .and_then(|t| ObjectId::parse_str(t).ok())
-            .ok_or_else(|| ApiError::BadRequest("Choose an organization".into()))?;
-        crate::agent::require_permission(
-            &state,
-            tid,
-            auth.user_id,
-            permissions::MANAGE_AGENTS,
-            "MANAGE_AGENTS",
-        )
-        .await?;
-        Some(tid)
+        if purpose.needs_user_session() {
+            let user = state.users.base.find_by_id(auth.user_id).await?;
+            meshharbor_core::admission::require_user(
+                &state.core,
+                &user,
+                Some(auth.claims.approval_revision),
+            )?;
+            if !meshharbor_core::admission::has_verified_account_email(&user)
+                || user.security_revision().is_none()
+            {
+                return Err(ApiError::Forbidden(
+                    "A verified account email is required to authorize native sign-in".into(),
+                ));
+            }
+        }
+        if purpose.needs_enrollment() {
+            let tid = body
+                .tenant_id
+                .as_deref()
+                .and_then(|t| ObjectId::parse_str(t).ok())
+                .ok_or_else(|| ApiError::BadRequest("Choose an organization".into()))?;
+            crate::agent::require_permission(
+                &state,
+                tid,
+                auth.user_id,
+                permissions::MANAGE_AGENTS,
+                "MANAGE_AGENTS",
+            )
+            .await?;
+            Some(tid)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -432,7 +508,7 @@ pub async fn decide(
         coll!(state)
             .find_one_and_update(
                 doc! {
-                    "user_code_hash": hash_secret("device-login-user", &code),
+                    "_id": pending.id,
                     "state": "pending",
                     "expires_at": { "$gt": now },
                 },
@@ -452,7 +528,7 @@ pub async fn decide(
     };
     tracing::info!(
         request = %row.id, device = %row.device_name, client = %row.client_display,
-        user = %auth.user_id, tenant = ?tenant, decision = next,
+        user = %auth.user_id, tenant = ?tenant, purpose = %row.purpose, decision = next,
         "device-login: decided"
     );
     Ok(response(StatusCode::OK, json!({ "status": next })))
@@ -504,10 +580,16 @@ pub async fn exchange(
         tracing::warn!(request = %row.id, "device-login: exchange with a wrong verifier refused");
         return Ok(oauth_error("access_denied"));
     }
-    let (Some(tenant), Some(approver)) = (row.tenant_id, row.approved_by) else {
+    let Some(purpose) = Purpose::parse(Some(&row.purpose)) else {
         return Ok(oauth_error("access_denied"));
     };
-    // The one-time step: whoever wins this compare-and-set gets the token.
+    let Some(approver) = row.approved_by else {
+        return Ok(oauth_error("access_denied"));
+    };
+    if purpose.needs_enrollment() && row.tenant_id.is_none() {
+        return Ok(oauth_error("access_denied"));
+    }
+    // The one-time step: whoever wins this compare-and-set gets the grant.
     let won = storage(
         c.update_one(
             doc! { "_id": row.id, "state": "approved" },
@@ -518,48 +600,123 @@ pub async fn exchange(
     if won.modified_count != 1 {
         return Ok(oauth_error("expired_token"));
     }
-    // Re-check the approver still holds the permission at the moment the
-    // credential is minted (a revocation between approval and exchange wins).
-    crate::agent::require_permission(
-        &state,
-        tenant,
-        approver,
-        permissions::MANAGE_AGENTS,
-        "MANAGE_AGENTS",
-    )
-    .await?;
-    let (token, jti) = state
-        .auth
-        .issue_enrollment_token_with_relay(approver, tenant, ENROLLMENT_TTL_SECS, false, false)
-        .map_err(|_| ApiError::ServiceUnavailable("Could not mint an enrollment token".into()))?;
-    let stamped = storage(c.update_one(
-        doc! { "_id": row.id, "state": "consumed" },
-        doc! { "$set": { "enrollment_jti": &jti, "expires_at": DateTime::from_millis(DateTime::now().timestamp_millis() + (ENROLLMENT_TTL_SECS as i64) * 1000) } },
-    ).await)?;
-    if stamped.modified_count != 1 {
-        return Err(ApiError::ServiceUnavailable(
-            "Could not bind personal device approval".into(),
-        ));
+
+    let user = state.users.base.find_by_id(approver).await?;
+    if user.deleted_at.is_some() {
+        return Err(ApiError::Unauthorized("Account unavailable".into()));
     }
-    if let Err(e) = state
-        .enroll_tokens
-        .record_issued(&jti, tenant, approver, DateTime::now())
+    meshharbor_core::admission::require_user(&state.core, &user, None)?;
+
+    let mut out = serde_json::Map::new();
+    if purpose.needs_enrollment() {
+        let tenant = row
+            .tenant_id
+            .ok_or_else(|| ApiError::Forbidden("Missing enrollment organization".into()))?;
+        crate::agent::require_permission(
+            &state,
+            tenant,
+            approver,
+            permissions::MANAGE_AGENTS,
+            "MANAGE_AGENTS",
+        )
+        .await?;
+        let (token, jti) = state
+            .auth
+            .issue_enrollment_token_with_relay(approver, tenant, ENROLLMENT_TTL_SECS, false, false)
+            .map_err(|_| {
+                ApiError::ServiceUnavailable("Could not mint an enrollment token".into())
+            })?;
+        let stamped = storage(
+            c.update_one(
+                doc! { "_id": row.id, "state": "consumed" },
+                doc! { "$set": { "enrollment_jti": &jti, "expires_at": DateTime::from_millis(DateTime::now().timestamp_millis() + (ENROLLMENT_TTL_SECS as i64) * 1000) } },
+            )
+            .await,
+        )?;
+        if stamped.modified_count != 1 {
+            return Err(ApiError::ServiceUnavailable(
+                "Could not bind personal device approval".into(),
+            ));
+        }
+        if let Err(e) = state
+            .enroll_tokens
+            .record_issued(&jti, tenant, approver, DateTime::now())
+            .await
+        {
+            tracing::warn!(%tenant, %jti, error = %e, "device-login: could not record the issued enrollment token");
+        }
+        out.insert("enrollment_token".into(), json!(token));
+        out.insert("expires_in".into(), json!(ENROLLMENT_TTL_SECS));
+        out.insert("tenant_id".into(), json!(tenant.to_hex()));
+    }
+
+    if purpose.needs_user_session() {
+        if !meshharbor_core::admission::has_verified_account_email(&user) {
+            return Err(ApiError::Forbidden(
+                "A verified account email is required to authorize native sign-in".into(),
+            ));
+        }
+        let sec_rev = user.security_revision().ok_or_else(|| {
+            ApiError::Forbidden("Account security revision unavailable".into())
+        })?;
+        let prefix = meshharbor_core::admission::normalized_frontend_prefix(
+            &state.settings.app.frontend_url,
+        )
+        .ok_or_else(|| {
+            ApiError::ServiceUnavailable("Account frontend origin unavailable".into())
+        })?;
+        let sid = ObjectId::new();
+        let issued_at = DateTime::now();
+        let expires_at = DateTime::from_millis(
+            issued_at.timestamp_millis()
+                + (state.settings.jwt.refresh_token_ttl_secs as i64) * 1000,
+        );
+        meshharbor_services::dao::native_session::create_session(
+            &state.core.db,
+            &meshharbor_services::dao::native_session::NativeUserSession {
+                id: sid,
+                user_id: approver,
+                security_revision: sec_rev,
+                approval_revision: user.account_approval.revision,
+                trusted_frontend_origin_prefix: prefix,
+                created_at: issued_at,
+                expires_at,
+                revoked_at: None,
+            },
+        )
         .await
-    {
-        tracing::warn!(%tenant, %jti, error = %e, "device-login: could not record the issued enrollment token");
+        .map_err(|_| ApiError::ServiceUnavailable("Could not create native session".into()))?;
+        let sid_hex = sid.to_hex();
+        let tokens = state
+            .auth
+            .generate_tokens_with_native_sid(
+                approver,
+                &user.email,
+                &user.username,
+                user.account_approval.revision,
+                Some(&sid_hex),
+            )
+            .map_err(|_| ApiError::ServiceUnavailable("Could not mint native session".into()))?;
+        out.insert(
+            "native_session".into(),
+            json!({
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+                "expires_in": tokens.expires_in,
+                "user": {
+                    "id": approver.to_hex(),
+                    "email": user.email,
+                    "email_verified": true,
+                },
+            }),
+        );
     }
+
     tracing::info!(
-        request = %row.id, device = %row.device_name, %tenant, approver = %approver, %jti,
-        "device-login: exchanged for a single-use enrollment token"
+        request = %row.id, device = %row.device_name, approver = %approver,
+        purpose = purpose.wire(), "device-login: exchanged"
     );
-    Ok(response(
-        StatusCode::OK,
-        json!({
-            "enrollment_token": token,
-            "expires_in": ENROLLMENT_TTL_SECS,
-            "tenant_id": tenant.to_hex(),
-        }),
-    ))
+    Ok(response(StatusCode::OK, Value::Object(out)))
 }
 
 pub async fn is_personal_enrollment(

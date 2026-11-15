@@ -434,6 +434,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/health/ready", get(readiness_check));
 
+    let api = api.nest("/native", routes::native_session::router());
+
     // FR-69 — the module crates' governed routes join the host's under
     // `/api` (`crates/api/src/compose.rs`).
     let api = state.modules.mount(api);

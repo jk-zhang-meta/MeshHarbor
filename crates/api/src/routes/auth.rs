@@ -151,8 +151,6 @@ pub struct RegisterResponse {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
     pub email: Option<String>,
     pub password: String,
 }
@@ -390,7 +388,7 @@ pub(super) async fn password_identity(state: &Core, body: &LoginRequest) -> Resu
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeShareSshLoginRequest {
-    pub username: Option<String>,
+    #[serde(default)]
     pub email: Option<String>,
     pub password: String,
     pub share_grant_id: String,
@@ -409,7 +407,6 @@ pub async fn native_share_ssh_login(
     let user = password_identity(
         &state,
         &LoginRequest {
-            username: body.username,
             email: body.email,
             password: body.password,
         },
@@ -514,7 +511,7 @@ fn dummy_password_hash(state: &Core) -> &'static str {
 /// `; Secure` in production, empty in dev — the session cookie is a full API
 /// credential (the auth extractor accepts it), so it must never travel over
 /// cleartext http; the http://localhost dev/test flow still needs it set.
-fn secure_attr(state: &Core) -> &'static str {
+pub(crate) fn secure_attr(state: &Core) -> &'static str {
     if state.settings.app.environment == "production" {
         "; Secure"
     } else {
@@ -561,22 +558,41 @@ fn clear_refresh_cookie(state: &Core) -> String {
     )
 }
 
-pub async fn logout(State(state): State<Core>) -> Result<HeaderMap, ApiError> {
+pub(crate) fn clear_auth_cookies(state: &Core) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let cookie = format!(
         "access_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0{}",
-        secure_attr(&state)
+        secure_attr(state)
     );
     headers.append(header::SET_COOKIE, cookie.parse().unwrap());
-    // Clearing the refresh cookie is the load-bearing half: an access token
-    // expires on its own in days, a refresh token would keep re-minting them
-    // for a month. (Neither is REVOKED — the tokens stay valid if they were
-    // captured; see the stateless-session item. This ends the browser's copy.)
     headers.append(
         header::SET_COOKIE,
-        clear_refresh_cookie(&state).parse().unwrap(),
+        clear_refresh_cookie(state).parse().unwrap(),
     );
-    Ok(headers)
+    headers
+}
+
+pub async fn logout(
+    State(state): State<Core>,
+    req_headers: HeaderMap,
+) -> Result<HeaderMap, ApiError> {
+    let candidate = req_headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| crate::cookies::get(&req_headers, "access_token"))
+        .or_else(|| crate::cookies::get(&req_headers, REFRESH_COOKIE));
+    if let Some(token) = candidate
+        && let Ok(claims) = state.auth.verify_token(&token)
+        && let (Ok(uid), Some(Ok(sid))) = (
+            bson::oid::ObjectId::parse_str(&claims.sub),
+            claims.native_sid.as_deref().map(bson::oid::ObjectId::parse_str),
+        )
+    {
+        let _ = meshharbor_services::dao::native_session::revoke_session(&state.db, sid, uid).await;
+    }
+    Ok(clear_auth_cookies(&state))
 }
 
 pub async fn me(State(state): State<Core>, auth: AuthUser) -> Result<Json<UserResponse>, ApiError> {
@@ -595,10 +611,14 @@ pub async fn refresh(
     // `/ws` work: the server has to accept the cookie BEFORE the UI stops
     // putting the token in the body, because during a rolling deploy a browser
     // can hit either pod.
-    let presented = crate::cookies::get(&req_headers, REFRESH_COOKIE)
-        .or_else(|| body.refresh_token.clone())
+    let presented = body
+        .refresh_token
+        .clone()
+        .filter(|t| !t.is_empty())
+        .or_else(|| crate::cookies::get(&req_headers, REFRESH_COOKIE))
         .ok_or_else(|| ApiError::Unauthorized("No refresh token in cookie or body".to_string()))?;
     let claims = state.auth.verify_refresh_token(&presented)?;
+    meshharbor_core::admission::authorize_claims(&state, &claims).await?;
 
     let user_id = bson::oid::ObjectId::parse_str(&claims.sub)
         .map_err(|_| ApiError::Unauthorized("Invalid user ID".to_string()))?;
@@ -606,11 +626,12 @@ pub async fn refresh(
     let user = state.users.base.find_by_id(user_id).await?;
     meshharbor_core::admission::require_user(&state, &user, Some(claims.approval_revision))?;
 
-    let tokens = state.auth.generate_tokens_at_revision(
+    let tokens = state.auth.generate_tokens_with_native_sid(
         user_id,
         &user.email,
         &user.username,
         user.account_approval.revision,
+        claims.native_sid.as_deref(),
     )?;
 
     let mut headers = HeaderMap::new();

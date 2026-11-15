@@ -65,3 +65,5 @@ pub mod device_share;
 pub mod native_ssh_authorization;
 
 pub mod email_change;
+
+pub mod native_session;

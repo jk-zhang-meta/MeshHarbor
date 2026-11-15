@@ -297,6 +297,23 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
         vec![index_ttl(bson::doc! { "used_at": 1 }, 60 * 60)],
     ));
 
+    sets.push(set(
+        "native_user_sessions",
+        vec![
+            index(bson::doc! { "user_id": 1, "revoked_at": 1 }),
+            index_ttl(bson::doc! { "expires_at": 1 }, 0),
+        ],
+    ));
+
+    sets.push(set(
+        "native_handoff_tickets",
+        vec![
+            index_unique(bson::doc! { "ticket_hash": 1 }),
+            index(bson::doc! { "native_sid": 1 }),
+            index_ttl(bson::doc! { "expires_at": 1 }, 0),
+        ],
+    ));
+
     // FR-51 P2 — reusable ephemeral enrollment keys. `jti` is the value the
     // atomic use-claim is keyed by; unique GLOBALLY (jtis are uuid4, and a
     // cross-tenant collision would let one org's claim decrement another's

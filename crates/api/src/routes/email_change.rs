@@ -123,7 +123,7 @@ pub async fn confirm(
             ApiError::Unauthorized("Invalid, superseded or expired verification".into())
         })?;
     Ok((
-        super::auth::logout(State(core)).await?,
+        super::auth::clear_auth_cookies(&core),
         Json(Confirmed {
             email: user.email,
             email_verified: true,

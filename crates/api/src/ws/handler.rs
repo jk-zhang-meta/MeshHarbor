@@ -329,9 +329,6 @@ async fn handle_socket(
             }
         },
         async {
-            if !state.settings.auth.account_approval.enabled {
-                std::future::pending::<()>().await;
-            }
             loop {
                 if !admission_current(&state.core, &claims).await {
                     return;
@@ -398,10 +395,8 @@ async fn admission_current(
     core: &meshharbor_core::Core,
     claims: &meshharbor_services::auth::Claims,
 ) -> bool {
-    if !core.settings.auth.account_approval.enabled {
-        return true;
-    }
-    // User JWT expiry must apply to long-lived sockets as well as new requests.
+    // User JWT expiry, credential rotation, and native_sid revocation apply to
+    // long-lived sockets even when optional account approval is disabled.
     if claims.exp <= chrono::Utc::now().timestamp() {
         return false;
     }

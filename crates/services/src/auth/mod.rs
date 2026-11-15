@@ -33,6 +33,8 @@ pub struct Claims {
     /// Missing pre-approval JWTs are generation zero for migration compatibility.
     #[serde(default)]
     pub approval_revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_sid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -488,6 +490,7 @@ impl AuthService {
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::Access,
             approval_revision,
+            native_sid: None,
         };
         let token = encode(&self.header(), &claims, &self.signing.encoding)
             .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
@@ -501,7 +504,19 @@ impl AuthService {
         username: &str,
         approval_revision: u32,
     ) -> Result<TokenPair, AuthError> {
+        self.generate_tokens_with_native_sid(user_id, email, username, approval_revision, None)
+    }
+
+    pub fn generate_tokens_with_native_sid(
+        &self,
+        user_id: ObjectId,
+        email: &str,
+        username: &str,
+        approval_revision: u32,
+        native_sid: Option<&str>,
+    ) -> Result<TokenPair, AuthError> {
         let now = Utc::now();
+        let sid = native_sid.map(str::to_owned);
 
         let access_claims = Claims {
             sub: user_id.to_hex(),
@@ -513,6 +528,7 @@ impl AuthService {
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::Access,
             approval_revision,
+            native_sid: sid.clone(),
         };
 
         let refresh_claims = Claims {
@@ -525,6 +541,7 @@ impl AuthService {
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::Refresh,
             approval_revision,
+            native_sid: sid,
         };
 
         let access_token = encode(&self.header(), &access_claims, &self.signing.encoding)
