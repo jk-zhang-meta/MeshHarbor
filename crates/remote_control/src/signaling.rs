@@ -6678,7 +6678,7 @@ pub struct OverlayNetworkInfo {
     /// Identity and revision of the same persisted DNS projection snapshot.
     /// Older servers omit these; once a revision is observed an unversioned
     /// map must not roll the local self-name back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "option_oid_hex")]
     pub self_node_id: Option<ObjectId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_name_revision: Option<String>,
@@ -11511,6 +11511,23 @@ mod tests {
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
         assert_eq!(back.cidrs, vec![back.cidr.clone()]);
+    }
+
+    #[test]
+    fn self_dns_projection_wire_keeps_exact_revision_and_node() {
+        let node_id = ObjectId::new();
+        let frame = ServerMsg::OverlaySelfName {
+            agent_id: "agent".into(),
+            tenant_id: "tenant".into(),
+            node_id,
+            revision: "9007199254740993".into(),
+            name: "dns-label-2".into(),
+        };
+        let bytes = serde_json::to_string(&frame).unwrap();
+        assert!(bytes.contains("rc:overlay.self_name"));
+        assert!(matches!(serde_json::from_str::<ServerMsg>(&bytes).unwrap(),
+            ServerMsg::OverlaySelfName { node_id: got, revision, name, .. }
+            if got == node_id && revision == "9007199254740993" && name == "dns-label-2"));
     }
 
     /// FR-68 / FR-47 P5d — the half of the compatibility claim that was missing.

@@ -1352,7 +1352,29 @@ pub fn intercept(
     msg: ServerMsg,
     is_primary: bool,
     local_agent_id: &str,
+    local_tenant_id: &str,
 ) -> Option<ServerMsg> {
+    if let ServerMsg::OverlaySelfName {
+        agent_id,
+        tenant_id,
+        node_id,
+        revision,
+        name,
+    } = msg
+    {
+        if agent_id == local_agent_id && tenant_id == local_tenant_id {
+            if let Err(error) = evt_tx.try_send(OverlayEvent::SelfName {
+                node_id,
+                revision,
+                name,
+            }) {
+                warn!(%error, "overlay self DNS metadata queue unavailable; awaiting next reconciliation");
+            }
+        } else {
+            warn!("overlay self DNS metadata ignored: enrollment scope mismatch");
+        }
+        return None;
+    }
     intercept_with_bridge_installer(evt_tx, msg, is_primary, local_agent_id, |bridge| {
         crate::relay_server::install_bridge_from_wire(bridge)
     })
@@ -1587,6 +1609,28 @@ fn intercept_with_bridge_installer(
 /// re-collides.
 #[cfg(test)]
 mod derived_port_layout_lock {
+    #[tokio::test]
+    async fn self_dns_metadata_is_bound_to_enrollment_and_secondary_is_supported() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let msg = |agent: &str, tenant: &str| {
+            meshharbor_remote_control::signaling::ServerMsg::OverlaySelfName {
+                agent_id: agent.into(),
+                tenant_id: tenant.into(),
+                node_id: bson::oid::ObjectId::new(),
+                revision: "1".into(),
+                name: "alias-label".into(),
+            }
+        };
+        for (agent, tenant) in [("other", "org"), ("agent", "other")] {
+            assert!(super::intercept(&tx, msg(agent, tenant), false, "agent", "org").is_none());
+            assert!(rx.try_recv().is_err());
+        }
+        assert!(super::intercept(&tx, msg("agent", "org"), false, "agent", "org").is_none());
+        assert!(
+            matches!(rx.try_recv(), Ok(tunnel_core::overlay::runtime::OverlayEvent::SelfName { name, .. }) if name == "alias-label")
+        );
+    }
+
     #[test]
     fn agent_core_layout_matches_tunnel_core() {
         use meshharbor_node_core::config as c;
@@ -2349,6 +2393,7 @@ mod org_relay_discovery_dispatch_tests {
                     scope: scope.clone(),
                 },
                 true,
+                "",
                 ""
             )
             .is_none()
@@ -2370,6 +2415,7 @@ mod org_relay_discovery_dispatch_tests {
                     scope: member_scope.clone(),
                 },
                 true,
+                "",
                 ""
             )
             .is_none()
@@ -2424,7 +2470,7 @@ mod org_relay_discovery_dispatch_tests {
             "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]
         }))
         .unwrap();
-        assert!(intercept(&tx, msg, true, "").is_none());
+        assert!(intercept(&tx, msg, true, "", "").is_none());
         assert!(matches!(
             rx.try_recv(),
             Ok(OverlayEvent::Netmap {
@@ -2445,9 +2491,9 @@ mod org_relay_discovery_dispatch_tests {
             next_cursor: None,
             scan: None,
         };
-        assert!(intercept(&tx, msg(), false, "").is_none());
+        assert!(intercept(&tx, msg(), false, "", "").is_none());
         assert!(rx.try_recv().is_err());
-        assert!(intercept(&tx, msg(), true, "").is_none());
+        assert!(intercept(&tx, msg(), true, "", "").is_none());
         assert!(
             matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayCandidates {
             peer_node_id: id, request_id: 17, ttl_secs: 0, candidates, ..
