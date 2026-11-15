@@ -46,7 +46,7 @@ export function sameNameSyncSnapshot(current?: NameSync, before?: NameSync): boo
 }
 
 export function nameSyncPresentation(sync?: NameSync) {
-  const key = sync?.scope === 'organization_alias' ? 'organizationAlias'
+  const key = sync?.scope === 'organization_alias' && sync.state === 'synced' && sync.acked_revision === sync.revision ? 'organizationAlias'
     : !sync || revision(sync.revision) === null ? 'unverified'
       : sync.state === 'synced' && sync.acked_revision !== sync.revision ? 'pending'
         : sync.state

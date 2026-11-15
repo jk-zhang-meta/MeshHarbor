@@ -17,7 +17,8 @@ describe('device acknowledgement presentation', () => {
     for (const [sync, expected] of [
       [undefined, 'Local name unverified'],
       [{ revision: '1', acked_revision: null, state: 'unsupported' }, 'Device update needed'],
-      [{ revision: '1', acked_revision: null, state: 'synced', scope: 'organization_alias' }, 'Organization alias saved'],
+      [{ revision: '1', acked_revision: null, state: 'synced', scope: 'organization_alias' }, 'Name sync pending'],
+      [{ revision: '1', acked_revision: '1', state: 'synced', scope: 'organization_alias' }, 'Organization alias saved'],
     ] as const) {
       const w = mount(DeviceNameSyncStatus, { props: { sync }, global: { stubs: { VChip: { template: '<span><slot /></span>' } } } })
       expect(w.text()).toContain(expected)
