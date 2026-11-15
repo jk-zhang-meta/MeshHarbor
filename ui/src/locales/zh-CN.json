@@ -80,6 +80,27 @@
     "password": "密码",
     "username": "用户名",
     "displayName": "显示名称",
+    "displayNameOptional": "显示名称（可选）",
+    "emailChange": {
+      "title": "账号邮箱与密码",
+      "intro": "邮箱就是账号名。修改后保留原账号 ID、设备和权限，验证新邮箱后才生效。",
+      "current": "当前账号：{email}",
+      "newEmail": "新的账号邮箱",
+      "currentPassword": "当前密码",
+      "newPassword": "新密码（可选）",
+      "repeatPassword": "再次输入新密码",
+      "passwordHint": "留空则保留当前密码。标点和空格也是密码的一部分。",
+      "passwordMismatch": "两次输入的新密码不一致。",
+      "send": "发送验证邮件",
+      "sent": "已为 {email} 提交验证请求。请在该邮箱中打开邮件并明确确认；现有账号尚未改变。",
+      "failed": "尚未确认验证请求成功，不能将账号报告为已修改。",
+      "confirmTitle": "确认更换账号邮箱",
+      "confirmIntro": "仅确认你自己发起的修改。若申请时提供了新密码，会同时生效，并退出旧登录会话；原账号、设备和权限保持不变。",
+      "confirm": "确认更换邮箱",
+      "invalidLink": "链接不完整，或该标签页已不再保留验证信息。请从邮箱重新打开完整的验证链接。",
+      "complete": "账号邮箱已改为 {email}。请使用该邮箱及当前密码或你刚设置的新密码登录。",
+      "confirmFailed": "此处无法确认修改结果。链接可能已过期、被更新的申请替代，或响应被中断。请先尝试用新邮箱登录；否则重新申请验证链接。此页面不会自动重复提交。"
+    },
     "forgotPassword": "忘记密码？",
     "noAccount": "还没有账号？",
     "hasAccount": "已有账号？",
@@ -96,6 +117,12 @@
       "hacker_news": "Hacker News",
       "friend": "朋友或同事",
       "other": "其他"
+    },
+    "nativeSession": {
+      "completing": "正在完成桌面端免登录交接…",
+      "failedTitle": "无法建立桌面端网页会话",
+      "invalidHandoff": "此桌面会话交接链接不完整或无效，请从 MeshHarbor 桌面端重新打开。",
+      "failed": "该一次性桌面交接已过期或与当前浏览器会话不匹配，请从 MeshHarbor 桌面端重新打开或在下方登录。"
     }
   },
   "nav": {
@@ -2514,6 +2541,12 @@
     }
   },
   "deviceLogin": {
+    "userSessionConsent": "在这台电脑上以 {email} 登录账号。电脑会将可撤销的账号会话保存在操作系统凭据库中，让远控和账号页面无需重复网页登录。只批准你此刻正在使用且信任的电脑；这不只是设备入网授权。",
+    "currentAccount": "当前已登录账号",
+    "verifiedEmailRequired": "请先验证真实账号邮箱，再让桌面软件登录此账号。",
+    "verifyEmail": "设置账号邮箱",
+    "approveSignIn": "批准账号登录",
+    "unsupportedPurpose": "请求包含尚不支持的授权范围，请勿批准。",
     "personalAccess": "这是你的自有设备。默认向你的账号开放设备支持的桌面、文件、SSH 和远程命令，不是向所有组织成员开放。终端可能以 root 或 SYSTEM 身份运行。系统隐私授权、本机明确关闭的功能及已有邀请选择仍然有效。只批准自己的设备；他人的设备应通过邀请加入，并自行选择开放功能。",
     "title": "把设备加入 MeshHarbor",
     "intro": "有一台设备运行了 `mh login`（或在 MeshHarbor 应用里点了登录），请求加入你的组织。",

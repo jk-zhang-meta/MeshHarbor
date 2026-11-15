@@ -82,10 +82,12 @@
         </div>
       </v-card-text>
     </v-card>
+    <EmailAccountChange />
   </v-container>
 </template>
 
 <script setup lang="ts">
+import EmailAccountChange from '@/components/account/EmailAccountChange.vue'
 import { reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'

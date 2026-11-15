@@ -80,6 +80,27 @@
     "password": "Password",
     "username": "Username",
     "displayName": "Display Name",
+    "displayNameOptional": "Display name (optional)",
+    "emailChange": {
+      "title": "Account email and password",
+      "intro": "Your email is your account name. Changing it keeps your account ID, devices and permissions. Verify the new address before any change takes effect.",
+      "current": "Current account: {email}",
+      "newEmail": "New account email",
+      "currentPassword": "Current password",
+      "newPassword": "New password (optional)",
+      "repeatPassword": "Repeat new password",
+      "passwordHint": "Leave blank to keep your password. Punctuation and spaces are part of the password.",
+      "passwordMismatch": "The new passwords do not match.",
+      "send": "Send verification email",
+      "sent": "Verification was requested for {email}. Check that inbox and explicitly confirm the change. Your existing account has not changed yet.",
+      "failed": "The verification request was not confirmed. Your account has not been reported as changed.",
+      "confirmTitle": "Confirm account email change",
+      "confirmIntro": "Confirm only a change you requested. This also applies any new password you supplied and signs out old sessions. Your account, devices and permissions are retained.",
+      "confirm": "Confirm email change",
+      "invalidLink": "This link is incomplete or no longer available in this tab. Open the complete verification link from your email.",
+      "complete": "Your account email is now {email}. Sign in with this email and your current or newly chosen password.",
+      "confirmFailed": "The change could not be confirmed here. The link may be expired or superseded, or the response may have been interrupted. Try signing in with the new email; otherwise request a new verification link. This page will not submit it again automatically."
+    },
     "forgotPassword": "Forgot password?",
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
@@ -96,6 +117,12 @@
       "hacker_news": "Hacker News",
       "friend": "A friend or colleague",
       "other": "Other"
+    },
+    "nativeSession": {
+      "completing": "Completing desktop session handoff…",
+      "failedTitle": "Could not open desktop web session",
+      "invalidHandoff": "This desktop session link is incomplete or invalid. Open it again from the MeshHarbor app.",
+      "failed": "This one-time desktop handoff expired or does not match the current browser session. Open the page again from the MeshHarbor app or sign in below."
     }
   },
   "nav": {
@@ -2514,6 +2541,12 @@
     }
   },
   "deviceLogin": {
+    "userSessionConsent": "Sign in to this computer as {email}. It will keep a revocable account session in this computer's operating-system credential store so remote control and account pages can open without another web sign-in. Approve only a computer you trust and are using now. This is more than enrolling a device.",
+    "currentAccount": "your currently signed-in account",
+    "verifiedEmailRequired": "Verify a real account email before signing the desktop app into your account.",
+    "verifyEmail": "Set up account email",
+    "approveSignIn": "Approve account sign-in",
+    "unsupportedPurpose": "This request contains an unsupported authorization scope. Do not approve it.",
     "personalAccess": "This is your personal device. Supported desktop, files, SSH and remote-command services are enabled for your account by default, not for every organization member. Shells may run as root or SYSTEM. System privacy permissions, explicit local refusals and existing invitation choices still apply. Only approve your own device; another person's device should join by invitation and choose what to allow.",
     "title": "Add a device to MeshHarbor",
     "intro": "A device ran `mh login` (or chose Sign in in the MeshHarbor app) and is asking to join one of your organizations.",

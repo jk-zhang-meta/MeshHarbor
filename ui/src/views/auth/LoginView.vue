@@ -13,15 +13,14 @@
           <div class="text-center text-subtitle-1 mb-4" data-testid="product-name">{{ PRODUCT_TITLE }}</div>
 
           <v-form ref="formRef" @submit.prevent="handleLogin">
-            <!-- No auto-capitalisation, no autocorrect: iOS capitalises the first
-                 letter of a text field by default, and the server matches the
-                 username exactly — "goran" typed on an iPhone arrived as
-                 "Goran" and was refused as invalid credentials. -->
+            <!-- Email is the account identity; passwords are never normalized. -->
             <v-text-field
-              v-model="username"
-              :label="$t('auth.username')"
-              prepend-inner-icon="mdi-account"
-              :rules="[rules.required]"
+              v-model="email"
+              :label="$t('auth.email')"
+              prepend-inner-icon="mdi-email"
+              type="email"
+              inputmode="email"
+              :rules="[rules.required, rules.email]"
               autofocus
               autocomplete="username"
               autocapitalize="none"
@@ -103,7 +102,7 @@ const { rules } = useValidation()
 const { mark: brandMark } = useBrand()
 
 const formRef = ref()
-const username = ref('')
+const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
 
@@ -132,7 +131,7 @@ async function handleLogin() {
   const { valid } = await formRef.value.validate()
   if (!valid) return
   try {
-    await auth.login(username.value, password.value)
+    await auth.login(email.value, password.value)
     ws.connect()
     // Check for pending invite code
     const pendingInvite = (route.query.invite as string) || sessionStorage.getItem('pending_invite_code')

@@ -75,11 +75,11 @@ describe('useAuthStore', () => {
       })
 
       const store = useAuthStore()
-      await store.login('testuser', 'password123')
+      await store.login('  TEST@test.com  ', 'password123.')
 
       expect(mockApi.post).toHaveBeenCalledWith('/auth/login', {
-        username: 'testuser',
-        password: 'password123',
+        email: 'test@test.com',
+        password: 'password123.',
       })
       expect(store.user).toEqual(USER)
       expect(store.isAuthenticated).toBe(true)
@@ -305,11 +305,10 @@ describe('useAuthStore', () => {
       mockApi.post.mockResolvedValueOnce({ access_token: 'reg-token', user: mockUser })
 
       const store = useAuthStore()
-      const result = await store.register('new@test.com', 'newuser', 'pass', 'New')
+      const result = await store.register('new@test.com', 'pass', 'New')
 
       expect(mockApi.post).toHaveBeenCalledWith('/auth/register', {
         email: 'new@test.com',
-        username: 'newuser',
         password: 'pass',
         display_name: 'New',
       })
@@ -326,7 +325,7 @@ describe('useAuthStore', () => {
       mockApi.post.mockResolvedValueOnce({ message: 'check your email' })
 
       const store = useAuthStore()
-      await store.register('new@test.com', 'newuser', 'pass', 'New')
+      await store.register('new@test.com', 'pass', 'New')
 
       expect(store.isAuthenticated).toBe(false)
       expect(store.user).toBeNull()
@@ -340,11 +339,10 @@ describe('useAuthStore', () => {
       })
 
       const store = useAuthStore()
-      await store.register('e@e.com', 'u', 'p', 'D', 'invite-123')
+      await store.register('e@e.com', 'p', 'D', 'invite-123')
 
       expect(mockApi.post).toHaveBeenCalledWith('/auth/register', {
         email: 'e@e.com',
-        username: 'u',
         password: 'p',
         display_name: 'D',
         invite_code: 'invite-123',
@@ -355,11 +353,10 @@ describe('useAuthStore', () => {
     it('sends the attribution object when there is one', async () => {
       mockApi.post.mockResolvedValueOnce({ message: 'check your email' })
       const store = useAuthStore()
-      await store.register('e@e.com', 'u', 'p', 'D', undefined, { source: 'youtube', campaign: 'c1', self_reported: 'friend' })
+      await store.register('e@e.com', 'p', 'D', undefined, { source: 'youtube', campaign: 'c1', self_reported: 'friend' })
 
       expect(mockApi.post).toHaveBeenCalledWith('/auth/register', {
         email: 'e@e.com',
-        username: 'u',
         password: 'p',
         display_name: 'D',
         attribution: { source: 'youtube', campaign: 'c1', self_reported: 'friend' },
@@ -369,8 +366,8 @@ describe('useAuthStore', () => {
     it('omits the attribution key when there is nothing to say — never `{}`', async () => {
       mockApi.post.mockResolvedValue({ message: 'check your email' })
       const store = useAuthStore()
-      await store.register('e@e.com', 'u', 'p', 'D', undefined, undefined)
-      await store.register('e@e.com', 'u', 'p', 'D', undefined, {})
+      await store.register('e@e.com', 'p', 'D', undefined, undefined)
+      await store.register('e@e.com', 'p', 'D', undefined, {})
 
       for (const [, body] of mockApi.post.mock.calls) {
         expect(body).not.toHaveProperty('attribution')

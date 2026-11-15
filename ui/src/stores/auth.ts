@@ -13,9 +13,10 @@ import { subscribePush, unsubscribePush } from '@/composables/usePush'
 import { markSignedIn, clearSignedIn, looksSignedIn } from '@/api/session'
 import type { SignupAttribution } from '@/utils/attribution'
 
-interface User {
+export interface User {
   id: string
   email: string
+  email_verified?: boolean
   username: string
   display_name: string
   avatar?: string
@@ -62,14 +63,14 @@ export const useAuthStore = defineStore('auth', () => {
   const signedIn = ref(looksSignedIn())
   const isAuthenticated = computed(() => signedIn.value)
 
-  async function login(username: string, password: string) {
+  async function login(email: string, password: string) {
     loading.value = true
     error.value = null
     try {
       // The response still carries tokens; we deliberately ignore them. The
       // session arrived as Set-Cookie on this same response.
       const data = await api.post<{ user: User }>('/auth/login', {
-        username,
+        email: email.trim().toLowerCase(),
         password,
       })
       adoptSession(data.user)
@@ -86,9 +87,8 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function register(
     email: string,
-    username: string,
     password: string,
-    displayName: string,
+    displayName?: string,
     inviteCode?: string,
     attribution?: SignupAttribution,
   ) {
@@ -96,10 +96,9 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     try {
       const body: Record<string, unknown> = {
-        email,
-        username,
+        email: email.trim().toLowerCase(),
         password,
-        display_name: displayName,
+        ...(displayName?.trim() ? { display_name: displayName.trim() } : {}),
       }
       if (inviteCode) body.invite_code = inviteCode
       // FR-88 §3a: where this account came from, sent once, with it. Absent
@@ -142,6 +141,14 @@ export const useAuthStore = defineStore('auth', () => {
     signedIn.value = true
     markSignedIn()
     await fetchMe()
+  }
+
+  function completeNativeHandoff(u: User) {
+    cancelMeRetry()
+    adoptSession(u)
+    signedIn.value = true
+    markSignedIn()
+    subscribePush().catch(() => {})
   }
 
   /**
@@ -248,6 +255,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     register,
     adoptCookieSession,
+    completeNativeHandoff,
     forgetLocalSession,
     fetchMe,
     logout,

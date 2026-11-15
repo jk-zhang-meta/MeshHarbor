@@ -65,8 +65,7 @@ async function mountAt(path: string) {
 async function fillAndSubmit(w: Awaited<ReturnType<typeof mountAt>>['w']) {
   const inputs = w.findAll('input')
   await inputs[0]!.setValue('new@example.com')
-  await inputs[1]!.setValue('newuser')
-  await inputs[2]!.setValue('New User')
+  await inputs[1]!.setValue('New User')
   await w.find('input[type="password"]').setValue('secret123')
   await w.find('form').trigger('submit')
   await flushPromises()
@@ -118,6 +117,13 @@ afterEach(() => {
 })
 
 describe('RegisterView — attribution (FR-88)', () => {
+  it('uses email as the account identity without requesting an independent username', async () => {
+    const { w } = await mountAt('/register')
+    expect(w.find('input[type="email"]').exists()).toBe(true)
+    expect(w.text()).not.toContain('Username')
+    await fillAndSubmit(w)
+    expect(registerBody()).not.toHaveProperty('username')
+  })
   it('sends the landing’s campaign, as the static pages carried it, with the account', async () => {
     const { w } = await mountAt(
       '/register?utm_source=youtube&utm_medium=video&utm_campaign=fr88-test&referrer_host=www.youtube.com&landing_path=%2Fblog%2Fx%2F',
@@ -125,7 +131,6 @@ describe('RegisterView — attribution (FR-88)', () => {
     await fillAndSubmit(w)
     expect(registerBody()).toEqual({
       email: 'new@example.com',
-      username: 'newuser',
       password: 'secret123',
       display_name: 'New User',
       attribution: {
@@ -255,11 +260,12 @@ describe('RegisterView — the signup goal (FR-88)', () => {
 // FR-116 P7 — the same keyboard rules as the sign-in page: an account made
 // on a phone must not be "Goran" when its owner typed "goran".
 describe('RegisterView — on a phone keyboard (FR-116)', () => {
-  it('asks the keyboard not to capitalise the username or the email, and names the new password', async () => {
+  it('asks the keyboard not to capitalise the email and names the new password without a second identity', async () => {
     const { w } = await mountAt('/register')
-    const user = w.find('input[autocomplete="username"]')
+    const user = w.find('input[autocomplete="email"]')
     expect(user.attributes('autocapitalize')).toBe('none')
     expect(user.attributes('autocorrect')).toBe('off')
+    expect(w.find('input[autocomplete="username"]').exists()).toBe(false)
     expect(w.find('input[autocomplete="email"]').attributes('autocapitalize')).toBe('none')
     expect(w.find('input[autocomplete="new-password"]').exists()).toBe(true)
   })

@@ -40,20 +40,29 @@
             <v-list-item :title="preview.client" :subtitle="t('deviceLogin.from')" prepend-icon="mdi-map-marker" />
             <v-list-item :title="displayCode" :subtitle="t('deviceLogin.codeCheck')" prepend-icon="mdi-shield-key" />
           </v-list>
+          <v-alert v-if="!validPurpose" type="error" class="mb-3">{{ t('deviceLogin.unsupportedPurpose') }}</v-alert>
           <v-select
+            v-if="needsEnrollment"
             v-model="tenantId"
             :items="tenantItems"
             :label="t('deviceLogin.org')"
             :disabled="busy"
             data-testid="device-login-org"
           />
-          <p class="text-caption text-medium-emphasis mb-3">{{ t('deviceLogin.warning') }}</p>
+          <p v-if="needsEnrollment" class="text-caption text-medium-emphasis mb-3">{{ t('deviceLogin.warning') }}</p>
+          <v-alert v-if="needsUserSession" type="warning" variant="tonal" class="mb-3" data-testid="device-login-user-session">
+            {{ t('deviceLogin.userSessionConsent', { email: auth.user?.email ?? t('deviceLogin.currentAccount') }) }}
+          </v-alert>
+          <v-alert v-if="needsUserSession && auth.user?.email_verified !== true" type="warning" class="mb-3" data-testid="device-login-email-required">
+            {{ t('deviceLogin.verifiedEmailRequired') }}
+            <router-link :to="{ name: 'profile-edit' }">{{ t('deviceLogin.verifyEmail') }}</router-link>
+          </v-alert>
           <v-alert v-if="preview.personal_device === true" type="warning" variant="tonal" class="mb-3" data-testid="device-login-personal-access">
             {{ t('deviceLogin.personalAccess') }}
           </v-alert>
           <div class="d-flex ga-2">
-            <v-btn color="primary" :loading="busy" :disabled="!tenantId" data-testid="device-login-approve" @click="decide(true)">
-              {{ t('deviceLogin.approve') }}
+            <v-btn color="primary" :loading="busy" :disabled="busy || !canApprove" data-testid="device-login-approve" @click="decide(true)">
+              {{ t(needsUserSession ? 'deviceLogin.approveSignIn' : 'deviceLogin.approve') }}
             </v-btn>
             <v-btn variant="text" :disabled="busy" data-testid="device-login-deny" @click="decide(false)">
               {{ t('deviceLogin.deny') }}
@@ -71,8 +80,11 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, ApiError } from '@/api/client'
 import { useTenantStore } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
 
 interface Preview {
+  purpose?: 'enrollment' | 'user_session' | 'enrollment_and_user_session'
+  requested_scopes?: string[]
   personal_device?: boolean
   device: { name: string; os: string }
   client: string
@@ -83,11 +95,16 @@ interface Preview {
 const { t } = useI18n()
 const route = useRoute()
 const tenants = useTenantStore()
+const auth = useAuthStore()
 const code = ref(typeof route.query.code === 'string' ? route.query.code : '')
 const preview = ref<Preview | null>(null)
 const tenantId = ref<string | null>(null)
 const busy = ref(false)
 const error = ref('')
+const needsEnrollment = computed(() => preview.value?.purpose !== 'user_session')
+const needsUserSession = computed(() => preview.value?.purpose === 'user_session' || preview.value?.purpose === 'enrollment_and_user_session' || preview.value?.requested_scopes?.includes('user_session'))
+const validPurpose = computed(() => (!preview.value?.purpose || ['enrollment', 'user_session', 'enrollment_and_user_session'].includes(preview.value.purpose)) && (!preview.value?.requested_scopes || preview.value.requested_scopes.every(scope => ['enrollment', 'user_session'].includes(scope))))
+const canApprove = computed(() => validPurpose.value && (!needsEnrollment.value || !!tenantId.value) && (!needsUserSession.value || auth.user?.email_verified === true))
 const done = ref<'' | 'approved' | 'denied'>('')
 
 // Same shape the server accepts: 10 consonants, the dash and case optional.
@@ -102,10 +119,10 @@ async function load() {
   busy.value = true
   error.value = ''
   try {
-    if (!tenants.tenants.length) await tenants.fetchTenants()
     const p = await api.post<Preview>('/native/device-login/preview', { user_code: displayCode.value })
     if (!p || !p.device || typeof p.device.name !== 'string') throw new Error('bad preview')
     preview.value = p
+    if (needsEnrollment.value && !tenants.tenants.length) await tenants.fetchTenants()
     tenantId.value = tenants.current?.id ?? tenants.tenants[0]?.id ?? null
   } catch (e) {
     preview.value = null
@@ -117,6 +134,7 @@ async function load() {
 
 async function decide(approve: boolean) {
   if (busy.value || !preview.value) return
+  if (approve && !canApprove.value) return
   if (preview.value.expires_at_ms <= Date.now()) {
     preview.value = null
     error.value = t('deviceLogin.notFound')
@@ -128,7 +146,7 @@ async function decide(approve: boolean) {
     const r = await api.post<{ status: string }>('/native/device-login/decision', {
       user_code: displayCode.value,
       approve,
-      tenant_id: approve ? tenantId.value : null,
+      ...(needsEnrollment.value ? { tenant_id: approve ? tenantId.value : null } : {}),
     })
     if (r?.status !== (approve ? 'approved' : 'denied')) throw new Error('unexpected')
     done.value = approve ? 'approved' : 'denied'

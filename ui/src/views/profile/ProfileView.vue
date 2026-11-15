@@ -13,7 +13,7 @@
         </v-avatar>
         <div>
           <h2 class="text-h5">{{ userStore.profile.display_name }}</h2>
-          <p class="text-medium-emphasis">@{{ userStore.profile.username }}</p>
+          <p v-if="isOwnProfile" class="text-medium-emphasis">{{ authStore.user?.email }}</p>
           <v-chip
             size="small"
             :color="presenceColor"

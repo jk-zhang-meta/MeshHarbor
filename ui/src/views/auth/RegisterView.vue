@@ -22,27 +22,13 @@
               autofocus
               autocomplete="email"
               autocapitalize="none"
-              spellcheck="false"
-            />
-            <!-- No auto-capitalisation, no autocorrect: iOS capitalises the first
-                 letter of a text field by default, and the server matches the
-                 username exactly — "goran" typed on an iPhone arrived as
-                 "Goran" and was refused as invalid credentials. -->
-            <v-text-field
-              v-model="username"
-              :label="$t('auth.username')"
-              prepend-inner-icon="mdi-account"
-              :rules="[rules.required, rules.minLength(3)]"
-              autocomplete="username"
-              autocapitalize="none"
               autocorrect="off"
               spellcheck="false"
             />
             <v-text-field
               v-model="displayName"
-              :label="$t('auth.displayName')"
+              :label="$t('auth.displayNameOptional')"
               prepend-inner-icon="mdi-badge-account"
-              :rules="[rules.required]"
               autocomplete="name"
             />
             <v-text-field
@@ -146,7 +132,6 @@ const { mark: brandMark } = useBrand()
 
 const formRef = ref()
 const email = ref('')
-const username = ref('')
 const displayName = ref('')
 const password = ref('')
 const showPassword = ref(false)
@@ -195,7 +180,6 @@ async function handleRegister() {
   try {
     const result = await auth.register(
       email.value,
-      username.value,
       password.value,
       displayName.value,
       inviteCode.value,

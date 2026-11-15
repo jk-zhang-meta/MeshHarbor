@@ -54,6 +54,16 @@ const routes: RouteRecordRaw[] = [
     meta: { guest: true },
   },
   {
+    path: '/verify-email-change',
+    name: 'verify-email-change',
+    component: () => import('@/views/auth/VerifyEmailChangeView.vue'),
+  },
+  {
+    path: '/native-session-complete',
+    name: 'native-session-complete',
+    component: () => import('@/views/auth/NativeSessionCompleteView.vue'),
+  },
+  {
     path: '/privacy',
     name: 'privacy',
     component: () => import('@/views/legal/PrivacyPolicyView.vue'),

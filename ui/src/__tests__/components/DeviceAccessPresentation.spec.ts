@@ -12,6 +12,7 @@ import { deviceFeatureKeys, enabledDeviceFeatures, type DeviceAccessFeatures } f
 vi.mock('@/api/client', () => ({ api: { post: vi.fn() }, ApiError: class extends Error { status = 500 } }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: { code: 'BCDFG-HJKLM' } }) }))
 vi.mock('@/stores/tenant', () => ({ useTenantStore: () => ({ tenants: [{ id: 'org1', name: 'My devices' }], current: { id: 'org1' }, fetchTenants: vi.fn() }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 'u1', email: 'test@example.com', email_verified: true } }) }))
 
 const off = Object.fromEntries(deviceFeatureKeys.map(key => [key, false])) as DeviceAccessFeatures
 const vuetify = createVuetify({ components, directives })
