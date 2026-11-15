@@ -136,17 +136,17 @@ enum Command {
         /// No browser-cookie export, refresh, persistent login or MFA downgrade.
         #[arg(
             long,
-            requires = "username",
+            requires = "email",
             conflicts_with_all = ["access_token_file", "browser_approve"]
         )]
         login: bool,
         #[arg(long, requires = "login")]
-        username: Option<String>,
+        email: Option<String>,
         /// Request short-lived PKCE + key-bound browser approval for this SSH session
         /// without prompting for or sending an account password.
         #[arg(
             long,
-            conflicts_with_all = ["access_token_file", "login", "username"]
+            conflicts_with_all = ["access_token_file", "login", "email"]
         )]
         browser_approve: bool,
         #[arg(long, default_value_t = 0)]
@@ -1334,7 +1334,7 @@ where
             share,
             access_token_file,
             login,
-            username,
+            email,
             browser_approve,
             session_secs,
             args,
@@ -1345,7 +1345,7 @@ where
                 crate::native_auth::interactive(
                     &server,
                     &share,
-                    username.as_deref().context("--username required")?,
+                    email.as_deref().context("--email required")?,
                     session_secs,
                     &args,
                 )
@@ -2123,29 +2123,30 @@ mod tests {
         assert!(Cli::try_parse_from(base).is_err());
         for tail in [
             vec!["--login"],
-            vec!["--username", "alice"],
+            vec!["--email", "alice@example.com"],
+            vec!["--login", "--username", "alice"],
             vec![
                 "--login",
-                "--username",
-                "alice",
+                "--email",
+                "alice@example.com",
                 "--access-token-file",
                 "file",
             ],
             vec![
                 "--login",
-                "--username",
-                "alice",
+                "--email",
+                "alice@example.com",
                 "--password",
                 "not-accepted",
             ],
             vec!["--browser-approve", "--access-token-file", "file"],
-            vec!["--browser-approve", "--login", "--username", "alice"],
-            vec!["--browser-approve", "--username", "alice"],
+            vec!["--browser-approve", "--login", "--email", "alice@example.com"],
+            vec!["--browser-approve", "--email", "alice@example.com"],
         ] {
             assert!(Cli::try_parse_from(base.into_iter().chain(tail)).is_err());
         }
         assert!(
-            Cli::try_parse_from(base.into_iter().chain(["--login", "--username", "alice"])).is_ok()
+            Cli::try_parse_from(base.into_iter().chain(["--login", "--email", "alice@example.com"])).is_ok()
         );
         assert!(
             Cli::try_parse_from(base.into_iter().chain(["--access-token-file", "file"])).is_ok()

@@ -35,6 +35,7 @@
 )]
 
 mod account_window;
+mod user_account;
 mod commands;
 mod desktop_log;
 mod editor;

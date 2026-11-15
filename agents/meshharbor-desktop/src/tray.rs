@@ -42,6 +42,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let account_status =
         MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
     let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
+    let sign_out = MenuItem::with_id(app,"user_sign_out","Sign out of account…",true,None::<&str>)?;
     let join = MenuItem::with_id(
         app,
         JOIN_ITEM_ID,
@@ -86,6 +87,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &[
             &account_status,
             &login,
+            &sign_out,
             &join,
             &invites,
             &devices,
@@ -103,6 +105,17 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let on_menu = |app: &AppHandle<R>, event: tauri::menu::MenuEvent| match event.id.as_ref() {
         "open_status" => show_window(app, "/overview"),
         "open_web" => open_meshharbor_web(app),
+        "user_sign_out" => {
+            tauri::async_runtime::spawn(async {
+                let result=async {
+                    let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.map_err(|_|"Cannot resolve account server".to_string())??;
+                    crate::user_account::sign_out(&server).await
+                }.await;
+                if let Err(error)=result {
+                    LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).error=Some((error,std::time::Instant::now()));
+                }
+            });
+        }
         RECORD_ITEM_ID => toggle_recording(app),
         KEEP_BUSY_ITEM_ID => toggle_keep_busy(app),
         "onboarding" => show_window(app, "/onboarding"),
@@ -643,16 +656,12 @@ fn show_window<R: Runtime>(app: &AppHandle<R>, path: &str) {
 /// thread (window creation is main-thread-only on Windows).
 fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || match crate::commands::server_origin_blocking() {
-        Ok(url) => {
-            let app2 = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                if let Err(e) = crate::commands::open_web_or_browser(&app2, &url) {
-                    tracing::warn!(%e, "open meshharbor web failed");
-                }
-            });
-        }
-        Err(e) => tracing::warn!(%e, "open meshharbor web: no server origin"),
+    tauri::async_runtime::spawn(async move {
+        let result=async {
+            let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.map_err(|_|"Cannot resolve account server".to_string())??;
+            crate::commands::open_authenticated_web(&app,&server,meshharbor_node_core::user_session::WebTarget::Dashboard).await
+        }.await;
+        if let Err(error)=result { LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).error=Some((error,std::time::Instant::now())); }
     });
 }
 
@@ -1194,7 +1203,13 @@ fn spawn_account_watch<R: Runtime>(
                 }
                 Err(_) => (None, Vec::new()),
             };
-            let view = account_view(enrolled, node.as_ref(), &peers);
+            let mut view = account_view(enrolled, node.as_ref(), &peers);
+            let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.ok().and_then(Result::ok).unwrap_or_else(||meshharbor_node_core::device_login::DEFAULT_SERVER.into());
+            crate::user_account::load_cached_identity(server.clone()).await;
+            if !LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).busy {
+                let (label,enabled)=crate::user_account::label(&server,node.as_ref().is_some_and(|n|n.connected));
+                view.login_text=label; view.login_enabled=enabled;
+            }
             if shown.as_ref() != Some(&view) {
                 let _ = status.set_text(&view.status);
                 let _ = login.set_text(&view.login_text);

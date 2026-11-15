@@ -66,6 +66,7 @@ libc = "0.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Registry",
+    "Win32_Security_Credentials",
 ] }
 
 [features]

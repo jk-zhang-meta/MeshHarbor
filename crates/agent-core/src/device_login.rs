@@ -31,10 +31,32 @@ struct StartResponse {
     interval: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct ExchangeOk {
+    #[serde(default)]
     enrollment_token: String,
+    #[serde(default)]
     tenant_id: String,
+    #[serde(default)]
+    native_session: Option<crate::user_session::NativeSession>,
+}
+impl ExchangeOk {
+    fn validate(&self, purpose: Purpose)->Result<()> {
+        if purpose.needs_enrollment() && self.enrollment_token.is_empty() { bail!("the server approved the sign-in but sent no enrollment token"); }
+        if purpose.needs_session() { self.native_session.as_ref().context("server does not support user sign-in; upgrade the server")?.validate()?; }
+        else if self.native_session.is_some() { bail!("server returned an unrequested user session"); }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose { Enrollment, UserSession, EnrollmentAndUserSession }
+impl Purpose {
+    fn wire(self) -> &'static str {
+        match self { Self::Enrollment => "enrollment", Self::UserSession => "user_session", Self::EnrollmentAndUserSession => "enrollment_and_user_session" }
+    }
+    fn needs_enrollment(self) -> bool { self != Self::UserSession }
+    fn needs_session(self) -> bool { self != Self::Enrollment }
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +67,7 @@ struct ExchangeErr {
 /// A started request: show [`Self::user_code`] and open
 /// [`Self::verification_uri_complete`], then [`Self::wait`].
 pub struct Pending {
+    pub purpose: Purpose,
     pub server_url: String,
     pub user_code: String,
     pub verification_uri: String,
@@ -70,6 +93,7 @@ impl std::fmt::Debug for Pending {
 pub struct Approved {
     pub enrollment_token: String,
     pub tenant_id: String,
+    pub native_session: Option<crate::user_session::NativeSession>,
 }
 
 /// The OS name the server shows the approver.
@@ -111,20 +135,30 @@ pub fn server_base(server: &str) -> String {
 
 /// Start a device login for `device_name` on `server`.
 pub async fn start(server: &str, device_name: &str) -> Result<Pending> {
+    start_with_purpose(server, device_name, Purpose::Enrollment).await
+}
+
+/// GUI-only explicit authorization. Existing CLI enrollment never requests
+/// or stores a user session, including headless invitation enrollments.
+pub async fn start_with_purpose(server: &str, device_name: &str, purpose: Purpose) -> Result<Pending> {
     let server_url = server_base(server);
     let name = device_name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         bail!("the device name must be 1-64 printable characters");
     }
     let verifier = new_verifier();
+    let mut body=serde_json::json!({
+        "device_name": name,
+        "device_os": os_name(),
+        "code_challenge": challenge_for(&verifier),
+        "code_challenge_method": "S256",
+    });
+    // Old servers reject unknown fields. Enrollment-only remains byte-shape
+    // compatible; user-session authorization is never silently downgraded.
+    if purpose != Purpose::Enrollment { body["purpose"]=purpose.wire().into(); }
     let res = client()?
         .post(format!("{server_url}/api/native/device-login"))
-        .json(&serde_json::json!({
-            "device_name": name,
-            "device_os": os_name(),
-            "code_challenge": challenge_for(&verifier),
-            "code_challenge_method": "S256",
-        }))
+        .json(&body)
         .send()
         .await
         .with_context(|| format!("contacting {server_url}"))?;
@@ -132,6 +166,7 @@ pub async fn start(server: &str, device_name: &str) -> Result<Pending> {
         201 => {}
         503 => bail!("this server does not offer sign-in yet (device login is turned off there)"),
         429 => bail!("too many sign-in requests from this network; wait a few minutes"),
+        400 | 404 | 422 if purpose.needs_session() => bail!("this server does not support GUI user-session authorization; upgrade the server before signing in"),
         s => bail!("the server refused the sign-in request (HTTP {s})"),
     }
     let body: StartResponse = res.json().await.context("reading the server's answer")?;
@@ -139,6 +174,7 @@ pub async fn start(server: &str, device_name: &str) -> Result<Pending> {
         bail!("the server's sign-in answer is malformed");
     }
     Ok(Pending {
+        purpose,
         server_url,
         user_code: body.user_code,
         verification_uri: body.verification_uri,
@@ -177,12 +213,11 @@ impl Pending {
         let status = res.status().as_u16();
         if status == 200 {
             let ok: ExchangeOk = res.json().await.context("reading the enrollment token")?;
-            if ok.enrollment_token.is_empty() {
-                bail!("the server approved the sign-in but sent no token");
-            }
+            ok.validate(self.purpose)?;
             return Ok(Poll::Approved(Approved {
                 enrollment_token: ok.enrollment_token,
                 tenant_id: ok.tenant_id,
+                native_session: ok.native_session,
             }));
         }
         if status >= 500 {
@@ -277,6 +312,7 @@ mod tests {
     #[test]
     fn credentials_never_reach_debug_output() {
         let p = Pending {
+            purpose: Purpose::Enrollment,
             server_url: DEFAULT_SERVER.into(),
             user_code: "BCDFG-HJKLM".into(),
             verification_uri: String::new(),
@@ -288,5 +324,16 @@ mod tests {
         };
         let s = format!("{p:?}");
         assert!(!s.contains("SECRET"), "{s}");
+    }
+
+    #[test]
+    fn user_session_requires_explicit_scope_and_legacy_server_cannot_fake_login() {
+        let legacy:ExchangeOk=serde_json::from_value(serde_json::json!({"enrollment_token":"enroll-only","tenant_id":"tenant"})).unwrap();
+        assert!(legacy.validate(Purpose::Enrollment).is_ok());
+        assert!(legacy.validate(Purpose::UserSession).is_err());
+        let user:ExchangeOk=serde_json::from_value(serde_json::json!({"native_session":{"access_token":"access-fixture","refresh_token":"refresh-fixture","expires_in":60,"user":{"id":"user","email":"person@example.com","email_verified":true}}})).unwrap();
+        assert!(user.validate(Purpose::UserSession).is_ok());
+        assert!(user.validate(Purpose::Enrollment).is_err());
+        assert!(user.validate(Purpose::EnrollmentAndUserSession).is_err());
     }
 }

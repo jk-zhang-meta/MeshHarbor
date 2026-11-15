@@ -637,11 +637,14 @@ pub async fn cmd_leave(invite_id: Option<String>) -> Result<(), String> {
 pub async fn cmd_login_start(server: String, device_name: String) -> Result<LoginStarted, String> {
     use meshharbor_node_core::device_login;
     let server = if server.trim().is_empty() {
-        device_login::DEFAULT_SERVER.to_string()
+        server_origin_blocking().unwrap_or_else(|_|device_login::DEFAULT_SERVER.to_string())
     } else {
         server
     };
-    let pending = device_login::start(&server, device_name.trim())
+    // Already enrolled machines authorize only a GUI user session: no device
+    // identity/organization mutation and no daemon restart for web sign-in.
+    let purpose = if is_enrolled() { device_login::Purpose::UserSession } else { device_login::Purpose::EnrollmentAndUserSession };
+    let pending = device_login::start_with_purpose(&server, device_name.trim(), purpose)
         .await
         .map_err(|e| format!("{e:#}"))?;
     let opened = device_login::open_browser(&pending.verification_uri_complete);
@@ -663,6 +666,14 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         .take()
         .ok_or_else(|| "No sign-in is in progress".to_string())?;
     let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
+    if let Some(session) = approved.native_session {
+        crate::user_account::save_login(pending.server_url.clone(), session).await?;
+    } else {
+        return Err("This server did not grant a user session; device enrollment alone is not a user login".into());
+    }
+    if pending.purpose == meshharbor_node_core::device_login::Purpose::UserSession {
+        return Ok(cmd_status().await);
+    }
     enroll_with_token(
         pending.server_url.clone(),
         approved.enrollment_token,
@@ -1285,6 +1296,8 @@ pub async fn cmd_open_files_dir() -> Result<(), String> {
 /// other platforms open the default browser instead.
 #[cfg(windows)]
 pub const WEB_WINDOW_LABEL: &str = "meshharbor-web";
+#[cfg(windows)]
+static WEB_WINDOW_ORIGIN: Mutex<Option<tauri::Url>> = Mutex::new(None);
 
 /// S7 — open (or focus + navigate) the embedded WebView2 window on the
 /// MeshHarbor web app. The URL is an EXTERNAL origin, which Tauri keeps
@@ -1297,15 +1310,14 @@ pub const WEB_WINDOW_LABEL: &str = "meshharbor-web";
 /// `/__meshharbor_desktop__/open_rdp` requests and dispatches [`launch_desktop_rdp_session`]
 /// without exposing general `__TAURI__` IPC to the external page.
 #[cfg(windows)]
-pub fn open_web_window<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    url: &str,
-) -> Result<(), String> {
+fn open_web_window_for_server<R: tauri::Runtime>(app:&tauri::AppHandle<R>,url:&str,server:&str)->Result<(),String> {
     use tauri::Manager;
     let parsed: tauri::Url = url.parse().map_err(|e| format!("invalid URL: {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("only http(s) URLs can be opened".to_string());
     }
+    let allowed_origin=meshharbor_node_core::user_session::trusted_base(server).map_err(|e|e.to_string())?;
+    *WEB_WINDOW_ORIGIN.lock().map_err(|_|"Web account policy unavailable")?=Some(allowed_origin);
     if let Some(existing) = app.get_webview_window(WEB_WINDOW_LABEL) {
         // Reuse the window (and its signed-in session): navigate in place.
         existing
@@ -1315,13 +1327,13 @@ pub fn open_web_window<R: tauri::Runtime>(
         let _ = existing.set_focus();
         return Ok(());
     }
-    let allowed_origin = parsed.clone();
     let app_for_bridge = app.clone();
     tauri::WebviewWindowBuilder::new(app, WEB_WINDOW_LABEL, tauri::WebviewUrl::External(parsed))
         .title("MeshHarbor")
         .inner_size(1280.0, 800.0)
         .initialization_script(WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT)
         .on_new_window(move |req_url, _| {
+            let Some(allowed_origin)=WEB_WINDOW_ORIGIN.lock().ok().and_then(|base|base.clone()) else { return tauri::webview::NewWindowResponse::Deny; };
             let (response, bridge_req) =
                 decide_web_window_new_window::<R>(&req_url, &allowed_origin);
             if let Some(req) = bridge_req {
@@ -1355,22 +1367,13 @@ pub fn open_web_window<R: tauri::Runtime>(
     Ok(())
 }
 
-/// S7 — hybrid open policy: the in-app WebView2 window on Windows
-/// (Chromium: the full WebRTC/WebCodecs viewer works), the default
-/// browser elsewhere (WebKitGTK has no usable WebRTC; macOS WKWebView
-/// loses the Chrome-tuned worker paths) and as the fallback when the
-/// webview can't start (e.g. WebView2 runtime missing).
-pub fn open_web_or_browser<R: tauri::Runtime>(
+/// Non-Windows viewers use the default browser after the authenticated
+/// one-use handoff has been created. Account data uses its dedicated WebView.
+#[cfg(not(windows))]
+fn open_web_or_browser<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
 ) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        match open_web_window(app, url) {
-            Ok(()) => return Ok(()),
-            Err(e) => tracing::warn!(%e, "webview window failed — falling back to the browser"),
-        }
-    }
     // shell::open is deprecated in favour of tauri-plugin-opener, but the
     // shell plugin is already shipped + initialised here; not worth a new
     // plugin dependency for the fallback path.
@@ -1380,6 +1383,34 @@ pub fn open_web_or_browser<R: tauri::Runtime>(
         app.shell()
             .open(url, None)
             .map_err(|e| format!("opening browser: {e}"))
+    }
+}
+
+pub(crate) async fn open_authenticated_web<R:tauri::Runtime>(app:&tauri::AppHandle<R>,server:&str,target:meshharbor_node_core::user_session::WebTarget)->Result<(),String> {
+    let launch=crate::user_account::prepare(server,target).await?;
+    let app2=app.clone(); let server=server.to_owned();
+    let (tx,rx)=tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move||{
+        #[cfg(windows)]
+        let result=open_web_window_for_server(&app2,&launch,&server);
+        #[cfg(not(windows))]
+        let result={let _=server;open_web_or_browser(&app2,&launch)};
+        let _=tx.send(result);
+    }).map_err(|_|"Cannot schedule the account window")?;
+    rx.await.map_err(|_|"Account window task ended")?
+}
+
+pub(crate) async fn open_account_viewer_link<R:tauri::Runtime>(app:&tauri::AppHandle<R>,server:&str,url:&str)->Result<(),String> {
+    let base=meshharbor_node_core::user_session::trusted_base(server).map_err(|e|e.to_string())?;
+    let link:tauri::Url=url.parse().map_err(|_|"Invalid account viewer link")?;
+    if link.origin()!=base.origin() || link.query().is_some() || link.fragment().is_some() || !link.username().is_empty() || link.password().is_some() { return Err("Unsafe account viewer link".into()); }
+    let prefix=format!("{}/",base.path().trim_end_matches('/'));
+    let path=link.path().strip_prefix(&prefix).ok_or("Account viewer outside deployment prefix")?;
+    let parts:Vec<_>=path.split('/').collect();
+    match parts.as_slice() {
+        ["tenant",tenant,"agent",agent,"remote"]=>open_authenticated_web(app,server,meshharbor_node_core::user_session::WebTarget::Remote{tenant_id:(*tenant).into(),agent_id:(*agent).into()}).await,
+        ["device-shares",share_id,"remote"]=>open_authenticated_web(app,server,meshharbor_node_core::user_session::WebTarget::DeviceShareRemote{share_id:(*share_id).into()}).await,
+        _=>Err("This account viewer requires a supported authenticated handoff".into()),
     }
 }
 
@@ -1405,7 +1436,7 @@ pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
     let url = tokio::task::spawn_blocking(server_origin_blocking)
         .await
         .map_err(|e| format!("task join: {e}"))??;
-    open_web_or_browser(&app, &url)
+    open_authenticated_web(&app,&url,meshharbor_node_core::user_session::WebTarget::Dashboard).await
 }
 
 /// Personal directory and sharing are account-authenticated, never agent-token lists.
@@ -1429,7 +1460,14 @@ pub async fn cmd_open_account(
     })
     .await
     .map_err(|_| "Cannot resolve the account centre")??;
-    crate::account_window::open(&app, &server, &section)
+    let target=match section.as_str() {
+        "devices"=>meshharbor_node_core::user_session::WebTarget::MyDevices,
+        "sent"=>meshharbor_node_core::user_session::WebTarget::DeviceSharesSent,
+        "received"=>meshharbor_node_core::user_session::WebTarget::DeviceSharesReceived,
+        _=>return Err("Unknown personal account section".into()),
+    };
+    let launch=crate::user_account::prepare(&server,target).await?;
+    crate::account_window::open_authorized(&app,&server,&launch)
 }
 
 /// S2/S7 — open the remote-control viewer for one of the agent-backed
@@ -1459,11 +1497,11 @@ pub async fn cmd_open_remote(
         let path = active_config_path(is_scm)?;
         let cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
         let (server, tid) = remote_target(&cfg, org.as_deref())?;
-        Ok::<String, String>(format!("{server}/tenant/{tid}/agent/{aid}/remote"))
+        Ok::<_, String>((server,tid,aid))
     })
     .await
     .map_err(|e| format!("task join: {e}"))??;
-    open_web_or_browser(&app, &url)
+    open_authenticated_web(&app,&url.0,meshharbor_node_core::user_session::WebTarget::Remote{tenant_id:url.1,agent_id:url.2}).await
 }
 
 /// The `(server origin, tenant id)` a "View screen" for a device in `org`
