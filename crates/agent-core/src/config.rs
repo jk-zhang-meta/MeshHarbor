@@ -3652,54 +3652,93 @@ fn try_load(path: &PathBuf) -> Result<AgentConfig> {
     Ok(cfg)
 }
 
+#[cfg(all(test, unix))]
+pub(crate) static UMASK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Create `tmp` with owner-only `0600` permissions from inode birth (`O_CREAT |
+/// O_EXCL | O_NOFOLLOW` on Unix) BEFORE writing a single secret byte, invoke
+/// `before_first_write`, then write `bytes` and `sync_all()`.
+pub(crate) fn write_private_temp_and_sync_with_observer(
+    tmp: &std::path::Path,
+    bytes: &[u8],
+    before_first_write: impl FnOnce(&std::path::Path, &std::fs::File) -> Result<()>,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    match std::fs::remove_file(tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("removing stale temp file {}", tmp.display()));
+        }
+    }
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let mut f = opts
+        .open(tmp)
+        .with_context(|| format!("creating private temp file {}", tmp.display()))?;
+
+    let write_res = (|| -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // Group/other bits are already 0 from inode creation (`0600 & ~umask`
+            // has zero 0077 bits for any umask); `set_permissions(0600)` ensures
+            // owner rw even if a restrictive umask masked owner bits, still
+            // strictly before any secret byte is written.
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("setting 0600 on {}", tmp.display()))?;
+        }
+        before_first_write(tmp, &f)?;
+        f.write_all(bytes)
+            .with_context(|| format!("writing private temp file {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("fsync private temp file {}", tmp.display()))?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_res {
+        drop(f);
+        let _ = std::fs::remove_file(tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 pub fn save(path: &PathBuf, cfg: &AgentConfig) -> Result<()> {
+    save_with_observer(path, cfg, |_, _| Ok(()))
+}
+
+pub(crate) fn save_with_observer(
+    path: &PathBuf,
+    cfg: &AgentConfig,
+    mut before_first_write: impl FnMut(&std::path::Path, &std::fs::File) -> Result<()>,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating parent dir {}", parent.display()))?;
     }
     let serialised = toml::to_string_pretty(cfg).context("serialising config")?;
 
-    // ATOMIC (P6 hardening): write a sibling temp file, then rename over
-    // the target. The file holds `agent_token` — a torn `fs::write`
-    // (power loss / crash mid-write) used to brick enrollment. `rename`
-    // within one directory is atomic on Unix and uses
-    // MOVEFILE_REPLACE_EXISTING semantics on Windows. The temp name is
-    // pid-suffixed so two PROCESSES (daemon + tray/CLI) can't collide on
-    // the temp file itself; last-writer-wins on the rename is the
-    // documented cross-process limitation.
-    //
-    // DURABILITY (2026-08-12): rename-atomicity alone does NOT survive
-    // power loss — it only orders the *metadata*. NTFS journals metadata
-    // but not file data, so a rename can land while the temp file's bytes
-    // are still in the page cache; the post-crash file then has the right
-    // name and the right LENGTH but is entirely NUL. That is not a
-    // hypothetical: devbox lost power mid-save and came back with a
-    // 2995-byte all-NUL config.toml, which crash-looped the worker
-    // (exit 1 immediately after "resolved load path") until re-enrolled.
-    // `sync_all()` before the rename is what makes the guarantee real:
-    // the bytes are on disk first, so the crash window can only ever
-    // yield the OLD file or the NEW file.
+    // ATOMIC + PRIVATE FROM CREATION: write a sibling pid-suffixed temp file
+    // born with mode 0600 (`O_CREAT | O_EXCL | O_NOFOLLOW` on Unix) before any
+    // secret byte is written, `sync_all()`, then atomically rename into place.
+    // Even inside a searchable directory such as `/etc/meshharbor` (0755 on
+    // macOS) under ordinary `umask 0022`, no other local user can ever open
+    // the temporary inode before or after rename.
     let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
-    {
-        use std::io::Write as _;
-        let mut f = std::fs::File::create(&tmp)
-            .with_context(|| format!("creating config temp file {}", tmp.display()))?;
-        f.write_all(serialised.as_bytes())
-            .with_context(|| format!("writing config temp file {}", tmp.display()))?;
-        f.sync_all()
-            .with_context(|| format!("fsync config temp file {}", tmp.display()))?;
-    }
+    write_private_temp_and_sync_with_observer(&tmp, serialised.as_bytes(), |p, f| {
+        before_first_write(p, f)
+    })?;
 
-    // Tighten permissions on Unix BEFORE the rename — the file holds a
-    // bearer token, and the temp file must never be world-readable even
-    // for an instant at the final path.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&tmp, perms)?;
-    }
     // W4(c) — the Windows twin, for the MACHINE-GLOBAL location only: the
     // ProgramData default ACL leaves the config (agent bearer token!)
     // BUILTIN\Users-readable, and a non-admin could even pre-create the
@@ -3715,11 +3754,21 @@ pub fn save(path: &PathBuf, cfg: &AgentConfig) -> Result<()> {
 
     // Rotate the outgoing file to `.prev` so `load` has something to recover
     // from. Gated on it still parsing: a corrupt live file must never be
-    // allowed to overwrite the last known-good rotation. Best-effort — a
-    // failed rotation costs recoverability, not correctness. On Unix
-    // `fs::copy` carries the source's 0600 across, so the token stays private.
-    if try_load(path).is_ok() {
-        let _ = std::fs::copy(path, prev_path(path));
+    // allowed to overwrite the last known-good rotation. Stage via a private
+    // 0600 temp file + atomic rename rather than `fs::copy` so an existing
+    // looser `.prev` or source mode can never expose credentials mid-copy.
+    if try_load(path).is_ok()
+        && let Ok(existing_bytes) = std::fs::read(path)
+    {
+        let prev_tmp = path.with_extension(format!("toml.prev.tmp.{}", std::process::id()));
+        if write_private_temp_and_sync_with_observer(&prev_tmp, &existing_bytes, |p, f| {
+            before_first_write(p, f)
+        })
+        .is_ok()
+            && std::fs::rename(&prev_tmp, prev_path(path)).is_err()
+        {
+            let _ = std::fs::remove_file(&prev_tmp);
+        }
     }
 
     std::fs::rename(&tmp, path).with_context(|| {
@@ -4836,5 +4885,110 @@ tenant_id = "tid2"
             load_log.contains("ERROR"),
             "load must still report at ERROR; got: {load_log}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_creates_0600_temp_and_prev_before_first_write_under_umask_0022() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct UmaskGuard(libc::mode_t);
+        impl Drop for UmaskGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::umask(self.0);
+                }
+            }
+        }
+
+        let _lock = UMASK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _umask = UmaskGuard(unsafe { libc::umask(0o022) });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod 0755 dir");
+        let cfg_file = dir.path().join("config.toml");
+
+        let mut cfg: AgentConfig = toml::from_str(&minimal_toml()).expect("parses");
+        cfg.agent_token = "tok_secret_1".to_string();
+
+        let mut prewrite_modes = Vec::new();
+        save_with_observer(&cfg_file, &cfg, |tmp_path, file| {
+            let path_meta = std::fs::symlink_metadata(tmp_path)?;
+            let fd_meta = file.metadata()?;
+            assert!(
+                !path_meta.file_type().is_symlink(),
+                "temp file must be a real file"
+            );
+            assert_eq!(
+                path_meta.len(),
+                0,
+                "observer must run BEFORE first write on {}",
+                tmp_path.display()
+            );
+            assert_eq!(fd_meta.len(), 0);
+            let path_mode = path_meta.permissions().mode() & 0o777;
+            let fd_mode = fd_meta.permissions().mode() & 0o777;
+            assert_eq!(
+                path_mode,
+                0o600,
+                "temp file {} must be 0600 before first write under umask 0022, got {:04o}",
+                tmp_path.display(),
+                path_mode
+            );
+            assert_eq!(fd_mode, 0o600);
+            prewrite_modes.push((tmp_path.to_path_buf(), path_mode));
+            Ok(())
+        })
+        .expect("initial save");
+        assert_eq!(prewrite_modes.len(), 1, "initial save writes one temp file");
+        assert_eq!(
+            std::fs::symlink_metadata(&cfg_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let prev_file = prev_path(&cfg_file);
+        std::fs::write(&prev_file, "stale = true\n").unwrap();
+        std::fs::set_permissions(&prev_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        cfg.agent_token = "tok_secret_2".to_string();
+        save_with_observer(&cfg_file, &cfg, |tmp_path, file| {
+            let path_meta = std::fs::symlink_metadata(tmp_path)?;
+            assert_eq!(
+                path_meta.len(),
+                0,
+                "observer must run BEFORE first write on {}",
+                tmp_path.display()
+            );
+            assert_eq!(file.metadata()?.len(), 0);
+            let mode = path_meta.permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "rotating save temp {} must be 0600 before first write under umask 0022, got {:04o}",
+                tmp_path.display(),
+                mode
+            );
+            prewrite_modes.push((tmp_path.to_path_buf(), mode));
+            Ok(())
+        })
+        .expect("rotating save");
+        assert_eq!(
+            prewrite_modes.len(),
+            3,
+            "second save must observe both config.toml.tmp and config.toml.prev.tmp before first write"
+        );
+        for final_path in [&cfg_file, &prev_file] {
+            let mode = std::fs::symlink_metadata(final_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{} must end at 0600", final_path.display());
+        }
     }
 }

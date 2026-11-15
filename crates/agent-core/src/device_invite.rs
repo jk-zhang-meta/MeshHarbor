@@ -570,11 +570,47 @@ static MARKER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Record (or, with `None`, clear) what the server said about one
 /// enrollment. Written only when it changes, through a rename, so a reader
 /// never sees half a file; the file goes when no enrollment is temporary.
+fn write_private_sidecar_observed(
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+    before_first_write: impl FnOnce(&Path, &std::fs::File) -> Result<()>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent dir for {label}"))?;
+    }
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    crate::config::write_private_temp_and_sync_with_observer(&tmp, bytes, before_first_write)
+        .with_context(|| format!("writing {label}"))?;
+    std::fs::rename(&tmp, path).with_context(|| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("placing {label}")
+    })?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 pub fn write_marker_for(
     config_path: &Path,
     agent_id: &str,
     is_primary: bool,
     info: Option<&TemporaryInfo>,
+) -> Result<()> {
+    write_marker_for_observed(config_path, agent_id, is_primary, info, |_, _| Ok(()))
+}
+
+fn write_marker_for_observed(
+    config_path: &Path,
+    agent_id: &str,
+    is_primary: bool,
+    info: Option<&TemporaryInfo>,
+    before_first_write: impl FnOnce(&Path, &std::fs::File) -> Result<()>,
 ) -> Result<()> {
     let _g = MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let before = read_markers(config_path);
@@ -600,16 +636,8 @@ pub fn write_marker_for(
         }
         return Ok(());
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&MarkerFile { enrollments: all })?)
-        .context("writing temporary.json")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, &path).context("placing temporary.json")?;
-    Ok(())
+    let bytes = serde_json::to_vec(&MarkerFile { enrollments: all })?;
+    write_private_sidecar_observed(&path, &bytes, "temporary.json", before_first_write)
 }
 
 // ─── the machine's history and proofs ───────────────────────────────────────
@@ -654,6 +682,14 @@ pub fn read_history(config_path: &Path) -> Vec<HistoryEntry> {
 
 /// Add an accepted invitation (kept for good: it is the machine's record).
 pub fn append_history(config_path: &Path, entry: HistoryEntry) -> Result<()> {
+    append_history_observed(config_path, entry, |_, _| Ok(()))
+}
+
+fn append_history_observed(
+    config_path: &Path,
+    entry: HistoryEntry,
+    before_first_write: impl FnOnce(&Path, &std::fs::File) -> Result<()>,
+) -> Result<()> {
     let _g = MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = read_history(config_path);
     if all.iter().any(|h| h.invite_id == entry.invite_id) {
@@ -661,15 +697,8 @@ pub fn append_history(config_path: &Path, entry: HistoryEntry) -> Result<()> {
     }
     all.push(entry);
     let path = history_path(config_path);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&all)?).context("writing invites.json")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, &path).context("placing invites.json")?;
-    Ok(())
+    let bytes = serde_json::to_vec_pretty(&all)?;
+    write_private_sidecar_observed(&path, &bytes, "invites.json", before_first_write)
 }
 
 // ─── the end of an enrollment's access ──────────────────────────────────────
@@ -968,5 +997,102 @@ mod tests {
         assert_eq!(remaining_words(3 * h + 120_000, 0), "3 h 2 min");
         assert_eq!(remaining_words(30_000, 0), "1 min");
         assert_eq!(remaining_words(0, 5), "0 min");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_and_marker_create_0600_temp_before_first_write_under_umask_0022() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        struct UmaskGuard(libc::mode_t);
+        impl Drop for UmaskGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::umask(self.0);
+                }
+            }
+        }
+
+        let _lock = crate::config::UMASK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _umask = UmaskGuard(unsafe { libc::umask(0o022) });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod 0755 dir");
+        let cfg = dir.path().join("config.toml");
+
+        let mut hist_observed = false;
+        append_history_observed(
+            &cfg,
+            HistoryEntry {
+                invite_id: "inv_1".into(),
+                proof: "secret_proof_material".into(),
+                server_url: "https://mh.example/".into(),
+                tenant_id: "ten_1".into(),
+                org: "Org".into(),
+                inviter: "owner@example.com".into(),
+                access_until_ms: 9_999_999,
+                accepted_at_ms: 1_000_000,
+            },
+            |tmp_path, file| {
+                let meta = std::fs::symlink_metadata(tmp_path)?;
+                assert_eq!(meta.len(), 0, "invites temp must have 0 bytes before first write");
+                assert_eq!(file.metadata()?.len(), 0);
+                assert_eq!(
+                    meta.permissions().mode() & 0o777,
+                    0o600,
+                    "invites temp must be 0600 before first write under umask 0022"
+                );
+                hist_observed = true;
+                Ok(())
+            },
+        )
+        .expect("append_history_observed");
+        assert!(hist_observed, "invites pre-write observer must run");
+        assert_eq!(
+            std::fs::symlink_metadata(history_path(&cfg))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let mut marker_observed = false;
+        write_marker_for_observed(
+            &cfg,
+            "ag_1",
+            true,
+            Some(
+                &serde_json::from_str::<TemporaryInfo>(
+                    r#"{"org":"Org","inviter":"owner@example.com","access_until_ms":9999999}"#,
+                )
+                .unwrap(),
+            ),
+            |tmp_path, file| {
+                let meta = std::fs::symlink_metadata(tmp_path)?;
+                assert_eq!(meta.len(), 0, "marker temp must have 0 bytes before first write");
+                assert_eq!(file.metadata()?.len(), 0);
+                assert_eq!(
+                    meta.permissions().mode() & 0o777,
+                    0o600,
+                    "marker temp must be 0600 before first write under umask 0022"
+                );
+                marker_observed = true;
+                Ok(())
+            },
+        )
+        .expect("write_marker_for_observed");
+        assert!(marker_observed, "marker pre-write observer must run");
+        assert_eq!(
+            std::fs::symlink_metadata(marker_path(&cfg))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }

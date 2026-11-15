@@ -49,13 +49,44 @@ async fn execute(request_file: &Path) -> Result<()> {
     };
     #[cfg(not(windows))]
     let (target_path, existing_sys) = {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let p = PathBuf::from(crate::service::system::CONFIG);
         ensure_trusted_unix_config_paths(&p)?;
         if let Some(parent) = p.parent() {
+            let existed = parent.exists();
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755));
+            let dir_mode = if cfg!(target_os = "macos") {
+                if existed {
+                    let cur = std::fs::symlink_metadata(parent)
+                        .with_context(|| format!("inspecting {}", parent.display()))?
+                        .permissions()
+                        .mode()
+                        & 0o777;
+                    if cur == 0o700 { 0o700 } else { 0o755 }
+                } else {
+                    0o755
+                }
+            } else {
+                0o700
+            };
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(dir_mode))
+                .with_context(|| format!("setting {:04o} on {}", dir_mode, parent.display()))?;
+            let meta = std::fs::symlink_metadata(parent)
+                .with_context(|| format!("verifying {}", parent.display()))?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                bail!("{} is not a real directory", parent.display());
+            }
+            if personal_system::is_process_elevated()
+                && (meta.uid() != 0 || (meta.mode() & 0o022) != 0)
+            {
+                bail!(
+                    "{} is not exclusively root-owned and non-group/world-writable (uid={}, mode={:04o})",
+                    parent.display(),
+                    meta.uid(),
+                    meta.mode() & 0o777
+                );
+            }
         }
         ensure_trusted_unix_config_paths(&p)?;
         let existing = if p.exists() {
@@ -103,6 +134,8 @@ async fn execute(request_file: &Path) -> Result<()> {
     .await
     .context("enrolling device with server")?;
 
+    #[cfg(not(windows))]
+    ensure_trusted_unix_config_paths(&target_path)?;
     let combined_existing = fold_seeded_user_config(
         &target_path,
         existing_sys,
@@ -148,12 +181,19 @@ async fn execute(request_file: &Path) -> Result<()> {
 
 #[cfg(not(windows))]
 fn ensure_trusted_unix_config_paths(config_path: &Path) -> Result<()> {
+    let pid = std::process::id();
+    let marker = device_invite::marker_path(config_path);
+    let history = device_invite::history_path(config_path);
     for candidate in [
         config_path.to_path_buf(),
         config_path.with_extension("toml.prev"),
         config_path.with_extension("toml.tmp"),
-        device_invite::marker_path(config_path),
-        device_invite::history_path(config_path),
+        config_path.with_extension(format!("toml.tmp.{pid}")),
+        config_path.with_extension(format!("toml.prev.tmp.{pid}")),
+        marker.clone(),
+        marker.with_extension(format!("json.tmp.{pid}")),
+        history.clone(),
+        history.with_extension(format!("json.tmp.{pid}")),
     ] {
         if let Some(link) = personal_system::untrusted_promotion_link_component(&candidate) {
             bail!(
