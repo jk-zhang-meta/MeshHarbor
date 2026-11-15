@@ -42,7 +42,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let account_status =
         MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
     let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
-    let sign_out = MenuItem::with_id(app,"user_sign_out","Sign out of account…",true,None::<&str>)?;
+    let sign_out = MenuItem::with_id(app, "user_sign_out", "Sign out of account…", false, None::<&str>)?;
     let join = MenuItem::with_id(
         app,
         JOIN_ITEM_ID,
@@ -157,6 +157,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         app.clone(),
         account_status,
         login,
+        sign_out,
         join,
         invites,
         devices,
@@ -1031,6 +1032,7 @@ struct AccountView {
     status: String,
     login_text: String,
     login_enabled: bool,
+    sign_out_enabled: bool,
     join_enabled: bool,
     /// The machine holds only invitations (no account of its own): no device
     /// list and no admin console.
@@ -1169,6 +1171,7 @@ fn account_view_at(
         status,
         login_text,
         login_enabled,
+        sign_out_enabled: false,
         join_enabled: !ui.busy,
         temporary,
         devices,
@@ -1180,6 +1183,7 @@ fn spawn_account_watch<R: Runtime>(
     app: AppHandle<R>,
     status: MenuItem<R>,
     login: MenuItem<R>,
+    sign_out: MenuItem<R>,
     join: MenuItem<R>,
     invites: tauri::menu::Submenu<R>,
     devices: tauri::menu::Submenu<R>,
@@ -1206,14 +1210,20 @@ fn spawn_account_watch<R: Runtime>(
             let mut view = account_view(enrolled, node.as_ref(), &peers);
             let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.ok().and_then(Result::ok).unwrap_or_else(||meshharbor_node_core::device_login::DEFAULT_SERVER.into());
             crate::user_account::load_cached_identity(server.clone()).await;
-            if !LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).busy {
-                let (label,enabled)=crate::user_account::label(&server,node.as_ref().is_some_and(|n|n.connected));
-                view.login_text=label; view.login_enabled=enabled;
+            let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
+            if !busy_now {
+                let (label, enabled) =
+                    crate::user_account::label(&server, node.as_ref().is_some_and(|n| n.connected));
+                view.login_text = label;
+                view.login_enabled = enabled;
             }
+            view.sign_out_enabled =
+                !busy_now && !view.temporary && crate::user_account::has_identity(&server);
             if shown.as_ref() != Some(&view) {
                 let _ = status.set_text(&view.status);
                 let _ = login.set_text(&view.login_text);
                 let _ = login.set_enabled(view.login_enabled);
+                let _ = sign_out.set_enabled(view.sign_out_enabled);
                 let _ = join.set_enabled(view.join_enabled);
                 let _ = devices.set_enabled(!view.temporary);
                 let _ = admin.set_enabled(!view.temporary);

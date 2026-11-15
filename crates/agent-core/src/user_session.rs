@@ -138,6 +138,9 @@ pub async fn revoke(server: &str, access_token: &str) -> Result<()> {
         .send()
         .await
         .context("cannot revoke session while account server is unavailable")?;
+    if matches!(reply.status().as_u16(), 401 | 403) {
+        return Err(SessionDenied(reply.status().as_u16()).into());
+    }
     if reply.status().as_u16() != 204 {
         bail!(
             "session revocation not confirmed (HTTP {})",

@@ -27,6 +27,12 @@ fn badge(server: &str, user: Option<&UserProfile>, fresh: bool) {
         };
     }
 }
+pub fn has_identity(server: &str) -> bool {
+    BADGE
+        .lock()
+        .ok()
+        .is_some_and(|v| v.server == server && v.email.is_some())
+}
 pub fn label(server: &str, connected: bool) -> (String, bool) {
     let value = BADGE.lock().ok();
     label_for(value.as_deref(), server, connected)
@@ -82,10 +88,14 @@ pub async fn save_login(server: String, session: NativeSession) -> Result<(), St
         .map_err(|_| "Cannot read the previous account authorization")?;
     if let Some(old) = old {
         if old.refresh_token != session.refresh_token {
-            match user_session::refresh(&server,&old.refresh_token).await {
-                Ok(prior)=>user_session::revoke(&server,&prior.access_token).await.map_err(|e|e.to_string())?,
-                Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some()=>{},
-                Err(_)=>return Err("Cannot confirm revocation of the previous account session; authorization was not replaced".into()),
+            match user_session::refresh(&server, &old.refresh_token).await {
+                Ok(prior) => match user_session::revoke(&server, &prior.access_token).await {
+                    Ok(()) => {}
+                    Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+                    Err(error) => return Err(error.to_string()),
+                },
+                Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+                Err(_) => return Err("Cannot confirm revocation of the previous account session; authorization was not replaced".into()),
             }
         }
     }
@@ -162,15 +172,27 @@ pub async fn prepare(server: &str, target: WebTarget) -> Result<String, String> 
 
 pub async fn sign_out(server: &str) -> Result<(), String> {
     let _operation = SESSION_OP.lock().await;
-    let session = refreshed(server).await?;
-    user_session::revoke(server, &session.access_token)
+    let load_scope = server.to_owned();
+    let saved = tokio::task::spawn_blocking(move || vault::load(&load_scope))
         .await
-        .map_err(|e| e.to_string())?;
-    let scope = server.to_owned();
-    tokio::task::spawn_blocking(move || vault::delete(&scope))
-        .await
-        .map_err(|_| "OS credential removal task failed")?
-        .map_err(|_| "Server session revoked, but OS credential cleanup failed")?;
+        .map_err(|_| "OS credential read task failed")?
+        .map_err(|_| "Cannot read the OS credential store; unlock it and try signing out again")?;
+    if let Some(saved) = saved {
+        match user_session::refresh(server, &saved.refresh_token).await {
+            Ok(session) => match user_session::revoke(server, &session.access_token).await {
+                Ok(()) => {}
+                Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+                Err(error) => return Err(error.to_string()),
+            },
+            Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let del_scope = server.to_owned();
+        tokio::task::spawn_blocking(move || vault::delete(&del_scope))
+            .await
+            .map_err(|_| "OS credential removal task failed")?
+            .map_err(|_| "Server session revoked, but OS credential cleanup failed")?;
+    }
     badge(server, None, false);
     Ok(())
 }
