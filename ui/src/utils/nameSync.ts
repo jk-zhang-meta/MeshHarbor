@@ -25,6 +25,7 @@ export function shouldAcceptNameSync(current: NameSync | undefined, incoming: Na
   if (previous === null || previousAck === null) return true
   const seq = revision(incoming.event_seq)
   const previousSeq = revision(current.event_seq)
+  if (previousSeq !== null && seq === null) return false
   if (seq !== null && previousSeq !== null) return seq >= previousSeq && next >= previous
   return next > previous || (next === previous && ack >= previousAck)
 }

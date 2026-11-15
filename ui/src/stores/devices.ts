@@ -123,9 +123,12 @@ export const useDeviceStore = defineStore('devices', () => {
   }
 
   /** Merge a fresh row (e.g. from an edit response) into the current page. */
-  function patchRow(partial: Partial<DeviceRow> & { id: string }) {
+  function patchRow(partial: Partial<DeviceRow> & { id: string }, unverifiedSave = false) {
     const row = items.value.find((r) => r.id === partial.id)
-    if (row) Object.assign(row, mergeNameSync(row, partial))
+    if (row) {
+      if (unverifiedSave) Object.assign(row, partial, { name_sync: undefined })
+      else Object.assign(row, mergeNameSync(row, partial))
+    }
   }
 
   return {

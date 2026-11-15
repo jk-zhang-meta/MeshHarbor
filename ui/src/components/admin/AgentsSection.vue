@@ -1682,7 +1682,10 @@ function onDeviceSaved(result: {
   dnsRenamed?: boolean
   dnsName?: string
   nameSync?: NameSync
+  nameSyncUnverified?: boolean
 }) {
+  const row = deviceStore.items.find(row => row.id === result.id)
+  const unverifiedSave = result.nameSyncUnverified && (!row || row.name === result.name || row.name_sync === editTarget.value?.name_sync)
   deviceStore.patchRow({
     id: result.id,
     name: result.name,
@@ -1690,7 +1693,7 @@ function onDeviceSaved(result: {
     tags: result.tags,
     ...(result.nameSync ? { name_sync: result.nameSync } : {}),
     ...(result.dnsName ? { magic_dns_name: result.dnsName } : {}),
-  })
+  }, unverifiedSave)
   // Refetch so sort/search reflect the new values server-side.
   fetchGrid()
 }

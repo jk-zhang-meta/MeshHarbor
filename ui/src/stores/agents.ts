@@ -1057,7 +1057,8 @@ export const useAgentStore = defineStore('agents', () => {
     tenantId: string,
     agentId: string,
     fields: { name?: string; display_name?: string; tags?: string[] },
-  ): Promise<{ dnsRenamed?: boolean; dnsName?: string; nameSync?: NameSync }> {
+  ): Promise<{ dnsRenamed?: boolean; dnsName?: string; nameSync?: NameSync; nameSyncUnverified?: boolean }> {
+    const beforeSync = agents.value.find(a => a.id === agentId && a.tenant_id === tenantId)?.name_sync
     const resp = await api.put<{
       updated?: boolean
       agent?: Agent
@@ -1066,21 +1067,30 @@ export const useAgentStore = defineStore('agents', () => {
       name_sync?: NameSync
     }>(`/tenant/${tenantId}/agent/${agentId}`, fields)
     const idx = agents.value.findIndex((a) => a.id === agentId)
+    let nameSyncUnverified = false
     if (idx !== -1) {
       if (resp?.agent) {
         agents.value[idx] = mergeNameSync(agents.value[idx]!, resp.agent)
       } else {
-        if (fields.name !== undefined) agents.value[idx]!.name = fields.name
-        if (fields.display_name !== undefined)
-          agents.value[idx]!.display_name = fields.display_name || undefined
-        if (fields.tags !== undefined) agents.value[idx]!.tags = fields.tags
-        if (resp?.name_sync) agents.value[idx]!.name_sync = resp.name_sync
+        agents.value[idx] = mergeNameSync(agents.value[idx]!, {
+          ...fields,
+          ...(fields.display_name !== undefined ? { display_name: fields.display_name || undefined } : {}),
+          ...(fields.name !== undefined ? { name_sync: resp?.name_sync } : {}),
+        })
+      }
+      if (fields.name !== undefined && !resp?.name_sync && !resp?.agent?.name_sync && agents.value[idx]!.name_sync === beforeSync) {
+        // Older servers acknowledge only their own write. Never attach the
+        // previous name's device acknowledgement to the newly saved name.
+        agents.value[idx]!.name = resp?.agent?.name ?? fields.name
+        agents.value[idx]!.name_sync = undefined
+        nameSyncUnverified = true
       }
     }
     return {
       dnsRenamed: resp?.dns_renamed ?? undefined,
       dnsName: resp?.dns_name ?? undefined,
       nameSync: resp?.name_sync ?? resp?.agent?.name_sync,
+      nameSyncUnverified,
     }
   }
 
