@@ -38,6 +38,7 @@ pub mod companion;
 pub mod consent;
 pub mod crash_uploader;
 pub mod delegate;
+pub mod device_name;
 #[cfg(unix)]
 pub mod delegate_worker;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]

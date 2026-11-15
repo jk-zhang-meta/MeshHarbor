@@ -717,9 +717,9 @@
               <button type="submit" class="primary">Rename device</button>
             </div>
           </form>
-          <p class="muted small">
-            Takes effect on the next reconnect — the service re-announces itself
-            with the new name.
+          <p class="muted small" id="rename-sync-state">
+            Names synchronize live. Offline proposals wait for the server;
+            newer website changes take precedence.
           </p>
           <p class="muted small scm-hint" hidden>
             This device runs a machine-wide service — the rename is applied
