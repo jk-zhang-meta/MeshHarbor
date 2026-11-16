@@ -1295,6 +1295,10 @@ pub enum RpcCap {
     /// advertises this. An older agent ran a recipient's file operations as
     /// whatever the daemon was, root/SYSTEM included.
     SharedFilesAsAccount,
+    /// Dynamic admin-pushed org-relay activation (`rc:overlay.peer_relay_serve`).
+    /// Equality-matched; neither `relay-server` nor `relay-control` is a prefix
+    /// of the other.
+    RelayControl,
 }
 
 impl RpcCap {
@@ -1315,6 +1319,7 @@ impl RpcCap {
             Self::Config => "config",
             Self::ConfigReport => "config-report",
             Self::RelayServer => "relay-server",
+            Self::RelayControl => "relay-control",
             Self::ManagedForward => "managed-forward",
             Self::ManagedForwardNft => "managed-forward-nft",
             Self::SharedFilesAsAccount => "shared-files-as-account",
@@ -1356,7 +1361,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 46] = [
+    pub const ALL: [RpcCap; 47] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1366,6 +1371,7 @@ impl RpcCap {
         Self::Config,
         Self::ConfigReport,
         Self::RelayServer,
+        Self::RelayControl,
         Self::KeyRotate,
         Self::SshGrantAck,
         Self::Hive,
@@ -2378,6 +2384,20 @@ pub struct Agent {
     /// as the two above: every pre-FR-19 row deserialises to "not approved".
     #[serde(default)]
     pub peer_relay_policy: PeerRelayPolicy,
+    /// Monotonic revision bumped atomically via MongoDB `$inc` whenever
+    /// [`Self::peer_relay_policy`] is updated, ordering connect snapshots
+    /// against live admin `PeerRelayServe` pushes.
+    #[serde(default)]
+    pub peer_relay_revision: u64,
+    /// Last observed public IP address (from WS connection or STUN `srflx`),
+    /// persisted so both online and offline devices retain their Public IP and
+    /// GeoIP physical location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    /// Optional admin-pinned logical [`NetworkZone`] slug (`None` = Auto,
+    /// `Some(id)` = Pinned; single assignment representation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
     /// FR-52 gate 2 — approval for control by someone OUTSIDE this org. Same
     /// closed default as the three above.
     #[serde(default)]
@@ -3375,6 +3395,22 @@ pub struct VisibleDeviceRow {
     /// `rdp_available == Some(true)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_mesh_reachable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 
 /// The page `GET /api/agent/self/devices` answers with.
@@ -3433,6 +3469,14 @@ mod visible_device_tests {
             rdp_port: None,
             rdp_cert_sha256: None,
             rdp_mesh_reachable: None,
+            public_ip: None,
+            country_code: None,
+            country: None,
+            region: None,
+            city: None,
+            pinned_zone_id: None,
+            effective_zone_id: None,
+            effective_zone_name: None,
         }
     }
 
@@ -3812,7 +3856,7 @@ pub struct PeerRelayBackboneEdge {
     pub cross_border: bool,
 }
 
-pub const MAX_PEER_RELAY_BACKBONE_EDGES: usize = 8;
+pub const MAX_PEER_RELAY_BACKBONE_EDGES: usize = 32;
 
 /// FR-19 gate 3 — may THIS device serve as an org relay for its tenant?
 /// Per-device and admin-set; the device's own `relay_server_enabled` (gate 4)
@@ -3874,7 +3918,7 @@ pub mod peer_relay_limits {
     pub const MAX_LIFETIME_SECS: u32 = 3600;
     /// Live sessions the server will place on one relay — mirrors the
     /// device's own `orgrelay::session::MAX_SESSIONS`, which refuses beyond it.
-    pub const MAX_SESSIONS_PER_RELAY: usize = 64;
+    pub const MAX_SESSIONS_PER_RELAY: usize = 256;
     /// How long a reachability report counts toward relay ranking.
     pub const PROBE_TTL_SECS: u64 = 600;
     /// The STUN magic cookie as a 24-bit VNI — never minted, so a STUN
@@ -3946,9 +3990,7 @@ impl PeerRelayDenyReason {
             Self::OrgDisabled => "peer relays are off for this organization",
             Self::NotDeviceAdmin => "Missing MANAGE_AGENTS permission",
             Self::CannotGrantRelay => {
-                "Approving a device as an org relay requires EXEC_DEVICE — it makes the device \
-                 a traffic chokepoint for the whole organization, and you cannot grant a power \
-                 you do not hold"
+                "Approving a device as an org relay or adding backbone edges requires ADMINISTRATOR"
             }
             Self::RequesterUnsupported => "the requesting device does not support org relays",
             Self::PeerUnsupported => "the peer does not support org relays",
@@ -6943,8 +6985,231 @@ pub struct OverlayNetwork {
     /// stale deltas.
     #[serde(default)]
     pub auth_revision: u64,
+    /// Tenant logical routing zones (`[]` = legacy unrestricted behavior).
+    #[serde(default)]
+    pub zones: Vec<NetworkZone>,
+    /// Monotonically increasing revision bumped on every zone or device
+    /// zone-assignment mutation, ordering `RelayRegions` and netmap pushes.
+    #[serde(default)]
+    pub zone_revision: u64,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+}
+
+pub const MAX_NETWORK_ZONES: usize = 32;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossZoneMode {
+    #[default]
+    RouterOnly,
+    DirectPreferred,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct NetworkZone {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub auto_countries: Vec<String>,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub gateway_relay_ids: Vec<String>,
+    #[serde(default)]
+    pub cross_zone_mode: CrossZoneMode,
+}
+
+/// Deterministic zone resolution outcome for one device when evaluating
+/// `OverlayNetwork::zones`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceZoneResolution<'a> {
+    /// `zones` is empty (`[]`): legacy unrestricted behavior.
+    Unconfigured,
+    /// Resolved to an explicit `NetworkZone`.
+    Resolved(&'a NetworkZone),
+    /// `zones` is non-empty (or policy read failed) and device could not be
+    /// resolved (stale/missing `pinned_zone_id`, unknown country with no
+    /// `is_default` zone, or DB read error): fail closed (`RouterOnly` with
+    /// empty gateway set).
+    UnresolvedStrict,
+}
+
+impl<'a> DeviceZoneResolution<'a> {
+    pub fn effective_id_and_name(self) -> (Option<String>, Option<String>) {
+        match self {
+            Self::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+            Self::Unconfigured | Self::UnresolvedStrict => (None, None),
+        }
+    }
+
+    pub fn is_router_only(self) -> bool {
+        match self {
+            Self::Unconfigured => false,
+            Self::Resolved(z) => z.cross_zone_mode == CrossZoneMode::RouterOnly,
+            Self::UnresolvedStrict => true,
+        }
+    }
+
+    pub fn zone(self) -> Option<&'a NetworkZone> {
+        match self {
+            Self::Resolved(z) => Some(z),
+            Self::Unconfigured | Self::UnresolvedStrict => None,
+        }
+    }
+
+    /// Symmetric cross-zone transport rule: true when direct/TURN/DERP must be
+    /// stripped (`backbone_only = true`) between `self` and `other`.
+    pub fn requires_backbone_only_with(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Unconfigured, Self::Unconfigured) => false,
+            (Self::UnresolvedStrict, _) | (_, Self::UnresolvedStrict) => true,
+            (Self::Resolved(a), Self::Resolved(b)) if a.id == b.id => false,
+            (Self::Resolved(a), Self::Resolved(b)) => {
+                a.cross_zone_mode == CrossZoneMode::RouterOnly
+                    || b.cross_zone_mode == CrossZoneMode::RouterOnly
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Validate and normalize a zone slug (`[a-z0-9][a-z0-9_-]{0,31}`).
+pub fn normalize_zone_slug(raw: &str) -> Result<String, String> {
+    let s = raw.trim().to_ascii_lowercase();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 32 {
+        return Err(format!(
+            "zone id '{raw}' must be 1..=32 characters matching [a-z0-9][a-z0-9_-]{{0,31}}"
+        ));
+    }
+    if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
+        return Err(format!(
+            "zone id '{raw}' must start with [a-z0-9]"
+        ));
+    }
+    if !bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
+    {
+        return Err(format!(
+            "zone id '{raw}' contains invalid characters (allowed: [a-z0-9_-])"
+        ));
+    }
+    Ok(s)
+}
+
+/// Normalize and validate a 2-letter uppercase ASCII ISO-3166-1 alpha-2 country code.
+pub fn normalize_country_code(raw: &str) -> Result<String, String> {
+    let c = raw.trim().to_ascii_uppercase();
+    if c.len() != 2
+        || !c.bytes().all(|b| b.is_ascii_uppercase())
+        || matches!(c.as_str(), "XX" | "ZZ")
+    {
+        return Err(format!(
+            "country code '{raw}' must be a valid 2-letter ISO-3166-1 alpha-2 code"
+        ));
+    }
+    Ok(c)
+}
+
+/// Validate and normalize a tenant's `zones` configuration (excluding DB
+/// existence checks on `gateway_relay_ids` and pinned-agent deletion checks).
+pub fn validate_and_normalize_network_zones(
+    zones: Vec<NetworkZone>,
+) -> Result<Vec<NetworkZone>, String> {
+    if zones.len() > MAX_NETWORK_ZONES {
+        return Err(format!(
+            "at most {MAX_NETWORK_ZONES} network zones are supported"
+        ));
+    }
+    let mut seen_ids = std::collections::HashSet::with_capacity(zones.len());
+    let mut seen_countries = std::collections::HashMap::<String, String>::new();
+    let mut default_count = 0usize;
+    let mut out = Vec::with_capacity(zones.len());
+
+    for z in zones {
+        let id = normalize_zone_slug(&z.id)?;
+        if !seen_ids.insert(id.clone()) {
+            return Err(format!("duplicate zone id '{id}'"));
+        }
+        let name = z.name.trim().to_string();
+        let name_len = name.chars().count();
+        if !(1..=64).contains(&name_len) || name.chars().any(char::is_control) {
+            return Err(format!(
+                "zone '{id}' name must be 1..=64 non-control characters"
+            ));
+        }
+        if z.is_default {
+            default_count += 1;
+            if default_count > 1 {
+                return Err("at most one network zone may set is_default = true".to_string());
+            }
+        }
+        let mut auto_countries = Vec::with_capacity(z.auto_countries.len());
+        for raw_cc in z.auto_countries {
+            let cc = normalize_country_code(&raw_cc)?;
+            if let Some(prev_zone) = seen_countries.insert(cc.clone(), id.clone()) {
+                return Err(format!(
+                    "country code '{cc}' is assigned more than once (zones '{prev_zone}' and '{id}')"
+                ));
+            }
+            auto_countries.push(cc);
+        }
+        let mut gateway_relay_ids = Vec::with_capacity(z.gateway_relay_ids.len());
+        for raw_gw in z.gateway_relay_ids {
+            let oid = ObjectId::parse_str(raw_gw.trim()).map_err(|_| {
+                format!("zone '{id}' gateway_relay_id '{raw_gw}' is not a valid ObjectId")
+            })?;
+            let hex = oid.to_hex();
+            if !gateway_relay_ids.contains(&hex) {
+                gateway_relay_ids.push(hex);
+            }
+        }
+        out.push(NetworkZone {
+            id,
+            name,
+            auto_countries,
+            is_default: z.is_default,
+            gateway_relay_ids,
+            cross_zone_mode: z.cross_zone_mode,
+        });
+    }
+    Ok(out)
+}
+
+/// Deterministically resolve a device's [`NetworkZone`]:
+/// 1. Empty `zones` -> [`DeviceZoneResolution::Unconfigured`].
+/// 2. `pinned_zone_id == Some(id)` -> exact match in `zones`, else [`DeviceZoneResolution::UnresolvedStrict`].
+/// 3. `pinned_zone_id == None` (Auto) -> match `observed_country` against `zones[].auto_countries`,
+///    else `zones.iter().find(|z| z.is_default)`, else [`DeviceZoneResolution::UnresolvedStrict`].
+pub fn resolve_device_zone<'a>(
+    zones: &'a [NetworkZone],
+    pinned_zone_id: Option<&str>,
+    observed_country: Option<&str>,
+) -> DeviceZoneResolution<'a> {
+    if zones.is_empty() {
+        return DeviceZoneResolution::Unconfigured;
+    }
+    if let Some(pin) = pinned_zone_id {
+        let normalized = pin.trim().to_ascii_lowercase();
+        return match zones.iter().find(|z| z.id == normalized) {
+            Some(z) => DeviceZoneResolution::Resolved(z),
+            None => DeviceZoneResolution::UnresolvedStrict,
+        };
+    }
+    if let Some(cc) = observed_country.map(|c| c.trim().to_ascii_uppercase())
+        && !cc.is_empty()
+        && let Some(z) = zones
+            .iter()
+            .find(|z| z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc)))
+    {
+        return DeviceZoneResolution::Resolved(z);
+    }
+    match zones.iter().find(|z| z.is_default) {
+        Some(z) => DeviceZoneResolution::Resolved(z),
+        None => DeviceZoneResolution::UnresolvedStrict,
+    }
 }
 
 /// One edge of the server topology, between two agents. Stored with

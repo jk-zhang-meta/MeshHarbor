@@ -407,6 +407,26 @@ export interface Agent {
    *  server-side from its STUN probe reports), e.g. "us-east". Absent/null =
    *  never probed or all probes timed out — the default region serves it. */
   relay_home?: string | null
+  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`). */
+  public_ip?: string | null
+  country_code?: string | null
+  country?: string | null
+  region?: string | null
+  city?: string | null
+  /** Per-device logical network zone assignment (`null`/absent = Auto, string = Pinned) & server-resolved zone. */
+  pinned_zone_id?: string | null
+  effective_zone_id?: string | null
+  effective_zone_name?: string | null
+  /** Optional FR-19 peer-relay policy when included on the agent row. */
+  peer_relay_policy?: {
+    serve: boolean
+    static_endpoints?: string[]
+    approved_backbone_edges?: Array<{
+      relay_agent_id: string
+      endpoint: string
+      cross_border?: boolean
+    }>
+  }
 }
 
 /** Fleet RPC — whether a device accepts remote commands at all. Mirrors the
@@ -1762,6 +1782,36 @@ export const useAgentStore = defineStore('agents', () => {
     if (idx !== -1) agents.value[idx]!.ssh_policy = policy
   }
 
+  /** Set a device's logical network zone assignment (`MANAGE_AGENTS`).
+   *  `pinnedZoneId = null` restores Auto (GeoIP-based) zone matching; a zone
+   *  slug pins the device to that logical zone regardless of public IP GeoIP. */
+  async function updateZoneAssignment(
+    tenantId: string,
+    agentId: string,
+    pinnedZoneId: string | null,
+  ): Promise<{
+    agent_id: string
+    pinned_zone_id: string | null
+    effective_zone_id: string | null
+    effective_zone_name: string | null
+  }> {
+    const resp = await api.put<{
+      agent_id: string
+      pinned_zone_id: string | null
+      effective_zone_id: string | null
+      effective_zone_name: string | null
+    }>(`/tenant/${tenantId}/agent/${agentId}/zone-assignment`, {
+      pinned_zone_id: pinnedZoneId,
+    })
+    const idx = agents.value.findIndex((a) => a.id === agentId)
+    if (idx !== -1) {
+      agents.value[idx]!.pinned_zone_id = resp.pinned_zone_id
+      agents.value[idx]!.effective_zone_id = resp.effective_zone_id
+      agents.value[idx]!.effective_zone_name = resp.effective_zone_name
+    }
+    return resp
+  }
+
   /** Record the device config an operator wants (`docs/remote-config.md`).
    *
    *  This writes an INTENT, never a fact. The device reconciles it when it
@@ -1956,6 +2006,7 @@ export const useAgentStore = defineStore('agents', () => {
     mintEnrollKey,
     revokeEnrollKey,
     updateSshPolicy,
+    updateZoneAssignment,
     updateDesiredConfig,
     fetchSshAudit,
     fetchSshActivity,

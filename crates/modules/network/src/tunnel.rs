@@ -2559,16 +2559,18 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
 /// active sessions untouched so the caller can retry.
 pub async fn reconcile_tunnel_sessions(state: &NetworkState, tenant_id: ObjectId) -> bool {
     let iso = crate::business_isolation::mode(state);
-    if iso == crate::business_isolation::Mode::Off {
-        return true;
-    }
     let topo = crate::business_isolation::lines(state, iso, tenant_id).await;
-    if topo.roles_read_failed {
+    if topo.restricted_read_failed || (iso != crate::business_isolation::Mode::Off && topo.roles_read_failed) {
         warn!(
             %tenant_id,
-            "tunnel reconcile: role approval read failed; keeping active tunnel sessions"
+            restricted_read_failed = topo.restricted_read_failed,
+            roles_read_failed = topo.roles_read_failed,
+            "tunnel reconcile: policy read failed; keeping active tunnel sessions"
         );
         return false;
+    }
+    if iso == crate::business_isolation::Mode::Off && !topo.has_network_zones() {
+        return true;
     }
     let active: Vec<(ObjectId, ObjectId, NodeRef, ObjectId)> = state
         .tunnel_session_parties

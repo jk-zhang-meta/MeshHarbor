@@ -258,6 +258,53 @@ pub async fn handle_agent_socket(
     {
         warn!(%agent_id, %e, "agent update_hello failed");
     }
+    let prev_persisted_ip = state
+        .agents
+        .find_live_in_tenant(tenant_id, agent_id)
+        .await
+        .ok()
+        .and_then(|r| r.public_ip);
+    state.rc_hub.set_agent_live_public_ip(
+        agent_id,
+        &conn_id,
+        connection_origin.observed_public_ip(),
+    );
+    let mut roamed_public_ip = false;
+    if let Some(pub_ip) = connection_origin.observed_public_ip() {
+        let next_ip_str = pub_ip.to_string();
+        if let Err(e) = state.agents.update_public_ip(agent_id, &next_ip_str).await {
+            warn!(%agent_id, %e, "agent update_public_ip failed");
+        }
+        if prev_persisted_ip.as_deref() != Some(next_ip_str.as_str()) {
+            roamed_public_ip = true;
+            let net_dao =
+                meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+            let mut should_bump = false;
+            for _ in 0..5 {
+                let Ok(net1) = net_dao.find_for_tenant(tenant_id).await else {
+                    break;
+                };
+                let _ = state.agents.find_live_in_tenant(tenant_id, agent_id).await;
+                let Ok(net2) = net_dao.find_for_tenant(tenant_id).await else {
+                    break;
+                };
+                if net1.as_ref().is_some_and(|n| !n.zones.is_empty())
+                    || net2.as_ref().is_some_and(|n| !n.zones.is_empty())
+                {
+                    should_bump = true;
+                    break;
+                }
+                if net1.as_ref().map(|n| n.zone_revision) == net2.as_ref().map(|n| n.zone_revision)
+                    && net1.is_some() == net2.is_some()
+                {
+                    break;
+                }
+            }
+            if should_bump {
+                let _ = net_dao.bump_zone_revision(tenant_id).await;
+            }
+        }
+    }
 
     // Register with the Hub and start pumping server → socket.
     //
@@ -395,6 +442,15 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_keep_busy_support(agent_id, supports_keep_busy);
+    state
+        .rc_hub
+        .set_agent_relay_control_support(agent_id, caps.has_rpc(RpcCap::RelayControl));
+    state
+        .rc_hub
+        .set_agent_relay_regions_support(agent_id, supports_relay_regions);
+    state
+        .rc_hub
+        .set_agent_relay_server_support(agent_id, caps.has_rpc(RpcCap::RelayServer));
     state.rc_hub.set_agent_hive_support(agent_id, runs_hive);
     state
         .rc_hub
@@ -485,9 +541,9 @@ pub async fn handle_agent_socket(
             .rc_hub
             .set_agent_relay_home(agent_id, row.relay_home.clone(), prefs);
         // The row name wins over the hello machine_name — admins rename devices.
-        device_name = row.name;
+        device_name = row.name.clone();
         if !row.desired_config.is_empty() {
-            desired_config = Some(row.desired_config);
+            desired_config = Some(row.desired_config.clone());
         }
     }
     // Durable name reconciliation is independent of remote feature config.
@@ -510,8 +566,104 @@ pub async fn handle_agent_socket(
         crate::presence::ONLINE,
     )
     .await;
-    if supports_relay_regions && let Some((regions, rev)) = relay_regions_wire(&state.turn_map) {
-        let _ = registered_tx.try_send(ServerMsg::RelayRegions { regions, rev });
+    // Linearizable double-checked `(net1 -> fresh_agent + approved_relays -> net2)`
+    // snapshot AFTER Hub registration and the name/presence awaits, fenced before
+    // publishing so stale agent facts can never acquire a newer `zone_revision`
+    // and cold-starting routers receive composite-revisioned `backbone_endpoints`.
+    let peer_relay_serve = match load_consistent_connect_zone_and_relay_state(
+        &state, tenant_id, agent_id,
+    )
+    .await
+    {
+        ConnectZoneSnapshot::Consistent {
+            zone_revision,
+            has_net,
+            ice_policy,
+            peer_relay_serve,
+        } => {
+            let net_dao =
+                meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+            let still_current = match net_dao.find_for_tenant(tenant_id).await {
+                Ok(None) => !has_net,
+                Ok(Some(cur)) => {
+                    cur.zone_revision <= zone_revision && (has_net || cur.zones.is_empty())
+                }
+                Err(_) => false,
+            };
+            if still_current {
+                state
+                    .rc_hub
+                    .set_agent_zone_ice_policy(agent_id, ice_policy.clone());
+                if roamed_public_ip && has_net {
+                    let countries_vec: Vec<String> =
+                        ice_policy.allowed_countries.iter().cloned().collect();
+                    crate::ctrl::publish_rc_ctrl(
+                        &state,
+                        "zone_policy",
+                        serde_json::json!({
+                            "tenant_id": tenant_id.to_hex(),
+                            "agent_id": agent_id.to_hex(),
+                            "policy_revision": ice_policy.policy_revision,
+                            "strict": ice_policy.strict,
+                            "allowed_countries": countries_vec,
+                        }),
+                    )
+                    .await;
+                }
+                Some(peer_relay_serve)
+            } else {
+                state.rc_hub.set_agent_zone_ice_policy(
+                    agent_id,
+                    crate::hub::AgentZoneIcePolicy {
+                        policy_revision: 0,
+                        strict: true,
+                        allowed_countries: std::collections::HashSet::new(),
+                    },
+                );
+                None
+            }
+        }
+        ConnectZoneSnapshot::Superseded | ConnectZoneSnapshot::Failed => {
+            state.rc_hub.set_agent_zone_ice_policy(
+                agent_id,
+                crate::hub::AgentZoneIcePolicy {
+                    policy_revision: 0,
+                    strict: true,
+                    allowed_countries: std::collections::HashSet::new(),
+                },
+            );
+            None
+        }
+    };
+    if supports_relay_regions && let Some((mut regions, rev)) = relay_regions_wire(&state.turn_map) {
+        let eff = state.rc_hub.agent_zone_ice_policy(agent_id);
+        let strict = eff.as_ref().is_some_and(|p| p.strict);
+        if let Some(ref p) = eff
+            && p.strict
+        {
+            regions.retain(|r| {
+                let stun_url = format!("stun:{}", r.stun);
+                state
+                    .rc_hub
+                    .url_matches_allowed_countries(&stun_url, &p.allowed_countries)
+            });
+        }
+        if !regions.is_empty() || strict {
+            let _ = registered_tx.try_send(ServerMsg::RelayRegions {
+                regions,
+                rev,
+                policy_revision: eff.map(|p| p.policy_revision),
+            });
+        }
+    }
+    if caps.has_rpc(RpcCap::RelayControl)
+        && let Some((serve, rev, backbone_endpoints)) = peer_relay_serve
+    {
+        let _ = registered_tx.try_send(ServerMsg::PeerRelayServe {
+            serve,
+            revision: Some(rev),
+            backbone_endpoints,
+        });
     }
 
     // Remote config (docs/remote-config.md) — RECONCILE-ON-CONNECT is the only
@@ -984,6 +1136,27 @@ pub async fn handle_agent_socket(
                                             agent_id,
                                             caps.has_rpc(RpcCap::SshSystem),
                                         );
+                                        state.rc_hub.set_agent_relay_control_support(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::RelayControl),
+                                        );
+                                        if state.rc_hub.set_agent_relay_server_support(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::RelayServer),
+                                        ) {
+                                            crate::ctrl::publish_rc_ctrl(
+                                                &state,
+                                                "overlay_policy_sync",
+                                                serde_json::json!({
+                                                    "db": state.core.db.name(),
+                                                    "tenant_id": tenant_id.to_hex(),
+                                                    "auth_revision": 1_u64,
+                                                    "reason": "peer_relay_policy",
+                                                    "agent_id": agent_id.to_hex(),
+                                                }),
+                                            )
+                                            .await;
+                                        }
                                         // FR-92 — the owner re-allowed keep busy on
                                         // the device, so its word reappeared: hand it
                                         // the org's policy NOW, or a deny made while
@@ -1220,6 +1393,7 @@ pub async fn handle_agent_socket(
         debug!(%agent_id, "teardown skipped Offline+presence (newer connection owns the slot)");
     }
     state.rc_hub.clear_agent_business_zone(agent_id, &conn_id);
+    state.rc_hub.clear_agent_live_public_ip(agent_id, &conn_id);
     business_observation.finish(&state.core, &conn_id).await;
     info!(%agent_id, "remote-control agent WS disconnected");
 }
@@ -1456,6 +1630,367 @@ pub async fn pump_server_messages(
             break;
         }
     }
+}
+
+/// Extract admin-approved outgoing backbone `ip:port` endpoints for a serving
+/// relay daemon so Linux relays auto-derive `LocalBackbonePolicy`.
+pub fn serve_backbone_endpoints(agent: &meshharbor_remote_control::models::Agent) -> Vec<String> {
+    if !agent.peer_relay_policy.serve {
+        return Vec::new();
+    }
+    agent
+        .peer_relay_policy
+        .approved_backbone_edges
+        .iter()
+        .take(meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
+        .filter(|e| e.endpoint.parse::<std::net::SocketAddr>().is_ok())
+        .map(|e| e.endpoint.clone())
+        .collect()
+}
+
+/// Resolve an agent's uppercase ISO-3166-1 alpha-2 country code from its live
+/// observed connection IP first, falling back to persisted `Agent.public_ip`
+/// and then any public literal IP in `static_endpoints`.
+pub fn agent_effective_country(
+    state: &FleetState,
+    agent: &meshharbor_remote_control::models::Agent,
+) -> Option<String> {
+    let live_ip = agent.id.and_then(|id| state.rc_hub.agent_live_public_ip(id));
+    let persisted_ip = agent
+        .public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip);
+    if let Some(ip) = live_ip.or(persisted_ip)
+        && let Some(cc) = state.core.geoip.security_lookup(ip).country_code
+    {
+        return Some(cc.to_ascii_uppercase());
+    }
+    for ep in &agent.peer_relay_policy.static_endpoints {
+        if let Ok(sa) = ep.parse::<std::net::SocketAddr>()
+            && let Some(ip) = meshharbor_core::user_analytics::canonical_public_ip(sa.ip())
+            && let Some(cc) = state.core.geoip.security_lookup(ip).country_code
+        {
+            return Some(cc.to_ascii_uppercase());
+        }
+    }
+    None
+}
+
+/// Monotonically increasing composite revision for `ServerMsg::PeerRelayServe`
+/// combining the tenant's topology/zone revision (`zone_revision`) and the
+/// relay's own policy revision (`peer_relay_revision`).
+pub const fn effective_peer_relay_serve_revision(
+    zone_revision: u64,
+    peer_relay_revision: u64,
+) -> u64 {
+    (zone_revision << 24) | (peer_relay_revision & 0xFF_FFFF)
+}
+
+fn valid_connect_backbone_endpoint(s: &str, tenant_cidr: &str) -> bool {
+    use std::net::{IpAddr, SocketAddr};
+    let Ok(endpoint) = s.parse::<SocketAddr>() else {
+        return false;
+    };
+    if endpoint.port() == 0 {
+        return false;
+    }
+    let Ok(network) = tenant_cidr.parse::<ipnet::IpNet>() else {
+        return false;
+    };
+    if network.contains(&endpoint.ip()) {
+        return false;
+    }
+    match endpoint.ip() {
+        IpAddr::V4(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && ip.octets()[0] != 0
+                && ip.octets()[0] < 240
+        }
+        IpAddr::V6(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !ip.is_unicast_link_local()
+                && ip.to_ipv4_mapped().is_none()
+        }
+    }
+}
+
+enum ConnectZoneSnapshot {
+    Consistent {
+        zone_revision: u64,
+        has_net: bool,
+        ice_policy: crate::hub::AgentZoneIcePolicy,
+        peer_relay_serve: (bool, u64, Vec<String>),
+    },
+    Superseded,
+    Failed,
+}
+
+fn compute_ice_policy_from_snapshot(
+    state: &FleetState,
+    net: Option<&meshharbor_remote_control::models::OverlayNetwork>,
+    agent: &meshharbor_remote_control::models::Agent,
+    approved_relays: &[meshharbor_remote_control::models::Agent],
+) -> crate::hub::AgentZoneIcePolicy {
+    use meshharbor_remote_control::models::{
+        CrossZoneMode, DeviceZoneResolution, resolve_device_zone,
+    };
+    let Some(net) = net else {
+        return crate::hub::AgentZoneIcePolicy {
+            policy_revision: 0,
+            strict: false,
+            allowed_countries: std::collections::HashSet::new(),
+        };
+    };
+    if net.zones.is_empty() {
+        return crate::hub::AgentZoneIcePolicy {
+            policy_revision: net.zone_revision,
+            strict: false,
+            allowed_countries: std::collections::HashSet::new(),
+        };
+    }
+    let cc = agent_effective_country(state, agent);
+    match resolve_device_zone(&net.zones, agent.pinned_zone_id.as_deref(), cc.as_deref()) {
+        DeviceZoneResolution::Unconfigured => crate::hub::AgentZoneIcePolicy {
+            policy_revision: net.zone_revision,
+            strict: false,
+            allowed_countries: std::collections::HashSet::new(),
+        },
+        DeviceZoneResolution::UnresolvedStrict => crate::hub::AgentZoneIcePolicy {
+            policy_revision: net.zone_revision,
+            strict: true,
+            allowed_countries: std::collections::HashSet::new(),
+        },
+        DeviceZoneResolution::Resolved(zone) => {
+            let strict = zone.cross_zone_mode == CrossZoneMode::RouterOnly;
+            let mut allowed_countries: std::collections::HashSet<String> = zone
+                .auto_countries
+                .iter()
+                .map(|c| c.to_ascii_uppercase())
+                .collect();
+            for gw_hex in &zone.gateway_relay_ids {
+                if let Ok(gw_id) = ObjectId::parse_str(gw_hex)
+                    && let Some(gw) = approved_relays.iter().find(|r| r.id == Some(gw_id))
+                    && let Some(gw_cc) = agent_effective_country(state, gw)
+                {
+                    allowed_countries.insert(gw_cc);
+                }
+            }
+            crate::hub::AgentZoneIcePolicy {
+                policy_revision: net.zone_revision,
+                strict,
+                allowed_countries,
+            }
+        }
+    }
+}
+
+fn compute_connect_backbone_endpoints(
+    state: &FleetState,
+    net: Option<&meshharbor_remote_control::models::OverlayNetwork>,
+    agent: &meshharbor_remote_control::models::Agent,
+    approved_relays: &[meshharbor_remote_control::models::Agent],
+    relay_nodes: &std::collections::HashMap<
+        ObjectId,
+        meshharbor_remote_control::models::OverlayNode,
+    >,
+) -> Vec<String> {
+    use meshharbor_core::user_analytics::canonical_public_ip;
+    use meshharbor_remote_control::models::{
+        DeviceZoneResolution, MAX_PEER_RELAY_BACKBONE_EDGES, peer_relay_limits as limits,
+        resolve_device_zone,
+    };
+    use std::net::{IpAddr, SocketAddr};
+
+    if !agent.peer_relay_policy.serve {
+        return Vec::new();
+    }
+    let Some(own_id) = agent.id else {
+        return Vec::new();
+    };
+    let overlay_cidr = net
+        .map(|n| n.cidr.as_str())
+        .unwrap_or(meshharbor_remote_control::models::OverlayNetwork::DEFAULT_CIDR);
+    let mut out: Vec<String> = Vec::new();
+    let mut explicit_targets = std::collections::HashSet::new();
+    for edge in agent
+        .peer_relay_policy
+        .approved_backbone_edges
+        .iter()
+        .take(MAX_PEER_RELAY_BACKBONE_EDGES)
+    {
+        if let Ok(tid) = ObjectId::parse_str(&edge.relay_agent_id) {
+            explicit_targets.insert(tid);
+        }
+        if valid_connect_backbone_endpoint(&edge.endpoint, overlay_cidr)
+            && !out.contains(&edge.endpoint)
+        {
+            out.push(edge.endpoint.clone());
+        }
+    }
+    let Some(net) = net else {
+        return out;
+    };
+    if net.zones.is_empty() {
+        return out;
+    }
+    let own_cc = agent_effective_country(state, agent);
+    let DeviceZoneResolution::Resolved(own_zone) = resolve_device_zone(
+        &net.zones,
+        agent.pinned_zone_id.as_deref(),
+        own_cc.as_deref(),
+    ) else {
+        return out;
+    };
+    for peer in approved_relays {
+        if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
+            break;
+        }
+        let Some(peer_aid) = peer.id else { continue };
+        if peer_aid == own_id || explicit_targets.contains(&peer_aid) {
+            continue;
+        }
+        let peer_cc = agent_effective_country(state, peer);
+        let DeviceZoneResolution::Resolved(peer_zone) = resolve_device_zone(
+            &net.zones,
+            peer.pinned_zone_id.as_deref(),
+            peer_cc.as_deref(),
+        ) else {
+            continue;
+        };
+        if peer_zone.id != own_zone.id {
+            continue;
+        }
+        let mut candidate_eps: Vec<String> = Vec::new();
+        if let Some(node) = relay_nodes.get(&peer_aid) {
+            for cand in node
+                .srflx_endpoints
+                .iter()
+                .chain(node.lan_endpoints.iter())
+                .chain(node.endpoints.iter())
+            {
+                if let Ok(sa) = cand.parse::<SocketAddr>()
+                    && let Some(pub_ip) = canonical_public_ip(sa.ip())
+                {
+                    let ep = SocketAddr::new(pub_ip, limits::DEFAULT_RELAY_PORT).to_string();
+                    if !candidate_eps.contains(&ep) {
+                        candidate_eps.push(ep);
+                    }
+                }
+            }
+        }
+        for s in &peer.peer_relay_policy.static_endpoints {
+            if let Ok(sa) = s.parse::<SocketAddr>()
+                && canonical_public_ip(sa.ip()).is_some()
+            {
+                let ep = sa.to_string();
+                if !candidate_eps.contains(&ep) {
+                    candidate_eps.push(ep);
+                }
+            }
+        }
+        if candidate_eps.is_empty()
+            && let Some(pub_ip) = peer
+                .public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<IpAddr>().ok())
+                .and_then(canonical_public_ip)
+        {
+            candidate_eps.push(SocketAddr::new(pub_ip, limits::DEFAULT_RELAY_PORT).to_string());
+        }
+        if let Some(ep) = candidate_eps
+            .into_iter()
+            .find(|ep| valid_connect_backbone_endpoint(ep, overlay_cidr))
+            && !out.contains(&ep)
+        {
+            out.push(ep);
+        }
+    }
+    out
+}
+
+async fn load_consistent_connect_zone_and_relay_state(
+    state: &FleetState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) -> ConnectZoneSnapshot {
+    let net_dao = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+    let node_dao = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&state.core.db);
+    for _ in 0..5 {
+        let net1 = match net_dao.find_for_tenant(tenant_id).await {
+            Ok(n) => n,
+            Err(_) => return ConnectZoneSnapshot::Failed,
+        };
+        let fresh_agent = match state.agents.find_live_in_tenant(tenant_id, agent_id).await {
+            Ok(a) => a,
+            Err(_) => return ConnectZoneSnapshot::Failed,
+        };
+        let has_zones = net1.as_ref().is_some_and(|n| !n.zones.is_empty());
+        let approved_relays = if has_zones {
+            match state.agents.list_relay_approved(tenant_id).await {
+                Ok(rows) => rows,
+                Err(_) => return ConnectZoneSnapshot::Failed,
+            }
+        } else {
+            Vec::new()
+        };
+        let mut relay_nodes = std::collections::HashMap::new();
+        if has_zones && fresh_agent.peer_relay_policy.serve {
+            for peer in &approved_relays {
+                let Some(peer_aid) = peer.id else { continue };
+                if peer_aid == agent_id {
+                    continue;
+                }
+                match node_dao
+                    .find_live_by_tenant_and_machine(tenant_id, &peer.machine_id)
+                    .await
+                {
+                    Ok(Some(node)) => {
+                        relay_nodes.insert(peer_aid, node);
+                    }
+                    Ok(None) => {}
+                    Err(_) => return ConnectZoneSnapshot::Failed,
+                }
+            }
+        }
+        let net2 = match net_dao.find_for_tenant(tenant_id).await {
+            Ok(n) => n,
+            Err(_) => return ConnectZoneSnapshot::Failed,
+        };
+        let consistent = match (&net1, &net2) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.zone_revision == b.zone_revision,
+            _ => false,
+        };
+        if !consistent {
+            continue;
+        }
+        let zone_revision = net1.as_ref().map(|n| n.zone_revision).unwrap_or(0);
+        let ice_policy =
+            compute_ice_policy_from_snapshot(state, net1.as_ref(), &fresh_agent, &approved_relays);
+        let endpoints = compute_connect_backbone_endpoints(
+            state,
+            net1.as_ref(),
+            &fresh_agent,
+            &approved_relays,
+            &relay_nodes,
+        );
+        let composite_rev =
+            effective_peer_relay_serve_revision(zone_revision, fresh_agent.peer_relay_revision);
+        return ConnectZoneSnapshot::Consistent {
+            zone_revision,
+            has_net: net1.is_some(),
+            ice_policy,
+            peer_relay_serve: (fresh_agent.peer_relay_policy.serve, composite_rev, endpoints),
+        };
+    }
+    ConnectZoneSnapshot::Superseded
 }
 
 /// FR-92 — does this agent parse the org's keep-busy policy? Equality on
@@ -1829,5 +2364,23 @@ mod tests {
         assert_eq!(d.get_i64("tx").unwrap(), 512);
         assert_eq!(d.get_i64("rx").unwrap(), 0);
         assert_eq!(d.get_str("relay").unwrap(), "turn/udp");
+    }
+
+    #[test]
+    fn composite_peer_relay_serve_revision_advances_monotonically_on_zone_or_policy_bump() {
+        let r0 = effective_peer_relay_serve_revision(0, 1);
+        let r1 = effective_peer_relay_serve_revision(1, 1);
+        let r2 = effective_peer_relay_serve_revision(1, 2);
+        let r3 = effective_peer_relay_serve_revision(2, 2);
+        assert_eq!(r0, 1);
+        assert!(r1 > r0);
+        assert!(r2 > r1);
+        assert!(r3 > r2);
+        // A higher `zone_revision` strictly dominates any lower `zone_revision`
+        // regardless of the relay's 24-bit `peer_relay_revision`.
+        assert!(
+            effective_peer_relay_serve_revision(5, 1)
+                > effective_peer_relay_serve_revision(4, 0xFF_FFFF)
+        );
     }
 }

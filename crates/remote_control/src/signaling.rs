@@ -2668,6 +2668,10 @@ pub enum ClientMsg {
         reachable: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rtt_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        jitter_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        loss_permille: Option<u16>,
     },
 
     /// Negotiate a separate, reversible candidate; never an active session replacement.
@@ -2819,11 +2823,16 @@ pub enum ClientMsg {
         /// was answered.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         direct_rtt_ms: Option<u32>,
-        /// The same three readings for the relay path.
+        /// Robust RTT jitter of the answered direct probes, in ms.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_jitter_ms: Option<u32>,
+        /// The same readings for the relay path.
         relay_sent: u32,
         relay_lost: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_rtt_ms: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_jitter_ms: Option<u32>,
         /// What carries the reporter's side of the pair now.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         on_relay: bool,
@@ -3285,6 +3294,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:ssh.activity", Owner::Network),
     ("rc:ssh.grant_ack", Owner::Network),
     ("rc:agent.config_status", Owner::Fleet),
+    ("rc:agent.name.ack", Owner::Fleet),
     ("rc:agent.key_rotated", Owner::Network),
     ("rc:hive.start_ack", Owner::Hive),
     ("rc:hive.state", Owner::Hive),
@@ -4658,6 +4668,20 @@ pub enum ServerMsg {
         revision: String,
         name: String,
     },
+
+    /// Authoritative admin relay-serving directive (`peer_relay_policy.serve`),
+    /// delivered on every WS connect and immediately when an Administrator
+    /// updates `peer_relay_policy.serve` on this agent. Cap-gated on
+    /// [`crate::models::RpcCap::RelayControl`]; honoured only by the agent's
+    /// primary enrollment.
+    #[serde(rename = "rc:overlay.peer_relay_serve")]
+    PeerRelayServe {
+        serve: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        backbone_endpoints: Vec<String>,
+    },
     /// Full network map sent to a node on join. Carries the node's own
     /// `self_ip`, the network parameters, and every peer it may reach.
     /// `epoch` monotonically increases per network so a node can detect
@@ -4932,6 +4956,10 @@ pub enum ServerMsg {
         regions: Vec<RelayRegionInfo>,
         /// Stable hash of the region list — change detection for re-probes.
         rev: u64,
+        /// Monotonic tenant zone-policy revision ordering connect snapshots
+        /// against live policy updates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_revision: Option<u64>,
     },
 
     /// Multi-region DERP: the admission ticket for the regional relays, in
@@ -6693,6 +6721,11 @@ pub struct OverlayNetworkInfo {
     /// or STUN disabled). `#[serde(default)]` for back-compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun_urls: Vec<String>,
+    /// When `true` (recipient is in a `RouterOnly` or unresolved strict
+    /// [`crate::models::NetworkZone`]), the client MUST ignore any local
+    /// `OVERLAY_STUN_URLS` override and query only [`Self::stun_urls`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_stun: bool,
     /// MeshHarbor #5 — the org relays this node may bind to, for it to measure
     /// its RTT to each before any session exists (the relay's unauthenticated
     /// probe echo). The center ranks a pair's relays by the sum of both
@@ -9643,6 +9676,7 @@ mod tests {
                 },
             ],
             rev: 7,
+            policy_revision: Some(3),
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""t":"rc:relay.regions""#));
@@ -9650,8 +9684,13 @@ mod tests {
         // Absent derp_url is OMITTED, not null.
         assert!(!s.contains(r#""derp_url":null"#));
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
-            ServerMsg::RelayRegions { regions, rev } => {
+            ServerMsg::RelayRegions {
+                regions,
+                rev,
+                policy_revision,
+            } => {
                 assert_eq!(rev, 7);
+                assert_eq!(policy_revision, Some(3));
                 assert_eq!(regions.len(), 2);
                 assert_eq!(regions[0].id, "us-east");
                 assert!(regions[1].derp_url.is_none());
@@ -11504,6 +11543,7 @@ mod tests {
             self_node_id: None,
             self_name_revision: None,
             stun_urls: vec![],
+            strict_stun: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 1,
@@ -11588,6 +11628,7 @@ mod tests {
                 self_node_id: None,
                 self_name_revision: None,
                 stun_urls: vec![],
+                strict_stun: false,
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,
@@ -12427,6 +12468,7 @@ mod tests {
                 self_node_id: None,
                 self_name_revision: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
+                strict_stun: false,
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,
@@ -12665,10 +12707,33 @@ mod tests {
             endpoint: "62.210.194.66:3478".into(),
             reachable: true,
             rtt_ms: None,
+            jitter_ms: None,
+            loss_permille: None,
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""t":"rc:overlay.relay_probe""#), "{s}");
         assert!(!s.contains("rtt_ms"), "an absent rtt must be skipped: {s}");
+        assert!(
+            !s.contains("jitter_ms") && !s.contains("loss_permille"),
+            "absent SLA fields must be skipped: {s}"
+        );
+        let with_sla = ClientMsg::OverlayRelayProbe {
+            relay_node_id: oid,
+            endpoint: "62.210.194.66:3478".into(),
+            reachable: true,
+            rtt_ms: Some(20),
+            jitter_ms: Some(5),
+            loss_permille: Some(333),
+        };
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&serde_json::to_string(&with_sla).unwrap()).unwrap(),
+            ClientMsg::OverlayRelayProbe {
+                rtt_ms: Some(20),
+                jitter_ms: Some(5),
+                loss_permille: Some(333),
+                ..
+            }
+        ));
 
         assert_eq!(
             serde_json::to_string(&RelayStrategyWire::OrgRelay).unwrap(),
@@ -13583,9 +13648,11 @@ mod org_fallback_wire_tests {
             direct_sent: 11,
             direct_lost: 0,
             direct_rtt_ms: Some(960),
+            direct_jitter_ms: None,
             relay_sent: 11,
             relay_lost: 1,
             relay_rtt_ms: Some(620),
+            relay_jitter_ms: None,
             on_relay: false,
         })
         .unwrap();

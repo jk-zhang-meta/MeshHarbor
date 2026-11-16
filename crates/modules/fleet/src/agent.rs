@@ -119,8 +119,8 @@ pub async fn issue_enrollment_token(
             &state,
             tid,
             auth.user_id,
-            permissions::EXEC_DEVICE,
-            "EXEC_DEVICE",
+            permissions::ADMINISTRATOR,
+            "ADMINISTRATOR",
         )
         .await?;
     }
@@ -207,9 +207,17 @@ pub struct EnrollResponse {
 /// reaper, or schedule a permanent device for silent deletion).
 pub async fn enroll_agent(
     State(state): State<FleetState>,
+    meshharbor_core::client_ip::PeerAddr(peer): meshharbor_core::client_ip::PeerAddr,
     headers: HeaderMap,
     Json(body): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, ApiError> {
+    let observed_public_ip = meshharbor_core::client_ip::ConnectionOrigin::capture(
+        &headers,
+        peer,
+        &state.settings.app.business_trusted_proxy_cidrs,
+        state.settings.app.rate_limit_trusted_hops,
+    )
+    .observed_public_ip();
     let (claims, is_ephemeral) = state
         .auth
         .verify_enrollment_token_any(&body.enrollment_token)?;
@@ -526,6 +534,12 @@ pub async fn enroll_agent(
         }
         tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
             jti = %claims.jti, "fleet: signed enrollment approved relay serving");
+    }
+    if let Some(ip) = observed_public_ip {
+        let _ = state
+            .agents
+            .set_public_ip_if_missing(tid, agent_id, &ip.to_string())
+            .await;
     }
     // FR-104 — which token enrolled this device, so an `anchor: true` token
     // can anchor exactly this one afterwards. Best-effort: a failure here
@@ -980,6 +994,22 @@ pub struct AgentResponse {
     pub peer_auth_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_auth_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 
 /// FR-40 — one device's overlay-key rotation as the dashboard reads it:
@@ -1332,13 +1362,14 @@ pub async fn list_agents(
     }
 
     let page = state.agents.list_for_tenant(tid, &params).await?;
+    let zones = load_tenant_zones(&state, tid).await;
     let redis_fresh = agent_presence_batch(&state, &page.items).await;
     let items: Vec<AgentResponse> = page
         .items
         .into_iter()
         .map(|a| {
             let fresh = a.id.map(|i| redis_fresh.contains(&i)).unwrap_or(false);
-            to_agent_response(&state, a, fresh)
+            to_agent_response(&state, a, fresh, &zones)
         })
         .collect();
 
@@ -1368,9 +1399,10 @@ pub async fn get_agent(
     // LIVE: a removed device is a 404 here exactly as it is absent from the
     // listing (#1821 — this GET answered 200 with the whole tombstone).
     let agent = state.agents.find_live_in_tenant(tid, aid).await?;
+    let zones = load_tenant_zones(&state, tid).await;
     let redis_fresh = agent_presence_batch(&state, std::slice::from_ref(&agent)).await;
     let fresh = agent.id.map(|i| redis_fresh.contains(&i)).unwrap_or(false);
-    Ok(Json(to_agent_response(&state, agent, fresh)))
+    Ok(Json(to_agent_response(&state, agent, fresh, &zones)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1518,11 +1550,12 @@ pub async fn update_agent(
         crate::name_sync::push(&state, &agent).await;
         crate::name_sync::broadcast(&state, &agent).await;
     }
+    let zones = load_tenant_zones(&state, tid).await;
     let redis_fresh = agent_presence_batch(&state, std::slice::from_ref(&agent)).await;
     let fresh = agent.id.map(|i| redis_fresh.contains(&i)).unwrap_or(false);
     Ok(Json(serde_json::json!({
         "updated": true,
-        "agent": to_agent_response(&state, agent, fresh),
+        "agent": to_agent_response(&state, agent, fresh, &zones),
         "dns_renamed": dns_renamed,
         "dns_name": dns_name,
     })))
@@ -1966,13 +1999,39 @@ pub fn derive_agent_presence(
     (presence, is_online)
 }
 
+async fn load_tenant_zones(
+    state: &FleetState,
+    tid: ObjectId,
+) -> Vec<meshharbor_remote_control::models::NetworkZone> {
+    meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db)
+        .find_for_tenant(tid)
+        .await
+        .ok()
+        .flatten()
+        .map(|n| n.zones)
+        .unwrap_or_default()
+}
+
 fn to_agent_response(
     state: &FleetState,
     a: meshharbor_remote_control::models::Agent,
     redis_fresh: bool,
+    zones: &[meshharbor_remote_control::models::NetworkZone],
 ) -> AgentResponse {
     let id = a.id.map(|i| i.to_hex()).unwrap_or_default();
     let (presence, is_online) = derive_agent_presence(state, &a, redis_fresh);
+    let effective_cc = crate::socket::agent_effective_country(state, &a);
+    let pinned_zone_id = a.pinned_zone_id.clone();
+    let (effective_zone_id, effective_zone_name) = match meshharbor_remote_control::models::resolve_device_zone(
+        zones,
+        pinned_zone_id.as_deref(),
+        effective_cc.as_deref(),
+    ) {
+        meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+            (Some(z.id.clone()), Some(z.name.clone()))
+        }
+        _ => (None, None),
+    };
     // Resolved before the struct literal moves `capabilities`: the
     // remote-config state depends on which verbs this device advertises.
     let name_sync = crate::name_sync::view(&a);
@@ -1994,6 +2053,17 @@ fn to_agent_response(
     let peer_auth_key = peer_auth_fingerprint
         .is_some()
         .then(|| a.peer_auth_key.clone());
+    let public_ip = a
+        .public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        .map(|ip| ip.to_string());
+        let geo = public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .map(|ip| state.core.geoip.lookup_location(ip))
+        .unwrap_or_default();
     AgentResponse {
         presence,
         id,
@@ -2034,6 +2104,14 @@ fn to_agent_response(
         key_rotation,
         peer_auth_key,
         peer_auth_fingerprint,
+        public_ip,
+        country_code: geo.country_code,
+        country: geo.country,
+        region: geo.region,
+        city: geo.city,
+        pinned_zone_id,
+        effective_zone_id,
+        effective_zone_name,
     }
 }
 

@@ -328,6 +328,14 @@ const Q_DEATH_SLAM: f64 = -100.0;
 /// business (an ICMP-hostile network must not debit a healthy tier).
 const Q_RTT_ALPHA: f64 = 0.1;
 const Q_RTT_DIVISOR: f64 = 10.0;
+/// RFC 3550 §6.4.1 / A.8 smoothed inter-sample RTT jitter gain (`1/16`) and
+/// RFC 6298 smoothed RTT gain (`1/8`), applied strictly inside the Q (ranking)
+/// plane so eligibility (`PathMonitor::eligible`) stays 100% penalty-only.
+const RTT_EWMA_ALPHA: f64 = 0.125;
+const JITTER_EWMA_ALPHA: f64 = 0.0625;
+/// RFC 6298-style variance multiplier (`rtt + 4 * jitter`) penalizing high-jitter
+/// candidates on the Q curve while leaving steady-RTT convergence unchanged.
+const Q_JITTER_WEIGHT: f64 = 4.0;
 
 /// Eligibility float guard: `powf` at exactly one half-life is not guaranteed
 /// bit-exact, and legacy `until > now` counts the boundary instant as
@@ -402,10 +410,37 @@ impl Penalty {
     }
 }
 
+/// RFC 3550 smoothed RTT & jitter tracker for the ranking plane.
+#[derive(Clone, Copy, Default, Debug)]
+struct RttJitter {
+    last_ms: Option<f64>,
+    srtt_ms: Option<f64>,
+    jitter_ms: f64,
+}
+
+impl RttJitter {
+    fn observe(&mut self, sample_ms: f64) -> f64 {
+        match (self.last_ms, self.srtt_ms) {
+            (Some(prev), Some(srtt)) => {
+                let delta = (sample_ms - prev).abs();
+                self.jitter_ms += JITTER_EWMA_ALPHA * (delta - self.jitter_ms);
+                self.srtt_ms = Some(srtt + RTT_EWMA_ALPHA * (sample_ms - srtt));
+            }
+            _ => {
+                self.srtt_ms = Some(sample_ms);
+                self.jitter_ms = 0.0;
+            }
+        }
+        self.last_ms = Some(sample_ms);
+        self.jitter_ms
+    }
+}
+
 /// Per-(peer, direct-tier) state: quality, active suppression, strike count.
 #[derive(Default)]
 struct TierState {
     q: Ewma,
+    rtt: RttJitter,
     penalty: Option<Penalty>,
     fails: u32,
     /// B2 — since when (as the INCUMBENT tier) a margin-sized score
@@ -423,6 +458,7 @@ struct PeerPath {
     /// Relay-tier quality (telemetry + forced-DERP evidence window; the relay
     /// tier's ELIGIBILITY is structural — it is the floor).
     relay_q: Ewma,
+    relay_rtt: RttJitter,
     /// In-flight upgrade probe (mirror of `upgrade_probes` / the WgDevice
     /// probe slot — one per peer, structural).
     probe: Option<(DirectTier, Instant)>,
@@ -840,14 +876,42 @@ impl PathMonitor {
 
     /// B1 — an RTT sample from the agent's overlay pinger, credited to
     /// the INCUMBENT tier only (the ping rode the active carrier).
-    /// Q-plane only: never touches penalties, strikes, spacing or
-    /// hysteresis — locked by the eligibility-invariance tests.
+    /// Updates RFC 3550 smoothed jitter alongside EWMA RTT and folds
+    /// `rtt_ms + 4 * jitter_ms` into Q. Q-plane only: never touches
+    /// penalties, strikes, spacing or hysteresis — locked by the
+    /// eligibility-invariance tests.
     pub(crate) fn on_rtt_sample(&mut self, peer: &ObjectId, tier: DirectTier, rtt_ms: u32) {
-        let sample = (Q_CLAMP - f64::from(rtt_ms) / Q_RTT_DIVISOR).clamp(-Q_CLAMP, Q_CLAMP);
         let p = self.peers.entry(*peer).or_default();
+        let raw_ms = f64::from(rtt_ms);
+        let (q, rtt_state) = match tier_idx(tier) {
+            Some(idx) => (&mut p.tiers[idx].q, &mut p.tiers[idx].rtt),
+            None => (&mut p.relay_q, &mut p.relay_rtt),
+        };
+        let jitter_ms = rtt_state.observe(raw_ms);
+        let effective_ms = raw_ms + Q_JITTER_WEIGHT * jitter_ms;
+        let sample = (Q_CLAMP - effective_ms / Q_RTT_DIVISOR).clamp(-Q_CLAMP, Q_CLAMP);
+        q.feed(sample, Q_RTT_ALPHA);
+    }
+
+    /// RFC 3550 smoothed RTT jitter (ms) observed on `tier` for `peer`, if any
+    /// RTT sample has been recorded.
+    #[allow(dead_code)]
+    pub(crate) fn tier_jitter_ms(&self, peer: &ObjectId, tier: DirectTier) -> Option<f64> {
+        let p = self.peers.get(peer)?;
+        let rtt = match tier_idx(tier) {
+            Some(idx) => &p.tiers[idx].rtt,
+            None => &p.relay_rtt,
+        };
+        rtt.last_ms.map(|_| rtt.jitter_ms)
+    }
+
+    /// Smoothed RTT (ms) observed on `tier` for `peer`, if any sample exists.
+    #[allow(dead_code)]
+    pub(crate) fn tier_srtt_ms(&self, peer: &ObjectId, tier: DirectTier) -> Option<f64> {
+        let p = self.peers.get(peer)?;
         match tier_idx(tier) {
-            Some(idx) => p.tiers[idx].q.feed(sample, Q_RTT_ALPHA),
-            None => p.relay_q.feed(sample, Q_RTT_ALPHA),
+            Some(idx) => p.tiers[idx].rtt.srtt_ms,
+            None => p.relay_rtt.srtt_ms,
         }
     }
 
@@ -951,6 +1015,7 @@ impl PathMonitor {
                 t.penalty = None;
                 t.fails = 0;
                 t.q = Ewma::default();
+                t.rtt = RttJitter::default();
             }
         }
     }
@@ -970,6 +1035,7 @@ impl PathMonitor {
                 t.penalty = None;
                 t.fails = 0;
                 t.q = Ewma::default();
+                t.rtt = RttJitter::default();
             }
         }
     }
@@ -984,6 +1050,7 @@ impl PathMonitor {
                 *t = TierState::default();
             }
             p.relay_q = Ewma::default();
+            p.relay_rtt = RttJitter::default();
             p.last_lan_attempt = None;
         }
     }
@@ -1015,6 +1082,7 @@ impl PathMonitor {
         let p = self.peers.entry(*peer).or_default();
         p.forced_derp_until = Some(now + ttl);
         p.relay_q = Ewma::default();
+        p.relay_rtt = RttJitter::default();
     }
 
     /// The server prefers the relay for this pair for `ttl` from `now`
@@ -3942,5 +4010,89 @@ mod tests {
         m.note_lossy_direct(&a, t0 + Duration::from_secs(3));
         m.on_death(&a, DirectTier::Relay, DeathReason::RxStale, true, died);
         assert!(!m.prefer_relay_active(&a, died));
+    }
+
+    #[test]
+    fn rfc3550_jitter_penalizes_unstable_tier_ranking_without_touching_eligibility() {
+        let mut m = PathMonitor::default();
+        let a = oid(9);
+        let t0 = Instant::now();
+
+        // Public tier sees wild RTT jitter (alternating 10 ms and 290 ms: mean 150 ms,
+        // |D| = 280 ms -> RFC 3550 J -> 280 ms).
+        // Srflx tier sees steady 55 ms ± 2 ms (53 ms and 57 ms: |D| = 4 ms -> J -> 4 ms).
+        for i in 0..160u32 {
+            m.on_rtt_sample(
+                &a,
+                DirectTier::Public,
+                if i.is_multiple_of(2) { 10 } else { 290 },
+            );
+            m.on_rtt_sample(
+                &a,
+                DirectTier::Srflx,
+                if i.is_multiple_of(2) { 53 } else { 57 },
+            );
+        }
+
+        let j_pub = m.tier_jitter_ms(&a, DirectTier::Public).unwrap();
+        let j_srflx = m.tier_jitter_ms(&a, DirectTier::Srflx).unwrap();
+        assert!(
+            j_pub > 250.0,
+            "RFC 3550 jitter tracks 280 ms swings: {j_pub}"
+        );
+        assert!(j_srflx < 5.0, "steady srflx jitter stays ~4 ms: {j_srflx}");
+        assert!(
+            (m.tier_srtt_ms(&a, DirectTier::Srflx).unwrap() - 55.0).abs() < 2.0,
+            "EWMA RTT converges to 55 ms"
+        );
+
+        let s_pub = m.score(&a, DirectTier::Public, t0);
+        let s_srflx = m.score(&a, DirectTier::Srflx, t0);
+        assert!(
+            s_srflx > s_pub,
+            "stable 55 ms ± 2 ms Srflx ({s_srflx:.1}) must outrank jittery Public ({s_pub:.1})"
+        );
+        let no_lan = TierAvailability {
+            lan: false,
+            public: true,
+            srflx: true,
+        };
+        assert_eq!(
+            m.decide(&a, Incumbent::Relay, no_lan, true, t0, true),
+            PathAction::Probe(DirectTier::Srflx),
+            "upgrade selection picks stable Srflx ahead of jitter-degraded Public"
+        );
+
+        // Eligibility decay remains 100% independent of jitter/Q.
+        let mut quiet = PathMonitor::default();
+        quiet.on_death(
+            &a,
+            DirectTier::Public,
+            DeathReason::HandshakeDeadline,
+            true,
+            t0,
+        );
+        m.on_death(
+            &a,
+            DirectTier::Public,
+            DeathReason::HandshakeDeadline,
+            true,
+            t0,
+        );
+        for i in 0..200u32 {
+            m.on_rtt_sample(
+                &a,
+                DirectTier::Public,
+                if i.is_multiple_of(2) { 1 } else { 4_000 },
+            );
+        }
+        assert_eq!(
+            quiet.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(59)),
+            m.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(59))
+        );
+        assert_eq!(
+            quiet.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(61)),
+            m.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(61))
+        );
     }
 }

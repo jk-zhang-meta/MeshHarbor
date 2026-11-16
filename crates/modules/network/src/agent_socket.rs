@@ -315,6 +315,28 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
             crate::org_relay::connection_ended(&self.state, ctx.agent_id, "connection_displaced")
                 .await;
         }
+        // Dynamic Auto zone recomputation: if this tenant configures Logical
+        // Network Zones, reconcile sessions/trials and peer netmap deltas for
+        // this agent's fresh connection IP immediately on hello.
+        if self
+            .state
+            .overlay_networks
+            .find_for_tenant(ctx.tenant_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|n| !n.zones.is_empty())
+        {
+            crate::org_relay::recheck_zones(&self.state, ctx.agent_id, "auto_zone_recomputed")
+                .await;
+            crate::overlay::on_agent_policy_changed(
+                &self.state,
+                ctx.tenant_id,
+                ctx.agent_id,
+                "zone_policy",
+            )
+            .await;
+        }
     }
 
     /// The device's warm-relay choice mirrored onto its overlay node.

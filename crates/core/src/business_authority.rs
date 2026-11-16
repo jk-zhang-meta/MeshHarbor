@@ -449,7 +449,7 @@ pub fn zone_pin(
     }
 }
 
-fn known_zone(code: Option<&str>) -> Option<BusinessZone> {
+pub fn known_zone(code: Option<&str>) -> Option<BusinessZone> {
     match code {
         Some("CN") => Some(BusinessZone::Mainland),
         Some(v)

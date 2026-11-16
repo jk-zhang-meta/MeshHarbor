@@ -4,8 +4,9 @@
 //! capacity or send grants; the mint rechecks them before use.
 
 use super::{
+    OrgRelayState,
     path_candidate::PreparedGraph,
-    path_search::{self, OrientedPath, SearchEdge, SearchRelay},
+    path_search::{self, OrientedSlaPath, SearchEdgeWithSla, SearchRelayWithSla, SlaSearchPath},
 };
 use crate::NetworkState;
 use meshharbor_remote_control::models::PeerRelayDenyReason as Deny;
@@ -13,7 +14,7 @@ use std::time::Instant;
 
 pub(super) struct SelectedPath {
     pub prepared: PreparedGraph,
-    pub path: OrientedPath,
+    pub path: OrientedSlaPath,
 }
 
 /// Compute both member orientations using only edges and relay identities from
@@ -23,7 +24,7 @@ pub(super) fn select(
     state: &NetworkState,
     prepared: PreparedGraph,
 ) -> Result<Option<SelectedPath>, Deny> {
-    select_inner(state, prepared, false, false)
+    select_from_prepared(&state.org_relay, prepared, false, false)
 }
 
 /// Actual multi-hop grants require known member zones and matching end relays.
@@ -32,10 +33,12 @@ pub(super) fn select_for_mint(
     prepared: PreparedGraph,
     same_zone_only: bool,
 ) -> Result<Option<SelectedPath>, Deny> {
-    if prepared.requester_zone.is_none() || prepared.peer_zone.is_none() {
+    if !prepared.network_zones_active
+        && (prepared.requester_zone.is_none() || prepared.peer_zone.is_none())
+    {
         return Err(Deny::ZoneDenied);
     }
-    select_inner(state, prepared, true, same_zone_only)
+    select_from_prepared(&state.org_relay, prepared, true, same_zone_only)
 }
 
 /// Validate edge indexes before looking up probe provenance. The search
@@ -55,19 +58,21 @@ fn checked_edge_endpoints<'a>(
     Ok((from, to))
 }
 
-fn select_inner(
-    state: &NetworkState,
+pub(super) fn select_from_prepared(
+    org_relay: &OrgRelayState,
     mut prepared: PreparedGraph,
     require_ends: bool,
     same_zone_only: bool,
 ) -> Result<Option<SelectedPath>, Deny> {
-    if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
+    if prepared.eligibility_epoch != org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
     // Actual multi-hop mint cannot represent implicit or unknown-zone
     // relays, and every crossing must be explicitly approved. Apply these
     // gates before ranking so an unusable path cannot hide a valid one.
     // Keep edge indexes in the filtered graph for the fresh mint checks.
+    let nz_active = prepared.network_zones_active;
+    let restrict_bz = prepared.restrict_ends || (require_ends && !nz_active);
     let eligible: Vec<bool> = prepared
         .graph
         .relays
@@ -75,8 +80,9 @@ fn select_inner(
         .map(|relay| {
             !require_ends
                 || (!relay.implicit
-                    && relay.zone.is_some()
+                    && (!restrict_bz || relay.zone.is_some())
                     && (!same_zone_only
+                        || nz_active
                         || (prepared.requester_zone.is_some()
                             && prepared.requester_zone == prepared.peer_zone
                             && relay.zone == prepared.requester_zone)))
@@ -95,7 +101,9 @@ fn select_inner(
         prepared.graph.edges.retain(|edge| {
             eligible[edge.from]
                 && eligible[edge.to]
-                && (relays[edge.from].zone == relays[edge.to].zone || edge.cross_border)
+                && ((!restrict_bz && nz_active)
+                    || relays[edge.from].zone == relays[edge.to].zone
+                    || edge.cross_border)
         });
     }
     let now = Instant::now();
@@ -105,41 +113,35 @@ fn select_inner(
     // replacement connection invalidates earlier observations even before
     // its own overlay join; the final mint still must revalidate atomically.
     let cutoff = |reporter, reporter_identity, target, target_identity| {
-        let r_join = state.org_relay.probe_join_at.get(&reporter).map(|at| *at)?;
-        let t_join = state.org_relay.probe_join_at.get(&target).map(|at| *at)?;
-        let r_bind = state
-            .org_relay
+        let r_join = org_relay.probe_join_at.get(&reporter).map(|at| *at)?;
+        let t_join = org_relay.probe_join_at.get(&target).map(|at| *at)?;
+        let r_bind = org_relay
             .live_conns
             .get(&reporter_identity)
             .map(|c| c.bound_at)?;
-        let t_bind = state
-            .org_relay
+        let t_bind = org_relay
             .live_conns
             .get(&target_identity)
             .map(|c| c.bound_at)?;
         if r_join < r_bind || t_join < t_bind {
             return None;
         }
-        let r_endpoint = state
-            .org_relay
+        let r_endpoint = org_relay
             .probe_endpoint_at
             .get(&reporter)
             .map(|at| *at)
             .unwrap_or(r_join);
-        let t_endpoint = state
-            .org_relay
+        let t_endpoint = org_relay
             .probe_endpoint_at
             .get(&target)
             .map(|at| *at)
             .unwrap_or(t_join);
-        let r_policy = state
-            .org_relay
+        let r_policy = org_relay
             .probe_policy_at
             .get(&reporter_identity)
             .map(|at| *at)
             .unwrap_or(r_bind);
-        let t_policy = state
-            .org_relay
+        let t_policy = org_relay
             .probe_policy_at
             .get(&target_identity)
             .map(|at| *at)
@@ -153,7 +155,6 @@ fn select_inner(
                 .max(t_policy),
         )
     };
-    let restrict_ends = prepared.restrict_ends || require_ends;
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
     let mut best_single = None;
@@ -162,8 +163,8 @@ fn select_inner(
             .plans
             .get(&relay.node_id)
             .ok_or(Deny::PolicyUnreadable)?;
-        let a_probe = super::scoped_probe_verdict(
-            &state.org_relay.probes,
+        let a_probe = super::scoped_sla_verdict(
+            &org_relay.probes,
             a,
             relay.node_id,
             &plan.endpoints,
@@ -175,41 +176,50 @@ fn select_inner(
             ),
             now,
         );
-        let b_probe = super::scoped_probe_verdict(
-            &state.org_relay.probes,
+        let b_probe = super::scoped_sla_verdict(
+            &org_relay.probes,
             b,
             relay.node_id,
             &plan.endpoints,
             cutoff(b, prepared.peer_identity, relay.node_id, relay.agent_id),
             now,
         );
-        let load = state.org_relay.sessions_on_relay(relay.node_id);
-        // Compare the established single-relay planner's actual rank. Its
+        let load = org_relay.sessions_on_relay(relay.node_id);
+        // Compare the established single-relay planner's actual SLA rank. Its
         // missing-RTT and probe-freshness semantics differ from path search.
         // This candidate cannot introduce an ineligible relay into a long path.
-        if !prepared.restrict_ends
-            || (relay.zone == prepared.requester_zone && relay.zone == prepared.peer_zone)
-        {
-            let (class, rtt) = super::rank_key(state, a, b, relay.node_id, now);
-            let rank = (class, rtt, load);
-            if best_single.as_ref().is_none_or(|(_, best)| rank < *best) {
-                best_single = Some((index, rank));
+        let req_end_ok = prepared
+            .requester_gateways
+            .as_ref()
+            .is_none_or(|gw| gw.contains(&relay.agent_id))
+            && (!restrict_bz || relay.zone == prepared.requester_zone);
+        let peer_end_ok = prepared
+            .peer_gateways
+            .as_ref()
+            .is_none_or(|gw| gw.contains(&relay.agent_id))
+            && (!restrict_bz || relay.zone == prepared.peer_zone);
+        if req_end_ok && peer_end_ok {
+            let (class, eff_cost, rtt, jitter_ms, loss_permille, unknown_legs, unreachable_legs) =
+                super::sla_rank_key(org_relay, a, b, relay.node_id, load, now);
+            let rank = (class, eff_cost, load, rtt);
+            if best_single.as_ref().is_none_or(|(_, best, _)| rank < *best) {
+                best_single = Some((
+                    index,
+                    rank,
+                    (jitter_ms, loss_permille, unknown_legs, unreachable_legs),
+                ));
             }
         }
-        forward.push(SearchRelay {
+        forward.push(SearchRelayWithSla {
             node_id: relay.node_id,
-            ingress: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
-                .then_some(a_probe),
-            exit: (eligible && (!restrict_ends || relay.zone == prepared.peer_zone))
-                .then_some(b_probe),
+            ingress: (eligible && req_end_ok).then_some(a_probe),
+            exit: (eligible && peer_end_ok).then_some(b_probe),
             load,
         });
-        reverse.push(SearchRelay {
+        reverse.push(SearchRelayWithSla {
             node_id: relay.node_id,
-            ingress: (eligible && (!restrict_ends || relay.zone == prepared.peer_zone))
-                .then_some(b_probe),
-            exit: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
-                .then_some(a_probe),
+            ingress: (eligible && peer_end_ok).then_some(b_probe),
+            exit: (eligible && req_end_ok).then_some(a_probe),
             load,
         });
     }
@@ -219,11 +229,11 @@ fn select_inner(
         .iter()
         .map(|edge| {
             let (from, to) = checked_edge_endpoints(&prepared.graph, edge)?;
-            Ok(SearchEdge {
+            Ok(SearchEdgeWithSla {
                 from: edge.from,
                 to: edge.to,
-                verdict: super::scoped_probe_verdict(
-                    &state.org_relay.backbone_probes,
+                verdict: super::scoped_sla_verdict(
+                    &org_relay.backbone_probes,
                     from.node_id,
                     to.node_id,
                     std::slice::from_ref(&edge.endpoint),
@@ -233,33 +243,42 @@ fn select_inner(
             })
         })
         .collect::<Result<Vec<_>, Deny>>()?;
-    let mut chosen = path_search::shortest_either_direction(&forward, &reverse, &edges)
+    let mut chosen = path_search::shortest_either_direction_sla(&forward, &reverse, &edges)
         .map_err(|_| Deny::PolicyUnreadable)?;
-    if require_ends && let Some((index, (class, rtt, load))) = best_single {
+    if require_ends
+        && let Some((
+            index,
+            (class, eff_cost, load, rtt),
+            (jitter_ms, effective_loss_permille, unknown_legs, unreachable_legs),
+        )) = best_single
+    {
+        let min_multi_hops = if nz_active { 2 } else { 3 };
         // Unknown/down paths conservatively prefer the established one-relay
-        // fallback. Fully measured paths still compete on measured latency.
+        // fallback. Fully measured paths compete on effective SLA cost.
         let single_wins = chosen.as_ref().is_none_or(|path| {
-            path.path.relays.len() >= 3
+            path.path.relays.len() >= min_multi_hops
                 && (class < path.path.class
                     || (class == path.path.class
-                        && (class != 0 || u128::from(rtt) <= path.path.rtt)))
+                        && (class != 0 || eff_cost <= path.path.effective_cost_ms)))
         });
         if single_wins {
-            chosen = Some(OrientedPath {
+            chosen = Some(OrientedSlaPath {
                 flipped: false,
-                path: path_search::SearchPath {
-                    relays: vec![index],
-                    edges: Vec::new(),
+                path: SlaSearchPath::single(
+                    index,
                     class,
-                    rtt: u128::from(rtt),
-                    load: load as u128,
-                    unknown_legs: 0,
-                    unreachable_legs: 0,
-                },
+                    rtt,
+                    jitter_ms,
+                    effective_loss_permille,
+                    load,
+                    eff_cost,
+                    unknown_legs,
+                    unreachable_legs,
+                ),
             });
         }
     }
-    if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
+    if prepared.eligibility_epoch != org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
     Ok(chosen.map(|path| SelectedPath { prepared, path }))
@@ -306,5 +325,168 @@ mod checked_edge_tests {
             checked_edge_endpoints(&graph, &edge(usize::MAX, usize::MAX)),
             Err(Deny::PolicyUnreadable)
         ));
+    }
+
+    #[test]
+    fn lossy_20ms_relay_loses_to_lossless_30ms_relay_in_production_selection() {
+        use super::super::Plan;
+        use meshharbor_core::business_authority::BusinessZone;
+        use meshharbor_remote_control::models::OverlayNode;
+        use meshharbor_remote_control::signaling::RelayProbeTargetWire;
+        use std::collections::HashMap;
+
+        let org_relay = OrgRelayState::new();
+        let tenant_id = ObjectId::new();
+        let network_id = ObjectId::new();
+        let (a, b) = (ObjectId::new(), ObjectId::new());
+        let (a_ident, b_ident) = (ObjectId::new(), ObjectId::new());
+        let (r_lossy_node, r_lossy_agent) = (ObjectId::new(), ObjectId::new());
+        let (r_clean_node, r_clean_agent) = (ObjectId::new(), ObjectId::new());
+        let ep_lossy = "198.51.100.10:3478".to_string();
+        let ep_clean = "198.51.100.20:3478".to_string();
+
+        for (ident, node) in [
+            (a_ident, a),
+            (b_ident, b),
+            (r_lossy_agent, r_lossy_node),
+            (r_clean_agent, r_clean_node),
+        ] {
+            org_relay.bind_live_conn(ident, "conn-1");
+            assert!(
+                org_relay
+                    .note_join_from_connection(ident, "conn-1", node, Default::default())
+                    .is_some()
+            );
+        }
+        let targets = [
+            RelayProbeTargetWire {
+                relay_node_id: r_lossy_node,
+                endpoints: vec![ep_lossy.clone()],
+            },
+            RelayProbeTargetWire {
+                relay_node_id: r_clean_node,
+                endpoints: vec![ep_clean.clone()],
+            },
+        ];
+        org_relay.offer_probes(a, &targets);
+        org_relay.offer_probes(b, &targets);
+
+        // Both members measure r_lossy answering 2/3 probes (333 permille loss) at 20 ms,
+        // and r_clean answering 3/3 probes (0 permille loss) at 30 ms.
+        for member in [a, b] {
+            assert!(org_relay.record_probe_with_sla(
+                member,
+                r_lossy_node,
+                ep_lossy.clone(),
+                true,
+                Some(20),
+                Some(0),
+                Some(333),
+            ));
+            assert!(org_relay.record_probe_with_sla(
+                member,
+                r_clean_node,
+                ep_clean.clone(),
+                true,
+                Some(30),
+                Some(0),
+                Some(0),
+            ));
+        }
+
+        let make_node = |node_id: ObjectId, agent_id: ObjectId, ip: &str| -> OverlayNode {
+            let mut n: OverlayNode = serde_json::from_value(serde_json::json!({
+                "_id": node_id,
+                "tenant_id": tenant_id,
+                "node_ref": { "kind": "agent", "id": agent_id },
+                "network_id": network_id,
+                "machine_id": format!("m-{node_id}"),
+                "name": format!("n-{node_id}"),
+                "overlay_ip": ip,
+                "wg_public_key": "k",
+                "status": "online",
+                "last_seen_at": bson::DateTime::now(),
+                "created_at": bson::DateTime::now(),
+                "updated_at": bson::DateTime::now(),
+            }))
+            .expect("valid OverlayNode");
+            n.id = Some(node_id);
+            n
+        };
+
+        let build_prepared = || {
+            let mut plans = HashMap::new();
+            plans.insert(
+                r_lossy_node,
+                Plan {
+                    relay: make_node(r_lossy_node, r_lossy_agent, "100.64.0.10"),
+                    relay_agent_id: r_lossy_agent,
+                    endpoints: vec![ep_lossy.clone()],
+                    backbone_edges: Vec::new(),
+                    implicit: false,
+                },
+            );
+            plans.insert(
+                r_clean_node,
+                Plan {
+                    relay: make_node(r_clean_node, r_clean_agent, "100.64.0.20"),
+                    relay_agent_id: r_clean_agent,
+                    endpoints: vec![ep_clean.clone()],
+                    backbone_edges: Vec::new(),
+                    implicit: false,
+                },
+            );
+            PreparedGraph {
+                graph: EdgeGraph {
+                    relays: vec![
+                        EligibleRelay {
+                            node_id: r_lossy_node,
+                            agent_id: r_lossy_agent,
+                            zone: Some(BusinessZone::NonMainland),
+                            bridge_ready: false,
+                            implicit: false,
+                            approved_edges: Vec::new(),
+                        },
+                        EligibleRelay {
+                            node_id: r_clean_node,
+                            agent_id: r_clean_agent,
+                            zone: Some(BusinessZone::NonMainland),
+                            bridge_ready: false,
+                            implicit: false,
+                            approved_edges: Vec::new(),
+                        },
+                    ],
+                    edges: Vec::new(),
+                },
+                requester_id: a,
+                peer_id: b,
+                requester_identity: a_ident,
+                peer_identity: b_ident,
+                plans,
+                requester_zone: Some(BusinessZone::NonMainland),
+                peer_zone: Some(BusinessZone::NonMainland),
+                restrict_ends: true,
+                network_zones_active: false,
+                network_zones_backbone_only: false,
+                requester_gateways: None,
+                peer_gateways: None,
+                eligibility_epoch: org_relay.eligibility_generation(),
+                warn_only: false,
+            }
+        };
+
+        // Graph search (`require_ends = false`) selects lossless 30 ms relay (index 1).
+        let sel_graph = select_from_prepared(&org_relay, build_prepared(), false, false)
+            .expect("selection succeeds")
+            .expect("a relay is selected");
+        assert_eq!(sel_graph.path.path.relays, vec![1]);
+        assert_eq!(sel_graph.path.path.effective_loss_permille, 0);
+
+        // Mint selection (`require_ends = true`, exercising `best_single` too) also selects index 1.
+        let sel_mint = select_from_prepared(&org_relay, build_prepared(), true, false)
+            .expect("mint selection succeeds")
+            .expect("a relay is selected");
+        assert_eq!(sel_mint.path.path.relays, vec![1]);
+        assert_eq!(sel_mint.path.path.effective_loss_permille, 0);
     }
 }

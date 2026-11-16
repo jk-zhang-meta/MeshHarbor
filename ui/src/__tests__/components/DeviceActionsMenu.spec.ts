@@ -85,6 +85,9 @@ interface MenuProps {
   client?: TunnelClient
   node?: OverlayNode
   networkMounted?: boolean
+  canManageAgents?: boolean
+  canAssignZone?: boolean
+  isAdmin?: boolean
   updateBlocked?: string
 }
 
@@ -112,7 +115,7 @@ describe('DeviceActionsMenu', () => {
     expect(wrapper.find('button').attributes('aria-label')).toBe('Actions for Build Server')
   })
 
-  it('offers an agent every action, Edit name & tags included', async () => {
+  it('offers an agent every standard action, Edit name & tags and Zone assignment included, while hiding Admin-only Relay policy by default', async () => {
     const items = await openMenu({ row: row(), agent: { id: 'a' } as Agent, node, networkMounted: true })
     expect(titles(items)).toEqual([
       'Update now',
@@ -127,12 +130,62 @@ describe('DeviceActionsMenu', () => {
       'SSH policy',
       'External access',
       'Device configuration',
+      'Zone assignment',
       'Tunnel mesh routes',
       'Evict / reassign overlay address',
       'Overlay routes',
       'Overlay ACL',
       'Delete device',
     ])
+  })
+
+  it('offers Relay node policy only to Administrators (isAdmin: true) and gates Zone assignment on MANAGE_AGENTS or device ownership (canAssignZone)', async () => {
+    const adminItems = await openMenu({
+      row: row(),
+      agent: { id: 'a' } as Agent,
+      node,
+      networkMounted: true,
+      isAdmin: true,
+    })
+    expect(titles(adminItems)).toContain('Zone assignment')
+    expect(titles(adminItems)).toContain('Relay node policy')
+    adminItems.find((i) => i.textContent?.includes('Zone assignment'))!.click()
+    adminItems.find((i) => i.textContent?.includes('Relay node policy'))!.click()
+    expect(wrapper!.emitted('action')).toEqual([['zone-assignment'], ['peer-relay-policy']])
+
+    // Ordinary member who owns this device (`canManageAgents: false, canAssignZone: true`)
+    // sees Zone assignment, never Relay node policy!
+    wrapper!.unmount()
+    document.body.innerHTML = ''
+    const ownerItems = await openMenu({
+      row: row(),
+      agent: { id: 'a' } as Agent,
+      node,
+      networkMounted: true,
+      canManageAgents: false,
+      canAssignZone: true,
+      isAdmin: false,
+    })
+    expect(titles(ownerItems)).toContain('Zone assignment')
+    expect(titles(ownerItems)).not.toContain('Relay node policy')
+    ownerItems.find((i) => i.textContent?.includes('Zone assignment'))!.click()
+    expect(wrapper!.emitted('action')).toEqual([['zone-assignment']])
+
+    // Ordinary member viewing someone else's device (`canManageAgents: false, canAssignZone: false`)
+    // sees neither Zone assignment nor Relay node policy!
+    wrapper!.unmount()
+    document.body.innerHTML = ''
+    const nonOwnerItems = await openMenu({
+      row: row(),
+      agent: { id: 'a' } as Agent,
+      node,
+      networkMounted: true,
+      canManageAgents: false,
+      canAssignZone: false,
+      isAdmin: false,
+    })
+    expect(titles(nonOwnerItems)).not.toContain('Zone assignment')
+    expect(titles(nonOwnerItems)).not.toContain('Relay node policy')
   })
 
   it('keeps the tenant id in both overlay links', async () => {

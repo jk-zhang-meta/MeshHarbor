@@ -116,6 +116,14 @@ const ENTER_GAP_MS: u64 = 100;
 /// this many ms of it.
 const EXIT_RATIO_PCT: u64 = 115;
 const EXIT_GAP_MS: u64 = 30;
+/// Jitter thresholds (clamped to [`MAX_JITTER_MS`]): severe direct jitter over
+/// a calm relay enters even with zero packet loss; direct jitter above
+/// [`EXIT_JITTER_MS`] withholds a healed exit.
+const MAX_JITTER_MS: u32 = 10_000;
+const ENTER_JITTER_MS: u64 = 50;
+const RELAY_CALM_JITTER_MS: u64 = 10;
+const ENTER_JITTER_GAP_MS: u64 = 60;
+const EXIT_JITTER_MS: u64 = 20;
 /// Enter at this share of direct probes lost (a probe is a round trip, so
 /// 20% is about 11% each way); leave at or under [`EXIT_LOSS_PCT`].
 const ENTER_LOSS_PCT: u64 = 20;
@@ -145,9 +153,11 @@ pub struct Report {
     pub direct_sent: u32,
     pub direct_lost: u32,
     pub direct_rtt_ms: Option<u32>,
+    pub direct_jitter_ms: Option<u32>,
     pub relay_sent: u32,
     pub relay_lost: u32,
     pub relay_rtt_ms: Option<u32>,
+    pub relay_jitter_ms: Option<u32>,
     pub on_relay: bool,
 }
 
@@ -156,6 +166,7 @@ pub struct Report {
 pub enum Worse {
     Latency,
     Loss,
+    Jitter,
 }
 
 /// What one window says about the pair.
@@ -204,14 +215,26 @@ pub fn grade(r: &Report) -> Grade {
     let Some(direct_ms) = r.direct_rtt_ms.map(u64::from).filter(|_| d_lost < d_sent) else {
         return Grade::Dead;
     };
+    let d_jitter = u64::from(r.direct_jitter_ms.unwrap_or(0).min(MAX_JITTER_MS));
+    let r_jitter = u64::from(r.relay_jitter_ms.unwrap_or(0).min(MAX_JITTER_MS));
+    let direct_eff = direct_ms + 2 * d_jitter;
+    let relay_eff = relay_ms + 2 * r_jitter;
     if d_lost * 100 >= d_sent * ENTER_LOSS_PCT {
         return Grade::Worse(Worse::Loss);
     }
     if direct_ms * 100 >= relay_ms * ENTER_RATIO_PCT && direct_ms >= relay_ms + ENTER_GAP_MS {
         return Grade::Worse(Worse::Latency);
     }
+    if d_jitter >= ENTER_JITTER_MS
+        && r_jitter <= RELAY_CALM_JITTER_MS
+        && direct_eff * 100 >= relay_eff * ENTER_RATIO_PCT
+        && direct_eff >= relay_eff + ENTER_JITTER_GAP_MS
+    {
+        return Grade::Worse(Worse::Jitter);
+    }
     if d_lost * 100 <= d_sent * EXIT_LOSS_PCT
-        && (direct_ms * 100 <= relay_ms * EXIT_RATIO_PCT || direct_ms <= relay_ms + EXIT_GAP_MS)
+        && d_jitter <= EXIT_JITTER_MS
+        && (direct_eff * 100 <= relay_eff * EXIT_RATIO_PCT || direct_eff <= relay_eff + EXIT_GAP_MS)
     {
         return Grade::Healthy;
     }
@@ -229,12 +252,18 @@ fn direct_healed(r: &Report) -> bool {
     let Some(direct_ms) = r.direct_rtt_ms.map(u64::from).filter(|_| d_lost < d_sent) else {
         return false;
     };
+    let d_jitter = u64::from(r.direct_jitter_ms.unwrap_or(0).min(MAX_JITTER_MS));
+    let r_jitter = u64::from(r.relay_jitter_ms.unwrap_or(0).min(MAX_JITTER_MS));
+    let direct_eff = direct_ms + 2 * d_jitter;
     d_lost * 100 <= d_sent * EXIT_LOSS_PCT
+        && d_jitter <= EXIT_JITTER_MS
         && match r.relay_rtt_ms.map(u64::from) {
             Some(relay_ms) => {
-                direct_ms * 100 <= relay_ms * EXIT_RATIO_PCT || direct_ms <= relay_ms + EXIT_GAP_MS
+                let relay_eff = relay_ms + 2 * r_jitter;
+                direct_eff * 100 <= relay_eff * EXIT_RATIO_PCT
+                    || direct_eff <= relay_eff + EXIT_GAP_MS
             }
-            None => direct_ms < ENTER_GAP_MS,
+            None => direct_eff < ENTER_GAP_MS,
         }
 }
 
@@ -678,9 +707,11 @@ mod tests {
             direct_sent: 11,
             direct_lost: direct.0,
             direct_rtt_ms: direct.1,
+            direct_jitter_ms: None,
             relay_sent: 11,
             relay_lost: relay.0,
             relay_rtt_ms: relay.1,
+            relay_jitter_ms: None,
             on_relay,
         }
     }
@@ -1054,9 +1085,11 @@ mod tests {
             direct_sent: 9,
             direct_lost: 3,
             direct_rtt_ms: Some(2),
+            direct_jitter_ms: None,
             relay_sent: 3,
             relay_lost: 3,
             relay_rtt_ms: None,
+            relay_jitter_ms: None,
             on_relay: true,
         };
         assert_eq!(
@@ -1171,5 +1204,53 @@ mod tests {
         );
         st.forget_node(a);
         assert_eq!(st.standing_ms_in(Mode::On, a, b, now), None);
+    }
+
+    #[test]
+    fn severe_direct_jitter_enters_prefer_relay_while_clean_direct_stays_put() {
+        let t0 = Instant::now();
+        let mut p = Pair::default();
+
+        // Clean direct (25 ms median, 4 ms jitter) vs calm relay (40 ms, 3 ms jitter):
+        // stays Healthy and never enters prefer_relay.
+        let mut clean = slow(25, 40);
+        clean.direct_jitter_ms = Some(4);
+        clean.relay_jitter_ms = Some(3);
+        assert_eq!(grade(&clean), Grade::Healthy);
+        assert_eq!(note(&mut p, true, &clean, t0), Step::Nothing);
+        assert_eq!(
+            note(&mut p, false, &clean, t0 + Duration::from_secs(1)),
+            Step::Nothing
+        );
+        assert!(p.remaining(t0 + Duration::from_secs(1)).is_none());
+
+        // Jitter-only degradation: 0% packet loss and low median RTT (30 ms),
+        // but severe direct jitter (65 ms -> direct_eff = 160 ms) against a calm
+        // relay (40 ms, 5 ms jitter -> relay_eff = 50 ms) enters bilaterally!
+        let mut jittery = slow(30, 40);
+        jittery.direct_jitter_ms = Some(65);
+        jittery.relay_jitter_ms = Some(5);
+        assert_eq!(grade(&jittery), Grade::Worse(Worse::Jitter));
+
+        // If the relay is equally jittery, do not prefer it.
+        let mut both_jittery = jittery;
+        both_jittery.relay_jitter_ms = Some(55);
+        assert_ne!(grade(&both_jittery), Grade::Worse(Worse::Jitter));
+
+        // Bilateral reports from both ends trigger Step::Enter(Worse::Jitter).
+        assert_eq!(
+            note(&mut p, true, &jittery, t0 + Duration::from_secs(5)),
+            Step::Nothing
+        );
+        assert_eq!(
+            note(&mut p, false, &jittery, t0 + Duration::from_secs(6)),
+            Step::Enter(Worse::Jitter)
+        );
+        assert!(p.remaining(t0 + Duration::from_secs(6)).is_some());
+
+        // Extreme reported jitter is clamped to 10_000 ms without overflow.
+        let mut clamped = jittery;
+        clamped.direct_jitter_ms = Some(u32::MAX);
+        assert_eq!(grade(&clamped), Grade::Worse(Worse::Jitter));
     }
 }

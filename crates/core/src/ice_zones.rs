@@ -118,10 +118,12 @@ pub fn host_of(url: &str) -> Option<(String, u16)> {
     (!host.is_empty()).then(|| (host.to_ascii_lowercase(), port))
 }
 
-/// Host → zone, as last resolved. Absent and `None` both mean "no zone".
+/// Host → zone (and exact ISO-3166-1 alpha-2 country when uniform), as last
+/// resolved. Absent and `None` both mean "no zone".
 #[derive(Default)]
 pub struct IceServerZones {
     map: DashMap<String, Option<BusinessZone>>,
+    countries: DashMap<String, Option<String>>,
 }
 
 impl IceServerZones {
@@ -132,9 +134,59 @@ impl IceServerZones {
         self.map.get(&host).and_then(|z| *z)
     }
 
+    /// Exact ISO-3166-1 alpha-2 country code of the server one ICE URL names
+    /// when every resolved address shares a single country.
+    pub fn country_of_url(&self, url: &str) -> Option<String> {
+        let (host, _) = host_of(url)?;
+        self.countries.get(&host).and_then(|c| c.clone())
+    }
+
     /// Record `host`'s zone directly. Tests and IP-literal hosts.
     pub fn set(&self, host: &str, zone: Option<BusinessZone>) {
-        self.map.insert(host.to_ascii_lowercase(), zone);
+        let key = host.to_ascii_lowercase();
+        if zone == Some(BusinessZone::Mainland) {
+            self.countries.insert(key.clone(), Some("CN".to_string()));
+        } else {
+            self.countries.remove(&key);
+        }
+        self.map.insert(key, zone);
+    }
+
+    /// Record `host`'s exact country code directly (also updating its binary
+    /// `BusinessZone`).
+    pub fn set_country(&self, host: &str, country: Option<&str>) {
+        let key = host.to_ascii_lowercase();
+        let cc = country
+            .map(|c| c.trim().to_ascii_uppercase())
+            .filter(|c| crate::business_authority::known_zone(Some(c)).is_some());
+        let zone = crate::business_authority::known_zone(cc.as_deref());
+        self.countries.insert(key.clone(), cc);
+        self.map.insert(key, zone);
+    }
+
+    /// Whether `url` belongs to the allowed infrastructure countries of a
+    /// `RouterOnly` [`meshharbor_remote_control::models::NetworkZone`].
+    pub fn url_matches_countries(
+        &self,
+        geoip: &crate::user_analytics::GeoIp,
+        url: &str,
+        allowed_countries: &std::collections::HashSet<String>,
+    ) -> bool {
+        if allowed_countries.is_empty() {
+            return false;
+        }
+        if let Some((host, _)) = host_of(url)
+            && let Ok(ip) = host.parse::<IpAddr>()
+        {
+            return geoip
+                .security_lookup(ip)
+                .country_code
+                .is_some_and(|cc| allowed_countries.contains(&cc.to_ascii_uppercase()));
+        }
+        if let Some(cc) = self.country_of_url(url) {
+            return allowed_countries.contains(&cc.to_ascii_uppercase());
+        }
+        false
     }
 
     /// Resolve every distinct host named in `urls` and record its zone.
@@ -160,10 +212,28 @@ impl IceServerZones {
                 },
             };
             let zone = single_zone(addrs.iter().map(|ip| address_zone(core, *ip)));
-            tracing::info!(%host, ?zone, addresses = addrs.len(), "ice zones: resolved");
+            let country = single_country(addrs.iter().map(|ip| {
+                address_zone(core, *ip)?;
+                core.geoip.security_lookup(*ip).country_code
+            }));
+            tracing::info!(%host, ?zone, ?country, addresses = addrs.len(), "ice zones: resolved");
+            self.countries.insert(host.clone(), country);
             self.map.insert(host, zone);
         }
     }
+}
+
+fn single_country(countries: impl Iterator<Item = Option<String>>) -> Option<String> {
+    let mut out: Option<String> = None;
+    for c in countries {
+        match (&out, c) {
+            (_, None) => return None,
+            (None, Some(c)) => out = Some(c),
+            (Some(a), Some(b)) if a == &b => {}
+            _ => return None,
+        }
+    }
+    out
 }
 
 /// One zone when every element is `Some` of the same zone; `None` otherwise
@@ -402,6 +472,45 @@ mod tests {
         assert!(
             d.first_in("dev1", "zone=Mainland withheld=3", Duration::ZERO),
             "window over"
+        );
+    }
+
+    #[test]
+    fn mixed_country_dns_fails_closed_for_exact_country_sets_while_uniform_passes() {
+        let zones = IceServerZones::default();
+        // Mixed US + DE DNS answers produce `NonMainland` binary zone, but NO uniform country (`None`).
+        zones
+            .map
+            .insert("mixed-turn.example".into(), Some(NonMainland));
+        zones.countries.insert("mixed-turn.example".into(), None);
+
+        // Uniform JP DNS answers produce both `NonMainland` and exact `Some("JP")`.
+        zones
+            .map
+            .insert("jp-turn.example".into(), Some(NonMainland));
+        zones
+            .countries
+            .insert("jp-turn.example".into(), Some("JP".into()));
+
+        let geoip = crate::user_analytics::GeoIp::open(None);
+        let jp_only = std::collections::HashSet::from(["JP".to_string()]);
+        let us_only = std::collections::HashSet::from(["US".to_string()]);
+
+        assert!(
+            !zones.url_matches_countries(&geoip, "stun:mixed-turn.example:3478", &jp_only),
+            "mixed US/DE hostname must fail closed for {{JP}}"
+        );
+        assert!(
+            !zones.url_matches_countries(&geoip, "stun:mixed-turn.example:3478", &us_only),
+            "mixed US/DE hostname must fail closed for {{US}}"
+        );
+        assert!(
+            zones.url_matches_countries(&geoip, "stun:jp-turn.example:3478", &jp_only),
+            "uniform JP hostname passes {{JP}}"
+        );
+        assert!(
+            !zones.url_matches_countries(&geoip, "stun:jp-turn.example:3478", &us_only),
+            "uniform JP hostname rejected for {{US}}"
         );
     }
 }

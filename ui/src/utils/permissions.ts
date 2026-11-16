@@ -469,3 +469,28 @@ export function canSetHivePolicy(mask: number | null, isOwner: boolean): boolean
   if (mask === null) return false
   return hasPermission(mask, ADMINISTRATOR)
 }
+
+/**
+ * May this caller read tenant network zones and mutate per-device fleet
+ * settings such as logical zone assignment (`PUT …/agent/{id}/zone-assignment`)?
+ * Server gate: `MANAGE_AGENTS` (owner/ADMINISTRATOR bypass included).
+ * FAIL-CLOSED on `mask === null`.
+ */
+export function canManageAgents(mask: number | null, isOwner: boolean): boolean {
+  if (isOwner) return true
+  if (mask === null) return false
+  return hasPermission(mask, byKeys(['MANAGE_AGENTS']))
+}
+
+/**
+ * May this caller view or configure organization Relay Nodes (`peer_relay_mode`,
+ * `peer_relay_policy`: `serve`, `static_endpoints`, `approved_backbone_edges`)?
+ * Restricted strictly to Administrators (`ADMINISTRATOR` / org owner); ordinary
+ * members and non-ADMINISTRATOR device managers only see/add ordinary devices.
+ * FAIL-CLOSED on `mask === null`.
+ */
+export function canManageRelays(mask: number | null, isOwner: boolean): boolean {
+  if (isOwner) return true
+  if (mask === null) return false
+  return hasPermission(mask, ADMINISTRATOR)
+}

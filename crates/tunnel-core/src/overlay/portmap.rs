@@ -182,7 +182,7 @@ impl PortMapper {
     /// external IP is not one STUN saw in `srflx` (the gateway is not the
     /// NAT the peers would reach, e.g. it sits behind another one).
     pub async fn start(sock: &UdpSocket, srflx: &[String], key: &[u8]) -> Option<PortMapper> {
-        if !enabled() {
+        if !enabled() || sock.local_addr().ok().is_some_and(|a| a.ip().is_loopback()) {
             return None;
         }
         let gw = tokio::task::spawn_blocking(super::netstate::default_gateway_v4)

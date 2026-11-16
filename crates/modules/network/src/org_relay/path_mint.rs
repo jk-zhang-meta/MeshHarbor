@@ -17,6 +17,21 @@ struct ChosenEdge {
     cross_border: bool,
 }
 
+fn legacy_endpoint_zone_mismatch(
+    network_zones_active: bool,
+    same_zone_only: bool,
+    first_zone: Option<BusinessZone>,
+    last_zone: Option<BusinessZone>,
+    mut relay_zones: impl Iterator<Item = Option<BusinessZone>>,
+) -> bool {
+    if network_zones_active {
+        return false;
+    }
+    (same_zone_only
+        && (first_zone != last_zone || relay_zones.any(|rz| rz != first_zone)))
+        || (!same_zone_only && first_zone == last_zone)
+}
+
 /// Attempt a selected multi-relay path. No grants are sent if
 /// a policy, live identity, edge, capacity, VNI or crossing audit check fails.
 pub(super) async fn mint(
@@ -36,17 +51,22 @@ pub(super) async fn mint(
     if original.warn_only != warn_only {
         return Err(Deny::PolicyUnreadable);
     }
-    let (Some(za), Some(zb)) = (original.requester_zone, original.peer_zone) else {
-        return Ok(false);
+    let nz_active = original.network_zones_active;
+    let same_zone_only = if nz_active {
+        false
+    } else {
+        let (Some(za), Some(zb)) = (original.requester_zone, original.peer_zone) else {
+            return Ok(false);
+        };
+        let szo = same_zone_request
+            && (za == zb
+                || crate::business_isolation::mode(state)
+                    == crate::business_isolation::Mode::Enforce);
+        if (szo && za != zb) || (!szo && za == zb) {
+            return Ok(false);
+        }
+        szo
     };
-    // Ordinary requests in Off/Warn may use a freshly approved cross-zone
-    // path. Enforce continues to route such pairs through maybe_mint_line.
-    let same_zone_only = same_zone_request
-        && (za == zb
-            || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce);
-    if (same_zone_only && za != zb) || (!same_zone_only && za == zb) {
-        return Ok(false);
-    }
     let Some(selected) =
         path_select::select_for_mint(state, original, same_zone_only).unwrap_or(None)
     else {
@@ -55,9 +75,10 @@ pub(super) async fn mint(
     let graph = &selected.prepared.graph;
     let indices = &selected.path.path.relays;
     let edge_indices = &selected.path.path.edges;
-    // Keep the established one/two-relay behavior when search selects it;
-    // longer measured paths have no fixed maximum.
-    if indices.len() < 3 {
+    // Keep the established one/two-relay behavior when search selects it under legacy `#21`;
+    // under Logical Network Zones, 2+-hop router paths also mint directly here.
+    let min_hops = if nz_active { 2 } else { 3 };
+    if indices.len() < min_hops {
         return Ok(false);
     }
     if edge_indices.len() + 1 != indices.len() {
@@ -142,26 +163,50 @@ pub(super) async fn mint(
     } else {
         (&fresh_a, &fresh_b)
     };
-    let first_zone = if flipped {
-        fresh.peer_zone
+    if fresh.network_zones_active && !fresh.restrict_ends {
+        let ends_ok = if flipped {
+            fresh.matches_peer_end(relays[0].1)
+                && fresh.matches_requester_end(relays[relays.len() - 1].1)
+        } else {
+            fresh.matches_requester_end(relays[0].1)
+                && fresh.matches_peer_end(relays[relays.len() - 1].1)
+        };
+        if !ends_ok {
+            return Err(Deny::ZoneDenied);
+        }
     } else {
-        fresh.requester_zone
-    };
-    let last_zone = if flipped {
-        fresh.requester_zone
-    } else {
-        fresh.peer_zone
-    };
-    if first_zone.is_none()
-        || last_zone.is_none()
-        || relays[0].1.zone != first_zone
-        || relays[relays.len() - 1].1.zone != last_zone
-        || (same_zone_only
-            && (first_zone != last_zone
-                || relays.iter().any(|(_, relay, _)| relay.zone != first_zone)))
-        || (!same_zone_only && first_zone == last_zone)
-    {
-        return Err(Deny::ZoneDenied);
+        let first_zone = if flipped {
+            fresh.peer_zone
+        } else {
+            fresh.requester_zone
+        };
+        let last_zone = if flipped {
+            fresh.requester_zone
+        } else {
+            fresh.peer_zone
+        };
+        let ends_gw_ok = if flipped {
+            fresh.matches_peer_end(relays[0].1)
+                && fresh.matches_requester_end(relays[relays.len() - 1].1)
+        } else {
+            fresh.matches_requester_end(relays[0].1)
+                && fresh.matches_peer_end(relays[relays.len() - 1].1)
+        };
+        if !ends_gw_ok
+            || first_zone.is_none()
+            || last_zone.is_none()
+            || relays[0].1.zone != first_zone
+            || relays[relays.len() - 1].1.zone != last_zone
+            || legacy_endpoint_zone_mismatch(
+                fresh.network_zones_active,
+                same_zone_only,
+                first_zone,
+                last_zone,
+                relays.iter().map(|(_, relay, _)| relay.zone),
+            )
+        {
+            return Err(Deny::ZoneDenied);
+        }
     }
     let member = |node: &OverlayNode| SessionMember {
         party: SessionParty {
@@ -203,13 +248,17 @@ pub(super) async fn mint(
                     && e.cross_border == selected_edge.cross_border
             })
             .ok_or(Deny::PolicyUnreadable)?;
-        let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
-            return Err(Deny::ZoneDenied);
+        let crossing = if fresh.network_zones_active && !fresh.restrict_ends {
+            from.zone != to.zone && from.zone.is_some() && to.zone.is_some()
+        } else {
+            let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
+                return Err(Deny::ZoneDenied);
+            };
+            if from_zone != to_zone && !edge.cross_border {
+                return Err(Deny::ZoneDenied);
+            }
+            from_zone != to_zone
         };
-        let crossing = from_zone != to_zone;
-        if crossing && !edge.cross_border {
-            return Err(Deny::ZoneDenied);
-        }
         session.hops.push(LineLeg {
             relay: SessionParty {
                 node_id: to.node_id,
@@ -573,44 +622,72 @@ pub(super) async fn reauthorize(
         }
         relays.push((index, relay));
     }
-    let member_zone = |id| {
-        if id == a {
-            prepared.requester_zone
-        } else if id == b {
-            prepared.peer_zone
-        } else {
-            None
-        }
+    let first_id = session.members[0].party.node_id;
+    let last_id = session.members[1].party.node_id;
+    let ends_ok = if first_id == a && last_id == b {
+        prepared.matches_requester_end(relays[0].1)
+            && prepared.matches_peer_end(relays[relays.len() - 1].1)
+    } else if first_id == b && last_id == a {
+        prepared.matches_peer_end(relays[0].1)
+            && prepared.matches_requester_end(relays[relays.len() - 1].1)
+    } else {
+        false
     };
-    let first =
-        member_zone(session.members[0].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
-    let last =
-        member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
-    let (Some(first_relay), Some(last_relay)) = (relays[0].1.zone, relays[relays.len() - 1].1.zone)
-    else {
-        return Err(ReauthorizationError::Unavailable);
-    };
-    if first_relay != first || last_relay != last {
+    if !ends_ok {
         return Err(ReauthorizationError::Denied);
     }
-    for (i, hop) in session.hops.iter().enumerate() {
-        let (from_idx, from) = relays[i];
-        let (to_idx, to) = relays[i + 1];
-        let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
+    if prepared.network_zones_active && !prepared.restrict_ends {
+        for (i, hop) in session.hops.iter().enumerate() {
+            let (from_idx, _) = relays[i];
+            let (to_idx, _) = relays[i + 1];
+            let approved = prepared.graph.edges.iter().any(|edge| {
+                edge.from == from_idx && edge.to == to_idx && edge.endpoint == hop.private_endpoint
+            });
+            if !approved {
+                return Err(ReauthorizationError::Denied);
+            }
+        }
+    } else {
+        let member_zone = |id| {
+            if id == a {
+                prepared.requester_zone
+            } else if id == b {
+                prepared.peer_zone
+            } else {
+                None
+            }
+        };
+        let first = member_zone(session.members[0].party.node_id)
+            .ok_or(ReauthorizationError::Unavailable)?;
+        let last = member_zone(session.members[1].party.node_id)
+            .ok_or(ReauthorizationError::Unavailable)?;
+        let (Some(first_relay), Some(last_relay)) =
+            (relays[0].1.zone, relays[relays.len() - 1].1.zone)
+        else {
             return Err(ReauthorizationError::Unavailable);
         };
-        let crossing = from_zone != to_zone;
-        if crossing != hop.requires_cross_border_approval {
+        if first_relay != first || last_relay != last {
             return Err(ReauthorizationError::Denied);
         }
-        let approved = prepared.graph.edges.iter().any(|edge| {
-            edge.from == from_idx
-                && edge.to == to_idx
-                && edge.endpoint == hop.private_endpoint
-                && (!crossing || edge.cross_border)
-        });
-        if !approved {
-            return Err(ReauthorizationError::Denied);
+        for (i, hop) in session.hops.iter().enumerate() {
+            let (from_idx, from) = relays[i];
+            let (to_idx, to) = relays[i + 1];
+            let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
+                return Err(ReauthorizationError::Unavailable);
+            };
+            let crossing = from_zone != to_zone;
+            if crossing != hop.requires_cross_border_approval {
+                return Err(ReauthorizationError::Denied);
+            }
+            let approved = prepared.graph.edges.iter().any(|edge| {
+                edge.from == from_idx
+                    && edge.to == to_idx
+                    && edge.endpoint == hop.private_endpoint
+                    && (!crossing || edge.cross_border)
+            });
+            if !approved {
+                return Err(ReauthorizationError::Denied);
+            }
         }
     }
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
@@ -685,5 +762,44 @@ mod reauthorization_tests {
             classify_prepare_error(Deny::CrossTenant),
             ReauthorizationError::Denied
         );
+    }
+
+    #[test]
+    fn logical_network_zones_permit_two_router_zones_within_same_physical_zone() {
+        use meshharbor_core::business_authority::BusinessZone::{Mainland, NonMainland};
+
+        // Under active Logical Network Zones (`same_zone_only == false`), two
+        // RouterOnly logical zones inside one physical BusinessZone (`NonMainland`)
+        // must not be rejected by the legacy `!same_zone_only && first == last` rule.
+        assert!(!legacy_endpoint_zone_mismatch(
+            true,
+            false,
+            Some(NonMainland),
+            Some(NonMainland),
+            [Some(NonMainland), Some(NonMainland)].into_iter(),
+        ));
+        // Legacy routing without NetworkZones still rejects `first == last` when `!same_zone_only`
+        // and rejects cross-zone hops when `same_zone_only`.
+        assert!(legacy_endpoint_zone_mismatch(
+            false,
+            false,
+            Some(NonMainland),
+            Some(NonMainland),
+            [Some(NonMainland), Some(NonMainland)].into_iter(),
+        ));
+        assert!(legacy_endpoint_zone_mismatch(
+            false,
+            true,
+            Some(NonMainland),
+            Some(NonMainland),
+            [Some(NonMainland), Some(Mainland)].into_iter(),
+        ));
+        assert!(!legacy_endpoint_zone_mismatch(
+            false,
+            true,
+            Some(NonMainland),
+            Some(NonMainland),
+            [Some(NonMainland), Some(NonMainland)].into_iter(),
+        ));
     }
 }

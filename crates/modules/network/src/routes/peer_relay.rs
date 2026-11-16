@@ -45,35 +45,17 @@ use crate::NetworkState;
 /// a database and every refusal has exactly one place to come from — the shape
 /// of `remote_config::decide`.
 ///
-/// Clearing an approval (`serve: false`) is a plain `MANAGE_AGENTS` act: it is
-/// not a grant, and the admin who can approve must not be the only one who can
-/// revoke. Re-stating an approval that already stands is not a grant either —
-/// #600's `check_grant` gates only bits being ADDED, and the same rule applies
-/// to this one-bit policy.
+/// Every router-policy mutation (`serve`, `static_endpoints`, and
+/// `approved_backbone_edges` additions/edits/removals) requires `ADMINISTRATOR`.
 pub fn decide_approval(
     caller_permissions: u64,
-    current: &PeerRelayPolicy,
-    requested: &PeerRelayPolicy,
+    _current: &PeerRelayPolicy,
+    _requested: &PeerRelayPolicy,
 ) -> Result<(), PeerRelayDenyReason> {
     if !permissions::has(caller_permissions, permissions::MANAGE_AGENTS) {
         return Err(PeerRelayDenyReason::NotDeviceAdmin);
     }
-    let adds_backbone_edge = requested
-        .approved_backbone_edges
-        .iter()
-        .any(|e| !current.approved_backbone_edges.contains(e));
-    if ((requested.serve && !current.serve) || adds_backbone_edge)
-        && !permissions::has(caller_permissions, permissions::EXEC_DEVICE)
-    {
-        return Err(PeerRelayDenyReason::CannotGrantRelay);
-    }
-    // MeshHarbor #21 — a cross-border line is the one exception to the hard
-    // zone isolation: only an administrator opens one.
-    let opens_line = requested
-        .approved_backbone_edges
-        .iter()
-        .any(|e| e.cross_border && !current.approved_backbone_edges.contains(e));
-    if opens_line && !permissions::has(caller_permissions, permissions::ADMINISTRATOR) {
+    if !permissions::has(caller_permissions, permissions::ADMINISTRATOR) {
         return Err(PeerRelayDenyReason::CannotGrantRelay);
     }
     Ok(())
@@ -168,8 +150,8 @@ pub async fn set_mode(
         &state,
         tid,
         auth.user_id,
-        permissions::MANAGE_TENANT,
-        "MANAGE_TENANT",
+        permissions::ADMINISTRATOR,
+        "ADMINISTRATOR",
     )
     .await?;
     state
@@ -246,9 +228,9 @@ pub async fn set_policy(
     if requested.approved_backbone_edges.len() > MAX_PEER_RELAY_BACKBONE_EDGES
         || (!requested.serve && !requested.approved_backbone_edges.is_empty())
     {
-        return Err(ApiError::BadRequest(
-            "backbone edges require an approved source relay and at most 8 edges".into(),
-        ));
+        return Err(ApiError::BadRequest(format!(
+            "backbone edges require an approved source relay and at most {MAX_PEER_RELAY_BACKBONE_EDGES} edges"
+        )));
     }
     let overlay_cidr = if requested.approved_backbone_edges.is_empty() {
         None
@@ -303,19 +285,25 @@ pub async fn set_policy(
         return Err(ApiError::Forbidden(reason.message().to_string()));
     }
 
-    state
+    let Some(_revision) = state
         .fleet
         .agents
-        .update_peer_relay_policy(tid, aid, &requested)
-        .await?;
+        .update_peer_relay_policy_versioned(tid, aid, &requested)
+        .await?
+    else {
+        return Err(ApiError::NotFound("Agent not found".to_string()));
+    };
+    let updated_net = state.overlay_networks.bump_zone_revision(tid).await?;
+    let zones_configured = !updated_net.zones.is_empty();
     state.org_relay.note_probe_policy_change(aid);
-    // Remove all affected live two-leg trials synchronously before audit IO;
+    // Remove all affected live multi-hop sessions/trials synchronously before audit IO;
     // adding an unrelated edge leaves existing paths and direct peers alone.
-    let revoked = crate::org_relay::revoke_removed_backbone_edges_sync(
+    let revoked = crate::org_relay::revoke_removed_backbone_edges_sync_with_zones(
         &state,
         tid,
         aid,
         &requested.approved_backbone_edges,
+        zones_configured,
     );
     if !requested.serve {
         // §7 trigger 3 — clearing the approval tears down what it carried.
@@ -324,6 +312,16 @@ pub async fn set_policy(
             warn!(tenant = %tenant_id, agent = %agent_id, revoked = n,
                 "peer-relay: live sessions revoked with the approval");
         }
+    }
+    let snapshot = crate::network_zones::TenantZoneSnapshot::load_consistent(&state, tid).await;
+    if zones_configured {
+        snapshot.sync_hub_policies_for_tenant(&state, tid).await;
+    }
+    snapshot
+        .sync_relay_backbone_endpoints_at_current_revision(&state, tid, Some(aid))
+        .await;
+    if zones_configured {
+        crate::org_relay::recheck_tenant_zones(&state, tid, "peer_relay_policy").await;
     }
     for event in revoked {
         let _ = tokio::time::timeout(
@@ -525,36 +523,35 @@ mod tests {
         }
     }
 
-    /// The whole point: `DEFAULT_ADMIN` carries MANAGE_AGENTS but not
-    /// EXEC_DEVICE, and that must not be enough to nominate a chokepoint.
     #[test]
-    fn an_admin_without_exec_device_cannot_approve() {
+    fn non_administrator_cannot_approve_even_with_exec_device() {
         assert_eq!(
             decide_approval(DEFAULT_ADMIN, &p(false), &p(true)),
+            Err(PeerRelayDenyReason::CannotGrantRelay)
+        );
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &p(false), &p(true)),
             Err(PeerRelayDenyReason::CannotGrantRelay)
         );
     }
 
     #[test]
-    fn an_admin_with_exec_device_can_approve() {
+    fn administrator_can_approve() {
+        assert_eq!(decide_approval(ADMINISTRATOR, &p(false), &p(true)), Ok(()));
+    }
+
+    #[test]
+    fn clearing_or_restating_an_approval_also_requires_administrator() {
         assert_eq!(
-            decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &p(false), &p(true)),
-            Ok(())
+            decide_approval(DEFAULT_ADMIN, &p(true), &p(false)),
+            Err(PeerRelayDenyReason::CannotGrantRelay)
         );
-    }
-
-    /// Revocation is not a grant: the admin who can approve must not be the
-    /// only one who can take it back.
-    #[test]
-    fn clearing_an_approval_needs_only_manage_agents() {
-        assert_eq!(decide_approval(DEFAULT_ADMIN, &p(true), &p(false)), Ok(()));
-    }
-
-    /// Re-stating an approval that already stands adds no bit, so it is not
-    /// a grant either — the `check_grant` rule (#600) on a one-bit policy.
-    #[test]
-    fn restating_an_approval_is_not_a_grant() {
-        assert_eq!(decide_approval(DEFAULT_ADMIN, &p(true), &p(true)), Ok(()));
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &p(true), &p(true)),
+            Err(PeerRelayDenyReason::CannotGrantRelay)
+        );
+        assert_eq!(decide_approval(ADMINISTRATOR, &p(true), &p(false)), Ok(()));
+        assert_eq!(decide_approval(ADMINISTRATOR, &p(true), &p(true)), Ok(()));
     }
 
     #[test]
@@ -580,7 +577,7 @@ mod tests {
         assert_eq!(decide_approval(ADMINISTRATOR, &p(false), &p(true)), Ok(()));
     }
     #[test]
-    fn new_backbone_edge_needs_exec_but_removal_does_not() {
+    fn new_backbone_edge_needs_administrator_but_removal_does_not() {
         let mut old = p(true);
         let mut requested = old.clone();
         requested.approved_backbone_edges.push(
@@ -596,10 +593,15 @@ mod tests {
         );
         assert_eq!(
             decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &old, &requested),
-            Ok(())
+            Err(PeerRelayDenyReason::CannotGrantRelay)
         );
+        assert_eq!(decide_approval(ADMINISTRATOR, &old, &requested), Ok(()));
         old = requested;
-        assert_eq!(decide_approval(DEFAULT_ADMIN, &old, &p(true)), Ok(()));
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN, &old, &p(true)),
+            Err(PeerRelayDenyReason::CannotGrantRelay)
+        );
+        assert_eq!(decide_approval(ADMINISTRATOR, &old, &p(true)), Ok(()));
     }
 
     #[test]
@@ -622,9 +624,10 @@ mod tests {
         assert_eq!(decide_approval(ADMINISTRATOR, &old, &line), Ok(()));
         assert_eq!(
             decide_approval(DEFAULT_ADMIN, &line, &p(true)),
-            Ok(()),
-            "removing a line needs no more than editing"
+            Err(PeerRelayDenyReason::CannotGrantRelay),
+            "removing a line also requires ADMINISTRATOR"
         );
+        assert_eq!(decide_approval(ADMINISTRATOR, &line, &p(true)), Ok(()));
     }
     #[test]
     fn backbone_endpoint_is_exact_unicast_but_not_the_client_public_policy() {

@@ -39,6 +39,8 @@ use super::wire::{PROBE_TOKEN_LEN, build_probe, parse_probe};
 pub const PROBE_INTERVAL: Duration = Duration::from_secs(240);
 /// Echoes sent per endpoint; the minimum RTT is reported.
 pub const SAMPLES: usize = 3;
+/// Sliding-window probe history per `(relay_node_id, endpoint)` (4 rounds × 3 echoes).
+pub const SLA_WINDOW_CAP: usize = SAMPLES * 4;
 /// How long one echo is waited for.
 pub const SAMPLE_WAIT: Duration = Duration::from_millis(1500);
 /// The VNI the probe frames carry. Any value answers; a probe is not a session.
@@ -59,6 +61,151 @@ pub struct Outcome {
     pub relay_node_id: ObjectId,
     pub endpoint: SocketAddr,
     pub rtt: Option<Duration>,
+    pub jitter_ms: u32,
+    pub loss_permille: u16,
+}
+
+impl Outcome {
+    /// Measured minimum RTT rounded/clamped to `u32` milliseconds.
+    pub fn rtt_ms(&self) -> Option<u32> {
+        self.rtt
+            .map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
+    }
+}
+
+/// Sliding-window multi-metric SLA reading for one `(relay_node_id, endpoint)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointSla {
+    /// Minimum RTT across answered probes in the sliding window (ms).
+    pub rtt_ms: Option<u32>,
+    /// Mean consecutive RTT variation (`|r_i - r_{i-1}|`) across answered probes
+    /// in the sliding window (ms); `Some(0)` when only one probe answered.
+    pub jitter_ms: Option<u32>,
+    /// Windowed probe loss rate in permille (`0..=1000`).
+    pub loss_permille: u16,
+    /// Total probe attempts currently retained in the window (`1..=SLA_WINDOW_CAP`).
+    pub samples: u16,
+}
+
+impl EndpointSla {
+    pub fn jitter_ms(&self) -> Option<u32> {
+        self.jitter_ms
+    }
+
+    pub fn loss_permille(&self) -> u16 {
+        self.loss_permille
+    }
+}
+
+/// One endpoint's probe outcome paired with its updated sliding-window SLA metrics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlaOutcome {
+    pub relay_node_id: ObjectId,
+    pub endpoint: SocketAddr,
+    pub rtt: Option<Duration>,
+    pub jitter_ms: Option<u32>,
+    pub loss_permille: u16,
+}
+
+impl SlaOutcome {
+    pub fn jitter_ms(&self) -> Option<u32> {
+        self.jitter_ms
+    }
+
+    pub fn loss_permille(&self) -> u16 {
+        self.loss_permille
+    }
+
+    pub fn into_outcome(self) -> Outcome {
+        Outcome {
+            relay_node_id: self.relay_node_id,
+            endpoint: self.endpoint,
+            rtt: self.rtt,
+            jitter_ms: self.jitter_ms.unwrap_or(0),
+            loss_permille: self.loss_permille,
+        }
+    }
+}
+
+/// Bounded sliding window of individual echo probe outcomes (`Some(rtt)` or `None` on loss)
+/// for one `(relay_node_id, endpoint)`.
+#[derive(Debug, Clone, Default)]
+pub struct SlaWindow {
+    history: VecDeque<Option<Duration>>,
+}
+
+impl SlaWindow {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Push one probe attempt (`Some(rtt)` if answered within [`SAMPLE_WAIT`], `None` if lost).
+    pub fn push(&mut self, sample: Option<Duration>) {
+        if self.history.len() >= SLA_WINDOW_CAP {
+            self.history.pop_front();
+        }
+        self.history.push_back(sample);
+    }
+
+    /// Record a batch of probe attempts and return the updated window metrics.
+    pub fn record_samples(&mut self, samples: &[Option<Duration>]) -> Option<EndpointSla> {
+        for &s in samples {
+            self.push(s);
+        }
+        self.snapshot()
+    }
+
+    pub fn jitter_ms(&self) -> Option<u32> {
+        self.snapshot().and_then(|s| s.jitter_ms)
+    }
+
+    pub fn loss_permille(&self) -> u16 {
+        self.snapshot().map_or(0, |s| s.loss_permille)
+    }
+
+    /// Compute `(rtt_ms, jitter_ms, loss_permille, samples)` over the retained window.
+    pub fn snapshot(&self) -> Option<EndpointSla> {
+        let total = self.history.len();
+        if total == 0 {
+            return None;
+        }
+        let mut lost = 0u32;
+        let mut min_ms: Option<f64> = None;
+        let mut prev_ms: Option<f64> = None;
+        let mut delta_sum = 0.0_f64;
+        let mut delta_cnt = 0u32;
+        for sample in &self.history {
+            match sample {
+                Some(d) => {
+                    let ms = d.as_secs_f64() * 1000.0;
+                    min_ms = Some(min_ms.map_or(ms, |b| b.min(ms)));
+                    if let Some(prev) = prev_ms {
+                        delta_sum += (ms - prev).abs();
+                        delta_cnt += 1;
+                    }
+                    prev_ms = Some(ms);
+                }
+                None => lost += 1,
+            }
+        }
+        let total_u32 = total as u32;
+        let loss_permille = (((lost * 1000) + (total_u32 / 2)) / total_u32).min(1000) as u16;
+        let rtt_ms = min_ms.map(|m| m.round().min(f64::from(u32::MAX)) as u32);
+        let jitter_ms = if min_ms.is_none() {
+            None
+        } else if delta_cnt == 0 {
+            Some(0)
+        } else {
+            let mean_ipdv = delta_sum / f64::from(delta_cnt);
+            Some(mean_ipdv.round().min(f64::from(u32::MAX)) as u32)
+        };
+        Some(EndpointSla {
+            rtt_ms,
+            jitter_ms,
+            loss_permille,
+            samples: total as u16,
+        })
+    }
 }
 
 /// The netmap's targets as this module takes them; an endpoint that does not
@@ -93,27 +240,40 @@ pub fn targets_from_wire(
         .collect()
 }
 
-/// The minimum echo RTT to `endpoint` over [`SAMPLES`] probes, on a socket of
-/// its own (so concurrent endpoints never share a responder budget), pinned
-/// to interface `via` when given.
-pub async fn probe_rtt(endpoint: SocketAddr, via: Option<&str>) -> Option<Duration> {
-    let bind: SocketAddr = if endpoint.is_ipv4() {
-        "0.0.0.0:0".parse().ok()?
+/// Send [`SAMPLES`] echo probes to `endpoint` on a dedicated socket (pinned to
+/// `via` when given) and return each individual attempt's RTT (`None` = lost).
+pub async fn probe_samples(endpoint: SocketAddr, via: Option<&str>) -> Vec<Option<Duration>> {
+    let bind: SocketAddr = match if endpoint.is_ipv4() {
+        "0.0.0.0:0".parse()
     } else {
-        "[::]:0".parse().ok()?
+        "[::]:0".parse()
+    } {
+        Ok(addr) => addr,
+        Err(_) => return vec![None; SAMPLES],
     };
     let sock = match via {
-        None => UdpSocket::bind(bind).await.ok()?,
+        None => match UdpSocket::bind(bind).await {
+            Ok(s) => s,
+            Err(_) => return vec![None; SAMPLES],
+        },
         Some(interface) => {
-            let std = std::net::UdpSocket::bind(bind).ok()?;
-            super::backbone::pin_interface(&socket2::SockRef::from(&std), interface).ok()?;
-            std.set_nonblocking(true).ok()?;
-            UdpSocket::from_std(std).ok()?
+            let Ok(std) = std::net::UdpSocket::bind(bind) else {
+                return vec![None; SAMPLES];
+            };
+            if super::backbone::pin_interface(&socket2::SockRef::from(&std), interface).is_err()
+                || std.set_nonblocking(true).is_err()
+            {
+                return vec![None; SAMPLES];
+            }
+            let Ok(s) = UdpSocket::from_std(std) else {
+                return vec![None; SAMPLES];
+            };
+            s
         }
     };
-    let mut best: Option<Duration> = None;
+    let mut samples = Vec::with_capacity(SAMPLES);
     let mut buf = [0u8; 256];
-    for _ in 0..SAMPLES {
+    for i in 0..SAMPLES {
         let token: [u8; PROBE_TOKEN_LEN] = rand::random();
         let sent = Instant::now();
         if sock
@@ -121,9 +281,12 @@ pub async fn probe_rtt(endpoint: SocketAddr, via: Option<&str>) -> Option<Durati
             .await
             .is_err()
         {
-            return best;
+            samples.resize(SAMPLES, None);
+            let _ = i;
+            break;
         }
         let deadline = sent + SAMPLE_WAIT;
+        let mut matched = None;
         // Only this echo counts: another source, or a late echo of an earlier
         // sample, is skipped rather than timed.
         while let Ok(Ok((n, from))) = timeout(
@@ -133,27 +296,68 @@ pub async fn probe_rtt(endpoint: SocketAddr, via: Option<&str>) -> Option<Durati
         .await
         {
             if from == endpoint && parse_probe(&buf[..n]).is_some_and(|(_, t)| t == token) {
-                let rtt = sent.elapsed();
-                best = Some(best.map_or(rtt, |b| b.min(rtt)));
+                matched = Some(sent.elapsed());
                 break;
             }
         }
+        samples.push(matched);
     }
-    best
+    samples
+}
+
+/// The minimum echo RTT to `endpoint` over [`SAMPLES`] probes, on a socket of
+/// its own (so concurrent endpoints never share a responder budget), pinned
+/// to interface `via` when given.
+pub async fn probe_rtt(endpoint: SocketAddr, via: Option<&str>) -> Option<Duration> {
+    probe_samples(endpoint, via)
+        .await
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+/// Measure every endpoint of every target concurrently, updating `windows`
+/// with each endpoint's per-probe outcomes and returning SLA-enriched results.
+pub async fn probe_all_sla(
+    targets: &[Target],
+    windows: &mut HashMap<(ObjectId, SocketAddr), SlaWindow>,
+) -> Vec<SlaOutcome> {
+    let jobs = targets.iter().flat_map(|t| {
+        t.endpoints.iter().map(move |&endpoint| async move {
+            (
+                t.relay_node_id,
+                endpoint,
+                probe_samples(endpoint, t.via.as_deref()).await,
+            )
+        })
+    });
+    let raw = futures::future::join_all(jobs).await;
+    raw.into_iter()
+        .map(|(relay_node_id, endpoint, samples)| {
+            let rtt = samples.iter().copied().flatten().min();
+            let sla = windows
+                .entry((relay_node_id, endpoint))
+                .or_default()
+                .record_samples(&samples);
+            SlaOutcome {
+                relay_node_id,
+                endpoint,
+                rtt,
+                jitter_ms: sla.and_then(|s| s.jitter_ms),
+                loss_permille: sla.map_or(1000, |s| s.loss_permille),
+            }
+        })
+        .collect()
 }
 
 /// Measure every endpoint of every target, concurrently.
 pub async fn probe_all(targets: &[Target]) -> Vec<Outcome> {
-    let jobs = targets.iter().flat_map(|t| {
-        t.endpoints.iter().map(move |&endpoint| async move {
-            Outcome {
-                relay_node_id: t.relay_node_id,
-                endpoint,
-                rtt: probe_rtt(endpoint, t.via.as_deref()).await,
-            }
-        })
-    });
-    futures::future::join_all(jobs).await
+    let mut windows = HashMap::new();
+    probe_all_sla(targets, &mut windows)
+        .await
+        .into_iter()
+        .map(SlaOutcome::into_outcome)
+        .collect()
 }
 
 /// Probe the current targets now, whenever they change, and every
@@ -191,6 +395,8 @@ struct ReactiveState {
     // Keep the identity and serial for the same bounded sliding window, so
     // withdrawing and reoffering a target cannot discard its live budget.
     starts: VecDeque<(ObjectId, u64, Instant)>,
+    // Bounded sliding-window SLA metrics per currently offered (relay, endpoint).
+    sla: HashMap<(ObjectId, SocketAddr), SlaWindow>,
 }
 
 impl ReactiveState {
@@ -200,8 +406,13 @@ impl ReactiveState {
             .filter(|t| !t.endpoints.is_empty())
             .map(|t| t.relay_node_id)
             .collect();
+        let offered_endpoints: HashSet<_> = targets
+            .iter()
+            .flat_map(|t| t.endpoints.iter().map(move |&ep| (t.relay_node_id, ep)))
+            .collect();
         self.peers.retain(|id, _| offered.contains(id));
         self.pending.retain(|id| offered.contains(id));
+        self.sla.retain(|k, _| offered_endpoints.contains(k));
     }
 
     fn request(&mut self, id: ObjectId, serial: u64) -> bool {
@@ -310,6 +521,37 @@ impl ReactiveProbes {
             Err(mpsc::error::TrySendError::Closed(_))
         )
     }
+
+    /// Sliding-window SLA telemetry (`rtt_ms`, `jitter_ms`, `loss_permille`) for
+    /// one offered `(relay_node_id, endpoint)` if measured so far.
+    pub fn sla_metrics(
+        &self,
+        relay_node_id: ObjectId,
+        endpoint: SocketAddr,
+    ) -> Option<EndpointSla> {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .sla
+            .get(&(relay_node_id, endpoint))
+            .and_then(SlaWindow::snapshot)
+    }
+
+    /// Best sliding-window SLA reading across all measured endpoints of `relay_node_id`.
+    pub fn relay_sla(&self, relay_node_id: ObjectId) -> Option<EndpointSla> {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .sla
+            .iter()
+            .filter(|((id, _), _)| *id == relay_node_id)
+            .filter_map(|(_, w)| w.snapshot())
+            .min_by_key(|s| {
+                let unreachable = u8::from(s.rtt_ms.is_none());
+                let eff = s.rtt_ms.unwrap_or(u32::MAX) as u64
+                    + 2 * u64::from(s.jitter_ms.unwrap_or(0))
+                    + u64::from(s.loss_permille) * 10;
+                (unreachable, eff, s.loss_permille)
+            })
+    }
 }
 
 /// Keep the ordinary initial/target-change/240-second rounds, and allow
@@ -321,12 +563,65 @@ pub fn spawn_reactive(
     targets: watch::Receiver<Vec<Target>>,
     results: mpsc::Sender<Vec<Outcome>>,
 ) -> (tokio::task::JoinHandle<()>, ReactiveProbes) {
-    spawn_reactive_with(targets, results, |targets| async move {
-        probe_all(&targets).await
+    let state = Arc::new(Mutex::new(ReactiveState::default()));
+    let sla_state = state.clone();
+    spawn_reactive_inner(state, targets, results, move |round_targets| {
+        let sla_state = sla_state.clone();
+        async move {
+            let jobs = round_targets.iter().flat_map(|t| {
+                t.endpoints.iter().map(move |&endpoint| async move {
+                    (
+                        t.relay_node_id,
+                        endpoint,
+                        probe_samples(endpoint, t.via.as_deref()).await,
+                    )
+                })
+            });
+            let measured = futures::future::join_all(jobs).await;
+            let mut guard = sla_state.lock().unwrap_or_else(|p| p.into_inner());
+            measured
+                .into_iter()
+                .map(|(relay_node_id, endpoint, samples)| {
+                    let rtt = samples.iter().copied().flatten().min();
+                    let sla = guard
+                        .sla
+                        .entry((relay_node_id, endpoint))
+                        .or_default()
+                        .record_samples(&samples);
+                    Outcome {
+                        relay_node_id,
+                        endpoint,
+                        rtt,
+                        jitter_ms: sla.and_then(|s| s.jitter_ms).unwrap_or(0),
+                        loss_permille: sla
+                            .map_or(if rtt.is_some() { 0 } else { 1000 }, |s| s.loss_permille),
+                    }
+                })
+                .collect()
+        }
     })
 }
 
+#[cfg(test)]
 fn spawn_reactive_with<F, Fut>(
+    targets: watch::Receiver<Vec<Target>>,
+    results: mpsc::Sender<Vec<Outcome>>,
+    probe: F,
+) -> (tokio::task::JoinHandle<()>, ReactiveProbes)
+where
+    F: Fn(Vec<Target>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Vec<Outcome>> + Send,
+{
+    spawn_reactive_inner(
+        Arc::new(Mutex::new(ReactiveState::default())),
+        targets,
+        results,
+        probe,
+    )
+}
+
+fn spawn_reactive_inner<F, Fut>(
+    state: Arc<Mutex<ReactiveState>>,
     mut targets: watch::Receiver<Vec<Target>>,
     results: mpsc::Sender<Vec<Outcome>>,
     probe: F,
@@ -335,7 +630,6 @@ where
     F: Fn(Vec<Target>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Vec<Outcome>> + Send,
 {
-    let state = Arc::new(Mutex::new(ReactiveState::default()));
     let (wakes, mut wake_rx) = mpsc::channel(REACTIVE_PEERS);
     let handle = ReactiveProbes {
         targets: targets.clone(),
@@ -795,5 +1089,123 @@ mod tests {
             vec!["10.42.2.114:3478".parse::<SocketAddr>().unwrap()],
             "an endpoint outside the allowed CIDRs is dropped"
         );
+    }
+
+    #[test]
+    fn sliding_window_computes_jitter_and_loss_permille_across_rounds() {
+        let mut win = SlaWindow::new();
+        assert_eq!(win.snapshot(), None);
+        assert_eq!(win.jitter_ms(), None);
+        assert_eq!(win.loss_permille(), 0);
+
+        // Round 1: 20 ms, lost, 50 ms -> 1 of 3 lost (333 permille), |50 - 20| = 30 ms jitter.
+        let s1 = win
+            .record_samples(&[
+                Some(Duration::from_millis(20)),
+                None,
+                Some(Duration::from_millis(50)),
+            ])
+            .unwrap();
+        assert_eq!(s1.rtt_ms, Some(20));
+        assert_eq!(s1.jitter_ms(), Some(30));
+        assert_eq!(s1.loss_permille(), 333);
+        assert_eq!(s1.samples, 3);
+
+        // Fill remaining 9 slots of the 12-probe sliding window with clean 25 ms echoes.
+        for _ in 0..3 {
+            win.record_samples(&[
+                Some(Duration::from_millis(25)),
+                Some(Duration::from_millis(25)),
+                Some(Duration::from_millis(25)),
+            ]);
+        }
+        let s2 = win.snapshot().unwrap();
+        assert_eq!(s2.samples, SLA_WINDOW_CAP as u16);
+        // 1 lost out of 12 -> round(1000 / 12) = 83 permille.
+        assert_eq!(s2.loss_permille(), 83);
+        assert!(
+            s2.jitter_ms().unwrap() <= 6,
+            "jitter decayed as steady probes arrived: {s2:?}"
+        );
+
+        // Next clean round evicts the old round-1 spike & loss completely!
+        let s3 = win
+            .record_samples(&[
+                Some(Duration::from_millis(25)),
+                Some(Duration::from_millis(25)),
+                Some(Duration::from_millis(25)),
+            ])
+            .unwrap();
+        assert_eq!(s3.loss_permille(), 0);
+        assert_eq!(s3.jitter_ms(), Some(0));
+        assert_eq!(s3.rtt_ms, Some(25));
+    }
+
+    #[tokio::test]
+    async fn reactive_prober_tracks_sla_metrics_and_prunes_withdrawn_endpoints() {
+        let relay_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_ep = relay_sock.local_addr().unwrap();
+        let (server, _handle) = RelayServer::new(
+            CookieKey::from_bytes([9; 32]),
+            Arc::new(RelayStats::default()),
+        );
+        let srv_task = tokio::spawn(server.serve(relay_sock));
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent_ep = silent.local_addr().unwrap();
+
+        let id = ObjectId::new();
+        let (tx, rx) = watch::channel(vec![Target {
+            relay_node_id: id,
+            endpoints: vec![relay_ep, silent_ep],
+            via: None,
+        }]);
+        let (res_tx, mut res_rx) = mpsc::channel(4);
+        let (task, reactive) = spawn_reactive(rx, res_tx);
+        // Ensure SLA state wiring completes even if the initial round starts immediately.
+        let _ = timeout(Duration::from_secs(5), res_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(REACTIVE_GAP).await;
+        assert!(reactive.request(id, 1));
+        let round = timeout(Duration::from_secs(5), res_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(round.len(), 2);
+        let live_out = round.iter().find(|o| o.endpoint == relay_ep).unwrap();
+        assert_eq!(live_out.loss_permille, 0);
+        let dead_out = round.iter().find(|o| o.endpoint == silent_ep).unwrap();
+        assert_eq!(dead_out.loss_permille, 1000);
+        assert_eq!(dead_out.jitter_ms, 0);
+
+        let live_sla = reactive
+            .sla_metrics(id, relay_ep)
+            .expect("live endpoint SLA");
+        assert_eq!(live_sla.loss_permille(), 0);
+        assert!(live_sla.rtt_ms.is_some());
+        assert!(live_sla.jitter_ms().is_some());
+
+        let dead_sla = reactive
+            .sla_metrics(id, silent_ep)
+            .expect("silent endpoint SLA");
+        assert_eq!(dead_sla.loss_permille(), 1000);
+        assert_eq!(dead_sla.rtt_ms, None);
+        assert_eq!(dead_sla.jitter_ms(), None);
+
+        let best = reactive.relay_sla(id).unwrap();
+        assert_eq!(best.loss_permille(), 0);
+
+        // Withdrawing the target prunes its SLA window state on the next round.
+        tx.send_replace(Vec::new());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(reactive.sla_metrics(id, relay_ep), None);
+
+        drop(tx);
+        timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        srv_task.abort();
     }
 }

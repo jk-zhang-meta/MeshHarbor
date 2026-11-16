@@ -9855,7 +9855,9 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
             "acl={acl_mode}: us_b must receive explicit remove for Unknown us_a: up={up:?} rm={rm:?}"
         );
 
-        // Discovery: /api/agent/self/devices, /api/agent/self/mesh, /api/tunnel-client/agents
+        // Discovery: permanent `/api/agent/self/devices` lists all 5 permanent
+        // devices with `reachable = false` on all 4 withheld peers, while
+        // `/api/agent/self/mesh` and `/api/tunnel-client/agents` stay strictly shaped.
         let devs: Value = rig
             .app
             .auth_get("/api/agent/self/devices", &us_a_tok)
@@ -9867,10 +9869,18 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
             .unwrap();
         assert_eq!(
             devs["total"],
-            json!(1),
-            "acl={acl_mode}: only self in devices: {devs}"
+            json!(5),
+            "acl={acl_mode}: permanent inventory visible: {devs}"
         );
-        assert_eq!(devs["items"][0]["id"], json!(us_a_id));
+        for item in devs["items"].as_array().unwrap() {
+            if item["id"] != json!(us_a_id) {
+                assert_eq!(
+                    item["reachable"],
+                    json!(false),
+                    "acl={acl_mode}: withheld peer must have reachable=false: {item}"
+                );
+            }
+        }
 
         let mesh: Value = rig
             .app
@@ -10015,7 +10025,9 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
         "approved cross-zone client must stay withheld: {up:?}"
     );
 
-    // Discovery now includes approved same-zone peers and excludes cross-zone cn_a.
+    // Discovery lists all 5 permanent devices, with `reachable = true` for
+    // approved same-zone peers and `reachable = false` for cross-zone cn_a;
+    // `/self/mesh` excludes cn_a.
     let devs: Value = rig
         .app
         .auth_get("/api/agent/self/devices", &us_a_tok)
@@ -10025,7 +10037,14 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
         .json()
         .await
         .unwrap();
-    assert_eq!(devs["total"], json!(4), "{devs}");
+    assert_eq!(devs["total"], json!(5), "{devs}");
+    let cn_row = devs["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(cn_a_id))
+        .expect("cn_a in permanent inventory");
+    assert_eq!(cn_row["reachable"], json!(false), "{cn_row}");
     let mesh: Value = rig
         .app
         .auth_get("/api/agent/self/mesh", &us_a_tok)
@@ -11463,7 +11482,8 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                         trace.record(role,"measured_probe",json!({"relay_node_id":outcome.relay_node_id.to_hex(),
                             "endpoint":outcome.endpoint.to_string(),"reachable":outcome.rtt.is_some(),"rtt_ms":rtt_ms}));
                         let report=ClientMsg::OverlayRelayProbe{relay_node_id:outcome.relay_node_id,
-                            endpoint:outcome.endpoint.to_string(),reachable:outcome.rtt.is_some(),rtt_ms};
+                            endpoint:outcome.endpoint.to_string(),reachable:outcome.rtt.is_some(),rtt_ms,
+                            jitter_ms:outcome.rtt.map(|_|outcome.jitter_ms),loss_permille:Some(outcome.loss_permille)};
                         ws.send(Message::Text(serde_json::to_string(&report).unwrap().into())).await.unwrap();
                     }
                     continue;

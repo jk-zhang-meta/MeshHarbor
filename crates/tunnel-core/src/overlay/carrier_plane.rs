@@ -167,6 +167,12 @@ impl Drop for PlaneBinds {
     }
 }
 
+struct SrflxPolicySlot {
+    state: SrflxShared,
+    keepalive: Option<JoinHandle<()>>,
+    regather: Arc<tokio::sync::Notify>,
+}
+
 struct PlaneState {
     engines: Vec<EngineEntry>,
     routes: HashMap<u32, PlaneRoute>,
@@ -187,23 +193,152 @@ struct PlaneState {
     last_foreign_init_log: Option<Instant>,
     binds: Option<PlaneBinds>,
     next_engine_id: u64,
-    /// Demux-routed STUN Binding responses (the plane twin of the device's
-    /// channel — the srflx keepalive's query rides plane sockets whose
-    /// `recv_from` the plane owns).
+    /// Demux-routed STUN Binding responses: `stun_tx`/`stun_rx` preserves the
+    /// legacy single-consumer `take_stun_events` test seam, while production
+    /// gathers and keepalives subscribe independent per-query channels in
+    /// `stun_listeners` so a slow/silent gather in one organization never
+    /// blocks another organization's STUN keepalive.
     stun_tx: mpsc::Sender<StunInbound>,
     stun_rx: Option<mpsc::Receiver<StunInbound>>,
-    /// The shared srflx state every attached runtime mirrors onto its own
-    /// control WS (see [`SrflxShared`]).
+    stun_listeners: Vec<mpsc::Sender<StunInbound>>,
+    /// Monotonic counter incremented on every `run_rebuild` so an in-flight
+    /// gather from a retired bind epoch never installs stale socket state.
+    rebuild_epoch: u64,
+    /// Per-owner async serialization (`portmap_key` -> gate).
+    owner_gates: HashMap<Vec<u8>, Arc<tokio::sync::Mutex<()>>>,
+    /// Per-policy async coalescing (`stun_urls` -> gate) so callers sharing
+    /// the same URLs gather once without blocking distinct-policy callers.
+    policy_gates: HashMap<Vec<String>, Arc<tokio::sync::Mutex<()>>>,
+    /// Legacy single-owner srflx watch mirror (kept in sync when ≤1 active
+    /// STUN policy slot is present; multi-org runtimes subscribe per owner via
+    /// [`CarrierPlane::subscribe_srflx_for`]).
     srflx_watch: tokio::sync::watch::Sender<SrflxShared>,
-    /// The plane keepalive task, once armed (aborted + re-armed by the
-    /// rebuild — the plane itself is process-lifetime).
-    keepalive: Option<JoinHandle<()>>,
+    /// Per-owner (`portmap_key` = engine secret bytes) effective `stun_urls`.
+    owner_policies: HashMap<Vec<u8>, Vec<String>>,
+    /// Per-owner (`portmap_key`) srflx watch so one organization's STUN policy
+    /// tightening never clears another organization's discovery state.
+    owner_watches: HashMap<Vec<u8>, tokio::sync::watch::Sender<SrflxShared>>,
+    /// Active discovery & keepalive slots keyed by non-empty `stun_urls`.
+    policy_slots: HashMap<Vec<String>, SrflxPolicySlot>,
     /// P1-d — the runtimes subscribed to rebuild steps ([`PlaneEvent`]).
     subscribers: Vec<mpsc::Sender<PlaneEvent>>,
     /// P1-d — rebuild-in-flight latch + cooldown stamp (the plane twin of
     /// the per-runtime `pending_rebuild`/`last_rebuild` pair).
     rebuilding: bool,
     last_rebuild: Option<Instant>,
+}
+
+impl PlaneState {
+    fn owner_watch_sender(
+        &mut self,
+        owner_key: &[u8],
+    ) -> &tokio::sync::watch::Sender<SrflxShared> {
+        if !self.owner_watches.contains_key(owner_key) {
+            let seed = self
+                .owner_policies
+                .get(owner_key)
+                .and_then(|urls| self.policy_slots.get(urls))
+                .map(|slot| slot.state.clone())
+                .unwrap_or_else(|| {
+                    if self.owner_policies.is_empty() && self.policy_slots.is_empty() {
+                        self.srflx_watch.borrow().clone()
+                    } else {
+                        SrflxShared::default()
+                    }
+                });
+            let (tx, _) = tokio::sync::watch::channel(seed);
+            self.owner_watches.insert(owner_key.to_vec(), tx);
+        }
+        self.owner_watches.get(owner_key).expect("inserted above")
+    }
+
+    fn refresh_legacy_srflx_watch(&mut self) {
+        if self.policy_slots.is_empty() {
+            self.srflx_watch.send_replace(SrflxShared::default());
+        } else if self.policy_slots.len() == 1
+            && let Some(slot) = self.policy_slots.values().next()
+        {
+            self.srflx_watch.send_replace(slot.state.clone());
+        }
+    }
+
+    fn publish_policy_state(&mut self, urls: &[String], shared: SrflxShared) {
+        if let Some(slot) = self.policy_slots.get_mut(urls) {
+            slot.state = shared.clone();
+        }
+        let matching_owners: Vec<Vec<u8>> = self
+            .owner_policies
+            .iter()
+            .filter(|(_, owner_urls)| owner_urls.as_slice() == urls)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in matching_owners {
+            self.owner_watch_sender(&k).send_replace(shared.clone());
+        }
+        if self.policy_slots.len() == 1 && self.policy_slots.contains_key(urls) {
+            self.srflx_watch.send_replace(shared);
+        }
+    }
+
+    fn retire_unreferenced_policies(&mut self) -> Vec<JoinHandle<()>> {
+        let dead_urls: Vec<Vec<String>> = self
+            .policy_slots
+            .keys()
+            .filter(|urls| !self.owner_policies.values().any(|u| u == *urls))
+            .cloned()
+            .collect();
+        let mut handles = Vec::new();
+        for urls in dead_urls {
+            if let Some(mut slot) = self.policy_slots.remove(&urls)
+                && let Some(h) = slot.keepalive.take()
+            {
+                handles.push(h);
+            }
+        }
+        self.refresh_legacy_srflx_watch();
+        handles
+    }
+
+    fn clear_all_srflx_slots(&mut self) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+        for (_, mut slot) in self.policy_slots.drain() {
+            if let Some(h) = slot.keepalive.take() {
+                handles.push(h);
+            }
+        }
+        self.owner_policies.clear();
+        for tx in self.owner_watches.values() {
+            tx.send_replace(SrflxShared::default());
+        }
+        self.srflx_watch.send_replace(SrflxShared::default());
+        handles
+    }
+
+    fn subscribe_stun_listener(&mut self) -> mpsc::Receiver<StunInbound> {
+        self.stun_listeners.retain(|tx| !tx.is_closed());
+        let (tx, rx) = mpsc::channel(16);
+        self.stun_listeners.push(tx);
+        rx
+    }
+
+    fn owner_gate_for(&mut self, owner_key: &[u8]) -> Arc<tokio::sync::Mutex<()>> {
+        self.owner_gates
+            .entry(owner_key.to_vec())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    fn policy_gate_for(&mut self, urls: &[String]) -> Arc<tokio::sync::Mutex<()>> {
+        self.policy_gates
+            .entry(urls.to_vec())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    #[cfg(test)]
+    fn has_any_keepalive(&self) -> bool {
+        self.policy_slots.values().any(|s| s.keepalive.is_some())
+    }
 }
 
 /// The shared direct-carrier plane. See the module docs.
@@ -214,9 +349,6 @@ pub struct CarrierPlane {
     /// install per second it takes ~194 days to wrap, and a wrapped index
     /// collides only with a session that has been dead for exactly that long.
     index_alloc: AtomicU32,
-    /// Serializes [`ensure_srflx`](Self::ensure_srflx): the first caller
-    /// gathers while later callers wait, then read the cached result.
-    srflx_gate: tokio::sync::Mutex<bool>,
     /// PR-B1 — serializes [`ensure_bound`](Self::ensure_bound) ACROSS its
     /// awaits. The bind loop can take seconds (3×300 ms base retries per
     /// socket), and two orgs attaching concurrently both used to pass the
@@ -279,14 +411,19 @@ impl CarrierPlane {
                 next_engine_id: 1,
                 stun_tx,
                 stun_rx: Some(stun_rx),
+                stun_listeners: Vec::new(),
+                rebuild_epoch: 0,
+                owner_gates: HashMap::new(),
+                policy_gates: HashMap::new(),
                 srflx_watch,
-                keepalive: None,
+                owner_policies: HashMap::new(),
+                owner_watches: HashMap::new(),
+                policy_slots: HashMap::new(),
                 subscribers: Vec::new(),
                 rebuilding: false,
                 last_rebuild: None,
             }),
             index_alloc: AtomicU32::new(0),
-            srflx_gate: tokio::sync::Mutex::new(false),
             bind_gate: tokio::sync::Mutex::new(()),
             binds_performed: AtomicU32::new(0),
             regather: tokio::sync::Notify::new(),
@@ -310,10 +447,14 @@ impl CarrierPlane {
         direct::wsl_mirrored_guest()
     }
 
-    /// W5 — poke the plane srflx task (see the `regather` field). Sync and
+    /// W5 — poke the plane srflx task(s) (see the `regather` field). Sync and
     /// cheap; callable from any select arm.
     pub fn notify_regather(&self) {
         self.regather.notify_one();
+        let st = self.lock();
+        for slot in st.policy_slots.values() {
+            slot.regather.notify_one();
+        }
     }
 
     /// Test seam: flip the auth-first routing switch (production reads the
@@ -792,13 +933,30 @@ impl CarrierPlane {
         if crate::transport::stun::has_stun_cookie(&buf[..n]) && !is_wg_shaped(&buf[..n]) {
             // Only a STUN datagram needs the channel: taking the plane lock
             // for it on every WG data packet was pure per-packet overhead.
-            let stun_tx = { self.lock().stun_tx.clone() };
-            if stun_tx
-                .try_send(StunInbound {
-                    src,
-                    packet: buf[..n].to_vec(),
-                })
-                .is_err()
+            let inbound = StunInbound {
+                src,
+                packet: buf[..n].to_vec(),
+            };
+            let (legacy_tx, listeners) = {
+                let mut st = self.lock();
+                st.stun_listeners.retain(|tx| !tx.is_closed());
+                let legacy_tx = if st.stun_rx.is_none() {
+                    Some(st.stun_tx.clone())
+                } else {
+                    None
+                };
+                (legacy_tx, st.stun_listeners.clone())
+            };
+            let mut dropped = false;
+            if let Some(tx) = legacy_tx {
+                dropped |= tx.try_send(inbound.clone()).is_err();
+            }
+            for tx in listeners {
+                if tx.try_send(inbound.clone()).is_err() && !tx.is_closed() {
+                    dropped = true;
+                }
+            }
+            if dropped
                 && last_stun_drop_log
                     .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(10))
             {
@@ -1546,7 +1704,15 @@ impl PlaneHandle {
 impl Drop for PlaneHandle {
     fn drop(&mut self) {
         let mut st = self.plane.lock();
-        st.engines.retain(|e| e.id != self.id);
+        let mut detached_keys = Vec::new();
+        st.engines.retain(|e| {
+            if e.id == self.id {
+                detached_keys.push(e.secret.to_bytes().to_vec());
+                false
+            } else {
+                true
+            }
+        });
         let dead: Vec<u32> = st
             .routes
             .iter()
@@ -1560,6 +1726,20 @@ impl Drop for PlaneHandle {
                     st.by_src.remove(&key);
                 }
             }
+        }
+        let retired = if st.engines.is_empty() {
+            st.clear_all_srflx_slots()
+        } else {
+            for key in &detached_keys {
+                st.owner_policies.remove(key);
+                if let Some(tx) = st.owner_watches.get(key) {
+                    tx.send_replace(SrflxShared::default());
+                }
+            }
+            st.retire_unreferenced_policies()
+        };
+        for h in retired {
+            h.abort();
         }
         if !dead.is_empty() || !st.engines.is_empty() {
             debug!(
@@ -1615,71 +1795,245 @@ impl SrflxShared {
 }
 
 impl CarrierPlane {
-    /// Subscribe to the shared srflx state (see [`SrflxShared`]).
+    /// Subscribe to the legacy single-owner srflx state (see [`SrflxShared`]).
     pub fn subscribe_srflx(&self) -> tokio::sync::watch::Receiver<SrflxShared> {
         self.lock().srflx_watch.subscribe()
     }
 
-    /// ONE srflx gather + NAT probe for the whole process. The first caller
-    /// performs it — via the plane's STUN sink, because the plane's recv
-    /// loops own the sockets and raw-socket STUN would be stolen by them —
-    /// and every later caller gets the cached result. Also arms the plane
-    /// keepalive, which holds the mapping open and re-publishes on change.
-    /// P1-d re-gathers per rebuild epoch; until then the result is
-    /// process-lifetime, like the plane's binds.
-    ///
-    /// `portmap_key` keys the gateway mapping's PCP nonce
-    /// ([`super::portmap::nonce_for`]); the first caller's key wins, like the
-    /// gather itself.
+    /// Subscribe to `owner_key`'s effective STUN policy state so simultaneous
+    /// organizations sharing this plane isolate their discovery, watches, and
+    /// keepalives whenever policies diverge or tighten.
+    pub fn subscribe_srflx_for(
+        &self,
+        owner_key: &[u8],
+    ) -> tokio::sync::watch::Receiver<SrflxShared> {
+        self.lock().owner_watch_sender(owner_key).subscribe()
+    }
+
+    /// Ensure STUN `srflx` discovery + NAT probe + keepalive for `portmap_key`'s
+    /// `stun_urls` policy on the shared plane. Organizations sharing the same
+    /// non-empty `stun_urls` share one gather & keepalive slot; distinct
+    /// policies gather and keep alive independently with per-query STUN
+    /// response channels so a slow/silent gather never delays another org.
     pub async fn ensure_srflx(
         self: &Arc<Self>,
         stun_urls: &[String],
         portmap_key: &[u8],
     ) -> SrflxShared {
-        let mut done = self.srflx_gate.lock().await;
-        if *done {
-            return self.lock().srflx_watch.borrow().clone();
-        }
-        let mut sink = self.lock().stun_rx.take();
-        let Some(rx) = sink.as_mut() else {
-            // The srflx task already owns the sink (it lives for the plane
-            // epoch). Return the CURRENT state without publishing anything:
-            // the old error-publish here clobbered a good watch value with
-            // "sink already taken" (the W5 review's landmine).
-            return self.lock().srflx_watch.borrow().clone();
+        let (owner_gate, policy_gate) = {
+            let mut st = self.lock();
+            let og = st.owner_gate_for(portmap_key);
+            let pg = if stun_urls.is_empty() {
+                None
+            } else {
+                Some(st.policy_gate_for(stun_urls))
+            };
+            (og, pg)
         };
-        let shared = self.gather_via_sink(stun_urls, rx, false).await;
-        // send_replace, NOT send: the plane keeps no persistent receiver
-        // (the channel's initial one is dropped at construction), and
-        // `send` DROPS the value when there are zero receivers — which is
-        // exactly the case here, because ensure_srflx runs BEFORE any
-        // runtime's forwarder subscribes. That silently left the watch empty,
-        // so every forwarder read `[]` and never advertised, and the losing
-        // org of the gather-gate race went relay-locked (field 2026-08-10:
-        // random org per host stuck at srflx=[]). send_replace stores the
-        // value unconditionally, so late subscribers see the candidate.
-        self.lock().srflx_watch.send_replace(shared.clone());
-        if let Some(rx) = sink {
-            self.spawn_srflx_task(rx, stun_urls.to_vec(), &shared, portmap_key.to_vec());
+        let _owner_guard = owner_gate.lock().await;
+        let _policy_guard = match &policy_gate {
+            Some(g) => Some(g.lock().await),
+            None => None,
+        };
+
+        let (epoch_at_start, cached_hit, to_abort) = {
+            let mut st = self.lock();
+            if st.stun_rx.is_none() {
+                // Sink already externally owned (legacy unit-test seam): return
+                // current watch value untouched without clobbering it.
+                if stun_urls.is_empty() {
+                    st.owner_policies.insert(portmap_key.to_vec(), Vec::new());
+                    st.owner_watch_sender(portmap_key)
+                        .send_replace(SrflxShared::default());
+                    return SrflxShared::default();
+                }
+                return st
+                    .owner_watches
+                    .get(portmap_key)
+                    .map(|w| w.borrow().clone())
+                    .unwrap_or_else(|| st.srflx_watch.borrow().clone());
+            }
+            st.owner_policies
+                .insert(portmap_key.to_vec(), stun_urls.to_vec());
+            let _ = st.owner_watch_sender(portmap_key);
+            let to_abort = st.retire_unreferenced_policies();
+            let cached_hit = if stun_urls.is_empty() {
+                st.owner_watch_sender(portmap_key)
+                    .send_replace(SrflxShared::default());
+                Some(SrflxShared::default())
+            } else if let Some(slot) = st.policy_slots.get(stun_urls) {
+                let shared = slot.state.clone();
+                st.owner_watch_sender(portmap_key)
+                    .send_replace(shared.clone());
+                Some(shared)
+            } else {
+                None
+            };
+            (st.rebuild_epoch, cached_hit, to_abort)
+        };
+        for h in to_abort {
+            h.abort();
+            let _ = h.await;
         }
-        *done = true;
+        if let Some(shared) = cached_hit {
+            return shared;
+        }
+        let shared = self.gather_via_sink(stun_urls, None, false).await;
+        let regather = Arc::new(tokio::sync::Notify::new());
+        let should_spawn = {
+            let mut st = self.lock();
+            if st.rebuild_epoch != epoch_at_start
+                || st.owner_policies.get(portmap_key).map(Vec::as_slice) != Some(stun_urls)
+            {
+                return SrflxShared::default();
+            }
+            st.policy_slots.insert(
+                stun_urls.to_vec(),
+                SrflxPolicySlot {
+                    state: shared.clone(),
+                    keepalive: None,
+                    regather: regather.clone(),
+                },
+            );
+            st.publish_policy_state(stun_urls, shared.clone());
+            true
+        };
+        if should_spawn {
+            let handle =
+                self.spawn_srflx_task(stun_urls.to_vec(), &shared, portmap_key.to_vec(), regather);
+            let mut st = self.lock();
+            if st.rebuild_epoch == epoch_at_start
+                && let Some(slot) = st.policy_slots.get_mut(stun_urls)
+            {
+                slot.keepalive = handle;
+            } else if let Some(h) = handle {
+                h.abort();
+            }
+        }
         shared
+    }
+
+    /// Reconfigure `portmap_key`'s STUN discovery & keepalive against an updated
+    /// `stun_urls` list without disturbing any other organization's active STUN
+    /// discovery, watch, or keepalive on the shared plane.
+    pub async fn reconfigure_srflx(
+        self: &Arc<Self>,
+        stun_urls: &[String],
+        portmap_key: &[u8],
+    ) -> SrflxShared {
+        let (owner_gate, policy_gate) = {
+            let mut st = self.lock();
+            let og = st.owner_gate_for(portmap_key);
+            let pg = if stun_urls.is_empty() {
+                None
+            } else {
+                Some(st.policy_gate_for(stun_urls))
+            };
+            (og, pg)
+        };
+        let _owner_guard = owner_gate.lock().await;
+        let _policy_guard = match &policy_gate {
+            Some(g) => Some(g.lock().await),
+            None => None,
+        };
+
+        let (epoch_at_start, sink_owned_externally, reused_slot, to_abort) = {
+            let mut st = self.lock();
+            // Detach this owner from its old policy first so an unshared old
+            // policy slot is retired (even when force-refreshing the same URLs
+            // on a single-org host), while any slot still referenced by another
+            // attached organization remains completely intact.
+            st.owner_policies.remove(portmap_key);
+            st.owner_watch_sender(portmap_key)
+                .send_replace(SrflxShared::default());
+            let to_abort = st.retire_unreferenced_policies();
+
+            st.owner_policies
+                .insert(portmap_key.to_vec(), stun_urls.to_vec());
+            let sink_owned_externally = st.stun_rx.is_none();
+            let reused_slot = if !stun_urls.is_empty()
+                && let Some(slot) = st.policy_slots.get(stun_urls)
+            {
+                let shared = slot.state.clone();
+                st.owner_watch_sender(portmap_key)
+                    .send_replace(shared.clone());
+                st.refresh_legacy_srflx_watch();
+                Some(shared)
+            } else {
+                st.refresh_legacy_srflx_watch();
+                None
+            };
+            (st.rebuild_epoch, sink_owned_externally, reused_slot, to_abort)
+        };
+        for h in to_abort {
+            h.abort();
+            let _ = h.await;
+        }
+        if sink_owned_externally || stun_urls.is_empty() {
+            return reused_slot.unwrap_or_default();
+        }
+        if let Some(shared) = reused_slot {
+            return shared;
+        }
+        let shared = self.gather_via_sink(stun_urls, None, false).await;
+        let regather = Arc::new(tokio::sync::Notify::new());
+        let should_spawn = {
+            let mut st = self.lock();
+            if st.rebuild_epoch != epoch_at_start
+                || st.owner_policies.get(portmap_key).map(Vec::as_slice) != Some(stun_urls)
+            {
+                return SrflxShared::default();
+            }
+            st.policy_slots.insert(
+                stun_urls.to_vec(),
+                SrflxPolicySlot {
+                    state: shared.clone(),
+                    keepalive: None,
+                    regather: regather.clone(),
+                },
+            );
+            st.publish_policy_state(stun_urls, shared.clone());
+            true
+        };
+        if should_spawn {
+            let handle =
+                self.spawn_srflx_task(stun_urls.to_vec(), &shared, portmap_key.to_vec(), regather);
+            let mut st = self.lock();
+            if st.rebuild_epoch == epoch_at_start
+                && let Some(slot) = st.policy_slots.get_mut(stun_urls)
+            {
+                slot.keepalive = handle;
+            } else if let Some(h) = handle {
+                h.abort();
+            }
+        }
+        shared
+    }
+
+    async fn query_stun_on_plane(
+        &self,
+        sock: &UdpSocket,
+        ext_rx: &mut Option<&mut mpsc::Receiver<StunInbound>>,
+        server: SocketAddr,
+        attempt_timeout: std::time::Duration,
+    ) -> anyhow::Result<SocketAddr> {
+        if let Some(rx) = ext_rx.as_deref_mut() {
+            crate::transport::stun::srflx_query_via_sink(sock, rx, server, attempt_timeout).await
+        } else {
+            let mut rx = self.lock().subscribe_stun_listener();
+            crate::transport::stun::srflx_query_via_sink(sock, &mut rx, server, attempt_timeout)
+                .await
+        }
     }
 
     /// The gather pass — the plane twin of the runtime's
     /// `gather_and_advertise_srflx` core, minus the advertising (each
-    /// runtime does its own) and driven through the STUN sink.
-    ///
-    /// `quiet` — demote the per-vantage progress lines and the all-empty
-    /// WARN to debug. The SEEKING task re-walks every backoff tick (and on
-    /// every interface-event poke), so at full verbosity a UDP-blocked host
-    /// wrote the same 4 lines per walk forever — field 2026-08-14: 40k srflx
-    /// lines in one day's log on winhost-a. The task keeps its own low-rate
-    /// heartbeat instead.
+    /// runtime does its own) and driven through independent per-query STUN
+    /// response channels (or `ext_rx` for single-consumer unit tests).
     async fn gather_via_sink(
         &self,
         stun_urls: &[String],
-        rx: &mut mpsc::Receiver<StunInbound>,
+        mut ext_rx: Option<&mut mpsc::Receiver<StunInbound>>,
         quiet: bool,
     ) -> SrflxShared {
         let mut out = SrflxShared {
@@ -1725,13 +2079,14 @@ impl CarrierPlane {
             pairs = tokio::time::timeout(super::runtime::SRFLX_GATHER_BUDGET, async {
                 let mut pairs: Vec<(String, Arc<UdpSocket>)> = Vec::new();
                 for (_ip, sock) in &v.socks {
-                    match crate::transport::stun::srflx_query_via_sink(
-                        sock,
-                        rx,
-                        server,
-                        super::runtime::SRFLX_ATTEMPT_TIMEOUT,
-                    )
-                    .await
+                    match self
+                        .query_stun_on_plane(
+                            sock,
+                            &mut ext_rx,
+                            server,
+                            super::runtime::SRFLX_ATTEMPT_TIMEOUT,
+                        )
+                        .await
                     {
                         Ok(SocketAddr::V4(s)) if direct::is_public_v4(*s.ip()) => {
                             let ep = SocketAddr::V4(s).to_string();
@@ -1764,13 +2119,14 @@ impl CarrierPlane {
                 && (direct::vpn_vantage_enabled() || v.socks.is_empty())
                 && let Some(p) = v.public_sock.as_ref()
             {
-                match crate::transport::stun::srflx_query_via_sink(
-                    p,
-                    rx,
-                    server,
-                    super::runtime::SRFLX_ATTEMPT_TIMEOUT,
-                )
-                .await
+                match self
+                    .query_stun_on_plane(
+                        p,
+                        &mut ext_rx,
+                        server,
+                        super::runtime::SRFLX_ATTEMPT_TIMEOUT,
+                    )
+                    .await
                 {
                     Ok(SocketAddr::V4(s)) if direct::is_public_v4(*s.ip()) => {
                         if v.socks.is_empty() {
@@ -1869,13 +2225,14 @@ impl CarrierPlane {
             let punch_sock = pairs[0].1.clone();
             let mut mappings: Vec<SocketAddr> = Vec::with_capacity(typing_targets.len());
             for t in &typing_targets {
-                match crate::transport::stun::srflx_query_via_sink(
-                    &punch_sock,
-                    rx,
-                    *t,
-                    super::runtime::SRFLX_ATTEMPT_TIMEOUT,
-                )
-                .await
+                match self
+                    .query_stun_on_plane(
+                        &punch_sock,
+                        &mut ext_rx,
+                        *t,
+                        super::runtime::SRFLX_ATTEMPT_TIMEOUT,
+                    )
+                    .await
                 {
                     Ok(m) => {
                         typing.push(format!("{t}=>{m}"));
@@ -1930,26 +2287,23 @@ impl CarrierPlane {
     /// immediately instead of waiting out the tick.
     fn spawn_srflx_task(
         self: &Arc<Self>,
-        rx: mpsc::Receiver<StunInbound>,
         stun_urls: Vec<String>,
         seed: &SrflxShared,
         portmap_key: Vec<u8>,
-    ) {
+        regather: Arc<tokio::sync::Notify>,
+    ) -> Option<JoinHandle<()>> {
         let secs = direct::srflx_keepalive_secs();
-        if !direct::srflx_enabled() || secs == 0 {
-            self.lock().stun_rx = Some(rx);
-            return;
+        if !direct::srflx_enabled() || secs == 0 || stun_urls.is_empty() {
+            return None;
         }
         if seed.punch.is_none() && !direct::srflx_seek_enabled() {
             // Kill switch: restore the pre-W5 sticky-NONE behaviour.
-            self.lock().stun_rx = Some(rx);
-            return;
+            return None;
         }
         let plane = self.clone();
         let my_ips: Vec<Ipv4Addr> = self.view().map(|v| v.my_ips).unwrap_or_default();
         let mut state = seed.clone();
-        let handle = tokio::spawn(async move {
-            let mut rx = rx;
+        Some(tokio::spawn(async move {
             // ---- SEEKING ----
             if state.punch.is_none() {
                 let mut delay = std::time::Duration::from_secs(secs.max(20));
@@ -1959,26 +2313,18 @@ impl CarrierPlane {
                 loop {
                     let poked = tokio::select! {
                         _ = tokio::time::sleep(delay) => false,
-                        _ = plane.regather.notified() => {
+                        _ = regather.notified() => {
                             debug!("carrier plane: srflx re-gather poked (interface event) while SEEKING");
                             true
                         }
                     };
-                    // W6 — pokes bypass the backoff BY DESIGN (a VPN drop
-                    // must re-gather fast), but a churny event source must
-                    // not turn that into a continuous STUN loop: field
-                    // 2026-08-14, winhost-a under Check Point emitted an
-                    // interface event every ~6 s, so SEEKING walked all 3
-                    // vantages back-to-back for 15 minutes (~140 walks)
-                    // until the source quieted. Timer-driven walks never
-                    // wait — their spacing IS the backoff.
                     if poked {
                         let wait = poke_floor_wait(last_walk.map(|t| t.elapsed()));
                         if !wait.is_zero() {
                             tokio::time::sleep(wait).await;
                         }
                     }
-                    let fresh = plane.gather_via_sink(&stun_urls, &mut rx, walks > 0).await;
+                    let fresh = plane.gather_via_sink(&stun_urls, None, walks > 0).await;
                     last_walk = Some(std::time::Instant::now());
                     walks += 1;
                     if fresh.punch.is_some() {
@@ -1986,13 +2332,13 @@ impl CarrierPlane {
                             generation: state.generation + 1,
                             ..fresh
                         };
-                        plane.lock().srflx_watch.send_replace(state.clone());
+                        plane.lock().publish_policy_state(&stun_urls, state.clone());
                         info!(
                             candidates = ?state.candidates,
                             my_nat = ?state.my_nat,
                             walks,
-                            "carrier plane: srflx RECOVERED after NONE — every org re-advertises \
-                             and re-pairs"
+                            "carrier plane: srflx RECOVERED after NONE — matching orgs re-advertise \
+                             and re-pair"
                         );
                         break; // → ESTABLISHED below
                     }
@@ -2022,46 +2368,26 @@ impl CarrierPlane {
                 return;
             };
             let mut failures = 0u32;
-            // B4 — a SEPARATE consecutive-failure counter for the watchdog:
-            // `failures` resets every RERESOLVE_AFTER cycles (the STUN-server
-            // re-resolve), so it can't measure a sustained outage. This one
-            // resets ONLY on a successful query.
             let mut watchdog_fails = 0u32;
-            // PR-B1 tripwire — one WARN per outage (not per cycle): repeated
-            // keepalive failure is the "advertised mapping may be dead"
-            // signal, most notably a reader-less punch socket queueing the
-            // reply forever (the 2026-08-10 wedge). DEBUG-only left it
-            // invisible.
             let mut warned = false;
             const RERESOLVE_AFTER: u32 = 3;
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // The interval's immediate first tick — the gather just ran.
             tick.tick().await;
-            // §6 item 5 — ask the gateway to map the punch port. Here, not in
-            // the gather: the STUN advert is already out, so a silent gateway
-            // (most cloud hosts; ≤ 2 × `portmap::WAIT`) delays nothing, and a
-            // grant re-publishes with the mapping first.
             let mut pm =
                 super::portmap::PortMapper::start(&punch, &state.candidates, &portmap_key).await;
             if pm.is_some() {
                 state.generation += 1;
                 plane
                     .lock()
-                    .srflx_watch
-                    .send_replace(state.published(pm.as_ref()));
+                    .publish_policy_state(&stun_urls, state.published(pm.as_ref()));
             }
-            // W6 — poke-storm floor (see SEEKING): a poked query here is only
-            // an ACCELERATION of the ≤`secs` tick, so under an interface-event
-            // storm a too-soon poke is skipped outright — the regular
-            // keepalive re-queries within the interval anyway, and the tick
-            // cadence itself must NEVER be floored (Check Point grandfathering
-            // depends on the ≤25 s keepalive holding the session entry).
             let mut last_query: Option<std::time::Instant> = None;
             loop {
                 let poked = tokio::select! {
                     _ = tick.tick() => false,
-                    _ = plane.regather.notified() => {
+                    _ = regather.notified() => {
                         debug!("carrier plane: srflx keepalive poked (interface event) — querying now");
                         true
                     }
@@ -2071,14 +2397,15 @@ impl CarrierPlane {
                 }
                 last_query = Some(std::time::Instant::now());
                 let mut publish = false;
-                match crate::transport::stun::srflx_query_via_sink(
-                    &punch,
-                    &mut rx,
-                    server,
-                    super::runtime::SRFLX_ATTEMPT_TIMEOUT,
-                )
-                .await
-                {
+                let query_res = plane
+                    .query_stun_on_plane(
+                        &punch,
+                        &mut None,
+                        server,
+                        super::runtime::SRFLX_ATTEMPT_TIMEOUT,
+                    )
+                    .await;
+                match query_res {
                     Ok(cur) => {
                         failures = 0;
                         watchdog_fails = 0;
@@ -2102,17 +2429,13 @@ impl CarrierPlane {
                             }
                             info!(
                                 new_srflx = %ep,
-                                "carrier plane: srflx mapping changed — every org re-advertises"
+                                "carrier plane: srflx mapping changed — matching orgs re-advertise"
                             );
                         }
                     }
                     Err(e) => {
                         failures += 1;
                         watchdog_fails += 1;
-                        // B4 — sustained failure ⇒ the punch socket is dead
-                        // (reader-less / wedged); re-resolving the server
-                        // won't help. Self-heal via a debounced plane rebuild
-                        // (re-binds fresh sockets + re-arms this keepalive).
                         if direct::plane_watchdog_enabled()
                             && watchdog_fails >= direct::PLANE_WATCHDOG_FAILS
                         {
@@ -2152,8 +2475,6 @@ impl CarrierPlane {
                         }
                     }
                 }
-                // Refresh the gateway mapping when due (half its lifetime),
-                // or ask again after a loss.
                 if let Some(p) = pm.as_mut()
                     && p.poll(&state.candidates).await
                 {
@@ -2161,19 +2482,17 @@ impl CarrierPlane {
                 }
                 let v6 = plane.view().and_then(|v| v.v6);
                 if super::runtime::refresh_v6_adverts(&mut state.candidates, v6.as_ref()) {
-                    info!(candidates = ?state.candidates, "carrier plane: IPv6 address set changed — every org re-advertises");
+                    info!(candidates = ?state.candidates, "carrier plane: IPv6 address set changed — matching orgs re-advertise");
                     publish = true;
                 }
                 if publish {
                     state.generation += 1;
                     plane
                         .lock()
-                        .srflx_watch
-                        .send_replace(state.published(pm.as_ref()));
+                        .publish_policy_state(&stun_urls, state.published(pm.as_ref()));
                 }
             }
-        });
-        self.lock().keepalive = Some(handle);
+        }))
     }
 }
 
@@ -2269,26 +2588,27 @@ impl CarrierPlane {
                  a straggler's lingering port)"
             );
         }
-        let (keepalive_task, mut old_binds) = {
+        let (keepalive_tasks, mut old_binds) = {
             let mut st = self.lock();
-            let keepalive_task = st.keepalive.take();
-            // F3a: clear cached SrflxShared (`punch: Option<(SocketAddr, Arc<UdpSocket>)>`)
-            // BEFORE re-binding; otherwise `srflx_watch` retains a clone of the old
-            // punch socket Arc across `ensure_bound()` and forces a port band-walk.
-            st.srflx_watch.send_replace(SrflxShared::default());
-            // Fresh STUN sink: retired recv loops keep the dead sender; the
-            // loops adopted below clone the new one — the same discipline as
-            // the device-side `replace_stun_events`.
+            st.rebuild_epoch = st.rebuild_epoch.wrapping_add(1);
+            // F3a: clear all cached SrflxShared slots and per-owner watches
+            // (`punch: Option<(SocketAddr, Arc<UdpSocket>)>`) BEFORE re-binding;
+            // otherwise a watch/slot retains a clone of the old punch socket Arc
+            // across `ensure_bound()` and forces a port band-walk.
+            let keepalive_tasks = st.clear_all_srflx_slots();
+            // Fresh STUN channels: retired recv loops keep dead senders; the
+            // loops adopted below fan out to new per-query listeners.
             let (tx, rx) = mpsc::channel(16);
             st.stun_tx = tx;
             st.stun_rx = Some(rx);
-            (keepalive_task, st.binds.take())
+            st.stun_listeners.clear();
+            (keepalive_tasks, st.binds.take())
         };
         let had_binds = old_binds.is_some();
-        // F3a: abort AND `.await` both the srflx keepalive task and all per-socket
+        // F3a: abort AND `.await` all srflx keepalive tasks and all per-socket
         // recv loops outside the mutex so every `Arc<UdpSocket>` clone owned by
         // background tasks is guaranteed dropped before `ensure_bound()` re-binds.
-        if let Some(h) = keepalive_task {
+        for h in keepalive_tasks {
             h.abort();
             let _ = h.await;
         }
@@ -2302,7 +2622,6 @@ impl CarrierPlane {
         }
         // The srflx result was measured through sockets that no longer
         // exist — the next `ensure_srflx` re-gathers on the new binds.
-        *self.srflx_gate.lock().await = false;
         if had_binds && self.ensure_bound().await.is_none() {
             warn!("carrier plane: re-bind found no usable LAN interface — direct path off");
         }
@@ -2442,7 +2761,7 @@ mod tests {
         }
         let mut rx = plane.take_stun_events().unwrap();
         let shared = plane
-            .gather_via_sink(&[format!("stun:{server_addr}")], &mut rx, false)
+            .gather_via_sink(&[format!("stun:{server_addr}")], Some(&mut rx), false)
             .await;
         assert!(shared.via_public_dial, "the rescue must be attributed");
         assert_eq!(shared.candidates, vec!["203.0.113.7:4242".to_string()]);
@@ -2542,7 +2861,7 @@ mod tests {
         }
         let mut rx = plane.take_stun_events().unwrap();
         let shared = plane
-            .gather_via_sink(&[format!("stun:{server_addr}")], &mut rx, false)
+            .gather_via_sink(&[format!("stun:{server_addr}")], Some(&mut rx), false)
             .await;
         assert_eq!(shared.candidates, vec!["203.0.113.9:5151".to_string()]);
         let (_, punch) = shared.punch.expect("punch pair");
@@ -3505,5 +3824,365 @@ mod tests {
         assert_eq!(sb.status, PqPeerStatus::Established { epoch: 1 });
         assert!(sa.psk_fingerprint.is_some());
         assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+    }
+
+    #[tokio::test]
+    async fn recreated_runtime_with_empty_stun_clears_cache_and_stops_keepalive() {
+        let plane = CarrierPlane::new();
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let local_ep = sock.local_addr().unwrap().to_string();
+        let recv_task = plane.adopt_socket(sock.clone());
+        plane.lock().binds = Some(PlaneBinds {
+            socks: vec![(Ipv4Addr::LOCALHOST, sock)],
+            public_sock: None,
+            endpoints: vec![local_ep],
+            my_ips: Vec::new(),
+            v6: None,
+            my_v6: Vec::new(),
+            tasks: vec![recv_task],
+            stats: Vec::new(),
+        });
+
+        let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stun_addr = stun_sock.local_addr().unwrap();
+        let queries = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let queries_srv = queries.clone();
+        let stun_srv = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, peer)) = stun_sock.recv_from(&mut buf).await {
+                if n < 20 {
+                    continue;
+                }
+                queries_srv.fetch_add(1, Ordering::Relaxed);
+                let mut resp = [0u8; 32];
+                resp[0..2].copy_from_slice(&0x0101u16.to_be_bytes());
+                resp[2..4].copy_from_slice(&12u16.to_be_bytes());
+                resp[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+                resp[8..20].copy_from_slice(&buf[8..20]);
+                resp[20..22].copy_from_slice(&0x0020u16.to_be_bytes());
+                resp[22..24].copy_from_slice(&8u16.to_be_bytes());
+                resp[24] = 0;
+                resp[25] = 0x01;
+                resp[26..28].copy_from_slice(&(43620u16 ^ 0x2112u16).to_be_bytes());
+                let xip = u32::from(Ipv4Addr::new(203, 0, 113, 42)) ^ 0x2112_A442u32;
+                resp[28..32].copy_from_slice(&xip.to_be_bytes());
+                let _ = stun_sock.send_to(&resp, peer).await;
+            }
+        });
+
+        let attach_one = |plane: &Arc<CarrierPlane>| {
+            let kp = WgKeypair::generate();
+            plane.attach(EngineHooks {
+                secret: kp.secret,
+                public: kp.public,
+                send: crate::overlay::wg::WgSender::new(),
+                disco_events: mpsc::channel(1).0,
+                direct_events: mpsc::channel(1).0,
+                tun_tx: mpsc::channel(1).0,
+            })
+        };
+
+        let stun_url = format!("stun:{stun_addr}");
+        let h1 = attach_one(&plane);
+        let initial = plane
+            .ensure_srflx(std::slice::from_ref(&stun_url), b"stun-policy-key")
+            .await;
+        assert_eq!(initial.candidates, vec!["203.0.113.42:43620".to_string()]);
+        assert!(plane.lock().has_any_keepalive());
+        assert!(queries.load(Ordering::Relaxed) >= 1);
+
+        // Detach the sole runtime: cached srflx state is cleared and keepalive aborted.
+        drop(h1);
+        assert!(!plane.lock().has_any_keepalive());
+        assert!(plane.lock().srflx_watch.borrow().candidates.is_empty());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let q_after_detach = queries.load(Ordering::Relaxed);
+        plane.notify_regather();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            queries.load(Ordering::Relaxed),
+            q_after_detach,
+            "detached plane must send zero background STUN queries"
+        );
+
+        // Recreate runtime with strict_stun: true (empty allowed STUN list).
+        let h2 = attach_one(&plane);
+        let strict = plane.ensure_srflx(&[], b"stun-policy-key").await;
+        assert!(strict.candidates.is_empty());
+        assert!(strict.punch.is_none());
+        assert!(plane.lock().srflx_watch.borrow().candidates.is_empty());
+        assert!(!plane.lock().has_any_keepalive());
+        plane.notify_regather();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            queries.load(Ordering::Relaxed),
+            q_after_detach,
+            "ensure_srflx(&[]) must send zero STUN queries"
+        );
+
+        // Also verify direct policy tightening via ensure_srflx while attached.
+        let regathered = plane
+            .ensure_srflx(std::slice::from_ref(&stun_url), b"stun-policy-key")
+            .await;
+        assert_eq!(regathered.candidates, vec!["203.0.113.42:43620".to_string()]);
+        assert!(plane.lock().has_any_keepalive());
+        let tightened = plane.ensure_srflx(&[], b"stun-policy-key").await;
+        assert!(tightened.candidates.is_empty());
+        assert!(!plane.lock().has_any_keepalive());
+        assert!(plane.lock().srflx_watch.borrow().candidates.is_empty());
+        let q_after_tighten = queries.load(Ordering::Relaxed);
+        plane.notify_regather();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            queries.load(Ordering::Relaxed),
+            q_after_tighten,
+            "superseded keepalive must stay aborted after policy tightening"
+        );
+
+        drop(h2);
+        stun_srv.abort();
+    }
+
+    #[tokio::test]
+    async fn tightening_one_org_stun_policy_preserves_other_org_discovery_and_keepalive() {
+        let plane = CarrierPlane::new();
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let local_ep = sock.local_addr().unwrap().to_string();
+        let recv_task = plane.adopt_socket(sock.clone());
+        plane.lock().binds = Some(PlaneBinds {
+            socks: vec![(Ipv4Addr::LOCALHOST, sock)],
+            public_sock: None,
+            endpoints: vec![local_ep],
+            my_ips: Vec::new(),
+            v6: None,
+            my_v6: Vec::new(),
+            tasks: vec![recv_task],
+            stats: Vec::new(),
+        });
+
+        let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stun_addr = stun_sock.local_addr().unwrap();
+        let queries = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let queries_srv = queries.clone();
+        let stun_srv = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, peer)) = stun_sock.recv_from(&mut buf).await {
+                if n < 20 {
+                    continue;
+                }
+                queries_srv.fetch_add(1, Ordering::Relaxed);
+                let mut resp = [0u8; 32];
+                resp[0..2].copy_from_slice(&0x0101u16.to_be_bytes());
+                resp[2..4].copy_from_slice(&12u16.to_be_bytes());
+                resp[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+                resp[8..20].copy_from_slice(&buf[8..20]);
+                resp[20..22].copy_from_slice(&0x0020u16.to_be_bytes());
+                resp[22..24].copy_from_slice(&8u16.to_be_bytes());
+                resp[24] = 0;
+                resp[25] = 0x01;
+                resp[26..28].copy_from_slice(&(43621u16 ^ 0x2112u16).to_be_bytes());
+                let xip = u32::from(Ipv4Addr::new(203, 0, 113, 99)) ^ 0x2112_A442u32;
+                resp[28..32].copy_from_slice(&xip.to_be_bytes());
+                let _ = stun_sock.send_to(&resp, peer).await;
+            }
+        });
+
+        let kp_a = WgKeypair::generate();
+        let kp_b = WgKeypair::generate();
+        let key_a = kp_a.secret.to_bytes();
+        let key_b = kp_b.secret.to_bytes();
+        let h_a = plane.attach(EngineHooks {
+            secret: kp_a.secret,
+            public: kp_a.public,
+            send: crate::overlay::wg::WgSender::new(),
+            disco_events: mpsc::channel(1).0,
+            direct_events: mpsc::channel(1).0,
+            tun_tx: mpsc::channel(1).0,
+        });
+        let h_b = plane.attach(EngineHooks {
+            secret: kp_b.secret,
+            public: kp_b.public,
+            send: crate::overlay::wg::WgSender::new(),
+            disco_events: mpsc::channel(1).0,
+            direct_events: mpsc::channel(1).0,
+            tun_tx: mpsc::channel(1).0,
+        });
+
+        let stun_url = format!("stun:{stun_addr}");
+        let shared_b = plane
+            .ensure_srflx(std::slice::from_ref(&stun_url), &key_b)
+            .await;
+        let shared_a = plane
+            .ensure_srflx(std::slice::from_ref(&stun_url), &key_a)
+            .await;
+        let rx_a = plane.subscribe_srflx_for(&key_a);
+        let rx_b = plane.subscribe_srflx_for(&key_b);
+        assert_eq!(shared_a.candidates, vec!["203.0.113.99:43621".to_string()]);
+        assert_eq!(shared_b.candidates, vec!["203.0.113.99:43621".to_string()]);
+        assert_eq!(rx_a.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
+        assert_eq!(rx_b.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
+
+        // Org A tightens its STUN policy to empty (`strict_stun: true`).
+        // Org A's watch must clear immediately, while Org B's watch, punch state,
+        // and background keepalive remain 100% intact!
+        let tightened_a = plane.reconfigure_srflx(&[], &key_a).await;
+        assert!(tightened_a.candidates.is_empty());
+        assert!(rx_a.borrow().candidates.is_empty());
+        assert!(rx_a.borrow().punch.is_none());
+        assert_eq!(
+            rx_b.borrow().candidates,
+            vec!["203.0.113.99:43621".to_string()],
+            "Org B's srflx watch must not be cleared by Org A's policy tightening"
+        );
+        assert!(
+            rx_b.borrow().punch.is_some(),
+            "Org B's punch socket must remain populated"
+        );
+        assert!(
+            plane.lock().has_any_keepalive(),
+            "Org B's keepalive must remain active"
+        );
+
+        // Verify Org B's keepalive still responds to a regather poke.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let q_before_poke = queries.load(Ordering::Relaxed);
+        plane.notify_regather();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            queries.load(Ordering::Relaxed) > q_before_poke,
+            "Org B's keepalive must continue servicing STUN queries"
+        );
+
+        // Detaching Org A must still preserve Org B; detaching Org B finally stops keepalive.
+        drop(h_a);
+        assert!(plane.lock().has_any_keepalive());
+        assert_eq!(rx_b.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
+        drop(h_b);
+        assert!(!plane.lock().has_any_keepalive());
+        assert!(rx_b.borrow().candidates.is_empty());
+        stun_srv.abort();
+    }
+
+    #[tokio::test]
+    async fn distinct_policy_silent_gather_does_not_delay_healthy_org_keepalive() {
+        let plane = CarrierPlane::new();
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let local_ep = sock.local_addr().unwrap().to_string();
+        let recv_task = plane.adopt_socket(sock.clone());
+        plane.lock().binds = Some(PlaneBinds {
+            socks: vec![(Ipv4Addr::LOCALHOST, sock)],
+            public_sock: None,
+            endpoints: vec![local_ep],
+            my_ips: Vec::new(),
+            v6: None,
+            my_v6: Vec::new(),
+            tasks: vec![recv_task],
+            stats: Vec::new(),
+        });
+
+        // Healthy STUN server for Org B.
+        let stun_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stun_b_addr = stun_b.local_addr().unwrap();
+        let queries_b = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let queries_b_srv = queries_b.clone();
+        let stun_b_srv = tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, peer)) = stun_b.recv_from(&mut buf).await {
+                if n < 20 {
+                    continue;
+                }
+                queries_b_srv.fetch_add(1, Ordering::Relaxed);
+                let mut resp = [0u8; 32];
+                resp[0..2].copy_from_slice(&0x0101u16.to_be_bytes());
+                resp[2..4].copy_from_slice(&12u16.to_be_bytes());
+                resp[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+                resp[8..20].copy_from_slice(&buf[8..20]);
+                resp[20..22].copy_from_slice(&0x0020u16.to_be_bytes());
+                resp[22..24].copy_from_slice(&8u16.to_be_bytes());
+                resp[24] = 0;
+                resp[25] = 0x01;
+                resp[26..28].copy_from_slice(&(43622u16 ^ 0x2112u16).to_be_bytes());
+                let xip = u32::from(Ipv4Addr::new(203, 0, 113, 100)) ^ 0x2112_A442u32;
+                resp[28..32].copy_from_slice(&xip.to_be_bytes());
+                let _ = stun_b.send_to(&resp, peer).await;
+            }
+        });
+
+        // Bound-but-silent UDP sockets for Org A's unreachable STUN policy.
+        let silent1 = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent2 = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let silent_urls = vec![
+            format!("stun:{}", silent1.local_addr().unwrap()),
+            format!("stun:{}", silent2.local_addr().unwrap()),
+        ];
+
+        let kp_a = WgKeypair::generate();
+        let kp_b = WgKeypair::generate();
+        let key_a = kp_a.secret.to_bytes();
+        let key_b = kp_b.secret.to_bytes();
+        let h_a = plane.attach(EngineHooks {
+            secret: kp_a.secret,
+            public: kp_a.public,
+            send: crate::overlay::wg::WgSender::new(),
+            disco_events: mpsc::channel(1).0,
+            direct_events: mpsc::channel(1).0,
+            tun_tx: mpsc::channel(1).0,
+        });
+        let h_b = plane.attach(EngineHooks {
+            secret: kp_b.secret,
+            public: kp_b.public,
+            send: crate::overlay::wg::WgSender::new(),
+            disco_events: mpsc::channel(1).0,
+            direct_events: mpsc::channel(1).0,
+            tun_tx: mpsc::channel(1).0,
+        });
+
+        // Org B establishes healthy STUN discovery & keepalive.
+        let url_b = format!("stun:{stun_b_addr}");
+        let shared_b = plane
+            .ensure_srflx(std::slice::from_ref(&url_b), &key_b)
+            .await;
+        assert_eq!(
+            shared_b.candidates,
+            vec!["203.0.113.100:43622".to_string()]
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let baseline_b = queries_b.load(Ordering::Relaxed);
+
+        // Start Org A's multi-second silent gather in the background, then immediately
+        // poke Org B's keepalive: Org B must complete its STUN query in milliseconds
+        // WHILE Org A's silent gather is still blocked waiting on silent targets!
+        let plane_for_a = plane.clone();
+        let urls_for_a = silent_urls.clone();
+        let gather_a = tokio::spawn(async move {
+            plane_for_a.ensure_srflx(&urls_for_a, &key_a).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            !gather_a.is_finished(),
+            "precondition: Org A's silent STUN gather is actively in flight"
+        );
+        let t0 = Instant::now();
+        plane.notify_regather();
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while queries_b.load(Ordering::Relaxed) <= baseline_b {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Org B's healthy STUN keepalive must not be blocked by Org A's silent gather");
+        assert!(
+            t0.elapsed() < Duration::from_millis(250),
+            "Org B keepalive query completed promptly despite Org A's concurrent silent gather"
+        );
+        assert!(
+            !gather_a.is_finished(),
+            "Org B completed WHILE Org A was still walking silent targets"
+        );
+
+        gather_a.abort();
+        drop((h_a, h_b, silent1, silent2));
+        stun_b_srv.abort();
     }
 }

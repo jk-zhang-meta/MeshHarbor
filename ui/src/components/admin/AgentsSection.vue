@@ -169,6 +169,9 @@
                 :client="clientFor(item)"
                 :node="nodeFor(item)"
                 :network-mounted="caps.has('network')"
+                :can-manage-agents="mayManageAgents"
+                :can-assign-zone="mayAssignZoneFor(item)"
+                :is-admin="isAdmin"
                 :update-busy="updateBusy === item.id"
                 :rotate-key-busy="rotateKeyBusy === item.id"
                 :update-blocked="updateBlockedText(agentFor(item))"
@@ -201,6 +204,37 @@
                 :title="$t('mh.dev.ephemeralTitle')"
               >
                 {{ $t('mh.dev.ephemeral') }}
+              </v-chip>
+              <v-chip
+                v-if="rowZone(item).hasZone"
+                size="x-small"
+                :color="rowZone(item).pinned ? 'primary' : 'secondary'"
+                variant="tonal"
+                class="ml-2"
+                :prepend-icon="rowZone(item).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
+                :title="
+                  rowZone(item).pinned
+                    ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(item).zoneLabel })
+                    : $t('mh.dev.zoneAutoTitle', { zone: rowZone(item).zoneLabel })
+                "
+                data-testid="device-zone-chip"
+                :data-zone-pinned="rowZone(item).pinned ? 'true' : 'false'"
+                @click="mayAssignZoneFor(item) && agentFor(item) ? openZoneDialog(item, agentFor(item)!) : undefined"
+              >
+                {{ rowZone(item).badgeText }}
+              </v-chip>
+              <v-chip
+                v-if="isAdmin && relayEntryFor(item)"
+                size="x-small"
+                color="info"
+                variant="tonal"
+                class="ml-2"
+                prepend-icon="mdi-swap-horizontal-circle-outline"
+                :title="$t('mh.dev.relayBadgeTitle')"
+                data-testid="device-relay-chip"
+                @click="agentFor(item) ? openPeerRelayPolicy(agentFor(item)!) : undefined"
+              >
+                {{ relayEntryFor(item)!.serving ? $t('mh.dev.relayServingBadge') : $t('mh.dev.relayBadge') }}
               </v-chip>
               <v-btn
                 :icon="copiedAgentId === item.id ? 'mdi-check' : 'mdi-content-copy'"
@@ -318,6 +352,34 @@
             <v-chip size="x-small" :prepend-icon="osIcon(item.os as any)" variant="tonal">
               {{ item.os }}
             </v-chip>
+          </template>
+          <template #item.location="{ item }">
+            <div v-if="rowLocation(item).hasAny" class="device-loc-cell" data-testid="device-location-cell">
+              <div class="device-loc-primary">
+                <span v-if="rowLocation(item).countryCode" class="geo-code-pill">
+                  {{ rowLocation(item).countryCode }}
+                </span>
+                <span class="text-caption font-weight-medium">
+                  {{ rowLocation(item).locationText || '—' }}
+                </span>
+              </div>
+              <div class="device-loc-ip text-caption text-medium-emphasis text-mono">
+                <span>{{ rowLocation(item).publicIp || '—' }}</span>
+                <v-btn
+                  v-if="rowLocation(item).publicIp"
+                  :icon="copiedAgentId === rowLocation(item).publicIp ? 'mdi-check' : 'mdi-content-copy'"
+                  size="x-small"
+                  variant="text"
+                  density="compact"
+                  :color="copiedAgentId === rowLocation(item).publicIp ? 'success' : undefined"
+                  class="ml-1 device-loc-copy"
+                  :aria-label="$t('mh.dev.copyIpFor', { name: deviceLabel(item) })"
+                  :title="copiedAgentId === rowLocation(item).publicIp ? $t('mh.dev.copied') : $t('mh.dev.copyIp')"
+                  @click="copyAgentId(rowLocation(item).publicIp)"
+                />
+              </div>
+            </div>
+            <span v-else class="text-caption text-medium-emphasis" data-testid="device-location-empty">—</span>
           </template>
           <template #item.overlay_ip="{ item }">
             <template v-if="item.overlay_ip">
@@ -594,6 +656,35 @@
                 >
                   {{ $t('mh.dev.ephemeral') }}
                 </v-chip>
+                <v-chip
+                  v-if="rowZone(item).hasZone"
+                  size="x-small"
+                  :color="rowZone(item).pinned ? 'primary' : 'secondary'"
+                  variant="tonal"
+                  :prepend-icon="rowZone(item).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
+                  :title="
+                    rowZone(item).pinned
+                      ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(item).zoneLabel })
+                      : $t('mh.dev.zoneAutoTitle', { zone: rowZone(item).zoneLabel })
+                  "
+                  data-testid="device-zone-chip"
+                  :data-zone-pinned="rowZone(item).pinned ? 'true' : 'false'"
+                  @click="mayAssignZoneFor(item) && agentFor(item) ? openZoneDialog(item, agentFor(item)!) : undefined"
+                >
+                  {{ rowZone(item).badgeText }}
+                </v-chip>
+                <v-chip
+                  v-if="isAdmin && relayEntryFor(item)"
+                  size="x-small"
+                  color="info"
+                  variant="tonal"
+                  prepend-icon="mdi-swap-horizontal-circle-outline"
+                  :title="$t('mh.dev.relayBadgeTitle')"
+                  data-testid="device-relay-chip"
+                  @click="agentFor(item) ? openPeerRelayPolicy(agentFor(item)!) : undefined"
+                >
+                  {{ relayEntryFor(item)!.serving ? $t('mh.dev.relayServingBadge') : $t('mh.dev.relayBadge') }}
+                </v-chip>
                 <template v-if="agentFor(item)">
                   <!-- FR-103 — only when the device's credential needs someone. -->
                   <v-chip
@@ -744,6 +835,20 @@
                   </v-expansion-panel-title>
                   <v-expansion-panel-text>
                     <dl class="device-card__facts text-caption">
+                      <template v-if="rowLocation(item).hasAny">
+                        <dt>{{ $t('mh.dev.col.location') }}</dt>
+                        <dd>
+                          <div class="d-flex align-center flex-wrap ga-1">
+                            <span v-if="rowLocation(item).countryCode" class="geo-code-pill">
+                              {{ rowLocation(item).countryCode }}
+                            </span>
+                            <span>{{ rowLocation(item).locationText || '—' }}</span>
+                          </div>
+                          <div v-if="rowLocation(item).publicIp" class="text-mono text-medium-emphasis">
+                            {{ rowLocation(item).publicIp }}
+                          </div>
+                        </dd>
+                      </template>
                       <template v-if="item.overlay_ip">
                         <dt>{{ $t('mh.dev.col.overlay') }}</dt>
                         <dd class="text-mono">
@@ -838,6 +943,9 @@
                   :client="clientFor(item)"
                   :node="nodeFor(item)"
                   :network-mounted="caps.has('network')"
+                  :can-manage-agents="mayManageAgents"
+                  :can-assign-zone="mayAssignZoneFor(item)"
+                  :is-admin="isAdmin"
                   :update-busy="updateBusy === item.id"
                   :rotate-key-busy="rotateKeyBusy === item.id"
                   :update-blocked="updateBlockedText(agentFor(item))"
@@ -1038,6 +1146,19 @@
     :tenant-id="tenantId"
     :agent="remoteConfigTarget"
     @saved="agentStore.fetchAgents(tenantId); fetchGrid()"
+  />
+  <DeviceZoneDialog
+    v-if="zoneDialogTarget"
+    v-model="zoneDialogOpen"
+    :tenant-id="tenantId"
+    :agent="zoneDialogTarget"
+    :row="zoneDialogRow"
+  />
+  <PeerRelayPolicyDialog
+    v-if="isAdmin && peerRelayTarget"
+    v-model="peerRelayDialogOpen"
+    :tenant-id="tenantId"
+    :agent="peerRelayTarget"
   />
 
   <!-- FR-40 — rotate-overlay-key confirmation -->
@@ -1361,6 +1482,8 @@ import SshPolicyDialog from './SshPolicyDialog.vue'
 import ExternalAccessDialog from './ExternalAccessDialog.vue'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import RemoteConfigDialog from './RemoteConfigDialog.vue'
+import DeviceZoneDialog from './DeviceZoneDialog.vue'
+import PeerRelayPolicyDialog from './PeerRelayPolicyDialog.vue'
 import EnrollmentDialog from '@/components/enroll/EnrollmentDialog.vue'
 import {
   useOverlayRoutesStore,
@@ -1374,6 +1497,11 @@ import {
 } from '@/stores/tunnelClients'
 import { useDeviceStore, type DeviceRow } from '@/stores/devices'
 import { useAuthStore } from '@/stores/auth'
+import { useTenantStore } from '@/stores/tenant'
+import { usePeerRelaysStore, type RelayDeviceView } from '@/stores/peerRelays'
+import { useNetworkZonesStore } from '@/stores/networkZones'
+import { formatDeviceLocation, formatDeviceZone } from '@/utils/deviceLocation'
+import { canManageAgents, canManageRelays } from '@/utils/permissions'
 import { useGridColumns } from '@/composables/useGridColumns'
 import {
   deviceLabel,
@@ -1400,6 +1528,15 @@ const deviceStore = useDeviceStore()
 // module, and a menu item that leads to a 404 is worse than none.
 const caps = useCapabilitiesStore()
 const auth = useAuthStore()
+const tenantStore = useTenantStore()
+const peerRelayStore = usePeerRelaysStore()
+const networkZonesStore = useNetworkZonesStore()
+const mayManageAgents = computed(() =>
+  canManageAgents(tenantStore.myPermissions, tenantStore.isOwner),
+)
+const isAdmin = computed(() =>
+  canManageRelays(tenantStore.myPermissions, tenantStore.isOwner),
+)
 // Declared before the grid state below — gridKind's initializer reads
 // route.query.
 const route = useRoute()
@@ -1408,9 +1545,9 @@ const router = useRouter()
 // ── Unified server-driven grid state ─────────────────────────────
 const gridSearch = ref('')
 const gridPage = ref(1)
-// Default 10 (operator, 2026-08-27): the devices page leads the product —
-// a screenful beats a scroll; the footer still offers 25/50/100.
-const gridPerPage = ref(10)
+// Default 50 so multi-region fleets (20+ devices) display on a single page;
+// the footer still offers 10/25/50/100.
+const gridPerPage = ref(50)
 const gridSort = ref<string | undefined>(undefined)
 const gridDir = ref<'asc' | 'desc' | undefined>(undefined)
 /** Kind radio: devices-only by default — 'both' widens to tunnel clients.
@@ -1454,6 +1591,7 @@ const deviceHeaders = computed(() => [
   { title: tr('mh.dev.col.kind'), key: 'kind', sortable: true },
   { title: tr('mh.dev.col.status'), key: 'status', sortable: true },
   { title: 'OS', key: 'os', sortable: true },
+  { title: tr('mh.dev.col.location'), key: 'location', sortable: false },
   { title: tr('mh.dev.col.overlay'), key: 'overlay_ip', sortable: true },
   { title: 'MagicDNS', key: 'magic_dns', sortable: true },
   { title: tr('mh.dev.col.tags'), key: 'tags', sortable: false },
@@ -1542,6 +1680,34 @@ function agentFor(row: DeviceRow): Agent | undefined {
   return row.kind === 'agent' ? agentById.value.get(row.id) : undefined
 }
 
+function rowLocation(row: DeviceRow) {
+  return formatDeviceLocation(row, agentFor(row))
+}
+
+function rowZone(row: DeviceRow) {
+  const a = agentFor(row)
+  const id = row.effective_zone_id || a?.effective_zone_id || row.pinned_zone_id || a?.pinned_zone_id
+  return formatDeviceZone(row, a, networkZonesStore.zoneById(id)?.name ?? null)
+}
+
+function relayEntryFor(row: DeviceRow): RelayDeviceView | undefined {
+  if (row.kind !== 'agent') return undefined
+  const entry = peerRelayStore.relayForAgent(row.id)
+  if (entry) return entry
+  const a = agentFor(row)
+  if (a?.peer_relay_policy?.serve) {
+    return {
+      id: a.id,
+      name: a.name,
+      status: a.status,
+      serving: Boolean(a.capabilities?.rpc?.includes('relay-server')),
+      static_endpoints: a.peer_relay_policy.static_endpoints ?? [],
+      approved_backbone_edges: a.peer_relay_policy.approved_backbone_edges ?? [],
+    }
+  }
+  return undefined
+}
+
 /** FR-106 — the "not updating" chip for a device, or `null`. Online is the
  *  reachability truth the presence column renders (`is_online`, patched live
  *  by `applyPresence`). */
@@ -1575,6 +1741,12 @@ function nodeFor(row: DeviceRow): OverlayNode | undefined {
   return row.kind === 'agent' ? nodeForAgent(row.id) : nodeForTunnelClient(row.id)
 }
 
+function mayAssignZoneFor(row: DeviceRow): boolean {
+  if (mayManageAgents.value) return true
+  const a = agentFor(row)
+  return Boolean(auth.user?.id) && (a?.owner_user_id === auth.user?.id || row.owner_user_id === auth.user?.id)
+}
+
 /** The one place a menu pick becomes a dialog or a request — the grid and the
  *  cards render the same `DeviceActionsMenu`, so they cannot offer different
  *  things for the same device. */
@@ -1602,6 +1774,8 @@ function onDeviceAction(row: DeviceRow, action: DeviceAction) {
     case 'ssh-policy': return openSshPolicy(a)
     case 'external-access': return openExternalAccess(a)
     case 'remote-config': return openRemoteConfig(a)
+    case 'zone-assignment': return mayAssignZoneFor(row) ? openZoneDialog(row, a) : undefined
+    case 'peer-relay-policy': return isAdmin.value ? openPeerRelayPolicy(a) : undefined
     case 'routes': return openRoutes(a)
     case 'delete': return confirmDelete(a)
   }
@@ -1610,7 +1784,15 @@ function onDeviceAction(row: DeviceRow, action: DeviceAction) {
 /** Whether a card has any chip to show — an empty chip row would only add
  *  padding. Mirrors the chip row's own conditions. */
 function cardHasChips(row: DeviceRow): boolean {
-  if (row.kind === 'tunnel_client' || row.ephemeral || (row.tags?.length ?? 0) > 0) return true
+  if (
+    row.kind === 'tunnel_client' ||
+    row.ephemeral ||
+    rowZone(row).hasZone ||
+    (isAdmin.value && !!relayEntryFor(row)) ||
+    (row.tags?.length ?? 0) > 0
+  ) {
+    return true
+  }
   const a = agentFor(row)
   if (!a) return false
   return !!(
@@ -2185,6 +2367,24 @@ function openRemoteConfig(a: Agent) {
   remoteConfigDialogOpen.value = true
 }
 
+const zoneDialogOpen = ref(false)
+const zoneDialogTarget = ref<Agent | null>(null)
+const zoneDialogRow = ref<DeviceRow | null>(null)
+
+function openZoneDialog(row: DeviceRow, a: Agent) {
+  zoneDialogRow.value = row
+  zoneDialogTarget.value = a
+  zoneDialogOpen.value = true
+}
+
+const peerRelayDialogOpen = ref(false)
+const peerRelayTarget = ref<Agent | null>(null)
+
+function openPeerRelayPolicy(a: Agent) {
+  peerRelayTarget.value = a
+  peerRelayDialogOpen.value = true
+}
+
 /** The row badge for a device with a pending / refused / failed config
  *  request. `null` for `applied` and for devices nobody is managing — a
  *  steady-state chip on every row is noise that trains people to stop reading
@@ -2606,6 +2806,8 @@ function loadNetworkStores(tid: string) {
   if (!caps.has('network')) return
   overlayStore.fetchNodes(tid)
   tunnelClientStore.fetchTunnelClients(tid)
+  void peerRelayStore.fetchSettings(tid)
+  void networkZonesStore.fetchZones(tid)
 }
 
 onMounted(() => {
@@ -2743,5 +2945,38 @@ watch(() => props.tenantId, (tid) => {
 
 .companion-skew {
   color: rgb(var(--v-theme-warning));
+}
+
+.device-loc-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+.device-loc-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.device-loc-ip {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.2;
+}
+.device-loc-copy {
+  height: 18px !important;
+  width: 18px !important;
+}
+.geo-code-pill {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.4px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
 }
 </style>

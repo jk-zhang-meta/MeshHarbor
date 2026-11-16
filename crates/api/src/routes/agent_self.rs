@@ -59,9 +59,15 @@ struct Visibility {
     /// The ACL posture the shaping ran under (`unknown` without the module).
     acl_mode: &'static str,
     self_node_id: Option<String>,
+    self_temporary: bool,
     /// The visible node rows, each with the netmap's `reachable` verdict —
     /// the caller's own node included. `None` = the caller alone.
     nodes: Option<Vec<(OverlayNode, bool)>>,
+    /// All active nodes in the tenant's overlay network (read-only), used to
+    /// attach overlay metadata for permanent account inventory even when the
+    /// caller has no live node yet or ACL/isolation withholds data-plane reachability.
+    all_network_nodes: Vec<OverlayNode>,
+    zones: Vec<meshharbor_remote_control::models::NetworkZone>,
 }
 
 impl Visibility {
@@ -70,7 +76,10 @@ impl Visibility {
             overlay,
             acl_mode,
             self_node_id: None,
+            self_temporary: false,
             nodes: None,
+            all_network_nodes: Vec::new(),
+            zones: Vec::new(),
         }
     }
 
@@ -123,22 +132,43 @@ async fn visibility(state: &AppState, agent: &HostAuthAgent) -> Result<Visibilit
         return Ok(Visibility::self_only("no_network", "off"));
     };
     let stored_mode = acl_mode_str(net.acl_mode);
+    let zones = net.zones;
     let Some(network_id) = net.id else {
-        return Ok(Visibility::self_only("no_network", stored_mode));
+        return Ok(Visibility {
+            zones,
+            ..Visibility::self_only("no_network", stored_mode)
+        });
     };
-    // The device's own LIVE node — a released (tombstoned) node is gone for
-    // good; the device comes back with a fresh lease when it rejoins.
-    let Some(self_node) = current_node(network, NodeIdentity::Agent(agent.agent_id)).await else {
-        return Ok(Visibility::self_only("no_node", stored_mode));
-    };
-    let Some(self_id) = self_node.id else {
-        return Ok(Visibility::self_only("no_node", stored_mode));
-    };
-
     let all = network
         .overlay_nodes
         .list_active_in_network(agent.tenant_id, network_id)
         .await?;
+    // The device's own LIVE node — a released (tombstoned) node is gone for
+    // good; the device comes back with a fresh lease when it rejoins.
+    let Some(self_node) = current_node(network, NodeIdentity::Agent(agent.agent_id)).await else {
+        return Ok(Visibility {
+            overlay: "no_node",
+            acl_mode: stored_mode,
+            self_node_id: None,
+            self_temporary: false,
+            nodes: None,
+            all_network_nodes: all,
+            zones,
+        });
+    };
+    let Some(self_id) = self_node.id else {
+        return Ok(Visibility {
+            overlay: "no_node",
+            acl_mode: stored_mode,
+            self_node_id: None,
+            self_temporary: self_node.temporary.is_some(),
+            nodes: None,
+            all_network_nodes: all,
+            zones,
+        });
+    };
+    let self_temporary = self_node.temporary.is_some();
+
     let reach = reachability(network, &all).await;
     let shaped = shape_full_netmap(network, &self_node, &all, &reach).await;
     // Only the id and the presence verdict leave the shaped peers.
@@ -148,6 +178,7 @@ async fn visibility(state: &AppState, agent: &HostAuthAgent) -> Result<Visibilit
         .map(|p| (p.node_id, p.reachable))
         .collect();
     let self_reachable = reach.get(&self_id).copied().unwrap_or(true);
+    let all_network_nodes = all.clone();
     let mut nodes: Vec<(OverlayNode, bool)> = all
         .into_iter()
         .filter_map(|n| {
@@ -166,14 +197,26 @@ async fn visibility(state: &AppState, agent: &HostAuthAgent) -> Result<Visibilit
         overlay: "ok",
         acl_mode: acl_mode_str(shaped.acl.mode),
         self_node_id: Some(self_id.to_hex()),
+        self_temporary,
         nodes: Some(nodes),
+        all_network_nodes,
+        zones,
     })
 }
 
-/// A build without the network module has no mesh: every device sees itself.
+/// A build without the network module has no mesh: every device sees itself,
+/// while still resolving any persisted Logical Network Zones on the tenant.
 #[cfg(not(feature = "network"))]
-async fn visibility(_state: &AppState, _agent: &HostAuthAgent) -> Result<Visibility, ApiError> {
-    Ok(Visibility::self_only("unavailable", "unknown"))
+async fn visibility(state: &AppState, agent: &HostAuthAgent) -> Result<Visibility, ApiError> {
+    let zones = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db)
+        .find_for_tenant(agent.tenant_id)
+        .await?
+        .map(|n| n.zones)
+        .unwrap_or_default();
+    Ok(Visibility {
+        zones,
+        ..Visibility::self_only("unavailable", "unknown")
+    })
 }
 
 /// GET /api/agent/self/devices — the devices this device may see (itself
@@ -201,8 +244,28 @@ pub async fn devices(
     let vis = visibility(&state, &agent).await?;
     let reach_by_node = vis.reachable_by_node();
 
-    // Nodes are attached to rows ONLY from the visible set; a peer the netmap
-    // withholds gets no overlay columns and — below — no row.
+    // Always consult existing temporary-invitation records regardless of
+    // `native_device_invite_enabled` (disabling new invitations must never
+    // upgrade an already-enrolled guest to permanent inventory access), and
+    // propagate any DB lookup error (`?`) so failures fail closed.
+    let temporary_agents =
+        meshharbor_mod_fleet::device_invite::temporary_agent_ids_in_tenant(fleet, tid).await?;
+    let temporary_caller = vis.self_temporary
+        || temporary_agents.contains(&agent.agent_id)
+        || meshharbor_mod_fleet::device_invite::grant_for_agent(fleet, agent.agent_id)
+            .await?
+            .is_some();
+    // Permanent account devices see 100% of active non-temporary permanent
+    // devices in `/api/agent/self/devices` regardless of `acl_mode` or
+    // `business_isolation` (`reachable: bool` continues to reflect actual
+    // shaped netmap reachability, and `/api/agent/self/mesh` remains strictly
+    // shaped). Temporary invited guests remain strictly isolated.
+    let full_account_inventory = !temporary_caller;
+
+    // Nodes are attached from the shaped set; for a permanent account device,
+    // also attach non-temporary active nodes so all permanent inventory rows
+    // surface accurate overlay IPs / MagicDNS names while `reachable` stays
+    // `false` for peers withheld from the shaped netmap.
     let mut node_by_agent = HashMap::new();
     let mut node_by_client = HashMap::new();
     for (n, _) in vis.nodes.iter().flatten() {
@@ -212,6 +275,22 @@ pub async fn devices(
             }
             NodeRef::TunnelClient { tunnel_client_id } => {
                 node_by_client.insert(*tunnel_client_id, n);
+            }
+        }
+    }
+    if full_account_inventory {
+        for n in &vis.all_network_nodes {
+            if n.temporary.is_some() {
+                continue;
+            }
+            match &n.node_ref {
+                NodeRef::Agent { agent_id } if !temporary_agents.contains(agent_id) => {
+                    node_by_agent.entry(*agent_id).or_insert(n);
+                }
+                NodeRef::TunnelClient { tunnel_client_id } => {
+                    node_by_client.entry(*tunnel_client_id).or_insert(n);
+                }
+                _ => {}
             }
         }
     }
@@ -231,22 +310,34 @@ pub async fn devices(
     let fresh = agent_presence_batch(fleet, &agents).await;
     let mut rows: Vec<DeviceRow> = Vec::with_capacity(agents.len());
     for a in agents {
-        let redis_fresh = a.id.map(|i| fresh.contains(&i)).unwrap_or(false);
+        let aid = a.id;
+        let is_temp_peer = aid.is_some_and(|id| temporary_agents.contains(&id));
+        let redis_fresh = aid.map(|i| fresh.contains(&i)).unwrap_or(false);
         let (presence, is_online) = derive_agent_presence(fleet, &a, redis_fresh);
-        let node = a.id.and_then(|i| node_by_agent.get(&i).copied());
-        rows.push(agent_row(
+        let node = aid.and_then(|i| node_by_agent.get(&i).copied());
+        let row = agent_row(
+            fleet,
+            &vis.zones,
             a,
             presence,
             is_online,
             node,
             dns_domain.as_deref(),
-        ));
+        );
+        let in_netmap = row
+            .overlay_node_id
+            .as_deref()
+            .is_some_and(|id| reach_by_node.contains_key(id));
+        if row.id == self_hex || in_netmap || (full_account_inventory && !is_temp_peer) {
+            rows.push(row);
+        }
     }
     // Tunnel clients exist only as overlay nodes from a device's point of
-    // view: listed when the module is here and one of them is visible.
+    // view: listed when the module is here and one of them is visible (or part
+    // of permanent account inventory).
     #[cfg(feature = "network")]
     {
-        if !node_by_client.is_empty()
+        if should_query_tunnel_clients(full_account_inventory, !node_by_client.is_empty())
             && let Some(network) = state.modules.network.as_ref()
         {
             for c in network
@@ -255,25 +346,35 @@ pub async fn devices(
                 .await?
             {
                 let node = c.id.and_then(|i| node_by_client.get(&i).copied());
-                rows.push(client_row(c, node, dns_domain.as_deref()));
+                let row = client_row(&state.core.geoip, &vis.zones, c, node, dns_domain.as_deref());
+                let in_netmap = row
+                    .overlay_node_id
+                    .as_deref()
+                    .is_some_and(|id| reach_by_node.contains_key(id));
+                if should_include_tunnel_client(in_netmap, full_account_inventory) {
+                    rows.push(row);
+                }
             }
         }
     }
 
-    // The visibility rule, applied to rows: the caller itself, or a device
-    // whose overlay node the netmap carries.
-    rows.retain(|r| {
-        r.id == self_hex
-            || r.overlay_node_id
-                .as_deref()
-                .is_some_and(|id| reach_by_node.contains_key(id))
-    });
     // Blank what the device must not see BEFORE the search runs.
+    // Blank public_ip, geo, and zone fields ONLY when the calling agent is a temporary guest device.
     for r in &mut rows {
         r.machine_id.clear();
         r.owner_user_id.clear();
         r.overlay_public_key = None;
         r.overlay_key_epoch = None;
+        if temporary_caller {
+            r.public_ip = None;
+            r.country_code = None;
+            r.country = None;
+            r.region = None;
+            r.city = None;
+            r.pinned_zone_id = None;
+            r.effective_zone_id = None;
+            r.effective_zone_name = None;
+        }
     }
 
     let page = apply_query(rows, &query);
@@ -315,6 +416,14 @@ pub async fn devices(
                 rdp_port: r.rdp_port,
                 rdp_cert_sha256: r.rdp_cert_sha256,
                 rdp_mesh_reachable: r.rdp_mesh_reachable,
+                public_ip: r.public_ip,
+                country_code: r.country_code,
+                country: r.country,
+                region: r.region,
+                city: r.city,
+                pinned_zone_id: r.pinned_zone_id,
+                effective_zone_id: r.effective_zone_id,
+                effective_zone_name: r.effective_zone_name,
             }
         })
         .collect();
@@ -362,4 +471,35 @@ pub async fn mesh(
     payload["overlay"] = serde_json::Value::String(vis.overlay.to_string());
     payload["acl_mode"] = serde_json::Value::String(vis.acl_mode.to_string());
     Ok(Json(payload))
+}
+
+#[cfg(any(feature = "network", test))]
+fn should_query_tunnel_clients(full_account_inventory: bool, has_client_nodes: bool) -> bool {
+    full_account_inventory || has_client_nodes
+}
+
+#[cfg(any(feature = "network", test))]
+fn should_include_tunnel_client(in_netmap: bool, full_account_inventory: bool) -> bool {
+    in_netmap || full_account_inventory
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permanent_inventory_includes_nodeless_tunnel_clients_while_guest_requires_netmap() {
+        // Permanent caller (`full_account_inventory == true`) queries and includes
+        // active tunnel clients even when `node_by_client` is empty and `in_netmap == false`.
+        assert!(should_query_tunnel_clients(true, false));
+        assert!(should_include_tunnel_client(false, true));
+        assert!(should_include_tunnel_client(true, true));
+
+        // Temporary guest (`full_account_inventory == false`) skips querying when no
+        // client nodes exist and includes ONLY shaped `in_netmap` tunnel clients.
+        assert!(!should_query_tunnel_clients(false, false));
+        assert!(should_query_tunnel_clients(false, true));
+        assert!(!should_include_tunnel_client(false, false));
+        assert!(should_include_tunnel_client(true, false));
+    }
 }

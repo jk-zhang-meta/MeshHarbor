@@ -236,9 +236,11 @@ fn grade(
     d_sent: u32,
     d_lost: u32,
     d_rtt: Option<u32>,
+    d_jitter: Option<u32>,
     r_sent: u32,
     r_lost: u32,
     r_rtt: Option<u32>,
+    r_jitter: Option<u32>,
 ) -> Grade {
     if window_ms < 8_000 || d_sent < 8 || r_sent < 3 {
         return Grade::Thin;
@@ -249,10 +251,21 @@ fn grade(
     let Some(d) = d_rtt.map(u64::from).filter(|_| d_lost < d_sent) else {
         return Grade::Dead;
     };
-    if d_lost * 100 >= d_sent * 20 || (d * 100 >= r * 135 && d >= r + 100) {
+    let dj = u64::from(d_jitter.unwrap_or(0).min(10_000));
+    let rj = u64::from(r_jitter.unwrap_or(0).min(10_000));
+    let d_eff = d + 2 * dj;
+    let r_eff = r + 2 * rj;
+    let severe_jitter = dj >= 50 && rj <= 10 && d_eff * 100 >= r_eff * 135 && d_eff >= r_eff + 60;
+    if d_lost * 100 >= d_sent * 20
+        || (d_eff * 100 >= r_eff * 135 && d_eff >= r_eff + 100 && rj <= dj.max(10))
+        || severe_jitter
+    {
         return Grade::Worse;
     }
-    if d_lost * 100 <= d_sent * 5 && (d * 100 <= r * 115 || d <= r + 30) {
+    if d_lost * 100 <= d_sent * 5
+        && dj <= 20
+        && (d_eff * 100 <= r_eff * 115 || d_eff <= r_eff + 30)
+    {
         return Grade::Healthy;
     }
     Grade::Between
@@ -474,9 +487,11 @@ async fn prefer_relay_phases() {
                     direct_sent,
                     direct_lost,
                     direct_rtt_ms,
+                    direct_jitter_ms,
                     relay_sent,
                     relay_lost,
                     relay_rtt_ms,
+                    relay_jitter_ms,
                     on_relay,
                     ..
                 } = msg
@@ -489,9 +504,11 @@ async fn prefer_relay_phases() {
                     direct_sent,
                     direct_lost,
                     direct_rtt_ms,
+                    direct_jitter_ms,
                     relay_sent,
                     relay_lost,
                     relay_rtt_ms,
+                    relay_jitter_ms,
                 );
                 let verdict = judge.lock().unwrap().note(who, g, on_relay, Instant::now());
                 let Some(ms) = verdict else { continue };

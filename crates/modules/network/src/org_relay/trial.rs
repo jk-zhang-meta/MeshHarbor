@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::watch;
 
-pub(super) const MAX_TRIALS: usize = 128;
-const MAX_TENANT_TRIALS: usize = 16;
+pub(super) const MAX_TRIALS: usize = 512;
+const MAX_TENANT_TRIALS: usize = 64;
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_FRESH: Duration = Duration::from_secs(10);
 const RETURN_TOMBSTONE: Duration = Duration::from_secs(120);
@@ -60,6 +60,7 @@ struct Trial {
     request_id: u64,
     requester_node_id: ObjectId,
     requester_at_exit: bool,
+    bound_upgrade: bool,
     relay_zones: Vec<BusinessZone>,
     member_zones: Option<[BusinessZone; 2]>,
     session: OrgRelaySession,
@@ -129,6 +130,24 @@ impl PathTrials {
             })
             .collect()
     }
+    pub(super) fn has_member_leg(
+        &self,
+        reporter: ObjectId,
+        relay_node_id: ObjectId,
+        endpoint: &String,
+    ) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .any(|t| {
+                !returned(t)
+                    && t.session.member_index(reporter).is_some_and(|i| {
+                        let leg = t.session.member_leg(i);
+                        leg.relay_node_id == relay_node_id && leg.endpoints.contains(endpoint)
+                    })
+            })
+    }
     pub(super) fn revoke_where(
         &self,
         state: &NetworkState,
@@ -190,12 +209,45 @@ pub(super) fn revoke_backbone_node(
         .collect()
 }
 
+pub(super) fn session_has_removed_edge(
+    session: &OrgRelaySession,
+    source: ObjectId,
+    approved: &[meshharbor_remote_control::models::PeerRelayBackboneEdge],
+    zones_configured: bool,
+    allow_all_approved: bool,
+) -> bool {
+    if !zones_configured {
+        return session.has_removed_line_edge_with_mode(source, approved, allow_all_approved);
+    }
+    let mut prev = session.relay_agent_id;
+    for hop in &session.hops {
+        if prev == source {
+            let explicit_for_target = approved
+                .iter()
+                .find(|e| ObjectId::parse_str(&e.relay_agent_id).ok() == Some(hop.relay_agent_id));
+            if let Some(e) = explicit_for_target
+                && (e.endpoint != hop.private_endpoint
+                    || (hop.requires_cross_border_approval
+                        && !e.cross_border
+                        && !allow_all_approved))
+            {
+                return true;
+            }
+        }
+        prev = hop.relay_agent_id;
+    }
+    false
+}
+
 pub(super) fn revoke_removed_backbone_edges(
     state: &NetworkState,
     tenant: ObjectId,
     source: ObjectId,
     approved: &[meshharbor_remote_control::models::PeerRelayBackboneEdge],
+    zones_configured: bool,
 ) -> Vec<PeerRelayAuditEvent> {
+    let allow_all_approved = zones_configured
+        && crate::business_isolation::mode(state) != crate::business_isolation::Mode::Enforce;
     let mut entries = state
         .org_relay
         .trials
@@ -208,18 +260,40 @@ pub(super) fn revoke_removed_backbone_edges(
             if returned(t) || t.session.tenant_id != tenant {
                 return false;
             }
-            if t.session.has_removed_line_edge(source, approved) {
+            if session_has_removed_edge(
+                &t.session,
+                source,
+                approved,
+                zones_configured,
+                allow_all_approved,
+            ) {
                 return true;
             }
             if t.session.relay_agent_id != source {
                 return false;
             }
             t.backbone.as_ref().is_some_and(|path| {
-                !approved.iter().any(|e| {
-                    ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
-                        && e.endpoint == path.private_endpoint
-                        && (!path.requires_cross_border_approval || e.cross_border)
-                })
+                if zones_configured {
+                    let explicit_for_target = approved.iter().find(|e| {
+                        ObjectId::parse_str(&e.relay_agent_id).ok()
+                            == Some(path.exit.relay_agent_id)
+                    });
+                    explicit_for_target.is_some_and(|e| {
+                        e.endpoint != path.private_endpoint
+                            || (path.requires_cross_border_approval
+                                && !e.cross_border
+                                && !allow_all_approved)
+                    })
+                } else {
+                    !approved.iter().any(|e| {
+                        ObjectId::parse_str(&e.relay_agent_id).ok()
+                            == Some(path.exit.relay_agent_id)
+                            && e.endpoint == path.private_endpoint
+                            && (!path.requires_cross_border_approval
+                                || e.cross_border
+                                || allow_all_approved)
+                    })
+                }
             })
         })
         .map(|t| t.id)
@@ -476,6 +550,14 @@ async fn audit_trial_path(
     true
 }
 
+fn plan_relay_zones(plan: &path_trial_plan::TrialPathPlan) -> Vec<BusinessZone> {
+    if plan.relays.iter().all(|r| r.zone.is_some()) {
+        plan.relays.iter().filter_map(|r| r.zone).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// The plan is freshly authorized; a retained trial must still match every
 /// node, edge, member and zone before any idempotent reply can reuse it.
 fn trial_matches_plan(
@@ -487,12 +569,7 @@ fn trial_matches_plan(
     if trial.backbone.is_some()
         || trial.requester_at_exit != plan.requester_at_exit
         || trial_path(trial) != plan.path
-        || trial.relay_zones
-            != plan
-                .relays
-                .iter()
-                .map(|relay| relay.zone)
-                .collect::<Vec<_>>()
+        || trial.relay_zones != plan_relay_zones(plan)
         || trial.member_zones != plan.member_zones
     {
         return false;
@@ -632,6 +709,90 @@ async fn trial_pair_evidence(
     facts.unwrap_or(TrialPairEvidence::Unknown)
 }
 
+pub(super) fn has_active_or_incumbent_trial(
+    org_relay: &OrgRelayState,
+    pair: &str,
+    now: Instant,
+) -> bool {
+    org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .any(|t| {
+            t.session.pair_key == pair
+                && t.session.expires_at > now
+                && !returned(t)
+        })
+}
+
+/// Finalized, non-returned trial sessions eligible for a subsequent make-before-break
+/// `start_bound_upgrade` pass (excluding pairs that already have another in-flight
+/// trial or return).
+pub(super) fn finalized_incumbent_sessions(
+    org_relay: &OrgRelayState,
+    tenant_id: ObjectId,
+    reporter_id: ObjectId,
+    is_backbone_relay: bool,
+    now: Instant,
+) -> Vec<OrgRelaySession> {
+    let entries = org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut busy_pairs = HashSet::new();
+    for t in entries.values() {
+        if t.session.tenant_id == tenant_id
+            && (!matches!(t.phase, Phase::Finalized)
+                || t.return_state
+                    .as_ref()
+                    .is_some_and(|r| !matches!(r.phase, ReturnPhase::Finalized)))
+        {
+            busy_pairs.insert(t.session.pair_key.clone());
+        }
+    }
+    entries
+        .values()
+        .filter(|t| {
+            t.session.tenant_id == tenant_id
+                && matches!(t.phase, Phase::Finalized)
+                && !returned(t)
+                && t.backbone.is_none()
+                && t.session.expires_at > now
+                && !busy_pairs.contains(&t.session.pair_key)
+                && (is_backbone_relay || t.session.member_index(reporter_id).is_some())
+        })
+        .map(|t| {
+            let mut s = t.session.clone();
+            // A finalized trial has already completed bilateral bind + handshake.
+            s.bind_by = s.bind_by.min(now);
+            s
+        })
+        .collect()
+}
+
+pub(super) async fn start_bound_upgrade(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    path: meshharbor_remote_control::signaling::RelayPathWire,
+    requester_at_exit: bool,
+) -> Option<ObjectId> {
+    let request_id = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
+    request_inner(
+        state,
+        requester.clone(),
+        peer.clone(),
+        request_id,
+        path,
+        requester_at_exit,
+        true,
+    )
+    .await
+}
+
 pub async fn request(
     state: &NetworkState,
     ident: NodeIdentity,
@@ -650,33 +811,73 @@ pub async fn request(
     let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else {
         return;
     };
+    let _ = request_inner(
+        state,
+        requester,
+        peer,
+        request_id,
+        path,
+        requester_at_exit,
+        false,
+    )
+    .await;
+}
+
+async fn request_inner(
+    state: &NetworkState,
+    requester: OverlayNode,
+    peer: OverlayNode,
+    request_id: u64,
+    path: meshharbor_remote_control::signaling::RelayPathWire,
+    requester_at_exit: bool,
+    bound_upgrade: bool,
+) -> Option<ObjectId> {
+    let req_id = requester.id?;
+    let peer_id = peer.id?;
     if req_id == peer_id
         || peer.tenant_id != requester.tenant_id
         || peer.deleted_at.is_some()
         || !peer.is_key_authorized_at(bson::DateTime::now())
     {
-        return;
+        return None;
     }
     if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On {
-        return;
+        return None;
     }
     if !state.org_relay.join_extras(req_id).supports_path_trial_v1
         || !state.org_relay.join_extras(peer_id).supports_path_trial_v1
     {
-        return;
+        return None;
+    }
+    // Direct->relay trials cannot start when direct transport is forbidden for the pair;
+    // bound-relay upgrade trials replace an already-authorized OrgRelay session.
+    if !bound_upgrade {
+        let mode = crate::business_isolation::mode(state);
+        let topo = crate::business_isolation::lines(state, mode, requester.tenant_id).await;
+        if crate::business_isolation::refuses_parties_with_lines(
+            state,
+            &topo,
+            (requester.tenant_id, &requester.node_ref),
+            (peer.tenant_id, &peer.node_ref),
+            "path_trial_request",
+        )
+        .await
+        {
+            return None;
+        }
     }
     // Read exact target evidence before any new candidate is created. This is
     // not a distributed authorization fence and does not affect fallback.
     if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed {
-        return;
+        return None;
     }
     let nodes = path.relay_node_ids();
     if nodes.len() == 1 && requester_at_exit {
-        return;
+        return None;
     }
     let pair = pair_key(req_id, peer_id);
     if crate::overlay::org_fallback_forced_derp(state, &pair) {
-        return;
+        return None;
     }
     let existing = {
         let entries = state
@@ -709,31 +910,31 @@ pub async fn request(
         )
         .await
         else {
-            return;
+            return None;
         };
         if !audit_trial_path(state, &requester, &peer, &first).await {
-            return;
+            return None;
         }
         let Ok(fresh) =
             path_trial_plan::reauthorize_reusing(state, &requester, &peer, &first, reuse).await
         else {
-            return;
+            return None;
         };
         epoch = fresh.epoch;
         candidate = Some(fresh);
     } else {
         let auth_epoch = state.org_relay.eligibility_generation();
         let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else {
-            return;
+            return None;
         };
         let Ok(source) = try_overlay_source_of(state, &requester).await else {
-            return;
+            return None;
         };
         // T9-1 review — the peer's source is read only when the ACL enforces:
         // with it off, a failed lookup must not drop the request.
         if acl.enforcing() {
             let Ok(peer_source) = try_overlay_source_of(state, &peer).await else {
-                return;
+                return None;
             };
             if !crate::overlay::pair_any_direction_visible(
                 &acl.policies,
@@ -742,7 +943,7 @@ pub async fn request(
                 &peer,
                 &peer_source,
             ) {
-                return;
+                return None;
             }
         }
         let mut trial_diagnostic = TrialUnknownZoneDiagnostics::default();
@@ -756,10 +957,10 @@ pub async fn request(
         )
         .await
         else {
-            return;
+            return None;
         };
         let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else {
-            return;
+            return None;
         };
         epoch = auth_epoch;
         single_plan = Some(plan);
@@ -767,7 +968,7 @@ pub async fn request(
     // Candidate preparation awaits DB work; re-read the target roles/link.
     // A policy mutation can still race this read and the later claim/delivery.
     if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed {
-        return;
+        return None;
     }
     let tenant = requester.tenant_id;
     let (trial_id, cancel_rx) = {
@@ -780,7 +981,7 @@ pub async fn request(
         if epoch != state.org_relay.eligibility_generation()
             || crate::overlay::org_fallback_forced_derp(state, &pair)
         {
-            return;
+            return None;
         }
         let reserved: Vec<Vec<u32>> = nodes
             .iter()
@@ -896,9 +1097,10 @@ pub async fn request(
                     request_id,
                     requester_node_id: req_id,
                     requester_at_exit,
+                    bound_upgrade,
                     relay_zones: candidate
                         .as_ref()
-                        .map(|p| p.relays.iter().map(|r| r.zone).collect())
+                        .map(plan_relay_zones)
                         .unwrap_or_default(),
                     member_zones: candidate.as_ref().and_then(|p| p.member_zones),
                     session,
@@ -912,7 +1114,7 @@ pub async fn request(
             },
         );
         let id = match admission {
-            Admission::Rejected => return,
+            Admission::Rejected => return None,
             Admission::Existing(id) => {
                 let existing = &entries[&id];
                 if trial_path(existing) != path
@@ -921,7 +1123,7 @@ pub async fn request(
                         .as_ref()
                         .is_some_and(|plan| !trial_matches_plan(existing, plan, &requester, &peer))
                 {
-                    return;
+                    return None;
                 }
                 if let Some(plan) = single_plan.as_ref() {
                     let session = &existing.session;
@@ -942,7 +1144,7 @@ pub async fn request(
                                 })
                             });
                     if !matches {
-                        return;
+                        return None;
                     }
                 }
                 let message = if let Some(r) = existing.return_state.as_ref() {
@@ -953,17 +1155,19 @@ pub async fn request(
                     ServerMsg::OverlayPathTrialCommit { trial_id: id }
                 } else {
                     let Some(index) = existing.session.member_index(req_id) else {
-                        return;
+                        return None;
                     };
                     start_message(existing, index)
                 };
                 push_control(state, &requester.node_ref, message);
-                return;
+                return Some(id);
             }
             Admission::Created(id) => id,
         };
         let trial = &entries[&id];
-        let Some(delivery) = delivery else { return };
+        let Some(delivery) = delivery else {
+            return None;
+        };
         let mut sent = true;
         for (target, message) in delivery.relays.into_iter().chain(delivery.bridges) {
             if epoch != state.org_relay.eligibility_generation()
@@ -990,7 +1194,7 @@ pub async fn request(
             if let Some(trial) = entries.remove(&id) {
                 notify_abort(state, &trial);
             }
-            return;
+            return None;
         }
         (id, trial.cancel.subscribe())
     };
@@ -998,6 +1202,7 @@ pub async fn request(
     tokio::spawn(async move {
         timer(state, trial_id, cancel_rx).await;
     });
+    Some(trial_id)
 }
 
 enum Admission {
@@ -1292,6 +1497,7 @@ pub async fn update(
             // Duplicate Ready during Committing must not clear an existing ACK.
             if finalize {
                 trial.phase = Phase::Finalized;
+                trial.session.bind_by = trial.session.bind_by.min(now);
             } else if !matches!(trial.phase, Phase::Committing(_)) {
                 trial.phase = Phase::Committing([false, false]);
             }
@@ -1310,8 +1516,16 @@ pub async fn update(
             // dropped Finalize must retain that decision, never send Abort
             // after one participant legitimately released its old peer.
 
+            let mut finalized_bound_pair = None;
             if finalize {
                 let pair = entries[&id].session.pair_key.clone();
+                if entries[&id].bound_upgrade {
+                    finalized_bound_pair = Some((
+                        pair.clone(),
+                        entries[&id].session.vni,
+                        entries[&id].session.generation,
+                    ));
+                }
                 let old: Vec<_> = entries
                     .values()
                     .filter(|t| {
@@ -1325,6 +1539,22 @@ pub async fn update(
                     if let Some(old) = entries.remove(&old_id) {
                         notify_abort(state, &old);
                     }
+                }
+            }
+            drop(entries);
+            if let Some((pair, keep_vni, keep_gen)) = finalized_bound_pair {
+                let events = super::revoke_matching_sync(state, "bound_session_upgraded", |s| {
+                    s.pair_key == pair && !(s.vni == keep_vni && s.generation == keep_gen)
+                });
+                if !events.is_empty() {
+                    let audit = state.peer_relay_audit.clone();
+                    tokio::spawn(async move {
+                        for event in events {
+                            let _ =
+                                tokio::time::timeout(Duration::from_secs(3), audit.record(event))
+                                    .await;
+                        }
+                    });
                 }
             }
         }
@@ -1420,12 +1650,69 @@ pub async fn return_update(
         return;
     };
     let Some(node_id) = node.id else { return };
+    // Residual P1 #1: recheck current direct transport permission before
+    // admitting or advancing any return-to-direct transition.
+    let direct_check_inputs = {
+        let entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries.get(&id).map(|t| {
+            (
+                t.session.tenant_id,
+                t.session.members[0].party.node_ref.clone(),
+                t.session.members[1].party.node_ref.clone(),
+                t.bound_upgrade,
+            )
+        })
+    };
+    let Some((trial_tid, m0_ref, m1_ref, bound_upgrade)) = direct_check_inputs else {
+        return;
+    };
+    let direct_forbidden = if bound_upgrade {
+        true
+    } else if !matches!(update, PathTrialReturnUpdate::Abort) {
+        let mode = crate::business_isolation::mode(state);
+        let topo = crate::business_isolation::lines(state, mode, trial_tid).await;
+        crate::business_isolation::refuses_parties_with_lines(
+            state,
+            &topo,
+            (trial_tid, &m0_ref),
+            (trial_tid, &m1_ref),
+            "path_trial_return",
+        )
+        .await
+    } else {
+        false
+    };
     let mut entries = state
         .org_relay
         .trials
         .entries
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    if direct_forbidden {
+        if let Some(trial) = entries.get_mut(&id) {
+            if trial.return_state.is_some() && !returned(trial) {
+                cancel_return(state, trial);
+            } else {
+                if trial.return_ids.len() < MAX_RETURN_ATTEMPTS {
+                    trial.return_ids.insert(return_id);
+                }
+                push_members(
+                    state,
+                    trial,
+                    ServerMsg::OverlayPathTrialReturnAbort {
+                        trial_id: id,
+                        return_id,
+                    },
+                );
+            }
+        }
+        return;
+    }
     if epoch != state.org_relay.eligibility_generation() {
         return;
     }
@@ -1539,6 +1826,132 @@ pub async fn return_update(
         None => {}
     }
     trial.cancel.send_replace(false);
+}
+
+/// Live Logical-Network-Zone reconciliation for both single-hop and multi-hop
+/// `PathTrial`s: revokes trials whose gateway/edge constraints no longer fit,
+/// and aborts any active return-to-direct or direct-incumbent preparation when
+/// the pair becomes `backbone_only`.
+pub(super) async fn recheck_network_zone_trials(
+    state: &NetworkState,
+    tenant_id: Option<ObjectId>,
+    identity_filter: Option<ObjectId>,
+    reason: &str,
+) -> bool {
+    let snapshots: Vec<(ObjectId, OrgRelaySession, bool, bool, bool)> = {
+        let entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries
+            .values()
+            .filter(|t| {
+                !returned(t)
+                    && tenant_id.is_none_or(|tid| t.session.tenant_id == tid)
+                    && identity_filter.is_none_or(|ident| {
+                        t.session.involves_identity(ident)
+                            || t.backbone
+                                .as_ref()
+                                .is_some_and(|b| b.exit.involves_identity(ident))
+                    })
+            })
+            .map(|t| {
+                let mut check_session = t.session.clone();
+                if check_session.hops.is_empty()
+                    && let Some(b) = t.backbone.as_ref()
+                {
+                    check_session.hops.push(LineLeg {
+                        relay: b.exit.relay.clone(),
+                        relay_agent_id: b.exit.relay_agent_id,
+                        vni: b.exit.vni,
+                        generation: b.exit.generation,
+                        endpoints: b.exit.endpoints.clone(),
+                        private_endpoint: b.private_endpoint.clone(),
+                        requires_cross_border_approval: b.requires_cross_border_approval,
+                        bridge_id: t.id,
+                        bridge_secrets: [String::new(), String::new()],
+                    });
+                }
+                (
+                    t.id,
+                    check_session,
+                    t.bound_upgrade,
+                    matches!(t.phase, Phase::Finalized),
+                    t.return_state.is_some(),
+                )
+            })
+            .collect()
+    };
+    if snapshots.is_empty() {
+        return true;
+    }
+    let mut all_certain = true;
+    let mut events = Vec::new();
+    for (id, session, bound_upgrade, is_finalized, has_return) in snapshots {
+        let mode = crate::business_isolation::mode(state);
+        let topo = crate::business_isolation::lines(state, mode, session.tenant_id).await;
+        if topo.restricted_read_failed {
+            all_certain = false;
+            continue;
+        }
+        let zone_decision = super::session_zone::check(state, &session).await;
+        let session_invalid = match zone_decision {
+            super::session_zone::Decision::Fits => false,
+            super::session_zone::Decision::Uncertain { retryable } => {
+                if retryable {
+                    all_certain = false;
+                }
+                continue;
+            }
+            super::session_zone::Decision::Invalid => true,
+        };
+        let direct_forbidden = topo.has_network_zones()
+            && topo
+                .network_zones
+                .refs_require_backbone_only(
+                    state,
+                    session.tenant_id,
+                    &session.members[0].party.node_ref,
+                    &session.members[1].party.node_ref,
+                )
+                .await;
+        if !session_invalid && !direct_forbidden {
+            continue;
+        }
+        let mut entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let matches_snap = entries.get(&id).is_some_and(|t| {
+            !returned(t)
+                && t.session.vni == session.vni
+                && t.session.generation == session.generation
+        });
+        if !matches_snap {
+            continue;
+        }
+        if session_invalid || (direct_forbidden && !bound_upgrade && !is_finalized) {
+            if let Some(removed) = entries.remove(&id) {
+                notify_abort(state, &removed);
+                events.push(revoke_event(&removed, reason));
+            }
+        } else if direct_forbidden && has_return {
+            if let Some(trial) = entries.get_mut(&id) {
+                cancel_return(state, trial);
+            }
+        }
+    }
+    if !events.is_empty() {
+        for event in events {
+            let _ = tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                .await;
+        }
+    }
+    all_certain
 }
 
 fn expire_tick(state: &NetworkState, id: ObjectId) -> Option<Duration> {
@@ -1655,6 +2068,7 @@ mod tests {
             request_id,
             requester_node_id: requester,
             requester_at_exit: false,
+            bound_upgrade: false,
             relay_zones: Vec::new(),
             member_zones: None,
             phase: Phase::Preparing([None, None]),
@@ -2256,5 +2670,200 @@ mod tests {
             advance_return(&mut phase, 0, PathTrialReturnUpdate::Abort, now),
             Some(Err(()))
         ));
+    }
+
+    #[test]
+    fn sequential_bound_upgrades_r0_to_r1_to_r2_reoptimize_and_retire_superseded_winner() {
+        use meshharbor_remote_control::signaling::RelayProbeTargetWire;
+
+        let state = OrgRelayState::new();
+        let tenant = ObjectId::new();
+        let (a, b) = (ObjectId::new(), ObjectId::new());
+        let (r0, r1, r2) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let pair = pair_key(a, b);
+        let now = Instant::now();
+
+        let offers = [
+            RelayProbeTargetWire {
+                relay_node_id: r0,
+                endpoints: vec!["198.51.100.10:3478".into()],
+            },
+            RelayProbeTargetWire {
+                relay_node_id: r1,
+                endpoints: vec!["198.51.100.11:3478".into()],
+            },
+            RelayProbeTargetWire {
+                relay_node_id: r2,
+                endpoints: vec!["198.51.100.12:3478".into()],
+            },
+        ];
+        state.offer_probes(a, &offers);
+        state.offer_probes(b, &offers);
+        for member in [a, b] {
+            assert!(state.record_probe_with_sla(
+                member,
+                r0,
+                "198.51.100.10:3478".into(),
+                true,
+                Some(100),
+                Some(0),
+                Some(0),
+            ));
+            assert!(state.record_probe_with_sla(
+                member,
+                r1,
+                "198.51.100.11:3478".into(),
+                true,
+                Some(50),
+                Some(0),
+                Some(0),
+            ));
+        }
+
+        // Step 1: Bound ordinary session on R0 (200 ms round-trip sum).
+        let mut s_r0 = fixture_trial(tenant, a, b, r0, 1, 10, 1).session;
+        s_r0.bind_by = now - Duration::from_secs(1);
+        state.sessions.insert(pair.clone(), s_r0.clone());
+        assert!(!has_active_or_incumbent_trial(&state, &pair, now));
+        let rank_r0 = path_trial_plan::incumbent_session_sla_rank(&state, &s_r0, now);
+        let rank_r1 = {
+            let (_, eff, _, _, _, _, _) = sla_rank_key(&state, a, b, r1, 0, now);
+            (0, eff)
+        };
+        assert_eq!(rank_r0, (0, 200));
+        assert!(path_trial_plan::bound_upgrade_clearly_better(rank_r1, rank_r0));
+
+        // Step 2: Admit and finalize Trial 1 (R0 -> R1).
+        let t1_id = {
+            let mut entries = state.trials.entries.lock().unwrap();
+            let Admission::Created(id) = admit_trial(
+                &state,
+                &mut entries,
+                &[r1],
+                &pair,
+                tenant,
+                a,
+                100,
+                0,
+                0,
+                || {
+                    let mut t = fixture_trial(tenant, a, b, r1, 100, 11, 2);
+                    t.bound_upgrade = true;
+                    Some(t)
+                },
+            ) else {
+                panic!("R0 -> R1 upgrade trial must be admitted");
+            };
+            let t1 = entries.get_mut(&id).unwrap();
+            assert!(advance(&mut t1.phase, 0, PathTrialUpdate::Ready, now).is_none());
+            assert_eq!(
+                advance(&mut t1.phase, 1, PathTrialUpdate::Ready, now),
+                Some(Ok(false))
+            );
+            t1.phase = Phase::Committing([false, false]);
+            assert!(advance(&mut t1.phase, 0, PathTrialUpdate::Committed, now).is_none());
+            assert_eq!(
+                advance(&mut t1.phase, 1, PathTrialUpdate::Committed, now),
+                Some(Ok(true))
+            );
+            t1.phase = Phase::Finalized;
+            t1.session.bind_by = t1.session.bind_by.min(now);
+            id
+        };
+        state.sessions.remove(&pair);
+        assert!(has_active_or_incumbent_trial(&state, &pair, now));
+        assert_eq!(state.sessions_on_relay(r1), 1);
+
+        // Step 3: After R0 -> R1 finalizes, R1 is surfaced as the reoptimizable incumbent!
+        let incumbents = finalized_incumbent_sessions(&state, tenant, a, false, now);
+        assert_eq!(incumbents.len(), 1);
+        assert_eq!(incumbents[0].relay.node_id, r1);
+
+        // R2 comes online at 25 ms per leg (50 ms total vs R1's 100 ms -> 50% & 50 ms faster).
+        for member in [a, b] {
+            assert!(state.record_probe_with_sla(
+                member,
+                r2,
+                "198.51.100.12:3478".into(),
+                true,
+                Some(25),
+                Some(0),
+                Some(0),
+            ));
+        }
+        let rank_incumbent_r1 =
+            path_trial_plan::incumbent_session_sla_rank(&state, &incumbents[0], now);
+        let rank_r2 = {
+            let (_, eff, _, _, _, _, _) = sla_rank_key(&state, a, b, r2, 0, now);
+            (0, eff)
+        };
+        assert_eq!(rank_incumbent_r1, (0, 100));
+        assert_eq!(rank_r2, (0, 50));
+        assert!(path_trial_plan::bound_upgrade_clearly_better(
+            rank_r2,
+            rank_incumbent_r1
+        ));
+
+        // Step 4: Admit Trial 2 (R1 -> R2) while Trial 1 is Finalized!
+        let t2_id = {
+            let mut entries = state.trials.entries.lock().unwrap();
+            let Admission::Created(id) = admit_trial(
+                &state,
+                &mut entries,
+                &[r2],
+                &pair,
+                tenant,
+                a,
+                101,
+                0,
+                0,
+                || {
+                    let mut t = fixture_trial(tenant, a, b, r2, 101, 12, 3);
+                    t.bound_upgrade = true;
+                    Some(t)
+                },
+            ) else {
+                panic!("R1 -> R2 upgrade trial must be admitted over Finalized R1");
+            };
+            // A third concurrent trial while Trial 2 is Preparing must be rejected.
+            assert!(matches!(
+                admit_trial(&state, &mut entries, &[r0], &pair, tenant, a, 102, 0, 0, || {
+                    Some(fixture_trial(tenant, a, b, r0, 102, 13, 4))
+                }),
+                Admission::Rejected
+            ));
+            id
+        };
+        assert!(
+            finalized_incumbent_sessions(&state, tenant, a, false, now).is_empty(),
+            "busy pair with in-flight R1->R2 trial must not spawn another upgrade"
+        );
+        // Make-before-break holds both R1 and R2 until Trial 2 finalizes.
+        assert_eq!(state.sessions_on_relay(r1), 1);
+        assert_eq!(state.sessions_on_relay(r2), 1);
+
+        // Step 5: Finalize Trial 2 -> retires superseded Trial 1 (R1) and promotes R2!
+        {
+            let mut entries = state.trials.entries.lock().unwrap();
+            let t2 = entries.get_mut(&t2_id).unwrap();
+            t2.phase = Phase::Finalized;
+            t2.session.bind_by = t2.session.bind_by.min(now);
+            let old: Vec<_> = entries
+                .values()
+                .filter(|t| {
+                    t.id != t2_id && t.session.pair_key == pair && matches!(t.phase, Phase::Finalized)
+                })
+                .map(|t| t.id)
+                .collect();
+            assert_eq!(old, vec![t1_id]);
+            for old_id in old {
+                entries.remove(&old_id);
+            }
+        }
+        assert_eq!(state.sessions_on_relay(r1), 0);
+        assert_eq!(state.sessions_on_relay(r2), 1);
+        let incumbents_after = finalized_incumbent_sessions(&state, tenant, a, false, now);
+        assert_eq!(incumbents_after.len(), 1);
+        assert_eq!(incumbents_after[0].relay.node_id, r2);
     }
 }

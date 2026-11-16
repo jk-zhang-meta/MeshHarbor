@@ -22,11 +22,11 @@ use tokio::{net::UdpSocket, sync::watch, task::JoinHandle};
 pub const MAX_CIPHERTEXT: usize =
     meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_CIPHERTEXT;
 pub const MAX_BRIDGE_LIFETIME: Duration = Duration::from_secs(3600);
-const MAX_LOCAL_CIDRS: usize = 16;
+const MAX_LOCAL_CIDRS: usize = meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES;
 const BIND_BUDGET: Duration = Duration::from_secs(5);
 
 /// A local refusal independent of the center's approval. Empty/default is off.
-#[derive(Default)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct LocalBackbonePolicy {
     pub enabled: bool,
     /// Explicit physical/private-underlay NIC, never selected from routing.
@@ -53,8 +53,142 @@ impl LocalBackbonePolicy {
             })
     }
 }
-/// Read only explicit native configuration. Missing or malformed CIDRs fail
-/// closed, including an omitted overlay exclusion inventory.
+
+static SERVER_AUTHORIZED_BACKBONE: std::sync::OnceLock<
+    std::sync::RwLock<Option<LocalBackbonePolicy>>,
+> = std::sync::OnceLock::new();
+
+fn server_authorized_slot() -> &'static std::sync::RwLock<Option<LocalBackbonePolicy>> {
+    SERVER_AUTHORIZED_BACKBONE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn has_manual_backbone_env_override() -> bool {
+    [
+        "RELAY_BACKBONE_ENABLED",
+        "BACKBONE_INTERFACE",
+        "BACKBONE_ALLOWED_CIDRS",
+        "BACKBONE_OVERLAY_CIDRS",
+    ]
+    .into_iter()
+    .any(|k| crate::env::node_env(k).is_some())
+}
+
+#[cfg(target_os = "linux")]
+fn default_overlay_exclusion_cidrs() -> Vec<IpNet> {
+    vec![
+        "100.64.0.0/10".parse().expect("valid IPv4 overlay CIDR"),
+        "fd72:6f6f:6d6c::/48"
+            .parse()
+            .expect("valid IPv6 overlay CIDR"),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn detect_egress_physical_interface(target: SocketAddr, overlay_cidrs: &[IpNet]) -> Option<String> {
+    let bind_addr: SocketAddr = if target.is_ipv4() {
+        ([0, 0, 0, 0], 0).into()
+    } else {
+        ([0u16; 8], 0).into()
+    };
+    let sock = std::net::UdpSocket::bind(bind_addr).ok()?;
+    sock.connect(target).ok()?;
+    let local_ip = sock.local_addr().ok()?.ip();
+    if overlay_cidrs.iter().any(|n| n.contains(&local_ip)) {
+        return None;
+    }
+    let ifaces = if_addrs::get_if_addrs().ok()?;
+    // Collect any interface that carries an overlay address so we never pick an
+    // overlay TUN interface even on a multi-address virtual adapter.
+    let overlay_ifaces: std::collections::HashSet<String> = ifaces
+        .iter()
+        .filter(|i| overlay_cidrs.iter().any(|n| n.contains(&i.ip())))
+        .map(|i| i.name.clone())
+        .collect();
+    for iface in ifaces {
+        if iface.is_loopback()
+            || !valid_interface(&iface.name)
+            || iface.name.starts_with("mh")
+            || iface.name.starts_with("tun")
+            || iface.name.starts_with("utun")
+            || overlay_ifaces.contains(&iface.name)
+            || std::path::Path::new(&format!("/sys/class/net/{}/tun_flags", iface.name)).exists()
+        {
+            continue;
+        }
+        if iface.ip() == local_ip {
+            let probe = std::net::UdpSocket::bind(bind_addr).ok()?;
+            if pin_interface(&socket2::SockRef::from(&probe), &iface.name).is_ok() {
+                return Some(iface.name);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub fn build_auto_local_policy_from_endpoints(endpoints: &[String]) -> Option<LocalBackbonePolicy> {
+    if endpoints.is_empty() {
+        return None;
+    }
+    let overlay_cidrs = default_overlay_exclusion_cidrs();
+    let mut allowed_cidrs: Vec<IpNet> = Vec::new();
+    let mut detected_iface: Option<String> = None;
+    for raw in endpoints.iter().take(MAX_LOCAL_CIDRS) {
+        let Ok(ep) = raw.parse::<SocketAddr>() else {
+            continue;
+        };
+        if ep.port() == 0 || !unicast(ep.ip()) || overlay_cidrs.iter().any(|n| n.contains(&ep.ip()))
+        {
+            continue;
+        }
+        if detected_iface.is_none() {
+            detected_iface = detect_egress_physical_interface(ep, &overlay_cidrs);
+        }
+        let host_net = match ep.ip() {
+            IpAddr::V4(v4) => IpNet::from(ipnet::Ipv4Net::new(v4, 32).ok()?),
+            IpAddr::V6(v6) => IpNet::from(ipnet::Ipv6Net::new(v6, 128).ok()?),
+        };
+        if !allowed_cidrs.contains(&host_net) {
+            allowed_cidrs.push(host_net);
+        }
+    }
+    let interface = detected_iface?;
+    if allowed_cidrs.is_empty() {
+        return None;
+    }
+    Some(LocalBackbonePolicy {
+        enabled: true,
+        interface,
+        allowed_cidrs,
+        overlay_cidrs,
+    })
+}
+
+/// Update the server-authorized runtime backbone policy from `PeerRelayServe`.
+/// Returns `true` when the effective [`configured_local_policy`] changed.
+pub fn set_runtime_server_backbone_endpoints(serve: bool, endpoints: &[String]) -> bool {
+    let before = configured_local_policy();
+    #[cfg(target_os = "linux")]
+    let next = if serve {
+        build_auto_local_policy_from_endpoints(endpoints)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let next: Option<LocalBackbonePolicy> = {
+        let _ = (serve, endpoints);
+        None
+    };
+    *server_authorized_slot()
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = next;
+    configured_local_policy() != before
+}
+
+/// Read explicit native configuration when any `RELAY_BACKBONE_*` / `BACKBONE_*`
+/// override is set; otherwise fall back on Linux to the server-authorized
+/// `PeerRelayServe` backbone endpoint policy. Missing or malformed manual
+/// CIDRs still fail closed.
 #[cfg(not(target_os = "linux"))]
 pub fn configured_local_policy() -> Option<LocalBackbonePolicy> {
     None
@@ -62,6 +196,12 @@ pub fn configured_local_policy() -> Option<LocalBackbonePolicy> {
 
 #[cfg(target_os = "linux")]
 pub fn configured_local_policy() -> Option<LocalBackbonePolicy> {
+    if !has_manual_backbone_env_override() {
+        return server_authorized_slot()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+    }
     if !crate::env::flag("RELAY_BACKBONE_ENABLED", false) {
         return None;
     }

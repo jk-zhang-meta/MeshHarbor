@@ -263,6 +263,7 @@ fn item_ids(page: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn item_node_ids(page: &Value) -> BTreeSet<String> {
     items(page)
         .iter()
@@ -502,7 +503,8 @@ async fn acl_off_lists_every_live_node_with_display_names_sorted_and_paged() {
 /// With the visibility filter removed from `routes/agent_self.rs` this test
 /// fails at the set-equality assertion (the PR body carries that run).
 #[tokio::test]
-async fn enforce_lists_exactly_the_netmap_and_never_a_withheld_peer() {
+async fn enforce_lists_full_permanent_inventory_with_accurate_reachability_while_temporary_stays_isolated()
+{
     let mut rig = Rig::up("self-enforce").await;
 
     set_acl_mode(&rig.app, &rig.seeded, "enforce").await;
@@ -514,45 +516,42 @@ async fn enforce_lists_exactly_the_netmap_and_never_a_withheld_peer() {
     assert_eq!(
         netmap_peers,
         BTreeSet::from([rig.b_node.clone()]),
-        "the grant lets A reach B and nothing else: {netmap}"
+        "the grant lets A reach B and nothing else on the wire netmap: {netmap}"
     );
 
+    // Permanent account device A still sees 100% of active permanent devices
+    // in `/api/agent/self/devices`, with `reachable = false` on withheld C!
     let (s, page) = get_devices(&rig.app, &rig.a_tok, "").await;
     assert_eq!(s, 200, "{page}");
     assert_eq!(page["acl_mode"], json!("enforce"));
     assert_eq!(page["overlay"], json!("ok"));
-    let mut expected_nodes = netmap_peers.clone();
-    expected_nodes.insert(rig.a_node.clone());
-    assert_eq!(
-        item_node_ids(&page),
-        expected_nodes,
-        "the listed nodes must be EXACTLY the netmap's peers ∪ self: {page}"
-    );
     assert_eq!(
         item_ids(&page),
-        BTreeSet::from([rig.a_id.clone(), rig.b_id.clone()]),
+        BTreeSet::from([rig.a_id.clone(), rig.b_id.clone(), rig.c_id.clone()]),
         "{page}"
     );
-    assert_eq!(page["total"], json!(2));
-    assert!(
-        items(&page).iter().all(|r| r["id"] != json!(rig.c_id)),
-        "C is withheld from A's netmap and must be withheld here: {page}"
+    assert_eq!(page["total"], json!(3));
+    assert_eq!(item(&page, &rig.a_id)["reachable"], json!(true));
+    assert_eq!(item(&page, &rig.b_id)["reachable"], json!(true));
+    assert_eq!(
+        item(&page, &rig.c_id)["reachable"],
+        json!(false),
+        "withheld C must report reachable=false under enforce: {page}"
     );
-    // The search cannot reach a withheld peer either.
-    let (_, page) = get_devices(&rig.app, &rig.a_tok, "?q=charlie").await;
-    assert_eq!(page["total"], json!(0), "{page}");
 
-    // C has no grant as a source: its netmap is empty, and so is its list
-    // beyond itself.
+    // C has no grant as a source: its netmap is empty, and in `/self/devices`
+    // only self is reachable while permanent peers A and B show `reachable = false`.
     let netmap = join(&mut rig.c, 3).await;
     assert!(netmap_peer_node_ids(&netmap).is_empty(), "{netmap}");
     let (_, page) = get_devices(&rig.app, &rig.c_tok, "").await;
-    assert_eq!(page["total"], json!(1), "{page}");
-    assert_eq!(item_ids(&page), BTreeSet::from([rig.c_id.clone()]));
+    assert_eq!(page["total"], json!(3), "{page}");
     assert_eq!(item(&page, &rig.c_id)["is_self"], json!(true));
+    assert_eq!(item(&page, &rig.c_id)["reachable"], json!(true));
+    assert_eq!(item(&page, &rig.a_id)["reachable"], json!(false));
+    assert_eq!(item(&page, &rig.b_id)["reachable"], json!(false));
     assert_eq!(page["self_node_id"], json!(rig.c_node));
 
-    // Back to `off`: everyone sees everyone, in both views.
+    // Back to `off`: everyone sees everyone, and all live peers report reachable=true.
     set_acl_mode(&rig.app, &rig.seeded, "off").await;
     let netmap = join(&mut rig.a, 1).await;
     assert_eq!(
@@ -562,12 +561,11 @@ async fn enforce_lists_exactly_the_netmap_and_never_a_withheld_peer() {
     let (_, page) = get_devices(&rig.app, &rig.a_tok, "").await;
     assert_eq!(page["acl_mode"], json!("off"));
     assert_eq!(page["total"], json!(3));
-    assert!(item_ids(&page).contains(&rig.c_id));
+    assert_eq!(item(&page, &rig.c_id)["reachable"], json!(true));
     let (_, page) = get_devices(&rig.app, &rig.c_tok, "").await;
     assert_eq!(page["total"], json!(3));
 
-    // `warn` observes and never withholds: C is present although the same
-    // grant would deny it under `enforce`.
+    // `warn` observes and never withholds: C is present and reachable.
     set_acl_mode(&rig.app, &rig.seeded, "warn").await;
     let netmap = join(&mut rig.a, 1).await;
     assert_eq!(
@@ -624,8 +622,10 @@ async fn a_node_less_device_lists_itself_and_never_creates_a_network() {
     assert!(mesh["edges"].as_array().unwrap().is_empty());
     assert_eq!(count().await, 0);
 
-    // Another device joins: the network now exists, but A still has no node
-    // — it lists itself alone, says `no_node`, and the row count holds.
+    // Another device joins: the network now exists, A still has `no_node`,
+    // the row count holds at 1, and under `acl_mode == "off"` BOTH account
+    // devices see 100% of the account's inventory (while `enforce` restricts
+    // visibility strictly to live netmap peers).
     let (b_id, b_tok) = enroll(&app, &seeded, "self-nonode-b", "bravo-box").await;
     let mut b = connect(&app, &b_tok, "bravo-box").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -635,23 +635,45 @@ async fn a_node_less_device_lists_itself_and_never_creates_a_network() {
     let (s, page) = get_devices(&app, &a_tok, "").await;
     assert_eq!(s, 200, "{page}");
     assert_eq!(page["overlay"], json!("no_node"));
-    assert_eq!(page["total"], json!(1), "{page}");
-    assert_eq!(item_ids(&page), BTreeSet::from([a_id.clone()]));
-    assert!(
-        items(&page).iter().all(|r| r["id"] != json!(b_id)),
-        "no node ⇒ no netmap ⇒ no peers: {page}"
+    assert_eq!(page["total"], json!(2), "{page}");
+    assert_eq!(
+        item_ids(&page),
+        BTreeSet::from([a_id.clone(), b_id.clone()])
     );
+    assert_eq!(item(&page, &b_id)["reachable"], json!(false));
     assert_eq!(
         count().await,
         1,
         "the GET must not create a second network row"
     );
 
-    // B, which has a node, sees itself only: A has no node to be seen by.
+    // B, which has a node, also sees offline/node-less A under `acl_mode == "off"`.
     let (_, page) = get_devices(&app, &b_tok, "").await;
     assert_eq!(page["overlay"], json!("ok"));
-    assert_eq!(page["total"], json!(1), "{page}");
-    assert_eq!(item_ids(&page), BTreeSet::from([b_id.clone()]));
+    assert_eq!(page["total"], json!(2), "{page}");
+    assert_eq!(
+        item_ids(&page),
+        BTreeSet::from([a_id.clone(), b_id.clone()])
+    );
+
+    // Under `acl_mode == "enforce"`, permanent account devices A and B still see
+    // full permanent inventory (`total == 2`) while reporting `reachable = false`
+    // for ungranted peers.
+    set_acl_mode(&app, &seeded, "enforce").await;
+    let (_, page) = get_devices(&app, &a_tok, "").await;
+    assert_eq!(page["total"], json!(2), "{page}");
+    assert_eq!(
+        item_ids(&page),
+        BTreeSet::from([a_id.clone(), b_id.clone()])
+    );
+    assert_eq!(item(&page, &b_id)["reachable"], json!(false));
+    let (_, page) = get_devices(&app, &b_tok, "").await;
+    assert_eq!(page["total"], json!(2), "{page}");
+    assert_eq!(
+        item_ids(&page),
+        BTreeSet::from([a_id.clone(), b_id.clone()])
+    );
+    assert_eq!(item(&page, &a_id)["reachable"], json!(false));
 }
 
 /// The leak control: no row a device receives carries the fleet record
@@ -1076,5 +1098,564 @@ async fn rdp_fields_are_omitted_unless_rdp_available_is_true_and_capabilities_ne
     assert!(
         !c_obj.contains_key("capabilities"),
         "capabilities leaked: {c_row}"
+    );
+}
+
+/// Build a 2-bit-tree MaxMind City MMDB (`dbip-city-lite.mmdb`) stamped 60s ago:
+/// - `0.0.0.0/1`   (`8.8.8.8`)      -> US / United States / Texas / Houston (`en` fallback)
+/// - `128.0.0.0/2` (`139.199.1.1`)  -> CN / 中国 / 广东省 / 深圳市 (`zh-CN` preferred)
+/// - `192.0.0.0/2` (`203.0.113.9`)  -> HK / 中国香港 / 香港 (`zh-CN` preferred, NonMainland)
+pub(crate) fn city_fixture_mmdb() -> Vec<u8> {
+    fn text(out: &mut Vec<u8>, v: &str) {
+        let len = v.len();
+        if len < 29 {
+            out.push(0x40 | len as u8);
+        } else {
+            out.push(0x40 | 29);
+            out.push((len - 29) as u8);
+        }
+        out.extend_from_slice(v.as_bytes());
+    }
+    fn map(out: &mut Vec<u8>, entries: u8) {
+        out.push(0xE0 | entries);
+    }
+    fn array(out: &mut Vec<u8>, entries: u8) {
+        out.extend_from_slice(&[entries, 11 - 7]);
+    }
+    fn uint16(out: &mut Vec<u8>, v: u16) {
+        out.push(0xA2);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn uint32(out: &mut Vec<u8>, v: u32) {
+        out.push(0xC4);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn uint64(out: &mut Vec<u8>, v: u64) {
+        out.extend_from_slice(&[0x08, 9 - 7]);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn names(out: &mut Vec<u8>, zh: Option<&str>, en: &str) {
+        map(out, if zh.is_some() { 2 } else { 1 });
+        if let Some(zh) = zh {
+            text(out, "zh-CN");
+            text(out, zh);
+        }
+        text(out, "en");
+        text(out, en);
+    }
+    fn city_record(
+        code: &str,
+        country_zh: Option<&str>,
+        country_en: &str,
+        region: Option<(Option<&str>, &str)>,
+        city: Option<(Option<&str>, &str)>,
+    ) -> Vec<u8> {
+        let mut d = Vec::new();
+        let fields = 1 + u8::from(region.is_some()) + u8::from(city.is_some());
+        map(&mut d, fields);
+        text(&mut d, "country");
+        map(&mut d, 2);
+        text(&mut d, "iso_code");
+        text(&mut d, code);
+        text(&mut d, "names");
+        names(&mut d, country_zh, country_en);
+        if let Some((r_zh, r_en)) = region {
+            text(&mut d, "subdivisions");
+            array(&mut d, 1);
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names(&mut d, r_zh, r_en);
+        }
+        if let Some((c_zh, c_en)) = city {
+            text(&mut d, "city");
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names(&mut d, c_zh, c_en);
+        }
+        d
+    }
+
+    let us = city_record(
+        "US",
+        None,
+        "United States",
+        Some((None, "Texas")),
+        Some((None, "Houston")),
+    );
+    let cn = city_record(
+        "CN",
+        Some("中国"),
+        "China",
+        Some((Some("广东省"), "Guangdong")),
+        Some((Some("深圳市"), "Shenzhen")),
+    );
+    let hk = city_record(
+        "HK",
+        Some("中国香港"),
+        "Hong Kong",
+        None,
+        Some((Some("香港"), "Hong Kong")),
+    );
+    let node_count: u32 = 2;
+    let to_us = node_count + 16;
+    let to_cn = to_us + us.len() as u32;
+    let to_hk = to_cn + cn.len() as u32;
+    let built = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 60;
+    let mut db = Vec::new();
+    // Node 0: bit 0 == 0 -> US data; bit 0 == 1 -> Node 1
+    db.extend_from_slice(&to_us.to_be_bytes()[1..]);
+    db.extend_from_slice(&1_u32.to_be_bytes()[1..]);
+    // Node 1: bit 1 == 0 (128.0.0.0/2) -> CN; bit 1 == 1 (192.0.0.0/2) -> HK
+    db.extend_from_slice(&to_cn.to_be_bytes()[1..]);
+    db.extend_from_slice(&to_hk.to_be_bytes()[1..]);
+    db.extend_from_slice(&[0; 16]);
+    db.extend_from_slice(&us);
+    db.extend_from_slice(&cn);
+    db.extend_from_slice(&hk);
+    db.extend_from_slice(b"\xab\xcd\xefMaxMind.com");
+    map(&mut db, 9);
+    text(&mut db, "binary_format_major_version");
+    uint16(&mut db, 2);
+    text(&mut db, "binary_format_minor_version");
+    uint16(&mut db, 0);
+    text(&mut db, "build_epoch");
+    uint64(&mut db, built);
+    text(&mut db, "database_type");
+    text(&mut db, "DBIP-City-Lite");
+    text(&mut db, "description");
+    map(&mut db, 1);
+    text(&mut db, "en");
+    text(&mut db, "city geoip fixture");
+    text(&mut db, "ip_version");
+    uint16(&mut db, 4);
+    text(&mut db, "languages");
+    array(&mut db, 2);
+    text(&mut db, "en");
+    text(&mut db, "zh-CN");
+    text(&mut db, "node_count");
+    uint32(&mut db, node_count);
+    text(&mut db, "record_size");
+    uint16(&mut db, 24);
+    db
+}
+
+#[tokio::test]
+async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_temporary_isolation()
+{
+    use crate::peer_relay_mint_tests::connect_from;
+
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb_path = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb_path, city_fixture_mmdb()).unwrap();
+    let mmdb_str = mmdb_path.to_str().unwrap().to_owned();
+
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.auth.native_device_invite_enabled = true;
+        s.stats.geoip_mmdb = Some(mmdb_str);
+    })
+    .await;
+    let seeded = app.seed_tenant("self-geo-inv").await;
+    let admin = &seeded.admin.access_token;
+
+    let (cn_id, cn_tok) = enroll(&app, &seeded, "self-geo-cn", "siat45").await;
+    let (us_id, us_tok) = enroll(&app, &seeded, "self-geo-us", "houston-host").await;
+    let (hk_id, hk_tok) = enroll(&app, &seeded, "self-geo-hk", "isvoro-hk").await;
+    let (guest_id, guest_tok) = enroll(&app, &seeded, "self-geo-guest", "temp-guest").await;
+
+    // CN device connects from Shenzhen IP (139.199.1.1), joins overlay, then goes OFFLINE.
+    let mut cn_ws = connect_from(&app, &cn_tok, &[], Some("139.199.1.1")).await;
+    join(&mut cn_ws, 11).await;
+    drop(cn_ws);
+
+    // HK device connects from Hong Kong IP (202.181.7.9) WITHOUT ever joining overlay, then goes OFFLINE.
+    let hk_ws = connect_from(&app, &hk_tok, &[], Some("202.181.7.9")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(hk_ws);
+
+    // US device stays online on Houston IP (8.8.8.8).
+    let mut us_ws = connect_from(&app, &us_tok, &[], Some("8.8.8.8")).await;
+    join(&mut us_ws, 12).await;
+
+    // Define Logical Network Zones and pin CN device to `"siat"`.
+    let resp = app
+        .auth_put(&tenant_url(&seeded, "/network-zones"), admin)
+        .json(&json!({
+            "zones": [
+                {
+                    "id": "cn",
+                    "name": "Mainland China",
+                    "auto_countries": ["CN"],
+                    "is_default": false,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "router_only"
+                },
+                {
+                    "id": "siat",
+                    "name": "SIAT Campus",
+                    "auto_countries": [],
+                    "is_default": false,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "router_only"
+                },
+                {
+                    "id": "hk",
+                    "name": "Hong Kong",
+                    "auto_countries": ["HK"],
+                    "is_default": false,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "direct_preferred"
+                },
+                {
+                    "id": "global",
+                    "name": "Global",
+                    "auto_countries": ["US"],
+                    "is_default": true,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "direct_preferred"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let resp = app
+        .auth_put(
+            &tenant_url(&seeded, &format!("/agent/{cn_id}/zone-assignment")),
+            admin,
+        )
+        .json(&json!({ "pinned_zone_id": "siat" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Convert `guest_id` into a temporary invitee device.
+    let resp = app
+        .auth_post(
+            &tenant_url(&seeded, &format!("/agent/{guest_id}/temporary")),
+            admin,
+        )
+        .json(&json!({ "duration_secs": 3600 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 1. Account device (`houston-host`) calling GET /api/agent/self/devices sees
+    //    ALL 3 permanent account devices (including offline `siat45` and node-less
+    //    offline `isvoro-hk`, while excluding unjoined temporary guest `temp-guest`)
+    //    with persisted public_ip + zh-CN/en City GeoIP + Logical Network Zone fields!
+    let (s, self_page) = get_devices(&app, &us_tok, "").await;
+    assert_eq!(s, 200, "{self_page}");
+    assert_eq!(self_page["total"], json!(3), "{self_page}");
+    let cn_self = item(&self_page, &cn_id);
+    assert_eq!(cn_self["public_ip"], json!("139.199.1.1"));
+    assert_eq!(cn_self["country_code"], json!("CN"));
+    assert_eq!(cn_self["country"], json!("中国"));
+    assert_eq!(cn_self["region"], json!("广东省"));
+    assert_eq!(cn_self["city"], json!("深圳市"));
+    assert_eq!(cn_self["pinned_zone_id"], json!("siat"));
+    assert_eq!(cn_self["effective_zone_id"], json!("siat"));
+    assert_eq!(cn_self["effective_zone_name"], json!("SIAT Campus"));
+
+    let hk_self = item(&self_page, &hk_id);
+    assert_eq!(hk_self["public_ip"], json!("202.181.7.9"));
+    assert_eq!(hk_self["country_code"], json!("HK"));
+    assert_eq!(hk_self["country"], json!("中国香港"));
+    assert_eq!(hk_self["city"], json!("香港"));
+    assert!(hk_self.get("pinned_zone_id").is_none(), "{hk_self}");
+    assert_eq!(hk_self["effective_zone_id"], json!("hk"));
+    assert_eq!(hk_self["effective_zone_name"], json!("Hong Kong"));
+
+    let us_self = item(&self_page, &us_id);
+    assert_eq!(us_self["public_ip"], json!("8.8.8.8"));
+    assert_eq!(us_self["country_code"], json!("US"));
+    assert_eq!(us_self["country"], json!("United States"));
+    assert_eq!(us_self["region"], json!("Texas"));
+    assert_eq!(us_self["city"], json!("Houston"));
+    assert!(us_self.get("pinned_zone_id").is_none(), "{us_self}");
+    assert_eq!(us_self["effective_zone_id"], json!("global"));
+    assert_eq!(us_self["effective_zone_name"], json!("Global"));
+
+    // 2. Web UI endpoints `GET /api/tenant/{tid}/device` (`DeviceRow`) and
+    //    `GET /api/tenant/{tid}/agent` (`AgentResponse`) expose identical zone + GeoIP fields.
+    let dev_resp: Value = app
+        .auth_get(&tenant_url(&seeded, "/device"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cn_dev = dev_resp["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(cn_id))
+        .expect("cn device row");
+    assert_eq!(cn_dev["public_ip"], json!("139.199.1.1"));
+    assert_eq!(cn_dev["country_code"], json!("CN"));
+    assert_eq!(cn_dev["country"], json!("中国"));
+    assert_eq!(cn_dev["region"], json!("广东省"));
+    assert_eq!(cn_dev["city"], json!("深圳市"));
+    assert_eq!(cn_dev["pinned_zone_id"], json!("siat"));
+    assert_eq!(cn_dev["effective_zone_id"], json!("siat"));
+    assert_eq!(cn_dev["effective_zone_name"], json!("SIAT Campus"));
+
+    let ag_resp: Value = app
+        .auth_get(&tenant_url(&seeded, "/agent"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cn_ag = ag_resp["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == json!(cn_id))
+        .expect("cn agent row");
+    assert_eq!(cn_ag["public_ip"], json!("139.199.1.1"));
+    assert_eq!(cn_ag["country_code"], json!("CN"));
+    assert_eq!(cn_ag["country"], json!("中国"));
+    assert_eq!(cn_ag["region"], json!("广东省"));
+    assert_eq!(cn_ag["city"], json!("深圳市"));
+    assert_eq!(cn_ag["pinned_zone_id"], json!("siat"));
+    assert_eq!(cn_ag["effective_zone_id"], json!("siat"));
+    assert_eq!(cn_ag["effective_zone_name"], json!("SIAT Campus"));
+
+    // 3. Temporary guest device (`guest_tok`, node-less) retains strict isolation:
+    //    it does NOT receive the full tenant inventory and public_ip/geo/zone fields are blanked!
+    let guest_ws = connect_from(&app, &guest_tok, &[], Some("8.8.8.8")).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (s, guest_page) = get_devices(&app, &guest_tok, "").await;
+    assert_eq!(s, 200, "{guest_page}");
+    assert_eq!(guest_page["total"], json!(1), "{guest_page}");
+    let g_row = item(&guest_page, &guest_id);
+    for key in [
+        "public_ip",
+        "country_code",
+        "country",
+        "region",
+        "city",
+        "pinned_zone_id",
+        "effective_zone_id",
+        "effective_zone_name",
+    ] {
+        assert!(
+            g_row.get(key).is_none(),
+            "temporary caller must not receive {key}: {g_row}"
+        );
+    }
+    let (_, q_zone) = get_devices(&app, &guest_tok, "?q=global").await;
+    assert_eq!(q_zone["total"], json!(0), "temporary caller search must not probe zone: {q_zone}");
+    drop(guest_ws);
+    drop(us_ws);
+}
+
+#[tokio::test]
+async fn temporary_guest_without_node_stays_isolated_when_invitations_disabled_and_fails_closed_on_corrupt_invite()
+{
+    let geo_dir = tempfile::tempdir().unwrap();
+    let mmdb_path = geo_dir.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb_path, city_fixture_mmdb()).unwrap();
+    let mmdb_str = mmdb_path.to_str().unwrap().to_owned();
+
+    // `native_device_invite_enabled = false`, `business_isolation = "off"`, ACL `off`!
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.auth.native_device_invite_enabled = false;
+        s.stats.geoip_mmdb = Some(mmdb_str);
+    })
+    .await;
+    let seeded = app.seed_tenant("self-inv-disabled").await;
+    let tid = bson::oid::ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let admin_uid = bson::oid::ObjectId::parse_str(&seeded.admin.id).unwrap();
+
+    let (perm_id, perm_tok) = enroll(&app, &seeded, "perm-mach-1", "perm-host").await;
+    let (guest_id, guest_tok) = enroll(&app, &seeded, "guest-mach-1", "guest-host").await;
+
+    // Permanent device connects from Houston IP (8.8.8.8) and joins overlay.
+    let mut perm_ws =
+        crate::peer_relay_mint_tests::connect_from(&app, &perm_tok, &[], Some("8.8.8.8")).await;
+    join(&mut perm_ws, 71).await;
+
+    // Bind `guest_id` as an already-enrolled temporary invitee (with NO overlay node!).
+    let guest_oid = bson::oid::ObjectId::parse_str(&guest_id).unwrap();
+    let guest_row = app
+        .state
+        .fleet()
+        .agents
+        .base
+        .find_by_id(guest_oid)
+        .await
+        .unwrap();
+    meshharbor_mod_fleet::device_invite::create_bound(
+        app.state.fleet(),
+        tid,
+        admin_uid,
+        &guest_row,
+        3600,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+
+    // Guest connects from Shenzhen IP (139.199.1.1) WITHOUT joining overlay (`no_node`).
+    let guest_ws =
+        crate::peer_relay_mint_tests::connect_from(&app, &guest_tok, &[], Some("139.199.1.1"))
+            .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // 1. Even with `native_device_invite_enabled = false` and no overlay node,
+    //    temporary guest sees ONLY itself (never permanent `perm_id`) and has
+    //    `public_ip` / GeoIP blanked!
+    let (s, guest_page) = get_devices(&app, &guest_tok, "").await;
+    assert_eq!(s, 200, "{guest_page}");
+    assert_eq!(guest_page["overlay"], json!("no_node"));
+    assert_eq!(guest_page["total"], json!(1), "{guest_page}");
+    let g_row = item(&guest_page, &guest_id);
+    assert!(
+        guest_page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["id"] != json!(perm_id)),
+        "temporary invitee must never see permanent account inventory: {guest_page}"
+    );
+    for key in ["public_ip", "country_code", "country", "region", "city"] {
+        assert!(
+            g_row.get(key).is_none(),
+            "temporary invitee must have {key} blanked: {g_row}"
+        );
+    }
+
+    // 2. Permanent caller also excludes the temporary guest even when invitations are disabled.
+    let (s, perm_page) = get_devices(&app, &perm_tok, "").await;
+    assert_eq!(s, 200, "{perm_page}");
+    assert_eq!(perm_page["total"], json!(1), "{perm_page}");
+    assert_eq!(item(&perm_page, &perm_id)["public_ip"], json!("8.8.8.8"));
+
+    // 3. Corrupt `agent_id` in `device_invites` -> temporary lookup error MUST fail closed (5xx),
+    //    never defaulting `self_temporary = false`!
+    app.db
+        .collection::<bson::Document>("device_invites")
+        .update_many(
+            bson::doc! { "tenant_id": tid },
+            bson::doc! { "$set": { "agent_id": "corrupted-non-oid" } },
+        )
+        .await
+        .unwrap();
+    let (err_status, err_body) = get_devices(&app, &guest_tok, "").await;
+    assert!(
+        err_status >= 500,
+        "failed temporary-status lookup must fail closed (got {err_status}: {err_body})"
+    );
+
+    drop(guest_ws);
+    drop(perm_ws);
+}
+
+#[tokio::test]
+async fn permanent_caller_lists_nodeless_tunnel_clients_while_temporary_guest_hides_them() {
+    let app = TestApp::spawn_with_settings(|s| {
+        s.auth.native_device_invite_enabled = true;
+    })
+    .await;
+    let seeded = app.seed_tenant("self-nodeless-tc").await;
+    let admin = &seeded.admin.access_token;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+
+    let (perm_id, perm_tok) = enroll(&app, &seeded, "self-tc-perm", "perm-workstation").await;
+    let (guest_id, guest_tok) = enroll(&app, &seeded, "self-tc-guest", "guest-laptop").await;
+
+    // Enroll a permanent tunnel client WITHOUT ever creating an OverlayNode or OverlayNetwork!
+    let tc_et: Value = app
+        .auth_post(&tenant_url(&seeded, "/tunnel-client/enroll-token"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_enrolled: Value = app
+        .client
+        .post(app.url("/api/tunnel-client/enroll"))
+        .json(&json!({
+            "enrollment_token": tc_et["enrollment_token"].as_str().unwrap(),
+            "machine_id": "self-tc-only-m1",
+            "machine_name": "nodeless-tunnel-box",
+            "os": "macos",
+            "client_version": "0.4.166",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_id = tc_enrolled["tunnel_client_id"]
+        .as_str()
+        .expect("tunnel_client_id")
+        .to_string();
+
+    // Mark `guest_id` as a temporary guest device.
+    let resp = app
+        .auth_post(
+            &tenant_url(&seeded, &format!("/agent/{guest_id}/temporary")),
+            admin,
+        )
+        .json(&json!({ "duration_secs": 3600 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 1. Permanent caller sees BOTH `perm_id` AND the node-less permanent `tunnel_client` (`tc_id`),
+    //    even on a virgin tenant where `node_by_client` is empty (`overlay: "no_network"`),
+    //    and `GET /api/agent/self/devices` creates ZERO `overlay_networks` documents!
+    let (s, perm_page) = get_devices(&app, &perm_tok, "").await;
+    assert_eq!(s, 200, "{perm_page}");
+    assert_eq!(perm_page["overlay"], json!("no_network"));
+    assert_eq!(
+        item_ids(&perm_page),
+        BTreeSet::from([perm_id.clone(), tc_id.clone()]),
+        "permanent caller must see node-less permanent tunnel client: {perm_page}"
+    );
+    let tc_row = item(&perm_page, &tc_id);
+    assert_eq!(tc_row["kind"], json!("tunnel_client"));
+    assert_eq!(tc_row["name"], json!("nodeless-tunnel-box"));
+    assert_eq!(tc_row["reachable"], json!(false));
+    assert!(tc_row.get("overlay_node_id").is_none());
+    assert!(tc_row.get("overlay_ip").is_none());
+    assert_eq!(
+        app.db
+            .collection::<bson::Document>("overlay_networks")
+            .count_documents(doc! { "tenant_id": tid })
+            .await
+            .unwrap(),
+        0,
+        "GET /api/agent/self/devices must not allocate an overlay_networks row"
+    );
+
+    // 2. Temporary guest caller (`guest_tok`) sees ONLY itself (`guest_id`), hiding the node-less tunnel client!
+    let (s, guest_page) = get_devices(&app, &guest_tok, "").await;
+    assert_eq!(s, 200, "{guest_page}");
+    assert_eq!(
+        item_ids(&guest_page),
+        BTreeSet::from([guest_id]),
+        "temporary guest must never see non-netmap permanent tunnel clients: {guest_page}"
     );
 }

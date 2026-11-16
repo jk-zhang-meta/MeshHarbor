@@ -2295,6 +2295,8 @@ impl RelayCoordinator {
                     endpoint: death.endpoint.to_string(),
                     reachable: false,
                     rtt_ms: None,
+                    jitter_ms: None,
+                    loss_permille: None,
                 })
             )
             .await,
@@ -2630,6 +2632,26 @@ impl RelayCoordinator {
         // fast-commits it again: exactly the instant re-establishment the
         // standing leg exists for. A leg that actually died goes LOST on the
         // probe path and `set_warm_leg(None)` closes the fast path.
+        if self.warm_committed == Some(*node_id) {
+            self.warm_committed = None;
+        }
+    }
+
+    /// Clear any pending or active non-backbone (TURN / SingleRelay / DERP)
+    /// coordination state for a peer that requires `backbone_only`, preserving
+    /// any live `org_sessions` / `org_binding` and unanswered `pending` request
+    /// (`ice.is_none()`) that drives server-side backbone minting.
+    pub(crate) fn clear_non_backbone_state(&mut self, node_id: &ObjectId) {
+        if self.pending.get(node_id).is_some_and(|p| p.ice.is_some()) {
+            self.pending.remove(node_id);
+        }
+        self.allocated.remove(node_id);
+        self.advertised.remove(node_id);
+        self.dialing.remove(node_id);
+        self.derping.remove(node_id);
+        self.floored.remove(node_id);
+        self.forced_derp_until.remove(node_id);
+        self.forced_urls.remove(node_id);
         if self.warm_committed == Some(*node_id) {
             self.warm_committed = None;
         }
@@ -3019,6 +3041,7 @@ mod tests {
                 endpoint,
                 reachable,
                 rtt_ms,
+                ..
             } => {
                 assert_eq!(reported, relay_node_id);
                 assert_eq!(endpoint, relay_addr.to_string());

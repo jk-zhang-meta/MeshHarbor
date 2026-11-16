@@ -185,6 +185,9 @@ impl AgentDao {
             install: Some(install.unwrap_or_else(InstallInfo::unknown)),
             ssh_policy: SshPolicy::default(),
             peer_relay_policy: Default::default(),
+            peer_relay_revision: 0,
+            public_ip: None,
+            pinned_zone_id: None,
             // FR-52 gate 2 closed, and NO connect code. A code is minted on
             // demand rather than at enrollment, so a fleet that never uses
             // this feature carries nothing for it — and until one exists the
@@ -975,13 +978,38 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &PeerRelayPolicy,
     ) -> DaoResult<bool> {
+        Ok(self
+            .update_peer_relay_policy_versioned(tenant_id, agent_id, policy)
+            .await?
+            .is_some())
+    }
+
+    /// Atomically replace `peer_relay_policy` and increment `peer_relay_revision`,
+    /// returning the new monotonic revision when a live row matched.
+    pub async fn update_peer_relay_policy_versioned(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        policy: &PeerRelayPolicy,
+    ) -> DaoResult<Option<u64>> {
+        use mongodb::options::ReturnDocument;
         let policy_bson = bson::to_bson(policy)?;
-        self.base
-            .update_one(
+        let updated = self
+            .base
+            .collection()
+            .find_one_and_update(
                 Self::live_row(tenant_id, agent_id),
-                doc! { "$set": { "peer_relay_policy": policy_bson } },
+                doc! {
+                    "$set": {
+                        "peer_relay_policy": policy_bson,
+                        "updated_at": DateTime::now(),
+                    },
+                    "$inc": { "peer_relay_revision": 1i64 },
+                },
             )
-            .await
+            .return_document(ReturnDocument::After)
+            .await?;
+        Ok(updated.map(|a| a.peer_relay_revision))
     }
 
     /// Apply a signed single-use enrollment's explicit relay approval without
@@ -1011,13 +1039,106 @@ impl AgentDao {
             .collection()
             .update_one(
                 filter,
-                doc! { "$set": {
-                    "peer_relay_policy.serve": true,
-                    "updated_at": DateTime::now(),
-                } },
+                doc! {
+                    "$set": {
+                        "peer_relay_policy.serve": true,
+                        "updated_at": DateTime::now(),
+                    },
+                    "$inc": { "peer_relay_revision": 1i64 },
+                },
             )
             .await?;
         Ok(result.matched_count == 1)
+    }
+
+    /// Persist the agent's observed public IP on connect/hello.
+    pub async fn update_public_ip(&self, agent_id: ObjectId, public_ip: &str) -> DaoResult<()> {
+        if public_ip.is_empty() {
+            return Ok(());
+        }
+        self.base
+            .update_by_id(agent_id, doc! { "$set": { "public_ip": public_ip } })
+            .await?;
+        Ok(())
+    }
+
+    /// Backfill `public_ip` from a public STUN `srflx` candidate when the
+    /// control connection traversed a local/private proxy without a public IP.
+    pub async fn set_public_ip_if_missing(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        public_ip: &str,
+    ) -> DaoResult<bool> {
+        if public_ip.is_empty() {
+            return Ok(false);
+        }
+        let mut filter = Self::live_row(tenant_id, agent_id);
+        filter.insert(
+            "$or",
+            bson::bson!([
+                { "public_ip": null },
+                { "public_ip": "" },
+                { "public_ip": { "$exists": false } },
+            ]),
+        );
+        self.base
+            .update_one(filter, doc! { "$set": { "public_ip": public_ip } })
+            .await
+    }
+
+    /// Update per-device pinned [`meshharbor_remote_control::models::NetworkZone`]
+    /// (`MANAGE_AGENTS`). `None` unsets `pinned_zone_id` (Auto mode); `Some(id)`
+    /// sets it. Matches a live row even when setting the same value.
+    pub async fn update_pinned_zone_id(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        pinned_zone_id: Option<&str>,
+    ) -> DaoResult<bool> {
+        let update = match pinned_zone_id {
+            Some(zid) => doc! {
+                "$set": {
+                    "pinned_zone_id": zid,
+                    "updated_at": DateTime::now(),
+                },
+            },
+            None => doc! {
+                "$unset": { "pinned_zone_id": "" },
+                "$set": { "updated_at": DateTime::now() },
+            },
+        };
+        let result = self
+            .base
+            .collection()
+            .update_one(Self::live_row(tenant_id, agent_id), update)
+            .await?;
+        Ok(result.matched_count == 1)
+    }
+
+    /// Map of `agent_id -> pinned_zone_id` for live agents in `tenant_id` that
+    /// currently hold a non-empty `pinned_zone_id`.
+    pub async fn list_pinned_zone_ids(
+        &self,
+        tenant_id: ObjectId,
+    ) -> DaoResult<std::collections::HashMap<ObjectId, String>> {
+        use futures::TryStreamExt;
+        let coll = self.base.collection().clone_with_type::<Document>();
+        let mut cursor = coll
+            .find(doc! {
+                "tenant_id": tenant_id,
+                "deleted_at": null,
+                "pinned_zone_id": { "$type": "string", "$ne": "" },
+            })
+            .projection(doc! { "_id": 1, "pinned_zone_id": 1 })
+            .await?;
+        let mut out = std::collections::HashMap::new();
+        while let Some(d) = cursor.try_next().await? {
+            if let (Ok(id), Ok(zid)) = (d.get_object_id("_id"), d.get_str("pinned_zone_id")) {
+                out.insert(id, zid.to_string());
+            }
+        }
+        Ok(out)
     }
 
     /// Every live device the tenant has approved to serve as an org relay.

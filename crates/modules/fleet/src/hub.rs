@@ -200,6 +200,13 @@ pub struct ConnectedAgent {
     /// parses `rc:agent.keep_busy_policy`. Per CONNECTION; a pre-FR-92 agent
     /// would log every policy frame as an unknown `rc:*` at WARN.
     pub supports_keep_busy: bool,
+    /// Dynamic org-relay serving control (`rc:overlay.peer_relay_serve`).
+    pub supports_relay_control: bool,
+    /// Multi-region relay PoP target push (`rc:relay.regions`).
+    pub supports_relay_regions: bool,
+    /// Current connection's `relay-server` capability word (updated on hello
+    /// and heartbeat so org-relay eligibility sees runtime flips immediately).
+    pub supports_relay_server: bool,
     /// FR-90 — the agent advertises `hive`: it answers `rc:hive.start` with
     /// `rc:hive.start_ack` and reports sessions with `rc:hive.state`. Per
     /// CONNECTION, for [`Self::supports_ssh_grant_ack`]'s reason — a stored
@@ -763,6 +770,22 @@ pub struct HubInner {
     /// only while it still names it; a displaced connection never clears, or
     /// overwrites, its replacement's zone.
     agent_zones: DashMap<ObjectId, (String, BusinessZone)>,
+    /// Observed trusted public IP of each online agent's current control WS.
+    agent_live_ips: DashMap<ObjectId, (String, std::net::IpAddr)>,
+    /// Per-device revisioned Logical Network Zone ICE/STUN policy.
+    agent_zone_ice_policies: DashMap<ObjectId, AgentZoneIcePolicy>,
+    /// Shared DNS-refreshed ICE server zone/country map (independent of `#21` gate mode).
+    ice_zones: std::sync::OnceLock<Arc<IceServerZones>>,
+    /// Optional GeoIP database for synchronous literal-IP STUN/TURN country checks.
+    geoip: std::sync::OnceLock<Arc<meshharbor_core::user_analytics::GeoIp>>,
+}
+
+/// Per-device Logical Network Zone ICE/STUN policy cached on the Hub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentZoneIcePolicy {
+    pub policy_revision: u64,
+    pub strict: bool,
+    pub allowed_countries: std::collections::HashSet<String>,
 }
 
 /// MeshHarbor #21 — the hub's relay-locality gate (`app.rc_ice_zone_mode`):
@@ -827,6 +850,10 @@ impl Hub {
                 file_child_upload_disabled: std::sync::atomic::AtomicBool::new(upload_disabled),
                 ice_gate: std::sync::OnceLock::new(),
                 agent_zones: DashMap::new(),
+                agent_live_ips: DashMap::new(),
+                agent_zone_ice_policies: DashMap::new(),
+                ice_zones: std::sync::OnceLock::new(),
+                geoip: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -883,7 +910,16 @@ impl Hub {
 
     /// #21 — install the relay-locality gate (once, at startup).
     pub fn set_ice_gate(&self, gate: IceGate) {
+        let _ = self.inner.ice_zones.set(gate.zones.clone());
         let _ = self.inner.ice_gate.set(gate);
+    }
+
+    pub fn set_ice_zones(&self, zones: Arc<IceServerZones>) {
+        let _ = self.inner.ice_zones.set(zones);
+    }
+
+    pub fn set_geoip(&self, geoip: Arc<meshharbor_core::user_analytics::GeoIp>) {
+        let _ = self.inner.geoip.set(geoip);
     }
 
     /// #21 — the relay-locality gate, when isolation is on.
@@ -925,18 +961,154 @@ impl Hub {
         self.inner.agent_zones.get(&agent_id).map(|e| e.1)
     }
 
-    /// #21 relay locality: the ICE servers of a session with `agent_id`, kept
-    /// to the device's own business zone. Both ends receive the same filtered
-    /// list (`Ready`/`SdpAnswer` to the controller, `SdpOffer` to the agent),
-    /// so neither end allocates a relay the device would then connect to
-    /// across the line. With no zone on record for the device, nothing is
-    /// kept: host candidates still connect a direct path, and nothing crosses.
+    pub fn set_agent_live_public_ip(
+        &self,
+        agent_id: ObjectId,
+        conn_id: &str,
+        ip: Option<std::net::IpAddr>,
+    ) {
+        match ip.and_then(meshharbor_core::user_analytics::canonical_public_ip) {
+            Some(clean) => {
+                self.inner
+                    .agent_live_ips
+                    .insert(agent_id, (conn_id.to_string(), clean));
+            }
+            None => {
+                self.inner.agent_live_ips.remove(&agent_id);
+            }
+        }
+    }
+
+    pub fn clear_agent_live_public_ip(&self, agent_id: ObjectId, conn_id: &str) {
+        self.inner
+            .agent_live_ips
+            .remove_if(&agent_id, |_, (c, _)| c == conn_id);
+    }
+
+    pub fn agent_live_public_ip(&self, agent_id: ObjectId) -> Option<std::net::IpAddr> {
+        self.inner.agent_live_ips.get(&agent_id).map(|e| e.1)
+    }
+
+    /// Install a revisioned zone ICE policy for `agent_id`. Rejects stale
+    /// updates whose `policy_revision` is strictly older than what is already stored,
+    /// and combines equal-revision discrepancies conservatively (`strict = cur.strict || policy.strict`,
+    /// intersecting `allowed_countries` among strict policies) so ties can never relax restrictions.
+    pub fn set_agent_zone_ice_policy(&self, agent_id: ObjectId, policy: AgentZoneIcePolicy) -> bool {
+        use dashmap::mapref::entry::Entry;
+        match self.inner.agent_zone_ice_policies.entry(agent_id) {
+            Entry::Occupied(mut e) => {
+                let cur = e.get();
+                if policy.policy_revision < cur.policy_revision {
+                    return false;
+                }
+                if policy.policy_revision == cur.policy_revision && cur != &policy {
+                    let strict = cur.strict || policy.strict;
+                    let allowed_countries = match (cur.strict, policy.strict) {
+                        (true, true) => cur
+                            .allowed_countries
+                            .intersection(&policy.allowed_countries)
+                            .cloned()
+                            .collect(),
+                        (true, false) => cur.allowed_countries.clone(),
+                        (false, true) => policy.allowed_countries.clone(),
+                        (false, false) => cur
+                            .allowed_countries
+                            .intersection(&policy.allowed_countries)
+                            .cloned()
+                            .collect(),
+                    };
+                    let combined = AgentZoneIcePolicy {
+                        policy_revision: policy.policy_revision,
+                        strict,
+                        allowed_countries,
+                    };
+                    let changed = &combined != cur;
+                    e.insert(combined);
+                    return changed;
+                }
+                e.insert(policy);
+                true
+            }
+            Entry::Vacant(v) => {
+                v.insert(policy);
+                true
+            }
+        }
+    }
+
+    pub fn agent_zone_ice_policy(&self, agent_id: ObjectId) -> Option<AgentZoneIcePolicy> {
+        self.inner
+            .agent_zone_ice_policies
+            .get(&agent_id)
+            .map(|e| e.value().clone())
+    }
+
+    pub fn url_matches_allowed_countries(
+        &self,
+        url: &str,
+        allowed: &std::collections::HashSet<String>,
+    ) -> bool {
+        if allowed.is_empty() {
+            return false;
+        }
+        let Some(geoip) = self.inner.geoip.get() else {
+            return false;
+        };
+        if let Some((host, _)) = meshharbor_core::ice_zones::host_of(url)
+            && let Ok(ip) = host.parse::<std::net::IpAddr>()
+        {
+            return geoip
+                .security_lookup(ip)
+                .country_code
+                .is_some_and(|cc| allowed.contains(&cc.to_ascii_uppercase()));
+        }
+        if let Some(zones) = self
+            .inner
+            .ice_zones
+            .get()
+            .or_else(|| self.inner.ice_gate.get().map(|g| &g.zones))
+        {
+            return zones.url_matches_countries(geoip, url, allowed);
+        }
+        false
+    }
+
+    /// #21 relay locality + Logical Network Zone strict country gate: the ICE
+    /// servers of a session with `agent_id`, kept to the device's own zone.
     fn zone_local_ice(
         &self,
         agent_id: ObjectId,
         session_id: ObjectId,
         ice: Vec<IceServer>,
     ) -> Vec<IceServer> {
+        if let Some(policy) = self.agent_zone_ice_policy(agent_id)
+            && policy.strict
+        {
+            let mut kept = Vec::with_capacity(ice.len());
+            let mut withheld_urls = 0usize;
+            let mut kept_urls = 0usize;
+            for mut srv in ice {
+                let before = srv.urls.len();
+                srv.urls
+                    .retain(|u| self.url_matches_allowed_countries(u, &policy.allowed_countries));
+                kept_urls += srv.urls.len();
+                withheld_urls += before - srv.urls.len();
+                if !srv.urls.is_empty() {
+                    kept.push(srv);
+                }
+            }
+            if withheld_urls > 0 {
+                info!(
+                    session = %session_id.to_hex(),
+                    agent = %agent_id.to_hex(),
+                    policy_revision = policy.policy_revision,
+                    withheld = withheld_urls,
+                    kept = kept_urls,
+                    "rc ice zone: STUN/TURN outside the device's strict network zone withheld"
+                );
+            }
+            return kept;
+        }
         let Some(gate) = self.inner.ice_gate.get() else {
             return ice;
         };
@@ -1103,6 +1275,9 @@ impl Hub {
             // FR-92 — set by `set_agent_keep_busy_support`; `false` = no
             // policy frame is ever pushed to this connection.
             supports_keep_busy: false,
+            supports_relay_control: false,
+            supports_relay_regions: false,
+            supports_relay_server: false,
             // FR-90 — set by `set_agent_hive_support`; `false` = no session
             // frame is ever pushed to this connection.
             supports_hive: false,
@@ -3052,6 +3227,104 @@ impl Hub {
                     .is_ok()
             })
             .count()
+    }
+
+    pub fn set_agent_relay_control_support(&self, agent_id: ObjectId, supports: bool) {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            entry.supports_relay_control = supports;
+        }
+    }
+
+    pub fn set_agent_relay_regions_support(&self, agent_id: ObjectId, supports: bool) {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            entry.supports_relay_regions = supports;
+        }
+    }
+
+    /// Push the updated `ServerMsg::RelayRegions` target list to a live agent
+    /// using its current revisioned `AgentZoneIcePolicy` (sending an empty list
+    /// if strict zone policy filters out every configured region so the daemon
+    /// stops probing removed foreign STUN targets).
+    pub fn push_relay_regions_for_agent(&self, tenant_id: ObjectId, agent_id: ObjectId) -> bool {
+        let eligible = self
+            .inner
+            .agents
+            .get(&agent_id)
+            .is_some_and(|a| a.tenant_id == tenant_id && a.supports_relay_regions);
+        if !eligible {
+            return false;
+        }
+        let Some((mut regions, rev)) =
+            meshharbor_remote_control::turn_creds::relay_regions_wire(&self.inner.turn)
+        else {
+            return false;
+        };
+        let policy = self.agent_zone_ice_policy(agent_id);
+        if let Some(p) = &policy
+            && p.strict
+        {
+            regions.retain(|r| {
+                let stun_url = format!("stun:{}", r.stun);
+                self.url_matches_allowed_countries(&stun_url, &p.allowed_countries)
+            });
+        }
+        let policy_revision = policy.map(|p| p.policy_revision);
+        self.send_to_agent_in_tenant(
+            agent_id,
+            tenant_id,
+            ServerMsg::RelayRegions {
+                regions,
+                rev,
+                policy_revision,
+            },
+        )
+        .is_ok()
+    }
+
+    pub fn set_agent_relay_server_support(&self, agent_id: ObjectId, supports: bool) -> bool {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            let prev = entry.supports_relay_server;
+            entry.supports_relay_server = supports;
+            return prev != supports;
+        }
+        false
+    }
+
+    pub fn agent_supports_relay_server(&self, agent_id: ObjectId) -> Option<bool> {
+        self.inner
+            .agents
+            .get(&agent_id)
+            .map(|a| a.supports_relay_server)
+    }
+
+    /// Push the authoritative `peer_relay_policy.serve` directive to a
+    /// connected agent on this pod when it advertises `relay-control`.
+    pub fn push_peer_relay_serve(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        serve: bool,
+        revision: Option<u64>,
+        backbone_endpoints: Vec<String>,
+    ) -> bool {
+        let eligible = self
+            .inner
+            .agents
+            .get(&agent_id)
+            .is_some_and(|a| a.tenant_id == tenant_id && a.supports_relay_control);
+        if !eligible {
+            return false;
+        }
+        self.send_to_agent_in_tenant(
+            agent_id,
+            tenant_id,
+            ServerMsg::PeerRelayServe {
+                serve,
+                revision,
+                backbone_endpoints,
+            },
+        )
+        .is_ok()
     }
 
     /// FR-90 — record whether this connection runs Hive sessions (`hive`),
@@ -10458,6 +10731,101 @@ mod ice_zone_gate_tests {
         assert_eq!(
             urls(hub.zone_local_ice(agent, ObjectId::new(), ice.clone())),
             urls(ice)
+        );
+    }
+
+    #[tokio::test]
+    async fn zone_ice_policy_rejects_stale_and_combines_equal_revisions_conservatively() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let agent = ObjectId::new();
+        let set = |items: &[&str]| -> std::collections::HashSet<String> {
+            items.iter().map(|s| (*s).to_string()).collect()
+        };
+
+        // 1. Permissive rev=3 followed by strict rev=3 tightens conservatively.
+        assert!(hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: false,
+                allowed_countries: set(&["US", "HK"]),
+            },
+        ));
+        assert!(hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: true,
+                allowed_countries: set(&["CN", "HK"]),
+            },
+        ));
+        assert_eq!(
+            hub.agent_zone_ice_policy(agent),
+            Some(AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: true,
+                allowed_countries: set(&["CN", "HK"]),
+            })
+        );
+
+        // 2. Equal-revision permissive update can NEVER relax strictness or countries.
+        assert!(!hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: false,
+                allowed_countries: set(&[]),
+            },
+        ));
+        assert_eq!(
+            hub.agent_zone_ice_policy(agent).unwrap().allowed_countries,
+            set(&["CN", "HK"])
+        );
+        assert!(hub.agent_zone_ice_policy(agent).unwrap().strict);
+
+        // 3. Equal-revision strict update intersects allowed_countries.
+        assert!(hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: true,
+                allowed_countries: set(&["CN", "JP"]),
+            },
+        ));
+        assert_eq!(
+            hub.agent_zone_ice_policy(agent),
+            Some(AgentZoneIcePolicy {
+                policy_revision: 3,
+                strict: true,
+                allowed_countries: set(&["CN"]),
+            })
+        );
+
+        // 4. Stale revision (< 3) is rejected outright; newer revision (> 3) replaces.
+        assert!(!hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 2,
+                strict: false,
+                allowed_countries: set(&["US"]),
+            },
+        ));
+        assert!(hub.set_agent_zone_ice_policy(
+            agent,
+            AgentZoneIcePolicy {
+                policy_revision: 4,
+                strict: false,
+                allowed_countries: set(&["US"]),
+            },
+        ));
+        assert_eq!(
+            hub.agent_zone_ice_policy(agent),
+            Some(AgentZoneIcePolicy {
+                policy_revision: 4,
+                strict: false,
+                allowed_countries: set(&["US"]),
+            })
         );
     }
 }

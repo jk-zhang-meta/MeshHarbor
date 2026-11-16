@@ -224,6 +224,14 @@ impl ConnectionOrigin {
     pub fn client_ip(&self) -> Option<IpAddr> {
         self.client_ip
     }
+    /// Proxy-trust-validated public client IP for inventory display & GeoIP
+    /// location: `Some(ip)` if and only if [`Self::client_ip`] resolved a
+    /// public routable address; never trusts forwarded headers from an
+    /// untrusted socket peer or a rejected hop chain.
+    pub fn observed_public_ip(&self) -> Option<IpAddr> {
+        self.client_ip()
+            .and_then(crate::user_analytics::canonical_public_ip)
+    }
     pub fn transport_peer(&self) -> Option<IpAddr> {
         self.transport_peer
     }
@@ -544,5 +552,40 @@ mod tests {
             assert_eq!(o.client_ip(), Some(ip("198.51.100.9")));
             assert_eq!(o.source(), ConnectionOriginSource::SocketPeer);
         }
+    }
+
+    #[test]
+    fn observed_public_ip_rejects_forwarded_headers_from_untrusted_private_peer_and_invalid_chain()
+    {
+        // Untrusted private peer (10.0.0.5) sending X-Forwarded-For with trusted_hops = 1:
+        // trusted_proxy_cidrs does NOT trust 10.0.0.5, so XFF must never become observed_public_ip.
+        let untrusted = captured("8.8.8.8, 10.0.0.9", "10.0.0.5:443", &[], 1);
+        assert_eq!(untrusted.client_ip(), Some(ip("10.0.0.5")));
+        assert_eq!(untrusted.source(), ConnectionOriginSource::SocketPeer);
+        assert_eq!(untrusted.observed_public_ip(), None);
+
+        // Even when another proxy subnet is trusted (172.16.0.0/12), 10.0.0.5 is untrusted.
+        let untrusted_other_cidr =
+            captured("8.8.8.8, 10.0.0.9", "10.0.0.5:443", &["172.16.0.0/12"], 1);
+        assert_eq!(untrusted_other_cidr.observed_public_ip(), None);
+
+        // Trusted immediate peer (10.0.0.5 in 10.0.0.0/8), but suffix hop 198.51.100.9 is NOT trusted:
+        // chain validation rejects attribution, so observed_public_ip MUST also be None.
+        let rejected_chain = captured(
+            "8.8.8.8, 198.51.100.9",
+            "10.0.0.5:443",
+            &["10.0.0.0/8"],
+            1,
+        );
+        assert_eq!(rejected_chain.client_ip(), None);
+        assert_eq!(
+            rejected_chain.source(),
+            ConnectionOriginSource::InvalidTrustedChain
+        );
+        assert_eq!(rejected_chain.observed_public_ip(), None);
+
+        // Validated trusted chain yields Some(8.8.8.8).
+        let trusted_chain = captured("8.8.8.8, 10.0.0.9", "10.0.0.5:443", &["10.0.0.0/8"], 1);
+        assert_eq!(trusted_chain.observed_public_ip(), Some(ip("8.8.8.8")));
     }
 }

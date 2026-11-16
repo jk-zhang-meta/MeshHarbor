@@ -214,9 +214,11 @@ pub async fn relay_overlay_msg_from_node(
             direct_sent,
             direct_lost,
             direct_rtt_ms,
+            direct_jitter_ms,
             relay_sent,
             relay_lost,
             relay_rtt_ms,
+            relay_jitter_ms,
             on_relay,
         } => {
             crate::path_quality::handle(
@@ -228,9 +230,11 @@ pub async fn relay_overlay_msg_from_node(
                     direct_sent,
                     direct_lost,
                     direct_rtt_ms,
+                    direct_jitter_ms,
                     relay_sent,
                     relay_lost,
                     relay_rtt_ms,
+                    relay_jitter_ms,
                     on_relay,
                 },
             )
@@ -358,6 +362,8 @@ pub async fn relay_overlay_msg_from_node(
             endpoint,
             reachable,
             rtt_ms,
+            jitter_ms,
+            loss_permille,
         } => {
             crate::org_relay::handle_relay_probe(
                 state,
@@ -367,6 +373,8 @@ pub async fn relay_overlay_msg_from_node(
                 endpoint,
                 reachable,
                 rtt_ms,
+                jitter_ms,
+                loss_permille,
             )
             .await;
             None
@@ -437,7 +445,7 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
     // weekend into Monday's VPN connect. 72 h; the agent re-requests and
     // re-establishes fresh whenever it expires while UDP works.
     const WARM_CRED_TTL_SECS: u32 = 72 * 3600;
-    let ice_servers = overlay_ice_servers_with_ttl(
+    let mut ice_servers = overlay_ice_servers_with_ttl(
         state,
         &warm_key,
         Some(self_node.tenant_id),
@@ -447,6 +455,17 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
         needs_tls_relay(&self_node),
     )
     .await;
+    let snap = crate::network_zones::TenantZoneSnapshot::load(state, self_node.tenant_id).await;
+    if snap.read_failed {
+        warn!(node = %self_id, "overlay relay: network zones unreadable; withholding warm grant");
+        return;
+    }
+    if snap.has_zones() {
+        let policy = snap.ice_policy_for(snap.resolve_node_sync(&self_node));
+        if policy.strict {
+            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &policy.allowed_countries);
+        }
+    }
     debug!(node = %self_id, "overlay relay: warm-allocation creds granted (72h)");
     send_to_node(
         state,
@@ -996,11 +1015,7 @@ async fn handle_overlay_join(
         NodeRef::Agent { agent_id } => *agent_id,
         NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
     };
-    if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
-        crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await;
-    } else {
-        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_changed").await;
-    }
+    crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await;
     let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
     let ShapedNetmap {
         acl,
@@ -1039,11 +1054,15 @@ async fn handle_overlay_join(
         forget_restarted_grants(state, id, instance.as_deref());
     }
 
-    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
         warn!(
             tenant_id = %self_node.tenant_id,
             node = %self_node.name,
-            "overlay.join: role approval read failed; withholding degraded full netmap and peer deltas to preserve live peers, scheduling retry"
+            restricted_read_failed = lines.restricted_read_failed,
+            roles_read_failed = lines.roles_read_failed,
+            "overlay.join: policy read failed; withholding degraded full netmap and peer deltas to preserve live peers, scheduling retry"
         );
         if state.org_relay.live_conn(ident.connection_key()).as_deref() == Some(connection_id)
             && let Some(self_id) = self_node.id
@@ -1064,7 +1083,10 @@ async fn handle_overlay_join(
     // the next policy edit. Spawned: it re-reads every node, and the joiner must
     // not wait on that to get its netmap. #21 enforce needs the table for its
     // zones even when the ACL is off.
-    if acl.gating() || iso == business_isolation::Mode::Enforce {
+    if acl.gating()
+        || iso == business_isolation::Mode::Enforce
+        || lines.has_network_zones()
+    {
         schedule_derp_acl_rebuild(state, tenant_id, network_id);
     }
 
@@ -1104,6 +1126,7 @@ async fn handle_overlay_join(
         return;
     }
     // Full netmap → joiner.
+    let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
     send_to_node(
         state,
         &self_node,
@@ -1144,7 +1167,8 @@ async fn handle_overlay_join(
                 // gather its srflx candidates, derived from the configured
                 // coturn workers (a `turn:host:port` UDP listener also answers
                 // STUN Binding). Empty when TURN is unconfigured → srflx inert.
-                stun_urls: stun_urls_from_turn(state),
+                stun_urls,
+                strict_stun,
                 relay_probe_targets: crate::org_relay::probe_targets(
                     state,
                     &self_node,
@@ -1177,7 +1201,8 @@ async fn handle_overlay_join(
         let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
-        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+        let recipient_zone =
+            business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
         let zones = lines.zones_for(
             iso,
             peer,
@@ -1395,15 +1420,13 @@ async fn try_complete_join_netmap(
         NodeRef::Agent { agent_id } => *agent_id,
         NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
     };
-    if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
-        if !crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await {
-            return false;
-        }
-    } else {
-        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_changed").await;
+    if !crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await {
+        return false;
     }
     let lines = business_isolation::lines(state, iso, tenant_id).await;
-    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
         return false;
     }
     let reach = reachability(state, &all).await;
@@ -1412,7 +1435,9 @@ async fn try_complete_join_netmap(
         self_src: joiner_src,
         peers,
     } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
-    if (acl.gating() || iso == business_isolation::Mode::Enforce)
+    if (acl.gating()
+        || iso == business_isolation::Mode::Enforce
+        || lines.has_network_zones())
         && !super::derp_acl::rebuild(state, tenant_id, network_id).await
     {
         return false;
@@ -1452,6 +1477,7 @@ async fn try_complete_join_netmap(
             return false;
         }
     }
+    let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
     if !send_to_node_checked(
         state,
         &self_node,
@@ -1474,7 +1500,8 @@ async fn try_complete_join_netmap(
                 self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
                 self_node_id: self_node.id,
                 self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
-                stun_urls: stun_urls_from_turn(state),
+                stun_urls,
+                strict_stun,
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision: network.auth_revision.max(1),
@@ -1497,7 +1524,8 @@ async fn try_complete_join_netmap(
         let peer_src = overlay_source_of(state, peer).await;
         let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
-        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+        let recipient_zone =
+            business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
         let zones = lines.zones_for(
             iso,
             peer,
@@ -1534,7 +1562,50 @@ async fn try_complete_join_netmap(
         .await;
     }
     repush_forced_pairs_on_join(state, &self_node).await;
+    if lines.has_network_zones() {
+        maybe_sync_serving_relay_backbone(state, &self_node, Some(&lines.network_zones)).await;
+    }
     true
+}
+
+async fn maybe_sync_serving_relay_backbone(
+    state: &NetworkState,
+    node: &OverlayNode,
+    preloaded: Option<&crate::network_zones::TenantZoneSnapshot>,
+) {
+    let NodeRef::Agent { agent_id } = node.node_ref else {
+        return;
+    };
+    let Ok(agent) = state.fleet.agents.base.find_by_id(agent_id).await else {
+        return;
+    };
+    if !agent.peer_relay_policy.serve || agent.deleted_at.is_some() {
+        return;
+    }
+    match preloaded {
+        Some(snapshot) if snapshot.has_zones() => {
+            snapshot
+                .sync_relay_backbone_endpoints_for_tenant(state, node.tenant_id)
+                .await;
+        }
+        Some(_) => {}
+        None => {
+            let has_zones = state
+                .overlay_networks
+                .find_for_tenant(node.tenant_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|n| !n.zones.is_empty());
+            if has_zones {
+                let snapshot =
+                    crate::network_zones::TenantZoneSnapshot::load(state, node.tenant_id).await;
+                snapshot
+                    .sync_relay_backbone_endpoints_for_tenant(state, node.tenant_id)
+                    .await;
+            }
+        }
+    }
 }
 
 /// Trickle: update the node's candidates → fan an upsert delta so peers
@@ -1565,6 +1636,7 @@ async fn handle_overlay_endpoints(
     updated.endpoints = candidates;
     let epoch = next_epoch();
     fan_upsert_shaped(state, &updated, epoch, true).await;
+    maybe_sync_serving_relay_backbone(state, &updated, None).await;
 }
 
 /// NAT-traversal Phase B/C — the node trickled its server-reflexive (srflx)
@@ -1624,6 +1696,7 @@ async fn handle_overlay_srflx(
     } else {
         crate::org_relay::recheck_trial_zones(state, identity_id, "zone_conflict").await;
     }
+    maybe_sync_serving_relay_backbone(state, &updated, None).await;
 }
 
 /// Phase B (overlay v3) — store a node's measured capability vector and fan
@@ -2044,7 +2117,7 @@ async fn handle_overlay_relay_request(
     // broker pins them to a single deterministic coturn worker (see
     // `overlay_ice_servers`) so the relay-to-relay leg is an intra-worker
     // hairpin that never crosses buildhost's dual-public-IP SNAT.
-    let ice_servers = overlay_ice_servers(
+    let mut ice_servers = overlay_ice_servers(
         state,
         &pair_key,
         Some(self_node.tenant_id),
@@ -2053,6 +2126,25 @@ async fn handle_overlay_relay_request(
         needs_tls_relay(&self_node) || needs_tls_relay(&peer),
     )
     .await;
+    let snap = crate::network_zones::TenantZoneSnapshot::load(state, self_node.tenant_id).await;
+    if snap.read_failed {
+        warn!(%pair_key, requester = %self_id, "overlay relay: network zones unreadable; refusing grant");
+        return;
+    }
+    if snap.has_zones() {
+        if snap.nodes_require_backbone_only_sync(&self_node, &peer) {
+            warn!(%pair_key, requester = %self_id, "overlay relay: strict cross-zone pair cannot use TURN relay; refusing grant");
+            return;
+        }
+        let pa = snap.ice_policy_for(snap.resolve_node_sync(&self_node));
+        let pb = snap.ice_policy_for(snap.resolve_node_sync(&peer));
+        if pa.strict {
+            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &pa.allowed_countries);
+        }
+        if pb.strict {
+            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &pb.allowed_countries);
+        }
+    }
 
     // U1 — the evidence line for grants (the escalation path logs its own):
     // a died-carrier refresh names what died and why; a fresh establishment
@@ -3477,7 +3569,12 @@ pub async fn refan_tenant_authority_local(state: &NetworkState, tenant_id: Objec
     crate::org_relay::reconcile_acl(state, tenant_id).await;
     if matches!(
         reason,
-        "server_link_changed" | "role_changed" | "business_authority" | "acl_updated"
+        "server_link_changed"
+            | "role_changed"
+            | "business_authority"
+            | "acl_updated"
+            | "zone_policy"
+            | "network_zones_updated"
     ) {
         crate::tunnel::reconcile_tunnel_sessions(state, tenant_id).await;
         crate::managed_forward::reconcile_tenant_forwards(state, tenant_id).await;
@@ -3518,7 +3615,7 @@ pub async fn publish_and_refan_tenant_authority_for_agent(
 ) -> u64 {
     if matches!(
         reason,
-        "agent_updated" | "member_removed" | "peer_relay_policy"
+        "agent_updated" | "member_removed" | "peer_relay_policy" | "zone_policy"
     ) && state
         .overlay_networks
         .find_for_tenant(tenant_id)
@@ -3608,6 +3705,16 @@ pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Val
         }
     } else {
         refan_tenant_authority_local(state, tid, reason).await;
+        if reason == "zone_policy"
+            && let Some(aid) = ctrl
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .and_then(|v| ObjectId::parse_str(v).ok())
+        {
+            repush_full_netmap_for_agent(state, tid, aid).await;
+        } else if reason == "network_zones_updated" {
+            repush_full_netmap_for_tenant(state, tid).await;
+        }
     }
     debug!(%tid, auth_revision, reason,
         "overlay: policy sync applied from another pod");
@@ -3723,13 +3830,17 @@ async fn fan_upsert_shaped_mode(
         load_acl(state, node.tenant_id).await
     };
     let iso = business_isolation::mode(state);
-    let node_zone = business_isolation::zone_of(state, iso, node).await;
     let lines = business_isolation::lines(state, iso, node.tenant_id).await;
-    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+    let node_zone = business_isolation::zone_of_with_lines(state, iso, &lines, node).await;
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
         warn!(
             tenant_id = %node.tenant_id,
             node = %node.name,
-            "overlay: role approval read failed during delta fan-out; preserving existing peer netmaps"
+            restricted_read_failed = lines.restricted_read_failed,
+            roles_read_failed = lines.roles_read_failed,
+            "overlay: policy read failed during delta fan-out; preserving existing peer netmaps"
         );
         return false;
     }
@@ -3752,7 +3863,9 @@ async fn fan_upsert_shaped_mode(
     // U2-capable (verdicts are the only per-edge data its change moves;
     // pre-U2 nodes ignore stamps, so the delta would be pure noise there).
     let reverse = reachable
-        && (node.supports_server_relay_strategy || iso == business_isolation::Mode::Enforce);
+        && (node.supports_server_relay_strategy
+            || iso == business_isolation::Mode::Enforce
+            || lines.has_network_zones());
     let (node_recip_src, peer_reach) = if reverse {
         (
             Some(overlay_source_of(state, node).await),
@@ -3769,7 +3882,7 @@ async fn fan_upsert_shaped_mode(
         // U2 — the edge is `recipient=peer → this fanned node`; both full
         // rows are in hand, so stamp the server verdict onto the shaped peer.
         let verdict = server_relay_verdict(state, peer, node);
-        let peer_zone = business_isolation::zone_of(state, iso, peer).await;
+        let peer_zone = business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
         let zones = lines.zones_for(
             iso,
             peer,
@@ -3921,17 +4034,21 @@ async fn fan_pair_rows(
     // snapshot so a dead peer's row does not read dialable.
     let b_reach = is_reachable(&reach, b);
     let iso = business_isolation::mode(state);
-    let (a_zone, b_zone) = (
-        business_isolation::zone_of(state, iso, a).await,
-        business_isolation::zone_of(state, iso, b).await,
-    );
     let lines = business_isolation::lines(state, iso, a.tenant_id).await;
-    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+    let (a_zone, b_zone) = (
+        business_isolation::zone_of_with_lines(state, iso, &lines, a).await,
+        business_isolation::zone_of_with_lines(state, iso, &lines, b).await,
+    );
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
         warn!(
             tenant_id = %a.tenant_id,
             a = %a.name,
             b = %b.name,
-            "overlay: role approval read failed during pair verdict fan-out; skipping"
+            restricted_read_failed = lines.restricted_read_failed,
+            roles_read_failed = lines.roles_read_failed,
+            "overlay: policy read failed during pair verdict fan-out; skipping"
         );
         return;
     }
@@ -4926,7 +5043,6 @@ pub async fn shape_full_netmap_with_lines(
         };
     }
     let iso = business_isolation::mode(state);
-    let self_zone = business_isolation::zone_of(state, iso, self_node).await;
     let owned_lines;
     let lines = match preloaded_lines {
         Some(l) => l,
@@ -4935,12 +5051,13 @@ pub async fn shape_full_netmap_with_lines(
             &owned_lines
         }
     };
+    let self_zone = business_isolation::zone_of_with_lines(state, iso, lines, self_node).await;
     let rides = business_isolation::rides_lines(state, self_node);
     let mut peers: Vec<NetmapPeer> = Vec::new();
     let mut unknown_with_peers: Vec<String> = Vec::new();
     let self_role_known = lines.node_role_known(self_node);
     for n in all.iter().filter(|n| n.id != self_node.id) {
-        let peer_zone = business_isolation::zone_of(state, iso, n).await;
+        let peer_zone = business_isolation::zone_of_with_lines(state, iso, lines, n).await;
         let zones = lines.zones_for(iso, self_node, self_zone, n, peer_zone, rides);
         // Resolve identity for organization ACLs and device ceilings alike;
         // personal owner-only ingress still needs it when the ACL is off.
@@ -5796,9 +5913,260 @@ fn turn_url_host_port(u: &str) -> Option<String> {
 /// reuse the canonical public STUN list. Discovery does not require TURN auth.
 fn stun_urls_from_turn(state: &NetworkState) -> Vec<String> {
     let urls = build_turn_config(&state.settings.turn)
-        .map(|cfg| cfg.urls)
+        .map(|cfg| {
+            let mut all = cfg.urls;
+            for worker in cfg.workers {
+                all.extend(worker);
+            }
+            all
+        })
         .unwrap_or_default();
     stun_urls_from_turn_urls(&urls)
+}
+
+fn filter_ice_for_allowed_countries(
+    state: &NetworkState,
+    servers: Vec<IceServer>,
+    allowed_countries: &std::collections::HashSet<String>,
+) -> Vec<IceServer> {
+    let mut out = Vec::with_capacity(servers.len());
+    for mut srv in servers {
+        srv.urls
+            .retain(|u| crate::network_zones::url_matches_countries(state, u, allowed_countries));
+        if !srv.urls.is_empty() {
+            out.push(srv);
+        }
+    }
+    out
+}
+
+fn stun_policy_for_node(
+    state: &NetworkState,
+    node: &OverlayNode,
+    lines: &business_isolation::Lines,
+) -> (Vec<String>, bool) {
+    if lines.restricted_read_failed {
+        return (Vec::new(), true);
+    }
+    if !lines.has_network_zones() {
+        return (stun_urls_from_turn(state), false);
+    }
+    let policy = lines
+        .network_zones
+        .ice_policy_for(lines.network_zones.resolve_node_sync(node));
+    if !policy.strict {
+        return (stun_urls_from_turn(state), false);
+    }
+    let mut turn_urls: Vec<String> = build_turn_config(&state.settings.turn)
+        .map(|cfg| cfg.urls)
+        .unwrap_or_default();
+    for cfg in state.turn_map.regions.values() {
+        turn_urls.extend(cfg.urls.iter().cloned());
+    }
+    let mut candidates = Vec::new();
+    for u in &turn_urls {
+        if u.starts_with("turns:") || u.contains("transport=tcp") {
+            continue;
+        }
+        if let Some(hp) = turn_url_host_port(u) {
+            let stun = format!("stun:{hp}");
+            if !candidates.contains(&stun) {
+                candidates.push(stun);
+            }
+        }
+    }
+    candidates
+        .retain(|u| crate::network_zones::url_matches_countries(state, u, &policy.allowed_countries));
+    (candidates, true)
+}
+
+pub async fn on_agent_policy_changed(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    reason: &str,
+) {
+    publish_and_refan_tenant_authority_for_agent(state, tenant_id, true, reason, Some(agent_id))
+        .await;
+    repush_full_netmap_for_agent(state, tenant_id, agent_id).await;
+}
+
+pub async fn on_tenant_zones_changed(state: &NetworkState, tenant_id: ObjectId) {
+    publish_and_refan_tenant_authority(state, tenant_id, true, "network_zones_updated").await;
+    repush_full_netmap_for_tenant(state, tenant_id).await;
+}
+
+async fn repush_node_full_netmap(
+    state: &NetworkState,
+    network: &meshharbor_remote_control::models::OverlayNetwork,
+    all: &[OverlayNode],
+    reach: &HashMap<ObjectId, bool>,
+    lines: &business_isolation::Lines,
+    magic_domain: Option<String>,
+    nameservers: Vec<String>,
+    self_node: &OverlayNode,
+) {
+    let ShapedNetmap { peers, .. } =
+        shape_full_netmap_with_lines(state, self_node, all, reach, Some(lines)).await;
+    let join_blocks = state.overlay_networks.block_list(network).await;
+    let self_name_projection = state
+        .overlay_nodes
+        .name_projection(self_node)
+        .await
+        .ok()
+        .flatten();
+    let relay_probe_targets = crate::org_relay::probe_targets(state, self_node, Some(lines)).await;
+    let backbone_probe_targets =
+        crate::org_relay::backbone_probe_targets(state, self_node, Some(lines)).await;
+    let (stun_urls, strict_stun) = stun_policy_for_node(state, self_node, lines);
+    let epoch = next_epoch();
+    send_to_node(
+        state,
+        self_node,
+        ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
+            self_ip: self_node.overlay_ip.clone(),
+            network: OverlayNetworkInfo {
+                cidr: join_blocks
+                    .cidr_for_ip(&self_node.overlay_ip)
+                    .unwrap_or(&network.cidr)
+                    .to_string(),
+                cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
+                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
+                mtu: network.mtu,
+                magic_domain,
+                nameservers,
+                self_name: self_name_projection
+                    .as_ref()
+                    .map(|(name, _)| name.clone())
+                    .filter(|name| !name.is_empty()),
+                self_node_id: self_node.id,
+                self_name_revision: self_name_projection
+                    .as_ref()
+                    .and_then(|(_, revision)| *revision)
+                    .map(|revision| revision.to_string()),
+                stun_urls,
+                strict_stun,
+                relay_probe_targets,
+                backbone_probe_targets,
+                auth_revision: network.auth_revision.max(1),
+            },
+            peers,
+            epoch,
+        },
+    )
+    .await;
+}
+
+/// Push an updated full `OverlayNetmap` to a live agent node when its own
+/// zone assignment / IP policy flips, so its `stun_urls`, `strict_stun`,
+/// `relay_probe_targets`, and `peers` reconcile immediately without restart.
+pub async fn repush_full_netmap_for_agent(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) {
+    let Ok(Some(network)) = state.overlay_networks.find_for_tenant(tenant_id).await else {
+        return;
+    };
+    let Some(network_id) = network.id else { return };
+    let Some(self_node) = current_node(state, NodeIdentity::Agent(agent_id)).await else {
+        return;
+    };
+    let Ok(all) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return;
+    };
+    let iso = business_isolation::mode(state);
+    let lines = business_isolation::lines(state, iso, tenant_id).await;
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
+        warn!(
+            %tenant_id,
+            %agent_id,
+            restricted_read_failed = lines.restricted_read_failed,
+            roles_read_failed = lines.roles_read_failed,
+            "overlay: policy read failed during full-netmap repush; preserving existing client netmap"
+        );
+        return;
+    }
+    let reach = reachability(state, &all).await;
+    let (magic_domain, nameservers) = match state.tenants.base.find_by_id(tenant_id).await {
+        Ok(t) => (
+            t.settings.magic_dns_domain.clone(),
+            t.settings.magic_dns_nameservers.clone(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
+    repush_node_full_netmap(
+        state,
+        &network,
+        &all,
+        &reach,
+        &lines,
+        magic_domain,
+        nameservers,
+        &self_node,
+    )
+    .await;
+}
+
+/// Push an updated full `OverlayNetmap` to all live overlay nodes in `tenant_id`
+/// when `OverlayNetwork.zones` changes.
+pub async fn repush_full_netmap_for_tenant(state: &NetworkState, tenant_id: ObjectId) {
+    let Ok(Some(network)) = state.overlay_networks.find_for_tenant(tenant_id).await else {
+        return;
+    };
+    let Some(network_id) = network.id else { return };
+    let now = bson::DateTime::now();
+    let Ok(all) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return;
+    };
+    let all: Vec<_> = all
+        .into_iter()
+        .filter(|n| n.is_key_authorized_at(now))
+        .collect();
+    let iso = business_isolation::mode(state);
+    let lines = business_isolation::lines(state, iso, tenant_id).await;
+    if lines.restricted_read_failed
+        || (lines.roles_read_failed && iso == business_isolation::Mode::Enforce)
+    {
+        return;
+    }
+    let reach = reachability(state, &all).await;
+    let (magic_domain, nameservers) = match state.tenants.base.find_by_id(tenant_id).await {
+        Ok(t) => (
+            t.settings.magic_dns_domain.clone(),
+            t.settings.magic_dns_nameservers.clone(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
+    for node in &all {
+        if node.id.is_some_and(|id| reach.get(&id).copied() == Some(true)) {
+            repush_node_full_netmap(
+                state,
+                &network,
+                &all,
+                &reach,
+                &lines,
+                magic_domain.clone(),
+                nameservers.clone(),
+                node,
+            )
+            .await;
+        }
+    }
 }
 
 /// Pure core of [`stun_urls_from_turn`] — testable without an `AppState`.

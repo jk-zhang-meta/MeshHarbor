@@ -483,6 +483,70 @@ textarea {
 .dv-sub { margin: 1px 0 0 14px; }
 .dv-chips .chip { font-size: 10px; padding: 0 7px; }
 .chip-self { color: var(--primary); background: var(--primary-tint); border-color: var(--primary); }
+.dv-chip-zone {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg);
+  background: var(--bg-inset);
+  border-color: var(--border);
+  font-weight: 500;
+}
+.dv-chip-zone.is-pinned {
+  color: var(--primary);
+  background: var(--primary-tint);
+  border-color: var(--primary);
+  font-weight: 600;
+}
+.dv-pin-icon {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+}
+.dv-loc-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+.dv-loc-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dv-loc-text {
+  font-size: 12px;
+  font-weight: 500;
+}
+.geo-code-pill {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.4px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+.dv-loc-ip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  line-height: 1.2;
+}
+.dv-loc-ip.is-copyable {
+  cursor: pointer;
+}
+.dv-loc-ip.is-copyable:hover {
+  color: var(--fg);
+}
+.dv-loc-copied {
+  color: var(--ok);
+  font-weight: 600;
+}
 .tag-chip {
   display: inline-block;
   padding: 0 7px;

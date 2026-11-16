@@ -94,6 +94,20 @@
       />
       <v-list-subheader>{{ t('mh.devMenu.sec.network') }}</v-list-subheader>
       <v-list-item
+        v-if="networkMounted && effectiveCanAssignZone"
+        prepend-icon="mdi-map-marker-path"
+        :title="t('mh.devMenu.zoneAssignment')"
+        data-testid="menu-zone-assignment"
+        @click="emit('action', 'zone-assignment')"
+      />
+      <v-list-item
+        v-if="networkMounted && isAdmin === true"
+        prepend-icon="mdi-swap-horizontal-circle-outline"
+        :title="t('mh.devMenu.peerRelayPolicy')"
+        data-testid="menu-peer-relay-policy"
+        @click="emit('action', 'peer-relay-policy')"
+      />
+      <v-list-item
         prepend-icon="mdi-ip-network-outline"
         :title="t('mh.devMenu.routes')"
         @click="emit('action', 'routes')"
@@ -181,32 +195,50 @@ export type DeviceAction =
   | 'ssh-policy'
   | 'external-access'
   | 'remote-config'
+  | 'zone-assignment'
+  | 'peer-relay-policy'
   | 'routes'
   | 'evict'
   | 'delete'
   | 'delete-tunnel'
 
-const props = defineProps<{
-  tenantId: string
-  row: DeviceRow
-  /** The full agent, for an agent row — no agent, no menu (its actions all
-   *  need one). */
-  agent?: Agent
-  /** The tunnel client, for a tunnel row — its delete needs the record. */
-  client?: TunnelClient
-  /** The device's overlay node, when it holds an address. */
-  node?: OverlayNode
-  /** FR-69 P9 — the overlay-key rotation and the SSH policy are the network
-   *  module's routes; a menu item that leads to a 404 is worse than none. */
-  networkMounted?: boolean
-  updateBusy?: boolean
-  rotateKeyBusy?: boolean
-  /** Why "Update now" will not take, when it will not (FR-67 P7). */
-  updateBlocked?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    tenantId: string
+    row: DeviceRow
+    /** The full agent, for an agent row — no agent, no menu (its actions all
+     *  need one). */
+    agent?: Agent
+    /** The tunnel client, for a tunnel row — its delete needs the record. */
+    client?: TunnelClient
+    /** The device's overlay node, when it holds an address. */
+    node?: OverlayNode
+    /** FR-69 P9 — the overlay-key rotation and the SSH policy are the network
+     *  module's routes; a menu item that leads to a 404 is worse than none. */
+    networkMounted?: boolean
+    /** Caller holds MANAGE_AGENTS (AgentsSection passes `mayManageAgents`). */
+    canManageAgents?: boolean
+    /** Caller may assign a zone to this specific device (`MANAGE_AGENTS` or device owner). */
+    canAssignZone?: boolean
+    /** Caller holds ADMINISTRATOR / org owner (fail-closed: only admins see Relay policy). */
+    isAdmin?: boolean
+    updateBusy?: boolean
+    rotateKeyBusy?: boolean
+    /** Why "Update now" will not take, when it will not (FR-67 P7). */
+    updateBlocked?: string
+  }>(),
+  {
+    canManageAgents: true,
+    canAssignZone: undefined,
+    isAdmin: false,
+  },
+)
 
 const emit = defineEmits<{ action: [action: DeviceAction] }>()
 const { t } = useI18n()
 
+const effectiveCanAssignZone = computed(
+  () => props.canAssignZone ?? (props.canManageAgents !== false),
+)
 const label = computed(() => props.row.display_name || props.row.name)
 </script>

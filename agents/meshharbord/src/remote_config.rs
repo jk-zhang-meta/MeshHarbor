@@ -349,6 +349,28 @@ impl RemoteConfigServices {
         .unwrap_or_else(|e| Err(format!("config apply task join: {e}")))
     }
 
+    /// Persist `relay_server_enabled = Some(serve)` on disk when an
+    /// Administrator updates `peer_relay_policy.serve`. Idempotent on no-op so
+    /// every reconnect does not rewrite `config.toml`.
+    pub async fn persist_relay_server_enabled(&self, serve: bool) -> Result<bool, String> {
+        let _guard = self.lock.lock().await;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cfg = match crate::config::load(&path) {
+                Ok(c) => c,
+                Err(e) => return Err(format!("loading config: {e:#}")),
+            };
+            if cfg.relay_server_enabled == Some(serve) {
+                return Ok(false);
+            }
+            cfg.relay_server_enabled = Some(serve);
+            crate::config::save(&path, &cfg).map_err(|e| format!("saving config: {e:#}"))?;
+            Ok(true)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("relay config save task join: {e}")))
+    }
+
     /// FR-40 — persist a freshly minted overlay key for ONE enrollment and
     /// bump its epoch, under the daemon-wide write lock, through the same
     /// atomic `config::save` as everything else (fsync + `.prev` + 0600/ACL).

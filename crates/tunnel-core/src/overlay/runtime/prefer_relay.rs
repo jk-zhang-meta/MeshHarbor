@@ -512,9 +512,11 @@ impl OverlayRuntime {
                             direct_sent: r.direct.sent,
                             direct_lost: r.direct.lost,
                             direct_rtt_ms: r.direct.rtt_ms,
+                            direct_jitter_ms: r.direct.jitter_ms,
                             relay_sent: r.relay.sent,
                             relay_lost: r.relay.lost,
                             relay_rtt_ms: r.relay.rtt_ms,
+                            relay_jitter_ms: r.relay.jitter_ms,
                             on_relay: r.on_relay,
                         }),
                     )

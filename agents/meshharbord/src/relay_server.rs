@@ -31,7 +31,7 @@
 
 use bson::oid::ObjectId;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tokio::sync::watch;
 use tunnel_core::overlay::orgrelay::backbone::{self, AuthorizedBridgeGrant, BridgeLeg};
 
@@ -40,11 +40,20 @@ use tunnel_core::overlay::orgrelay::bind::CookieKey;
 use tunnel_core::overlay::orgrelay::responder::ResponderCounts;
 use tunnel_core::overlay::orgrelay::server::{RelayCounts, RelayHandle, RelayServer, RelayStats};
 
-/// Process-wide listener storage is populated only after bind. Its readiness
-/// channel is cleared on task exit; readers must use `active_running` rather
-/// than treating the OnceLock's retained value as lifetime evidence.
-static RUNNING: OnceLock<Running> = OnceLock::new();
+/// Process-wide listener snapshot populated while bound and cleared on stop.
+static RUNNING: OnceLock<RwLock<Option<Running>>> = OnceLock::new();
+static CONTROLLER: OnceLock<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+    OnceLock::new();
 
+fn running_slot() -> &'static RwLock<Option<Running>> {
+    RUNNING.get_or_init(|| RwLock::new(None))
+}
+
+fn controller_lock() -> &'static tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>> {
+    CONTROLLER.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+#[derive(Clone)]
 struct Running {
     listening: String,
     stats: Arc<RelayStats>,
@@ -93,8 +102,12 @@ pub fn listening_port() -> Option<u16> {
     *readiness_sender().borrow()
 }
 
-fn active_running() -> Option<&'static Running> {
-    RUNNING.get().filter(|r| r.readiness.borrow().is_some())
+fn active_running() -> Option<Running> {
+    running_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .filter(|r| r.readiness.borrow().is_some())
 }
 
 struct ServingGuard {
@@ -113,11 +126,6 @@ impl Drop for ServingGuard {
         self.reporter.abort();
     }
 }
-
-/// Guards against a second start. Separate from [`RUNNING`] because that is
-/// only populated once the socket exists, and the guard has to hold from the
-/// moment the first call is made.
-static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Probe counters, or `None` when this node is not serving. Feeds the P1
 /// `NodeStatus::org_relay` field.
@@ -153,23 +161,207 @@ pub async fn maybe_start() {
     if !orgrelay::relay_server_enabled() {
         return;
     }
-    let port = orgrelay::relay_server_port();
-    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        tracing::warn!("org-relay server already started; ignoring second start");
-        return;
-    }
-    match start_listener(port, readiness_sender().clone()).await {
-        Ok((running, task)) => {
-            if RUNNING.set(running).is_err() {
-                task.abort();
-            }
-            // Otherwise dropping the JoinHandle detaches the process-wide task.
+    set_serving(true).await;
+}
+
+/// Dynamically start or stop the process-wide UDP org-relay listener.
+/// Starting publishes `Some(port)` on [`READINESS`], waking `signaling` to
+/// re-advertise `RpcCap::RelayServer` and `OverlayRuntime` to rejoin with
+/// `relay_port` & backbone readiness. Stopping aborts the listener & bridges
+/// and publishes `None` on [`READINESS`].
+pub async fn set_serving(serve: bool) -> bool {
+    set_serving_on_port(serve, orgrelay::relay_server_port()).await
+}
+
+async fn set_serving_on_port(serve: bool, port: u16) -> bool {
+    let mut task_guard = controller_lock().lock().await;
+    if serve {
+        if listening_port().is_some() {
+            return true;
         }
-        Err(e) => tracing::error!(
-            port, error = %e,
-            "org-relay server NOT started: could not bind UDP listener; remaining a client"
-        ),
+        match start_listener(port, readiness_sender().clone()).await {
+            Ok((running, task)) => {
+                tracing::info!(
+                    listening = %running.listening,
+                    "org-relay server dynamically started (binding is local; reachability still depends on firewall/NAT)"
+                );
+                *running_slot().write().unwrap_or_else(|e| e.into_inner()) = Some(running);
+                *task_guard = Some(task);
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    port, error = %e,
+                    "org-relay server NOT started: could not bind UDP listener; remaining a client"
+                );
+                false
+            }
+        }
+    } else {
+        *running_slot().write().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(task) = task_guard.take() {
+            task.abort();
+            let _ = task.await;
+            tracing::info!("org-relay server dynamically stopped");
+        }
+        readiness_sender().send_replace(None);
+        false
     }
+}
+
+static LAST_APPLIED_REVISION: OnceLock<tokio::sync::Mutex<Option<u64>>> = OnceLock::new();
+static RUNTIME_SERVE: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
+static SERVER_BACKBONE_ENDPOINTS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
+
+fn last_applied_revision() -> &'static tokio::sync::Mutex<Option<u64>> {
+    LAST_APPLIED_REVISION.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+fn runtime_serve_slot() -> &'static RwLock<Option<bool>> {
+    RUNTIME_SERVE.get_or_init(|| RwLock::new(None))
+}
+
+fn server_backbone_endpoints_slot() -> &'static RwLock<Vec<String>> {
+    SERVER_BACKBONE_ENDPOINTS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+pub fn runtime_server_backbone_endpoints() -> Vec<String> {
+    server_backbone_endpoints_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyRevisionDecision {
+    RejectStale,
+    IdempotentReconnect(bool),
+    ApplyNew,
+}
+
+fn classify_policy_revision(
+    last_applied: &mut Option<u64>,
+    runtime_serve: Option<bool>,
+    revision: Option<u64>,
+) -> PolicyRevisionDecision {
+    match (revision, *last_applied, runtime_serve) {
+        (Some(rev), Some(last), _) if rev < last => PolicyRevisionDecision::RejectStale,
+        (None, Some(_), _) => PolicyRevisionDecision::RejectStale,
+        (Some(rev), Some(last), Some(applied_serve)) if rev == last => {
+            PolicyRevisionDecision::IdempotentReconnect(applied_serve)
+        }
+        (Some(rev), _, _) => {
+            *last_applied = Some(rev);
+            PolicyRevisionDecision::ApplyNew
+        }
+        (None, None, _) => PolicyRevisionDecision::ApplyNew,
+    }
+}
+
+#[cfg(test)]
+fn accept_policy_revision(last_applied: &mut Option<u64>, revision: Option<u64>) -> bool {
+    !matches!(
+        classify_policy_revision(last_applied, None, revision),
+        PolicyRevisionDecision::RejectStale
+    )
+}
+
+/// Reconcile against an authoritative `rc:overlay.peer_relay_serve` directive
+/// from the primary organization's server: ignore stale revisions
+/// (`revision < last_applied`), treat duplicate-equal revisions
+/// (`Some(rev) == *last_applied` once `RUNTIME_SERVE` is initialized) as
+/// idempotent reconnect deliveries without overwriting `RUNTIME_SERVE` or
+/// `SERVER_BACKBONE_ENDPOINTS`, and on strictly newer revisions update the
+/// runtime flag and server-authorized backbone endpoints, persist
+/// `relay_server_enabled = Some(serve)` to `config.toml`, and start/stop
+/// (or re-announce readiness on) the UDP relay listener.
+pub async fn apply_server_policy(
+    serve: bool,
+    revision: Option<u64>,
+    backbone_endpoints: &[String],
+    remote_cfg: &crate::remote_config::RemoteConfigServices,
+) -> bool {
+    apply_server_policy_on_port(
+        serve,
+        revision,
+        backbone_endpoints,
+        remote_cfg,
+        orgrelay::relay_server_port(),
+    )
+    .await
+}
+
+async fn apply_server_policy_on_port(
+    serve: bool,
+    revision: Option<u64>,
+    backbone_endpoints: &[String],
+    remote_cfg: &crate::remote_config::RemoteConfigServices,
+    port: u16,
+) -> bool {
+    let mut last_applied = last_applied_revision().lock().await;
+    let current_serve = *runtime_serve_slot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    match classify_policy_revision(&mut last_applied, current_serve, revision) {
+        PolicyRevisionDecision::RejectStale => {
+            tracing::debug!(
+                serve,
+                ?revision,
+                last_applied = ?*last_applied,
+                "org-relay: ignoring stale peer-relay policy directive"
+            );
+            return false;
+        }
+        PolicyRevisionDecision::IdempotentReconnect(applied_serve) => {
+            if applied_serve {
+                if listening_port().is_none() {
+                    set_serving_on_port(true, port).await;
+                }
+                if let Some(bound_port) = listening_port() {
+                    readiness_sender().send_replace(Some(bound_port));
+                }
+            } else if listening_port().is_some() {
+                set_serving_on_port(false, port).await;
+            }
+            return true;
+        }
+        PolicyRevisionDecision::ApplyNew => {}
+    }
+
+    let next_endpoints = if serve {
+        backbone_endpoints.to_vec()
+    } else {
+        Vec::new()
+    };
+    let endpoints_changed = {
+        let mut slot = server_backbone_endpoints_slot()
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        let changed = *slot != next_endpoints;
+        *slot = next_endpoints;
+        changed
+    };
+    *runtime_serve_slot()
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(serve);
+    let backbone_changed =
+        backbone::set_runtime_server_backbone_endpoints(serve, backbone_endpoints);
+    orgrelay::set_runtime_relay_server_enabled(Some(serve));
+    if let Err(e) = remote_cfg.persist_relay_server_enabled(serve).await {
+        tracing::debug!(serve, error = %e, "org-relay: config persistence skipped");
+    }
+    let was_listening = listening_port();
+    set_serving_on_port(serve, port).await;
+    if serve
+        && (backbone_changed || endpoints_changed)
+        && was_listening.is_some()
+        && listening_port() == was_listening
+    {
+        // Re-fire the readiness watch so `OverlayRuntime` immediately rejoins
+        // with the updated `relay_backbone_ready` and refreshes probe targets.
+        readiness_sender().send_replace(was_listening);
+    }
+    true
 }
 
 /// Separate per-instance seam so real bind/failure/teardown tests never change
@@ -344,7 +536,7 @@ pub fn install_bridge_from_wire(grant: meshharbor_remote_control::signaling::Rel
     let Some(policy) = backbone::configured_local_policy() else {
         return;
     };
-    install_bridge_for(running, grant, policy);
+    install_bridge_for(&running, grant, policy);
 }
 
 // Same production manager path, with per-instance dependencies so tests never
@@ -446,14 +638,14 @@ fn bridge_slot_allows(
     if let Some(existing) = entries.get(&id) {
         return generation > existing.generation;
     }
-    entries.len() < 64
+    entries.len() < meshharbor_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY
 }
 
 pub fn revoke_bridge_from_wire(id: ObjectId, generation: u64) {
     let Some(running) = active_running() else {
         return;
     };
-    revoke_bridge_for(running, id, generation);
+    revoke_bridge_for(&running, id, generation);
 }
 
 fn revoke_bridge_for(running: &Running, id: ObjectId, generation: u64) {
@@ -477,11 +669,18 @@ pub fn revoke_from_wire(vni: u32, generation: u64) {
 mod tests {
     use super::*;
 
+    fn global_state_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
     /// The default is off, and "off" must mean nothing was created — not a
     /// relay sitting on a socket with zeroed counters. `stats()` returning
     /// `None` is how a reader tells those apart.
     #[tokio::test]
     async fn a_device_that_did_not_opt_in_reports_no_relay() {
+        let _guard = global_state_test_lock().lock().await;
+        orgrelay::set_runtime_relay_server_enabled(None);
         // No env set in this test process, so the gate is closed.
         assert!(!orgrelay::relay_server_enabled());
         maybe_start().await;
@@ -489,6 +688,102 @@ mod tests {
             stats().is_none() && handle().is_none(),
             "opting out must leave no relay, not an idle one"
         );
+    }
+
+    #[tokio::test]
+    async fn dynamic_server_policy_starts_stops_persists_and_toggles_relay_cap() {
+        use meshharbor_remote_control::models::RpcCap;
+        use tunnel_core::overlay::orgrelay::{PROBE_TOKEN_LEN, build_probe};
+
+        let _guard = global_state_test_lock().lock().await;
+        set_serving(false).await;
+        orgrelay::set_runtime_relay_server_enabled(None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"server_url = "http://127.0.0.1:1"
+agent_token = "tok"
+agent_id = "000000000000000000000001"
+tenant_id = "000000000000000000000002"
+machine_id = "m1"
+machine_name = "box"
+"#,
+        )
+        .unwrap();
+        let remote_cfg = crate::remote_config::RemoteConfigServices::new(
+            cfg_path.clone(),
+            std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            false,
+            false,
+        );
+
+        let mut readiness_rx = readiness();
+        assert_eq!(*readiness_rx.borrow_and_update(), None);
+
+        // 1. Server pushes serve = true: runtime flag flips, config persists
+        //    `relay_server_enabled = Some(true)`, listener binds & answers probe,
+        //    READINESS publishes `Some(port)`, and `detect()` advertises
+        //    `RelayServer` + `RelayControl`.
+        orgrelay::set_runtime_relay_server_enabled(Some(true));
+        remote_cfg.persist_relay_server_enabled(true).await.unwrap();
+        assert!(orgrelay::relay_server_enabled());
+        assert_eq!(
+            crate::config::load(&cfg_path)
+                .unwrap()
+                .relay_server_enabled,
+            Some(true)
+        );
+        assert!(set_serving_on_port(true, 0).await);
+        let port = readiness_rx.borrow_and_update().expect("ready port");
+        assert_eq!(listening_port(), Some(port));
+        assert!(stats().is_some() && handle().is_some());
+
+        let caps_on = crate::encode::caps::detect();
+        assert!(caps_on.rpc.iter().any(|c| c == RpcCap::RelayControl.wire()));
+        assert!(caps_on.rpc.iter().any(|c| c == RpcCap::RelayServer.wire()));
+
+        let client = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+        let probe = build_probe(42, &[9; PROBE_TOKEN_LEN]);
+        client.send_to(&probe, ("127.0.0.1", port)).await.unwrap();
+        let mut reply = [0u8; 256];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut reply),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&reply[..n], &probe);
+
+        // 2. Server pushes serve = false: listener shuts down, socket releases,
+        //    READINESS publishes `None`, config persists `Some(false)`, and
+        //    `detect()` drops `RelayServer` while keeping `RelayControl`.
+        orgrelay::set_runtime_relay_server_enabled(Some(false));
+        remote_cfg
+            .persist_relay_server_enabled(false)
+            .await
+            .unwrap();
+        assert!(!set_serving(false).await);
+        assert_eq!(*readiness_rx.borrow_and_update(), None);
+        assert_eq!(listening_port(), None);
+        assert!(stats().is_none() && handle().is_none());
+        assert_eq!(
+            crate::config::load(&cfg_path)
+                .unwrap()
+                .relay_server_enabled,
+            Some(false)
+        );
+        let caps_off = crate::encode::caps::detect();
+        assert!(caps_off.rpc.iter().any(|c| c == RpcCap::RelayControl.wire()));
+        assert!(!caps_off.rpc.iter().any(|c| c == RpcCap::RelayServer.wire()));
+
+        // 3. Re-enabling starts cleanly again without restarting the daemon.
+        assert!(set_serving_on_port(true, 0).await);
+        assert!(listening_port().is_some());
+        set_serving(false).await;
+        orgrelay::set_runtime_relay_server_enabled(None);
     }
 
     #[tokio::test]
@@ -544,8 +839,9 @@ mod tests {
     }
     #[tokio::test]
     async fn backbone_native_registry_is_bounded_and_duplicate_generation_does_not_spawn() {
+        let cap = meshharbor_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY;
         let mut entries = HashMap::new();
-        for _ in 0..64 {
+        for _ in 0..cap {
             entries.insert(
                 ObjectId::new(),
                 NativeBridge {
@@ -561,7 +857,7 @@ mod tests {
         assert!(!bridge_slot_allows(&entries, id, 5));
         assert!(!bridge_slot_allows(&entries, id, 4));
         assert!(bridge_slot_allows(&entries, id, 6));
-        assert_eq!(entries.len(), 64);
+        assert_eq!(entries.len(), cap);
         entries.clear(); // Drop aborts every pending task.
     }
     // Only the Linux-only backbone tests below observe bridge sockets.
@@ -831,6 +1127,164 @@ mod tests {
         assert_eq!(&buffer[..n], &probe);
         target_task.abort();
         let _ = target_task.await;
+    }
+
+    #[tokio::test]
+    async fn apply_server_policy_ignores_out_of_order_stale_revision() {
+        let _guard = global_state_test_lock().lock().await;
+        set_serving(false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let mut init_cfg = crate::config::test_fixture();
+        init_cfg.relay_server_port = Some(0);
+        crate::config::save(&cfg_path, &init_cfg).unwrap();
+        let remote_cfg = crate::remote_config::RemoteConfigServices::new(
+            cfg_path.clone(),
+            Arc::new(tokio::sync::Mutex::new(())),
+            false,
+            true,
+        );
+
+        // Reset process-level revision state for deterministic test isolation.
+        *last_applied_revision().lock().await = None;
+        *runtime_serve_slot().write().unwrap() = None;
+        server_backbone_endpoints_slot().write().unwrap().clear();
+
+        // Live admin PUT (false, rev=2) arrives first.
+        assert!(apply_server_policy(false, Some(2), &[], &remote_cfg).await);
+        assert!(!orgrelay::relay_server_enabled());
+        assert_eq!(
+            crate::config::load(&cfg_path).unwrap().relay_server_enabled,
+            Some(false)
+        );
+        assert!(listening_port().is_none());
+
+        // Stale connect snapshot (true, rev=1) arrives out-of-order AFTER rev=2 -> ignored!
+        assert!(!apply_server_policy(true, Some(1), &[], &remote_cfg).await);
+        assert!(!orgrelay::relay_server_enabled());
+        assert_eq!(
+            crate::config::load(&cfg_path).unwrap().relay_server_enabled,
+            Some(false)
+        );
+        assert!(listening_port().is_none());
+
+        // Unversioned directive after versioned state is also ignored.
+        assert!(!apply_server_policy(true, None, &[], &remote_cfg).await);
+        assert!(!orgrelay::relay_server_enabled());
+
+        // Same revision (reconnect with unchanged policy) and strictly higher revision apply.
+        assert!(apply_server_policy(false, Some(2), &[], &remote_cfg).await);
+        let mut next = None;
+        assert!(accept_policy_revision(&mut next, Some(2)));
+        assert!(!accept_policy_revision(&mut next, Some(1)));
+        assert!(accept_policy_revision(&mut next, Some(3)));
+        assert_eq!(next, Some(3));
+
+        *last_applied_revision().lock().await = None;
+        *runtime_serve_slot().write().unwrap() = None;
+        server_backbone_endpoints_slot().write().unwrap().clear();
+        orgrelay::set_runtime_relay_server_enabled(None);
+    }
+
+    #[tokio::test]
+    async fn apply_server_policy_protects_backbone_endpoints_against_stale_and_duplicate_equal_revisions()
+    {
+        let _guard = global_state_test_lock().lock().await;
+        set_serving(false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let mut init_cfg = crate::config::test_fixture();
+        init_cfg.relay_server_port = Some(0);
+        crate::config::save(&cfg_path, &init_cfg).unwrap();
+        let remote_cfg = crate::remote_config::RemoteConfigServices::new(
+            cfg_path.clone(),
+            Arc::new(tokio::sync::Mutex::new(())),
+            false,
+            true,
+        );
+
+        *last_applied_revision().lock().await = None;
+        *runtime_serve_slot().write().unwrap() = None;
+        server_backbone_endpoints_slot().write().unwrap().clear();
+
+        let rev_v1 = (2_u64 << 24) | 1;
+        let rev_stale = (1_u64 << 24) | 99;
+        let rev_v2 = (3_u64 << 24) | 1;
+        let ep_initial = vec!["202.181.7.6:3478".to_string()];
+        let ep_obsolete = vec!["198.51.100.99:3478".to_string()];
+        let ep_updated = vec!["202.181.7.6:3478".to_string(), "8.8.4.4:3478".to_string()];
+
+        // 1. Initial composite revision applies `serve = true` and `ep_initial`.
+        assert!(apply_server_policy_on_port(true, Some(rev_v1), &ep_initial, &remote_cfg, 0).await);
+        let bound_port = listening_port().expect("ephemeral relay listener bound");
+        assert!(orgrelay::relay_server_enabled());
+        assert_eq!(*runtime_serve_slot().read().unwrap(), Some(true));
+        assert_eq!(runtime_server_backbone_endpoints(), ep_initial);
+
+        // 2. Stale composite revision (`rev_stale < rev_v1`) is rejected (`false`) and preserves endpoints.
+        assert!(!apply_server_policy_on_port(true, Some(rev_stale), &ep_obsolete, &remote_cfg, 0).await);
+        assert!(orgrelay::relay_server_enabled());
+        assert_eq!(runtime_server_backbone_endpoints(), ep_initial);
+
+        // 3. Duplicate-equal revision (`rev_v1 == last_applied`) is treated as idempotent reconnect:
+        //    re-emits readiness for the running listener WITHOUT overwriting `RUNTIME_SERVE`
+        //    or `SERVER_BACKBONE_ENDPOINTS` even if a racing payload carried obsolete endpoints or serve=false!
+        let mut readiness_rx = readiness();
+        let _ = readiness_rx.borrow_and_update();
+        assert!(apply_server_policy_on_port(false, Some(rev_v1), &ep_obsolete, &remote_cfg, 0).await);
+        assert!(readiness_rx.has_changed().unwrap());
+        assert_eq!(*readiness_rx.borrow_and_update(), Some(bound_port));
+        assert!(orgrelay::relay_server_enabled());
+        assert_eq!(*runtime_serve_slot().read().unwrap(), Some(true));
+        assert_eq!(runtime_server_backbone_endpoints(), ep_initial);
+        assert_eq!(
+            crate::config::load(&cfg_path).unwrap().relay_server_enabled,
+            Some(true)
+        );
+
+        // 4. Strictly newer composite revision (`rev_v2 > rev_v1`) updates backbone endpoints and fires readiness.
+        let _ = readiness_rx.borrow_and_update();
+        assert!(apply_server_policy_on_port(true, Some(rev_v2), &ep_updated, &remote_cfg, 0).await);
+        assert!(readiness_rx.has_changed().unwrap());
+        assert_eq!(runtime_server_backbone_endpoints(), ep_updated);
+
+        // 5. Failed initial bind followed by unchanged-revision reconnect recovers the listener
+        //    once the port frees, while preserving the accepted policy & endpoints.
+        set_serving(false).await;
+        let occupied = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await.unwrap();
+        let occupied_port = occupied.local_addr().unwrap().port();
+        let rev_v3 = (4_u64 << 24) | 1;
+        let ep_v3 = vec!["10.42.2.114:3478".to_string()];
+        assert!(
+            apply_server_policy_on_port(true, Some(rev_v3), &ep_v3, &remote_cfg, occupied_port)
+                .await
+        );
+        assert_eq!(listening_port(), None, "port conflict prevented initial bind");
+        assert_eq!(runtime_server_backbone_endpoints(), ep_v3);
+
+        drop(occupied);
+        let _ = readiness_rx.borrow_and_update();
+        assert!(
+            apply_server_policy_on_port(false, Some(rev_v3), &ep_obsolete, &remote_cfg, occupied_port)
+                .await
+        );
+        assert_eq!(
+            listening_port(),
+            Some(occupied_port),
+            "unchanged-revision reconnect must retry and recover the failed listener bind"
+        );
+        assert!(readiness_rx.has_changed().unwrap());
+        assert_eq!(*readiness_rx.borrow_and_update(), Some(occupied_port));
+        assert_eq!(*runtime_serve_slot().read().unwrap(), Some(true));
+        assert_eq!(runtime_server_backbone_endpoints(), ep_v3);
+
+        // Cleanup globals.
+        set_serving(false).await;
+        *last_applied_revision().lock().await = None;
+        *runtime_serve_slot().write().unwrap() = None;
+        server_backbone_endpoints_slot().write().unwrap().clear();
+        backbone::set_runtime_server_backbone_endpoints(false, &[]);
+        orgrelay::set_runtime_relay_server_enabled(None);
     }
 }
 

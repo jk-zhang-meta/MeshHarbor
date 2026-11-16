@@ -697,6 +697,10 @@
       "methods": "POST"
     },
     {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/zone-assignment",
+      "methods": "PUT"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/archive",
       "methods": "POST"
     },
@@ -881,6 +885,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/tenant/{tenant_id}/network-zones",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/overlay-acl",
       "methods": "GET,HEAD,POST"
     },
@@ -927,6 +935,10 @@
     {
       "path": "/api/tenant/{tenant_id}/peer-relay-audit",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/peer-relays/{agent_id}",
+      "methods": "PUT"
     },
     {
       "path": "/api/tenant/{tenant_id}/privacy-activity/{agent_id}",
@@ -6477,6 +6489,7 @@
     "rc:tunnel.quic.ready",
     "rc:tunnel.quic.candidate",
     "rc:overlay.self_name",
+    "rc:overlay.peer_relay_serve",
     "rc:overlay.netmap",
     "rc:overlay.netmap_delta",
     "rc:overlay.relay_grant",
@@ -6544,6 +6557,7 @@
     "rc:agent.heartbeat": "fleet",
     "rc:agent.hello": "fleet",
     "rc:agent.key_rotated": "network",
+    "rc:agent.name.ack": "fleet",
     "rc:agent.net_inventory": "network",
     "rc:consent": "fleet",
     "rc:consent.pending": "fleet",

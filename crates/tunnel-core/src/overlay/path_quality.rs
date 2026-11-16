@@ -57,8 +57,25 @@ pub(crate) const WINDOW: Duration = Duration::from_secs(10);
 /// How often a compared pair is reported.
 pub(crate) const REPORT_EVERY: Duration = Duration::from_secs(5);
 /// A direct round trip at or above this starts a comparison. A relay has two
-/// legs of its own, so below this it cannot be clearly better.
+/// legs of its own, so below this a clean direct path cannot be clearly beat.
 pub(crate) const SUSPECT_RTT_MS: f64 = 100.0;
+/// A resolved direct window losing at least this fraction of probes starts a
+/// comparison even when surviving packets still have low median RTT (e.g.
+/// cross-ISP / cross-border UDP policing).
+pub(crate) const SUSPECT_LOSS_RATIO: f64 = 0.10;
+/// A resolved direct window whose RTT jitter (robust spread) reaches this many
+/// milliseconds starts a comparison even when median RTT stays below
+/// [`SUSPECT_RTT_MS`].
+pub(crate) const SUSPECT_JITTER_MS: f64 = 30.0;
+/// Weight on RTT jitter in [`Stats::effective_rtt_ms`] (p95 interactive tail).
+const JITTER_SLA_WEIGHT: f64 = 2.0;
+/// Calibrated SLA latency penalty per unit loss ratio (`1000.0` ⇒ `10 ms` per
+/// `1%` packet loss up to 50%, steepening toward `2000 ms` under heavy loss).
+const LOSS_PENALTY_MS_PER_RATIO: f64 = 1_000.0;
+const LOSS_PENALTY_CAP_MS: f64 = 2_000.0;
+/// Maximum relay window loss ratio at which the relay may still be considered
+/// preferable over direct (mirrors the server's `RELAY_MAX_LOSS_PCT = 10%`).
+const RELAY_MAX_PREFER_LOSS: f64 = 0.10;
 /// Reports in a row with a direct path that is no longer suspect before a
 /// comparison ends.
 const CALM_REPORTS: u8 = 3;
@@ -71,6 +88,10 @@ const EVEN_SLACK_MS: f64 = 20.0;
 /// A settled pair is compared again once its direct round trip is this much
 /// worse than when it settled.
 const WORSE_RATIO: f64 = 1.25;
+/// Minimum effective-SLA worsening (ms) required to wake a settled pair via
+/// windowed loss/jitter alone, absorbing ±1-probe sliding-window discretization
+/// (~91–100 ms) on a steady lossy path so it never false-wakes right after settling.
+const WORSE_EFF_SLACK_MS: f64 = 150.0;
 /// The first pause before a settled pair is compared again, doubled each
 /// time it settles again, up to [`RECHECK_MAX`].
 const RECHECK_BASE: Duration = Duration::from_secs(120);
@@ -100,6 +121,52 @@ pub(crate) struct Stats {
     pub lost: u32,
     /// Median round trip of the answered probes.
     pub rtt_ms: Option<u32>,
+    /// Robust RTT jitter (maximum of median absolute deviation and
+    /// semi-interquartile spread across answered probes, in ms).
+    pub jitter_ms: Option<u32>,
+}
+
+impl Stats {
+    /// Resolved packet loss ratio in `0.0..=1.0`.
+    pub(crate) fn loss_ratio(&self) -> f64 {
+        if self.sent == 0 {
+            0.0
+        } else {
+            (f64::from(self.lost.min(self.sent)) / f64::from(self.sent)).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Interactive/TCP-equivalent latency penalty for a given packet loss ratio:
+    /// `10 ms` per `1%` loss up to `50%`, steepening under severe loss and
+    /// capped cleanly at [`LOSS_PENALTY_CAP_MS`].
+    pub(crate) fn loss_penalty_ms(loss_ratio: f64) -> f64 {
+        let r = loss_ratio.clamp(0.0, 1.0);
+        let base = r * LOSS_PENALTY_MS_PER_RATIO;
+        let severe = if r > 0.5 { (r - 0.5) * 2_000.0 } else { 0.0 };
+        (base + severe).min(LOSS_PENALTY_CAP_MS)
+    }
+
+    /// Multi-metric SLA effective latency:
+    /// `median_rtt_ms + 2.0 * jitter_ms + loss_penalty_ms(loss_ratio)`.
+    /// `None` when no probe in the window was answered.
+    pub(crate) fn effective_rtt_ms(&self) -> Option<f64> {
+        let rtt = f64::from(self.rtt_ms?);
+        let jitter = f64::from(self.jitter_ms.unwrap_or(0));
+        Some(rtt + JITTER_SLA_WEIGHT * jitter + Self::loss_penalty_ms(self.loss_ratio()))
+    }
+
+    /// True when the window has zero loss, low median RTT, low jitter, and low
+    /// effective SLA latency.
+    pub(crate) fn is_calm(&self) -> bool {
+        self.lost == 0
+            && self.rtt_ms.is_some_and(|d| f64::from(d) < SUSPECT_RTT_MS)
+            && self
+                .jitter_ms
+                .is_none_or(|j| f64::from(j) < SUSPECT_JITTER_MS)
+            && self
+                .effective_rtt_ms()
+                .is_some_and(|eff| eff < SUSPECT_RTT_MS)
+    }
 }
 
 /// One closed window of both paths, for `rc:overlay.path_quality`.
@@ -110,6 +177,38 @@ pub(crate) struct Report {
     pub direct: Stats,
     pub relay: Stats,
     pub on_relay: bool,
+}
+
+impl Report {
+    /// Whether this closed window's SLA score clearly prefers the relay path
+    /// over the direct path (accounting for median RTT, jitter, and loss on
+    /// both paths while refusing lossy or higher-jitter/lossier relays).
+    #[allow(dead_code)]
+    pub(crate) fn prefers_relay(&self) -> bool {
+        if self.direct.sent < MIN_REPORT_PROBES
+            || self.relay.sent < MIN_REPORT_PROBES
+            || self.direct.is_calm()
+        {
+            return false;
+        }
+        if self.relay.loss_ratio() > RELAY_MAX_PREFER_LOSS {
+            return false;
+        }
+        // Never prefer a relay that has strictly worse loss and no better jitter
+        // than the direct path.
+        if self.relay.loss_ratio() > self.direct.loss_ratio()
+            && self.relay.jitter_ms.unwrap_or(u32::MAX) >= self.direct.jitter_ms.unwrap_or(0)
+        {
+            return false;
+        }
+        match (
+            self.direct.effective_rtt_ms(),
+            self.relay.effective_rtt_ms(),
+        ) {
+            (Some(d_eff), Some(r_eff)) => d_eff > (r_eff * EVEN_RATIO).max(r_eff + EVEN_SLACK_MS),
+            _ => false,
+        }
+    }
 }
 
 /// What the runtime knows about one peer this tick.
@@ -233,6 +332,7 @@ impl Track {
             sent,
             lost: sent - rtts.len() as u32,
             rtt_ms: rtts.get(rtts.len() / 2).map(|r| r.round() as u32),
+            jitter_ms: robust_jitter_ms(&rtts),
         };
         let span = match (first, last) {
             (Some(a), Some(b)) => (b.saturating_duration_since(a) + PROBE_EVERY).min(WINDOW),
@@ -486,7 +586,15 @@ impl Engine {
         }
         let start_comparing = match pair.mode {
             Mode::Watch => {
+                let window_suspect = {
+                    let (d, _) = pair.direct.stats(now);
+                    d.sent >= MIN_REPORT_PROBES
+                        && (d.loss_ratio() >= SUSPECT_LOSS_RATIO
+                            || d.jitter_ms
+                                .is_some_and(|j| f64::from(j) >= SUSPECT_JITTER_MS))
+                };
                 pair.direct.recently_bad(now, SUSPECT_RTT_MS, 2, 3)
+                    || window_suspect
                     || (!p.active && slow_suspect(p.slow_direct, SUSPECT_RTT_MS))
             }
             // A settled pair needs a clearer signal than a watched one: its
@@ -497,9 +605,16 @@ impl Engine {
                 relay_blind,
             } => {
                 let worse = (baseline_ms * WORSE_RATIO).max(SUSPECT_RTT_MS);
+                let worse_eff = worse.max(baseline_ms + WORSE_EFF_SLACK_MS);
+                let window_worse = !relay_blind && {
+                    let (d, _) = pair.direct.stats(now);
+                    d.sent >= MIN_REPORT_PROBES
+                        && d.effective_rtt_ms().is_some_and(|eff| eff >= worse_eff)
+                };
                 now >= recheck
                     || (!relay_blind
                         && (pair.direct.recently_bad(now, worse, 3, 5)
+                            || window_worse
                             || (!p.active && slow_suspect(p.slow_direct, worse))))
             }
             Mode::Compare { .. } => false,
@@ -594,18 +709,21 @@ impl Engine {
         let Mode::Compare { calm, even } = pair.mode else {
             return;
         };
-        let d = direct.rtt_ms.map(f64::from);
-        let is_calm = direct.lost == 0 && d.is_some_and(|d| d < SUSPECT_RTT_MS);
-        // "No better" covers a relay that cannot be measured: with nothing
-        // to compare against, the probes buy nothing.
+        let is_calm = direct.is_calm();
+        // "No better" covers a relay that cannot be measured or loses too much
+        // to be preferred: with nothing better to switch to, the probes buy nothing.
         let relay_blind = relay.rtt_ms.is_none();
-        let low_loss = direct.lost * 10 <= direct.sent;
-        let is_even = relay_blind
-            || (low_loss
-                && match (d, relay.rtt_ms.map(f64::from)) {
-                    (Some(d), Some(r)) => d <= (r * EVEN_RATIO).max(r + EVEN_SLACK_MS),
-                    _ => false,
-                });
+        let relay_unusable = relay_blind || relay.loss_ratio() > RELAY_MAX_PREFER_LOSS;
+        let relay_worse_sla = relay.loss_ratio() > direct.loss_ratio()
+            && relay.jitter_ms.unwrap_or(u32::MAX) >= direct.jitter_ms.unwrap_or(0);
+        let is_even = relay_unusable
+            || relay_worse_sla
+            || match (direct.effective_rtt_ms(), relay.effective_rtt_ms()) {
+                (Some(d_eff), Some(r_eff)) => {
+                    d_eff <= (r_eff * EVEN_RATIO).max(r_eff + EVEN_SLACK_MS)
+                }
+                _ => false,
+            };
         let calm = if is_calm { calm + 1 } else { 0 };
         let even = if is_even { even + 1 } else { 0 };
         pair.mode = if calm >= CALM_REPORTS {
@@ -617,7 +735,7 @@ impl Engine {
                 .min(RECHECK_MAX);
             pair.settles = pair.settles.saturating_add(1);
             Mode::Settled {
-                baseline_ms: d.unwrap_or(SUSPECT_RTT_MS),
+                baseline_ms: direct.effective_rtt_ms().unwrap_or(SUSPECT_RTT_MS),
                 recheck: now + pause,
                 relay_blind,
             }
@@ -630,10 +748,30 @@ impl Engine {
     }
 }
 
+/// Robust RTT jitter in ms from a sorted slice of answered RTTs: maximum of
+/// median absolute deviation (MAD) and semi-interquartile spread (`(Q3 - Q1)/2`),
+/// capturing both bimodal/symmetric jitter and 25%+ bufferbloat tail spikes
+/// while ignoring isolated 1-in-10 scheduling outliers.
+fn robust_jitter_ms(rtts: &[f64]) -> Option<u32> {
+    let n = rtts.len();
+    if n == 0 {
+        return None;
+    }
+    if n == 1 {
+        return Some(0);
+    }
+    let med = 0.5 * (rtts[(n - 1) / 2] + rtts[n / 2]);
+    let mut devs: Vec<f64> = rtts.iter().map(|r| (r - med).abs()).collect();
+    devs.sort_by(f64::total_cmp);
+    let mad = 0.5 * (devs[(n - 1) / 2] + devs[n / 2]);
+    let siqr = 0.5 * (rtts[n - 1 - n / 4] - rtts[n / 4]);
+    Some(mad.max(siqr).round() as u32)
+}
+
 /// Does the slow table's reading make the direct path suspect?
 fn slow_suspect(slow: Option<(Option<f64>, Option<f64>)>, rtt_ms: f64) -> bool {
     slow.is_some_and(|(rtt, loss)| {
-        rtt.is_some_and(|r| r >= rtt_ms) || loss.is_some_and(|l| l >= 0.2)
+        rtt.is_some_and(|r| r >= rtt_ms) || loss.is_some_and(|l| l >= SUSPECT_LOSS_RATIO)
     })
 }
 
@@ -1229,5 +1367,133 @@ mod tests {
             !acts.iter().any(|a| matches!(a, Action::RelayDown { .. })),
             "late relay pongs still prove relay reachability: {acts:?}"
         );
+    }
+
+    #[test]
+    fn moderate_loss_on_low_rtt_direct_path_triggers_compare_and_prefers_clean_relay() {
+        let (t0, mut e) = (Instant::now(), Engine::with_seed(7));
+        let p = now_peer(true, false, true);
+        // 40 ms direct path with 20% packet loss (every 5th probe lost — never 2 of 3
+        // consecutive!) against a clean 0%-loss 55 ms relay path.
+        let acts = run(
+            &mut e,
+            t0,
+            0,
+            60,
+            p,
+            |s| (!s.is_multiple_of(5)).then_some(40),
+            |_| Some(55),
+        );
+        assert!(
+            e.comparing(&peer()),
+            "20% loss on a 40 ms direct path must trigger Compare and never falsely settle"
+        );
+        assert!(probes(&acts, Leg::Relay) >= 50);
+        let reps = reports(&acts);
+        assert!(!reps.is_empty());
+        let last = *reps.last().unwrap();
+        assert_eq!(last.direct.rtt_ms, Some(40));
+        assert!(
+            last.direct.loss_ratio() >= 0.18 && last.direct.loss_ratio() <= 0.30,
+            "direct window loss: {:?}",
+            last.direct
+        );
+        assert_eq!((last.relay.lost, last.relay.rtt_ms), (0, Some(55)));
+        assert!(
+            last.prefers_relay(),
+            "clean 55 ms relay must beat 20%-loss 40 ms direct: {last:?}"
+        );
+    }
+
+    #[test]
+    fn high_jitter_direct_path_triggers_compare_and_prefers_stable_relay() {
+        let (t0, mut e) = (Instant::now(), Engine::with_seed(7));
+        let p = now_peer(true, false, true);
+        // Direct path: median 40 ms with ±45 ms spikes (5 ms / 40 ms / 95 ms — every
+        // sample < SUSPECT_RTT_MS = 100 ms, 0% loss) vs stable 55 ms ± 2 ms relay.
+        let direct_jittery = |s: u64| {
+            Some(match s % 3 {
+                0 => 5,
+                1 => 40,
+                _ => 95,
+            })
+        };
+        let relay_stable = |s: u64| Some(if s.is_multiple_of(2) { 53 } else { 57 });
+        let acts = run(&mut e, t0, 0, 60, p, direct_jittery, relay_stable);
+        assert!(
+            e.comparing(&peer()),
+            "severe jitter on a 40 ms direct path must trigger Compare and stay comparing"
+        );
+        let reps = reports(&acts);
+        let last = *reps.last().expect("compared pair emits reports");
+        assert_eq!(last.direct.lost, 0);
+        assert!(
+            last.direct.jitter_ms.is_some_and(|j| j >= 35),
+            "direct jitter captured: {:?}",
+            last.direct
+        );
+        assert!(
+            last.relay.jitter_ms.is_some_and(|j| j <= 4),
+            "relay stays low-jitter: {:?}",
+            last.relay
+        );
+        assert!(
+            last.prefers_relay(),
+            "stable 55 ms ± 2 ms relay must beat 40 ms ± 45 ms direct: {last:?}"
+        );
+    }
+
+    #[test]
+    fn worse_relay_or_equal_sla_paths_settle_with_backoff_without_flapping() {
+        let t0 = Instant::now();
+        let p = now_peer(true, false, true);
+
+        // Case 1: Equal-SLA imperfect paths (40 ms + 20% loss direct vs 45 ms + 20% loss relay)
+        // settle after SETTLE_REPORTS and back off exponentially without flapping.
+        let mut e = Engine::with_seed(7);
+        let lossy_40 = |s: u64| (!s.is_multiple_of(5)).then_some(40);
+        let lossy_45 = |s: u64| (!s.is_multiple_of(5)).then_some(45);
+        let acts = run(&mut e, t0, 0, 80, p, lossy_40, lossy_45);
+        assert!(
+            !e.comparing(&peer()),
+            "equal-SLA paths must settle rather than probe forever"
+        );
+        for r in reports(&acts) {
+            assert!(
+                !r.prefers_relay(),
+                "a 20%-loss relay is never preferred over a 20%-loss direct path: {r:?}"
+            );
+        }
+        // Quiet while settled before RECHECK_BASE (120 s).
+        let quiet = run(&mut e, t0, 80, 60, p, lossy_40, lossy_45);
+        assert_eq!(probes(&quiet, Leg::Relay), 0);
+        assert!(reports(&quiet).is_empty());
+        // Rechecks after RECHECK_BASE (~t0+156), settles again (~t0+186), and doubles pause to 240 s (~t0+426).
+        let recheck = run(&mut e, t0, 140, 130, p, lossy_40, lossy_45);
+        assert!(
+            probes(&recheck, Leg::Relay) > 0,
+            "rechecked after base pause"
+        );
+        assert!(!e.comparing(&peer()), "settled again");
+        let doubled = run(&mut e, t0, 270, 150, p, lossy_40, lossy_45);
+        assert_eq!(
+            probes(&doubled, Leg::Relay),
+            0,
+            "second pause doubled to 240 s"
+        );
+        let second_recheck = run(&mut e, t0, 420, 20, p, lossy_40, lossy_45);
+        assert!(
+            probes(&second_recheck, Leg::Relay) > 0,
+            "rechecks after 240 s pause"
+        );
+
+        // Case 2: Relay has strictly worse loss/jitter than direct (direct 40 ms + 10% loss,
+        // relay 35 ms + 30% loss and high jitter) -> relay is NEVER preferred and settles.
+        let mut e = Engine::with_seed(7);
+        let direct_mild = |s: u64| (!s.is_multiple_of(10)).then_some(40);
+        let relay_bad = |s: u64| (s % 10 >= 3).then_some(if s.is_multiple_of(2) { 10 } else { 80 });
+        let acts = run(&mut e, t0, 0, 80, p, direct_mild, relay_bad);
+        assert!(!e.comparing(&peer()), "worse relay settles cleanly");
+        assert!(reports(&acts).iter().all(|r| !r.prefers_relay()));
     }
 }

@@ -121,6 +121,22 @@ pub struct DeviceRow {
     pub rdp_cert_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rdp_mesh_reachable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 
 /// GET /api/tenant/{tenant_id}/device — membership-gated like every other
@@ -167,7 +183,7 @@ pub async fn list_devices(
     };
 
     #[cfg(feature = "network")]
-    let (clients, nodes, dns_domain) = match state.modules.network.as_ref() {
+    let (clients, nodes, dns_domain, zones) = match state.modules.network.as_ref() {
         Some(network) => {
             let clients = if kind_filter.as_deref() == Some("agent") {
                 Vec::new()
@@ -177,38 +193,57 @@ pub async fn list_devices(
                     .list_all_active_for_tenant(tid)
                     .await?
             };
-            let (nodes, dns_domain) = match network.overlay_networks.find_for_tenant(tid).await? {
-                Some(net) => {
-                    let nodes = match net.id {
-                        Some(nid) => {
-                            network
-                                .overlay_nodes
-                                .list_active_in_network(tid, nid)
-                                .await?
-                        }
-                        None => Vec::new(),
-                    };
-                    let domain = state
-                        .tenants
-                        .base
-                        .find_by_id(tid)
-                        .await
-                        .ok()
-                        .and_then(|t| t.settings.magic_dns_domain);
-                    (nodes, domain)
-                }
-                None => (Vec::new(), None),
-            };
-            (clients, nodes, dns_domain)
+            let (nodes, dns_domain, zones) =
+                match network.overlay_networks.find_for_tenant(tid).await? {
+                    Some(net) => {
+                        let nodes = match net.id {
+                            Some(nid) => {
+                                network
+                                    .overlay_nodes
+                                    .list_active_in_network(tid, nid)
+                                    .await?
+                            }
+                            None => Vec::new(),
+                        };
+                        let domain = state
+                            .tenants
+                            .base
+                            .find_by_id(tid)
+                            .await
+                            .ok()
+                            .and_then(|t| t.settings.magic_dns_domain);
+                        (nodes, domain, net.zones)
+                    }
+                    None => (Vec::new(), None, Vec::new()),
+                };
+            (clients, nodes, dns_domain, zones)
         }
-        None => (Vec::new(), Vec::new(), None),
+        None => {
+            let zones = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(
+                &state.core.db,
+            )
+            .find_for_tenant(tid)
+            .await?
+            .map(|n| n.zones)
+            .unwrap_or_default();
+            (Vec::new(), Vec::new(), None, zones)
+        }
     };
     #[cfg(not(feature = "network"))]
-    let (clients, nodes, dns_domain): (
+    let (clients, nodes, dns_domain, zones): (
         Vec<TunnelClient>,
         Vec<meshharbor_remote_control::models::OverlayNode>,
         Option<String>,
-    ) = (Vec::new(), Vec::new(), None);
+        Vec<meshharbor_remote_control::models::NetworkZone>,
+    ) = {
+        let zones =
+            meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db)
+                .find_for_tenant(tid)
+                .await?
+                .map(|n| n.zones)
+                .unwrap_or_default();
+        (Vec::new(), Vec::new(), None, zones)
+    };
     let mut node_by_agent = std::collections::HashMap::new();
     let mut node_by_client = std::collections::HashMap::new();
     for n in &nodes {
@@ -230,6 +265,8 @@ pub async fn list_devices(
         let (presence, is_online) = derive_agent_presence(fleet, &a, redis_fresh);
         let node = a.id.and_then(|i| node_by_agent.get(&i).copied());
         rows.push(agent_row(
+            fleet,
+            &zones,
             a,
             presence,
             is_online,
@@ -239,7 +276,13 @@ pub async fn list_devices(
     }
     for c in clients {
         let node = c.id.and_then(|i| node_by_client.get(&i).copied());
-        rows.push(client_row(c, node, dns_domain.as_deref()));
+        rows.push(client_row(
+            &state.core.geoip,
+            &zones,
+            c,
+            node,
+            dns_domain.as_deref(),
+        ));
     }
 
     let page = apply_query(rows, &query);
@@ -388,26 +431,63 @@ pub fn apply_query(mut rows: Vec<DeviceRow>, query: &DeviceQuery) -> Page<Device
     }
 }
 
+fn public_ip_from_node(
+    node: Option<&meshharbor_remote_control::models::OverlayNode>,
+) -> Option<std::net::IpAddr> {
+    let n = node?;
+    n.srflx_endpoints
+        .iter()
+        .chain(&n.lan_endpoints)
+        .filter_map(|e| e.parse::<std::net::SocketAddr>().ok())
+        .find_map(|sa| meshharbor_core::user_analytics::canonical_public_ip(sa.ip()))
+}
+
 pub(crate) fn agent_row(
+    fleet: &meshharbor_mod_fleet::FleetState,
+    zones: &[meshharbor_remote_control::models::NetworkZone],
     a: Agent,
     presence: AgentPresence,
     is_online: bool,
     node: Option<&meshharbor_remote_control::models::OverlayNode>,
     dns_domain: Option<&str>,
 ) -> DeviceRow {
+    let geoip = &fleet.core.geoip;
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
     let name_sync = Some(meshharbor_mod_fleet::name_sync::view(&a));
     let (rdp_available, rdp_port, rdp_cert_sha256) = if a.capabilities.rdp_available == Some(true) {
         (
             Some(true),
             a.capabilities.rdp_port,
-            a.capabilities.rdp_cert_sha256,
+            a.capabilities.rdp_cert_sha256.clone(),
         )
     } else {
         (None, None, None)
     };
     // Only alongside `rdp_available == Some(true)`, like the three above.
     let rdp_mesh_reachable = rdp_available.and(a.capabilities.rdp_mesh_reachable);
+    let resolved_ip = a
+        .public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        .or_else(|| public_ip_from_node(node));
+    let loc = resolved_ip
+        .map(|ip| geoip.lookup_location(ip))
+        .unwrap_or_default();
+    let effective_cc = meshharbor_mod_fleet::socket::agent_effective_country(fleet, &a)
+        .or_else(|| loc.country_code.clone());
+    let pinned_zone_id = a.pinned_zone_id.clone();
+    let (effective_zone_id, effective_zone_name) =
+        match meshharbor_remote_control::models::resolve_device_zone(
+            zones,
+            pinned_zone_id.as_deref(),
+            effective_cc.as_deref(),
+        ) {
+            meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+                (Some(z.id.clone()), Some(z.name.clone()))
+            }
+            _ => (None, None),
+        };
     DeviceRow {
         kind: "agent",
         id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -435,16 +515,41 @@ pub(crate) fn agent_row(
         rdp_port,
         rdp_cert_sha256,
         rdp_mesh_reachable,
+        public_ip: resolved_ip.map(|ip| ip.to_string()),
+        country_code: loc.country_code,
+        country: loc.country,
+        region: loc.region,
+        city: loc.city,
+        pinned_zone_id,
+        effective_zone_id,
+        effective_zone_name,
     }
 }
 
 pub(crate) fn client_row(
+    geoip: &meshharbor_core::user_analytics::GeoIp,
+    zones: &[meshharbor_remote_control::models::NetworkZone],
     c: TunnelClient,
     node: Option<&meshharbor_remote_control::models::OverlayNode>,
     dns_domain: Option<&str>,
 ) -> DeviceRow {
     let (overlay_ip, overlay_node_id, magic_dns_name, magic_dns_fqdn) = node_bits(node, dns_domain);
     let online = matches!(c.status, AgentStatus::Online);
+    let resolved_ip = public_ip_from_node(node);
+    let loc = resolved_ip
+        .map(|ip| geoip.lookup_location(ip))
+        .unwrap_or_default();
+    let (effective_zone_id, effective_zone_name) =
+        match meshharbor_remote_control::models::resolve_device_zone(
+            zones,
+            None,
+            loc.country_code.as_deref(),
+        ) {
+            meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+                (Some(z.id.clone()), Some(z.name.clone()))
+            }
+            _ => (None, None),
+        };
     DeviceRow {
         kind: "tunnel_client",
         id: c.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -477,6 +582,14 @@ pub(crate) fn client_row(
         rdp_port: None,
         rdp_cert_sha256: None,
         rdp_mesh_reachable: None,
+        public_ip: resolved_ip.map(|ip| ip.to_string()),
+        country_code: loc.country_code,
+        country: loc.country,
+        region: loc.region,
+        city: loc.city,
+        pinned_zone_id: None,
+        effective_zone_id,
+        effective_zone_name,
     }
 }
 
@@ -531,6 +644,30 @@ fn row_matches(r: &DeviceRow, needle: &str) -> bool {
         || r.magic_dns_name
             .as_deref()
             .is_some_and(|f| f.to_lowercase().contains(needle))
+        || r.public_ip
+            .as_deref()
+            .is_some_and(|ip| ip.contains(needle))
+        || r.country_code
+            .as_deref()
+            .is_some_and(|c| c.to_lowercase().contains(needle))
+        || r.country
+            .as_deref()
+            .is_some_and(|c| c.to_lowercase().contains(needle))
+        || r.region
+            .as_deref()
+            .is_some_and(|c| c.to_lowercase().contains(needle))
+        || r.city
+            .as_deref()
+            .is_some_and(|c| c.to_lowercase().contains(needle))
+        || r.pinned_zone_id
+            .as_deref()
+            .is_some_and(|z| z.to_lowercase().contains(needle))
+        || r.effective_zone_id
+            .as_deref()
+            .is_some_and(|z| z.to_lowercase().contains(needle))
+        || r.effective_zone_name
+            .as_deref()
+            .is_some_and(|z| z.to_lowercase().contains(needle))
 }
 
 /// `None` sorts LAST ascending — a grid sorted by overlay ip should lead

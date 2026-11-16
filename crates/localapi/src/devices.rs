@@ -134,6 +134,22 @@ pub struct DeviceRowLite {
     pub rdp_cert_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdp_mesh_reachable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 
 /// One page of [`DeviceRowLite`]s plus the envelope — the answer to
@@ -416,6 +432,14 @@ mod tests {
             rdp_port: None,
             rdp_cert_sha256: None,
             rdp_mesh_reachable: None,
+            public_ip: None,
+            country_code: None,
+            country: None,
+            region: None,
+            city: None,
+            pinned_zone_id: None,
+            effective_zone_id: None,
+            effective_zone_name: None,
         }
     }
 

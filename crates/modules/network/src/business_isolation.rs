@@ -190,6 +190,13 @@ pub struct Zones {
     /// Whether both devices in the pair have an approved effective role
     /// (`Client` or `Server`).
     pub role_known: bool,
+    /// Under Logical Network Zones (`OverlayNetwork::zones`), this pair's
+    /// resolved zone policies require `backbone_only = true` (`line_only`) in
+    /// both directions (`RouterOnly` or `UnresolvedStrict`).
+    pub restricted_cross_border: bool,
+    /// True when reading Logical Network Zones from storage failed: new
+    /// admissions fail closed rather than treating devices as unrestricted.
+    pub restricted_read_failed: bool,
 }
 
 impl Zones {
@@ -201,6 +208,8 @@ impl Zones {
         servers: None,
         unknown_role: Mode::Off,
         role_known: true,
+        restricted_cross_border: false,
+        restricted_read_failed: false,
     };
 
     /// The pair may meet: two linked servers, or both zones known and equal.
@@ -222,28 +231,37 @@ impl Zones {
     }
 
     /// The rule says no: zones differ, one is unknown, or an `Unknown`-role
-    /// device is gated. Under `off` the rule is not consulted at all.
+    /// device is gated. Under `off` the rule is not consulted unless
+    /// restriction policy could not be read.
     pub fn denies(&self) -> bool {
-        (self.mode != Mode::Off && !self.same()) || self.unknown_role_denies()
+        self.restricted_read_failed
+            || (self.mode != Mode::Off && !self.same())
+            || self.unknown_role_denies()
     }
 
-    /// Withhold the peer from the recipient (only under `enforce`).
-    /// Never relaxes regional rules already in `enforce` when `unknown_role` is `warn`.
-    pub fn withholds(&self) -> bool {
-        self.unknown_role_withholds()
-            || (self.mode == Mode::Enforce && !self.same() && !self.line_only())
-    }
-
-    /// The one exception (the user's 2026-10-26 rule): two known, different
-    /// zones an approved cross-border line connects, toward a recipient that
-    /// rides such a peer over the line alone. Shown as `backbone_only`.
-    /// Never applies when `unknown_role` withholds either party.
-    pub fn line_only(&self) -> bool {
-        !self.unknown_role_withholds()
+    fn business_line_only(&self) -> bool {
+        !self.restricted_read_failed
+            && !self.unknown_role_withholds()
             && self.mode == Mode::Enforce
             && self.line
             && self.servers.is_none()
             && matches!((self.recipient, self.peer), (Some(a), Some(b)) if a != b)
+    }
+
+    /// Withhold the peer from the recipient (under `enforce` or when
+    /// Logical Network Zone policy could not be read).
+    /// Never relaxes regional rules already in `enforce` when `unknown_role` is `warn`.
+    pub fn withholds(&self) -> bool {
+        self.restricted_read_failed
+            || self.unknown_role_withholds()
+            || (self.mode == Mode::Enforce && !self.same() && !self.business_line_only())
+    }
+
+    /// Shown as `backbone_only`: either Logical Network Zone symmetric `RouterOnly`
+    /// (`restricted_cross_border`) or `#21` cross-border line under `enforce`.
+    /// Never applies when `withholds()` is true.
+    pub fn line_only(&self) -> bool {
+        !self.withholds() && (self.restricted_cross_border || self.business_line_only())
     }
 }
 
@@ -268,6 +286,12 @@ pub struct Lines {
     /// existing state and retry rather than treating a transient DB error as
     /// mass revocation.
     pub roles_read_failed: bool,
+    /// Per-tenant Logical Network Zones snapshot (`OverlayNetwork::zones`).
+    pub network_zones: crate::network_zones::TenantZoneSnapshot,
+    /// True when reading Logical Network Zones / active agents from storage failed.
+    /// New admissions fail closed in all modes (including `Mode::Off`), while
+    /// reconcile/teardown paths preserve existing sessions/DERP tables and retry.
+    pub restricted_read_failed: bool,
 }
 
 impl Lines {
@@ -317,6 +341,10 @@ impl Lines {
         self.ref_role_known(a) && self.ref_role_known(b)
     }
 
+    pub fn has_network_zones(&self) -> bool {
+        self.network_zones.has_zones()
+    }
+
     pub fn unknown_refs_list(&self, refs: &[&NodeRef]) -> Vec<String> {
         let mut out = Vec::new();
         for r in refs {
@@ -340,11 +368,16 @@ impl Lines {
         recipient_rides_lines: bool,
     ) -> Zones {
         let fail_closed_read = self.roles_read_failed && mode == Mode::Enforce;
+        let restricted_cross_border = !self.restricted_read_failed
+            && self
+                .network_zones
+                .nodes_require_backbone_only_sync(recipient, peer);
         Zones {
             mode,
             recipient: recipient_zone,
             peer: peer_zone,
             line: !fail_closed_read
+                && !self.restricted_read_failed
                 && recipient_rides_lines
                 && self.connects(recipient_zone, peer_zone),
             servers: self.server_pair(recipient, peer),
@@ -354,6 +387,8 @@ impl Lines {
                 self.unknown_role
             },
             role_known: !fail_closed_read && self.pair_roles_known(recipient, peer),
+            restricted_cross_border,
+            restricted_read_failed: self.restricted_read_failed,
         }
     }
 
@@ -383,8 +418,14 @@ impl Lines {
 }
 
 pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lines {
+    let network_zones = crate::network_zones::TenantZoneSnapshot::load(state, tenant_id).await;
+    let restricted_read_failed = network_zones.read_failed;
     if mode == Mode::Off {
-        return Lines::default();
+        return Lines {
+            network_zones,
+            restricted_read_failed,
+            ..Lines::default()
+        };
     }
     let unknown_role = unknown_role_mode(state);
     // New admissions fail closed when role reads fail (`approved_roles` is
@@ -443,6 +484,8 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         unknown_role,
         approved_roles,
         roles_read_failed,
+        network_zones,
+        restricted_read_failed,
     }
 }
 
@@ -493,7 +536,7 @@ pub async fn permit_refs_with_lines(
     if mode == Mode::Off {
         return Permit::Denied;
     }
-    if mode == Mode::Enforce && topo.roles_read_failed {
+    if topo.restricted_read_failed || (mode == Mode::Enforce && topo.roles_read_failed) {
         return Permit::Denied;
     }
     let role_known = topo.refs_roles_known(a, b);
@@ -533,13 +576,21 @@ pub fn zone_tag(zone: BusinessZone) -> &'static str {
     }
 }
 
-/// A node's zone, looked up only when the rule is on (each lookup reads the
-/// device row).
+/// A node's `#21` business zone, looked up only when `business_isolation` is on.
 pub async fn zone_of(state: &NetworkState, mode: Mode, node: &OverlayNode) -> Option<BusinessZone> {
     if mode == Mode::Off {
         return None;
     }
     crate::org_relay::node_zone(state, node).await
+}
+
+pub async fn zone_of_with_lines(
+    state: &NetworkState,
+    mode: Mode,
+    _topo: &Lines,
+    node: &OverlayNode,
+) -> Option<BusinessZone> {
+    zone_of(state, mode, node).await
 }
 
 /// How long a join waits for its own connection's zone under `enforce`.
@@ -548,7 +599,7 @@ pub async fn zone_of(state: &NetworkState, mode: Mode, node: &OverlayNode) -> Op
 /// would be shown nobody until its next rejoin.
 pub const JOIN_ZONE_WAIT: Duration = Duration::from_secs(2);
 
-/// The joiner's zone, waiting up to [`JOIN_ZONE_WAIT`] for it under `enforce`.
+/// The joiner's `#21` business zone, waiting up to [`JOIN_ZONE_WAIT`] for it under `enforce`.
 pub async fn joiner_zone(
     state: &NetworkState,
     mode: Mode,
@@ -602,7 +653,11 @@ pub async fn refuses_parties(
 ) -> bool {
     let mode = mode(state);
     if mode == Mode::Off {
-        return false;
+        if a.0 != b.0 {
+            return false;
+        }
+        let topo = lines(state, mode, a.0).await;
+        return refuses_parties_with_lines(state, &topo, a, b, what).await;
     }
     if a.0 == b.0 {
         let topo = lines(state, mode, a.0).await;
@@ -646,6 +701,32 @@ pub async fn refuses_parties_with_lines_and_fallback_zone(
     what: &str,
 ) -> bool {
     let mode = mode(state);
+    if topo.restricted_read_failed {
+        warn!(
+            tenant_id = %a.0,
+            a = ?a.1,
+            b = ?b.1,
+            what,
+            "network zones: policy unreadable; refusing"
+        );
+        return true;
+    }
+    if a.0 == b.0
+        && topo.has_network_zones()
+        && topo
+            .network_zones
+            .refs_require_backbone_only(state, a.0, a.1, b.1)
+            .await
+    {
+        warn!(
+            tenant_id = %a.0,
+            a = ?a.1,
+            b = ?b.1,
+            what,
+            "network zones: refusing direct/relay carrier across strict RouterOnly or unresolved zone"
+        );
+        return true;
+    }
     if mode == Mode::Off {
         return false;
     }
@@ -765,6 +846,32 @@ mod tests {
             servers: None,
             unknown_role: Mode::Off,
             role_known: true,
+            restricted_cross_border: false,
+            restricted_read_failed: false,
+        }
+    }
+
+    #[test]
+    fn restricted_read_failed_fails_closed_even_when_global_isolation_is_off() {
+        for mode in [Mode::Off, Mode::Warn, Mode::Enforce] {
+            let failed = Zones {
+                restricted_read_failed: true,
+                line: true,
+                restricted_cross_border: true,
+                ..z(mode, Some(Mainland), Some(NonMainland))
+            };
+            assert!(
+                failed.denies(),
+                "restricted_read_failed must deny under {mode:?}"
+            );
+            assert!(
+                failed.withholds(),
+                "restricted_read_failed must withhold new admissions under {mode:?}"
+            );
+            assert!(
+                !failed.line_only(),
+                "restricted_read_failed must not emit backbone_only under {mode:?}"
+            );
         }
     }
 

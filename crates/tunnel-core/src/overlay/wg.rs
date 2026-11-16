@@ -4397,7 +4397,7 @@ impl WgDevice {
     }
 
     /// Start a bilateral-protocol candidate. No router/send entry is changed.
-    /// Only one trial per peer, and never start without a direct incumbent.
+    /// Only one trial per peer, and never start without a live direct or relay incumbent.
     pub(crate) fn start_path_trial(
         &mut self,
         trial: ObjectId,
@@ -4413,7 +4413,13 @@ impl WgDevice {
         let Some(active) = self.peers.get(&public) else {
             return false;
         };
-        if !matches!(&*active.carrier, Carrier::Direct { .. }) || active.overlay_ip != ip {
+        if active.carrier.is_dead()
+            || !matches!(
+                &*active.carrier,
+                Carrier::Direct { .. } | Carrier::Relay { .. }
+            )
+            || active.overlay_ip != ip
+        {
             return false;
         }
         let incumbent_tunn = Arc::downgrade(&active.tunn);
@@ -4487,8 +4493,8 @@ impl WgDevice {
             .map(|_| dst)
     }
 
-    /// The standing P2P endpoint has a separate Tunn and receive ownership;
-    /// active relay probes must never be credited as P2P measurements.
+    /// The standing incumbent endpoint has a separate Tunn and receive ownership;
+    /// active candidate relay probes must never be credited as incumbent measurements.
     pub(crate) async fn send_path_trial_direct_disco(
         &self,
         trial: ObjectId,
@@ -4500,7 +4506,7 @@ impl WgDevice {
         } else {
             t.incumbent.as_ref()?
         };
-        if !p.carrier.is_direct() {
+        if t.committed && !t.returned && !p.carrier.is_direct() {
             return None;
         }
         let carrier = p.carrier.clone();
@@ -4815,6 +4821,51 @@ impl WgDevice {
                 routes.remove(&src);
             }
         }
+    }
+
+    /// Permanently drop a committed trial's retained direct shadow without
+    /// restoring it or disturbing the active committed relay carrier (e.g.,
+    /// when a peer flips to `backbone_only = true`).
+    pub(crate) async fn retire_path_trial_direct_shadow(&mut self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get_mut(&trial) else {
+            return false;
+        };
+        if !t.committed || t.returned {
+            return false;
+        }
+        let Some(direct) = t.incumbent.take() else {
+            return false;
+        };
+        let pk = t.public_key;
+        self.unregister_trial_owned(&direct).await;
+        self.sync_peer_on_demand_hold(&pk);
+        true
+    }
+
+    /// Detach a finalized `PathTrialPeer` from `self.path_trials` without
+    /// disturbing the active promoted carrier in `self.peers[&public]` so a
+    /// subsequent make-before-break relay upgrade trial (`R1 -> R2`) can run
+    /// for the same peer. Any residual candidate/shadow owned by `trial` is
+    /// unregistered and dropped.
+    pub(crate) async fn promote_finalized_path_trial(&mut self, trial: ObjectId) -> bool {
+        if !self
+            .path_trials
+            .get(&trial)
+            .is_some_and(|t| t.committed && !t.returned)
+        {
+            return false;
+        }
+        let Some(mut t) = self.path_trials.remove(&trial) else {
+            return false;
+        };
+        if let Some(p) = t.candidate.take() {
+            self.unregister_trial_owned(&p).await;
+        }
+        if let Some(p) = t.incumbent.take() {
+            self.unregister_trial_owned(&p).await;
+        }
+        self.sync_peer_on_demand_hold(&t.public_key);
+        true
     }
 
     pub(crate) async fn retire_path_trial(&mut self, trial: ObjectId) -> bool {

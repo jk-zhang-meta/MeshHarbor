@@ -104,8 +104,9 @@ fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
         endpoints: s.endpoints.clone(),
     }];
     let mut edges = Vec::with_capacity(s.hops.len());
-    // A single relay has no private backbone zone to recheck here.
-    if s.hops.is_empty() {
+    // Single-relay trials and Logical-Network-Zone trials without `#21` relay_zones
+    // are rechecked by `recheck_network_zone_trials`.
+    if s.hops.is_empty() || trial.relay_zones.is_empty() {
         return None;
     }
     for hop in &s.hops {
@@ -607,6 +608,7 @@ pub(in crate::org_relay) fn insert_trial_fixture(
         request_id: 1,
         requester_node_id: session.members[0].party.node_id,
         requester_at_exit: false,
+        bound_upgrade: false,
         relay_zones,
         member_zones,
         session,

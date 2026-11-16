@@ -779,6 +779,14 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_port,
         rdp_cert_sha256,
         rdp_mesh_reachable,
+        public_ip,
+        country_code,
+        country,
+        region,
+        city,
+        pinned_zone_id,
+        effective_zone_id,
+        effective_zone_name,
     } = row;
     DeviceRowLite {
         kind,
@@ -802,6 +810,14 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_port,
         rdp_cert_sha256,
         rdp_mesh_reachable,
+        public_ip,
+        country_code,
+        country,
+        region,
+        city,
+        pinned_zone_id,
+        effective_zone_id,
+        effective_zone_name,
     }
 }
 
@@ -847,6 +863,14 @@ mod tests {
                 "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
                     .into(),
             ),
+            public_ip: Some("14.20.0.1".into()),
+            country_code: Some("CN".into()),
+            country: Some("中国".into()),
+            region: Some("广东省".into()),
+            city: Some("深圳市".into()),
+            pinned_zone_id: Some("siat".into()),
+            effective_zone_id: Some("siat".into()),
+            effective_zone_name: Some("SIAT Campus".into()),
         }
     }
 
@@ -885,6 +909,14 @@ mod tests {
                     "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
                         .into(),
                 ),
+                public_ip: Some("14.20.0.1".into()),
+                country_code: Some("CN".into()),
+                country: Some("中国".into()),
+                region: Some("广东省".into()),
+                city: Some("深圳市".into()),
+                pinned_zone_id: Some("siat".into()),
+                effective_zone_id: Some("siat".into()),
+                effective_zone_name: Some("SIAT Campus".into()),
             }
         );
         assert_eq!(

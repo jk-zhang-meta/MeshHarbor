@@ -489,24 +489,22 @@ pub async fn plan(
         },
     );
 
-    // Hard regional isolation over ingress and destination.
-    if mode == Mode::Off {
+    // Hard regional / Logical Network Zone isolation over ingress and destination.
+    if topo.restricted_read_failed {
+        check(
+            &mut checks,
+            "region",
+            Verdict::Unknown,
+            "cross-border restrictions are unreadable",
+        );
+    } else if mode == Mode::Off && !topo.has_network_zones() {
         check(
             &mut checks,
             "region",
             Verdict::Pass,
             "business_isolation is off",
         );
-    } else if topo.roles_read_failed && mode == Mode::Enforce {
-        check(
-            &mut checks,
-            "region",
-            Verdict::Unknown,
-            "role approvals are unreadable",
-        );
     } else {
-        // Two servers meet by their topology link, any other pair by one zone
-        // (`business_isolation::permit_refs_with_lines`).
         let ingress_ref = ingress.map(|agent_id| NodeRef::Agent { agent_id });
         let dest_ref = match (spec.dest_agent_id.as_deref(), &path) {
             (Some(d), _) => oid(d).map(|agent_id| NodeRef::Agent { agent_id }),
@@ -515,32 +513,36 @@ pub async fn plan(
             (None, Some(node)) => Some(node.node_ref.clone()),
             (None, None) => None,
         };
-        let permit = match (&ingress_ref, &dest_ref) {
-            (Some(a), Some(b)) => {
-                business_isolation::permit_refs_with_lines(state, mode, &topo, tenant_id, a, b)
-                    .await
+        let logical_denied = if topo.has_network_zones() {
+            match (&ingress_ref, &dest_ref) {
+                (Some(a), Some(b)) => {
+                    topo.network_zones
+                        .refs_require_backbone_only(state, tenant_id, a, b)
+                        .await
+                }
+                _ => true,
             }
-            _ => business_isolation::Permit::Denied,
-        };
-        let (verdict, detail) = match permit {
-            business_isolation::Permit::Zone(z) => (Verdict::Pass, format!("both in {z:?}")),
-            business_isolation::Permit::Linked(..) => {
-                (Verdict::Pass, "a server link joins them".to_string())
-            }
-            business_isolation::Permit::Denied if dest_ref.is_none() => (
-                Verdict::Fail,
-                "an unenrolled destination has no verified zone attachment".to_string(),
-            ),
-            business_isolation::Permit::Denied => (
-                Verdict::Fail,
-                "not in one known zone, and no server link joins them".to_string(),
-            ),
-        };
-        let verdict = if verdict == Verdict::Fail && mode == Mode::Warn {
-            Verdict::Warn
         } else {
-            verdict
+            false
         };
+        let (verdict, detail) = evaluate_region_verdict(
+            mode,
+            topo.has_network_zones(),
+            topo.roles_read_failed,
+            dest_ref.is_none(),
+            logical_denied,
+            if !logical_denied && mode != Mode::Off {
+                match (&ingress_ref, &dest_ref) {
+                    (Some(a), Some(b)) => Some(
+                        business_isolation::permit_refs_with_lines(state, mode, &topo, tenant_id, a, b)
+                            .await,
+                    ),
+                    _ => Some(business_isolation::Permit::Denied),
+                }
+            } else {
+                None
+            },
+        );
         check(&mut checks, "region", verdict, detail);
     }
 
@@ -821,6 +823,66 @@ async fn overlay_path(
     Some(dest_node)
 }
 
+fn evaluate_region_verdict(
+    mode: Mode,
+    has_network_zones: bool,
+    roles_read_failed: bool,
+    dest_missing: bool,
+    logical_denied: bool,
+    physical_permit: Option<business_isolation::Permit>,
+) -> (Verdict, String) {
+    if has_network_zones && logical_denied {
+        return if dest_missing {
+            (
+                Verdict::Fail,
+                "an unenrolled destination has no verified zone attachment".to_string(),
+            )
+        } else {
+            (
+                Verdict::Fail,
+                "cross-zone forwarding is blocked by Logical Network Zone RouterOnly policy"
+                    .to_string(),
+            )
+        };
+    }
+    if mode == Mode::Off {
+        return (
+            Verdict::Pass,
+            if has_network_zones {
+                "permitted by Logical Network Zone policy".to_string()
+            } else {
+                "business_isolation is off".to_string()
+            },
+        );
+    }
+    if roles_read_failed && mode == Mode::Enforce {
+        return (
+            Verdict::Unknown,
+            "role approvals are unreadable".to_string(),
+        );
+    }
+    let (verdict, detail) = match physical_permit.unwrap_or(business_isolation::Permit::Denied) {
+        business_isolation::Permit::Zone(z) => (Verdict::Pass, format!("both in {z:?}")),
+        business_isolation::Permit::Linked(..) => {
+            (Verdict::Pass, "a server link joins them".to_string())
+        }
+        business_isolation::Permit::Denied if dest_missing => (
+            Verdict::Fail,
+            "an unenrolled destination has no verified zone attachment".to_string(),
+        ),
+        business_isolation::Permit::Denied => (
+            Verdict::Fail,
+            "not in one known zone, and no server link joins them".to_string(),
+        ),
+    };
+    let verdict = if verdict == Verdict::Fail && mode == Mode::Warn {
+        Verdict::Warn
+    } else {
+        verdict
+    };
+    (verdict, detail)
+}
+
 /// v039 GEO-03: a forward must not launder an origin across the zone rule.
 /// The destination sees the ingress, so a source the rule keeps from the
 /// destination (another zone, no server link) is refused here as the ingress
@@ -837,10 +899,19 @@ async fn source_region(
     checks: &mut Vec<Check>,
 ) {
     let mode = business_isolation::mode(state);
-    if mode == Mode::Off {
+    if topo.restricted_read_failed {
+        check(
+            checks,
+            "source region",
+            Verdict::Unknown,
+            "cross-border restrictions are unreadable",
+        );
         return;
     }
-    if topo.roles_read_failed && mode == Mode::Enforce {
+    if mode == Mode::Off && !topo.has_network_zones() {
+        return;
+    }
+    if mode != Mode::Off && topo.roles_read_failed && mode == Mode::Enforce {
         check(
             checks,
             "source region",
@@ -850,7 +921,8 @@ async fn source_region(
         return;
     }
     let sources: Vec<(IpAddr, u8)> = spec.sources.iter().filter_map(|s| parse_cidr(s)).collect();
-    let mut crossing = Vec::new();
+    let mut logical_crossing = Vec::new();
+    let mut physical_crossing = Vec::new();
     for n in nodes
         .iter()
         .filter(|n| n.id != ingress.id && n.id != dest_node.id)
@@ -861,41 +933,63 @@ async fn source_region(
         if !sources.iter().any(|c| in_net(ip, *c)) {
             continue;
         }
-        let permit = business_isolation::permit_refs_with_lines(
-            state,
-            mode,
-            topo,
-            tenant_id,
-            &n.node_ref,
-            &dest_node.node_ref,
-        )
-        .await;
-        if permit == business_isolation::Permit::Denied {
-            crossing.push(format!("{} ({})", n.name, n.overlay_ip));
+        if topo.has_network_zones()
+            && topo
+                .network_zones
+                .refs_require_backbone_only(state, tenant_id, &n.node_ref, &dest_node.node_ref)
+                .await
+        {
+            logical_crossing.push(format!("{} ({})", n.name, n.overlay_ip));
+            continue;
+        }
+        if mode != Mode::Off {
+            let permit = business_isolation::permit_refs_with_lines(
+                state,
+                mode,
+                topo,
+                tenant_id,
+                &n.node_ref,
+                &dest_node.node_ref,
+            )
+            .await;
+            if permit == business_isolation::Permit::Denied {
+                physical_crossing.push(format!("{} ({})", n.name, n.overlay_ip));
+            }
         }
     }
-    let fail = if mode == Mode::Enforce {
-        Verdict::Fail
-    } else {
-        Verdict::Warn
-    };
-    if crossing.is_empty() {
+    if !logical_crossing.is_empty() {
+        logical_crossing.truncate(5);
         check(
             checks,
             "source region",
-            Verdict::Pass,
-            "every overlay node the sources admit shares the destination's zone or server link",
+            Verdict::Fail,
+            format!(
+                "{} may not reach the destination's Logical Network Zone without a router hop",
+                logical_crossing.join(", ")
+            ),
         );
-    } else {
-        crossing.truncate(5);
+    } else if !physical_crossing.is_empty() {
+        physical_crossing.truncate(5);
+        let fail = if mode == Mode::Enforce {
+            Verdict::Fail
+        } else {
+            Verdict::Warn
+        };
         check(
             checks,
             "source region",
             fail,
             format!(
                 "{} may not reach the destination's zone; the forward would carry them across it",
-                crossing.join(", ")
+                physical_crossing.join(", ")
             ),
+        );
+    } else {
+        check(
+            checks,
+            "source region",
+            Verdict::Pass,
+            "every overlay node the sources admit shares the destination's zone or server link",
         );
     }
 }
@@ -1514,5 +1608,67 @@ mod tests {
         assert!(!in_net("10.0.4.9".parse().unwrap(), n("10.0.3.1/24")));
         assert!(in_net("fd00::9".parse().unwrap(), n("fd00::1/64")));
         assert!(!in_net("10.0.3.9".parse().unwrap(), n("fd00::1/64")));
+    }
+
+    #[test]
+    fn logical_network_zones_permit_same_zone_and_direct_preferred_with_business_isolation_off() {
+        use meshharbor_remote_control::models::{
+            CrossZoneMode, DeviceZoneResolution, NetworkZone,
+        };
+        let cn = NetworkZone {
+            id: "cn".into(),
+            name: "CN".into(),
+            auto_countries: vec!["CN".into()],
+            is_default: false,
+            gateway_relay_ids: vec![],
+            cross_zone_mode: CrossZoneMode::RouterOnly,
+        };
+        let hk_direct = NetworkZone {
+            id: "hk".into(),
+            name: "HK".into(),
+            auto_countries: vec!["HK".into()],
+            is_default: false,
+            gateway_relay_ids: vec![],
+            cross_zone_mode: CrossZoneMode::DirectPreferred,
+        };
+        let us_direct = NetworkZone {
+            id: "us".into(),
+            name: "US".into(),
+            auto_countries: vec!["US".into()],
+            is_default: true,
+            gateway_relay_ids: vec![],
+            cross_zone_mode: CrossZoneMode::DirectPreferred,
+        };
+
+        // 1. Same-zone (CN <-> CN) under business_isolation = Off: permitted!
+        let same_cn_denied = DeviceZoneResolution::Resolved(&cn)
+            .requires_backbone_only_with(DeviceZoneResolution::Resolved(&cn));
+        assert!(!same_cn_denied);
+        assert_eq!(
+            evaluate_region_verdict(Mode::Off, true, false, false, same_cn_denied, None).0,
+            Verdict::Pass
+        );
+
+        // 2. Cross-zone DirectPreferred (HK <-> US) under business_isolation = Off: permitted!
+        let dp_denied = DeviceZoneResolution::Resolved(&hk_direct)
+            .requires_backbone_only_with(DeviceZoneResolution::Resolved(&us_direct));
+        assert!(!dp_denied);
+        assert_eq!(
+            evaluate_region_verdict(Mode::Off, true, false, false, dp_denied, None).0,
+            Verdict::Pass
+        );
+
+        // 3. Cross-zone RouterOnly (CN <-> HK) under business_isolation = Off (or Warn): strictly Fail!
+        let ro_denied = DeviceZoneResolution::Resolved(&cn)
+            .requires_backbone_only_with(DeviceZoneResolution::Resolved(&hk_direct));
+        assert!(ro_denied);
+        assert_eq!(
+            evaluate_region_verdict(Mode::Off, true, false, false, ro_denied, None).0,
+            Verdict::Fail
+        );
+        assert_eq!(
+            evaluate_region_verdict(Mode::Warn, true, false, false, ro_denied, None).0,
+            Verdict::Fail
+        );
     }
 }

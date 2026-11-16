@@ -129,9 +129,40 @@ pub(super) fn scan(
     limit: usize,
     budget: usize,
 ) -> ScanPage {
+    scan_with_gateways(
+        graph,
+        requester_zone,
+        peer_zone,
+        restrict_ends,
+        false,
+        None,
+        None,
+        after,
+        resume,
+        limit,
+        budget,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn scan_with_gateways(
+    graph: &EdgeGraph,
+    requester_zone: Option<BusinessZone>,
+    peer_zone: Option<BusinessZone>,
+    restrict_ends: bool,
+    network_zones_active: bool,
+    requester_gateways: Option<&HashSet<ObjectId>>,
+    peer_gateways: Option<&HashSet<ObjectId>>,
+    after: Option<&OrgRelayDiscoveryCursorWire>,
+    resume: Option<&RelayPathWire>,
+    limit: usize,
+    budget: usize,
+) -> ScanPage {
     if limit == 0
         || budget == 0
         || (restrict_ends && (requester_zone.is_none() || peer_zone.is_none()))
+        || requester_gateways.is_some_and(HashSet::is_empty)
+        || peer_gateways.is_some_and(HashSet::is_empty)
     {
         return ScanPage {
             paths: Vec::new(),
@@ -143,9 +174,12 @@ pub(super) fn scan(
     let mut roots: Vec<_> = (0..graph.relays.len())
         .filter(|&i| {
             let relay = &graph.relays[i];
-            !relay.implicit
-                && relay.zone.is_some()
-                && (!restrict_ends || relay.zone == requester_zone || relay.zone == peer_zone)
+            let zone_ok = (network_zones_active && !restrict_ends) || relay.zone.is_some();
+            let req_ok = requester_gateways.is_none_or(|gw| gw.contains(&relay.agent_id))
+                && (!restrict_ends || relay.zone == requester_zone);
+            let peer_ok = peer_gateways.is_none_or(|gw| gw.contains(&relay.agent_id))
+                && (!restrict_ends || relay.zone == peer_zone);
+            !relay.implicit && zone_ok && (req_ok || peer_ok)
         })
         .collect();
     roots.sort_by_key(|&i| graph.relays[i].node_id);
@@ -163,11 +197,13 @@ pub(super) fn scan(
         if from.implicit || to.implicit {
             continue;
         }
-        let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
-            continue;
-        };
-        if from_zone != to_zone && !edge.cross_border {
-            continue;
+        if !network_zones_active || restrict_ends {
+            let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
+                continue;
+            };
+            if from_zone != to_zone && !edge.cross_border {
+                continue;
+            }
         }
         next[edge.from].push(edge.to);
     }
@@ -264,16 +300,25 @@ pub(super) fn scan(
             let frame = stack.last_mut().expect("nonempty");
             if !frame.emitted {
                 frame.emitted = true;
-                if path.len() >= 3 {
-                    let first = graph.relays[path[0]].zone;
-                    let last = graph.relays[frame.node].zone;
+                if path.len() >= if network_zones_active { 2 } else { 3 } {
+                    let first_relay = &graph.relays[path[0]];
+                    let last_relay = &graph.relays[frame.node];
                     for flip in [false, true] {
-                        let valid = !restrict_ends
-                            || if flip {
-                                first == peer_zone && last == requester_zone
-                            } else {
-                                first == requester_zone && last == peer_zone
-                            };
+                        let valid = if flip {
+                            peer_gateways.is_none_or(|gw| gw.contains(&first_relay.agent_id))
+                                && requester_gateways
+                                    .is_none_or(|gw| gw.contains(&last_relay.agent_id))
+                                && (!restrict_ends
+                                    || (first_relay.zone == peer_zone
+                                        && last_relay.zone == requester_zone))
+                        } else {
+                            requester_gateways.is_none_or(|gw| gw.contains(&first_relay.agent_id))
+                                && peer_gateways
+                                    .is_none_or(|gw| gw.contains(&last_relay.agent_id))
+                                && (!restrict_ends
+                                    || (first_relay.zone == requester_zone
+                                        && last_relay.zone == peer_zone))
+                        };
                         if !valid {
                             continue;
                         }

@@ -61,6 +61,7 @@ pub mod hooks;
 pub mod managed_forward;
 pub mod native_ssh_authorization;
 pub mod net_inventory;
+pub mod network_zones;
 pub mod org_relay;
 pub mod overlay;
 pub mod path_quality;
@@ -74,6 +75,7 @@ pub mod routes {
     pub mod business_authority;
     pub mod managed_forward;
     pub mod net_inventory;
+    pub mod network_zones;
     pub mod overlay_block;
     pub mod overlay_key;
     pub mod overlay_policy;
@@ -497,6 +499,10 @@ impl Module for NetworkState {
             .route(
                 "/{agent_id}/peer-relay-policy",
                 put(routes::peer_relay::set_policy),
+            )
+            .route(
+                "/{agent_id}/zone-assignment",
+                put(routes::network_zones::set_zone_assignment),
             );
 
         // meshharbor-cli routes — same enrollment two-step shape as the agent,
@@ -593,6 +599,10 @@ impl Module for NetworkState {
             "/",
             get(routes::peer_relay::get_settings).put(routes::peer_relay::set_mode),
         );
+        let network_zones = Router::new().route(
+            "/",
+            get(routes::network_zones::get_zones).put(routes::network_zones::set_zones),
+        );
         let peer_relay_audit = Router::new().route("/", get(routes::peer_relay::audit));
         let ssh_audit = Router::new().route("/", get(routes::agent_ssh::audit));
         let ssh_activity = Router::new().route("/", get(routes::agent_ssh::activity));
@@ -684,10 +694,15 @@ impl Module for NetworkState {
             .nest("/tenant/{tenant_id}/overlay-acl", overlay_policy)
             .nest("/tenant/{tenant_id}/server-link", server_link)
             .nest("/tenant/{tenant_id}/net-inventory", net_inventory)
+            .nest("/tenant/{tenant_id}/network-zones", network_zones)
             .nest("/tenant/{tenant_id}/managed-forward", managed_forward)
             .nest("/tenant/{tenant_id}/magic-dns", magic_dns)
             .nest("/tenant/{tenant_id}/overlay-block", overlay_block)
             .nest("/tenant/{tenant_id}/peer-relay", peer_relay)
+            .route(
+                "/tenant/{tenant_id}/peer-relays/{agent_id}",
+                put(routes::peer_relay::set_policy),
+            )
             .nest("/tenant/{tenant_id}/peer-relay-audit", peer_relay_audit)
             .nest("/tenant/{tenant_id}/ssh-audit", ssh_audit)
             .nest("/tenant/{tenant_id}/ssh-activity", ssh_activity)

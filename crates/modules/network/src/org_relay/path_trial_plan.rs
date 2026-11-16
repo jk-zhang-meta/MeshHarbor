@@ -22,7 +22,7 @@ struct MemberIdentity {
 pub(super) struct TrialRelay {
     pub node_id: ObjectId,
     pub agent_id: ObjectId,
-    pub zone: BusinessZone,
+    pub zone: Option<BusinessZone>,
     pub node_ref: NodeRef,
     pub endpoints: Vec<String>,
 }
@@ -190,6 +190,7 @@ pub(super) async fn plan_reusing(
     if prepared.warn_only || prepared.eligibility_epoch != epoch {
         return Err(D::PolicyUnreadable);
     }
+    let nz_active = prepared.network_zones_active;
     let first_zone = if requester_at_exit {
         prepared.peer_zone
     } else {
@@ -215,24 +216,38 @@ pub(super) async fn plan_reusing(
             .ok_or(D::NoRelay)?;
         let relay = &prepared.graph.relays[index];
         let plan = prepared.plans.get(&node_id).ok_or(D::PolicyUnreadable)?;
-        if relay.implicit || relay.zone.is_none() {
+        if relay.implicit || ((!nz_active || prepared.restrict_ends) && relay.zone.is_none()) {
             return Err(D::ZoneDenied);
         }
         indices.push(index);
         relays.push(TrialRelay {
             node_id,
             agent_id: relay.agent_id,
-            zone: relay.zone.ok_or(D::ZoneDenied)?,
+            zone: if !nz_active || prepared.restrict_ends {
+                Some(relay.zone.ok_or(D::ZoneDenied)?)
+            } else {
+                relay.zone
+            },
             node_ref: plan.relay.node_ref.clone(),
             endpoints: plan.endpoints.iter().take(4).cloned().collect(),
         });
     }
+    let first_relay_entry = &prepared.graph.relays[indices[0]];
+    let last_relay_entry = &prepared.graph.relays[*indices.last().ok_or(D::NoRelay)?];
+    let gw_ends_ok = if requester_at_exit {
+        prepared.matches_peer_end(first_relay_entry)
+            && prepared.matches_requester_end(last_relay_entry)
+    } else {
+        prepared.matches_requester_end(first_relay_entry)
+            && prepared.matches_peer_end(last_relay_entry)
+    };
+    if !gw_ends_ok {
+        return Err(D::ZoneDenied);
+    }
     let member_zones = if prepared.restrict_ends {
         let first = first_zone.ok_or(D::ZoneDenied)?;
         let last = last_zone.ok_or(D::ZoneDenied)?;
-        if prepared.graph.relays[indices[0]].zone != Some(first)
-            || prepared.graph.relays[*indices.last().ok_or(D::NoRelay)?].zone != Some(last)
-        {
+        if first_relay_entry.zone != Some(first) || last_relay_entry.zone != Some(last) {
             return Err(D::ZoneDenied);
         }
         Some([first, last])
@@ -243,15 +258,21 @@ pub(super) async fn plan_reusing(
     for (position, pair) in indices.windows(2).enumerate() {
         let from = &prepared.graph.relays[pair[0]];
         let to = &prepared.graph.relays[pair[1]];
-        let from_zone = from.zone.ok_or(D::ZoneDenied)?;
-        let to_zone = to.zone.ok_or(D::ZoneDenied)?;
-        let crossing = from_zone != to_zone;
+        let crossing = if nz_active && !prepared.restrict_ends {
+            from.zone != to.zone && from.zone.is_some() && to.zone.is_some()
+        } else {
+            let from_zone = from.zone.ok_or(D::ZoneDenied)?;
+            let to_zone = to.zone.ok_or(D::ZoneDenied)?;
+            from_zone != to_zone
+        };
         let edge = prepared
             .graph
             .edges
             .iter()
             .find(|edge| {
-                edge.from == pair[0] && edge.to == pair[1] && (!crossing || edge.cross_border)
+                edge.from == pair[0]
+                    && edge.to == pair[1]
+                    && ((nz_active && !prepared.restrict_ends) || !crossing || edge.cross_border)
             })
             .ok_or(D::ZoneDenied)?;
         edges.push(TrialEdge {
@@ -308,4 +329,126 @@ pub(super) async fn reauthorize_reusing(
         return Err(PeerRelayDenyReason::PolicyUnreadable);
     }
     Ok(fresh)
+}
+
+/// Hysteresis for upgrading a bound `OrgRelaySession` (single-hop or multi-hop,
+/// ordinary or finalized trial incumbent) via bilateral make-before-break
+/// `PathTrial`: candidate path must be fully measured reachable (`class == 0`)
+/// AND beat `current` either because `current` is measured unreachable
+/// (`class == 2`) or because both are measured reachable and `candidate`'s
+/// effective SLA cost is at least 25% AND 20 ms lower.
+pub(super) fn bound_upgrade_clearly_better(candidate: (u8, u128), current: (u8, u128)) -> bool {
+    candidate.0 == 0
+        && (current.0 == 2
+            || (current.0 == 0
+                && candidate.1.saturating_mul(4) <= current.1.saturating_mul(3)
+                && current.1.saturating_sub(candidate.1) >= 20))
+}
+
+/// Evaluate the incumbent `OrgRelaySession`'s `(class, effective_cost_ms)`
+/// across its member-to-ingress, intermediate backbone hops (if any), and
+/// member-to-exit legs.
+pub(super) fn incumbent_session_sla_rank(
+    org_relay: &OrgRelayState,
+    current_session: &OrgRelaySession,
+    now: Instant,
+) -> (u8, u128) {
+    let relays: Vec<ObjectId> = current_session.relay_nodes().collect();
+    if relays.is_empty() {
+        return (2, u128::MAX);
+    }
+    let m0 = current_session.members[0].party.node_id;
+    let m1 = current_session.members[1].party.node_id;
+    let mut legs = Vec::with_capacity(relays.len() + 1);
+    legs.push(org_relay.sla_verdict(m0, relays[0], now));
+    for pair in relays.windows(2) {
+        legs.push(org_relay.backbone_sla_verdict(pair[0], pair[1], now));
+    }
+    legs.push(org_relay.sla_verdict(m1, *relays.last().unwrap(), now));
+    let loads = relays.iter().map(|&r| org_relay.sessions_on_relay(r));
+    let (class, eff_cost, _, _, _, _, _) = path_search::evaluate_sla_legs(legs, loads);
+    (class, eff_cost)
+}
+
+/// Select an authorized single-hop or multi-hop candidate path that beats a
+/// currently bound `OrgRelaySession` by [`bound_upgrade_clearly_better`],
+/// respecting all `NetworkZone` gateway constraints and capability gates.
+pub(super) async fn plan_bound_upgrade(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    current_session: &OrgRelaySession,
+) -> Option<(RelayPathWire, bool)> {
+    let (req_id, peer_id) = (requester.id?, peer.id?);
+    let now = Instant::now();
+    if now < current_session.bind_by || now >= current_session.expires_at {
+        return None;
+    }
+    for id in [req_id, peer_id] {
+        let extra = state.org_relay.join_extras(id);
+        if !extra.supports_path_trial_v1 || !extra.supports_path_backbone_v1 {
+            return None;
+        }
+    }
+    let incumbent_relays: Vec<ObjectId> = current_session.relay_nodes().collect();
+    if incumbent_relays.is_empty() {
+        return None;
+    }
+    let incumbent_req_at_exit =
+        !current_session.hops.is_empty() && current_session.members[1].party.node_id == req_id;
+    let current_rank = incumbent_session_sla_rank(&state.org_relay, current_session, now);
+    if current_rank.0 == 1 {
+        return None;
+    }
+
+    let mut best_choice: Option<((u8, u128), RelayPathWire, bool)> = None;
+
+    // Evaluate multi-hop + single-hop graph selection (when MTU <= 1360) and
+    // single-hop candidate ranking, picking the lowest-SLA-cost authorized upgrade.
+    if let Ok(prepared) = path_candidate::prepare(state, requester, peer, true).await
+        && !prepared.warn_only
+        && let Ok(Some(selected)) = path_select::select_for_mint(state, prepared, false)
+    {
+        let cand_rank = (
+            selected.path.path.class,
+            selected.path.path.effective_cost_ms,
+        );
+        let relay_ids: Vec<ObjectId> = selected
+            .path
+            .path
+            .relays
+            .iter()
+            .filter_map(|&idx| selected.prepared.graph.relays.get(idx).map(|r| r.node_id))
+            .collect();
+        let requester_at_exit = relay_ids.len() > 1 && selected.path.flipped;
+        let same_as_incumbent = relay_ids == incumbent_relays
+            && (relay_ids.len() <= 1 || requester_at_exit == incumbent_req_at_exit);
+        if relay_ids.len() == selected.path.path.relays.len()
+            && !same_as_incumbent
+            && bound_upgrade_clearly_better(cand_rank, current_rank)
+            && let Ok(wire) = RelayPathWire::new(relay_ids)
+        {
+            best_choice = Some((cand_rank, wire, requester_at_exit));
+        }
+    }
+
+    if let Ok(plans) = plan_mint_candidates(state, requester, peer).await
+        && let Some(best) = plans.into_iter().next()
+        && let Some(best_id) = best.relay.id
+        && !(incumbent_relays.len() == 1 && incumbent_relays[0] == best_id)
+    {
+        let load = state.org_relay.sessions_on_relay(best_id);
+        let (class, eff_cost, _, _, _, _, _) =
+            super::sla_rank_key(&state.org_relay, req_id, peer_id, best_id, load, now);
+        let cand_rank = (class, eff_cost);
+        if bound_upgrade_clearly_better(cand_rank, current_rank)
+            && best_choice
+                .as_ref()
+                .is_none_or(|(prev, _, _)| cand_rank < *prev)
+            && let Ok(wire) = RelayPathWire::new(vec![best_id])
+        {
+            best_choice = Some((cand_rank, wire, false));
+        }
+    }
+    best_choice.map(|(_, wire, requester_at_exit)| (wire, requester_at_exit))
 }

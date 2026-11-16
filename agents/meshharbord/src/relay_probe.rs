@@ -24,10 +24,29 @@ pub fn probing_enabled() -> bool {
     tunnel_core::env::flag("RELAY_PROBE", true)
 }
 
-/// The last region list pushed on this connection (with its `rev`), shared
-/// between the dispatch arm (immediate probe on change) and the periodic
-/// re-prober.
-pub type RegionSlot = Arc<Mutex<Option<(Vec<RelayRegionInfo>, u64)>>>;
+/// Cached region snapshot on this connection: `(regions, turn_rev, policy_revision)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionSnapshot {
+    pub regions: Vec<RelayRegionInfo>,
+    pub rev: u64,
+    pub policy_revision: Option<u64>,
+}
+
+/// The last region list pushed on this connection (with its `rev` and monotonic
+/// `policy_revision`), shared between the dispatch arm (immediate probe on
+/// change) and the periodic re-prober.
+pub type RegionSlot = Arc<Mutex<Option<RegionSnapshot>>>;
+
+/// Outcome of applying a `ServerMsg::RelayRegions` update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionUpdate {
+    /// Rejected because `policy_revision` was older than the already-applied snapshot.
+    Stale,
+    /// Accepted, target set and `rev` unchanged.
+    Unchanged,
+    /// Accepted, target set or `rev` changed (trigger immediate re-probe).
+    Changed,
+}
 
 /// Multi-region DERP: the per-connection admission-ticket cache
 /// (`(ticket, exp_unix)`), filled by the signaling loop's
@@ -44,10 +63,95 @@ const SAMPLE_SPACING: Duration = Duration::from_millis(80);
 /// Re-probe cadence (±20 % jitter so a fleet never probes in lockstep).
 const REPROBE_BASE: Duration = Duration::from_secs(20 * 60);
 
-/// Probe every region and push the report through the connection's outbound
-/// channel. Spawned — never blocks the signaling loop.
-pub async fn probe_and_report(regions: Vec<RelayRegionInfo>, outbound: mpsc::Sender<ClientMsg>) {
-    let results = probe_regions(&regions).await;
+/// Update the cached region list pushed by the server, rejecting stale
+/// `policy_revision` snapshots so an out-of-order connect/cross-pod push can
+/// never restore removed STUN targets. Comparing both `regions` and `rev`
+/// ensures per-device Logical Network Zone changes immediately replace the
+/// cached list and stop probing removed targets.
+pub fn update_regions_versioned(
+    slot: &RegionSlot,
+    regions: Vec<RelayRegionInfo>,
+    rev: u64,
+    policy_revision: Option<u64>,
+) -> RegionUpdate {
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    let next_policy_rev = match (
+        policy_revision,
+        guard.as_ref().and_then(|s| s.policy_revision),
+    ) {
+        (Some(incoming), Some(applied)) if incoming < applied => return RegionUpdate::Stale,
+        (None, Some(_)) => return RegionUpdate::Stale,
+        (Some(incoming), _) => Some(incoming),
+        (None, None) => None,
+    };
+    let changed = guard
+        .as_ref()
+        .map(|old| old.rev != rev || old.regions != regions)
+        .unwrap_or(true);
+    *guard = Some(RegionSnapshot {
+        regions,
+        rev,
+        policy_revision: next_policy_rev,
+    });
+    if changed {
+        RegionUpdate::Changed
+    } else {
+        RegionUpdate::Unchanged
+    }
+}
+
+pub fn update_regions(slot: &RegionSlot, regions: Vec<RelayRegionInfo>, rev: u64) -> bool {
+    update_regions_versioned(slot, regions, rev, None) == RegionUpdate::Changed
+}
+
+fn region_still_in_slot(slot: &RegionSlot, target: &RelayRegionInfo) -> bool {
+    let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().is_some_and(|s| {
+        s.regions
+            .iter()
+            .any(|r| r.id == target.id && r.stun == target.stun)
+    })
+}
+
+/// Probe every region in `slot` (aborting immediately if `slot` is replaced
+/// mid-pass so removed targets are never queried) and push the report through
+/// the connection's outbound channel. Spawned — never blocks the signaling loop.
+pub async fn probe_and_report_slot(slot: RegionSlot, outbound: mpsc::Sender<ClientMsg>) {
+    let Some(regions) = ({
+        let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|s| s.regions.clone())
+    }) else {
+        return;
+    };
+    if regions.is_empty() {
+        let _ = outbound
+            .send(ClientMsg::RelayProbeReport {
+                results: Vec::new(),
+            })
+            .await;
+        return;
+    }
+    let mut results = Vec::with_capacity(regions.len());
+    for r in &regions {
+        if !region_still_in_slot(&slot, r) {
+            return;
+        }
+        let rtt_ms = probe_one_if_active(&r.stun, || region_still_in_slot(&slot, r)).await;
+        if !region_still_in_slot(&slot, r) {
+            return;
+        }
+        results.push(RelayRegionRtt {
+            region: r.id.clone(),
+            rtt_ms,
+        });
+    }
+    let still_current = {
+        let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().is_some_and(|s| s.regions == regions)
+    };
+    if !still_current {
+        return;
+    }
     debug!(
         results = ?results
             .iter()
@@ -62,6 +166,17 @@ pub async fn probe_and_report(regions: Vec<RelayRegionInfo>, outbound: mpsc::Sen
     {
         debug!("relay probe: connection gone before the report could be sent");
     }
+}
+
+/// Probe every region and push the report through the connection's outbound
+/// channel. Spawned — never blocks the signaling loop.
+pub async fn probe_and_report(regions: Vec<RelayRegionInfo>, outbound: mpsc::Sender<ClientMsg>) {
+    let slot: RegionSlot = Arc::new(Mutex::new(Some(RegionSnapshot {
+        regions,
+        rev: 0,
+        policy_revision: None,
+    })));
+    probe_and_report_slot(slot, outbound).await;
 }
 
 /// One pass over the region list (sequential — a handful of PoPs at 3 samples
@@ -82,6 +197,16 @@ pub async fn probe_regions(regions: &[RelayRegionInfo]) -> Vec<RelayRegionRtt> {
 /// the home unset and this node rides the default region, which is correct:
 /// its traffic goes over TURNS-443/DERP anyway).
 async fn probe_one(target: &str) -> Option<u32> {
+    probe_one_if_active(target, || true).await
+}
+
+async fn probe_one_if_active<F>(target: &str, mut keep_probing: F) -> Option<u32>
+where
+    F: FnMut() -> bool,
+{
+    if !keep_probing() {
+        return None;
+    }
     let addr = tokio::net::lookup_host(target)
         .await
         .ok()?
@@ -89,6 +214,9 @@ async fn probe_one(target: &str) -> Option<u32> {
     let sock = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await.ok()?;
     let mut samples: Vec<u32> = Vec::with_capacity(SAMPLES);
     for i in 0..SAMPLES {
+        if !keep_probing() {
+            return None;
+        }
         let txn: [u8; 12] = rand::random();
         let req = tunnel_core::transport::stun::encode_binding_request(txn);
         let t0 = Instant::now();
@@ -129,12 +257,14 @@ pub async fn periodic_reprobe(slot: RegionSlot, outbound: mpsc::Sender<ClientMsg
         if outbound.is_closed() {
             return;
         }
-        let regions = {
+        let has_targets = {
             let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_ref().map(|(r, _)| r.clone())
+            guard.as_ref().is_some_and(|s| !s.regions.is_empty())
         };
-        let Some(regions) = regions else { continue };
-        probe_and_report(regions, outbound.clone()).await;
+        if !has_targets {
+            continue;
+        }
+        probe_and_report_slot(slot.clone(), outbound.clone()).await;
     }
 }
 
@@ -203,5 +333,82 @@ mod tests {
         assert!(table[0].rtt_ms.is_some());
         assert_eq!(table[1].rtt_ms, None, "unresolvable host is None");
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn update_regions_reconciles_same_rev_policy_filter_and_aborts_removed_targets() {
+        let (cn_addr, cn_handle) = fake_stun_server().await;
+        let hk_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let hk_addr = hk_sock.local_addr().unwrap();
+        let hk_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hk_queries_bg = hk_queries.clone();
+        let hk_handle = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((n, from)) = hk_sock.recv_from(&mut buf).await {
+                if n >= 20 {
+                    hk_queries_bg.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let mut resp = [0u8; 20];
+                    resp[0] = 0x01;
+                    resp[1] = 0x01;
+                    resp[4..8].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+                    resp[8..20].copy_from_slice(&buf[8..20]);
+                    let _ = hk_sock.send_to(&resp, from).await;
+                }
+            }
+        });
+
+        let cn_region = RelayRegionInfo {
+            id: "cn".into(),
+            stun: cn_addr.to_string(),
+            derp_url: None,
+            relay_band: None,
+        };
+        let hk_region = RelayRegionInfo {
+            id: "hk".into(),
+            stun: hk_addr.to_string(),
+            derp_url: None,
+            relay_band: None,
+        };
+        let slot: RegionSlot = Arc::new(Mutex::new(None));
+        assert!(update_regions(
+            &slot,
+            vec![cn_region.clone(), hk_region.clone()],
+            7
+        ));
+        // Identical list and rev -> unchanged.
+        assert!(!update_regions(
+            &slot,
+            vec![cn_region.clone(), hk_region],
+            7
+        ));
+        // Restriction filters down to Mainland-only at the SAME server turn_map rev=7!
+        assert!(update_regions(&slot, vec![cn_region], 7));
+
+        let (tx, mut rx) = mpsc::channel(4);
+        probe_and_report_slot(slot.clone(), tx.clone()).await;
+        let report = rx.try_recv().expect("Mainland-only report");
+        match report {
+            ClientMsg::RelayProbeReport { results } => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].region, "cn");
+            }
+            other => panic!("unexpected msg: {other:?}"),
+        }
+        assert_eq!(
+            hk_queries.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "removed non-Mainland target must never be queried"
+        );
+
+        // Filtering down to empty list clears slot targets and reports empty results.
+        assert!(update_regions(&slot, Vec::new(), 7));
+        probe_and_report_slot(slot.clone(), tx).await;
+        match rx.try_recv().expect("empty report") {
+            ClientMsg::RelayProbeReport { results } => assert!(results.is_empty()),
+            other => panic!("unexpected msg: {other:?}"),
+        }
+
+        cn_handle.abort();
+        hk_handle.abort();
     }
 }

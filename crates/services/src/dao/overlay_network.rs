@@ -135,6 +135,8 @@ impl OverlayNetworkDao {
             peer_relay_mode: Default::default(),
             server_links: Vec::new(),
             auth_revision: 1,
+            zones: Vec::new(),
+            zone_revision: 0,
             created_at: now,
             updated_at: now,
         };
@@ -317,6 +319,61 @@ impl OverlayNetworkDao {
     pub async fn current_auth_revision(&self, tenant_id: ObjectId) -> DaoResult<u64> {
         let net = self.get_or_create(tenant_id).await?;
         Ok(net.auth_revision.max(1))
+    }
+
+    /// Atomically persist the tenant's logical `NetworkZone` list and bump both
+    /// `zone_revision` and `auth_revision`.
+    pub async fn set_network_zones(
+        &self,
+        tenant_id: ObjectId,
+        zones: &[meshharbor_remote_control::models::NetworkZone],
+    ) -> DaoResult<OverlayNetwork> {
+        self.get_or_create(tenant_id).await?;
+        let zones_bson = bson::to_bson(zones)?;
+        let updated = self
+            .base
+            .collection()
+            .find_one_and_update(
+                doc! { "tenant_id": tenant_id },
+                doc! {
+                    "$set": {
+                        "zones": zones_bson,
+                        "updated_at": DateTime::now(),
+                    },
+                    "$inc": {
+                        "zone_revision": 1i64,
+                        "auth_revision": 1i64,
+                    },
+                },
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or(DaoError::NotFound)?;
+        Ok(updated)
+    }
+
+    /// Atomically bump `zone_revision` (and `auth_revision`) on a device
+    /// `pinned_zone_id` or gateway mutation so derived region/netmap pushes
+    /// carry a strictly newer monotonic revision.
+    pub async fn bump_zone_revision(&self, tenant_id: ObjectId) -> DaoResult<OverlayNetwork> {
+        self.get_or_create(tenant_id).await?;
+        let updated = self
+            .base
+            .collection()
+            .find_one_and_update(
+                doc! { "tenant_id": tenant_id },
+                doc! {
+                    "$inc": {
+                        "zone_revision": 1i64,
+                        "auth_revision": 1i64,
+                    },
+                    "$set": { "updated_at": DateTime::now() },
+                },
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or(DaoError::NotFound)?;
+        Ok(updated)
     }
 
     pub async fn set_acl_mode(&self, tenant_id: ObjectId, mode: OverlayAclMode) -> DaoResult<bool> {

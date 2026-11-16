@@ -104,6 +104,15 @@ pub struct GeoIpSecurityLookup {
     pub country_code: Option<String>,
 }
 
+/// Physical location resolved from a MaxMind/DB-IP City or Country MMDB.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GeoIpLocation {
+    pub country_code: Option<String>,
+    pub country: Option<String>,
+    pub region: Option<String>,
+    pub city: Option<String>,
+}
+
 /// Warn during the last 30 days of the 120-day security validity window.
 const GEOIP_WARN_BEFORE_EXPIRY_SECS: u64 = 30 * 24 * 3600;
 
@@ -233,18 +242,85 @@ impl GeoIp {
     /// an address the database doesn't cover is a normal outcome, not an
     /// error worth logging on every connection.
     pub fn country(&self, ip: IpAddr) -> Option<String> {
+        let ip = normalize_ip(ip);
         let r = self.reader.as_ref()?;
-        let looked: maxminddb::geoip2::Country = r.lookup(ip).ok()?;
-        looked.country?.iso_code.map(str::to_string)
+        if let Ok(looked) = r.lookup::<maxminddb::geoip2::Country>(ip) {
+            return looked.country.and_then(|c| c.iso_code).map(str::to_string);
+        }
+        let looked: maxminddb::geoip2::City = r.lookup(ip).ok()?;
+        looked.country.and_then(|c| c.iso_code).map(str::to_string)
+    }
+
+    /// Physical location (`country_code`, `country`, `region`, `city`) from a
+    /// City MMDB, falling back to `geoip2::Country` on Country-only MMDBs.
+    /// Prefers `"zh-CN"` names when present, falling back to `"en"`.
+    pub fn lookup_location(&self, ip: IpAddr) -> GeoIpLocation {
+        let Some(ip) = canonical_public_ip(ip) else {
+            return GeoIpLocation::default();
+        };
+        let Some(r) = self.reader.as_ref() else {
+            return GeoIpLocation::default();
+        };
+        if let Ok(city) = r.lookup::<maxminddb::geoip2::City>(ip) {
+            let country_code = city
+                .country
+                .as_ref()
+                .and_then(|c| c.iso_code)
+                .filter(|code| crate::business_authority::known_zone(Some(code)).is_some())
+                .map(str::to_string);
+            let country = city
+                .country
+                .as_ref()
+                .and_then(|c| pick_localized_name(c.names.as_ref()));
+            let region = city
+                .subdivisions
+                .as_ref()
+                .and_then(|subs| subs.first())
+                .and_then(|sub| pick_localized_name(sub.names.as_ref()));
+            let city_name = city
+                .city
+                .as_ref()
+                .and_then(|c| pick_localized_name(c.names.as_ref()));
+            return GeoIpLocation {
+                country_code,
+                country,
+                region,
+                city: city_name,
+            };
+        }
+        if let Ok(country_rec) = r.lookup::<maxminddb::geoip2::Country>(ip) {
+            let country_code = country_rec
+                .country
+                .as_ref()
+                .and_then(|c| c.iso_code)
+                .filter(|code| crate::business_authority::known_zone(Some(code)).is_some())
+                .map(str::to_string);
+            let country = country_rec
+                .country
+                .as_ref()
+                .and_then(|c| pick_localized_name(c.names.as_ref()));
+            return GeoIpLocation {
+                country_code,
+                country,
+                region: None,
+                city: None,
+            };
+        }
+        GeoIpLocation::default()
+    }
+
+    /// Classify a public IP into [`crate::business_authority::BusinessZone`]
+    /// (`"CN"` => `Mainland`, any other known ISO country including `"HK"`,
+    /// `"MO"`, `"TW"` => `NonMainland`). Works with both City and Country MMDBs.
+    pub fn zone_of_ip(&self, ip: IpAddr) -> Option<crate::business_authority::BusinessZone> {
+        let lookup = self.security_lookup(ip);
+        crate::business_authority::known_zone(lookup.country_code.as_deref())
     }
 
     /// Security producers use the same loaded reader regardless of whether
     /// optional analytics collection is enabled. Missing data stays unknown.
     pub fn security_lookup(&self, ip: IpAddr) -> GeoIpSecurityLookup {
-        let ip = match ip {
-            IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v)),
-            ip => ip,
-        };
+        let ip = normalize_ip(ip);
         let dataset = self.reader.as_ref().map(|r| GeoIpDatasetIdentity {
             database_type: r.metadata.database_type.clone(),
             build_epoch: r.metadata.build_epoch,
@@ -262,6 +338,32 @@ impl GeoIp {
             dataset,
         }
     }
+}
+
+fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v)),
+        ip => ip,
+    }
+}
+
+/// Normalize IPv4-mapped IPv6 and filter out loopback/private/link-local/CGNAT
+/// addresses, returning `Some(ip)` only for public routable addresses.
+pub fn canonical_public_ip(ip: IpAddr) -> Option<IpAddr> {
+    let ip = normalize_ip(ip);
+    (!private_or_local_source(ip)).then_some(ip)
+}
+
+fn pick_localized_name(
+    names: Option<&std::collections::BTreeMap<&str, &str>>,
+) -> Option<String> {
+    let names = names?;
+    for lang in ["zh-CN", "en"] {
+        if let Some(val) = names.get(lang).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            return Some(val.to_string());
+        }
+    }
+    None
 }
 
 /// Only explicit private/local source categories are excluded here. This is not
@@ -654,6 +756,233 @@ mod tests {
         assert_eq!(
             g.country("193.0.6.139".parse().unwrap()).as_deref(),
             Some("DE")
+        );
+    }
+
+    #[test]
+    fn geoip_city_and_country_lookup_prefers_zh_cn_and_classifies_zones() {
+        use crate::business_authority::BusinessZone::{Mainland, NonMainland};
+
+        fn text(out: &mut Vec<u8>, v: &str) {
+            assert!(v.len() < 29);
+            out.push(0x40 | v.len() as u8);
+            out.extend_from_slice(v.as_bytes());
+        }
+        fn map(out: &mut Vec<u8>, entries: u8) {
+            out.push(0xE0 | entries);
+        }
+        fn array(out: &mut Vec<u8>, entries: u8) {
+            out.extend_from_slice(&[entries, 11 - 7]);
+        }
+        fn uint16(out: &mut Vec<u8>, v: u16) {
+            out.push(0xA2);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn uint32(out: &mut Vec<u8>, v: u32) {
+            out.push(0xC4);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn uint64(out: &mut Vec<u8>, v: u64) {
+            out.extend_from_slice(&[0x08, 9 - 7]);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn names_map(out: &mut Vec<u8>, zh: Option<&str>, en: &str) {
+            if let Some(zh) = zh {
+                map(out, 2);
+                text(out, "en");
+                text(out, en);
+                text(out, "zh-CN");
+                text(out, zh);
+            } else {
+                map(out, 1);
+                text(out, "en");
+                text(out, en);
+            }
+        }
+        fn city_record(
+            iso: &str,
+            country_zh: Option<&str>,
+            country_en: &str,
+            region_zh: Option<&str>,
+            region_en: Option<&str>,
+            city_zh: Option<&str>,
+            city_en: Option<&str>,
+        ) -> Vec<u8> {
+            let mut d = Vec::new();
+            let count = 1 + u8::from(region_en.is_some()) + u8::from(city_en.is_some());
+            map(&mut d, count);
+            text(&mut d, "country");
+            map(&mut d, 2);
+            text(&mut d, "iso_code");
+            text(&mut d, iso);
+            text(&mut d, "names");
+            names_map(&mut d, country_zh, country_en);
+            if let Some(ren) = region_en {
+                text(&mut d, "subdivisions");
+                array(&mut d, 1);
+                map(&mut d, 1);
+                text(&mut d, "names");
+                names_map(&mut d, region_zh, ren);
+            }
+            if let Some(cen) = city_en {
+                text(&mut d, "city");
+                map(&mut d, 1);
+                text(&mut d, "names");
+                names_map(&mut d, city_zh, cen);
+            }
+            d
+        }
+
+        // Two-bit prefix tree (3 internal nodes: 0 -> [1, 2]):
+        // 00.. (e.g. 14.20.0.1)  -> CN (zh-CN + en)
+        // 01.. (e.g. 103.10.0.1) -> HK (zh-CN + en, NonMainland!)
+        // 10.. (e.g. 140.82.0.1) -> US (en-only fallback)
+        // 11.. (e.g. 203.0.113.1)-> TW (NonMainland!)
+        let cn = city_record(
+            "CN",
+            Some("中国"),
+            "China",
+            Some("广东省"),
+            Some("Guangdong"),
+            Some("深圳市"),
+            Some("Shenzhen"),
+        );
+        let hk = city_record(
+            "HK",
+            Some("香港"),
+            "Hong Kong",
+            None,
+            None,
+            Some("香港"),
+            Some("Hong Kong"),
+        );
+        let us = city_record(
+            "US",
+            None,
+            "United States",
+            None,
+            Some("Texas"),
+            None,
+            Some("Houston"),
+        );
+        let tw = city_record(
+            "TW",
+            Some("台湾"),
+            "Taiwan",
+            None,
+            None,
+            Some("台北市"),
+            Some("Taipei"),
+        );
+
+        let node_count: u32 = 3;
+        let o_cn = node_count + 16;
+        let o_hk = o_cn + cn.len() as u32;
+        let o_us = o_hk + hk.len() as u32;
+        let o_tw = o_us + us.len() as u32;
+        let mut db = Vec::new();
+        // node 0: bit0 == 0 -> node 1, bit0 == 1 -> node 2
+        db.extend_from_slice(&1u32.to_be_bytes()[1..]);
+        db.extend_from_slice(&2u32.to_be_bytes()[1..]);
+        // node 1: 00 -> cn, 01 -> hk
+        db.extend_from_slice(&o_cn.to_be_bytes()[1..]);
+        db.extend_from_slice(&o_hk.to_be_bytes()[1..]);
+        // node 2: 10 -> us, 11 -> tw
+        db.extend_from_slice(&o_us.to_be_bytes()[1..]);
+        db.extend_from_slice(&o_tw.to_be_bytes()[1..]);
+        db.extend_from_slice(&[0; 16]);
+        db.extend_from_slice(&cn);
+        db.extend_from_slice(&hk);
+        db.extend_from_slice(&us);
+        db.extend_from_slice(&tw);
+        db.extend_from_slice(b"\xab\xcd\xefMaxMind.com");
+        map(&mut db, 9);
+        text(&mut db, "binary_format_major_version");
+        uint16(&mut db, 2);
+        text(&mut db, "binary_format_minor_version");
+        uint16(&mut db, 0);
+        text(&mut db, "build_epoch");
+        uint64(&mut db, 1_790_812_800);
+        text(&mut db, "database_type");
+        text(&mut db, "DBIP-City-Lite");
+        text(&mut db, "description");
+        map(&mut db, 1);
+        text(&mut db, "en");
+        text(&mut db, "city fixture");
+        text(&mut db, "ip_version");
+        uint16(&mut db, 4);
+        text(&mut db, "languages");
+        array(&mut db, 2);
+        text(&mut db, "en");
+        text(&mut db, "zh-CN");
+        text(&mut db, "node_count");
+        uint32(&mut db, node_count);
+        text(&mut db, "record_size");
+        uint16(&mut db, 24);
+
+        let dir = tempfile::tempdir().unwrap();
+        let city_path = dir.path().join("dbip-city-lite.mmdb");
+        std::fs::write(&city_path, db).unwrap();
+        let g = GeoIp::open(city_path.to_str());
+        assert_eq!(g.database(), Some("DBIP-City-Lite"));
+
+        let loc_cn = g.lookup_location("14.20.0.1".parse().unwrap());
+        assert_eq!(
+            loc_cn,
+            GeoIpLocation {
+                country_code: Some("CN".into()),
+                country: Some("中国".into()),
+                region: Some("广东省".into()),
+                city: Some("深圳市".into()),
+            }
+        );
+        assert_eq!(g.zone_of_ip("14.20.0.1".parse().unwrap()), Some(Mainland));
+
+        let loc_hk = g.lookup_location("103.10.0.1".parse().unwrap());
+        assert_eq!(loc_hk.country_code.as_deref(), Some("HK"));
+        assert_eq!(loc_hk.country.as_deref(), Some("香港"));
+        assert_eq!(loc_hk.city.as_deref(), Some("香港"));
+        assert_eq!(
+            g.zone_of_ip("103.10.0.1".parse().unwrap()),
+            Some(NonMainland),
+            "HK must classify as NonMainland"
+        );
+        assert_eq!(
+            g.zone_of_ip("203.0.113.1".parse().unwrap()),
+            Some(NonMainland),
+            "TW must classify as NonMainland"
+        );
+
+        let loc_us = g.lookup_location("140.82.0.1".parse().unwrap());
+        assert_eq!(
+            loc_us,
+            GeoIpLocation {
+                country_code: Some("US".into()),
+                country: Some("United States".into()),
+                region: Some("Texas".into()),
+                city: Some("Houston".into()),
+            }
+        );
+        assert_eq!(
+            g.zone_of_ip("140.82.0.1".parse().unwrap()),
+            Some(NonMainland)
+        );
+        assert_eq!(
+            g.lookup_location("127.0.0.1".parse().unwrap()),
+            GeoIpLocation::default()
+        );
+
+        // Country-only MMDB fallback still extracts country_code and classifies zones.
+        let country_path = dir.path().join("dbip-country-lite.mmdb");
+        std::fs::write(&country_path, tiny_country_mmdb("DBIP-Country-Lite")).unwrap();
+        let gc = GeoIp::open(country_path.to_str());
+        let loc_country_only = gc.lookup_location("8.8.8.8".parse().unwrap());
+        assert_eq!(loc_country_only.country_code.as_deref(), Some("US"));
+        assert_eq!(loc_country_only.region, None);
+        assert_eq!(loc_country_only.city, None);
+        assert_eq!(
+            gc.zone_of_ip("8.8.8.8".parse().unwrap()),
+            Some(NonMainland)
         );
     }
 

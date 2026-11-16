@@ -42,7 +42,8 @@ use std::time::Instant;
 use super::bind::{BindOutcome, BindRefusal, BindSecret, BindVerifier, Mac, Nonce};
 
 /// Default ceiling on concurrent sessions per relay. FR-19's `relay_max_sessions`.
-pub const MAX_SESSIONS: usize = 64;
+pub const MAX_SESSIONS: usize =
+    meshharbor_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY;
 
 /// One party to a session: its WireGuard public key (identity, as the mint
 /// names it) and the secret proving it is that party.

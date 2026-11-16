@@ -87,12 +87,36 @@ pub struct DerpAllowTable {
     /// Under `business_isolation = enforce` + `business_unknown_role = enforce`,
     /// the pubkeys of devices with an approved role (`Client` or `Server`).
     approved_roles: Option<HashSet<DerpPubKey>>,
+    /// Logical Network Zone resolution (`zone_id`, `cross_zone_mode`) per node pubkey
+    /// when `OverlayNetwork.zones` is non-empty; `UnresolvedStrict` nodes are omitted.
+    network_zones: Option<
+        HashMap<
+            DerpPubKey,
+            (
+                String,
+                meshharbor_remote_control::models::CrossZoneMode,
+            ),
+        >,
+    >,
+    /// Monotonic `OverlayNetwork.zone_revision` captured for this table (`None` for unit-test fixtures).
+    zone_revision: Option<u64>,
 }
 
 impl DerpAllowTable {
     /// May `src` relay a frame to `dst`? Always `true` when neither the ACL
     /// nor the isolation is enforced.
     pub fn permits(&self, src: &DerpPubKey, dst: &DerpPubKey) -> bool {
+        if let Some(nz) = &self.network_zones {
+            use meshharbor_remote_control::models::CrossZoneMode;
+            match (nz.get(src), nz.get(dst)) {
+                (Some((za, _)), Some((zb, _))) if za == zb => {}
+                (
+                    Some((_, CrossZoneMode::DirectPreferred)),
+                    Some((_, CrossZoneMode::DirectPreferred)),
+                ) => {}
+                _ => return false,
+            }
+        }
         if let Some(approved) = &self.approved_roles
             && (!approved.contains(src) || !approved.contains(dst))
         {
@@ -170,6 +194,13 @@ pub const ENSURE_BUILT_TIMEOUT: Duration = Duration::from_secs(10);
 static BUILD_LOCKS: LazyLock<DashMap<ObjectId, Arc<tokio::sync::Mutex<()>>>> =
     LazyLock::new(DashMap::new);
 
+fn network_rebuild_lock(network_id: ObjectId) -> Arc<tokio::sync::Mutex<()>> {
+    BUILD_LOCKS
+        .entry(network_id)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 /// Load before serve: make sure `network_id` has a table in this process.
 ///
 /// Returns `true` when an entry exists, whether it was already built or built
@@ -180,17 +211,15 @@ pub async fn ensure_built(state: &NetworkState, tenant_id: ObjectId, network_id:
     if state.derp_acl.contains_key(&network_id) {
         return true;
     }
-    let lock = BUILD_LOCKS
-        .entry(network_id)
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
+    let lock = network_rebuild_lock(network_id);
     let build = async {
         let _single_flight = lock.lock().await;
-        // Another registration may have built it while we waited.
+        // Another registration or rebuild may have built it while we waited.
         if state.derp_acl.contains_key(&network_id) {
             return true;
         }
-        rebuild(state, tenant_id, network_id).await && state.derp_acl.contains_key(&network_id)
+        rebuild_locked(state, tenant_id, network_id).await
+            && state.derp_acl.contains_key(&network_id)
     };
     tokio::time::timeout(ENSURE_BUILT_TIMEOUT, build)
         .await
@@ -246,25 +275,114 @@ fn build_overlay_allow_table(
     allow
 }
 
+fn install_fenced_derp_table(
+    cache: &DerpAclCache,
+    network_id: ObjectId,
+    snap_rev: u64,
+    current_db_rev: Option<u64>,
+    table: Arc<DerpAllowTable>,
+) -> bool {
+    if current_db_rev != Some(snap_rev) {
+        return false;
+    }
+    use dashmap::mapref::entry::Entry;
+    match cache.entry(network_id) {
+        Entry::Occupied(mut e) => {
+            if e.get().zone_revision.is_some_and(|r| r > snap_rev) {
+                return false;
+            }
+            e.insert(table);
+            true
+        }
+        Entry::Vacant(v) => {
+            v.insert(table);
+            true
+        }
+    }
+}
+
+fn commit_open_or_keep_on_zone_read<T>(
+    cache: &DerpAclCache,
+    network_id: ObjectId,
+    acl_gating: bool,
+    isolating: bool,
+    zone_snapshot: Result<(bool, u64, T), ()>,
+    current_db_rev: Option<u64>,
+) -> Option<(bool, u64, T)> {
+    let (has_zones, snap_rev, snap) = zone_snapshot.ok()?;
+    if !acl_gating && !isolating && !has_zones {
+        let open = Arc::new(DerpAllowTable {
+            zone_revision: Some(snap_rev),
+            ..DerpAllowTable::default()
+        });
+        if !install_fenced_derp_table(cache, network_id, snap_rev, current_db_rev, open) {
+            return None;
+        }
+        return Some((false, snap_rev, snap));
+    }
+    Some((has_zones, snap_rev, snap))
+}
+
+async fn current_db_zone_revision(state: &NetworkState, tenant_id: ObjectId) -> Option<u64> {
+    state
+        .overlay_networks
+        .find_for_tenant(tenant_id)
+        .await
+        .ok()
+        .map(|opt| opt.map_or(0, |n| n.zone_revision))
+}
+
 /// Recompute one network's table and publish it atomically.
 ///
-/// Build-then-swap, never invalidate-then-rebuild: once built, there is no
-/// window in which the network has no table (which would now drop every frame
-/// of a live network). O(N²) over the network's nodes, but it runs only on policy
-/// changes and joins — never per datagram, and never on an endpoint trickle,
-/// which cannot change an ACL decision.
+/// Serialized per `network_id` from snapshot acquisition through publication, and
+/// fenced on `OverlayNetwork.zone_revision` before every cache insertion so an
+/// older delayed rebuild can never overwrite a newer zone restriction.
 pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
+    let lock = network_rebuild_lock(network_id);
+    let _guard = lock.lock().await;
+    rebuild_locked(state, tenant_id, network_id).await
+}
+
+async fn rebuild_locked(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
     let acl = super::overlay::load_acl(state, tenant_id).await;
     let isolating =
         super::business_isolation::mode(state) == super::business_isolation::Mode::Enforce;
+    let snap = crate::network_zones::TenantZoneSnapshot::load_consistent(state, tenant_id).await;
+    let snap_res = if snap.read_failed || snap.superseded {
+        tracing::warn!(
+            %tenant_id,
+            %network_id,
+            read_failed = snap.read_failed,
+            superseded = snap.superseded,
+            "derp acl: network zones snapshot unreadable or superseded; keeping the previous table"
+        );
+        Err(())
+    } else {
+        Ok((snap.has_zones(), snap.revision, snap))
+    };
+    let db_rev_for_open = if snap_res
+        .as_ref()
+        .is_ok_and(|(has_zones, _, _)| !acl.gating() && !isolating && !*has_zones)
+    {
+        current_db_zone_revision(state, tenant_id).await
+    } else {
+        None
+    };
+    let Some((has_network_zones, snap_rev, snap)) = commit_open_or_keep_on_zone_read(
+        &state.derp_acl,
+        network_id,
+        acl.gating(),
+        isolating,
+        snap_res,
+        db_rev_for_open,
+    ) else {
+        return false;
+    };
     // `Off` gets an OPEN table rather than no entry: a miss now means "not
     // built" and denies, so an ungated network must still be marked built.
     // `DerpAllowTable::default()` permits every pair, and costs a few empty
     // collections per network.
-    if !acl.gating() && !isolating {
-        state
-            .derp_acl
-            .insert(network_id, Arc::new(DerpAllowTable::default()));
+    if !acl.gating() && !isolating && !has_network_zones {
         return true;
     }
     let now = bson::DateTime::now();
@@ -366,6 +484,21 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         }
     }
 
+    let network_zones = if has_network_zones {
+        let mut nz = HashMap::new();
+        for n in &nodes {
+            let Some(pk) = pubkey_of(n) else { continue };
+            if let meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) =
+                snap.resolve_node_sync(n)
+            {
+                nz.insert(pk, (z.id.clone(), z.cross_zone_mode));
+            }
+        }
+        Some(nz)
+    } else {
+        None
+    };
+
     let pairs: usize = allow.values().map(|s| s.len()).sum();
     let table = Arc::new(DerpAllowTable {
         enforcing: acl.enforcing(),
@@ -374,6 +507,8 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         servers,
         links,
         approved_roles,
+        network_zones,
+        zone_revision: Some(snap_rev),
     });
     if !warn_unknown.is_empty() {
         let mut unknown_with_peers = Vec::new();
@@ -394,14 +529,28 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
             &unknown_with_peers,
         );
     }
+    let current_db_rev = current_db_zone_revision(state, tenant_id).await;
+    if !install_fenced_derp_table(
+        &state.derp_acl,
+        network_id,
+        snap_rev,
+        current_db_rev,
+        table.clone(),
+    ) {
+        tracing::info!(
+            %tenant_id, %network_id, snap_rev, ?current_db_rev,
+            "derp acl: discarding superseded table rebuild"
+        );
+        return false;
+    }
     tracing::info!(
         %tenant_id, %network_id,
         nodes = nodes.len(), pairs,
         enforcing = table.enforcing,
+        zone_revision = snap_rev,
         zoned = table.zones.as_ref().map(|z| z.len()),
         "derp acl: allow table rebuilt"
     );
-    state.derp_acl.insert(network_id, table);
     true
 }
 
@@ -636,5 +785,108 @@ mod tests {
         );
         assert!(!t.permits(&ka, &kc) && !t.permits(&kc, &ka));
         assert!(!t.permits(&kb, &kc) && !t.permits(&kc, &kb));
+    }
+
+    #[test]
+    fn restricted_read_failed_never_installs_open_table_and_preserves_existing() {
+        use meshharbor_remote_control::models::CrossZoneMode;
+        let cache: DerpAclCache = Arc::new(DashMap::new());
+        let net_id = ObjectId::new();
+        let (cn, hk, global) = (pk(0x41), pk(0x42), pk(0x43));
+
+        // 1. Cold cache + DB read failure under ACL=off, isolation=off:
+        //    must return None (rebuild -> false) and leave cache empty (miss = deny),
+        //    NEVER inserting DerpAllowTable::default()!
+        assert!(
+            commit_open_or_keep_on_zone_read::<()>(&cache, net_id, false, false, Err(()), None)
+                .is_none()
+        );
+        assert!(
+            !cache.contains_key(&net_id),
+            "failed zone read on cold cache must fail closed, never install open table"
+        );
+
+        // 2. Warm cache holding a zone-gated table + DB read failure:
+        //    must preserve the existing restricted table intact!
+        let existing = Arc::new(DerpAllowTable {
+            network_zones: Some(HashMap::from([
+                (cn, ("cn".into(), CrossZoneMode::RouterOnly)),
+                (hk, ("hk".into(), CrossZoneMode::DirectPreferred)),
+                (global, ("global".into(), CrossZoneMode::DirectPreferred)),
+            ])),
+            zone_revision: Some(5),
+            ..DerpAllowTable::default()
+        });
+        assert!(!existing.permits(&cn, &hk));
+        assert!(!existing.permits(&hk, &cn));
+        assert!(existing.permits(&hk, &global));
+        cache.insert(net_id, existing);
+
+        assert!(
+            commit_open_or_keep_on_zone_read::<()>(&cache, net_id, false, false, Err(()), None)
+                .is_none()
+        );
+        let preserved = cache.get(&net_id).expect("previous table preserved");
+        assert!(
+            !preserved.permits(&cn, &hk),
+            "failed zone read must preserve existing restricted DERP table"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_older_rebuild_is_fenced_and_never_overwrites_newer_zone_restriction() {
+        use meshharbor_remote_control::models::CrossZoneMode;
+        let cache: DerpAclCache = Arc::new(DashMap::new());
+        let net_id = ObjectId::new();
+        let (cn, hk) = (pk(0x51), pk(0x52));
+
+        let permissive_r1 = Arc::new(DerpAllowTable {
+            network_zones: Some(HashMap::from([
+                (cn, ("cn".into(), CrossZoneMode::DirectPreferred)),
+                (hk, ("hk".into(), CrossZoneMode::DirectPreferred)),
+            ])),
+            zone_revision: Some(1),
+            ..DerpAllowTable::default()
+        });
+        let strict_r2 = Arc::new(DerpAllowTable {
+            network_zones: Some(HashMap::from([
+                (cn, ("cn".into(), CrossZoneMode::RouterOnly)),
+                (hk, ("hk".into(), CrossZoneMode::DirectPreferred)),
+            ])),
+            zone_revision: Some(2),
+            ..DerpAllowTable::default()
+        });
+
+        let (a_paused_tx, a_paused_rx) = tokio::sync::oneshot::channel();
+        let (b_done_tx, b_done_rx) = tokio::sync::oneshot::channel();
+
+        // Simulate deterministic delayed older rebuild A (captured r=1) vs newer rebuild B (r=2).
+        let cache_a = cache.clone();
+        let task_a = tokio::spawn(async move {
+            let _ = a_paused_tx.send(());
+            let _ = b_done_rx.await;
+            // Both DB revision (Some(2)) and cached table revision (Some(2)) reject snap_rev = 1!
+            let ok_vs_db = install_fenced_derp_table(&cache_a, net_id, 1, Some(2), permissive_r1.clone());
+            let ok_vs_cache = install_fenced_derp_table(&cache_a, net_id, 1, Some(1), permissive_r1);
+            (ok_vs_db, ok_vs_cache)
+        });
+
+        let _ = a_paused_rx.await;
+        assert!(install_fenced_derp_table(&cache, net_id, 2, Some(2), strict_r2));
+        let _ = b_done_tx.send(());
+
+        let (ok_vs_db, ok_vs_cache) = task_a.await.unwrap();
+        assert!(!ok_vs_db && !ok_vs_cache, "stale r=1 rebuild must be rejected");
+        assert!(
+            commit_open_or_keep_on_zone_read(&cache, net_id, false, false, Ok((false, 1, ())), Some(2))
+                .is_none(),
+            "stale open-table insertion must also be fenced"
+        );
+        let final_tbl = cache.get(&net_id).expect("r=2 table remains installed");
+        assert_eq!(final_tbl.zone_revision, Some(2));
+        assert!(
+            !final_tbl.permits(&cn, &hk),
+            "r=2 RouterOnly restriction must remain enforced"
+        );
     }
 }

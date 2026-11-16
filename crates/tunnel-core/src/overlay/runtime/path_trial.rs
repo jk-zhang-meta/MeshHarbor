@@ -201,15 +201,32 @@ struct Trial {
     // One retained-shadow attempt at a time, paced by the existing tier's
     // handshake deadline. This does not renew the relay session/grant.
     direct_refreshed: Option<Instant>,
+    /// True when the trial started over a bound OrgRelay incumbent rather than direct.
+    incumbent_is_relay: bool,
+    /// True once `backbone_only` (or a relay incumbent) retired the retained shadow:
+    /// no direct rebuild, post-commit direct probe, or return-to-direct may run.
+    direct_shadow_retired: bool,
     requested: Option<RequestedCandidate>,
 }
 pub(super) struct Bound {
     id: ObjectId,
     conn: Option<Arc<OrgRelayConn>>,
 }
+struct PromotedCarrier {
+    conn: Arc<OrgRelayConn>,
+    pubkey: [u8; 32],
+    overlay_ip: Ipv4Addr,
+    since: Instant,
+}
+
 pub(super) struct Engine {
     observation: observation::Observation,
     trials: HashMap<ObjectId, Trial>,
+    /// Active relay connections promoted out of superseded `Phase::Finalized`
+    /// trials while a newer `R1 -> R2` upgrade trial is evaluated. Kept alive
+    /// if the new trial aborts before commit; closed once a replacement trial
+    /// finalizes or the peer's trial-managed carrier is torn down.
+    promoted_conns: HashMap<ObjectId, PromotedCarrier>,
     retired: Vec<ObjectId>,
     tx: mpsc::Sender<Bound>,
     rx: mpsc::Receiver<Bound>,
@@ -224,6 +241,7 @@ impl Engine {
         Self {
             observation: observation::Observation::new(),
             trials: HashMap::new(),
+            promoted_conns: HashMap::new(),
             retired: Vec::new(),
             tx,
             rx,
@@ -233,11 +251,66 @@ impl Engine {
             failed_requests: Vec::new(),
         }
     }
+    fn peer_is_backbone_only(peer_id: ObjectId, peers: &HashMap<ObjectId, NetmapPeer>) -> bool {
+        peers.get(&peer_id).is_some_and(|p| p.backbone_only)
+    }
+
+    fn promoted_current(
+        peer_id: ObjectId,
+        pc: &PromotedCarrier,
+        peers: &HashMap<ObjectId, NetmapPeer>,
+        installed: &HashMap<ObjectId, Installed>,
+    ) -> bool {
+        peers
+            .get(&peer_id)
+            .and_then(peer_config_from_netmap)
+            .is_some_and(|p| p.public_key == pc.pubkey && p.overlay_ip == pc.overlay_ip)
+            && installed.get(&peer_id).is_some_and(|p| {
+                !p.is_direct
+                    && p.pubkey == pc.pubkey
+                    && p.overlay_ip == pc.overlay_ip
+                    && p.since == pc.since
+            })
+    }
+
+    /// Release any promoted connection and orphaned `path_trial_managed`
+    /// ownership immediately when `peer_id` is evicted from the netmap.
+    pub(super) fn on_peer_evicted(&mut self, peer_id: ObjectId, ctx: &OverlayRuntime) {
+        if self
+            .pending_request
+            .as_ref()
+            .is_some_and(|r| r.peer_id == peer_id)
+        {
+            self.pending_request = None;
+        }
+        if let Some(pc) = self.promoted_conns.remove(&peer_id) {
+            pc.conn.close();
+        }
+        if !self
+            .trials
+            .values()
+            .any(|t| t.peer_id == peer_id && t.committed_since.is_some())
+        {
+            ctx.path_trial_managed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&peer_id);
+        }
+    }
+
     fn current(
         t: &Trial,
         peers: &HashMap<ObjectId, NetmapPeer>,
         installed: &HashMap<ObjectId, Installed>,
     ) -> bool {
+        let backbone_only = Self::peer_is_backbone_only(t.peer_id, peers);
+        if backbone_only
+            && (!t.incumbent_is_relay
+                && matches!(t.phase, Phase::Binding | Phase::Measuring | Phase::Ready)
+                || t.phase == Phase::Returned)
+        {
+            return false;
+        }
         peers
             .get(&t.peer_id)
             .and_then(peer_config_from_netmap)
@@ -247,6 +320,83 @@ impl Engine {
                     && p.overlay_ip == t.peer.overlay_ip
                     && p.since == t.committed_since.unwrap_or(t.original.since)
             })
+    }
+
+    /// Immediately retire any trial-held direct state for peers that flipped to
+    /// `backbone_only = true`, without restoring the direct shadow.
+    pub(super) async fn retire_forbidden_direct_shadows(
+        &mut self,
+        ctx: &OverlayRuntime,
+        wg: &mut WgDevice,
+        peers: &HashMap<ObjectId, NetmapPeer>,
+        installed: &mut HashMap<ObjectId, Installed>,
+    ) {
+        if let Some(pending) = &self.pending_request
+            && Self::peer_is_backbone_only(pending.peer_id, peers)
+        {
+            self.pending_request = None;
+        }
+        let ids: Vec<ObjectId> = self
+            .trials
+            .iter()
+            .filter(|(_, t)| !t.incumbent_is_relay && Self::peer_is_backbone_only(t.peer_id, peers))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let phase = self.trials.get(&id).map(|t| t.phase);
+            match phase {
+                Some(Phase::Binding | Phase::Measuring | Phase::Ready | Phase::Returned) => {
+                    self.cancel(id, ctx, wg, peers, installed, true).await;
+                }
+                Some(
+                    Phase::Committed
+                    | Phase::Finalized
+                    | Phase::ReturnPreparing
+                    | Phase::ReturnReady,
+                ) => {
+                    let abort_return = {
+                        let t = self.trials.get_mut(&id).unwrap();
+                        let abort_id = matches!(
+                            t.phase,
+                            Phase::ReturnPreparing | Phase::ReturnReady
+                        )
+                        .then_some(t.return_id)
+                        .flatten();
+                        if let Some(rid) = t.return_id.take() {
+                            t.return_retired.push(rid);
+                            if t.return_retired.len() > 64 {
+                                t.return_retired.remove(0);
+                            }
+                        }
+                        t.return_started = None;
+                        if matches!(t.phase, Phase::ReturnPreparing | Phase::ReturnReady) {
+                            t.phase = Phase::Finalized;
+                        }
+                        t.direct_shadow_retired = true;
+                        t.measurements = Measurements {
+                            seq: rand::random::<u64>() / 2,
+                            ..Default::default()
+                        };
+                        abort_id
+                    };
+                    wg.retire_path_trial_direct_shadow(id).await;
+                    if let Some(return_id) = abort_return
+                        && enabled()
+                        && ctx.org_primary
+                    {
+                        Self::send(
+                            &ctx.outbound,
+                            ClientMsg::OverlayPathTrialReturnAbort {
+                                trial_id: id,
+                                return_id,
+                            },
+                        )
+                        .await;
+                    }
+                }
+                None => {}
+            }
+        }
     }
     async fn send(out: &ControlTx, msg: ClientMsg) -> bool {
         matches!(
@@ -297,10 +447,21 @@ impl Engine {
         if let Some(c) = t.conn {
             c.close();
         }
-        ctx.path_trial_managed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&t.peer_id);
+        let preserve_promoted = current
+            && !removed_active
+            && self
+                .promoted_conns
+                .get(&t.peer_id)
+                .is_some_and(|pc| Self::promoted_current(t.peer_id, pc, peers, installed));
+        if !preserve_promoted {
+            if let Some(pc) = self.promoted_conns.remove(&t.peer_id) {
+                pc.conn.close();
+            }
+            ctx.path_trial_managed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&t.peer_id);
+        }
         self.retired(id);
         if notify && enabled() && ctx.org_primary {
             Self::send(
@@ -386,15 +547,15 @@ impl Engine {
                 }
                 info!(trial = %trial_id, peer = %peer_node_id, relay = %relay_node_id,
                     "overlay path-trial: started by the server — binding the relay, then measuring it against direct");
-                let allowed = local_enabled
-                    && ctx.org_primary
-                    && supported
-                    && self.trials.len() < MAX_TRIALS
-                    && !self.trials.values().any(|t| t.peer_id == peer_node_id);
                 let config = peers.get(&peer_node_id).and_then(peer_config_from_netmap);
+                let backbone_only = Self::peer_is_backbone_only(peer_node_id, peers);
                 let original = installed
                     .get(&peer_node_id)
-                    .filter(|p| p.is_direct && !p.stalled)
+                    .filter(|p| {
+                        !p.stalled
+                            && ((p.is_direct && !backbone_only)
+                                || (!p.is_direct && p.relay_kind == Some(RelayKind::Org)))
+                    })
                     .cloned();
                 let session = OrgSession::from_wire(
                     vni,
@@ -413,6 +574,30 @@ impl Engine {
                     Self::send(&ctx.outbound, ClientMsg::OverlayPathTrialAbort { trial_id }).await;
                     return;
                 };
+                let incumbent_is_relay = !original.is_direct;
+                let superseded_ids: Vec<ObjectId> = self
+                    .trials
+                    .iter()
+                    .filter(|(_, t)| t.peer_id == peer_node_id)
+                    .map(|(id, _)| *id)
+                    .collect();
+                let peer_slot_free = if superseded_ids.is_empty() {
+                    true
+                } else {
+                    incumbent_is_relay
+                        && superseded_ids.iter().all(|id| {
+                            self.trials.get(id).is_some_and(|t| {
+                                t.phase == Phase::Finalized
+                                    && t.return_started.is_none()
+                                    && Self::current(t, peers, installed)
+                            })
+                        })
+                };
+                let allowed = local_enabled
+                    && ctx.org_primary
+                    && supported
+                    && self.trials.len().saturating_sub(superseded_ids.len()) < MAX_TRIALS
+                    && peer_slot_free;
                 let path_nodes = path.relay_node_ids();
                 if !allowed
                     || (path_nodes.len() == 1 && requester_at_exit)
@@ -449,6 +634,23 @@ impl Engine {
                 if requested.is_some() {
                     self.pending_request = None;
                 }
+                for old_id in superseded_ids {
+                    if let Some(mut old_t) = self.trials.remove(&old_id) {
+                        if let Some(conn) = old_t.conn.take() {
+                            let promoted = PromotedCarrier {
+                                conn,
+                                pubkey: old_t.peer.public_key,
+                                overlay_ip: old_t.peer.overlay_ip,
+                                since: old_t.committed_since.unwrap_or(old_t.original.since),
+                            };
+                            if let Some(prev) = self.promoted_conns.insert(peer_node_id, promoted) {
+                                prev.conn.close();
+                            }
+                        }
+                        let _ = wg.promote_finalized_path_trial(old_id).await;
+                        self.retired(old_id);
+                    }
+                }
                 self.trials.insert(
                     trial_id,
                     Trial {
@@ -469,6 +671,8 @@ impl Engine {
                         return_started: None,
                         next_return: now + Duration::from_secs(15),
                         direct_refreshed: None,
+                        incumbent_is_relay,
+                        direct_shadow_retired: incumbent_is_relay,
                         requested,
                     },
                 );
@@ -589,12 +793,30 @@ impl Engine {
                 .await;
             }
             ServerMsg::OverlayPathTrialFinalize { trial_id } => {
-                if let Some(t) = self.trials.get_mut(&trial_id)
+                let mut finalized_peer = None;
+                let retire_shadow = if let Some(t) = self.trials.get_mut(&trial_id)
                     && t.phase == Phase::Committed
                     && Self::current(t, peers, installed)
                     && wg.finalize_path_trial(trial_id)
                 {
                     t.phase = Phase::Finalized;
+                    finalized_peer = Some(t.peer_id);
+                    if Self::peer_is_backbone_only(t.peer_id, peers) || t.direct_shadow_retired {
+                        t.direct_shadow_retired = true;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if retire_shadow {
+                    wg.retire_path_trial_direct_shadow(trial_id).await;
+                }
+                if let Some(peer_id) = finalized_peer
+                    && let Some(prev) = self.promoted_conns.remove(&peer_id)
+                {
+                    prev.conn.close();
                 }
             }
             ServerMsg::OverlayPathTrialReturnPrepare {
@@ -607,6 +829,19 @@ impl Engine {
                 let Some(t) = self.trials.get_mut(&trial_id) else {
                     return;
                 };
+                if Self::peer_is_backbone_only(t.peer_id, peers) || t.direct_shadow_retired {
+                    t.direct_shadow_retired = true;
+                    wg.retire_path_trial_direct_shadow(trial_id).await;
+                    Self::send(
+                        &ctx.outbound,
+                        ClientMsg::OverlayPathTrialReturnAbort {
+                            trial_id,
+                            return_id,
+                        },
+                    )
+                    .await;
+                    return;
+                }
                 if !Self::current(t, peers, installed) || t.return_retired.contains(&return_id) {
                     return;
                 }
@@ -662,6 +897,19 @@ impl Engine {
                 let Some(t) = self.trials.get_mut(&trial_id) else {
                     return;
                 };
+                if Self::peer_is_backbone_only(t.peer_id, peers) || t.direct_shadow_retired {
+                    t.direct_shadow_retired = true;
+                    wg.retire_path_trial_direct_shadow(trial_id).await;
+                    Self::send(
+                        &ctx.outbound,
+                        ClientMsg::OverlayPathTrialReturnAbort {
+                            trial_id,
+                            return_id,
+                        },
+                    )
+                    .await;
+                    return;
+                }
                 if t.return_id != Some(return_id) || !Self::current(t, peers, installed) {
                     return;
                 }
@@ -708,6 +956,8 @@ impl Engine {
                 let ok = self.trials.get(&trial_id).is_some_and(|t| {
                     t.return_id == Some(return_id)
                         && t.phase == Phase::Returned
+                        && !t.direct_shadow_retired
+                        && !Self::peer_is_backbone_only(t.peer_id, peers)
                         && Self::current(t, peers, installed)
                 });
                 if ok && wg.finalize_path_trial_return(trial_id) {
@@ -729,6 +979,52 @@ impl Engine {
                 let Some(t) = self.trials.get_mut(&trial_id) else {
                     return;
                 };
+                if Self::peer_is_backbone_only(t.peer_id, peers) || t.direct_shadow_retired {
+                    if t.phase == Phase::Returned {
+                        if wg.abort_path_trial_return(trial_id) {
+                            let now = Instant::now();
+                            installed.insert(
+                                t.peer_id,
+                                Installed {
+                                    hs_done: true,
+                                    initiated: true,
+                                    relay_kind: Some(RelayKind::Org),
+                                    carrier_local: t
+                                        .conn
+                                        .as_ref()
+                                        .and_then(|c| c.local_addr().ok()),
+                                    carrier_dst: t.conn.as_ref().map(|c| c.synth_peer()),
+                                    ..Installed::base(
+                                        t.peer.public_key,
+                                        t.peer.overlay_ip,
+                                        DirectTier::Relay,
+                                        now,
+                                    )
+                                },
+                            );
+                            t.committed_since = Some(now);
+                        } else {
+                            self.cancel(trial_id, ctx, wg, peers, installed, false)
+                                .await;
+                            return;
+                        }
+                    }
+                    t.direct_shadow_retired = true;
+                    wg.retire_path_trial_direct_shadow(trial_id).await;
+                    t.return_retired.push(return_id);
+                    if t.return_retired.len() > 64 {
+                        t.return_retired.remove(0);
+                    }
+                    t.return_id = None;
+                    t.return_started = None;
+                    if matches!(
+                        t.phase,
+                        Phase::ReturnPreparing | Phase::ReturnReady | Phase::Returned
+                    ) {
+                        t.phase = Phase::Finalized;
+                    }
+                    return;
+                }
                 if t.return_id != Some(return_id) || !Self::current(t, peers, installed) {
                     return;
                 }
@@ -832,6 +1128,30 @@ impl Engine {
     ) {
         let now = Instant::now();
         wg.reap_path_trial_drains(now);
+        let mut released_promoted = Vec::new();
+        self.promoted_conns.retain(|peer_id, pc| {
+            let keep = Self::promoted_current(*peer_id, pc, peers, installed);
+            if !keep {
+                pc.conn.close();
+                released_promoted.push(*peer_id);
+            }
+            keep
+        });
+        if !released_promoted.is_empty() {
+            let mut managed = ctx
+                .path_trial_managed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for peer_id in released_promoted {
+                if !self
+                    .trials
+                    .values()
+                    .any(|t| t.peer_id == peer_id && t.committed_since.is_some())
+                {
+                    managed.remove(&peer_id);
+                }
+            }
+        }
         for failed in self.failed_requests.drain(..) {
             discovery.note_failure(
                 peers,
@@ -918,11 +1238,19 @@ impl Engine {
                 self.cancel(id, ctx, wg, peers, installed, true).await;
                 continue;
             }
+            let direct_forbidden =
+                Self::peer_is_backbone_only(self.trials[&id].peer_id, peers)
+                    || self.trials[&id].direct_shadow_retired;
+            if direct_forbidden {
+                self.trials.get_mut(&id).unwrap().direct_shadow_retired = true;
+                wg.retire_path_trial_direct_shadow(id).await;
+            }
             let t = self.trials.get_mut(&id).unwrap();
             // A dead retained Tunn cannot be resurrected by stateless echo.
             // Repair only the non-active shadow and only before a Ready vote;
             // Returned/Committed decisions must keep both receivers unchanged.
-            if matches!(t.phase, Phase::Finalized | Phase::ReturnPreparing)
+            if !direct_forbidden
+                && matches!(t.phase, Phase::Finalized | Phase::ReturnPreparing)
                 && !wg.path_trial_direct_ready(id)
                 && t.direct_refreshed.is_none_or(|at| {
                     now.saturating_duration_since(at) >= t.original.tier.handshake_deadline()
@@ -980,7 +1308,8 @@ impl Engine {
                     self.cancel(id, ctx, wg, peers, installed, true).await;
                     continue;
                 }
-            } else if t.phase == Phase::Finalized
+            } else if !direct_forbidden
+                && t.phase == Phase::Finalized
                 && now >= t.next_return
                 && t.measurements.return_ready(now)
                 && wg.path_trial_direct_ready(id)
@@ -1049,7 +1378,11 @@ impl Engine {
                 .await;
             }
             let t = self.trials.get_mut(&id).unwrap();
-            if t.measurements.round.is_none()
+            let measure_allowed = !direct_forbidden
+                || (t.incumbent_is_relay
+                    && matches!(t.phase, Phase::Measuring | Phase::Ready));
+            if measure_allowed
+                && t.measurements.round.is_none()
                 && t.measurements
                     .last_round
                     .is_none_or(|at| now.duration_since(at) >= ROUND_GAP)
@@ -1305,6 +1638,8 @@ mod ownership_regression {
                     return_started: None,
                     next_return: now,
                     direct_refreshed: None,
+                    incumbent_is_relay: false,
+                    direct_shadow_retired: false,
                     requested: None,
                 },
             );
@@ -1419,6 +1754,8 @@ mod simultaneous_return_regression {
                     return_started: Some(now),
                     next_return: now,
                     direct_refreshed: None,
+                    incumbent_is_relay: false,
+                    direct_shadow_retired: false,
                     requested: None,
                 },
             );
@@ -1571,6 +1908,8 @@ mod failure_feedback_regression {
                 return_started: None,
                 next_return: now,
                 direct_refreshed: None,
+                incumbent_is_relay: false,
+                direct_shadow_retired: false,
                 requested: Some(RequestedCandidate {
                     peer_id,
                     request_id: 71,
@@ -1635,6 +1974,8 @@ mod failure_feedback_regression {
                 return_started: None,
                 next_return: now,
                 direct_refreshed: None,
+                incumbent_is_relay: false,
+                direct_shadow_retired: false,
                 requested: None,
             },
         );
@@ -2031,6 +2372,8 @@ mod retained_repair_pacing {
                 return_started: None,
                 next_return: now,
                 direct_refreshed: None,
+                incumbent_is_relay: false,
+                direct_shadow_retired: false,
                 requested: None,
             },
         );
@@ -2177,5 +2520,658 @@ mod reset_gate_cause_tests {
                 "unavailable diagnostic must emit no control traffic"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sequential_relay_upgrade_tests {
+    use super::*;
+    use crate::overlay::orgrelay::bind::{BindSecret, CookieKey};
+    use crate::overlay::orgrelay::client::bind_any;
+    use crate::overlay::orgrelay::server::{RelayServer, RelayStats};
+    use crate::overlay::orgrelay::session::{Member, Session};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use meshharbor_remote_control::signaling::RelayPathWire;
+
+    fn ipv4_packet(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
+        let total = (20 + payload.len()) as u16;
+        let mut p = Vec::with_capacity(total as usize);
+        p.push(0x45);
+        p.push(0);
+        p.extend_from_slice(&total.to_be_bytes());
+        p.extend_from_slice(&[0, 0, 0x40, 0, 64, 17, 0, 0]);
+        p.extend_from_slice(&src.octets());
+        p.extend_from_slice(&dst.octets());
+        p.extend_from_slice(payload);
+        p
+    }
+
+    async fn spawn_relay_session(
+        vni: u32,
+        generation: u64,
+        pub_a: [u8; 32],
+        pub_b: [u8; 32],
+        sec_a: [u8; 32],
+        sec_b: [u8; 32],
+    ) -> (SocketAddr, Arc<RelayStats>, tokio::task::JoinHandle<()>) {
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = sock.local_addr().unwrap();
+        let stats = Arc::new(RelayStats::default());
+        let (server, handle) =
+            RelayServer::new(CookieKey::from_bytes([0x42; 32]), stats.clone());
+        let now = Instant::now();
+        assert!(handle.install(Session {
+            vni,
+            generation,
+            members: [
+                Member {
+                    wg_public: pub_a,
+                    secret: BindSecret::from_bytes(sec_a),
+                },
+                Member {
+                    wg_public: pub_b,
+                    secret: BindSecret::from_bytes(sec_b),
+                },
+            ],
+            bound: [None, None],
+            max_lifetime: now + Duration::from_secs(120),
+            idle_deadline: now + Duration::from_secs(120),
+            bind_deadline: now + Duration::from_secs(60),
+        }));
+        let task = tokio::spawn(async move {
+            let _keep_handle = handle;
+            server.serve(sock).await;
+        });
+        (addr, stats, task)
+    }
+
+    fn seed_ready_windows(t: &mut Trial, now: Instant, inc_ms: f64, cand_ms: f64) {
+        for i in 0..9 {
+            let at = now - Duration::from_millis((9 - i) * 100);
+            let a = |result| Attempt {
+                nonce: [0; 8],
+                at,
+                dst: None,
+                result: Some(result),
+            };
+            t.measurements.round = Some(Round {
+                direct: a(Some(inc_ms)),
+                relay: a(Some(cand_ms)),
+            });
+            t.measurements.finish(at);
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_relay_upgrade_r0_to_r1_to_r2_preserves_r1_on_abort_and_switches_to_r2_on_commit()
+    {
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (id_a, id_b) = (ObjectId::new(), ObjectId::new());
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 64, 0, 10), Ipv4Addr::new(100, 64, 0, 11));
+        let (_r0_id, r1_id, r2_id) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+
+        let np_b: NetmapPeer = serde_json::from_value(serde_json::json!({
+            "node_id": id_b.to_hex(),
+            "overlay_ip": ip_b.to_string(),
+            "wg_public_key": kp_b.public_base64(),
+            "reachable": true,
+        }))
+        .unwrap();
+        let np_a: NetmapPeer = serde_json::from_value(serde_json::json!({
+            "node_id": id_a.to_hex(),
+            "overlay_ip": ip_a.to_string(),
+            "wg_public_key": kp_a.public_base64(),
+            "reachable": true,
+        }))
+        .unwrap();
+
+        // Start with an active bound OrgRelay R0 carrier between A and B.
+        let (s0_a, s0_b) = ([0x10; 32], [0x11; 32]);
+        let (r0_addr, _, r0_task) = spawn_relay_session(
+            100,
+            1,
+            kp_a.public.to_bytes(),
+            kp_b.public.to_bytes(),
+            s0_a,
+            s0_b,
+        )
+        .await;
+        let (sock0_a, _, _) =
+            bind_any(&[r0_addr], 100, 1, &BindSecret::from_bytes(s0_a), Duration::from_secs(2))
+                .await
+                .unwrap();
+        let (sock0_b, _, _) =
+            bind_any(&[r0_addr], 100, 1, &BindSecret::from_bytes(s0_b), Duration::from_secs(2))
+                .await
+                .unwrap();
+        let conn0_a = Arc::new(OrgRelayConn::new(Arc::new(sock0_a), r0_addr, 100, "r0".into()));
+        let conn0_b = Arc::new(OrgRelayConn::new(Arc::new(sock0_b), r0_addr, 100, "r0".into()));
+
+        let (out_a, mut rx_a) = mpsc::channel(64);
+        let (out_b, mut rx_b) = mpsc::channel(64);
+        let ctx_a = OverlayRuntime::new_relay(
+            kp_a.clone(),
+            out_a,
+            Box::new(|_, _, _| Err(std::io::Error::other("no TUN"))),
+            1280,
+        )
+        .with_org_primary(true);
+        let ctx_b = OverlayRuntime::new_relay(
+            kp_b.clone(),
+            out_b,
+            Box::new(|_, _, _| Err(std::io::Error::other("no TUN"))),
+            1280,
+        )
+        .with_org_primary(true);
+
+        let (mut wg_a, mut inbox_a) = WgDevice::new(kp_a.secret.clone());
+        let (mut wg_b, mut inbox_b) = WgDevice::new(kp_b.secret.clone());
+        wg_a.add_peer(
+            kp_b.public.to_bytes(),
+            ip_b,
+            Carrier::relay(conn0_a.clone(), conn0_a.synth_peer()),
+            true,
+        );
+        wg_b.add_peer(
+            kp_a.public.to_bytes(),
+            ip_a,
+            Carrier::relay(conn0_b.clone(), conn0_b.synth_peer()),
+            false,
+        );
+        let pkt0 = ipv4_packet(ip_a, ip_b, b"over-r0");
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                wg_a.send_ip_packet(&pkt0).await;
+                if let Ok(Some(got)) =
+                    tokio::time::timeout(Duration::from_millis(80), inbox_b.recv()).await
+                {
+                    assert_eq!(got, pkt0);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("initial R0 carrier delivers traffic");
+
+        let now0 = Instant::now();
+        let mut installed_a = HashMap::from([(
+            id_b,
+            Installed {
+                hs_done: true,
+                initiated: true,
+                relay_kind: Some(RelayKind::Org),
+                carrier_dst: Some(conn0_a.synth_peer()),
+                ..Installed::base(kp_b.public.to_bytes(), ip_b, DirectTier::Relay, now0)
+            },
+        )]);
+        let mut installed_b = HashMap::from([(
+            id_a,
+            Installed {
+                hs_done: true,
+                initiated: false,
+                relay_kind: Some(RelayKind::Org),
+                carrier_dst: Some(conn0_b.synth_peer()),
+                ..Installed::base(kp_a.public.to_bytes(), ip_a, DirectTier::Relay, now0)
+            },
+        )]);
+        let peers_a = HashMap::from([(id_b, np_b)]);
+        let peers_b = HashMap::from([(id_a, np_a)]);
+        let mut eng_a = Engine::new();
+        let mut eng_b = Engine::new();
+        let mut disc_a = super::super::super::orgrelay::discovery::Discovery::default();
+        let mut disc_b = super::super::super::orgrelay::discovery::Discovery::default();
+
+        // ---- Phase 1: R0 -> R1 upgrade trial commits and finalizes ----
+        let t1 = ObjectId::new();
+        let (s1_a, s1_b) = ([0x20; 32], [0x21; 32]);
+        let (r1_addr, r1_stats, r1_task) = spawn_relay_session(
+            101,
+            2,
+            kp_a.public.to_bytes(),
+            kp_b.public.to_bytes(),
+            s1_a,
+            s1_b,
+        )
+        .await;
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t1,
+                    request_id: 1,
+                    path: RelayPathWire::new(vec![r1_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_b,
+                    peer_wg_public_key: kp_b.public_base64(),
+                    vni: 101,
+                    generation: 2,
+                    relay_node_id: r1_id,
+                    relay_endpoints: vec![r1_addr.to_string()],
+                    bind_secret: BASE64.encode(s1_a),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        eng_b
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t1,
+                    request_id: 1,
+                    path: RelayPathWire::new(vec![r1_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_a,
+                    peer_wg_public_key: kp_a.public_base64(),
+                    vni: 101,
+                    generation: 2,
+                    relay_node_id: r1_id,
+                    relay_endpoints: vec![r1_addr.to_string()],
+                    bind_secret: BASE64.encode(s1_b),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_b,
+                &mut wg_b,
+                &peers_b,
+                &mut installed_b,
+                true,
+                true,
+            )
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                eng_a
+                    .tick_enabled(&ctx_a, &mut wg_a, &peers_a, &mut installed_a, &mut disc_a, true, true)
+                    .await;
+                eng_b
+                    .tick_enabled(&ctx_b, &mut wg_b, &peers_b, &mut installed_b, &mut disc_b, true, true)
+                    .await;
+                if wg_a.path_trial_handshake_done(t1) && wg_b.path_trial_handshake_done(t1) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("R1 trial handshake completes");
+
+        let now1 = Instant::now();
+        seed_ready_windows(eng_a.trials.get_mut(&t1).unwrap(), now1, 120.0, 60.0);
+        seed_ready_windows(eng_b.trials.get_mut(&t1).unwrap(), now1, 120.0, 60.0);
+        eng_a.trials.get_mut(&t1).unwrap().phase = Phase::Ready;
+        eng_b.trials.get_mut(&t1).unwrap().phase = Phase::Ready;
+        let conn1_a = eng_a.trials[&t1].conn.clone().unwrap();
+
+        for msg in [
+            ServerMsg::OverlayPathTrialCommit { trial_id: t1 },
+            ServerMsg::OverlayPathTrialFinalize { trial_id: t1 },
+        ] {
+            eng_a
+                .control_enabled(msg.clone(), &ctx_a, &mut wg_a, &peers_a, &mut installed_a, true, true)
+                .await;
+            eng_b
+                .control_enabled(msg, &ctx_b, &mut wg_b, &peers_b, &mut installed_b, true, true)
+                .await;
+        }
+        while rx_a.try_recv().is_ok() {}
+        while rx_b.try_recv().is_ok() {}
+        assert!(eng_a.trials[&t1].phase == Phase::Finalized);
+        assert!(eng_b.trials[&t1].phase == Phase::Finalized);
+        conn0_a.close();
+        conn0_b.close();
+
+        // ---- Phase 2: R1 -> R2_bad starts over Finalized R1, then aborts -> R1 preserved! ----
+        let t2_bad = ObjectId::new();
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t2_bad,
+                    request_id: 2,
+                    path: RelayPathWire::new(vec![r2_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_b,
+                    peer_wg_public_key: kp_b.public_base64(),
+                    vni: 102,
+                    generation: 3,
+                    relay_node_id: r2_id,
+                    relay_endpoints: vec!["127.0.0.1:9".into()],
+                    bind_secret: BASE64.encode([0x30; 32]),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        assert!(
+            eng_a.trials.contains_key(&t2_bad),
+            "client must admit second upgrade trial R1->R2 after R0->R1 finalized"
+        );
+        assert!(!eng_a.trials.contains_key(&t1));
+        assert!(eng_a.retired.contains(&t1));
+
+        // Abort t2_bad before commit: R1 must stay installed, managed, and carrying traffic!
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialAbort { trial_id: t2_bad },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        assert!(installed_a.contains_key(&id_b));
+        assert!(conn1_a.is_alive(), "R1 connection must stay alive when R1->R2 aborts");
+        assert!(ctx_a.path_trial_managed.lock().unwrap().contains(&id_b));
+        let r1_fwd_before = r1_stats.snapshot().forwarded;
+        let pkt1 = ipv4_packet(ip_a, ip_b, b"still-on-r1");
+        wg_a.send_ip_packet(&pkt1).await;
+        let got1 = tokio::time::timeout(Duration::from_secs(2), inbox_b.recv())
+            .await
+            .expect("R1 still delivers after R1->R2 abort")
+            .unwrap();
+        assert_eq!(got1, pkt1);
+        assert!(r1_stats.snapshot().forwarded > r1_fwd_before);
+
+        // ---- Phase 3: R1 -> R2_good commits & finalizes -> switches to R2 & ignores late Abort(t1) ----
+        let t2_good = ObjectId::new();
+        let (s2_a, s2_b) = ([0x40; 32], [0x41; 32]);
+        let (r2_addr, r2_stats, r2_task) = spawn_relay_session(
+            103,
+            4,
+            kp_a.public.to_bytes(),
+            kp_b.public.to_bytes(),
+            s2_a,
+            s2_b,
+        )
+        .await;
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t2_good,
+                    request_id: 3,
+                    path: RelayPathWire::new(vec![r2_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_b,
+                    peer_wg_public_key: kp_b.public_base64(),
+                    vni: 103,
+                    generation: 4,
+                    relay_node_id: r2_id,
+                    relay_endpoints: vec![r2_addr.to_string()],
+                    bind_secret: BASE64.encode(s2_a),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        eng_b
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t2_good,
+                    request_id: 3,
+                    path: RelayPathWire::new(vec![r2_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_a,
+                    peer_wg_public_key: kp_a.public_base64(),
+                    vni: 103,
+                    generation: 4,
+                    relay_node_id: r2_id,
+                    relay_endpoints: vec![r2_addr.to_string()],
+                    bind_secret: BASE64.encode(s2_b),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_b,
+                &mut wg_b,
+                &peers_b,
+                &mut installed_b,
+                true,
+                true,
+            )
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                eng_a
+                    .tick_enabled(&ctx_a, &mut wg_a, &peers_a, &mut installed_a, &mut disc_a, true, true)
+                    .await;
+                eng_b
+                    .tick_enabled(&ctx_b, &mut wg_b, &peers_b, &mut installed_b, &mut disc_b, true, true)
+                    .await;
+                if wg_a.path_trial_handshake_done(t2_good) && wg_b.path_trial_handshake_done(t2_good) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("R2 trial handshake completes");
+
+        let now2 = Instant::now();
+        seed_ready_windows(eng_a.trials.get_mut(&t2_good).unwrap(), now2, 60.0, 25.0);
+        seed_ready_windows(eng_b.trials.get_mut(&t2_good).unwrap(), now2, 60.0, 25.0);
+        eng_a.trials.get_mut(&t2_good).unwrap().phase = Phase::Ready;
+        eng_b.trials.get_mut(&t2_good).unwrap().phase = Phase::Ready;
+
+        for msg in [
+            ServerMsg::OverlayPathTrialCommit { trial_id: t2_good },
+            ServerMsg::OverlayPathTrialFinalize { trial_id: t2_good },
+            // Server retires superseded t1 upon finalizing t2_good by pushing Abort(t1).
+            ServerMsg::OverlayPathTrialAbort { trial_id: t1 },
+        ] {
+            eng_a
+                .control_enabled(msg.clone(), &ctx_a, &mut wg_a, &peers_a, &mut installed_a, true, true)
+                .await;
+            eng_b
+                .control_enabled(msg, &ctx_b, &mut wg_b, &peers_b, &mut installed_b, true, true)
+                .await;
+        }
+
+        assert!(eng_a.trials[&t2_good].phase == Phase::Finalized);
+        assert!(eng_b.trials[&t2_good].phase == Phase::Finalized);
+        assert!(
+            !conn1_a.is_alive(),
+            "superseded R1 carrier must be closed once R2 finalizes"
+        );
+        let r2_fwd_before = r2_stats.snapshot().forwarded;
+        let pkt2 = ipv4_packet(ip_a, ip_b, b"switched-to-r2");
+        wg_a.send_ip_packet(&pkt2).await;
+        let got2 = tokio::time::timeout(Duration::from_secs(2), inbox_b.recv())
+            .await
+            .expect("R2 delivers traffic after R1->R2 finalization and Abort(t1)")
+            .unwrap();
+        assert_eq!(got2, pkt2);
+        assert!(r2_stats.snapshot().forwarded > r2_fwd_before);
+        let pkt2_rev = ipv4_packet(ip_b, ip_a, b"reply-over-r2");
+        wg_b.send_ip_packet(&pkt2_rev).await;
+        let got2_rev = tokio::time::timeout(Duration::from_secs(2), inbox_a.recv())
+            .await
+            .expect("B->A traffic also rides R2")
+            .unwrap();
+        assert_eq!(got2_rev, pkt2_rev);
+
+        let conn2_a = eng_a.trials[&t2_good].conn.clone().unwrap();
+        assert!(conn2_a.is_alive());
+
+        // ---- Phase 4: Follow-up R2 -> R3_bad aborts before commit, then peer is removed and re-added ----
+        let t3_bad = ObjectId::new();
+        let (s3_a, _s3_b) = ([0x50; 32], [0x51; 32]);
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialStart {
+                    trial_id: t3_bad,
+                    request_id: 4,
+                    path: RelayPathWire::new(vec![r1_id]).unwrap(),
+                    requester_at_exit: false,
+                    peer_node_id: id_b,
+                    peer_wg_public_key: kp_b.public_base64(),
+                    vni: 104,
+                    generation: 5,
+                    relay_node_id: r1_id,
+                    relay_endpoints: vec![r1_addr.to_string()],
+                    bind_secret: BASE64.encode(s3_a),
+                    bind_secs: 30,
+                    max_lifetime_secs: 120,
+                },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        eng_a
+            .control_enabled(
+                ServerMsg::OverlayPathTrialAbort { trial_id: t3_bad },
+                &ctx_a,
+                &mut wg_a,
+                &peers_a,
+                &mut installed_a,
+                true,
+                true,
+            )
+            .await;
+        assert!(eng_a.trials.is_empty());
+        assert!(eng_a.promoted_conns.contains_key(&id_b));
+        assert!(ctx_a.path_trial_managed.lock().unwrap().contains(&id_b));
+
+        // Evict peer B (netmap ACL/removal): tick pruning & explicit eviction must BOTH release
+        // promoted_conns AND clear path_trial_managed so B can receive a fresh relay session on return!
+        let mut peers_a_evicted = peers_a.clone();
+        let saved_np_b = peers_a_evicted.remove(&id_b).unwrap();
+        installed_a.remove(&id_b);
+        wg_a.remove_peer(&kp_b.public.to_bytes()).await;
+        eng_a
+            .tick_enabled(
+                &ctx_a,
+                &mut wg_a,
+                &peers_a_evicted,
+                &mut installed_a,
+                &mut disc_a,
+                true,
+                true,
+            )
+            .await;
+        assert!(
+            !conn2_a.is_alive(),
+            "promoted R2 carrier must close on peer eviction"
+        );
+        assert!(
+            !eng_a.promoted_conns.contains_key(&id_b),
+            "promoted_conns must be pruned on peer removal"
+        );
+        assert!(
+            !ctx_a.path_trial_managed.lock().unwrap().contains(&id_b),
+            "path_trial_managed must be cleared when promoted peer is removed so rejoin relay grants are accepted"
+        );
+
+        // Re-add peer B on a fresh org-relay session R_rejoin and prove packet delivery succeeds!
+        let (sr_a, sr_b) = ([0x60; 32], [0x61; 32]);
+        let (rejoin_addr, rejoin_stats, rejoin_task) = spawn_relay_session(
+            105,
+            6,
+            kp_a.public.to_bytes(),
+            kp_b.public.to_bytes(),
+            sr_a,
+            sr_b,
+        )
+        .await;
+        let (sockr_a, _, _) = bind_any(
+            &[rejoin_addr],
+            105,
+            6,
+            &BindSecret::from_bytes(sr_a),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let (sockr_b, _, _) = bind_any(
+            &[rejoin_addr],
+            105,
+            6,
+            &BindSecret::from_bytes(sr_b),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let conn_rejoin_a = Arc::new(OrgRelayConn::new(
+            Arc::new(sockr_a),
+            rejoin_addr,
+            105,
+            "rejoin".into(),
+        ));
+        let conn_rejoin_b = Arc::new(OrgRelayConn::new(
+            Arc::new(sockr_b),
+            rejoin_addr,
+            105,
+            "rejoin".into(),
+        ));
+        peers_a_evicted.insert(id_b, saved_np_b);
+        wg_b.remove_peer(&kp_a.public.to_bytes()).await;
+        wg_a.add_peer(
+            kp_b.public.to_bytes(),
+            ip_b,
+            Carrier::relay(conn_rejoin_a.clone(), conn_rejoin_a.synth_peer()),
+            true,
+        );
+        wg_b.add_peer(
+            kp_a.public.to_bytes(),
+            ip_a,
+            Carrier::relay(conn_rejoin_b.clone(), conn_rejoin_b.synth_peer()),
+            false,
+        );
+        installed_a.insert(
+            id_b,
+            Installed {
+                hs_done: true,
+                initiated: true,
+                relay_kind: Some(RelayKind::Org),
+                carrier_dst: Some(conn_rejoin_a.synth_peer()),
+                ..Installed::base(kp_b.public.to_bytes(), ip_b, DirectTier::Relay, Instant::now())
+            },
+        );
+        assert!(
+            !ctx_a.path_trial_managed.lock().unwrap().contains(&id_b),
+            "re-added peer remains eligible for ordinary org-relay sessions"
+        );
+        let pkt_rejoin = ipv4_packet(ip_a, ip_b, b"rejoined-after-eviction");
+        let got_rejoin = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                wg_a.send_ip_packet(&pkt_rejoin).await;
+                if let Ok(Some(got)) =
+                    tokio::time::timeout(Duration::from_millis(80), inbox_b.recv()).await
+                {
+                    break got;
+                }
+            }
+        })
+        .await
+        .expect("re-added peer delivers over new relay session");
+        assert_eq!(got_rejoin, pkt_rejoin);
+        assert!(rejoin_stats.snapshot().forwarded > 0);
+
+        r0_task.abort();
+        r1_task.abort();
+        r2_task.abort();
+        rejoin_task.abort();
     }
 }

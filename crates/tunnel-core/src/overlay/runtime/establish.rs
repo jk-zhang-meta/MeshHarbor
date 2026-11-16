@@ -1886,11 +1886,94 @@ impl OverlayRuntime {
         // accumulated an entry per peer that ever churned (the monitor's
         // per-peer state is dropped by `on_peer_removed` above).
         relay_refresh_cooldown.remove(&node_id);
+        self.path_trial_managed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&node_id);
         if let Some(ref e) = removed {
             wg.clear_pending_wake_queue(&e.pubkey);
         }
         if removed.is_some() {
             info!(peer = %node_id, "overlay: peer removed");
+        }
+    }
+
+    /// Retire any installed non-backbone carrier (direct LAN / public / srflx,
+    /// TURN, or DERP) and cancel any pending direct probe or TURN allocation
+    /// for peers whose netmap entry has `backbone_only == true`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn retire_forbidden_backbone_carriers(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        tun: &Arc<dyn TunIo>,
+        relay: &mut Option<RelayCoordinator>,
+        relay_bq: &mut RelayBuildQueue,
+        alloc_q: &mut RelayAllocQueue,
+        upgrade_probes: &mut HashMap<ObjectId, UpgradeProbe>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
+    ) {
+        let backbone_ids: Vec<ObjectId> = current_peers
+            .iter()
+            .filter(|(_, p)| p.backbone_only)
+            .map(|(id, _)| *id)
+            .collect();
+        for nid in backbone_ids {
+            alloc_q.invalidate(&nid);
+            relay_bq.invalidate(&nid);
+            if let Some(pr) = upgrade_probes.remove(&nid) {
+                wg.drop_direct_probe(&pr.pubkey).await;
+                self.shadow(|s| s.mon.on_probe_aborted(&nid));
+            }
+            if let Some(np) = current_peers.get(&nid)
+                && let Some(cfg) = peer_config_from_netmap(np)
+            {
+                if wg.has_direct_probe(&cfg.public_key) {
+                    wg.drop_direct_probe(&cfg.public_key).await;
+                    self.shadow(|s| s.mon.on_probe_aborted(&nid));
+                }
+                if by_node
+                    .get(&nid)
+                    .is_some_and(|e| e.is_direct || e.relay_kind != Some(RelayKind::Org))
+                {
+                    let pk = by_node[&nid].pubkey;
+                    let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                        .peer_subnets(&pk)
+                        .into_iter()
+                        .filter(|c| !c.is_default_route())
+                        .collect();
+                    info!(
+                        peer = %nid,
+                        overlay_ip = %cfg.overlay_ip,
+                        "overlay: peer requires backbone_only — retiring non-backbone carrier"
+                    );
+                    self.remove_peer_state(
+                        nid,
+                        wg,
+                        by_node,
+                        tun,
+                        relay,
+                        relay_bq,
+                        Some(alloc_q),
+                        upgrade_probes,
+                        PeerRoute::Keep,
+                    )
+                    .await;
+                    for old_c in old_subnets {
+                        if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                            tun.del_cidr_route(&old_c.to_string()).await;
+                        }
+                    }
+                    self.path_trial_managed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&nid);
+                    self.shadow(|s| s.mon.on_peer_removed(&nid));
+                }
+            }
+            if let Some(r) = relay.as_mut() {
+                r.clear_non_backbone_state(&nid);
+            }
         }
     }
 
@@ -2070,6 +2153,68 @@ impl OverlayRuntime {
                 }
                 other => other,
             };
+            // Cross-border `backbone_only`: immediately retire any installed
+            // non-orgrelay carrier (direct / TURN / DERP) and cancel any
+            // pending direct probe or non-backbone relay state before
+            // establishing the backbone org-relay path.
+            if cfg.backbone_only {
+                if let Some(pr) = upgrade_probes.remove(&np.node_id) {
+                    wg.drop_direct_probe(&pr.pubkey).await;
+                    self.shadow(|s| s.mon.on_probe_aborted(&np.node_id));
+                } else if wg.has_direct_probe(&cfg.public_key) {
+                    wg.drop_direct_probe(&cfg.public_key).await;
+                    self.shadow(|s| s.mon.on_probe_aborted(&np.node_id));
+                }
+            }
+            let installed = match installed {
+                Some((_, pk, _, _))
+                    if cfg.backbone_only
+                        && by_node
+                            .get(&np.node_id)
+                            .is_some_and(|e| e.is_direct || e.relay_kind != Some(RelayKind::Org)) =>
+                {
+                    let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                        .peer_subnets(&pk)
+                        .into_iter()
+                        .filter(|c| !c.is_default_route())
+                        .collect();
+                    info!(
+                        peer = %np.node_id,
+                        overlay_ip = %cfg.overlay_ip,
+                        "overlay: peer is backbone_only — retiring non-backbone carrier"
+                    );
+                    self.remove_peer_state(
+                        np.node_id,
+                        wg,
+                        by_node,
+                        tun,
+                        relay,
+                        relay_bq,
+                        None,
+                        upgrade_probes,
+                        PeerRoute::Keep,
+                    )
+                    .await;
+                    for old_c in old_subnets {
+                        if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                            tun.del_cidr_route(&old_c.to_string()).await;
+                        }
+                    }
+                    self.path_trial_managed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&np.node_id);
+                    self.shadow(|s| s.mon.on_peer_removed(&np.node_id));
+                    None
+                }
+                other => other,
+            };
+            if cfg.backbone_only {
+                relay_bq.invalidate(&np.node_id);
+                if let Some(r) = relay.as_mut() {
+                    r.clear_non_backbone_state(&np.node_id);
+                }
+            }
             // B5 — reconcile an already-installed peer's approved subnet routes
             // in-place (and withdraw OS CIDR routes only when no remaining HA
             // router claims them) before any short-circuit `continue` below.
@@ -2511,6 +2656,9 @@ impl OverlayRuntime {
 
             match &self.mode {
                 CarrierMode::Direct(links) => {
+                    if cfg.backbone_only {
+                        continue;
+                    }
                     let Some(carrier) = links.build_carrier(&cfg).await else {
                         debug!(peer = %np.node_id, "overlay: no carrier built; retry next netmap");
                         continue;
@@ -4089,6 +4237,215 @@ impl OverlayRuntime {
         }
         out
     }
+
+    /// Reconcile `srflx` discovery when a full-netmap replacement changes
+    /// `stun_urls`: clear stale candidates/NAT state, query ONLY the new
+    /// `stun_urls` through the demux STUN sink (never racing active socket
+    /// recv loops), and advertise the updated (or cleared) `OverlaySrflx`.
+    pub(super) async fn reconfigure_srflx_on_stun_change(
+        &mut self,
+        direct_ctx: &mut Option<DirectCtx>,
+        stun_urls: &[String],
+        stun_sink: Option<&Arc<tokio::sync::Mutex<mpsc::Receiver<crate::transport::stun::StunInbound>>>>,
+    ) -> SrflxGather {
+        let mut out = SrflxGather {
+            stun_server: None,
+            advertised: Vec::new(),
+            my_nat: None,
+        };
+        if let Some(ctx) = direct_ctx.as_mut() {
+            ctx.punch = None;
+            ctx.my_nat = None;
+        }
+        self.srflx_status = None;
+        if let Some(plane) = self.carrier_plane.clone() {
+            let shared = plane
+                .reconfigure_srflx(stun_urls, &self.keypair.secret.to_bytes())
+                .await;
+            if let Some(ctx) = direct_ctx.as_mut() {
+                ctx.punch = shared.punch.clone();
+                ctx.my_nat = shared.my_nat.clone();
+            }
+            self.srflx_status = Some(crate::localapi::SrflxStatus {
+                candidates: shared.candidates.clone(),
+                stun_server: shared.stun_server.map(|s| s.to_string()),
+                nat: shared.my_nat.clone(),
+                via_public_dial: shared.via_public_dial,
+                error: shared.error.clone(),
+                portmap: shared.portmap.clone(),
+            });
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlaySrflx {
+                    candidates: shared.candidates.clone(),
+                    nat: shared.my_nat.clone(),
+                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+                })
+                .await;
+            out.stun_server = shared.stun_server;
+            out.advertised = shared.candidates;
+            out.my_nat = shared.my_nat;
+            return out;
+        }
+        let socks = direct_ctx
+            .as_ref()
+            .map(|c| c.socks.clone())
+            .unwrap_or_default();
+        let public_sock = direct_ctx.as_ref().and_then(|c| c.public_sock.clone());
+        if !direct::srflx_gather_active()
+            || (socks.is_empty() && public_sock.is_none())
+            || stun_urls.is_empty()
+            || stun_sink.is_none()
+        {
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlaySrflx {
+                    candidates: Vec::new(),
+                    nat: None,
+                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+                })
+                .await;
+            return out;
+        }
+        let sink = stun_sink.expect("checked Some above");
+        let own_ips: Vec<Ipv4Addr> = socks.iter().map(|(ip, _)| *ip).collect();
+        let Some(stun_server) = direct::resolve_stun_server(stun_urls, &own_ips).await else {
+            self.srflx_status = Some(crate::localapi::SrflxStatus {
+                candidates: Vec::new(),
+                stun_server: None,
+                nat: None,
+                via_public_dial: false,
+                error: Some(format!("no resolvable STUN server among {stun_urls:?}")),
+                portmap: None,
+            });
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlaySrflx {
+                    candidates: Vec::new(),
+                    nat: None,
+                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+                })
+                .await;
+            return out;
+        };
+        out.stun_server = Some(stun_server);
+        let mut rx = sink.lock().await;
+        while rx.try_recv().is_ok() {}
+        let mut via_public_dial = false;
+        let mut pairs = tokio::time::timeout(SRFLX_GATHER_BUDGET, async {
+            let mut pairs: Vec<(String, Arc<UdpSocket>)> = Vec::new();
+            for (_ip, sock) in &socks {
+                if let Ok(SocketAddr::V4(s)) = crate::transport::stun::srflx_query_via_sink(
+                    sock,
+                    &mut rx,
+                    stun_server,
+                    SRFLX_ATTEMPT_TIMEOUT,
+                )
+                .await
+                    && direct::is_public_v4(*s.ip())
+                {
+                    let ep = SocketAddr::V4(s).to_string();
+                    if !pairs.iter().any(|(e, _)| e == &ep) {
+                        pairs.push((ep, sock.clone()));
+                    }
+                }
+            }
+            pairs
+        })
+        .await
+        .unwrap_or_default();
+        if pairs.is_empty()
+            && (direct::vpn_vantage_enabled() || socks.is_empty())
+            && let Some(ps) = public_sock.as_ref()
+            && let Ok(SocketAddr::V4(s)) = crate::transport::stun::srflx_query_via_sink(
+                ps,
+                &mut rx,
+                stun_server,
+                SRFLX_ATTEMPT_TIMEOUT,
+            )
+            .await
+            && direct::is_public_v4(*s.ip())
+        {
+            via_public_dial = true;
+            pairs.push((SocketAddr::V4(s).to_string(), ps.clone()));
+        }
+        if pairs.is_empty() {
+            drop(rx);
+            self.srflx_status = Some(crate::localapi::SrflxStatus {
+                candidates: Vec::new(),
+                stun_server: Some(stun_server.to_string()),
+                nat: None,
+                via_public_dial: false,
+                error: Some(format!(
+                    "STUN yielded no public candidate from {stun_server} ({} socket(s) probed)",
+                    socks.len()
+                )),
+                portmap: None,
+            });
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlaySrflx {
+                    candidates: Vec::new(),
+                    nat: None,
+                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+                })
+                .await;
+            return out;
+        }
+        let punch = pairs.first().cloned();
+        let my_nat = if let Some((_, ps)) = &punch {
+            let targets = direct::resolve_stun_targets(stun_urls, &own_ips).await;
+            let typing_targets = direct::exclude_self_vantages(&targets);
+            if typing_targets.len() >= 2 {
+                let mut mappings = Vec::with_capacity(typing_targets.len());
+                for t in &typing_targets {
+                    if let Ok(m) = crate::transport::stun::srflx_query_via_sink(
+                        ps,
+                        &mut rx,
+                        *t,
+                        SRFLX_ATTEMPT_TIMEOUT,
+                    )
+                    .await
+                    {
+                        mappings.push(m);
+                    }
+                }
+                direct::classify_nat_mappings(&mappings).map(str::to_string)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        drop(rx);
+        out.my_nat = my_nat.clone();
+        if let (Some(ctx), Some(first)) = (direct_ctx.as_mut(), punch) {
+            ctx.punch = Some(first);
+            ctx.my_nat = my_nat.clone();
+        }
+        let mut candidates: Vec<String> = pairs.into_iter().map(|(c, _)| c).collect();
+        if let Some(ctx) = direct_ctx.as_ref() {
+            candidates.extend(v6_adverts(ctx.v6.as_ref(), &ctx.my_v6));
+        }
+        out.advertised = candidates.clone();
+        self.srflx_status = Some(crate::localapi::SrflxStatus {
+            candidates: candidates.clone(),
+            stun_server: Some(stun_server.to_string()),
+            nat: my_nat.clone(),
+            via_public_dial,
+            error: None,
+            portmap: None,
+        });
+        let _ = self
+            .outbound
+            .send(ClientMsg::OverlaySrflx {
+                candidates,
+                nat: my_nat,
+                udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+            })
+            .await;
+        out
+    }
 }
 
 /// §6 item 5 — bind the IPv6 direct socket when this host has a global IPv6
@@ -5136,5 +5493,191 @@ mod tests {
             );
             assert!(!by_node[&nid_a].hs_done);
         }
+    }
+
+    #[tokio::test]
+    async fn backbone_only_flip_immediately_retires_established_direct_carrier_and_pending_probes() {
+        let mut f = live_direct_pair().await;
+        let now = Instant::now();
+        f.by_node.insert(
+            f.nid,
+            Installed {
+                hs_done: true,
+                ..Installed::base(f.pk, f.ip, DirectTier::Lan, now)
+            },
+        );
+        assert!(
+            f.by_node[&f.nid].is_direct,
+            "precondition: peer has an established healthy direct carrier"
+        );
+        assert!(f.wg.is_connected(&f.pk).await);
+        assert!(f.wg.peer_handshake_done(&f.pk).is_some());
+
+        // Also seed an in-flight direct upgrade probe so reconciliation must drop both.
+        let probe_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let probe_dst_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let probe_dst = probe_dst_sock.local_addr().unwrap();
+        let cfg_before = peer_config_from_netmap(&f.current_peers[&f.nid]).unwrap();
+        let mut upgrade_probes = HashMap::new();
+        f.rt.start_upgrade_probe(
+            &mut f.wg,
+            &mut upgrade_probes,
+            f.nid,
+            &cfg_before,
+            probe_sock,
+            probe_dst,
+            DirectTier::Lan,
+            now,
+        )
+        .await;
+        assert!(f.wg.has_direct_probe(&f.pk));
+        assert!(upgrade_probes.contains_key(&f.nid));
+
+        // Flip peer to stripped `backbone_only = true` (simulating cross_border_restricted = true).
+        let mut restricted_peer = f.current_peers[&f.nid].clone();
+        restricted_peer.backbone_only = true;
+        restricted_peer.endpoints.clear();
+        restricted_peer.lan_endpoints.clear();
+        restricted_peer.srflx_endpoints.clear();
+        restricted_peer.supports_derp = false;
+        restricted_peer.supports_derp_floor = false;
+        restricted_peer.supports_forced_derp = false;
+        restricted_peer.supports_relay_single = false;
+        restricted_peer.relay_strategy = None;
+        f.current_peers.insert(f.nid, restricted_peer.clone());
+
+        let (tx, _rx) = mpsc::channel(4);
+        let mut relay_bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        f.rt.install_peers(
+            &mut f.wg,
+            &mut f.by_node,
+            &mut f.relay,
+            &f.tun,
+            &[restricted_peer],
+            None,
+            &mut upgrade_probes,
+            &mut relay_bq,
+            "netmap",
+        )
+        .await;
+
+        assert!(
+            !f.by_node.contains_key(&f.nid),
+            "established direct carrier MUST be immediately retired when backbone_only flips true"
+        );
+        assert!(
+            f.wg.peer_handshake_done(&f.pk).is_none(),
+            "direct WG peer MUST be removed from WgDevice"
+        );
+        assert!(
+            !f.wg.has_direct_probe(&f.pk) && !upgrade_probes.contains_key(&f.nid),
+            "pending direct upgrade probe MUST be cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_turn_build_without_installed_carrier_is_invalidated_and_rejected_on_backbone_only_full_and_delta() {
+        let mut f = live_direct_pair().await;
+        // Ensure NO carrier is installed (`by_node` empty) when an off-loop TURN build is pending.
+        f.by_node.clear();
+        f.wg.remove_peer(&f.pk).await;
+
+        let mut restricted_peer = f.current_peers[&f.nid].clone();
+        restricted_peer.backbone_only = true;
+        restricted_peer.endpoints.clear();
+        restricted_peer.lan_endpoints.clear();
+        restricted_peer.srflx_endpoints.clear();
+        f.current_peers.insert(f.nid, restricted_peer.clone());
+
+        let (tx, _rx) = mpsc::channel(4);
+        let mut relay_bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        let (atx, _arx) = mpsc::channel(4);
+        let mut alloc_q = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx: atx,
+        };
+        let mut upgrade_probes = HashMap::new();
+
+        // 1. Full/delta netmap `retire_forbidden_backbone_carriers` with `by_node` empty:
+        //    must invalidate pending `relay_bq` epoch!
+        let ep_delta = relay_bq.stamp(f.nid);
+        assert!(relay_bq.in_flight.contains_key(&f.nid));
+        f.rt.retire_forbidden_backbone_carriers(
+            &mut f.wg,
+            &mut f.by_node,
+            &f.tun,
+            &mut f.relay,
+            &mut relay_bq,
+            &mut alloc_q,
+            &mut upgrade_probes,
+            &f.current_peers,
+        )
+        .await;
+        assert!(
+            !super::should_commit_built_relay(
+                &mut relay_bq,
+                &f.current_peers,
+                &f.rt.path_trial_managed,
+                f.nid,
+                ep_delta,
+                RelayKind::Turn,
+            ),
+            "pending TURN build must be invalidated by retire_forbidden_backbone_carriers even with no installed carrier"
+        );
+
+        // 2. Full/delta `install_peers` with `by_node` empty: must also invalidate `relay_bq`!
+        let ep_full = relay_bq.stamp(f.nid);
+        f.rt.install_peers(
+            &mut f.wg,
+            &mut f.by_node,
+            &mut f.relay,
+            &f.tun,
+            &[restricted_peer],
+            None,
+            &mut upgrade_probes,
+            &mut relay_bq,
+            "netmap",
+        )
+        .await;
+        assert!(!relay_bq.take_if_current(&f.nid, ep_full));
+
+        // 3. Even if an epoch token were still current on arrival, `should_commit_built_relay`
+        //    rejects non-Org completions (`Turn` and `Derp`) for `backbone_only` peers while allowing `Org`.
+        let ep_turn = relay_bq.stamp(f.nid);
+        assert!(!super::super::should_commit_built_relay(
+            &mut relay_bq,
+            &f.current_peers,
+            &f.rt.path_trial_managed,
+            f.nid,
+            ep_turn,
+            RelayKind::Turn,
+        ));
+        let ep_derp = relay_bq.stamp(f.nid);
+        assert!(!super::super::should_commit_built_relay(
+            &mut relay_bq,
+            &f.current_peers,
+            &f.rt.path_trial_managed,
+            f.nid,
+            ep_derp,
+            RelayKind::Derp,
+        ));
+        let ep_org = relay_bq.stamp(f.nid);
+        assert!(super::should_commit_built_relay(
+            &mut relay_bq,
+            &f.current_peers,
+            &f.rt.path_trial_managed,
+            f.nid,
+            ep_org,
+            RelayKind::Org,
+        ));
     }
 }

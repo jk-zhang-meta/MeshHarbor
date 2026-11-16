@@ -216,15 +216,17 @@ impl Module for FleetState {
         // the device's zone, which can break cross-network RC to the operator's
         // own devices. The zones of the deployment's STUN/TURN hosts are
         // resolved off the hot path, now and every 10 minutes.
+        rc_hub.set_geoip(core.geoip.clone());
+        let ice_zones = Arc::new(meshharbor_core::ice_zones::IceServerZones::default());
+        meshharbor_core::ice_zones::spawn_refresh(
+            core.clone(),
+            ice_zones.clone(),
+            meshharbor_core::ice_zones::all_urls(&core.turn_map),
+        );
+        rc_hub.set_ice_zones(ice_zones.clone());
         if let Some(mode) = meshharbor_core::ice_zones::gate_mode(&settings.app.rc_ice_zone_mode) {
-            let zones = Arc::new(meshharbor_core::ice_zones::IceServerZones::default());
-            meshharbor_core::ice_zones::spawn_refresh(
-                core.clone(),
-                zones.clone(),
-                meshharbor_core::ice_zones::all_urls(&core.turn_map),
-            );
             tracing::info!(?mode, "rc ice zone: relay-locality gate installed");
-            rc_hub.set_ice_gate(hub::IceGate::new(zones, mode));
+            rc_hub.set_ice_gate(hub::IceGate::new(ice_zones, mode));
         }
         // FR-115 P3b — the hub keeps its sessions' slots: renews this pod's
         // leases every round, and gives a slot back when its session ends.

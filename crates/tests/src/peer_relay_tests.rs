@@ -11,7 +11,7 @@
 
 use crate::fixtures::{seed::SeededTenant, test_app::TestApp};
 use bson::{doc, oid::ObjectId};
-use meshharbor_db::models::role::permissions::{DEFAULT_ADMIN, EXEC_DEVICE};
+use meshharbor_db::models::role::permissions::{ADMINISTRATOR, DEFAULT_ADMIN, EXEC_DEVICE};
 use meshharbor_mod_network::overlay::{PolicyLoad, load_acl, try_load_acl};
 use meshharbor_remote_control::models::OverlayAclMode;
 use meshharbord::{config::AgentConfig, enrollment};
@@ -134,8 +134,9 @@ async fn org_mode_defaults_off_and_flipping_it_is_an_owner_decision() {
     let (_, body) = get(&app, &settings, owner).await;
     assert_eq!(body["mode"], json!("on"));
 
-    // An admin (DEFAULT_ADMIN: MANAGE_AGENTS, not MANAGE_TENANT) can read the
-    // settings but cannot flip the org switch.
+    // An admin (DEFAULT_ADMIN: MANAGE_AGENTS) or MANAGE_TENANT without
+    // ADMINISTRATOR can read the settings (when holding MANAGE_AGENTS) but
+    // cannot flip the org switch.
     let admin_role = seeded_role_id(&app, &seeded, "admin").await;
     assign_role(&app, &seeded, &admin_role, &seeded.member.id).await;
     let (s, body) = get(&app, &settings, &seeded.member.access_token).await;
@@ -149,13 +150,33 @@ async fn org_mode_defaults_off_and_flipping_it_is_an_owner_decision() {
     )
     .await;
     assert_eq!(s, 403, "MANAGE_AGENTS alone must not flip the org switch");
+    let tenant_mgr = create_role(
+        &app,
+        &seeded,
+        "tenant-mgr",
+        meshharbor_db::models::role::permissions::MANAGE_TENANT,
+    )
+    .await;
+    assign_role(&app, &seeded, &tenant_mgr, &seeded.member.id).await;
+    let (s, _) = put(
+        &app,
+        &settings,
+        &seeded.member.access_token,
+        json!({ "mode": "warn" }),
+    )
+    .await;
+    assert_eq!(
+        s, 403,
+        "MANAGE_TENANT without ADMINISTRATOR must not flip the org switch"
+    );
 }
 
-/// Gate 3 and its audit. `DEFAULT_ADMIN` carries `MANAGE_AGENTS` but
-/// deliberately not `EXEC_DEVICE`; approving a relay needs both, clearing one
-/// needs only the first, and EVERY attempt — granted or refused — is a row.
+/// Gate 3 and its audit. `DEFAULT_ADMIN` and `EXEC_DEVICE` carry device/exec
+/// permissions, NOT `ADMINISTRATOR`; every router policy mutation (`serve: true`,
+/// `serve: false`, `static_endpoints`, `approved_backbone_edges`) requires
+/// `ADMINISTRATOR`, and EVERY attempt — granted or refused — is a row.
 #[tokio::test]
-async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
+async fn approval_needs_administrator_and_audits_both_arms() {
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("relayappr").await;
     let owner = &seeded.admin.access_token;
@@ -165,6 +186,7 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
         &seeded,
         &format!("/agent/{}/peer-relay-policy", cfg.agent_id),
     );
+    let alias_policy = url(&seeded, &format!("/peer-relays/{}", cfg.agent_id));
     let settings = url(&seeded, "/peer-relay");
     let audit = url(&seeded, "/peer-relay-audit");
 
@@ -176,17 +198,19 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
     let (s, body) = put(&app, &policy, member, json!({ "serve": true })).await;
     assert_eq!(s, 403, "{body}");
 
-    // 2. Promoted to `admin`: MANAGE_AGENTS, still no EXEC_DEVICE.
-    let admin_role = seeded_role_id(&app, &seeded, "admin").await;
-    assign_role(&app, &seeded, &admin_role, &seeded.member.id).await;
+    // 2. Promoted to `admin` + `EXEC_DEVICE`: still no ADMINISTRATOR, so
+    //    cannot promote devices to relay nodes.
+    let non_root_admin =
+        create_role(&app, &seeded, "non-root-admin", DEFAULT_ADMIN | EXEC_DEVICE).await;
+    assign_role(&app, &seeded, &non_root_admin, &seeded.member.id).await;
     let (s, body) = put(&app, &policy, member, json!({ "serve": true })).await;
     assert_eq!(s, 403);
     assert!(
         body["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("EXEC_DEVICE"),
-        "the refusal must name the missing permission, got {body}"
+            .contains("ADMINISTRATOR"),
+        "the refusal must name ADMINISTRATOR, got {body}"
     );
     let (_, body) = get(&app, &settings, owner).await;
     assert_eq!(
@@ -195,10 +219,9 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
         "a refused approval changes nothing"
     );
 
-    // 3. The owner approves (ADMINISTRATOR bypass). The device is listed —
-    //    and listed as NOT serving, because this row never advertised
-    //    `relay-server`: gate 3 is not gate 4.
-    let (s, body) = put(&app, &policy, owner, json!({ "serve": true })).await;
+    // 3. The owner approves (ADMINISTRATOR). Both canonical and `/peer-relays/{id}`
+    //    alias work. The device is listed as NOT serving while offline.
+    let (s, body) = put(&app, &alias_policy, owner, json!({ "serve": true })).await;
     assert_eq!(s, 200, "{body}");
     assert_eq!(body["serve"], json!(true));
     let (_, body) = get(&app, &settings, owner).await;
@@ -206,29 +229,33 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
     assert_eq!(body["relays"][0]["id"], json!(cfg.agent_id));
     assert_eq!(body["relays"][0]["serving"], json!(false));
 
-    // 4. Clearing is not a grant: the EXEC_DEVICE-less admin may revoke.
+    // 4. Clearing router approval ALSO requires ADMINISTRATOR: MANAGE_AGENTS is refused.
+    let (s, _) = put(&app, &policy, member, json!({ "serve": false })).await;
+    assert_eq!(s, 403);
+    let (_, body) = get(&app, &settings, owner).await;
+    assert_eq!(body["relays"].as_array().map(Vec::len), Some(1));
+
+    // 5. ...and still may not re-approve.
+    let (s, _) = put(&app, &alias_policy, member, json!({ "serve": true })).await;
+    assert_eq!(s, 403);
+
+    // 6. With ADMINISTRATOR granted, both clearing and re-approving work.
+    let relay_admin = create_role(&app, &seeded, "relay-admin", ADMINISTRATOR).await;
+    assign_role(&app, &seeded, &relay_admin, &seeded.member.id).await;
     let (s, _) = put(&app, &policy, member, json!({ "serve": false })).await;
     assert_eq!(s, 200);
     let (_, body) = get(&app, &settings, owner).await;
     assert_eq!(body["relays"], json!([]));
-
-    // 5. ...and still may not re-approve.
-    let (s, _) = put(&app, &policy, member, json!({ "serve": true })).await;
-    assert_eq!(s, 403);
-
-    // 6. With EXEC_DEVICE added to the same person (roles union), it works.
-    let relay_admin = create_role(&app, &seeded, "relay-admin", DEFAULT_ADMIN | EXEC_DEVICE).await;
-    assign_role(&app, &seeded, &relay_admin, &seeded.member.id).await;
     let (s, body) = put(&app, &policy, member, json!({ "serve": true })).await;
     assert_eq!(s, 200, "{body}");
     let (_, body) = get(&app, &settings, owner).await;
     assert_eq!(body["relays"][0]["id"], json!(cfg.agent_id));
 
-    // 7. Six attempts, six rows — the refused ones included — all naming the
+    // 7. Seven attempts, seven rows — the refused ones included — all naming the
     //    device and who asked, newest first.
     let (s, body) = get(&app, &audit, owner).await;
     assert_eq!(s, 200);
-    assert_eq!(body["total"], json!(6));
+    assert_eq!(body["total"], json!(7));
     let items = body["items"].as_array().unwrap();
     assert!(items.iter().all(|r| r["action"] == json!("approve")));
     assert!(items.iter().all(|r| r["agent_id"] == json!(cfg.agent_id)));
@@ -242,7 +269,7 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
             .iter()
             .filter(|d| **d == "cannot_grant_relay")
             .count(),
-        2
+        3
     );
     assert_eq!(items.iter().filter(|r| r["denied"].is_null()).count(), 3);
     assert_eq!(items[0]["serve"], json!(true));
@@ -254,8 +281,8 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
 
     // The per-device filter and the (now admin) member's own read.
     let (s, body) = get(&app, &format!("{audit}?agent_id={}", cfg.agent_id), member).await;
-    assert_eq!(s, 200, "DEFAULT_ADMIN carries VIEW_EXEC_AUDIT");
-    assert_eq!(body["total"], json!(6));
+    assert_eq!(s, 200, "ADMINISTRATOR carries VIEW_EXEC_AUDIT");
+    assert_eq!(body["total"], json!(7));
 }
 
 /// The loader the P3c mint will stand on. A relay grant must be REFUSED and
@@ -626,4 +653,63 @@ async fn backbone_policy_is_same_tenant_approved_exact_and_preserved_by_plain_en
         serde_json::to_value(row.peer_relay_policy.approved_backbone_edges).unwrap(),
         edges
     );
+}
+
+#[tokio::test]
+async fn admin_relay_policy_pushes_peer_relay_serve_live_and_on_reconnect() {
+    use crate::peer_relay_mint_tests::{connect_from, recv_t};
+    use std::time::Duration;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("relay-live-push").await;
+    let owner = &seeded.admin.access_token;
+    let cfg = enrol(&app, &seeded, "mach-relay-push").await;
+    let alias_policy = url(&seeded, &format!("/peer-relays/{}", cfg.agent_id));
+    let wait = Duration::from_secs(5);
+
+    // 1. Agent connects advertising `relay-control` -> immediately receives
+    //    authoritative `serve: false`.
+    let mut ws = connect_from(&app, &cfg.agent_token, &["relay-control"], None).await;
+    let initial = recv_t(&mut ws, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("initial peer_relay_serve on connect");
+    assert_eq!(initial["serve"], json!(false), "{initial}");
+    let rev0 = initial["revision"]
+        .as_u64()
+        .expect("initial revision on connect");
+
+    // 2. Admin enables relay via PUT /api/tenant/{tid}/peer-relays/{id} ->
+    //    connected agent receives live push `serve: true` without restarting,
+    //    with a strictly higher monotonic `revision`.
+    let (s, body) = put(&app, &alias_policy, owner, json!({ "serve": true })).await;
+    assert_eq!(s, 200, "{body}");
+    let pushed_on = recv_t(&mut ws, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("live peer_relay_serve = true push");
+    assert_eq!(pushed_on["serve"], json!(true), "{pushed_on}");
+    let rev1 = pushed_on["revision"]
+        .as_u64()
+        .expect("bumped revision on PUT serve=true");
+    assert!(rev1 > rev0, "revision must increase monotonically: {rev1} <= {rev0}");
+
+    // 3. Offline/reconnecting agent reconciles immediately on WS connect with `rev1`.
+    drop(ws);
+    let mut ws2 = connect_from(&app, &cfg.agent_token, &["relay-control"], None).await;
+    let reconnected = recv_t(&mut ws2, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("peer_relay_serve = true on reconnect");
+    assert_eq!(reconnected["serve"], json!(true), "{reconnected}");
+    assert_eq!(reconnected["revision"], json!(rev1), "{reconnected}");
+
+    // 4. Admin disables relay -> connected agent receives live push `serve: false` with `rev2 > rev1`.
+    let (s, body) = put(&app, &alias_policy, owner, json!({ "serve": false })).await;
+    assert_eq!(s, 200, "{body}");
+    let pushed_off = recv_t(&mut ws2, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("live peer_relay_serve = false push");
+    assert_eq!(pushed_off["serve"], json!(false), "{pushed_off}");
+    let rev2 = pushed_off["revision"]
+        .as_u64()
+        .expect("bumped revision on PUT serve=false");
+    assert!(rev2 > rev1, "revision must increase monotonically: {rev2} <= {rev1}");
 }

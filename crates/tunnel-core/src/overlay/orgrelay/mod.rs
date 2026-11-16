@@ -31,13 +31,29 @@ pub use wire::*;
 /// unreachable by its own target population.
 pub const DEFAULT_RELAY_SERVER_PORT: u16 = 3478;
 
+/// Runtime override set when the control plane pushes `rc:overlay.peer_relay_serve`:
+/// `0` = unset (fall back to env / startup config), `1` = `false`, `2` = `true`.
+static RUNTIME_RELAY_SERVER_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_runtime_relay_server_enabled(enabled: Option<bool>) {
+    let val = match enabled {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    };
+    RUNTIME_RELAY_SERVER_OVERRIDE.store(val, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Is this node offering itself as an org relay?
 ///
-/// **Opt-in**: only `1|true|yes|on` enables it. That direction is deliberate —
-/// this is FR-19's gate 4, the refusal that survives a compromised server, so
-/// the failure mode of a typo must be "off", never "on".
+/// **Opt-in**: only `1|true|yes|on` or a live admin push enables it.
 pub fn relay_server_enabled() -> bool {
-    crate::env::flag("RELAY_SERVER_ENABLED", false)
+    match RUNTIME_RELAY_SERVER_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+        1 => false,
+        2 => true,
+        _ => crate::env::flag("RELAY_SERVER_ENABLED", false),
+    }
 }
 
 /// The configured listen port, falling back to [`DEFAULT_RELAY_SERVER_PORT`].

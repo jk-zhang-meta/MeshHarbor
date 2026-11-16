@@ -132,6 +132,91 @@
     if (text != null) e.textContent = text;
     return e;
   }
+
+  function sarStem(s) {
+    return String(s || '')
+      .replace(/特别行政区$/u, '')
+      .replace(/特別行政區$/u, '')
+      .replace(/\s+s\.?a\.?r\.?$/iu, '')
+      .trim();
+  }
+
+  /** Deduplicate `[country, region, city]` identically to Web UI's
+   *  `ui/src/utils/deviceLocation.ts` (`新加坡 · 新加坡` → `新加坡`,
+   *  `中国香港 · 香港` → `中国香港`, `中国 · 北京 · 北京市` → `中国 · 北京市`,
+   *  while keeping `中国 · 吉林省 · 吉林市` intact). */
+  function dedupeLocationParts(parts) {
+    const kept = [];
+    for (const raw of parts || []) {
+      const seg = typeof raw === 'string' ? raw.trim() : '';
+      if (!seg || seg === '-' || seg === '—') continue;
+      const prev = kept[kept.length - 1];
+      if (!prev) {
+        kept.push(seg);
+        continue;
+      }
+      const pStem = sarStem(prev);
+      const sStem = sarStem(seg);
+      if (
+        prev.toLowerCase() === seg.toLowerCase() ||
+        (sStem.length > 0 && pStem.toLowerCase() === sStem.toLowerCase())
+      ) {
+        continue;
+      }
+      if (sStem.length >= 2 && (pStem === '中国' + sStem || pStem === '中國' + sStem)) {
+        continue;
+      }
+      if (seg === prev + '市') {
+        kept[kept.length - 1] = seg;
+        continue;
+      }
+      if (prev === seg + '市') {
+        continue;
+      }
+      kept.push(seg);
+    }
+    return kept;
+  }
+
+  function cleanField(v) {
+    const s = typeof v === 'string' ? v.trim() : '';
+    return s && s !== '-' && s !== '—' ? s : '';
+  }
+
+  function formatDeviceLocation(row) {
+    const r = row || {};
+    const country = cleanField(r.country);
+    const region = cleanField(r.region);
+    const city = cleanField(r.city);
+    const rawCode = cleanField(r.country_code).toUpperCase();
+    const countryCode = /^[A-Z]{2}$/.test(rawCode) ? rawCode : '';
+    const publicIp = cleanField(r.public_ip);
+    const locationText = dedupeLocationParts([country, region, city]).join(' · ');
+    return {
+      locationText,
+      countryCode,
+      publicIp,
+      hasAny: Boolean(locationText || countryCode || publicIp),
+    };
+  }
+
+  function formatDeviceZone(row) {
+    const r = row || {};
+    const pinnedId = cleanField(r.pinned_zone_id);
+    const effectiveId = cleanField(r.effective_zone_id);
+    const effectiveName = cleanField(r.effective_zone_name);
+    const pinned = Boolean(pinnedId);
+    const zoneId = effectiveId || pinnedId;
+    const zoneLabel = effectiveName || effectiveId || pinnedId;
+    const hasZone = Boolean(zoneLabel);
+    return {
+      zoneId,
+      zoneLabel,
+      badgeText: hasZone ? zoneLabel : '',
+      pinned,
+      hasZone,
+    };
+  }
   /** "less than a minute ago" / "N min ago" / "N h ago" — how old the data
    *  on screen is. */
   function agoText(epochMs) {
@@ -538,13 +623,46 @@
         const showSub = !!(row.display_name && row.name && row.display_name !== row.name);
         setText(s.sub, showSub ? row.name : '');
         s.sub.hidden = !showSub;
-        const chipKey = (row.is_self ? 's' : '') + (row.ephemeral ? 'e' : '');
+        const zone = formatDeviceZone(row);
+        const chipKey =
+          (row.is_self ? 's' : '') +
+          (row.ephemeral ? 'e' : '') +
+          (zone.hasZone ? (zone.pinned ? 'zp:' : 'za:') + zone.zoneLabel : '');
         if (chipKey !== s.chipKey) {
           const chips = [];
           if (row.is_self) chips.push(el('span', 'chip chip-self', 'this device'));
           if (row.ephemeral) {
             const c = el('span', 'chip chip-warn', 'ephemeral');
             c.title = 'Removes itself after inactivity or on a clean shutdown; removal is final';
+            chips.push(c);
+          }
+          if (zone.hasZone) {
+            const cls = 'chip dv-chip-zone' + (zone.pinned ? ' is-pinned' : '');
+            const c = el('span', cls);
+            if (zone.pinned) {
+              const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+              svg.setAttribute('viewBox', '0 0 16 16');
+              svg.setAttribute('aria-hidden', 'true');
+              svg.setAttribute('class', 'dv-pin-icon');
+              const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+              path.setAttribute(
+                'd',
+                'M9.8 1.7a1 1 0 0 1 1.4 0l3.1 3.1a1 1 0 0 1-.2 1.6l-2.3 1.2-.8 2.9a1 1 0 0 1-1.7.4L6.7 8.3 2.9 12.1l-.9.2.2-.9 3.8-3.8-2.6-2.6a1 1 0 0 1 .4-1.7l2.9-.8 1.2-2.3a1 1 0 0 1 1.9-.5Z',
+              );
+              path.setAttribute('fill', 'currentColor');
+              svg.appendChild(path);
+              c.appendChild(svg);
+            }
+            c.appendChild(document.createTextNode(zone.badgeText));
+            c.dataset.zoneId = zone.zoneId;
+            c.dataset.pinned = zone.pinned ? '1' : '0';
+            c.title = zone.pinned
+              ? 'Logical network zone: ' +
+                zone.zoneLabel +
+                ' (pinned — locked regardless of GeoIP)'
+              : 'Logical network zone: ' +
+                zone.zoneLabel +
+                ' (auto-matched by public IP location)';
             chips.push(c);
           }
           s.chips.replaceChildren(...chips);
@@ -638,6 +756,63 @@
     },
     textCol('os', 'OS', 'os', (r) => r.os),
     textCol('version', 'Version', 'version', (r) => r.version, 'mono'),
+    {
+      key: 'location',
+      title: 'Public IP & Location',
+      cls: 'dv-col-location',
+      build(td) {
+        const empty = el('span', 'muted small', '—');
+        const box = el('div', 'dv-loc-cell');
+        box.hidden = true;
+        const primary = el('div', 'dv-loc-primary');
+        const code = el('span', 'geo-code-pill');
+        code.hidden = true;
+        const locText = el('span', 'dv-loc-text');
+        primary.append(code, locText);
+        const secondary = el('div', 'dv-loc-ip muted small mono');
+        const ip = el('span', 'dv-loc-ip-val');
+        const copyMark = el('span', 'dv-loc-copied');
+        copyMark.hidden = true;
+        secondary.append(ip, copyMark);
+        box.append(primary, secondary);
+        td.append(empty, box);
+        const stCell = { empty, box, code, locText, secondary, ip, copyMark, currentIp: '', timer: null };
+        secondary.addEventListener('click', () => {
+          if (!stCell.currentIp || !navigator.clipboard || !navigator.clipboard.writeText) return;
+          navigator.clipboard.writeText(stCell.currentIp).then(
+            () => {
+              setText(stCell.copyMark, ' ✓');
+              stCell.copyMark.hidden = false;
+              clearTimeout(stCell.timer);
+              stCell.timer = setTimeout(() => {
+                stCell.copyMark.hidden = true;
+              }, 1600);
+            },
+            () => {},
+          );
+        });
+        return stCell;
+      },
+      update(s, row) {
+        const loc = formatDeviceLocation(row);
+        if (!loc.hasAny) {
+          s.box.hidden = true;
+          s.empty.hidden = false;
+          s.currentIp = '';
+          return;
+        }
+        s.empty.hidden = true;
+        s.box.hidden = false;
+        setText(s.code, loc.countryCode);
+        s.code.hidden = !loc.countryCode;
+        setText(s.locText, loc.locationText || '—');
+        setText(s.ip, loc.publicIp || '—');
+        s.currentIp = loc.publicIp;
+        s.secondary.classList.toggle('is-copyable', Boolean(loc.publicIp));
+        const tip = loc.publicIp ? 'Click to copy public IP (' + loc.publicIp + ')' : '';
+        if (s.secondary.title !== tip) s.secondary.title = tip;
+      },
+    },
     {
       key: 'overlay_ip',
       title: 'Overlay IP',
@@ -885,7 +1060,23 @@
   function localQuery(rows) {
     const q = st.q.trim().toLowerCase();
     const hay = (r) =>
-      [r.name, r.display_name, r.os, r.version, r.overlay_ip, r.magic_dns_name, r.magic_dns_fqdn]
+      [
+        r.name,
+        r.display_name,
+        r.os,
+        r.version,
+        r.overlay_ip,
+        r.public_ip,
+        r.country_code,
+        r.country,
+        r.region,
+        r.city,
+        r.effective_zone_name,
+        r.effective_zone_id,
+        r.pinned_zone_id,
+        r.magic_dns_name,
+        r.magic_dns_fqdn,
+      ]
         .concat(r.tags || [])
         .filter(Boolean)
         .map((v) => String(v).toLowerCase());
@@ -1287,4 +1478,10 @@
       else scheduleMesh();
     });
   });
+
+  window.MeshHarborDevices = {
+    dedupeLocationParts,
+    formatDeviceLocation,
+    formatDeviceZone,
+  };
 })();

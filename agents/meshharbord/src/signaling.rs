@@ -5009,31 +5009,49 @@ async fn handle_server_msg(
         // Multi-region relay PoPs: stash the pushed region list; probe now
         // when the set actually changed (rev), else let the periodic
         // re-prober use the stored copy.
-        ServerMsg::RelayRegions { regions, rev } => {
-            // Multi-region DERP: any region carrying a derp_url ⇒ fetch an
-            // admission ticket (once; the reply arm schedules refreshes).
-            // Only when this build can actually dial regional relays.
+        ServerMsg::RelayRegions {
+            regions,
+            rev,
+            policy_revision,
+        } => {
             #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-            if regions.iter().any(|r| r.derp_url.is_some())
-                && tunnel_core::overlay::direct::derp_enabled()
-                && derp_ticket_slot
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .is_none()
-            {
-                let _ = outbound_tx.try_send(ClientMsg::DerpTicketRequest {});
-            }
-            if crate::relay_probe::probing_enabled() {
-                let changed = {
-                    let mut slot = relay_regions_slot.lock().unwrap_or_else(|e| e.into_inner());
-                    let changed = slot.as_ref().map(|(_, r)| *r != rev).unwrap_or(true);
-                    *slot = Some((regions.clone(), rev));
-                    changed
-                };
-                if changed {
-                    debug!(count = regions.len(), rev, "relay regions pushed; probing");
-                    tokio::spawn(crate::relay_probe::probe_and_report(
-                        regions,
+            let has_derp_url = regions.iter().any(|r| r.derp_url.is_some());
+            let outcome = crate::relay_probe::update_regions_versioned(
+                &relay_regions_slot,
+                regions,
+                rev,
+                policy_revision,
+            );
+            if outcome == crate::relay_probe::RegionUpdate::Stale {
+                debug!(
+                    rev,
+                    ?policy_revision,
+                    "ignoring stale relay regions push (older policy_revision)"
+                );
+            } else {
+                // Multi-region DERP: any region carrying a derp_url ⇒ fetch an
+                // admission ticket (once; the reply arm schedules refreshes).
+                // Only when this build can actually dial regional relays.
+                #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                if has_derp_url
+                    && tunnel_core::overlay::direct::derp_enabled()
+                    && derp_ticket_slot
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_none()
+                {
+                    let _ = outbound_tx.try_send(ClientMsg::DerpTicketRequest {});
+                }
+                if outcome == crate::relay_probe::RegionUpdate::Changed
+                    && crate::relay_probe::probing_enabled()
+                {
+                    debug!(
+                        rev,
+                        ?policy_revision,
+                        "relay regions pushed; reconciling probe targets"
+                    );
+                    tokio::spawn(crate::relay_probe::probe_and_report_slot(
+                        relay_regions_slot.clone(),
                         outbound_tx.clone(),
                     ));
                 }
@@ -5546,6 +5564,38 @@ async fn handle_server_msg(
                     agent_id, tenant_id, revision, name,
                 }, outbound_tx).await;
             }
+        }
+        ServerMsg::PeerRelayServe {
+            serve,
+            revision,
+            backbone_endpoints,
+        } => {
+            #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+            if ctx.is_primary {
+                info!(
+                    org = %ctx.label,
+                    serve,
+                    ?revision,
+                    backbone_endpoints = backbone_endpoints.len(),
+                    "org-relay: applying server peer-relay directive"
+                );
+                crate::relay_server::apply_server_policy(
+                    serve,
+                    revision,
+                    &backbone_endpoints,
+                    remote_cfg,
+                )
+                .await;
+            } else {
+                debug!(
+                    org = %ctx.label,
+                    serve,
+                    ?revision,
+                    "rc:overlay.peer_relay_serve ignored on secondary enrollment"
+                );
+            }
+            #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+            let _ = (serve, revision, backbone_endpoints);
         }
         ServerMsg::ConfigPush { revision, desired } => {
             use meshharbor_remote_control::models::ConfigOutcome;

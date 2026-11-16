@@ -39,11 +39,14 @@ pub(super) async fn page(
         _ => return unavailable(),
     };
     let epoch = prepared.eligibility_epoch;
-    let scanned = path_discovery::scan(
+    let scanned = path_discovery::scan_with_gateways(
         &prepared.graph,
         prepared.requester_zone,
         prepared.peer_zone,
         prepared.restrict_ends,
+        prepared.network_zones_active,
+        prepared.requester_gateways.as_ref(),
+        prepared.peer_gateways.as_ref(),
         after,
         checkpoint,
         3,

@@ -2462,6 +2462,8 @@ fn rpc_caps() -> Vec<String> {
     if crate::relay_server::listening_port().is_some() {
         caps.push(RpcCap::RelayServer);
     }
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    caps.push(RpcCap::RelayControl);
     // FR-40 — a build with an overlay surface can retire its overlay key on
     // order. A property of the BUILD, like `config`: the device may still
     // refuse (`overlay_key_rotation=false`), and says so in its report.

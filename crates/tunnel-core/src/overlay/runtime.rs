@@ -1057,6 +1057,30 @@ struct BuiltRelay {
     quic: Option<Arc<Carrier>>,
 }
 
+fn should_commit_built_relay(
+    relay_bq: &mut RelayBuildQueue,
+    current_peers: &HashMap<ObjectId, NetmapPeer>,
+    path_trial_managed: &std::sync::Mutex<HashSet<ObjectId>>,
+    node_id: ObjectId,
+    epoch: u64,
+    relay_kind: RelayKind,
+) -> bool {
+    let cur = relay_bq.take_if_current(&node_id, epoch);
+    if !cur {
+        return false;
+    }
+    let Some(np) = current_peers.get(&node_id) else {
+        return false;
+    };
+    if np.backbone_only && relay_kind != RelayKind::Org {
+        return false;
+    }
+    !path_trial_managed
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&node_id)
+}
+
 /// P2 (rc.211 + rc.218 merged) — epoch-token ABA bookkeeping for OFF-LOOP work,
 /// generic over the completion payload. One instance per off-loop pipeline:
 ///
@@ -1635,10 +1659,43 @@ async fn sync_name_map(
 /// advert is RETAINED (a transient STUN outage must not strip a working srflx).
 /// Re-trickles ONLY when the punch mapping (`[0]`) actually changes. Ends when
 /// the control channel closes (runtime gone).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn run_srflx_keepalive(
     punch_sock: Arc<UdpSocket>,
-    mut stun_rx: mpsc::Receiver<crate::transport::stun::StunInbound>,
+    stun_rx: mpsc::Receiver<crate::transport::stun::StunInbound>,
+    stun_server: SocketAddr,
+    stun_urls: Vec<String>,
+    own_ips: Vec<Ipv4Addr>,
+    advertised: Vec<String>,
+    nat: Option<String>,
+    outbound: ControlTx,
+    interval: Duration,
+    reattach_rx: tokio::sync::watch::Receiver<u64>,
+    portmap: super::portmap::Source,
+    v6: Option<Arc<UdpSocket>>,
+) {
+    run_srflx_keepalive_shared(
+        punch_sock,
+        Arc::new(tokio::sync::Mutex::new(stun_rx)),
+        stun_server,
+        stun_urls,
+        own_ips,
+        advertised,
+        nat,
+        outbound,
+        interval,
+        reattach_rx,
+        portmap,
+        v6,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_srflx_keepalive_shared(
+    punch_sock: Arc<UdpSocket>,
+    stun_sink: Arc<tokio::sync::Mutex<mpsc::Receiver<crate::transport::stun::StunInbound>>>,
     mut stun_server: SocketAddr,
     stun_urls: Vec<String>,
     own_ips: Vec<Ipv4Addr>,
@@ -1657,6 +1714,7 @@ async fn run_srflx_keepalive(
     // current global addresses (`refresh_v6_adverts`).
     v6: Option<Arc<UdpSocket>>,
 ) {
+    let mut stun_rx = stun_sink.lock().await;
     const RERESOLVE_AFTER: u32 = 3;
     let mut failures: u32 = 0;
     // PR-B1 tripwire — one WARN per outage (not per cycle): repeated
@@ -1797,9 +1855,12 @@ async fn run_srflx_keepalive(
 /// task, not mutate it. `None` when any precondition is missing (no punch
 /// socket / no STUN server / keepalive disabled / nothing advertised) —
 /// exactly the startup semantics.
-/// T12 — the device's own srflx STUN list when it set a non-empty one, else the
-/// server's.
-fn pick_srflx_stun_urls(own: Option<&[String]>, server: &[String]) -> Vec<String> {
+/// T12 — the device's own srflx STUN list when it set a non-empty one (and the
+/// zone policy does not enforce `strict_stun`), else the server's.
+fn pick_srflx_stun_urls(own: Option<&[String]>, server: &[String], strict_stun: bool) -> Vec<String> {
+    if strict_stun {
+        return server.to_vec();
+    }
     match own {
         Some(urls) if !urls.is_empty() => urls.to_vec(),
         _ => server.to_vec(),
@@ -1814,10 +1875,18 @@ mod t12_srflx_stun_tests {
     fn t12_the_devices_own_stun_list_replaces_the_servers_for_srflx() {
         let server = vec!["stun:203.0.113.7:3478".to_string()];
         let own = vec!["stun:198.51.100.9:3478".to_string()];
-        assert_eq!(pick_srflx_stun_urls(Some(&own), &server), own);
-        assert_eq!(pick_srflx_stun_urls(None, &server), server);
+        assert_eq!(pick_srflx_stun_urls(Some(&own), &server, false), own);
+        assert_eq!(pick_srflx_stun_urls(None, &server, false), server);
         // An empty own list is "unset", never "no STUN at all".
-        assert_eq!(pick_srflx_stun_urls(Some(&[]), &server), server);
+        assert_eq!(pick_srflx_stun_urls(Some(&[]), &server, false), server);
+    }
+
+    #[test]
+    fn strict_stun_policy_overrides_local_device_stun_urls() {
+        let server = vec!["stun:203.0.113.7:3478".to_string()];
+        let own = vec!["stun:198.51.100.9:3478".to_string()];
+        assert_eq!(pick_srflx_stun_urls(Some(&own), &server, true), server);
+        assert!(pick_srflx_stun_urls(Some(&own), &[], true).is_empty());
     }
 }
 
@@ -1825,7 +1894,7 @@ mod t12_srflx_stun_tests {
 fn spawn_srflx_keepalive(
     direct_ctx: &Option<DirectCtx>,
     stun_server: Option<SocketAddr>,
-    stun_rx: Option<mpsc::Receiver<crate::transport::stun::StunInbound>>,
+    stun_sink: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<crate::transport::stun::StunInbound>>>>,
     stun_urls: &[String],
     advertised: &[String],
     my_nat: &Option<String>,
@@ -1837,14 +1906,14 @@ fn spawn_srflx_keepalive(
     match (
         direct_ctx.as_ref().and_then(|c| c.punch.clone()),
         stun_server,
-        stun_rx,
+        stun_sink,
     ) {
-        (Some((_, punch_sock)), Some(stun_server), Some(stun_rx))
-            if direct::srflx_enabled() && secs > 0 && !advertised.is_empty() =>
+        (Some((_, punch_sock)), Some(stun_server), Some(stun_sink))
+            if direct::srflx_enabled() && secs > 0 && !advertised.is_empty() && !stun_urls.is_empty() =>
         {
-            Some(tokio::spawn(run_srflx_keepalive(
+            Some(tokio::spawn(run_srflx_keepalive_shared(
                 punch_sock,
-                stun_rx,
+                stun_sink,
                 stun_server,
                 stun_urls.to_vec(),
                 direct_ctx
@@ -2770,7 +2839,11 @@ impl OverlayRuntime {
     /// own list when it set one, else the server's. Relay (TURN) worker
     /// identification deliberately keeps `network.stun_urls`.
     fn srflx_stun_urls(&self, network: &OverlayNetworkInfo) -> Vec<String> {
-        pick_srflx_stun_urls(self.srflx_stun_override.as_deref(), &network.stun_urls)
+        pick_srflx_stun_urls(
+            self.srflx_stun_override.as_deref(),
+            &network.stun_urls,
+            network.strict_stun,
+        )
     }
 
     /// Unification P1 — publish this node's live overlay view (self IP + peers
@@ -3576,21 +3649,32 @@ impl OverlayRuntime {
         // udp_relay_ok, the srflx_* locals, the LocalAPI status) — before
         // this, `set_udp_relay_ok`'s only caller was the rebuild path, so a
         // NONE→SOME recovery left the node frozen as universal relay anchor.
-        let mut plane_srflx_rx = self.carrier_plane.as_ref().map(|p| p.subscribe_srflx());
+        let srflx_owner_key = self.keypair.secret.to_bytes();
+        let mut plane_srflx_rx = self
+            .carrier_plane
+            .as_ref()
+            .map(|p| p.subscribe_srflx_for(&srflx_owner_key));
+        let mut stun_sink = wg
+            .take_stun_events()
+            .map(|rx| Arc::new(tokio::sync::Mutex::new(rx)));
         let mut srflx_keepalive = if let Some(plane) = &self.carrier_plane {
             info!(
                 self_v4 = %self_v4,
                 "overlay: srflx re-advert via the carrier PLANE forwarder"
             );
-            // Multi-org v2 — the plane owns the ONE keepalive (its sockets,
+            // Multi-org v2 — the plane owns the keepalive (its sockets,
             // its STUN sink); this runtime only forwards mapping changes and
             // reattach restores onto ITS control WS.
-            spawn_plane_srflx_forwarder(
-                plane.subscribe_srflx(),
-                self.outbound.clone(),
-                srflx_reattach_rx,
-                self_v4,
-            )
+            if self.srflx_stun_urls(&network).is_empty() {
+                None
+            } else {
+                spawn_plane_srflx_forwarder(
+                    plane.subscribe_srflx_for(&srflx_owner_key),
+                    self.outbound.clone(),
+                    srflx_reattach_rx,
+                    self_v4,
+                )
+            }
         } else {
             info!(
                 self_v4 = %self_v4,
@@ -3599,7 +3683,7 @@ impl OverlayRuntime {
             spawn_srflx_keepalive(
                 &direct_ctx,
                 srflx_stun_server,
-                wg.take_stun_events(),
+                stun_sink.clone(),
                 &self.srflx_stun_urls(&network),
                 &srflx_advertised,
                 &srflx_my_nat,
@@ -3986,7 +4070,7 @@ impl OverlayRuntime {
         // already ranks relays by latency.
         // #5 step B — the device's own backbone opt-in decides which offered
         // lines it may measure, and on which interface.
-        let backbone_policy = super::orgrelay::backbone::configured_local_policy();
+        let mut backbone_policy = super::orgrelay::backbone::configured_local_policy();
         let (probe_targets_tx, probe_targets_rx) =
             watch::channel(super::orgrelay::prober::targets_from_wire(
                 &network.relay_probe_targets,
@@ -4184,6 +4268,12 @@ impl OverlayRuntime {
             tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
                     if changed {
+                        backbone_policy = super::orgrelay::backbone::configured_local_policy();
+                        probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
+                            &network.relay_probe_targets,
+                            &network.backbone_probe_targets,
+                            backbone_policy.as_ref(),
+                        ));
                         // Reannounce through the SAME authenticated socket.
                         // No Reattach: keep WG/direct paths and discovery state.
                         if self.outbound.send(self.make_join(advertised.clone())).await.is_err() {
@@ -4347,7 +4437,14 @@ impl OverlayRuntime {
                 built = built_rx.recv() => {
                     if let Some(built) = built {
                         let t_arm = Instant::now();
-                        if relay_bq.take_if_current(&built.link.node_id, built.epoch) && current_peers.contains_key(&built.link.node_id) && !self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&built.link.node_id) {
+                        if should_commit_built_relay(
+                            &mut relay_bq,
+                            &current_peers,
+                            &self.path_trial_managed,
+                            built.link.node_id,
+                            built.epoch,
+                            built.link.relay_kind,
+                        ) {
                             let BuiltRelay { mut link, quic, .. } = built;
                             if let Some(cfg) = current_peers.get(&link.node_id).and_then(peer_config_from_netmap) {
                                 link.subnets = cfg.subnets;
@@ -4491,7 +4588,9 @@ impl OverlayRuntime {
                                 relay_node_id: o.relay_node_id,
                                 endpoint: o.endpoint.to_string(),
                                 reachable: o.rtt.is_some(),
-                                rtt_ms: o.rtt.map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                                rtt_ms: o.rtt_ms(),
+                                jitter_ms: o.rtt.map(|_| o.jitter_ms),
+                                loss_permille: Some(o.loss_permille),
                             })
                             .await;
                     }
@@ -4522,6 +4621,8 @@ impl OverlayRuntime {
                                     endpoint: o.endpoint.to_string(),
                                     reachable: o.reachable,
                                     rtt_ms: o.rtt.map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                                    jitter_ms: None,
+                                    loss_permille: None,
                                 })
                                 .await;
                         }
@@ -4740,6 +4841,7 @@ impl OverlayRuntime {
                                     &mut relay_bq, &mut alloc_q, &tun, &mut direct_ctx,
                                 )
                                 .await;
+                            stun_sink = stun_rx.map(|rx| Arc::new(tokio::sync::Mutex::new(rx)));
                             // Fresh join FROM THE NEW PLANE (the server's
                             // re-join updates lan_endpoints AND clears srflx
                             // — which is why the gather comes after).
@@ -4772,17 +4874,21 @@ impl OverlayRuntime {
                                 r.set_udp_relay_ok(!srflx_advertised.is_empty());
                             }
                             srflx_keepalive = if let Some(plane) = &self.carrier_plane {
-                                spawn_plane_srflx_forwarder(
-                                    plane.subscribe_srflx(),
-                                    self.outbound.clone(),
-                                    srflx_reattach_tx.subscribe(),
-                                    self_v4,
-                                )
+                                if self.srflx_stun_urls(&network).is_empty() {
+                                    None
+                                } else {
+                                    spawn_plane_srflx_forwarder(
+                                        plane.subscribe_srflx_for(&srflx_owner_key),
+                                        self.outbound.clone(),
+                                        srflx_reattach_tx.subscribe(),
+                                        self_v4,
+                                    )
+                                }
                             } else {
                                 spawn_srflx_keepalive(
                                     &direct_ctx,
                                     srflx_stun_server,
-                                    stun_rx,
+                                    stun_sink.clone(),
                                     &self.srflx_stun_urls(&network),
                                     &srflx_advertised,
                                     &srflx_my_nat,
@@ -5619,6 +5725,69 @@ impl OverlayRuntime {
                             status.self_name = network.self_name.clone();
                             status.self_name_revision = network.self_name_revision.clone();
                         }
+                        if new_network.stun_urls != network.stun_urls
+                            || new_network.strict_stun != network.strict_stun
+                        {
+                            let prev_srflx_stun = self.srflx_stun_urls(&network);
+                            let server_stun_changed = new_network.stun_urls != network.stun_urls;
+                            network.stun_urls = new_network.stun_urls.clone();
+                            network.strict_stun = new_network.strict_stun;
+                            if server_stun_changed
+                                && let Some(r) = relay.as_mut()
+                            {
+                                r.set_coturn_ips(
+                                    direct::resolve_stun_worker_ips(&network.stun_urls).await,
+                                );
+                            }
+                            let next_srflx_stun = self.srflx_stun_urls(&network);
+                            if next_srflx_stun != prev_srflx_stun {
+                                info!(
+                                    old = ?prev_srflx_stun,
+                                    new = ?next_srflx_stun,
+                                    "overlay: full netmap changed stun_urls — reconfiguring srflx discovery"
+                                );
+                                if let Some(h) = srflx_keepalive.take() {
+                                    h.abort();
+                                    let _ = h.await;
+                                }
+                                srflx_advertised.clear();
+                                let gathered = self
+                                    .reconfigure_srflx_on_stun_change(
+                                        &mut direct_ctx,
+                                        &next_srflx_stun,
+                                        stun_sink.as_ref(),
+                                    )
+                                    .await;
+                                srflx_stun_server = gathered.stun_server;
+                                srflx_advertised = gathered.advertised;
+                                srflx_my_nat = gathered.my_nat;
+                                if let Some(r) = relay.as_mut() {
+                                    r.set_udp_relay_ok(!srflx_advertised.is_empty());
+                                }
+                                srflx_keepalive = if next_srflx_stun.is_empty() {
+                                    None
+                                } else if let Some(plane) = &self.carrier_plane {
+                                    spawn_plane_srflx_forwarder(
+                                        plane.subscribe_srflx_for(&srflx_owner_key),
+                                        self.outbound.clone(),
+                                        srflx_reattach_tx.subscribe(),
+                                        self_v4,
+                                    )
+                                } else {
+                                    spawn_srflx_keepalive(
+                                        &direct_ctx,
+                                        srflx_stun_server,
+                                        stun_sink.clone(),
+                                        &next_srflx_stun,
+                                        &srflx_advertised,
+                                        &srflx_my_nat,
+                                        self.outbound.clone(),
+                                        srflx_reattach_tx.subscribe(),
+                                        self.keypair.secret.to_bytes().to_vec(),
+                                    )
+                                };
+                            }
+                        }
                         #[cfg(test)]
                         {
                             let me = self.keypair.public.to_bytes();
@@ -5638,6 +5807,9 @@ impl OverlayRuntime {
                         server_org_fallback = new_network.org_relay_fallback_v1;
                         server_org_loss = new_network.org_relay_loss_v1;
                         prefer.server_wants = new_network.path_quality_v1;
+                        network.relay_probe_targets = new_network.relay_probe_targets.clone();
+                        network.backbone_probe_targets = new_network.backbone_probe_targets.clone();
+                        backbone_policy = super::orgrelay::backbone::configured_local_policy();
                         probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
                             &new_network.relay_probe_targets,
                             &new_network.backbone_probe_targets,
@@ -5647,6 +5819,7 @@ impl OverlayRuntime {
                         let positive: HashSet<_> = peers.iter().filter(|p| p.reachable && current_peers.get(&p.node_id).is_some_and(|old|
                             !old.reachable || org_peer_identity(old) != org_peer_identity(p)
                                 || direct_endpoints_changed(old, p) || (!old.supports_org_relay && p.supports_org_relay)
+                                || (!old.backbone_only && p.backbone_only)
                         )).map(|p| p.node_id).collect();
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
@@ -5720,8 +5893,16 @@ impl OverlayRuntime {
                                 &mut alloc_q, &mut upgrade_probes, &mut current_peers,
                                 &mut relay_refresh_cooldown,
                             ).await;
+                            path_trials.on_peer_evicted(nid, &self);
                         }
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
+                        self.retire_forbidden_backbone_carriers(
+                            &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                            &mut alloc_q, &mut upgrade_probes, &current_peers,
+                        ).await;
+                        path_trials.retire_forbidden_direct_shadows(
+                            &self, &mut wg, &current_peers, &mut by_node,
+                        ).await;
                         request_org_fallbacks_inner(
                             self.org_primary && super::direct::org_relay_enabled() && server_org_discovery && server_org_fallback,
                             &by_node, &current_peers, &mut relay, Instant::now(), Some(&positive),
@@ -5797,6 +5978,7 @@ impl OverlayRuntime {
                                 &mut alloc_q, &mut upgrade_probes, &mut current_peers,
                                 &mut relay_refresh_cooldown,
                             ).await;
+                            path_trials.on_peer_evicted(node_id, &self);
                         }
                         for p in &upserts {
                             if current_peers.get(&p.node_id).is_some_and(|old|
@@ -5806,13 +5988,16 @@ impl OverlayRuntime {
                             }
                             // rc.225 — endpoint change ⇒ clean cooldown slate
                             // (see the Netmap arm / `direct_endpoints_changed`).
-                            if let Some(old) = current_peers.insert(p.node_id, p.clone())
-                                && direct_endpoints_changed(&old, p)
-                            {
-                                // P3 PR-A — same clean slate in the monitor
-                                // (penalties, strikes AND quality — F1).
-                                self.shadow(|s| s.mon.on_endpoint_change(&p.node_id));
-                                debug!(peer = %p.node_id, "overlay: peer's direct endpoints changed — cleared its path-monitor evidence");
+                            if let Some(old) = current_peers.insert(p.node_id, p.clone()) {
+                                if !old.backbone_only && p.backbone_only && p.reachable {
+                                    positive.insert(p.node_id);
+                                }
+                                if direct_endpoints_changed(&old, p) {
+                                    // P3 PR-A — same clean slate in the monitor
+                                    // (penalties, strikes AND quality — F1).
+                                    self.shadow(|s| s.mon.on_endpoint_change(&p.node_id));
+                                    debug!(peer = %p.node_id, "overlay: peer's direct endpoints changed — cleared its path-monitor evidence");
+                                }
                             }
                         }
                         org_discovery.reconcile_delta(&current_peers, &removes);
@@ -5823,6 +6008,13 @@ impl OverlayRuntime {
                         if relay_changed {
                             positive.extend(current_peers.keys().copied());
                         }
+                        self.retire_forbidden_backbone_carriers(
+                            &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                            &mut alloc_q, &mut upgrade_probes, &current_peers,
+                        ).await;
+                        path_trials.retire_forbidden_direct_shadows(
+                            &self, &mut wg, &current_peers, &mut by_node,
+                        ).await;
                         // Run before install_peers: this delta must not create
                         // an ordinary pending request and immediately use it
                         // as evidence for bypassing its own initial grace.
@@ -5859,6 +6051,17 @@ impl OverlayRuntime {
                         warn_if_slow("arm:netmap_delta", t_arm);
                     }
                     Some(OverlayEvent::RelayGrant { peer_node_id, ice_servers, pair_key }) => {
+                        if current_peers.get(&peer_node_id).is_some_and(|p| p.backbone_only) {
+                            alloc_q.invalidate(&peer_node_id);
+                            if let Some(r) = relay.as_mut() {
+                                r.clear_non_backbone_state(&peer_node_id);
+                            }
+                            debug!(
+                                peer = %peer_node_id,
+                                "overlay relay: ignoring TURN RelayGrant for backbone_only peer"
+                            );
+                            continue;
+                        }
                         let t_arm = Instant::now();
                         if let Some(r) = relay.as_mut() {
                             // rc.218 — the DNS + TURN allocate no longer runs
@@ -10905,6 +11108,7 @@ mod tests {
             self_node_id: None,
             self_name_revision: None,
             stun_urls: vec![],
+            strict_stun: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 0,
@@ -13363,6 +13567,8 @@ mod org_fallback_tests {
             relay_node_id: peer.node_id,
             endpoint,
             rtt: Some(Duration::from_millis(1)),
+            jitter_ms: 0,
+            loss_permille: 0,
         };
         assert!(!updates.reachable_results(&[outcome.clone()]));
         assert!(!updates.reachable_results(&[outcome.clone()]));
@@ -15008,5 +15214,198 @@ mod org_upgrade_tests {
                 t.abort();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn full_netmap_stun_urls_change_reconciles_srflx_discovery_and_stops_removed_stun() {
+        async fn stun_reflector(
+            mapped_ip: [u8; 4],
+            mapped_port: u16,
+        ) -> (
+            SocketAddr,
+            Arc<std::sync::atomic::AtomicUsize>,
+            tokio::task::JoinHandle<()>,
+        ) {
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let addr = sock.local_addr().unwrap();
+            let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let hits_bg = hits.clone();
+            let task = tokio::spawn(async move {
+                let mut buf = [0u8; 512];
+                while let Ok((n, from)) = sock.recv_from(&mut buf).await {
+                    if n < 20 {
+                        continue;
+                    }
+                    hits_bg.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let mut txn = [0u8; 12];
+                    txn.copy_from_slice(&buf[8..20]);
+                    // Build minimal XOR-MAPPED-ADDRESS (0x0020) STUN Binding Success.
+                    let cookie = [0x21u8, 0x12, 0xA4, 0x42];
+                    let xport = mapped_port ^ 0x2112;
+                    let mut resp = Vec::with_capacity(32);
+                    resp.extend_from_slice(&[0x01, 0x01, 0x00, 0x0C]);
+                    resp.extend_from_slice(&cookie);
+                    resp.extend_from_slice(&txn);
+                    resp.extend_from_slice(&[0x00, 0x20, 0x00, 0x08, 0x00, 0x01]);
+                    resp.extend_from_slice(&xport.to_be_bytes());
+                    for i in 0..4 {
+                        resp.push(mapped_ip[i] ^ cookie[i]);
+                    }
+                    let _ = sock.send_to(&resp, from).await;
+                }
+            });
+            (addr, hits, task)
+        }
+
+        let (hk_stun, hk_hits, hk_task) = stun_reflector([202, 181, 7, 10], 51001).await;
+        let (cn_stun, cn_hits, cn_task) = stun_reflector([139, 199, 1, 10], 51002).await;
+
+        struct IdleTun;
+        #[async_trait::async_trait]
+        impl TunIo for IdleTun {
+            async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+                std::future::pending().await
+            }
+            async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let kp = WgKeypair::generate();
+        let (out_tx, mut out_rx) = mpsc::channel(32);
+        let tun: Arc<dyn TunIo> = Arc::new(IdleTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let (evt_tx, evt_rx) = mpsc::channel(16);
+        let plane = crate::overlay::carrier_plane::CarrierPlane::new();
+        *plane.lan_only.lock().unwrap() = Some(Vec::new());
+        *plane.mirrored_guest.lock().unwrap() = Some(true);
+        let view_tx = tokio::sync::watch::channel(crate::localapi::OverlayView::default()).0;
+        let rt = OverlayRuntime::new_relay(kp, out_tx, tf, 1280)
+            .with_carrier_plane(Some(plane))
+            .with_peer_view(view_tx.clone());
+        let rt_task = tokio::spawn(rt.run(evt_rx, Vec::new()));
+
+        let mk_net = |rev: u64, stun_urls: Vec<String>| OverlayNetworkInfo {
+            cidr: "100.64.0.0/10".into(),
+            cidrs: vec!["100.64.0.0/10".into()],
+            mtu: 1280,
+            magic_domain: None,
+            nameservers: vec![],
+            self_name: None,
+            self_node_id: Some(ObjectId::new()),
+            self_name_revision: None,
+            stun_urls,
+            strict_stun: false,
+            relay_probe_targets: vec![],
+            backbone_probe_targets: vec![],
+            org_relay_fallback_v1: true,
+            org_relay_loss_v1: true,
+            path_quality_v1: false,
+            auth_revision: rev,
+        };
+
+        // 1. Initial unrestricted netmap with HK STUN.
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: mk_net(1, vec![format!("stun:{hk_stun}")]),
+                peers: vec![],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut saw_hk_srflx = false;
+        while Instant::now() < deadline {
+            if let Ok(msg) = tokio::time::timeout(Duration::from_millis(50), out_rx.recv()).await
+                && let Some(ClientMsg::OverlaySrflx { candidates, .. }) = msg
+                && candidates.iter().any(|c| c == "202.181.7.10:51001")
+            {
+                saw_hk_srflx = true;
+                break;
+            }
+        }
+        assert!(saw_hk_srflx, "initial netmap must gather srflx from HK STUN");
+        let hk_before = hk_hits.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(hk_before >= 1);
+        assert_eq!(cn_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // 2. Full-netmap replacement changes stun_urls to Mainland CN STUN only.
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: mk_net(2, vec![format!("stun:{cn_stun}")]),
+                peers: vec![],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut saw_cn_srflx = false;
+        while Instant::now() < deadline {
+            if let Ok(msg) = tokio::time::timeout(Duration::from_millis(50), out_rx.recv()).await
+                && let Some(ClientMsg::OverlaySrflx { candidates, .. }) = msg
+                && candidates.iter().any(|c| c == "139.199.1.10:51002")
+            {
+                saw_cn_srflx = true;
+                break;
+            }
+        }
+        assert!(
+            saw_cn_srflx,
+            "full-netmap replacement must re-gather srflx against new Mainland STUN"
+        );
+        assert!(cn_hits.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert_eq!(
+            hk_hits.load(std::sync::atomic::Ordering::SeqCst),
+            hk_before,
+            "removed HK STUN must receive zero additional queries after replacement"
+        );
+
+        // 3. Full-netmap replacement empties stun_urls -> clears srflx and stops discovery.
+        let cn_before_clear = cn_hits.load(std::sync::atomic::Ordering::SeqCst);
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: mk_net(3, vec![]),
+                peers: vec![],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut saw_cleared = false;
+        while Instant::now() < deadline {
+            if let Ok(msg) = tokio::time::timeout(Duration::from_millis(50), out_rx.recv()).await
+                && let Some(ClientMsg::OverlaySrflx { candidates, .. }) = msg
+                && candidates.is_empty()
+            {
+                saw_cleared = true;
+                break;
+            }
+        }
+        assert!(
+            saw_cleared,
+            "emptied stun_urls must advertise cleared OverlaySrflx"
+        );
+        assert_eq!(
+            cn_hits.load(std::sync::atomic::Ordering::SeqCst),
+            cn_before_clear,
+            "emptied stun_urls must stop querying removed CN STUN"
+        );
+
+        drop(evt_tx);
+        let _ = rt_task.await;
+        hk_task.abort();
+        cn_task.abort();
     }
 }

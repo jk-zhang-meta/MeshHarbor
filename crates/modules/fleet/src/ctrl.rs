@@ -126,6 +126,66 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(tenant = %tid, denied, agents = n, "rc ctrl: keep-busy policy applied from another pod");
             }
         }
+        Some("peer_relay_serve") => {
+            let (Some(tid), Some(aid), Some(serve)) = (
+                ctrl.get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("serve").and_then(|v| v.as_bool()),
+            ) else {
+                return;
+            };
+            let revision = ctrl.get("revision").and_then(|v| v.as_u64());
+            let backbone_endpoints = ctrl
+                .get("backbone_endpoints")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if hub.push_peer_relay_serve(tid, aid, serve, revision, backbone_endpoints) {
+                info!(tenant = %tid, agent = %aid, serve, ?revision, "rc ctrl: peer-relay serve applied from another pod");
+            }
+        }
+        Some("zone_policy") => {
+            let (Some(aid), Some(policy_revision), Some(strict)) = (
+                ctrl.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("policy_revision").and_then(|v| v.as_u64()),
+                ctrl.get("strict").and_then(|v| v.as_bool()),
+            ) else {
+                return;
+            };
+            let allowed_countries = ctrl
+                .get("allowed_countries")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_ascii_uppercase()))
+                        .collect::<std::collections::HashSet<_>>()
+                })
+                .unwrap_or_default();
+            if hub.set_agent_zone_ice_policy(
+                aid,
+                crate::hub::AgentZoneIcePolicy {
+                    policy_revision,
+                    strict,
+                    allowed_countries,
+                },
+            ) && let Some(tid) = ctrl
+                .get("tenant_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| ObjectId::parse_str(s).ok())
+            {
+                hub.push_relay_regions_for_agent(tid, aid);
+            }
+        }
         Some("consent") => {
             let (Some(sid), Some(granted)) = (
                 ctrl.get("session_id")

@@ -14,7 +14,7 @@ use meshharbor_core::business_authority::BusinessZone;
 use meshharbor_remote_control::models::{
     NodeRef, OverlayNode, PeerRelayDenyReason as Deny, PeerRelayMode, peer_relay_limits as limits,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(super) struct PreparedGraph {
     pub graph: path_graph::EdgeGraph,
@@ -25,11 +25,32 @@ pub(super) struct PreparedGraph {
     pub plans: HashMap<ObjectId, Plan>,
     pub requester_zone: Option<BusinessZone>,
     pub peer_zone: Option<BusinessZone>,
-    /// Ordinary enforced pairs bind path ends to the members' zones.
-    /// A topology-linked server pair may use either permitted relay zone.
+    /// Ordinary `#21` enforced pairs bind path ends to the members' `BusinessZone`s.
     pub restrict_ends: bool,
+    /// True when Logical Network Zones (`OverlayNetwork::zones`) are configured.
+    pub network_zones_active: bool,
+    /// True when symmetric `RouterOnly` / `UnresolvedStrict` requires `backbone_only`.
+    pub network_zones_backbone_only: bool,
+    pub requester_gateways: Option<HashSet<ObjectId>>,
+    pub peer_gateways: Option<HashSet<ObjectId>>,
     pub eligibility_epoch: u64,
     pub warn_only: bool,
+}
+
+impl PreparedGraph {
+    pub(super) fn matches_requester_end(&self, relay: &path_graph::EligibleRelay) -> bool {
+        self.requester_gateways
+            .as_ref()
+            .is_none_or(|gw| gw.contains(&relay.agent_id))
+            && (!self.restrict_ends || relay.zone == self.requester_zone)
+    }
+
+    pub(super) fn matches_peer_end(&self, relay: &path_graph::EligibleRelay) -> bool {
+        self.peer_gateways
+            .as_ref()
+            .is_none_or(|gw| gw.contains(&relay.agent_id))
+            && (!self.restrict_ends || relay.zone == self.peer_zone)
+    }
 }
 
 /// Convert only a Plan produced by the current candidate gate. It checks that
@@ -105,7 +126,43 @@ pub(super) async fn prepare_reusing(
         return Err(Deny::RequesterUnsupported);
     }
     use crate::business_isolation::{self as iso, Mode};
-    let enforce_zone = iso::mode(state) == Mode::Enforce;
+    let iso_mode = iso::mode(state);
+    let enforce_zone = iso_mode == Mode::Enforce;
+    let nz_snap = crate::network_zones::TenantZoneSnapshot::load(state, requester.tenant_id).await;
+    if nz_snap.read_failed {
+        return Err(Deny::PolicyUnreadable);
+    }
+    let network_zones_active = nz_snap.has_zones();
+    let (requester_gateways, peer_gateways, network_zones_backbone_only) = if network_zones_active {
+        let req_res = nz_snap.resolve_node_sync(requester);
+        let peer_res = nz_snap.resolve_node_sync(peer);
+        if matches!(
+            req_res,
+            meshharbor_remote_control::models::DeviceZoneResolution::UnresolvedStrict
+        ) || matches!(
+            peer_res,
+            meshharbor_remote_control::models::DeviceZoneResolution::UnresolvedStrict
+        ) {
+            return Err(Deny::ZoneDenied);
+        }
+        let req_gw = nz_snap.gateway_set_for(req_res).unwrap_or_default();
+        let peer_gw = nz_snap.gateway_set_for(peer_res).unwrap_or_default();
+        if req_gw.is_empty() || peer_gw.is_empty() {
+            return Err(Deny::ZoneDenied);
+        }
+        let bb_only =
+            crate::network_zones::TenantZoneSnapshot::pair_requires_backbone_only(req_res, peer_res);
+        if bb_only
+            && req_gw.is_disjoint(&peer_gw)
+            && (!a_extra.supports_backbone_only_v1 || !b_extra.supports_backbone_only_v1)
+        {
+            return Err(Deny::ZoneDenied);
+        }
+        (Some(req_gw), Some(peer_gw), bb_only)
+    } else {
+        (None, None, false)
+    };
+    let enforce_pair_zone = enforce_zone;
     let unknown_role_mode = iso::unknown_role_mode(state);
     if enforce_zone || unknown_role_mode != Mode::Off {
         let roles = match meshharbor_core::business_authority::current_approved_roles(
@@ -194,10 +251,10 @@ pub(super) async fn prepare_reusing(
         return Err(Deny::ZoneDenied);
     }
     let linked_servers = enforce_zone && !known_crossing && server_pair == Some(true);
-    if enforce_zone && !linked_servers && (za.is_none() || zb.is_none()) {
+    if enforce_pair_zone && !linked_servers && (za.is_none() || zb.is_none()) {
         return Err(Deny::ZoneDenied);
     }
-    if enforce_zone
+    if enforce_pair_zone
         && !linked_servers
         && za != zb
         && (!a_extra.supports_backbone_only_v1 || !b_extra.supports_backbone_only_v1)
@@ -216,17 +273,20 @@ pub(super) async fn prepare_reusing(
         return Err(Deny::RequesterUnsupported);
     }
 
-    // Outside Enforce, preserve the existing Pair gate's Off/Warn behavior.
-    // In Enforce, the members have known zones (checked above), and a
-    // crossing requires explicit Side-scope authorizations.
-    let scopes = match (enforce_zone, linked_servers, za, zb) {
-        (true, true, _, _) => vec![(ZoneScope::Pair, None)],
-        (true, false, Some(a), Some(b)) if a != b => {
-            vec![(ZoneScope::Side(a), Some(a)), (ZoneScope::Side(b), Some(b))]
+    // Outside Enforce, preserve the existing Pair gate's Off/Warn behavior (or
+    // load the full approved tenant router graph when Logical Network Zones are active).
+    let scopes = if network_zones_active && !enforce_pair_zone {
+        vec![(ZoneScope::NetworkZoneGraph, None)]
+    } else {
+        match (enforce_pair_zone, linked_servers, za, zb) {
+            (true, true, _, _) => vec![(ZoneScope::Pair, None)],
+            (true, false, Some(a), Some(b)) if a != b => {
+                vec![(ZoneScope::Side(a), Some(a)), (ZoneScope::Side(b), Some(b))]
+            }
+            (true, false, Some(a), Some(_)) => vec![(ZoneScope::Pair, Some(a))],
+            (false, _, _, _) => vec![(ZoneScope::Pair, None)],
+            _ => return Err(Deny::ZoneDenied),
         }
-        (true, false, Some(a), Some(_)) => vec![(ZoneScope::Pair, Some(a))],
-        (false, _, _, _) => vec![(ZoneScope::Pair, None)],
-        _ => return Err(Deny::ZoneDenied),
     };
     let mut inputs = Vec::new();
     let mut plans = HashMap::new();
@@ -243,7 +303,7 @@ pub(super) async fn prepare_reusing(
         .await?;
         for plan in candidates {
             let relay_zone = node_zone(state, &plan.relay).await;
-            if enforce_zone && !linked_servers && relay_zone != expected_zone {
+            if enforce_pair_zone && !linked_servers && relay_zone != expected_zone {
                 if for_trial
                     && !plan.implicit
                     && relay_zone.is_none()
@@ -259,18 +319,25 @@ pub(super) async fn prepare_reusing(
             if plan.relay.node_ref == requester.node_ref || plan.relay.node_ref == peer.node_ref {
                 return Err(Deny::PolicyUnreadable);
             }
-            if enforce_zone && !linked_servers && za != zb && plan.implicit {
+            if ((enforce_pair_zone && !linked_servers && za != zb) || network_zones_active)
+                && plan.implicit
+            {
                 return Err(Deny::PolicyUnreadable);
             }
             let node_id = plan.relay.id.ok_or(Deny::PolicyUnreadable)?;
             let ready = state.org_relay.join_extras(node_id).relay_backbone_ready;
-            let eligible = eligible_from_plan(
+            let mut eligible = eligible_from_plan(
                 &plan,
                 requester.tenant_id,
                 requester.network_id,
                 relay_zone,
                 ready,
             )?;
+            if network_zones_active && !enforce_zone && !eligible.implicit {
+                for edge in &mut eligible.approved_edges {
+                    edge.cross_border = true;
+                }
+            }
             if plans.insert(eligible.node_id, plan).is_some() {
                 return Err(Deny::PolicyUnreadable);
             }
@@ -280,7 +347,68 @@ pub(super) async fn prepare_reusing(
     if inputs.is_empty() {
         return Err(Deny::NoRelay);
     }
-    let graph = path_graph::build(inputs, &network.cidr, iso::mode(state))
+    // Same-zone routers auto-mesh: when Logical Network Zones are configured,
+    // two approved routers in the SAME resolved NetworkZone may forward directly
+    // to each other's primary reachable relay endpoint unless overridden by an
+    // explicit `approved_backbone_edges` entry; cross-zone router forwarding is
+    // strictly restricted to admin-configured `approved_backbone_edges`.
+    if network_zones_active {
+        let peer_snapshots: Vec<(ObjectId, ObjectId, Option<String>)> = inputs
+            .iter()
+            .map(|r| {
+                let z = match nz_snap.resolve_agent(r.agent_id) {
+                    meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+                        Some(z.id.clone())
+                    }
+                    _ => None,
+                };
+                (r.agent_id, r.node_id, z)
+            })
+            .collect();
+        for src in &mut inputs {
+            let Some(src_zone) = peer_snapshots
+                .iter()
+                .find(|(aid, _, _)| *aid == src.agent_id)
+                .and_then(|(_, _, z)| z.as_deref())
+            else {
+                continue;
+            };
+            for (dst_agent, dst_node, dst_zone) in &peer_snapshots {
+                if src.approved_edges.len()
+                    >= meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES
+                {
+                    break;
+                }
+                if *dst_agent == src.agent_id || dst_zone.as_deref() != Some(src_zone) {
+                    continue;
+                }
+                let has_explicit = src.approved_edges.iter().any(|e| {
+                    ObjectId::parse_str(&e.relay_agent_id).ok() == Some(*dst_agent)
+                });
+                if has_explicit {
+                    continue;
+                }
+                if let Some(dst_plan) = plans.get(dst_node)
+                    && let Some(ep) = dst_plan.endpoints.iter().find(|ep| {
+                        crate::routes::peer_relay::valid_backbone_endpoint(ep)
+                            && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                                ep,
+                                &network.cidr,
+                            )
+                    })
+                {
+                    src.approved_edges.push(
+                        meshharbor_remote_control::models::PeerRelayBackboneEdge {
+                            relay_agent_id: dst_agent.to_hex(),
+                            endpoint: ep.clone(),
+                            cross_border: !enforce_zone,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    let graph = path_graph::build(inputs, &network.cidr, iso_mode)
         .map_err(|_| Deny::PolicyUnreadable)?;
     // This detects known policy/join changes during reads, not all races; a
     // future mint must validate again under its own reservation boundary.
@@ -302,7 +430,11 @@ pub(super) async fn prepare_reusing(
         plans,
         requester_zone: za,
         peer_zone: zb,
-        restrict_ends: enforce_zone && !linked_servers,
+        restrict_ends: enforce_pair_zone && !linked_servers,
+        network_zones_active,
+        network_zones_backbone_only,
+        requester_gateways,
+        peer_gateways,
         eligibility_epoch: epoch,
         warn_only: mode == PeerRelayMode::Warn,
     })

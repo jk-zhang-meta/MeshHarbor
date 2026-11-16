@@ -1110,6 +1110,34 @@ pub async fn grant_for_agent(
     }))
 }
 
+/// All `agent_id`s in `tenant_id` currently bound to an enrolled or
+/// pending-removal temporary invitation.
+pub async fn temporary_agent_ids_in_tenant(
+    state: &FleetState,
+    tenant_id: ObjectId,
+) -> Result<std::collections::HashSet<ObjectId>, ApiError> {
+    use futures::TryStreamExt;
+    let raw = state.core.db.collection::<bson::Document>(COLLECTION);
+    let mut cursor = storage(
+        raw.find(doc! {
+            "tenant_id": tenant_id,
+            "agent_id": { "$ne": null },
+            "$or": [{ "state": STATE_ENROLLED }, { "removal_pending": true }],
+        })
+        .projection(doc! { "agent_id": 1 })
+        .await,
+    )?;
+    let mut out = std::collections::HashSet::new();
+    while let Some(d) = storage(cursor.try_next().await)? {
+        let aid = d.get_object_id("agent_id").map_err(|e| {
+            tracing::error!(%e, "device invite: malformed agent_id in temporary lookup");
+            ApiError::Internal("temporary-device lookup failed".to_string())
+        })?;
+        out.insert(aid);
+    }
+    Ok(out)
+}
+
 /// The host's ceiling for THIS caller. Never union another inviter's rights.
 /// None means an ordinary device with no selected access profile. Legacy
 /// invitations retain their old service gates; they do not enable services.

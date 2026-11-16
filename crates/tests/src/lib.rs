@@ -88,6 +88,8 @@ mod exec_service_tests;
 #[cfg(test)]
 mod business_isolation_tests;
 #[cfg(test)]
+mod network_zones_tests;
+#[cfg(test)]
 mod extauth_tests;
 #[cfg(test)]
 mod external_access_tests;
