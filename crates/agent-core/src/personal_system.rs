@@ -168,6 +168,238 @@ pub fn is_process_elevated() -> bool {
     }
 }
 
+/// Whether `group_name` grants administrative / `sudo` elevation capability
+/// on macOS (`is_macos == true`) or Linux/other Unix (`is_macos == false`).
+pub fn is_unix_admin_group_name(is_macos: bool, group_name: &str) -> bool {
+    if is_macos {
+        matches!(group_name, "admin" | "wheel")
+    } else {
+        matches!(group_name, "sudo" | "wheel" | "admin" | "root")
+    }
+}
+
+/// Whether the OS account running this process possesses Administrator / `root`
+/// / `sudo` capability and therefore MUST be required to authorize system-level
+/// promotion (returning `false` only for genuinely unprivileged standard user
+/// accounts that should enroll directly in per-user mode).
+pub fn can_current_user_elevate() -> bool {
+    if is_process_elevated() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            CheckTokenMembership, CreateWellKnownSid, GetTokenInformation, TOKEN_ELEVATION_TYPE,
+            TOKEN_QUERY, TokenElevationType, TokenElevationTypeFull, TokenElevationTypeLimited,
+            WinBuiltinAdministratorsSid,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0 {
+                let mut etype: TOKEN_ELEVATION_TYPE = 0;
+                let mut returned: u32 = 0;
+                let ok = GetTokenInformation(
+                    token,
+                    TokenElevationType,
+                    (&mut etype as *mut TOKEN_ELEVATION_TYPE).cast(),
+                    std::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+                    &mut returned,
+                );
+                let _ = CloseHandle(token);
+                if ok != 0
+                    && (etype == TokenElevationTypeFull || etype == TokenElevationTypeLimited)
+                {
+                    return true;
+                }
+            }
+
+            // Also cover UAC-disabled (`EnableLUA=0`) Administrator tokens where
+            // `TokenElevationType` is `TokenElevationTypeDefault`.
+            let mut sid = [0u8; 68];
+            let mut sid_len = sid.len() as u32;
+            let mut member: i32 = 0;
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null_mut(),
+                sid.as_mut_ptr().cast(),
+                &mut sid_len,
+            ) != 0
+                && CheckTokenMembership(std::ptr::null_mut(), sid.as_mut_ptr().cast(), &mut member)
+                    != 0
+                && member != 0
+        }
+    }
+    #[cfg(unix)]
+    {
+        if std::process::Command::new("sudo")
+            .args(["-n", "true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return true;
+        }
+        unix_current_user_in_admin_group()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn unix_current_user_in_admin_group() -> bool {
+    let is_macos = cfg!(target_os = "macos");
+    // SAFETY: getgid/getegid/getgroups read process credentials.
+    let mut gids = unsafe {
+        let mut v = vec![libc::getgid(), libc::getegid()];
+        let count = libc::getgroups(0, std::ptr::null_mut());
+        if count > 0 {
+            let mut supp = vec![0 as libc::gid_t; count as usize];
+            let got = libc::getgroups(count, supp.as_mut_ptr());
+            if got > 0 {
+                supp.truncate(got as usize);
+                v.extend(supp);
+            }
+        }
+        v
+    };
+    gids.sort_unstable();
+    gids.dedup();
+    for gid in gids {
+        if let Some(name) = unix_group_name_by_gid(gid)
+            && is_unix_admin_group_name(is_macos, &name)
+        {
+            return true;
+        }
+    }
+
+    // Also inspect `/etc/group` / DirectoryService member lists for the
+    // current UID so a newly added group membership takes effect immediately.
+    let uid = unsafe { libc::getuid() };
+    if let Some((username, pw_gid)) = unix_passwd_name_and_gid(uid) {
+        if let Some(primary_group) = unix_group_name_by_gid(pw_gid)
+            && is_unix_admin_group_name(is_macos, &primary_group)
+        {
+            return true;
+        }
+        let candidates: &[&str] = if is_macos {
+            &["admin", "wheel"]
+        } else {
+            &["sudo", "wheel", "admin", "root"]
+        };
+        for &cand in candidates {
+            if unix_group_lists_member(cand, &username) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn unix_group_name_by_gid(gid: libc::gid_t) -> Option<String> {
+    use std::ffi::CStr;
+    let mut buf_len = 1024usize;
+    while buf_len <= 262_144 {
+        let mut buf = vec![0u8; buf_len];
+        let mut grp = unsafe { std::mem::zeroed::<libc::group>() };
+        let mut res: *mut libc::group = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getgrgid_r(gid, &mut grp, buf.as_mut_ptr().cast(), buf.len(), &mut res)
+        };
+        if rc == 0 {
+            if res.is_null() || grp.gr_name.is_null() {
+                return None;
+            }
+            let name = unsafe { CStr::from_ptr(grp.gr_name) }.to_str().ok()?;
+            return Some(name.to_string());
+        }
+        if rc == libc::ERANGE {
+            buf_len *= 2;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+#[cfg(unix)]
+fn unix_passwd_name_and_gid(uid: libc::uid_t) -> Option<(String, libc::gid_t)> {
+    use std::ffi::CStr;
+    let mut buf_len = 1024usize;
+    while buf_len <= 262_144 {
+        let mut buf = vec![0u8; buf_len];
+        let mut pwd = unsafe { std::mem::zeroed::<libc::passwd>() };
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr().cast(), buf.len(), &mut res)
+        };
+        if rc == 0 {
+            if res.is_null() || pwd.pw_name.is_null() {
+                return None;
+            }
+            let name = unsafe { CStr::from_ptr(pwd.pw_name) }.to_str().ok()?;
+            return Some((name.to_string(), pwd.pw_gid));
+        }
+        if rc == libc::ERANGE {
+            buf_len *= 2;
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+#[cfg(unix)]
+fn unix_group_lists_member(group_name: &str, username: &str) -> bool {
+    use std::ffi::{CStr, CString};
+    let Ok(c_group) = CString::new(group_name) else {
+        return false;
+    };
+    let mut buf_len = 1024usize;
+    while buf_len <= 262_144 {
+        let mut buf = vec![0u8; buf_len];
+        let mut grp = unsafe { std::mem::zeroed::<libc::group>() };
+        let mut res: *mut libc::group = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getgrnam_r(
+                c_group.as_ptr(),
+                &mut grp,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut res,
+            )
+        };
+        if rc == 0 {
+            if res.is_null() || grp.gr_mem.is_null() {
+                return false;
+            }
+            let mut ptr = grp.gr_mem;
+            unsafe {
+                while !(*ptr).is_null() {
+                    if CStr::from_ptr(*ptr).to_str().ok() == Some(username) {
+                        return true;
+                    }
+                    ptr = ptr.add(1);
+                }
+            }
+            return false;
+        }
+        if rc == libc::ERANGE {
+            buf_len *= 2;
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
 /// First untrusted symlink/junction component along `path` (or `None` if clean).
 ///
 /// - On Windows: identical to [`crate::recording_dir::link_component`] — every
@@ -378,7 +610,10 @@ impl TempPromotionFiles {
             req_opts.mode(0o600);
         }
         let mut req_file = req_opts.open(&request_path)?;
-        if let Err(e) = req_file.write_all(&payload).and_then(|()| req_file.sync_all()) {
+        if let Err(e) = req_file
+            .write_all(&payload)
+            .and_then(|()| req_file.sync_all())
+        {
             drop(req_file);
             let _ = std::fs::remove_file(&request_path);
             return Err(e);
@@ -518,7 +753,10 @@ pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> 
             .metadata()
             .map_err(|e| anyhow::anyhow!("stat promotion request {}: {e}", path.display()))?;
         if !meta.is_file() || meta.nlink() != 1 {
-            anyhow::bail!("promotion request {} must be a single-link regular file", path.display());
+            anyhow::bail!(
+                "promotion request {} must be a single-link regular file",
+                path.display()
+            );
         }
         if (meta.mode() & 0o077) != 0 {
             anyhow::bail!(
@@ -528,10 +766,16 @@ pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> 
             );
         }
         if meta.len() == 0 {
-            anyhow::bail!("promotion request {} was already consumed or empty", path.display());
+            anyhow::bail!(
+                "promotion request {} was already consumed or empty",
+                path.display()
+            );
         }
         if meta.len() > MAX_REQUEST_BYTES {
-            anyhow::bail!("promotion request {} exceeds maximum allowed size", path.display());
+            anyhow::bail!(
+                "promotion request {} exceeds maximum allowed size",
+                path.display()
+            );
         }
         f
     };
@@ -541,27 +785,31 @@ pub fn consume_request_file(path: &Path) -> anyhow::Result<SystemEnrollRequest> 
         let (f, size) = open_single_link_plain_file_win(path, true, true)
             .map_err(|e| anyhow::anyhow!("opening promotion request {}: {e}", path.display()))?;
         if size == 0 {
-            anyhow::bail!("promotion request {} was already consumed or empty", path.display());
+            anyhow::bail!(
+                "promotion request {} was already consumed or empty",
+                path.display()
+            );
         }
         if size > MAX_REQUEST_BYTES {
-            anyhow::bail!("promotion request {} exceeds maximum allowed size", path.display());
+            anyhow::bail!(
+                "promotion request {} exceeds maximum allowed size",
+                path.display()
+            );
         }
         f
     };
 
     let mut raw = Vec::new();
-    if let Err(e) = (&mut file).take(MAX_REQUEST_BYTES + 1).read_to_end(&mut raw) {
+    if let Err(e) = (&mut file)
+        .take(MAX_REQUEST_BYTES + 1)
+        .read_to_end(&mut raw)
+    {
         raw.fill(0);
         return Err(anyhow::anyhow!("reading promotion request: {e}"));
     }
 
     // Scrub the bearer enrollment token from disk BEFORE parsing or network I/O.
-    let scrub_res = scrub_request_writer(
-        &mut file,
-        raw.len(),
-        |f| f.set_len(0),
-        |f| f.sync_all(),
-    );
+    let scrub_res = scrub_request_writer(&mut file, raw.len(), |f| f.set_len(0), |f| f.sync_all());
     drop(file);
     if let Err(e) = scrub_res {
         raw.fill(0);
@@ -637,7 +885,10 @@ pub fn write_status_error(status_file: &Path, message: &str) {
 pub fn read_status_error(status_file: &Path) -> Option<String> {
     let mut f = std::fs::File::open(status_file).ok()?;
     let mut buf = String::new();
-    let _ = (&mut f).take((MAX_STATUS_BYTES + 1) as u64).read_to_string(&mut buf).ok()?;
+    let _ = (&mut f)
+        .take((MAX_STATUS_BYTES + 1) as u64)
+        .read_to_string(&mut buf)
+        .ok()?;
     let msg = buf.trim();
     if msg.is_empty() {
         None
@@ -758,9 +1009,13 @@ pub fn invoke_elevated_enroll_system(
 #[cfg(windows)]
 fn invoke_windows_runas(daemon_exe: &Path, temp: &TempPromotionFiles) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, GetLastError, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_CANCELLED, GetLastError, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-    use windows_sys::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
 
     fn wide_nul(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
@@ -847,9 +1102,8 @@ fn invoke_linux_elevated(
             return Ok(());
         }
         if !temp.has_unconsumed_request() {
-            return Err(read_status_error(&temp.status_path).unwrap_or_else(|| {
-                String::from_utf8_lossy(&out.stderr).trim().to_string()
-            }));
+            return Err(read_status_error(&temp.status_path)
+                .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string()));
         }
     }
 
@@ -932,9 +1186,8 @@ fn invoke_macos_elevated(
             return Ok(());
         }
         if !temp.has_unconsumed_request() {
-            return Err(read_status_error(&temp.status_path).unwrap_or_else(|| {
-                String::from_utf8_lossy(&out.stderr).trim().to_string()
-            }));
+            return Err(read_status_error(&temp.status_path)
+                .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string()));
         }
     }
 
@@ -1215,9 +1468,18 @@ mod tests {
             Some(&cfg_path),
         )
         .unwrap();
-        assert_eq!(req.seed_config_toml.as_deref(), Some("machine_id = \"m1\"\n"));
-        assert_eq!(req.seed_temporary_json.as_deref(), Some("{\"access_until_ms\":123}"));
-        assert_eq!(req.seed_history_json.as_deref(), Some("[{\"invite_id\":\"inv1\"}]"));
+        assert_eq!(
+            req.seed_config_toml.as_deref(),
+            Some("machine_id = \"m1\"\n")
+        );
+        assert_eq!(
+            req.seed_temporary_json.as_deref(),
+            Some("{\"access_until_ms\":123}")
+        );
+        assert_eq!(
+            req.seed_history_json.as_deref(),
+            Some("[{\"invite_id\":\"inv1\"}]")
+        );
 
         retire_migrated_user_config(&cfg_path);
         assert!(!cfg_path.exists());
@@ -1284,7 +1546,11 @@ mod tests {
             None
         );
         std::fs::create_dir_all(priv_etc.join("meshharbor")).unwrap();
-        std::fs::write(priv_etc.join("meshharbor/config.toml"), r#"machine_id = "m""#).unwrap();
+        std::fs::write(
+            priv_etc.join("meshharbor/config.toml"),
+            r#"machine_id = "m""#,
+        )
+        .unwrap();
         assert_eq!(
             untrusted_promotion_link_unix(&sys_cfg, &fake_root, true, false),
             None
@@ -1376,5 +1642,27 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&fake_root);
+    }
+
+    #[test]
+    fn unix_admin_group_classifier_matches_platform_conventions() {
+        for g in ["sudo", "wheel", "admin", "root"] {
+            assert!(
+                is_unix_admin_group_name(false, g),
+                "linux should accept {g}"
+            );
+        }
+        for g in ["users", "staff", "docker", "cuizhuoxu", "nogroup", ""] {
+            assert!(!is_unix_admin_group_name(false, g), "linux must reject {g}");
+        }
+        for g in ["admin", "wheel"] {
+            assert!(is_unix_admin_group_name(true, g), "macos should accept {g}");
+        }
+        for g in ["staff", "sudo", "users", "everyone", ""] {
+            assert!(!is_unix_admin_group_name(true, g), "macos must reject {g}");
+        }
+        if is_process_elevated() {
+            assert!(can_current_user_elevate());
+        }
     }
 }

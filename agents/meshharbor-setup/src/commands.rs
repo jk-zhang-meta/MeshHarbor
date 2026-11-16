@@ -41,6 +41,8 @@ pub struct AgentDetect {
     /// `false` on non-Windows: the daemon roles are MSI-only, so the
     /// SPA shows only the tunnel-client card.
     pub supported: bool,
+    /// Whether the current OS account can elevate to Administrator (`SYSTEM`).
+    pub can_elevate: bool,
     /// `"clean" | "peruser" | "permachine" | "ambiguous"`.
     pub kind: String,
     /// perUser version when present, else None.
@@ -77,6 +79,7 @@ pub fn cmd_detect_install() -> Result<DetectResult, String> {
     let agent = match detect_existing_install() {
         ExistingInstall::Clean => AgentDetect {
             supported: cfg!(target_os = "windows"),
+            can_elevate: meshharbord::personal_system::can_current_user_elevate(),
             kind: "clean".to_string(),
             peruser_version: None,
             permachine_version: None,
@@ -84,6 +87,7 @@ pub fn cmd_detect_install() -> Result<DetectResult, String> {
         },
         ExistingInstall::PerUser(info) => AgentDetect {
             supported: cfg!(target_os = "windows"),
+            can_elevate: meshharbord::personal_system::can_current_user_elevate(),
             kind: "peruser".to_string(),
             peruser_version: info.version,
             permachine_version: None,
@@ -91,6 +95,7 @@ pub fn cmd_detect_install() -> Result<DetectResult, String> {
         },
         ExistingInstall::PerMachine(info) => AgentDetect {
             supported: cfg!(target_os = "windows"),
+            can_elevate: meshharbord::personal_system::can_current_user_elevate(),
             kind: "permachine".to_string(),
             peruser_version: None,
             permachine_version: info.version,
@@ -101,6 +106,7 @@ pub fn cmd_detect_install() -> Result<DetectResult, String> {
             permachine,
         } => AgentDetect {
             supported: cfg!(target_os = "windows"),
+            can_elevate: meshharbord::personal_system::can_current_user_elevate(),
             kind: "ambiguous".to_string(),
             peruser_version: peruser.version,
             permachine_version: permachine.version,
@@ -438,6 +444,7 @@ mod tests {
         let r = DetectResult {
             agent: AgentDetect {
                 supported: true,
+                can_elevate: true,
                 kind: "peruser".to_string(),
                 peruser_version: Some("0.3.0-rc.190".to_string()),
                 permachine_version: None,

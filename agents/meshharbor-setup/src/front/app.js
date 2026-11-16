@@ -119,7 +119,7 @@ async function probeAndRender() {
     state.detection = await invoke("cmd_detect_install");
   } catch (err) {
     state.detection = {
-      agent: { supported: false, kind: "clean", peruserVersion: null, permachineVersion: null, ambiguous: false },
+      agent: { supported: false, canElevate: false, kind: "clean", peruserVersion: null, permachineVersion: null, ambiguous: false },
       tunnel: { installed: false, machineName: null, configPath: null },
     };
     showSnackbar(`Detection failed: ${err}`);
@@ -129,7 +129,7 @@ async function probeAndRender() {
   // Administrator (`NT AUTHORITY\SYSTEM`) mode ("daemon-system") while
   // keeping all other roles selectable.
   if (!state.role && state.detection?.agent?.supported && state.detection.agent.kind === "clean") {
-    state.role = "daemon-system";
+    state.role = state.detection.agent.canElevate === false ? "daemon-user" : "daemon-system";
   }
 
   // Default server URL + device name come from the lib helpers when

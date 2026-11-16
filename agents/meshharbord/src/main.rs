@@ -1295,8 +1295,9 @@ fn daemon_argv(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::f
     v
 }
 
-/// `meshharbord login` / `mh login`: device login, defaulting to Administrator
-/// (`SYSTEM`) / `root` system-service promotion unless `--user` is passed.
+/// `meshharbord login` / `mh login`: device login, requiring Administrator
+/// (`SYSTEM`) / `root` system-service promotion whenever the OS account can
+/// elevate (unless `--user` is passed), and enrolling in user mode otherwise.
 async fn login_cmd(
     config_path: &std::path::PathBuf,
     server: &str,
@@ -1307,7 +1308,8 @@ async fn login_cmd(
     user: bool,
 ) -> Result<()> {
     use meshharbor_node_core::{device_invite, device_login, personal_system};
-    let promote_system = !user;
+    let can_elevate = personal_system::can_current_user_elevate();
+    let promote_system = !user && can_elevate;
 
     let live_status = match tunnel_core::localapi::connect().await {
         Ok(mut c) => c.status().await.ok(),
@@ -1400,7 +1402,13 @@ async fn login_cmd(
         return Ok(());
     }
 
-    println!("Approved. Enrolling (user mode)…");
+    if !user && !can_elevate {
+        println!(
+            "Approved. Current OS account does not have Administrator / root privileges; enrolling in user mode…"
+        );
+    } else {
+        println!("Approved. Enrolling (user mode)…");
+    }
     let before = config::load(config_path).ok();
     enroll_cmd(
         config_path,
@@ -1441,7 +1449,16 @@ async fn login_cmd(
                     device_invite::write_marker_for(config_path, &old_primary, true, Some(info));
             }
             println!("Signed in. The invitations this machine holds are kept.");
+        } else if let Ok(cfg) = config::load(config_path) {
+            let _ = device_invite::write_marker_for(config_path, &cfg.agent_id, true, None);
         }
+        link_history(config_path).await;
+        restart_service(config_path).await;
+    } else if before.is_none() {
+        if meshharbord::service::install().is_ok() || meshharbord::service::start().is_ok() {
+            println!("The MeshHarbor user service is active.");
+        }
+    } else {
         link_history(config_path).await;
         restart_service(config_path).await;
     }
@@ -2562,9 +2579,7 @@ async fn daemon_main() -> Result<()> {
         Command::EnrollPersonalSystem {
             request_file,
             status_file,
-        } => {
-            meshharbord::personal_system_exec::run_cli(&request_file, &status_file).await
-        }
+        } => meshharbord::personal_system_exec::run_cli(&request_file, &status_file).await,
         Command::Join {
             code,
             yes,
@@ -2950,7 +2965,8 @@ async fn daemon_main() -> Result<()> {
         #[cfg(target_os = "windows")]
         Command::PostInstallOwner { directory } => {
             tokio::task::spawn_blocking(move || updater::run_windows_install_owner(&directory))
-                .await.context("install owner join")?
+                .await
+                .context("install owner join")?
         }
         Command::PostInstallWatch {
             installer_pid,
@@ -8039,11 +8055,9 @@ mod tests {
             _ => panic!("expected the daemon's Login command"),
         }
 
-        let user_cli = parse_cli_before_startup(
-            daemon_argv(os(&["mh", "cli", "login", "--user"])),
-            || {},
-        )
-        .unwrap();
+        let user_cli =
+            parse_cli_before_startup(daemon_argv(os(&["mh", "cli", "login", "--user"])), || {})
+                .unwrap();
         assert!(matches!(
             user_cli.command,
             Some(Command::Login { user: true, .. })

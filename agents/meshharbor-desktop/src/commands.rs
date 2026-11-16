@@ -456,8 +456,8 @@ pub(crate) fn invitations_at(path: &PathBuf) -> Option<Invitations> {
     }
     let cfg = meshharbor_node_core::config::load(path).ok()?;
     let markers = device_invite::read_markers(path);
-    let own_account = !(markers.contains_key(&cfg.agent_id)
-        || markers.contains_key(device_invite::PRIMARY_KEY));
+    let own_account =
+        !(markers.contains_key(&cfg.agent_id) || markers.contains_key(device_invite::PRIMARY_KEY));
     let mut grants = Vec::new();
     for (aid, info) in &markers {
         let aid = if aid == device_invite::PRIMARY_KEY {
@@ -660,7 +660,7 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
     // Resolve the active service flavour once on the blocking pool so neither
     // a stale cross-flavour Windows config nor an invitation-only (SIAT) active
     // config can misclassify `purpose` as `UserSession` and skip conversion.
-    let (file_server, file_personal) = tokio::task::spawn_blocking(move || {
+    let (file_server, file_personal, can_elevate) = tokio::task::spawn_blocking(move || {
         let is_scm = probe_service_state().0 == "scmService";
         let active_path = active_config_path(is_scm).ok();
         let disk_server = active_path
@@ -669,7 +669,8 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
             .map(|cfg| cfg.server_url.trim().trim_end_matches('/').to_string())
             .filter(|s| s.starts_with("https://") || s.starts_with("http://"));
         let personally_enrolled = has_personal_enrollment_for(is_scm);
-        (disk_server, personally_enrolled)
+        let can_elevate = meshharbor_node_core::personal_system::can_current_user_elevate();
+        (disk_server, personally_enrolled, can_elevate)
     })
     .await
     .map_err(|e| format!("task join: {e}"))?;
@@ -698,7 +699,11 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
         .and_then(|n| n.system_privileged.or(n.privileged))
         .unwrap_or(false);
 
-    let purpose = login_purpose_for_system_personal_state(personally_enrolled, system_privileged);
+    let purpose = login_purpose_for_system_personal_state(
+        personally_enrolled,
+        system_privileged,
+        can_elevate,
+    );
     let pending = device_login::start_with_purpose(&resolved_server, device_name.trim(), purpose)
         .await
         .map_err(|e| format!("{e:#}"))?;
@@ -723,14 +728,20 @@ pub(crate) fn login_purpose_for_personal_state(
     }
 }
 
-/// Personal desktop sign-in skips device enrollment ONLY when this machine is
-/// ALREADY personally enrolled AND running with full Administrator (`SYSTEM`) /
-/// `root` system privileges; otherwise sign-in auto-enrolls/promotes it.
+/// Personal desktop sign-in requires full Administrator (`SYSTEM`) / `root`
+/// privileges when the OS account can elevate, and accepts per-user personal
+/// enrollment when the OS account has no administrative capability.
 pub(crate) fn login_purpose_for_system_personal_state(
     personally_enrolled: bool,
     system_privileged: bool,
+    can_elevate: bool,
 ) -> meshharbor_node_core::device_login::Purpose {
-    login_purpose_for_personal_state(personally_enrolled && system_privileged)
+    let satisfied = if can_elevate {
+        personally_enrolled && system_privileged
+    } else {
+        personally_enrolled
+    };
+    login_purpose_for_personal_state(satisfied)
 }
 
 pub(crate) async fn finalize_approved_login<EnrollFut, SaveFut, RevokeFut>(
@@ -790,8 +801,18 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
         pending.purpose,
         approved,
         move |enrollment_token| async move {
-            promote_personal_device_to_system(server_for_enroll, enrollment_token, device_name)
-                .await
+            let can_elevate = tokio::task::spawn_blocking(
+                meshharbor_node_core::personal_system::can_current_user_elevate,
+            )
+            .await
+            .map_err(|e| format!("Privilege check task failed: {e}"))?;
+            if can_elevate {
+                promote_personal_device_to_system(server_for_enroll, enrollment_token, device_name)
+                    .await
+            } else {
+                enroll_personal_device_user_mode(server_for_enroll, enrollment_token, device_name)
+                    .await
+            }
         },
         move |session| crate::user_account::save_login(server_for_save, session),
         move |access_token| async move {
@@ -817,8 +838,7 @@ async fn promote_personal_device_to_system(
     let resolved_name = {
         let t = device_name.trim();
         if t.is_empty() {
-            meshharbor_node_core::machine::hostname()
-                .unwrap_or_else(|_| "my-device".to_string())
+            meshharbor_node_core::machine::hostname().unwrap_or_else(|_| "my-device".to_string())
         } else {
             t.to_string()
         }
@@ -866,7 +886,47 @@ async fn promote_personal_device_to_system(
     )
 }
 
-#[allow(dead_code)]
+async fn enroll_personal_device_user_mode(
+    server: String,
+    enrollment_token: String,
+    device_name: String,
+) -> Result<(), String> {
+    let resolved_name = {
+        let t = device_name.trim();
+        if t.is_empty() {
+            meshharbor_node_core::machine::hostname().unwrap_or_else(|_| "my-device".to_string())
+        } else {
+            t.to_string()
+        }
+    };
+    enroll_with_token(server, enrollment_token, resolved_name, true).await?;
+    if localapi::connect().await.is_ok() {
+        let restart = cmd_restart_daemon("personal account enrollment changed".into()).await?;
+        if !restart.started {
+            return Err(format!(
+                "Device enrolled, but the device service could not reload: {}",
+                restart
+                    .refusal
+                    .as_deref()
+                    .unwrap_or("upgrade or restart the service manually")
+            ));
+        }
+        cmd_restart_wait(
+            restart.pid,
+            restart.started_at_ms,
+            restart.restart_by,
+            restart.restart_within_s,
+        )
+        .await?;
+    } else {
+        tokio::task::spawn_blocking(|| run_service_start().or_else(|_| run_service_install()))
+            .await
+            .map_err(|e| format!("Service start task: {e}"))?
+            .map_err(|e| format!("Service start failed: {e}"))?;
+    }
+    Ok(())
+}
+
 async fn enroll_with_token(
     server: String,
     token: String,
@@ -930,21 +990,46 @@ async fn enroll_with_token(
     });
     let (mut cfg, outcome) = enrollment::apply_enrollment(existing, cfg, None, false)
         .map_err(|e| format!("Merging enrollment: {e}"))?;
-    if personal_login
-        && primary_was_invited
-        && let enrollment::EnrollOutcome::AppendedOrg { label } = outcome
-    {
-        if let Some(org) = cfg.orgs.iter_mut().find(|o| o.label == label) {
-            org.overlay_mode = config::OrgOverlayMode::Netstack;
-        }
-        config::promote_keeping_mesh(&mut cfg, &label, None)
-            .map_err(|e| format!("Promoting own account: {e}"))?;
-        if let (Some(id), Some(info)) = (
-            old_primary,
-            markers.get(meshharbor_node_core::device_invite::PRIMARY_KEY),
-        ) {
-            meshharbor_node_core::device_invite::write_marker_for(&path, &id, true, Some(info))
-                .map_err(|e| format!("Preserving invitation marker: {e}"))?;
+    if personal_login {
+        match &outcome {
+            enrollment::EnrollOutcome::AppendedOrg { label }
+            | enrollment::EnrollOutcome::RefreshedOrg { label } => {
+                if let Some(org_id) = cfg.find_org(label).map(|o| o.agent_id.clone()) {
+                    let _ = meshharbor_node_core::device_invite::write_marker_for(
+                        &path, &org_id, false, None,
+                    );
+                }
+                if primary_was_invited {
+                    if let Some(org) = cfg.orgs.iter_mut().find(|o| &o.label == label) {
+                        org.overlay_mode = config::OrgOverlayMode::Netstack;
+                    }
+                    let label_owned = label.clone();
+                    config::promote_keeping_mesh(&mut cfg, &label_owned, None)
+                        .map_err(|e| format!("Promoting own account: {e}"))?;
+                    if let (Some(id), Some(info)) = (
+                        old_primary,
+                        markers.get(meshharbor_node_core::device_invite::PRIMARY_KEY),
+                    ) {
+                        meshharbor_node_core::device_invite::write_marker_for(
+                            &path,
+                            &id,
+                            true,
+                            Some(info),
+                        )
+                        .map_err(|e| format!("Preserving invitation marker: {e}"))?;
+                    }
+                }
+            }
+            enrollment::EnrollOutcome::FreshPrimary
+            | enrollment::EnrollOutcome::RefreshedPrimary
+            | enrollment::EnrollOutcome::ReplacedPrimary => {
+                let _ = meshharbor_node_core::device_invite::write_marker_for(
+                    &path,
+                    &cfg.agent_id,
+                    true,
+                    None,
+                );
+            }
         }
     }
     config::save(&path, &cfg).map_err(|e| format!("Saving config: {e}"))?;
@@ -1467,14 +1552,21 @@ static WEB_WINDOW_ORIGIN: Mutex<Option<tauri::Url>> = Mutex::new(None);
 /// `/__meshharbor_desktop__/open_rdp` requests and dispatches [`launch_desktop_rdp_session`]
 /// without exposing general `__TAURI__` IPC to the external page.
 #[cfg(windows)]
-fn open_web_window_for_server<R: tauri::Runtime>(app:&tauri::AppHandle<R>,url:&str,server:&str)->Result<(),String> {
+fn open_web_window_for_server<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    url: &str,
+    server: &str,
+) -> Result<(), String> {
     use tauri::Manager;
     let parsed: tauri::Url = url.parse().map_err(|e| format!("invalid URL: {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("only http(s) URLs can be opened".to_string());
     }
-    let allowed_origin=meshharbor_node_core::user_session::trusted_base(server).map_err(|e|e.to_string())?;
-    *WEB_WINDOW_ORIGIN.lock().map_err(|_|"Web account policy unavailable")?=Some(allowed_origin);
+    let allowed_origin =
+        meshharbor_node_core::user_session::trusted_base(server).map_err(|e| e.to_string())?;
+    *WEB_WINDOW_ORIGIN
+        .lock()
+        .map_err(|_| "Web account policy unavailable")? = Some(allowed_origin);
     if let Some(existing) = app.get_webview_window(WEB_WINDOW_LABEL) {
         // Reuse the window (and its signed-in session): navigate in place.
         existing
@@ -1543,31 +1635,74 @@ fn open_web_or_browser<R: tauri::Runtime>(
     }
 }
 
-pub(crate) async fn open_authenticated_web<R:tauri::Runtime>(app:&tauri::AppHandle<R>,server:&str,target:meshharbor_node_core::user_session::WebTarget)->Result<(),String> {
-    let launch=crate::user_account::prepare(server,target).await?;
-    let app2=app.clone(); let server=server.to_owned();
-    let (tx,rx)=tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move||{
+pub(crate) async fn open_authenticated_web<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    server: &str,
+    target: meshharbor_node_core::user_session::WebTarget,
+) -> Result<(), String> {
+    let launch = crate::user_account::prepare(server, target).await?;
+    let app2 = app.clone();
+    let server = server.to_owned();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
         #[cfg(windows)]
-        let result=open_web_window_for_server(&app2,&launch,&server);
+        let result = open_web_window_for_server(&app2, &launch, &server);
         #[cfg(not(windows))]
-        let result={let _=server;open_web_or_browser(&app2,&launch)};
-        let _=tx.send(result);
-    }).map_err(|_|"Cannot schedule the account window")?;
-    rx.await.map_err(|_|"Account window task ended")?
+        let result = {
+            let _ = server;
+            open_web_or_browser(&app2, &launch)
+        };
+        let _ = tx.send(result);
+    })
+    .map_err(|_| "Cannot schedule the account window")?;
+    rx.await.map_err(|_| "Account window task ended")?
 }
 
-pub(crate) async fn open_account_viewer_link<R:tauri::Runtime>(app:&tauri::AppHandle<R>,server:&str,url:&str)->Result<(),String> {
-    let base=meshharbor_node_core::user_session::trusted_base(server).map_err(|e|e.to_string())?;
-    let link:tauri::Url=url.parse().map_err(|_|"Invalid account viewer link")?;
-    if link.origin()!=base.origin() || link.query().is_some() || link.fragment().is_some() || !link.username().is_empty() || link.password().is_some() { return Err("Unsafe account viewer link".into()); }
-    let prefix=format!("{}/",base.path().trim_end_matches('/'));
-    let path=link.path().strip_prefix(&prefix).ok_or("Account viewer outside deployment prefix")?;
-    let parts:Vec<_>=path.split('/').collect();
+pub(crate) async fn open_account_viewer_link<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    server: &str,
+    url: &str,
+) -> Result<(), String> {
+    let base =
+        meshharbor_node_core::user_session::trusted_base(server).map_err(|e| e.to_string())?;
+    let link: tauri::Url = url.parse().map_err(|_| "Invalid account viewer link")?;
+    if link.origin() != base.origin()
+        || link.query().is_some()
+        || link.fragment().is_some()
+        || !link.username().is_empty()
+        || link.password().is_some()
+    {
+        return Err("Unsafe account viewer link".into());
+    }
+    let prefix = format!("{}/", base.path().trim_end_matches('/'));
+    let path = link
+        .path()
+        .strip_prefix(&prefix)
+        .ok_or("Account viewer outside deployment prefix")?;
+    let parts: Vec<_> = path.split('/').collect();
     match parts.as_slice() {
-        ["tenant",tenant,"agent",agent,"remote"]=>open_authenticated_web(app,server,meshharbor_node_core::user_session::WebTarget::Remote{tenant_id:(*tenant).into(),agent_id:(*agent).into()}).await,
-        ["device-shares",share_id,"remote"]=>open_authenticated_web(app,server,meshharbor_node_core::user_session::WebTarget::DeviceShareRemote{share_id:(*share_id).into()}).await,
-        _=>Err("This account viewer requires a supported authenticated handoff".into()),
+        ["tenant", tenant, "agent", agent, "remote"] => {
+            open_authenticated_web(
+                app,
+                server,
+                meshharbor_node_core::user_session::WebTarget::Remote {
+                    tenant_id: (*tenant).into(),
+                    agent_id: (*agent).into(),
+                },
+            )
+            .await
+        }
+        ["device-shares", share_id, "remote"] => {
+            open_authenticated_web(
+                app,
+                server,
+                meshharbor_node_core::user_session::WebTarget::DeviceShareRemote {
+                    share_id: (*share_id).into(),
+                },
+            )
+            .await
+        }
+        _ => Err("This account viewer requires a supported authenticated handoff".into()),
     }
 }
 
@@ -1593,7 +1728,12 @@ pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
     let url = tokio::task::spawn_blocking(server_origin_blocking)
         .await
         .map_err(|e| format!("task join: {e}"))??;
-    open_authenticated_web(&app,&url,meshharbor_node_core::user_session::WebTarget::Dashboard).await
+    open_authenticated_web(
+        &app,
+        &url,
+        meshharbor_node_core::user_session::WebTarget::Dashboard,
+    )
+    .await
 }
 
 /// Personal directory and sharing are account-authenticated, never agent-token lists.
@@ -1617,14 +1757,14 @@ pub async fn cmd_open_account(
     })
     .await
     .map_err(|_| "Cannot resolve the account centre")??;
-    let target=match section.as_str() {
-        "devices"=>meshharbor_node_core::user_session::WebTarget::MyDevices,
-        "sent"=>meshharbor_node_core::user_session::WebTarget::DeviceSharesSent,
-        "received"=>meshharbor_node_core::user_session::WebTarget::DeviceSharesReceived,
-        _=>return Err("Unknown personal account section".into()),
+    let target = match section.as_str() {
+        "devices" => meshharbor_node_core::user_session::WebTarget::MyDevices,
+        "sent" => meshharbor_node_core::user_session::WebTarget::DeviceSharesSent,
+        "received" => meshharbor_node_core::user_session::WebTarget::DeviceSharesReceived,
+        _ => return Err("Unknown personal account section".into()),
     };
-    let launch=crate::user_account::prepare(&server,target).await?;
-    crate::account_window::open_authorized(&app,&server,&launch)
+    let launch = crate::user_account::prepare(&server, target).await?;
+    crate::account_window::open_authorized(&app, &server, &launch)
 }
 
 /// S2/S7 — open the remote-control viewer for one of the agent-backed
@@ -1654,11 +1794,19 @@ pub async fn cmd_open_remote(
         let path = active_config_path(is_scm)?;
         let cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
         let (server, tid) = remote_target(&cfg, org.as_deref())?;
-        Ok::<_, String>((server,tid,aid))
+        Ok::<_, String>((server, tid, aid))
     })
     .await
     .map_err(|e| format!("task join: {e}"))??;
-    open_authenticated_web(&app,&url.0,meshharbor_node_core::user_session::WebTarget::Remote{tenant_id:url.1,agent_id:url.2}).await
+    open_authenticated_web(
+        &app,
+        &url.0,
+        meshharbor_node_core::user_session::WebTarget::Remote {
+            tenant_id: url.1,
+            agent_id: url.2,
+        },
+    )
+    .await
 }
 
 /// The `(server origin, tenant id)` a "View screen" for a device in `org`
@@ -2046,8 +2194,13 @@ pub async fn cmd_set_device_name(name: String) -> Result<StatusReport, String> {
     if trimmed.is_empty() {
         return Err("Device name is empty".to_string());
     }
-    let mut client = localapi::connect().await.map_err(|e| format!("Daemon unavailable; name was not changed: {e}"))?;
-    let (canonical, state) = client.propose_device_name(&trimmed).await.map_err(|e| e.to_string())?;
+    let mut client = localapi::connect()
+        .await
+        .map_err(|e| format!("Daemon unavailable; name was not changed: {e}"))?;
+    let (canonical, state) = client
+        .propose_device_name(&trimmed)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut report = cmd_status().await;
     report.device_name = Some(canonical);
     report.name_sync = Some(state);
@@ -2291,6 +2444,33 @@ pub async fn cmd_restart_wait(
 
 /// `meshharbord service start`, the caller half of a restart under the Scheduled
 /// Task. Blocking; bounded at 20 s.
+pub(crate) fn run_service_install() -> Result<(), String> {
+    let exe = agent_exe_path()?;
+    #[cfg(windows)]
+    {
+        match spawn_no_inherit_and_wait(
+            &exe,
+            "service install",
+            std::time::Duration::from_secs(20),
+        )? {
+            0 => Ok(()),
+            code => Err(format!("`meshharbord service install` exited {code}")),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let out = no_window_command(&exe)
+            .args(["service", "install"])
+            .output()
+            .map_err(|e| format!("Spawning service install ({}): {e}", exe.display()))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    }
+}
+
 pub(crate) fn run_service_start() -> Result<(), String> {
     let exe = agent_exe_path()?;
     #[cfg(windows)]
@@ -4576,8 +4756,14 @@ mod tests {
         )
         .await;
         assert!(res.is_err());
-        assert!(!saved.load(Ordering::SeqCst), "failed conversion must leave no stored session");
-        assert!(revoked.load(Ordering::SeqCst), "failed conversion must revoke issued session");
+        assert!(
+            !saved.load(Ordering::SeqCst),
+            "failed conversion must leave no stored session"
+        );
+        assert!(
+            revoked.load(Ordering::SeqCst),
+            "failed conversion must revoke issued session"
+        );
         assert!(!has_personal_enrollment_at(&cfg_path));
 
         // Case 2: Successful conversion promotes personal enrollment, preserves invitation, then saves session.
@@ -4779,24 +4965,40 @@ mod system_login_purpose_tests {
     use meshharbor_node_core::device_login::Purpose;
 
     #[test]
-    fn login_purpose_requires_both_personal_enrollment_and_system_privileges() {
+    fn login_purpose_respects_account_elevation_capability() {
+        // Admin-capable OS user (`can_elevate = true`) MUST promote to system privileges.
         assert_eq!(
-            login_purpose_for_system_personal_state(false, false),
+            login_purpose_for_system_personal_state(false, false, true),
             Purpose::EnrollmentAndUserSession
         );
         assert_eq!(
-            login_purpose_for_system_personal_state(false, true),
+            login_purpose_for_system_personal_state(false, true, true),
             Purpose::EnrollmentAndUserSession
         );
         assert_eq!(
-            login_purpose_for_system_personal_state(true, false),
+            login_purpose_for_system_personal_state(true, false, true),
             Purpose::EnrollmentAndUserSession,
-            "unprivileged per-user personal enrollment must promote to system privileges on sign-in"
+            "admin-capable user on per-user enrollment must promote to system privileges"
         );
         assert_eq!(
-            login_purpose_for_system_personal_state(true, true),
+            login_purpose_for_system_personal_state(true, true, true),
             Purpose::UserSession,
             "already-privileged personal system install only needs a user session"
+        );
+
+        // Non-admin OS user (`can_elevate = false`) enrolls once in user mode and stays satisfied.
+        assert_eq!(
+            login_purpose_for_system_personal_state(false, false, false),
+            Purpose::EnrollmentAndUserSession
+        );
+        assert_eq!(
+            login_purpose_for_system_personal_state(true, false, false),
+            Purpose::UserSession,
+            "non-admin user already personally enrolled in user mode only needs a user session"
+        );
+        assert_eq!(
+            login_purpose_for_system_personal_state(true, true, false),
+            Purpose::UserSession
         );
     }
 }
