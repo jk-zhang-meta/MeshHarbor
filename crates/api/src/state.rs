@@ -97,12 +97,7 @@ impl AppState {
 
         let ws_storage = Arc::new(WsStorage::new());
 
-        let oauth = if !settings.oauth.google.client_id.is_empty()
-            || !settings.oauth.facebook.client_id.is_empty()
-            || !settings.oauth.github.client_id.is_empty()
-            || !settings.oauth.linkedin.client_id.is_empty()
-            || !settings.oauth.microsoft.client_id.is_empty()
-        {
+        let oauth = if !settings.oauth.google.client_id.is_empty() {
             Some(Arc::new(OAuthService::new(settings.oauth.clone())))
         } else {
             None

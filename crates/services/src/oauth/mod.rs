@@ -134,22 +134,6 @@ impl OAuthService {
                 &self.settings.google.client_id,
                 &self.settings.google.client_secret,
             ),
-            "facebook" => (
-                &self.settings.facebook.client_id,
-                &self.settings.facebook.client_secret,
-            ),
-            "github" => (
-                &self.settings.github.client_id,
-                &self.settings.github.client_secret,
-            ),
-            "linkedin" => (
-                &self.settings.linkedin.client_id,
-                &self.settings.linkedin.client_secret,
-            ),
-            "microsoft" => (
-                &self.settings.microsoft.client_id,
-                &self.settings.microsoft.client_secret,
-            ),
             _ => return Err(OAuthError::UnknownProvider(provider.to_string())),
         };
         if cfg.0.is_empty() {

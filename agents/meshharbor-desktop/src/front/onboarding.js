@@ -236,7 +236,13 @@
     // Device login: start → show the code (and the link, if no browser
     // opened) → wait for the approval → the same Enrolled banner.
     const loginBtn = $('btn-login');
+    let loginWaiting = false;
     if (loginBtn) loginBtn.addEventListener('click', async () => {
+      if (loginWaiting) {
+        loginBtn.disabled = true;
+        try { await invoke('cmd_login_cancel'); } catch (_) {}
+        return;
+      }
       const deviceName = ($('device-name').value || '').trim();
       if (!deviceName) {
         showError('Fill in the device name first.');
@@ -262,15 +268,20 @@
         const p2 = document.createElement('p');
         p2.textContent = 'The page must show the code ' + started.user_code + '. Waiting for approval…';
         box.appendChild(p2);
-        loginBtn.textContent = 'Waiting…';
+        loginWaiting = true;
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Cancel sign-in';
         const s = await invoke('cmd_login_wait', { deviceName });
         box.hidden = true;
         showEnrolled(s);
         void refreshStatus();
       } catch (e) {
         box.hidden = true;
-        showError('Sign-in failed: ' + e);
+        if (!String(e).includes('sign-in cancelled')) {
+          showError('Sign-in failed: ' + e);
+        }
       } finally {
+        loginWaiting = false;
         loginBtn.disabled = false;
         loginBtn.textContent = 'Sign in…';
       }

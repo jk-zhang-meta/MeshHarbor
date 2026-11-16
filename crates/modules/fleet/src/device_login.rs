@@ -123,6 +123,10 @@ pub struct DeviceLoginRow {
     pub created_at: DateTime,
     pub expires_at: DateTime,
     pub decided_at: Option<DateTime>,
+    #[serde(default)]
+    pub browser_closed_at: Option<DateTime>,
+    #[serde(default)]
+    pub browser_oauth_until: Option<DateTime>,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +159,13 @@ pub struct Decision {
 pub struct Exchange {
     device_code: String,
     code_verifier: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Presence {
+    user_code: String,
+    state: String,
 }
 
 macro_rules! coll {
@@ -373,6 +384,8 @@ pub async fn start(
         created_at: now,
         expires_at: DateTime::from_millis(now.timestamp_millis() + REQUEST_TTL_SECS * 1000),
         decided_at: None,
+        browser_closed_at: None,
+        browser_oauth_until: None,
     };
     // A user-code collision is a unique-index error: astronomically rare at
     // 20^10, and answered like any storage failure (the device just retries).
@@ -534,6 +547,65 @@ pub async fn decide(
     Ok(response(StatusCode::OK, json!({ "status": next })))
 }
 
+/// Grace period (ms) between a browser `pagehide` beacon and treating a pending
+/// device login as cancelled, so page reloads (`F5`) and `/login <-> /register`
+/// navigations clear `browser_closed_at` before the next poll cancels it.
+const BROWSER_CLOSE_GRACE_MS: i64 = 3_500;
+/// Grace window (ms) while the browser leaves our origin for Google OAuth.
+const BROWSER_OAUTH_GRACE_MS: i64 = 180_000;
+
+/// `POST /api/native/device-login/presence` — anonymous browser tab presence
+/// signal (`"open"`, `"oauth"`, `"closed"`). Always returns `204 No Content`.
+pub async fn presence(
+    State(state): State<FleetState>,
+    Json(body): Json<Presence>,
+) -> Result<Response, ApiError> {
+    enabled(&state)?;
+    let Some(normalized) = normalize_user_code(&body.user_code) else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let c = coll!(state);
+    let now = DateTime::now();
+    let hash = hash_secret("device-login-user", &normalized);
+    match body.state.as_str() {
+        "open" => {
+            let _ = c
+                .update_one(
+                    doc! { "user_code_hash": &hash, "state": "pending" },
+                    doc! { "$set": { "browser_closed_at": null, "browser_oauth_until": null } },
+                )
+                .await;
+        }
+        "oauth" => {
+            let until = DateTime::from_millis(now.timestamp_millis() + BROWSER_OAUTH_GRACE_MS);
+            let _ = c
+                .update_one(
+                    doc! { "user_code_hash": &hash, "state": "pending" },
+                    doc! { "$set": { "browser_closed_at": null, "browser_oauth_until": until } },
+                )
+                .await;
+        }
+        "closed" => {
+            let _ = c
+                .update_one(
+                    doc! {
+                        "user_code_hash": &hash,
+                        "state": "pending",
+                        "$or": [
+                            { "browser_oauth_until": null },
+                            { "browser_oauth_until": { "$exists": false } },
+                            { "browser_oauth_until": { "$lte": now } },
+                        ],
+                    },
+                    doc! { "$set": { "browser_closed_at": now } },
+                )
+                .await;
+        }
+        _ => {}
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// `POST /api/native/device-login/exchange` — the device's poll. Anonymous;
 /// authenticated by the device code AND the PKCE verifier together.
 pub async fn exchange(
@@ -555,6 +627,18 @@ pub async fn exchange(
     }
     match row.state.as_str() {
         "pending" => {
+            if let Some(closed_at) = row.browser_closed_at
+                && now.timestamp_millis() - closed_at.timestamp_millis() >= BROWSER_CLOSE_GRACE_MS
+            {
+                let _ = storage(
+                    c.update_one(
+                        doc! { "_id": row.id, "state": "pending" },
+                        doc! { "$set": { "state": "cancelled", "decided_at": now } },
+                    )
+                    .await,
+                )?;
+                return Ok(oauth_error("cancelled"));
+            }
             let polls = row.polls + 1;
             let set = if polls > MAX_POLLS {
                 doc! { "$set": { "state": "denied", "decided_at": now }, "$inc": { "polls": 1 } }
@@ -572,6 +656,7 @@ pub async fn exchange(
             }));
         }
         "denied" => return Ok(oauth_error("access_denied")),
+        "cancelled" => return Ok(oauth_error("cancelled")),
         "approved" => {}
         // `consumed`, or anything unknown: the request is spent.
         _ => return Ok(oauth_error("expired_token")),
@@ -659,9 +744,9 @@ pub async fn exchange(
                 "A verified account email is required to authorize native sign-in".into(),
             ));
         }
-        let sec_rev = user.security_revision().ok_or_else(|| {
-            ApiError::Forbidden("Account security revision unavailable".into())
-        })?;
+        let sec_rev = user
+            .security_revision()
+            .ok_or_else(|| ApiError::Forbidden("Account security revision unavailable".into()))?;
         let prefix = meshharbor_core::admission::normalized_frontend_prefix(
             &state.settings.app.frontend_url,
         )

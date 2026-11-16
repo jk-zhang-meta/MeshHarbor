@@ -23,68 +23,17 @@ async fn oauth_redirect_google_returns_302() {
 }
 
 #[tokio::test]
-async fn oauth_redirect_github_returns_302() {
+async fn non_google_oauth_providers_are_disabled() {
     let app = TestApp::spawn_with_oauth().await;
-
-    let resp = app
-        .client
-        .get(app.url("/api/oauth/github"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status().as_u16(), 307);
-    let location = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(location.starts_with("https://github.com/login/oauth/authorize"));
-    assert!(location.contains("client_id=test-github-id"));
-}
-
-#[tokio::test]
-async fn oauth_redirect_facebook_returns_302() {
-    let app = TestApp::spawn_with_oauth().await;
-
-    let resp = app
-        .client
-        .get(app.url("/api/oauth/facebook"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status().as_u16(), 307);
-    let location = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(location.starts_with("https://www.facebook.com/v18.0/dialog/oauth"));
-}
-
-#[tokio::test]
-async fn oauth_redirect_linkedin_returns_302() {
-    let app = TestApp::spawn_with_oauth().await;
-
-    let resp = app
-        .client
-        .get(app.url("/api/oauth/linkedin"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status().as_u16(), 307);
-    let location = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(location.starts_with("https://www.linkedin.com/oauth/v2/authorization"));
-}
-
-#[tokio::test]
-async fn oauth_redirect_microsoft_returns_302() {
-    let app = TestApp::spawn_with_oauth().await;
-
-    let resp = app
-        .client
-        .get(app.url("/api/oauth/microsoft"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status().as_u16(), 307);
-    let location = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(location.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"));
+    for provider in ["facebook", "github", "linkedin", "microsoft"] {
+        let resp = app
+            .client
+            .get(app.url(&format!("/api/oauth/{provider}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400, "{provider} must be disabled");
+    }
 }
 
 #[tokio::test]
@@ -183,7 +132,10 @@ async fn oauth_user_dao_links_existing_user() {
     // social login" case.
     app.activate_user("existing@test.com").await;
 
-    let original = meshharbor_services::dao::user::UserDao::new(&app.db).find_by_email("existing@test.com").await.unwrap();
+    let original = meshharbor_services::dao::user::UserDao::new(&app.db)
+        .find_by_email("existing@test.com")
+        .await
+        .unwrap();
     // Now use OAuth with the same email
     let dao = meshharbor_services::dao::user::UserDao::new(&app.db);
     let user = dao

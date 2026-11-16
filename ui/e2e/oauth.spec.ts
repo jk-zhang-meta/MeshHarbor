@@ -9,13 +9,13 @@ test.describe('OAuth Login', () => {
   test('shows all OAuth provider buttons on login page', async ({ page }) => {
     await expect(page.getByText('Or login with')).toBeVisible()
 
-    for (const provider of ['Google', 'Facebook', 'GitHub', 'LinkedIn', 'Microsoft']) {
+    for (const provider of ['Google']) {
       await expect(page.getByRole('button', { name: provider })).toBeVisible()
     }
   })
 
   test('all OAuth provider buttons are clickable', async ({ page }) => {
-    for (const provider of ['Google', 'Facebook', 'GitHub', 'LinkedIn', 'Microsoft']) {
+    for (const provider of ['Google']) {
       await expect(page.getByRole('button', { name: provider })).toBeEnabled()
     }
   })

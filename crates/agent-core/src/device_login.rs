@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 /// Where devices sign in when nobody says otherwise.
 pub const DEFAULT_SERVER: &str = "https://www.itachi.fans/meshharbor";
 
+/// Canonical error message returned when a pending sign-in is cancelled locally
+/// or when the user closes the browser tab before deciding.
+pub const CANCELLED_ERROR: &str = "sign-in cancelled";
+
 #[derive(Debug, Deserialize)]
 struct StartResponse {
     device_code: String,
@@ -41,22 +45,42 @@ struct ExchangeOk {
     native_session: Option<crate::user_session::NativeSession>,
 }
 impl ExchangeOk {
-    fn validate(&self, purpose: Purpose)->Result<()> {
-        if purpose.needs_enrollment() && self.enrollment_token.is_empty() { bail!("the server approved the sign-in but sent no enrollment token"); }
-        if purpose.needs_session() { self.native_session.as_ref().context("server does not support user sign-in; upgrade the server")?.validate()?; }
-        else if self.native_session.is_some() { bail!("server returned an unrequested user session"); }
+    fn validate(&self, purpose: Purpose) -> Result<()> {
+        if purpose.needs_enrollment() && self.enrollment_token.is_empty() {
+            bail!("the server approved the sign-in but sent no enrollment token");
+        }
+        if purpose.needs_session() {
+            self.native_session
+                .as_ref()
+                .context("server does not support user sign-in; upgrade the server")?
+                .validate()?;
+        } else if self.native_session.is_some() {
+            bail!("server returned an unrequested user session");
+        }
         Ok(())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Purpose { Enrollment, UserSession, EnrollmentAndUserSession }
+pub enum Purpose {
+    Enrollment,
+    UserSession,
+    EnrollmentAndUserSession,
+}
 impl Purpose {
     fn wire(self) -> &'static str {
-        match self { Self::Enrollment => "enrollment", Self::UserSession => "user_session", Self::EnrollmentAndUserSession => "enrollment_and_user_session" }
+        match self {
+            Self::Enrollment => "enrollment",
+            Self::UserSession => "user_session",
+            Self::EnrollmentAndUserSession => "enrollment_and_user_session",
+        }
     }
-    fn needs_enrollment(self) -> bool { self != Self::UserSession }
-    fn needs_session(self) -> bool { self != Self::Enrollment }
+    fn needs_enrollment(self) -> bool {
+        self != Self::UserSession
+    }
+    fn needs_session(self) -> bool {
+        self != Self::Enrollment
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,14 +164,18 @@ pub async fn start(server: &str, device_name: &str) -> Result<Pending> {
 
 /// GUI-only explicit authorization. Existing CLI enrollment never requests
 /// or stores a user session, including headless invitation enrollments.
-pub async fn start_with_purpose(server: &str, device_name: &str, purpose: Purpose) -> Result<Pending> {
+pub async fn start_with_purpose(
+    server: &str,
+    device_name: &str,
+    purpose: Purpose,
+) -> Result<Pending> {
     let server_url = server_base(server);
     let name = device_name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         bail!("the device name must be 1-64 printable characters");
     }
     let verifier = new_verifier();
-    let mut body=serde_json::json!({
+    let mut body = serde_json::json!({
         "device_name": name,
         "device_os": os_name(),
         "code_challenge": challenge_for(&verifier),
@@ -155,7 +183,9 @@ pub async fn start_with_purpose(server: &str, device_name: &str, purpose: Purpos
     });
     // Old servers reject unknown fields. Enrollment-only remains byte-shape
     // compatible; user-session authorization is never silently downgraded.
-    if purpose != Purpose::Enrollment { body["purpose"]=purpose.wire().into(); }
+    if purpose != Purpose::Enrollment {
+        body["purpose"] = purpose.wire().into();
+    }
     let res = client()?
         .post(format!("{server_url}/api/native/device-login"))
         .json(&body)
@@ -166,7 +196,9 @@ pub async fn start_with_purpose(server: &str, device_name: &str, purpose: Purpos
         201 => {}
         503 => bail!("this server does not offer sign-in yet (device login is turned off there)"),
         429 => bail!("too many sign-in requests from this network; wait a few minutes"),
-        400 | 404 | 422 if purpose.needs_session() => bail!("this server does not support GUI user-session authorization; upgrade the server before signing in"),
+        400 | 404 | 422 if purpose.needs_session() => bail!(
+            "this server does not support GUI user-session authorization; upgrade the server before signing in"
+        ),
         s => bail!("the server refused the sign-in request (HTTP {s})"),
     }
     let body: StartResponse = res.json().await.context("reading the server's answer")?;
@@ -231,6 +263,7 @@ impl Pending {
         match err.as_str() {
             "authorization_pending" => Ok(Poll::Pending),
             "slow_down" => Ok(Poll::SlowDown),
+            "cancelled" => bail!("{CANCELLED_ERROR}"),
             "access_denied" => bail!("the sign-in was denied in the browser"),
             "expired_token" => bail!("the sign-in request expired; run it again"),
             other => bail!("the server refused the sign-in ({other}, HTTP {status})"),
@@ -328,7 +361,10 @@ mod tests {
 
     #[test]
     fn user_session_requires_explicit_scope_and_legacy_server_cannot_fake_login() {
-        let legacy:ExchangeOk=serde_json::from_value(serde_json::json!({"enrollment_token":"enroll-only","tenant_id":"tenant"})).unwrap();
+        let legacy: ExchangeOk = serde_json::from_value(
+            serde_json::json!({"enrollment_token":"enroll-only","tenant_id":"tenant"}),
+        )
+        .unwrap();
         assert!(legacy.validate(Purpose::Enrollment).is_ok());
         assert!(legacy.validate(Purpose::UserSession).is_err());
         let user:ExchangeOk=serde_json::from_value(serde_json::json!({"native_session":{"access_token":"access-fixture","refresh_token":"refresh-fixture","expires_in":60,"user":{"id":"user","email":"person@example.com","email_verified":true}}})).unwrap();

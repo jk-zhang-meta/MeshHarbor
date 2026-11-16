@@ -81,6 +81,7 @@ import { useI18n } from 'vue-i18n'
 import { api, ApiError } from '@/api/client'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
+import { markDeviceLoginDecided } from '@/utils/deviceLoginPresence'
 
 interface Preview {
   purpose?: 'enrollment' | 'user_session' | 'enrollment_and_user_session'
@@ -149,6 +150,7 @@ async function decide(approve: boolean) {
       ...(needsEnrollment.value ? { tenant_id: approve ? tenantId.value : null } : {}),
     })
     if (r?.status !== (approve ? 'approved' : 'denied')) throw new Error('unexpected')
+    markDeviceLoginDecided()
     done.value = approve ? 'approved' : 'denied'
     preview.value = null
   } catch (e) {

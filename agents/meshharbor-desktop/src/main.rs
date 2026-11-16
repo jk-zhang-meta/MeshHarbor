@@ -35,7 +35,6 @@
 )]
 
 mod account_window;
-mod user_account;
 mod commands;
 mod desktop_log;
 mod editor;
@@ -44,6 +43,7 @@ mod panels;
 #[cfg(target_os = "linux")]
 mod pin;
 mod tray;
+mod user_account;
 
 use tauri::Manager;
 
@@ -138,6 +138,7 @@ fn main() {
             commands::cmd_invite_features,
             commands::cmd_leave,
             commands::cmd_login_wait,
+            commands::cmd_login_cancel,
             commands::cmd_re_enroll,
             commands::cmd_set_device_name,
             commands::cmd_default_device_name,

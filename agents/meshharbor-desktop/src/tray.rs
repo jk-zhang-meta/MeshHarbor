@@ -42,7 +42,13 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let account_status =
         MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
     let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
-    let sign_out = MenuItem::with_id(app, "user_sign_out", "Sign out of account…", false, None::<&str>)?;
+    let sign_out = MenuItem::with_id(
+        app,
+        "user_sign_out",
+        "Sign out of account…",
+        false,
+        None::<&str>,
+    )?;
     let join = MenuItem::with_id(
         app,
         JOIN_ITEM_ID,
@@ -107,12 +113,17 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "open_web" => open_meshharbor_web(app),
         "user_sign_out" => {
             tauri::async_runtime::spawn(async {
-                let result=async {
-                    let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.map_err(|_|"Cannot resolve account server".to_string())??;
+                let result = async {
+                    let server =
+                        tokio::task::spawn_blocking(crate::commands::server_origin_blocking)
+                            .await
+                            .map_err(|_| "Cannot resolve account server".to_string())??;
                     crate::user_account::sign_out(&server).await
-                }.await;
-                if let Err(error)=result {
-                    LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).error=Some((error,std::time::Instant::now()));
+                }
+                .await;
+                if let Err(error) = result {
+                    LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).error =
+                        Some((error, std::time::Instant::now()));
                 }
             });
         }
@@ -658,11 +669,22 @@ fn show_window<R: Runtime>(app: &AppHandle<R>, path: &str) {
 fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result=async {
-            let server=tokio::task::spawn_blocking(crate::commands::server_origin_blocking).await.map_err(|_|"Cannot resolve account server".to_string())??;
-            crate::commands::open_authenticated_web(&app,&server,meshharbor_node_core::user_session::WebTarget::Dashboard).await
-        }.await;
-        if let Err(error)=result { LOGIN_UI.lock().unwrap_or_else(|e|e.into_inner()).error=Some((error,std::time::Instant::now())); }
+        let result = async {
+            let server = tokio::task::spawn_blocking(crate::commands::server_origin_blocking)
+                .await
+                .map_err(|_| "Cannot resolve account server".to_string())??;
+            crate::commands::open_authenticated_web(
+                &app,
+                &server,
+                meshharbor_node_core::user_session::WebTarget::Dashboard,
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).error =
+                Some((error, std::time::Instant::now()));
+        }
     });
 }
 
@@ -944,15 +966,19 @@ mod tests {
 #[derive(Default)]
 struct LoginUi {
     busy: bool,
+    login_waiting: bool,
     code: Option<String>,
     error: Option<(String, std::time::Instant)>,
 }
 
 static LOGIN_UI: Mutex<LoginUi> = Mutex::new(LoginUi {
     busy: false,
+    login_waiting: false,
     code: None,
     error: None,
 });
+
+static ACCOUNT_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub(crate) const LOGIN_ITEM_ID: &str = "login";
 pub(crate) const JOIN_ITEM_ID: &str = "join";
@@ -965,12 +991,21 @@ const INVITE_ITEM_PREFIX: &str = "inv:";
 fn start_login<R: Runtime>(app: &AppHandle<R>) {
     {
         let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        if ui.login_waiting {
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::commands::cmd_login_cancel().await;
+                ACCOUNT_WATCH_WAKE.notify_one();
+            });
+            return;
+        }
         if ui.busy {
             return;
         }
         ui.busy = true;
+        ui.login_waiting = true;
         ui.error = None;
     }
+    ACCOUNT_WATCH_WAKE.notify_one();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let name = crate::commands::cmd_default_device_name();
@@ -978,6 +1013,7 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
             Ok(started) => {
                 LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).code =
                     Some(started.user_code.clone());
+                ACCOUNT_WATCH_WAKE.notify_one();
                 if !started.opened {
                     // No browser could be opened: the window shows the link.
                     show_window(&app, "/onboarding");
@@ -986,15 +1022,23 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
             }
             Err(e) => Err(e),
         };
-        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
-        ui.busy = false;
-        ui.code = None;
-        if let Err(e) = outcome {
-            tracing::warn!(error = %e, "tray: sign-in did not complete");
-            ui.error = Some((e, std::time::Instant::now()));
-        } else {
-            tracing::info!("tray: signed in");
+        {
+            let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+            ui.busy = false;
+            ui.login_waiting = false;
+            ui.code = None;
+            match outcome {
+                Ok(()) => tracing::info!("tray: signed in"),
+                Err(e) if e == meshharbor_node_core::device_login::CANCELLED_ERROR => {
+                    tracing::info!("tray: sign-in cancelled");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "tray: sign-in did not complete");
+                    ui.error = Some((e, std::time::Instant::now()));
+                }
+            }
         }
+        ACCOUNT_WATCH_WAKE.notify_one();
     });
 }
 
@@ -1143,8 +1187,14 @@ fn account_view_at(
             }
         }
     };
-    let (login_text, login_enabled) = if ui.busy {
-        ("Waiting…".to_string(), false)
+    let (login_text, login_enabled) = if ui.login_waiting {
+        let label = match &ui.code {
+            Some(c) => format!("Waiting ({c}) · click to cancel"),
+            None => "Waiting… · click to cancel".to_string(),
+        };
+        (label, true)
+    } else if ui.busy {
+        ("Working…".to_string(), false)
     } else if enrolled && !temporary {
         ("Signed in".to_string(), false)
     } else {
@@ -1222,7 +1272,8 @@ fn spawn_account_watch<R: Runtime>(
                 Err(_) => (None, Vec::new()),
             };
             let server = resolve_tray_server(enrolled, server, node.as_ref());
-            let mut view = account_view_at(enrolled, node.as_ref(), &peers, active_invites, now_ms());
+            let mut view =
+                account_view_at(enrolled, node.as_ref(), &peers, active_invites, now_ms());
             let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
             if !view.temporary {
                 crate::user_account::load_cached_identity(server.clone()).await;
@@ -1307,7 +1358,10 @@ fn spawn_account_watch<R: Runtime>(
                 shown = Some(view);
             }
             let busy = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
-            tokio::time::sleep(std::time::Duration::from_secs(if busy { 1 } else { 4 })).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(if busy { 1 } else { 4 })) => {}
+                _ = ACCOUNT_WATCH_WAKE.notified() => {}
+            }
         }
     });
 }
@@ -1347,7 +1401,11 @@ mod account_tests {
         assert!(!v.temporary);
         assert_eq!(v.login_text, "Signed in");
         assert_eq!(
-            resolve_tray_server(false, "https://www.itachi.fans/meshharbor".into(), Some(&st)),
+            resolve_tray_server(
+                false,
+                "https://www.itachi.fans/meshharbor".into(),
+                Some(&st)
+            ),
             "https://custom.meshharbor.example"
         );
 
@@ -1356,6 +1414,25 @@ mod account_tests {
         assert!(v_temp.temporary);
         assert_eq!(v_temp.login_text, "Log in…");
         assert!(v_temp.login_enabled);
+    }
+
+    #[test]
+    fn login_waiting_exposes_clickable_cancel_label_in_tray() {
+        {
+            let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+            ui.busy = true;
+            ui.login_waiting = true;
+            ui.code = Some("BCDFG-HJKLM".to_string());
+        }
+        let v = account_view_at(false, None, &[], None, 0);
+        {
+            let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+            ui.busy = false;
+            ui.login_waiting = false;
+            ui.code = None;
+        }
+        assert_eq!(v.login_text, "Waiting (BCDFG-HJKLM) · click to cancel");
+        assert!(v.login_enabled, "waiting row must be clickable to cancel");
     }
 
     #[test]

@@ -19,12 +19,15 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { PRODUCT_TITLE } from '@/utils/product'
+import { onDeviceLoginPageHide, onDeviceLoginRouteChanged } from '@/utils/deviceLoginPresence'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
+const route = useRoute()
 
 const snackbar = useSnackbar()
 
@@ -48,12 +51,26 @@ function syncFullscreenTarget() {
   fullscreenEl.value = (document.fullscreenElement as HTMLElement | null) ?? undefined
 }
 
+function handlePageHide() {
+  onDeviceLoginPageHide(route?.fullPath)
+}
+
+watch(
+  () => route?.fullPath,
+  (fullPath) => {
+    if (fullPath) onDeviceLoginRouteChanged(fullPath)
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   document.title = PRODUCT_TITLE
   document.addEventListener('fullscreenchange', syncFullscreenTarget)
+  window.addEventListener('pagehide', handlePageHide)
   syncFullscreenTarget()
 })
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncFullscreenTarget)
+  window.removeEventListener('pagehide', handlePageHide)
 })
 </script>

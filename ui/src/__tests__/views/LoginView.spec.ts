@@ -92,7 +92,7 @@ describe('LoginView — attribution (FR-88)', () => {
   it('carries a campaign carried here onto every provider button', async () => {
     // Reached from the homepage's "Log in" link: attribution.js put these on it.
     const w = await mountAt('/login?utm_source=youtube&utm_campaign=c1&referrer_host=www.youtube.com&landing_path=%2F')
-    for (const [label, p] of [['Google', 'google'], ['Facebook', 'facebook'], ['GitHub', 'github'], ['LinkedIn', 'linkedin'], ['Microsoft', 'microsoft']]) {
+    for (const [label, p] of [['Google', 'google']]) {
       const u = await clickProvider(w, label!)
       expect(u.pathname).toBe(`/api/oauth/${p}`)
       expect(Object.fromEntries(u.searchParams)).toEqual({
@@ -117,9 +117,11 @@ describe('LoginView — attribution (FR-88)', () => {
 
   it('keeps the provider controls BUTTONS (e2e/oauth.spec.ts finds them by that role)', async () => {
     const w = await mountAt('/login?utm_source=youtube')
-    expect(w.findAll('button').map((b) => b.text().trim())).toEqual(
-      expect.arrayContaining(['Google', 'Facebook', 'GitHub', 'LinkedIn', 'Microsoft']),
-    )
+    const labels = w.findAll('button').map((b) => b.text().trim())
+    expect(labels).toContain('Google')
+    for (const removed of ['Facebook', 'GitHub', 'LinkedIn', 'Microsoft']) {
+      expect(labels).not.toContain(removed)
+    }
     expect(w.find('a[href^="/api/oauth/"]').exists()).toBe(false)
   })
 

@@ -91,6 +91,7 @@ import { useValidation } from '@/composables/useValidation'
 import { useBrand } from '@/composables/useBrand'
 import { PRODUCT_TITLE } from '@/utils/product'
 import { carriedQuery, signupAttribution, startOAuth, type Landing } from '@/utils/attribution'
+import { markDeviceLoginOAuthRedirect } from '@/utils/deviceLoginPresence'
 
 const auth = useAuthStore()
 // Provider buttons are a real touch target on a phone (28 px at `small`).
@@ -108,10 +109,6 @@ const showPassword = ref(false)
 
 const oauthProviders = [
   { name: 'google', label: 'Google', icon: 'mdi-google', color: '#DB4437' },
-  { name: 'facebook', label: 'Facebook', icon: 'mdi-facebook', color: '#4267B2' },
-  { name: 'github', label: 'GitHub', icon: 'mdi-github', color: '#333' },
-  { name: 'linkedin', label: 'LinkedIn', icon: 'mdi-linkedin', color: '#0077B5' },
-  { name: 'microsoft', label: 'Microsoft', icon: 'mdi-microsoft', color: '#00A4EF' },
 ]
 
 // FR-88 §3a — a provider "sign-in" creates the account when there is none, so
@@ -122,6 +119,7 @@ function landing(): Landing {
   return { referrer: document.referrer, host: window.location.host, path: route.path }
 }
 function oauthLogin(provider: string) {
+  markDeviceLoginOAuthRedirect()
   startOAuth(provider, signupAttribution(route.query, landing()))
 }
 /** The same keys on the link to the register page. */

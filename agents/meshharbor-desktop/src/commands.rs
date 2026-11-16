@@ -430,6 +430,9 @@ pub async fn cmd_enroll(
 /// `cmd_login_wait`. Holds the device code + PKCE verifier in memory only.
 static LOGIN: tokio::sync::Mutex<Option<meshharbor_node_core::device_login::Pending>> =
     tokio::sync::Mutex::const_new(None);
+static LOGIN_CANCEL: std::sync::LazyLock<
+    std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 #[derive(Debug, Serialize)]
 pub struct LoginStarted {
@@ -713,6 +716,13 @@ pub async fn cmd_login_start(server: String, device_name: String) -> Result<Logi
         url: pending.verification_uri_complete.clone(),
         opened,
     };
+    if let Some(prev_cancel) = LOGIN_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = prev_cancel.send(());
+    }
     *LOGIN.lock().await = Some(pending);
     Ok(out)
 }
@@ -787,13 +797,42 @@ where
 }
 
 #[tauri::command]
+pub async fn cmd_login_cancel() -> Result<(), String> {
+    let _ = LOGIN.lock().await.take();
+    if let Some(tx) = LOGIN_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = tx.send(());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String> {
     let pending = LOGIN
         .lock()
         .await
         .take()
         .ok_or_else(|| "No sign-in is in progress".to_string())?;
-    let approved = pending.wait().await.map_err(|e| format!("{e:#}"))?;
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    {
+        let mut slot = LOGIN_CANCEL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = slot.replace(cancel_tx) {
+            let _ = prev.send(());
+        }
+    }
+    let approved = tokio::select! {
+        res = pending.wait() => res.map_err(|e| format!("{e:#}"))?,
+        _ = cancel_rx => {
+            return Err(meshharbor_node_core::device_login::CANCELLED_ERROR.to_string());
+        }
+    };
+    let _ = LOGIN_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     let server_for_enroll = pending.server_url.clone();
     let server_for_save = pending.server_url.clone();
     let server_for_revoke = pending.server_url.clone();

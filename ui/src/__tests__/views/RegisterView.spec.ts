@@ -180,7 +180,7 @@ describe('RegisterView — attribution (FR-88)', () => {
     const tagged = await mountAt('/register?utm_source=youtube&utm_campaign=c1&landing_path=%2F')
     tagged.w.findComponent({ name: 'VSelect' }).vm.$emit('update:modelValue', 'youtube')
     await flushPromises()
-    for (const [label, p] of [['Google', 'google'], ['Facebook', 'facebook'], ['GitHub', 'github'], ['LinkedIn', 'linkedin'], ['Microsoft', 'microsoft']]) {
+    for (const [label, p] of [['Google', 'google']]) {
       const u = await clickProvider(tagged.w, label!)
       expect(u.pathname).toBe(`/api/oauth/${p}`)
       expect(Object.fromEntries(u.searchParams)).toEqual({
@@ -199,7 +199,7 @@ describe('RegisterView — attribution (FR-88)', () => {
   it('keeps the provider controls BUTTONS, as on the sign-in page (e2e finds them by that role)', async () => {
     const { w } = await mountAt('/register?utm_source=youtube')
     const labels = w.findAll('button').map((b) => b.text().trim())
-    expect(labels).toEqual(expect.arrayContaining(['Google', 'Facebook', 'GitHub', 'LinkedIn', 'Microsoft']))
+    expect(labels).toContain('Google'); for (const removed of ['Facebook', 'GitHub', 'LinkedIn', 'Microsoft']) { expect(labels).not.toContain(removed) }
     expect(w.find('a[href^="/api/oauth/"]').exists()).toBe(false)
   })
 

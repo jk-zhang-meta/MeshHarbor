@@ -425,6 +425,10 @@
       "methods": "POST"
     },
     {
+      "path": "/api/native/device-login/presence",
+      "methods": "POST"
+    },
+    {
       "path": "/api/native/device-login/preview",
       "methods": "POST"
     },

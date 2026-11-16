@@ -118,6 +118,7 @@ import {
   type SelfReported,
   type SignupAttribution,
 } from '@/utils/attribution'
+import { markDeviceLoginOAuthRedirect } from '@/utils/deviceLoginPresence'
 import { trackGoal } from '@/utils/goals'
 
 const auth = useAuthStore()
@@ -162,15 +163,12 @@ const inviteCode = computed(() => (route.query.invite as string) || sessionStora
 
 const oauthProviders = [
   { name: 'google', label: 'Google', icon: 'mdi-google', color: '#DB4437' },
-  { name: 'facebook', label: 'Facebook', icon: 'mdi-facebook', color: '#4267B2' },
-  { name: 'github', label: 'GitHub', icon: 'mdi-github', color: '#333' },
-  { name: 'linkedin', label: 'LinkedIn', icon: 'mdi-linkedin', color: '#0077B5' },
-  { name: 'microsoft', label: 'Microsoft', icon: 'mdi-microsoft', color: '#00A4EF' },
 ]
 
 /** The server parks the attribution under the CSRF state it mints and
  *  attaches it only if the callback creates the account. */
 function oauthRegister(provider: string) {
+  markDeviceLoginOAuthRedirect()
   startOAuth(provider, attribution())
 }
 

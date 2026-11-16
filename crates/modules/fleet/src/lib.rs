@@ -56,7 +56,6 @@ use meshharbor_services::dao::{
 use tokio::sync::mpsc;
 
 pub mod agent;
-pub mod name_sync;
 pub mod agent_crash;
 pub mod agent_exec;
 pub mod agent_log;
@@ -75,6 +74,7 @@ pub mod hub;
 pub mod install_trace;
 pub mod keep_busy;
 mod local_releases;
+pub mod name_sync;
 pub mod nudge;
 pub mod presence;
 mod release_delivery;
@@ -514,7 +514,10 @@ impl Module for FleetState {
             .route("/installer/{flavour}", get(agent_release::installer_proxy))
             .route("/crash", post(agent_crash::ingest))
             .route("/self/unenroll", post(agent::self_unenroll))
-            .route("/self/name", get(name_sync::get_self).post(name_sync::propose))
+            .route(
+                "/self/name",
+                get(name_sync::get_self).post(name_sync::propose),
+            )
             // Temporary devices — the device's own deadline and inviter.
             .route("/self/temporary", get(device_invite::self_view))
             .route(
@@ -626,6 +629,10 @@ impl Module for FleetState {
             .route(
                 "/native/device-login",
                 post(device_login::start).layer(axum::extract::DefaultBodyLimit::max(4096)),
+            )
+            .route(
+                "/native/device-login/presence",
+                post(device_login::presence).layer(axum::extract::DefaultBodyLimit::max(4096)),
             )
             .route(
                 "/native/device-login/preview",
