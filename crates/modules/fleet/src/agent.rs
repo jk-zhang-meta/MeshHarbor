@@ -2105,7 +2105,7 @@ fn to_agent_response(
         peer_auth_key,
         peer_auth_fingerprint,
         public_ip,
-        country_code: geo.country_code,
+        country_code: effective_cc.or(geo.country_code),
         country: geo.country,
         region: geo.region,
         city: geo.city,

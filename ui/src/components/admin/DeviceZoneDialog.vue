@@ -324,6 +324,7 @@ async function save() {
     }
     deviceStore.patchRow({
       id: saveAgentId,
+      ...(resp.country_code !== undefined ? { country_code: resp.country_code } : {}),
       pinned_zone_id: resp.pinned_zone_id,
       effective_zone_id: resp.effective_zone_id,
       effective_zone_name: resp.effective_zone_name,

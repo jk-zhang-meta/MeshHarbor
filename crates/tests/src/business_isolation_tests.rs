@@ -11110,8 +11110,8 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
 async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart() {
     use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbord::relay_server::backbone_test_support::{
-        ConnectionType, NativeRelay, Netstack, NetstackHandle, OverlayEvent, OverlayRuntime,
-        OverlayView, RelayProbeUpdates, TunFactory, TunIo, WgKeypair, prober,
+        ConnectionType, NativeRelay, Netstack, NetstackHandle, OverlayRuntime, OverlayView,
+        RelayProbeUpdates, TunFactory, TunIo, WgKeypair, prober,
     };
     use std::{
         io,
@@ -11242,7 +11242,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         forbidden_carrier: Arc<AtomicBool>,
         runtime: usize,
         pump: usize,
-        _events: mpsc::Sender<OverlayEvent>,
+        _events: meshharbord::overlay::OverlayEventTx,
     }
     impl Member {
         fn healthy(&self, peer: &str) -> bool {
@@ -11290,7 +11290,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         let (role, trace) = context;
         let mainland = endpoint.starts_with("223.");
         let (out, mut outbound) = mpsc::channel::<ClientMsg>(256);
-        let (events, event_rx) = mpsc::channel(256);
+        let (events, event_rx) = meshharbord::overlay::overlay_event_channel(256);
         let (handle_tx, mut handle_rx) = mpsc::unbounded_channel();
         let factory: TunFactory = Box::new(move |ip, nm, mtu| {
             let stack = Netstack::start(ip, u32::from(nm).count_ones() as u8, mtu);

@@ -32,6 +32,7 @@ export interface RelayDeviceView {
   pinned_zone_id?: string | null
   effective_zone_id?: string | null
   effective_zone_name?: string | null
+  auto_zone_hint?: { zone_id: string | null; default_zone_id: string | null }
 }
 
 export interface PeerRelaySettings {
@@ -134,13 +135,22 @@ export const usePeerRelaysStore = defineStore('peerRelays', () => {
     agentId: string,
     zone: {
       pinned_zone_id: string | null
+      country_code?: string | null
       effective_zone_id: string | null
       effective_zone_name: string | null
     },
+    contradictedAutoCountry = false,
+    autoZoneHint?: { zone_id: string | null; default_zone_id: string | null },
   ) {
     const r = relays.value.find((item) => item.id === agentId)
     if (r) {
       r.pinned_zone_id = zone.pinned_zone_id
+      if (zone.country_code !== undefined) {
+        r.country_code = zone.country_code
+      } else if (contradictedAutoCountry) {
+        r.country_code = null
+      }
+      r.auto_zone_hint = autoZoneHint
       r.effective_zone_id = zone.effective_zone_id
       r.effective_zone_name = zone.effective_zone_name
     }

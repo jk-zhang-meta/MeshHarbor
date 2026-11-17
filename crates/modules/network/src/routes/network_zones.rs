@@ -46,6 +46,7 @@ pub struct ZoneAssignmentBody {
 pub struct ZoneAssignmentResponse {
     pub agent_id: String,
     pub pinned_zone_id: Option<String>,
+    pub country_code: Option<String>,
     pub effective_zone_id: Option<String>,
     pub effective_zone_name: Option<String>,
 }
@@ -229,21 +230,24 @@ pub async fn set_zone_assignment(
     crate::org_relay::recheck_zones(&state, aid, "zone_assignment").await;
     crate::overlay::on_agent_policy_changed(&state, tid, aid, "zone_policy").await;
 
+    let fresh_agent = state.fleet.agents.find_live_in_tenant(tid, aid).await.ok();
+    let country_code = fresh_agent
+        .as_ref()
+        .and_then(|f| meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, f));
     let (effective_zone_id, effective_zone_name) = if !snapshot.read_failed && !snapshot.superseded
     {
         match snapshot.resolve_agent(aid) {
             DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
             _ => (None, None),
         }
-    } else if let (Ok(Some(net)), Ok(fresh)) = (
+    } else if let (Ok(Some(net)), Some(fresh)) = (
         state.overlay_networks.find_for_tenant(tid).await,
-        state.fleet.agents.find_live_in_tenant(tid, aid).await,
+        fresh_agent.as_ref(),
     ) {
-        let cc = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, &fresh);
         match meshharbor_remote_control::models::resolve_device_zone(
             &net.zones,
             fresh.pinned_zone_id.as_deref(),
-            cc.as_deref(),
+            country_code.as_deref(),
         ) {
             DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
             _ => (None, None),
@@ -264,6 +268,7 @@ pub async fn set_zone_assignment(
     Ok(Json(ZoneAssignmentResponse {
         agent_id: aid.to_hex(),
         pinned_zone_id: normalized_pin,
+        country_code,
         effective_zone_id,
         effective_zone_name,
     }))

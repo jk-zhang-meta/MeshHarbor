@@ -300,27 +300,33 @@ function effectiveZoneIdFor(agentId: string): string | null {
   const a = agentId === props.agent.id ? props.agent : agentStore.agents.find((x) => x.id === agentId)
   if (!a && !relay) return null
 
-  // When live tenant zones are loaded in `zonesStore`, evaluate directly against
-  // the current zone rules + live `pinned_zone_id`/`country_code` (preferring
-  // the live `Agent` record over cached `RelayDeviceView`), so neither a device
-  // zone reassignment nor a `saveZones` edit leaves stale zone metadata in play.
+  // Mirror `resolve_device_zone` (`crates/remote_control/src/models.rs`) against
+  // live `zonesStore.zones`: prefer the current `Agent` record whenever present
+  // (never letting stale `relay.country_code` or a previous default's
+  // `effective_zone_id` override a live reassignment or default-zone change),
+  // and fall back to `relay` metadata for off-page (>100th) targets.
   if (zonesStore.loadedTenantId === props.tenantId) {
     if (zonesStore.zones.length === 0) return null
     const pinned = ((a ? a.pinned_zone_id : relay?.pinned_zone_id) || '').trim()
     if (pinned) {
       return zonesStore.zones.find((z) => z.id === pinned)?.id ?? null
     }
-    const cc = (relay?.country_code || a?.country_code || '').trim().toUpperCase()
+    const cc = ((a ? a.country_code : relay?.country_code) || '').trim().toUpperCase()
     if (cc) {
       const matched = zonesStore.zones.find((z) => z.auto_countries.includes(cc))
       if (matched) return matched.id
       return zonesStore.zones.find((z) => z.is_default)?.id ?? null
     }
-    const serverEffective = ((a ? a.effective_zone_id : relay?.effective_zone_id) || '').trim()
-    if (serverEffective && zonesStore.zones.some((z) => z.id === serverEffective)) {
-      return serverEffective
+    const defId = zonesStore.zones.find((z) => z.is_default)?.id ?? null
+    const hint = a ? a.auto_zone_hint : relay?.auto_zone_hint
+    if (
+      hint &&
+      hint.default_zone_id === defId &&
+      (!hint.zone_id || zonesStore.zones.some((z) => z.id === hint.zone_id))
+    ) {
+      return hint.zone_id
     }
-    return zonesStore.zones.find((z) => z.is_default)?.id ?? null
+    return defId
   }
 
   const direct = (

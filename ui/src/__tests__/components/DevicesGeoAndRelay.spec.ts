@@ -1812,5 +1812,104 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
         ],
       },
     )
+    wrapper.unmount()
+
+    // Verify Auto reassignment after a relay roamed from CN -> HK (`pinned_zone_id: null`,
+    // `country_code: 'HK'`, `effective_zone_id: 'non-cn'`) AND changing `is_default` on a
+    // countryless Auto relay (`non-cn` -> `cn`) both compute `cross_border` accurately!
+    mockApi.put.mockImplementationOnce(async () => ({
+      agent_id: szAgent.id,
+      pinned_zone_id: null,
+      country_code: 'HK',
+      effective_zone_id: 'non-cn',
+      effective_zone_name: '非 CN 区',
+    }))
+    await agentStore.updateZoneAssignment(TID, szAgent.id, null)
+    const countrylessOffPageId = '6af76c3a52bb8c8c18ba4888'
+    peerRelayStore.relays.push({
+      id: countrylessOffPageId,
+      name: 'mystery-relay',
+      status: 'online',
+      serving: true,
+      static_endpoints: [],
+      approved_backbone_edges: [],
+      country_code: null,
+      pinned_zone_id: null,
+      effective_zone_id: 'non-cn', // stale pre-flip default!
+      effective_zone_name: '非 CN 区',
+    })
+    // Flip live default zone from `non-cn` -> `cn` (`HK` still matches `non-cn` via `auto_countries`):
+    zonesStore.zones = [
+      {
+        id: 'cn',
+        name: 'CN 区',
+        auto_countries: ['CN'],
+        is_default: true,
+        gateway_relay_ids: [gzAgent.id],
+        cross_zone_mode: 'router_only',
+      },
+      {
+        id: 'non-cn',
+        name: '非 CN 区',
+        auto_countries: ['HK', 'US'],
+        is_default: false,
+        gateway_relay_ids: [hkAgent.id],
+        cross_zone_mode: 'router_only',
+      },
+    ]
+    mockApi.put.mockClear()
+    mockApi.put.mockImplementation(async (_url: string, body: unknown) => body)
+
+    wrapper = mount(PeerRelayPolicyDialog, {
+      props: {
+        modelValue: true,
+        tenantId: TID,
+        agent: agentStore.agents[0]!, // `szAgent`: Auto HK -> `non-cn`
+      },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    const selectField4 = document.body.querySelector('.v-select .v-field') as HTMLElement
+    selectField4.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    const option4 = Array.from(document.body.querySelectorAll('.v-list-item')).find((el) =>
+      el.textContent?.includes('mystery-relay'),
+    ) as HTMLElement
+    option4.click()
+    await flushPromises()
+
+    const epInput4 = document.body.querySelector(
+      '[data-testid="backbone-endpoint-input"]',
+    ) as HTMLInputElement
+    const actualInput4 =
+      epInput4.tagName === 'INPUT'
+        ? epInput4
+        : (epInput4.querySelector('input') as HTMLInputElement)
+    actualInput4.value = '172.31.8.88:3478'
+    actualInput4.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const saveBtn4 = document.body.querySelector(
+      '[data-testid="peer-relay-save"]',
+    ) as HTMLButtonElement
+    saveBtn4.click()
+    await flushPromises()
+
+    // `szAgent` (`HK` -> `non-cn`) to `mystery-relay` (countryless Auto -> new default `cn`) MUST be `cross_border: true`!
+    expect(mockApi.put).toHaveBeenCalledWith(
+      `/tenant/${TID}/agent/${szAgent.id}/peer-relay-policy`,
+      {
+        serve: true,
+        approved_backbone_edges: [
+          {
+            relay_agent_id: countrylessOffPageId,
+            endpoint: '172.31.8.88:3478',
+            cross_border: true,
+          },
+        ],
+      },
+    )
   })
 })

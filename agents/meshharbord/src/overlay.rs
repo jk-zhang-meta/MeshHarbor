@@ -295,25 +295,51 @@ impl OverlayEventTx {
             if st.closed {
                 return Err(evt);
             }
-            if st.reliable >= MAX_RELIABLE_EVENTS {
-                if matches!(evt, OverlayEvent::ControlDetached)
-                    && matches!(
-                        st.buf.back(),
-                        Some(QueuedOverlayEvent::Reliable(OverlayEvent::ControlDetached))
-                    )
-                {
-                    return Ok(());
-                }
-                if matches!(evt, OverlayEvent::RebuildDirect)
-                    && st.buf.iter().any(|q| {
+            match &evt {
+                OverlayEvent::RebuildDirect => {
+                    if st.buf.iter().any(|q| {
                         matches!(
                             q,
                             QueuedOverlayEvent::Reliable(OverlayEvent::RebuildDirect)
                         )
-                    })
-                {
-                    return Ok(());
+                    }) {
+                        return Ok(());
+                    }
                 }
+                OverlayEvent::Reattach { .. } => {
+                    // A new control-WS session supersedes any unconsumed
+                    // detach/reattach/refusal from a previous session, while
+                    // preserving `RebuildDirect`!
+                    let before = st.buf.len();
+                    st.buf.retain(|q| {
+                        !matches!(
+                            q,
+                            QueuedOverlayEvent::Reliable(
+                                OverlayEvent::Reattach { .. }
+                                    | OverlayEvent::ControlDetached
+                                    | OverlayEvent::JoinRefused { .. }
+                            )
+                        )
+                    });
+                    st.reliable = st.reliable.saturating_sub(before - st.buf.len());
+                }
+                OverlayEvent::ControlDetached => {
+                    let before = st.buf.len();
+                    st.buf.retain(|q| {
+                        !matches!(
+                            q,
+                            QueuedOverlayEvent::Reliable(
+                                OverlayEvent::ControlDetached
+                                    | OverlayEvent::JoinRefused { .. }
+                            )
+                        )
+                    });
+                    st.reliable = st.reliable.saturating_sub(before - st.buf.len());
+                }
+                _ => {}
+            }
+            if st.reliable >= MAX_RELIABLE_EVENTS {
+                // Never evict `RebuildDirect` or the active `Reattach`!
                 if let Some(pos) = st.buf.iter().position(|q| {
                     matches!(
                         q,
@@ -324,13 +350,6 @@ impl OverlayEventTx {
                         )
                     )
                 }) {
-                    st.buf.remove(pos);
-                    st.reliable = st.reliable.saturating_sub(1);
-                } else if let Some(pos) = st
-                    .buf
-                    .iter()
-                    .position(|q| matches!(q, QueuedOverlayEvent::Reliable(_)))
-                {
                     st.buf.remove(pos);
                     st.reliable = st.reliable.saturating_sub(1);
                 }
@@ -2850,5 +2869,29 @@ mod org_relay_discovery_dispatch_tests {
             })
             .collect();
         assert_eq!(reliable, vec!["refused_retry", "netmap", "refused_terminal"]);
+
+        // Also verify `RebuildDirect` survives 65+ detach/reattach pairs while reader is stalled!
+        let (evt_tx2, mut evt_rx2) = overlay_event_channel(2);
+        evt_tx2.send_reliable(OverlayEvent::RebuildDirect).unwrap();
+        for _ in 0..65 {
+            evt_tx2.send_reliable(OverlayEvent::ControlDetached).unwrap();
+            let (out_tx, _out_rx) = mpsc::channel(1);
+            evt_tx2
+                .send_reliable(OverlayEvent::Reattach { outbound: out_tx })
+                .unwrap();
+        }
+        drop(evt_tx2);
+        let mut saw_rebuild = false;
+        let mut saw_reattach = false;
+        while let Some(e) = evt_rx2.recv().await {
+            if matches!(e, OverlayEvent::RebuildDirect) {
+                saw_rebuild = true;
+            }
+            if matches!(e, OverlayEvent::Reattach { .. }) {
+                saw_reattach = true;
+            }
+        }
+        assert!(saw_rebuild, "RebuildDirect must never be evicted across detach/reattach bursts");
+        assert!(saw_reattach, "latest Reattach must be delivered");
     }
 }

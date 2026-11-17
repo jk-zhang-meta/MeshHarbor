@@ -3,6 +3,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
+import { useNetworkZonesStore } from '@/stores/networkZones'
 import { usePeerRelaysStore } from '@/stores/peerRelays'
 import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'
@@ -418,6 +419,7 @@ export interface Agent {
   pinned_zone_id?: string | null
   effective_zone_id?: string | null
   effective_zone_name?: string | null
+  auto_zone_hint?: { zone_id: string | null; default_zone_id: string | null }
   /** Optional FR-19 peer-relay policy when included on the agent row. */
   peer_relay_policy?: {
     serve: boolean
@@ -1793,24 +1795,58 @@ export const useAgentStore = defineStore('agents', () => {
   ): Promise<{
     agent_id: string
     pinned_zone_id: string | null
+    country_code?: string | null
     effective_zone_id: string | null
     effective_zone_name: string | null
   }> {
     const resp = await api.put<{
       agent_id: string
       pinned_zone_id: string | null
+      country_code?: string | null
       effective_zone_id: string | null
       effective_zone_name: string | null
     }>(`/tenant/${tenantId}/agent/${agentId}/zone-assignment`, {
       pinned_zone_id: pinnedZoneId,
     })
+    const zonesStore = useNetworkZonesStore()
+    const autoZoneForCountry = (rawCc?: string | null): string | null => {
+      if (zonesStore.loadedTenantId !== tenantId || zonesStore.zones.length === 0) return null
+      const cc = (rawCc || '').trim().toUpperCase()
+      if (cc) {
+        const matched = zonesStore.zones.find((z) => z.auto_countries.includes(cc))
+        if (matched) return matched.id
+      }
+      return zonesStore.zones.find((z) => z.is_default)?.id ?? null
+    }
+    const peerRelays = usePeerRelaysStore()
+    const relayRow = peerRelays.relayForAgent(agentId)
     const idx = agents.value.findIndex((a) => a.id === agentId)
+    const cachedCc = (idx !== -1 ? agents.value[idx]!.country_code : undefined) ?? relayRow?.country_code
+    const contradictedAutoCountry =
+      resp.country_code === undefined &&
+      !resp.pinned_zone_id &&
+      !!cachedCc &&
+      zonesStore.loadedTenantId === tenantId &&
+      zonesStore.zones.length > 0 &&
+      autoZoneForCountry(cachedCc) !== resp.effective_zone_id
+    const autoZoneHint = contradictedAutoCountry
+      ? {
+          zone_id: resp.effective_zone_id,
+          default_zone_id: zonesStore.zones.find((z) => z.is_default)?.id ?? null,
+        }
+      : undefined
     if (idx !== -1) {
       agents.value[idx]!.pinned_zone_id = resp.pinned_zone_id
+      if (resp.country_code !== undefined) {
+        agents.value[idx]!.country_code = resp.country_code ?? undefined
+      } else if (contradictedAutoCountry) {
+        agents.value[idx]!.country_code = undefined
+      }
+      agents.value[idx]!.auto_zone_hint = autoZoneHint
       agents.value[idx]!.effective_zone_id = resp.effective_zone_id
       agents.value[idx]!.effective_zone_name = resp.effective_zone_name
     }
-    usePeerRelaysStore().syncAgentZone(agentId, resp)
+    peerRelays.syncAgentZone(agentId, resp, contradictedAutoCountry, autoZoneHint)
     return resp
   }
 
