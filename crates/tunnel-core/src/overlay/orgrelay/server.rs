@@ -271,6 +271,32 @@ impl RelayServer {
         }
     }
 
+    /// The source budget for a Bind or Answer on `vni`.
+    ///
+    /// Only a source that is a stranger to a LIVE session draws from the
+    /// shared [`ProbeGate`] table. The other two cases never reach a MAC from
+    /// an unauthenticated party, so charging them would protect nothing:
+    ///
+    /// * no live session — [`SessionTable::decide`] drops the frame on the
+    ///   VNI lookup or the deadline check, before any MAC;
+    /// * a bound member re-binding from the address it holds — the idle
+    ///   re-bind and every liveness round of its carrier. A spoofer of that
+    ///   address gets exactly what spoofing a data frame gets it (one hash
+    ///   probe, one same-size reply to the real member), with no table entry.
+    ///
+    /// Field, 2026-11-17 (po0-gz, ~210 member sockets): bound members' in-band
+    /// re-binds shared the 64-entry table with everyone else, filled it, and
+    /// 57k binds were refused in five hours. A member reads an unanswered
+    /// liveness bind as a dead relay, so each refusal tore down a healthy
+    /// carrier and sent the pair back through the server's re-mint — the
+    /// one-way and flapping cross-zone pairs of that day.
+    fn admit_control(&mut self, vni: u32, src: SocketAddr, now: Instant) -> bool {
+        match self.sessions.standing(vni, &src, now) {
+            None | Some(true) => true,
+            Some(false) => self.gate.admit(src, now),
+        }
+    }
+
     /// The whole per-datagram decision. Pure: no I/O, no clock of its own.
     pub fn handle(&mut self, src: SocketAddr, pkt: &[u8], now: Instant) -> Option<Outbound> {
         // 1. Shape. Costs a header decode; refuses everything that is not ours
@@ -308,7 +334,7 @@ impl RelayServer {
                 ControlFrame::Bind { nonce, tag1 } => {
                     // 2. Rate limit, BEFORE the MAC: a bind costs a MAC only if
                     //    the source still has budget.
-                    if !self.gate.admit(src, now) {
+                    if !self.admit_control(vni, src, now) {
                         self.stats
                             .refused_rate_limited
                             .fetch_add(1, Ordering::Relaxed);
@@ -336,7 +362,7 @@ impl RelayServer {
                     cookie,
                     tag2,
                 } => {
-                    if !self.gate.admit(src, now) {
+                    if !self.admit_control(vni, src, now) {
                         self.stats
                             .refused_rate_limited
                             .fetch_add(1, Ordering::Relaxed);
@@ -803,6 +829,118 @@ mod tests {
             50 - PER_SOURCE_PER_WINDOW as u64,
             "everything past the allowance is refused pre-crypto"
         );
+    }
+
+    /// Run one member's full bind (Bind → Challenge → Answer) through the
+    /// pure handler. `false` when the relay did not challenge.
+    fn bind_via_handle(
+        server: &mut RelayServer,
+        from: SocketAddr,
+        key: u8,
+        nonce: Nonce,
+        now: Instant,
+    ) -> bool {
+        let s = BindSecret::from_bytes([key; 32]);
+        let req = ControlFrame::Bind {
+            nonce,
+            tag1: tag1(&s, VNI, 1, &nonce),
+        }
+        .encode(VNI);
+        let Some(out) = server.handle(from, &req, now) else {
+            return false;
+        };
+        let Some((_, ControlFrame::Challenge { cookie, .. })) = ControlFrame::decode(&out.bytes)
+        else {
+            return false;
+        };
+        let ans = ControlFrame::Answer {
+            nonce,
+            cookie,
+            tag2: tag2(&s, &cookie, &nonce),
+        }
+        .encode(VNI);
+        assert!(server.handle(from, &ans, now).is_none());
+        true
+    }
+
+    /// Field, 2026-11-17: a bound member's in-band re-binds (idle re-bind,
+    /// liveness rounds) drew from the same source table as every stranger,
+    /// so a busy relay refused them and the member declared a healthy relay
+    /// dead. A bound member re-binding from the address it holds must be
+    /// answered however full the table is and however often it asks; a
+    /// stranger on the same session is still refused by the full table.
+    #[test]
+    fn a_bound_members_rebind_is_answered_even_when_the_source_table_is_full() {
+        use crate::overlay::orgrelay::responder::MAX_SOURCES;
+        let stats = Arc::new(RelayStats::default());
+        let (mut server, _h) = RelayServer::new(CookieKey::from_bytes([1; 32]), stats.clone());
+        let now = Instant::now();
+        server.apply(RelayCommand::Install(Box::new(session(now))));
+        let a: SocketAddr = "198.51.100.10:4000".parse().unwrap();
+        let b: SocketAddr = "198.51.100.11:4000".parse().unwrap();
+        assert!(bind_via_handle(&mut server, a, 0xA1, N, now));
+        assert!(bind_via_handle(&mut server, b, 0xB1, N, now));
+
+        // Fill the shared table with LIVE strangers.
+        let p = build_probe(VNI, &[7; 16]);
+        for n in 0..MAX_SOURCES as u32 {
+            let src = SocketAddr::from(([203, 0, 113, (n % 250 + 1) as u8], 1024 + n as u16));
+            let _ = server.handle(src, &p, now);
+        }
+        assert_eq!(server.gate.tracked_sources(), MAX_SOURCES);
+
+        // A stranger's bind on the live session: refused pre-MAC (the bound holds).
+        let stranger: SocketAddr = "192.0.2.77:9".parse().unwrap();
+        let before = stats.snapshot().refused_rate_limited;
+        assert!(!bind_via_handle(
+            &mut server,
+            stranger,
+            0xA1,
+            [0x44; 16],
+            now
+        ));
+        assert_eq!(stats.snapshot().refused_rate_limited, before + 1);
+
+        // Both bound members re-bind far past the per-source allowance.
+        for i in 0..20u8 {
+            assert!(
+                bind_via_handle(&mut server, a, 0xA1, [i; 16], now),
+                "a re-bind {i}"
+            );
+            assert!(
+                bind_via_handle(&mut server, b, 0xB1, [i; 16], now),
+                "b re-bind {i}"
+            );
+        }
+        assert_eq!(stats.snapshot().refused_rate_limited, before + 1);
+        assert_eq!(
+            server.gate.tracked_sources(),
+            MAX_SOURCES,
+            "no table entry for members"
+        );
+    }
+
+    /// A Bind for a VNI the relay does not hold is dropped on the lookup,
+    /// before any MAC, so it must not spend a slot of the shared table that a
+    /// fresh session's first bind needs.
+    #[test]
+    fn an_unknown_vni_bind_costs_no_source_table_entry() {
+        let stats = Arc::new(RelayStats::default());
+        let (mut server, _h) = RelayServer::new(CookieKey::from_bytes([1; 32]), stats.clone());
+        let now = Instant::now();
+        let req = ControlFrame::Bind {
+            nonce: N,
+            tag1: [0xEE; 16],
+        }
+        .encode(VNI);
+        for n in 0..100u16 {
+            let src = SocketAddr::from(([203, 0, 113, 9], 2000 + n));
+            assert!(server.handle(src, &req, now).is_none());
+        }
+        assert_eq!(server.gate.tracked_sources(), 0);
+        let c = stats.snapshot();
+        assert_eq!(c.drop_unknown_vni, 100);
+        assert_eq!(c.refused_rate_limited, 0);
     }
 
     /// Sessions are minted by the server and capped; the cap refuses rather

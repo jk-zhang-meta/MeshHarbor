@@ -201,6 +201,23 @@ impl SessionTable {
         before - self.by_vni.len()
     }
 
+    /// Who `from` is to the live session `vni`, answered by a hash probe and an
+    /// address compare — never a MAC. `None` when there is no live session
+    /// (unknown VNI, or one past a deadline): [`Self::decide`] drops such a
+    /// datagram before any MAC runs, so it needs no rate-limit budget either.
+    /// `Some(true)` when `from` is one of the session's bound addresses: the
+    /// member re-binding in band from the address it already holds (the idle
+    /// re-bind and the liveness rounds of the member's carrier). `Some(false)`
+    /// for anyone else, which is the only case an unauthenticated source can
+    /// make cost a MAC, and the one the relay's source gate exists for.
+    pub fn standing(&self, vni: u32, from: &SocketAddr, now: Instant) -> Option<bool> {
+        let s = self.by_vni.get(&vni)?;
+        if s.expired(now).is_some() {
+            return None;
+        }
+        Some(s.index_of(from).is_some())
+    }
+
     /// The whole relay decision, as a pure function of the table, the datagram
     /// and the clock.
     pub fn decide(

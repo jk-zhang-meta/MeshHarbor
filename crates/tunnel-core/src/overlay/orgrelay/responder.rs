@@ -54,7 +54,13 @@ pub const WINDOW: Duration = Duration::from_secs(2);
 /// Hard ceiling on tracked sources, mirroring `UNKNOWN_INIT_MAX_SOURCES`. Once
 /// reached, unknown sources are refused rather than admitted — the table is a
 /// bound, so it must not be growable by the party it is bounding.
-pub const MAX_SOURCES: usize = 64;
+///
+/// 512, not 64: on a serving relay this one table also admits every fresh
+/// session's first binds, and a mint burst (a daemon or server restart, a
+/// zone change re-minting a node's lines) brings two new member sockets per
+/// session at once. 64 was measured too small on a ~200-socket relay
+/// (2026-11-17). 512 entries is tens of KiB, still a fixed bound.
+pub const MAX_SOURCES: usize = 512;
 
 /// What the responder decided about one datagram.
 #[derive(Debug, Clone, PartialEq, Eq)]
