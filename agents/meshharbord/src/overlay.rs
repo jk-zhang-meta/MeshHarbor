@@ -313,43 +313,50 @@ impl OverlayEventTx {
                     .map(|idx| idx + 1)
                     .unwrap_or(0)
             };
+            let ensure_detached_in_segment = |st: &mut OverlayEventQueueState,
+                                              seg_start: usize,
+                                              seg_end: usize,
+                                              at: std::time::Instant| {
+                for q in st.buf.range_mut(seg_start..seg_end) {
+                    if let QueuedOverlayEvent::Reliable {
+                        evt,
+                        enqueued_at,
+                    } = q
+                    {
+                        match evt {
+                            OverlayEvent::ControlDetached => {
+                                let earliest = (*enqueued_at).min(at);
+                                *evt = OverlayEvent::ControlDetachedAt(earliest);
+                                *enqueued_at = earliest;
+                                return;
+                            }
+                            OverlayEvent::ControlDetachedAt(prev) => {
+                                if at < *prev {
+                                    *prev = at;
+                                }
+                                if at < *enqueued_at {
+                                    *enqueued_at = at;
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                st.buf.insert(
+                    seg_start,
+                    QueuedOverlayEvent::Reliable {
+                        evt: OverlayEvent::ControlDetachedAt(at),
+                        enqueued_at: at,
+                    },
+                );
+                st.reliable += 1;
+            };
             let ensure_tail_detached_at =
                 |st: &mut OverlayEventQueueState, at: std::time::Instant| {
                     let tail_start = tail_start_of(&st.buf);
-                    for q in st.buf.range_mut(tail_start..) {
-                        if let QueuedOverlayEvent::Reliable {
-                            evt,
-                            enqueued_at,
-                        } = q
-                        {
-                            match evt {
-                                OverlayEvent::ControlDetached => {
-                                    let earliest = (*enqueued_at).min(at);
-                                    *evt = OverlayEvent::ControlDetachedAt(earliest);
-                                    *enqueued_at = earliest;
-                                    return;
-                                }
-                                OverlayEvent::ControlDetachedAt(prev) => {
-                                    if at < *prev {
-                                        *prev = at;
-                                    }
-                                    if at < *enqueued_at {
-                                        *enqueued_at = at;
-                                    }
-                                    return;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    st.buf.insert(
-                        tail_start,
-                        QueuedOverlayEvent::Reliable {
-                            evt: OverlayEvent::ControlDetachedAt(at),
-                            enqueued_at: at,
-                        },
-                    );
-                    st.reliable += 1;
+                    let tail_end = st.buf.len();
+                    ensure_detached_in_segment(st, tail_start, tail_end, at);
                 };
 
             let evt_to_push: Option<OverlayEvent> = match evt {
@@ -394,9 +401,8 @@ impl OverlayEventTx {
                     None
                 }
                 OverlayEvent::Reattach { outbound } => {
-                    // Supersede unconsumed `Reattach` / `JoinRefused` in the
-                    // post-`Netmap` tail while preserving `RebuildDirect` AND
-                    // the earliest detach/refusal timestamp in that tail!
+                    // 1. Supersede `Reattach` / `JoinRefused` in the post-`Netmap` tail
+                    //    while preserving the earliest detach/refusal deadline in that tail.
                     let mut earliest = now;
                     let tail_start = tail_start_of(&st.buf);
                     let mut idx = tail_start;
@@ -432,13 +438,179 @@ impl OverlayEventTx {
                         }
                     }
                     ensure_tail_detached_at(&mut st, earliest);
+                    // 2. Also remove any older `Reattach` from an earlier segment before
+                    //    `tail_start` (folding its timestamp into that segment's detach)
+                    //    so at most ONE live `Reattach` ever exists in `st.buf`.
+                    while let Some(pos) = st.buf.iter().position(|q| {
+                        matches!(
+                            q,
+                            QueuedOverlayEvent::Reliable {
+                                evt: OverlayEvent::Reattach { .. },
+                                ..
+                            }
+                        )
+                    }) {
+                        let ts = match st.buf.remove(pos) {
+                            Some(QueuedOverlayEvent::Reliable { enqueued_at, .. }) => enqueued_at,
+                            _ => now,
+                        };
+                        st.reliable = st.reliable.saturating_sub(1);
+                        let seg_start = st
+                            .buf
+                            .range(..pos)
+                            .rposition(|q| {
+                                matches!(
+                                    q,
+                                    QueuedOverlayEvent::Reliable {
+                                        evt: OverlayEvent::Netmap { .. },
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        let seg_end = st
+                            .buf
+                            .range(pos..)
+                            .position(|q| {
+                                matches!(
+                                    q,
+                                    QueuedOverlayEvent::Reliable {
+                                        evt: OverlayEvent::Netmap { .. },
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|off| pos + off)
+                            .unwrap_or(st.buf.len());
+                        ensure_detached_in_segment(&mut st, seg_start, seg_end, ts);
+                    }
                     Some(OverlayEvent::Reattach { outbound })
+                }
+                OverlayEvent::JoinRefused { retryable } => {
+                    let tail_start = tail_start_of(&st.buf);
+                    let mut removed_earliest: Option<std::time::Instant> = None;
+                    let mut idx = tail_start;
+                    while idx < st.buf.len() {
+                        let old_ts = match &st.buf[idx] {
+                            QueuedOverlayEvent::Reliable {
+                                evt: OverlayEvent::JoinRefused { .. },
+                                enqueued_at,
+                            } => Some(*enqueued_at),
+                            _ => None,
+                        };
+                        if let Some(ts) = old_ts {
+                            removed_earliest =
+                                Some(removed_earliest.map_or(ts, |prev| prev.min(ts)));
+                            st.buf.remove(idx);
+                            st.reliable = st.reliable.saturating_sub(1);
+                        } else {
+                            idx += 1;
+                        }
+                    }
+                    if let Some(ts) = removed_earliest {
+                        ensure_tail_detached_at(&mut st, ts);
+                    }
+                    Some(OverlayEvent::JoinRefused { retryable })
+                }
+                OverlayEvent::Netmap {
+                    self_ip,
+                    network,
+                    peers,
+                    org_relay_discovery,
+                    path_trial_v1,
+                } => {
+                    let max_queued_rev = st
+                        .buf
+                        .iter()
+                        .filter_map(|q| match q {
+                            QueuedOverlayEvent::Reliable {
+                                evt: OverlayEvent::Netmap { network, .. },
+                                ..
+                            } => Some(network.auth_revision),
+                            _ => None,
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    if network.auth_revision > 0 && network.auth_revision < max_queued_rev {
+                        // Guaranteed rejected by `accept_netmap_version` because an
+                        // earlier queued `Netmap` already has a higher `auth_revision`.
+                        // Never let a stale snapshot advance `tail_start` or evict a
+                        // post-`Netmap` detach deadline!
+                        let tail_start = tail_start_of(&st.buf);
+                        let tail_detached = st.buf.range(tail_start..).any(|q| {
+                            matches!(
+                                q,
+                                QueuedOverlayEvent::Reliable {
+                                    evt: OverlayEvent::ControlDetached
+                                        | OverlayEvent::ControlDetachedAt(_),
+                                    ..
+                                }
+                            )
+                        });
+                        let tail_has_reattach_or_refused = st.buf.range(tail_start..).any(|q| {
+                            matches!(
+                                q,
+                                QueuedOverlayEvent::Reliable {
+                                    evt: OverlayEvent::Reattach { .. }
+                                        | OverlayEvent::JoinRefused { .. },
+                                    ..
+                                }
+                            )
+                        });
+                        if tail_detached && !tail_has_reattach_or_refused {
+                            Some(OverlayEvent::JoinRefused { retryable: true })
+                        } else {
+                            None
+                        }
+                    } else {
+                        if network.auth_revision == 0 {
+                            // An unversioned `Netmap` (`auth_revision == 0`) is unconditionally
+                            // accepted by `accept_netmap_version` and unconditionally clears
+                            // `control_detached_at` and `post_join_retry`, without lowering
+                            // `applied_auth_revision`. Drop all earlier detaches, refusals,
+                            // and `auth_revision == 0` snapshots while keeping `RebuildDirect`,
+                            // `Reattach`, and any `auth_revision > 0` snapshot.
+                            let mut idx = 0;
+                            while idx < st.buf.len() {
+                                let drop_it = match &st.buf[idx] {
+                                    QueuedOverlayEvent::Reliable {
+                                        evt:
+                                            OverlayEvent::ControlDetached
+                                            | OverlayEvent::ControlDetachedAt(_)
+                                            | OverlayEvent::JoinRefused { .. },
+                                        ..
+                                    } => true,
+                                    QueuedOverlayEvent::Reliable {
+                                        evt: OverlayEvent::Netmap { network: n, .. },
+                                        ..
+                                    } => n.auth_revision == 0,
+                                    _ => false,
+                                };
+                                if drop_it {
+                                    st.buf.remove(idx);
+                                    st.reliable = st.reliable.saturating_sub(1);
+                                } else {
+                                    idx += 1;
+                                }
+                            }
+                        }
+                        Some(OverlayEvent::Netmap {
+                            self_ip,
+                            network,
+                            peers,
+                            org_relay_discovery,
+                            path_trial_v1,
+                        })
+                    }
                 }
                 other => Some(other),
             };
 
-            let incoming_netmap_rev = match &evt_to_push {
-                Some(OverlayEvent::Netmap { network, .. }) => Some(network.auth_revision),
+            let incoming_pos_netmap_rev = match &evt_to_push {
+                Some(OverlayEvent::Netmap { network, .. }) if network.auth_revision > 0 => {
+                    Some(network.auth_revision)
+                }
                 _ => None,
             };
             let target_cap = if evt_to_push.is_some() {
@@ -456,15 +628,14 @@ impl OverlayEventTx {
                         }
                     )
                 });
-                // 1. Drop superseded `Reattach` / `JoinRefused` before `last_netmap_pos`,
-                //    folding their timestamp into a pre-`Netmap` `ControlDetachedAt`.
+                // 1. Drop superseded `JoinRefused` before `last_netmap_pos` (NEVER drop `Reattach`!),
+                //    folding its timestamp into a `ControlDetachedAt` in the same segment.
                 if let Some(bound) = last_netmap_pos
                     && let Some(pos) = st.buf.range(..bound).position(|q| {
                         matches!(
                             q,
                             QueuedOverlayEvent::Reliable {
-                                evt:
-                                    OverlayEvent::Reattach { .. } | OverlayEvent::JoinRefused { .. },
+                                evt: OverlayEvent::JoinRefused { .. },
                                 ..
                             }
                         )
@@ -475,41 +646,64 @@ impl OverlayEventTx {
                         _ => now,
                     };
                     st.reliable = st.reliable.saturating_sub(1);
-                    let new_bound = bound.saturating_sub(1);
-                    let mut folded = false;
-                    for q in st.buf.range_mut(..new_bound) {
-                        if let QueuedOverlayEvent::Reliable {
-                            evt: OverlayEvent::ControlDetachedAt(prev),
-                            enqueued_at,
-                        } = q
-                        {
-                            *prev = (*prev).min(ts);
-                            *enqueued_at = (*enqueued_at).min(ts);
-                            folded = true;
-                            break;
-                        }
-                    }
-                    if !folded {
-                        st.buf.insert(
-                            pos.min(new_bound),
-                            QueuedOverlayEvent::Reliable {
-                                evt: OverlayEvent::ControlDetachedAt(ts),
-                                enqueued_at: ts,
-                            },
-                        );
-                        st.reliable += 1;
-                    }
-                    if folded {
+                    let seg_start = st
+                        .buf
+                        .range(..pos)
+                        .rposition(|q| {
+                            matches!(
+                                q,
+                                QueuedOverlayEvent::Reliable {
+                                    evt: OverlayEvent::Netmap { .. },
+                                    ..
+                                }
+                            )
+                        })
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    let seg_end = st
+                        .buf
+                        .range(pos..)
+                        .position(|q| {
+                            matches!(
+                                q,
+                                QueuedOverlayEvent::Reliable {
+                                    evt: OverlayEvent::Netmap { .. },
+                                    ..
+                                }
+                            )
+                        })
+                        .map(|off| pos + off)
+                        .unwrap_or(st.buf.len());
+                    let before_rel = st.reliable;
+                    ensure_detached_in_segment(&mut st, seg_start, seg_end, ts);
+                    if st.reliable < before_rel + 1 {
                         continue;
                     }
                 }
-                // 2. Coalesce multiple pre-`Netmap` `ControlDetachedAt`s into the earliest one.
-                if let Some(bound) = last_netmap_pos {
+                // 2. Coalesce multiple `ControlDetached*` ONLY within the SAME segment
+                //    (never across an intervening `Netmap`!).
+                let mut merged_same_seg = false;
+                let mut seg_start = 0usize;
+                while seg_start < st.buf.len() {
+                    let seg_end = st
+                        .buf
+                        .range(seg_start..)
+                        .position(|q| {
+                            matches!(
+                                q,
+                                QueuedOverlayEvent::Reliable {
+                                    evt: OverlayEvent::Netmap { .. },
+                                    ..
+                                }
+                            )
+                        })
+                        .map(|off| seg_start + off)
+                        .unwrap_or(st.buf.len());
                     let detached_positions: Vec<usize> = st
                         .buf
-                        .range(..bound)
+                        .range(seg_start..seg_end)
                         .enumerate()
-                        .filter_map(|(i, q)| {
+                        .filter_map(|(off, q)| {
                             matches!(
                                 q,
                                 QueuedOverlayEvent::Reliable {
@@ -518,7 +712,7 @@ impl OverlayEventTx {
                                     ..
                                 }
                             )
-                            .then_some(i)
+                            .then_some(seg_start + off)
                         })
                         .collect();
                     if detached_positions.len() >= 2 {
@@ -545,112 +739,45 @@ impl OverlayEventTx {
                             *evt = OverlayEvent::ControlDetachedAt(merged);
                             *enqueued_at = merged;
                         }
-                        continue;
+                        merged_same_seg = true;
+                        break;
                     }
+                    seg_start = seg_end.saturating_add(1);
                 }
-                // 3. Evict older `Netmap` while keeping both the highest `auth_revision`
-                //    `Netmap` and (unless superseded by an incoming `Netmap`) the last `Netmap`.
-                let max_rev = st
-                    .buf
-                    .iter()
-                    .filter_map(|q| match q {
-                        QueuedOverlayEvent::Reliable {
-                            evt: OverlayEvent::Netmap { network, .. },
-                            ..
-                        } => Some(network.auth_revision),
-                        _ => None,
-                    })
-                    .chain(incoming_netmap_rev)
-                    .max()
-                    .unwrap_or(0);
-                let keep_max_pos = if incoming_netmap_rev == Some(max_rev) {
-                    None
-                } else {
-                    st.buf.iter().rposition(|q| {
-                        matches!(
-                            q,
-                            QueuedOverlayEvent::Reliable {
-                                evt: OverlayEvent::Netmap { network, .. },
-                                ..
-                            } if network.auth_revision == max_rev
-                        )
-                    })
-                };
-                let keep_last_pos = if incoming_netmap_rev.is_some() {
-                    None
-                } else {
-                    last_netmap_pos
-                };
-                if let Some(evict_pos) = st.buf.iter().position(|q| {
-                    matches!(
-                        q,
-                        QueuedOverlayEvent::Reliable {
-                            evt: OverlayEvent::Netmap { .. },
-                            ..
-                        }
-                    )
-                }) && Some(evict_pos) != keep_max_pos
-                    && Some(evict_pos) != keep_last_pos
-                {
-                    st.buf.remove(evict_pos);
-                    st.reliable = st.reliable.saturating_sub(1);
+                if merged_same_seg {
                     continue;
                 }
-                // Also inspect later Netmaps if index `evict_pos` happened to be `keep_max_pos`.
-                if let Some(alt_pos) = st
+                // 3. Evict an older positive-revision `Netmap(r1)` that is dominated by a
+                //    later `Netmap(r2)` (`r2 >= r1 > 0`). Removing `Netmap(r1)` places any
+                //    surrounding detaches into the same pre-`Netmap(r2)` segment, which
+                //    Step 2 then merges cleanly without ever crossing `Netmap(r2)`!
+                let netmap_entries: Vec<(usize, u64)> = st
                     .buf
                     .iter()
                     .enumerate()
-                    .find_map(|(i, q)| {
-                        (Some(i) != keep_max_pos
-                            && Some(i) != keep_last_pos
-                            && matches!(
-                                q,
-                                QueuedOverlayEvent::Reliable {
-                                    evt: OverlayEvent::Netmap { .. },
-                                    ..
-                                }
-                            ))
-                        .then_some(i)
+                    .filter_map(|(i, q)| match q {
+                        QueuedOverlayEvent::Reliable {
+                            evt: OverlayEvent::Netmap { network, .. },
+                            ..
+                        } => Some((i, network.auth_revision)),
+                        _ => None,
                     })
-                {
-                    st.buf.remove(alt_pos);
+                    .collect();
+                let dominated_pos = netmap_entries.iter().enumerate().find_map(|(k, &(pos, rev))| {
+                    if rev == 0 {
+                        return None;
+                    }
+                    let dominated_in_buf = netmap_entries[k + 1..]
+                        .iter()
+                        .any(|&(_, later_rev)| later_rev >= rev);
+                    let dominated_by_incoming =
+                        incoming_pos_netmap_rev.is_some_and(|in_rev| in_rev >= rev);
+                    (dominated_in_buf || dominated_by_incoming).then_some(pos)
+                });
+                if let Some(evict_pos) = dominated_pos {
+                    st.buf.remove(evict_pos);
                     st.reliable = st.reliable.saturating_sub(1);
                     continue;
-                }
-                // Fallback for excessive `JoinRefused` bursts on the same session: keep latest.
-                if let Some(pos) = st.buf.iter().position(|q| {
-                    matches!(
-                        q,
-                        QueuedOverlayEvent::Reliable {
-                            evt: OverlayEvent::JoinRefused { .. },
-                            ..
-                        }
-                    )
-                }) {
-                    let ts = match st.buf.remove(pos) {
-                        Some(QueuedOverlayEvent::Reliable { enqueued_at, .. }) => enqueued_at,
-                        _ => now,
-                    };
-                    st.reliable = st.reliable.saturating_sub(1);
-                    ensure_tail_detached_at(&mut st, ts);
-                    if st.reliable <= target_cap {
-                        break;
-                    }
-                    // If `ensure_tail_detached_at` inserted 1 item, loop once more to drop the next `JoinRefused`.
-                    if let Some(pos2) = st.buf.iter().position(|q| {
-                        matches!(
-                            q,
-                            QueuedOverlayEvent::Reliable {
-                                evt: OverlayEvent::JoinRefused { .. },
-                                ..
-                            }
-                        )
-                    }) {
-                        st.buf.remove(pos2);
-                        st.reliable = st.reliable.saturating_sub(1);
-                        continue;
-                    }
                 }
                 break;
             }
@@ -3224,5 +3351,315 @@ mod org_relay_discovery_dispatch_tests {
             "coalesced ControlDetachedAt must preserve the original detach deadline"
         );
         assert!(saw_reattach, "latest Reattach must be delivered");
+    }
+
+    #[tokio::test]
+    async fn overflow_preserves_live_reattach_and_detach_deadlines_across_stale_and_random_netmaps() {
+        let make_netmap = |rev: u64, tag: &str| -> ServerMsg {
+            serde_json::from_value(serde_json::json!({
+                "t": "rc:overlay.netmap",
+                "self_ip": "100.64.0.1",
+                "network": {
+                    "cidr": "100.64.0.0/10",
+                    "mtu": 1280,
+                    "auth_revision": rev,
+                    "self_name": tag
+                },
+                "peers": []
+            }))
+            .unwrap()
+        };
+
+        // 1. Reproduce Round 5 #1: `Detached, Reattach(new_sender), Netmap × 70` while stalled.
+        //    `Reattach(new_sender)` must NEVER be discarded by netmap overflow!
+        let (tx1, mut rx1) = overlay_event_channel(2);
+        for i in 0..2 {
+            tx1.try_send(OverlayEvent::SelfName {
+                node_id: bson::oid::ObjectId::new(),
+                revision: i.to_string(),
+                name: format!("stall-{i}"),
+            })
+            .unwrap();
+        }
+        tokio::task::yield_now().await;
+        tx1.send_reliable(OverlayEvent::ControlDetached).unwrap();
+        let (live_out_tx, mut live_out_rx) = mpsc::channel(4);
+        tx1.send_reliable(OverlayEvent::Reattach {
+            outbound: live_out_tx,
+        })
+        .unwrap();
+        for rev in 1..=70u64 {
+            assert!(intercept(&tx1, make_netmap(rev, &format!("n-{rev}")), true, "", "").is_none());
+        }
+        assert!(
+            tx1.inner.state.lock().unwrap().reliable <= MAX_RELIABLE_EVENTS,
+            "reliable count must stay bounded <= MAX_RELIABLE_EVENTS"
+        );
+        drop(tx1);
+        let mut reattach_count = 0usize;
+        let mut max_delivered_rev = 0u64;
+        while let Some(evt) = rx1.recv().await {
+            match evt {
+                OverlayEvent::Reattach { outbound } => {
+                    reattach_count += 1;
+                    outbound
+                        .send(signaling::ClientMsg::OverlayEndpoints { candidates: vec![] })
+                        .await
+                        .expect("live sender must match live_out_rx");
+                }
+                OverlayEvent::Netmap { network, .. } => {
+                    max_delivered_rev = max_delivered_rev.max(network.auth_revision);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(reattach_count, 1, "sole live Reattach must survive netmap overflow");
+        assert!(live_out_rx.recv().await.is_some(), "delivered Reattach must carry live_out_tx");
+        assert_eq!(max_delivered_rev, 70);
+
+        // 2. Reproduce Round 5 #2: `D(t0), Reattach0, N(rev100), D(t1), Reattach1, N(rev99) × 70`.
+        //    Both `D(t0)` (if rev100 is rejected) and `D(t1)` (when rev100 is accepted) AND `Reattach1`
+        //    must survive!
+        let (tx2, mut rx2) = overlay_event_channel(2);
+        for i in 0..2 {
+            tx2.try_send(OverlayEvent::SelfName {
+                node_id: bson::oid::ObjectId::new(),
+                revision: i.to_string(),
+                name: format!("stall2-{i}"),
+            })
+            .unwrap();
+        }
+        tokio::task::yield_now().await;
+        let base = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        let t0 = base;
+        let t1 = base + std::time::Duration::from_millis(50);
+        tx2.send_reliable(OverlayEvent::ControlDetachedAt(t0)).unwrap();
+        let (dead_tx, _dead_rx) = mpsc::channel(1);
+        tx2.send_reliable(OverlayEvent::Reattach { outbound: dead_tx })
+            .unwrap();
+        assert!(intercept(&tx2, make_netmap(100, "rev100"), true, "", "").is_none());
+        tx2.send_reliable(OverlayEvent::ControlDetachedAt(t1)).unwrap();
+        let (live2_tx, mut live2_rx) = mpsc::channel(4);
+        tx2.send_reliable(OverlayEvent::Reattach { outbound: live2_tx })
+            .unwrap();
+        for _ in 0..70 {
+            assert!(intercept(&tx2, make_netmap(99, "stale99"), true, "", "").is_none());
+        }
+        assert!(tx2.inner.state.lock().unwrap().reliable <= MAX_RELIABLE_EVENTS);
+        drop(tx2);
+
+        let mut events2 = Vec::new();
+        while let Some(e) = rx2.recv().await {
+            events2.push(e);
+        }
+
+        let sim = |initial_rev: u64, evts: &[OverlayEvent]| -> (u64, Option<std::time::Instant>, usize) {
+            let mut epoch = 0u64;
+            let mut rev = initial_rev;
+            let mut detached: Option<std::time::Instant> = None;
+            let mut reattachs = 0usize;
+            for e in evts {
+                match e {
+                    OverlayEvent::ControlDetachedAt(at) => {
+                        detached = Some(detached.map_or(*at, |p| p.min(*at)));
+                    }
+                    OverlayEvent::Reattach { .. } => {
+                        reattachs += 1;
+                    }
+                    OverlayEvent::Netmap { network, .. } => {
+                        if tunnel_core::overlay::runtime::accept_netmap_version(
+                            &mut epoch,
+                            &mut rev,
+                            0,
+                            network.auth_revision,
+                        ) {
+                            epoch = 0;
+                            detached = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (rev, detached, reattachs)
+        };
+        // When `rev100` is accepted (`initial_rev = 1`), `D(t1)` MUST survive after `rev100`!
+        let (r_acc, d_acc, re_acc) = sim(1, &events2);
+        assert_eq!(r_acc, 100);
+        assert_eq!(d_acc, Some(t1), "post-rev100 detach deadline t1 must survive stale rev99 flood");
+        assert_eq!(re_acc, 1);
+        // When `rev100` is also stale (`initial_rev = 105`), `D(t0)` MUST survive!
+        let (r_rej, d_rej, re_rej) = sim(105, &events2);
+        assert_eq!(r_rej, 105);
+        assert_eq!(d_rej, Some(t0), "pre-rev100 detach deadline t0 must survive if rev100 is rejected");
+        assert_eq!(re_rej, 1);
+        // Verify the delivered Reattach is `live2_tx`, not `dead_tx`!
+        for e in &events2 {
+            if let OverlayEvent::Reattach { outbound } = e {
+                outbound
+                    .send(signaling::ClientMsg::OverlayEndpoints { candidates: vec![] })
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(live2_rx.recv().await.is_some());
+
+        // 3. Deterministic 250-sequence equivalence oracle over 120-step mixed workloads
+        //    (`RebuildDirect`, `ControlDetachedAt`, `Reattach`, `JoinRefused`, `Netmap` with rev in {0,1..12}).
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next_u64 = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case_idx in 0..250usize {
+            let (tx, mut rx) = overlay_event_channel(2);
+            for i in 0..2 {
+                tx.try_send(OverlayEvent::SelfName {
+                    node_id: bson::oid::ObjectId::new(),
+                    revision: i.to_string(),
+                    name: format!("s-{i}"),
+                })
+                .unwrap();
+            }
+            tokio::task::yield_now().await;
+
+            #[derive(Clone)]
+            enum SpecEvt {
+                Rebuild,
+                Detach(std::time::Instant),
+                Reattach(usize),
+                Refused(std::time::Instant),
+                Netmap(u64, usize),
+            }
+            let mut ref_log = Vec::new();
+            let mut reattach_rxs = Vec::new();
+            for step in 0..120usize {
+                let ts = base + std::time::Duration::from_millis((step as u64 + 1) * 10);
+                match next_u64() % 5 {
+                    0 => {
+                        ref_log.push(SpecEvt::Rebuild);
+                        tx.send_reliable(OverlayEvent::RebuildDirect).unwrap();
+                    }
+                    1 => {
+                        ref_log.push(SpecEvt::Detach(ts));
+                        tx.send_reliable(OverlayEvent::ControlDetachedAt(ts)).unwrap();
+                    }
+                    2 => {
+                        let id = reattach_rxs.len() + 1;
+                        let (otx, orx) = mpsc::channel(4);
+                        reattach_rxs.push((id, orx));
+                        // Note: Reattach uses `Instant::now()` only when no earlier detach exists in tail;
+                        // precede with explicit `ControlDetachedAt(ts)` so exact timestamps are deterministic!
+                        ref_log.push(SpecEvt::Detach(ts));
+                        ref_log.push(SpecEvt::Reattach(id));
+                        tx.send_reliable(OverlayEvent::ControlDetachedAt(ts)).unwrap();
+                        tx.send_reliable(OverlayEvent::Reattach { outbound: otx }).unwrap();
+                    }
+                    3 => {
+                        let retryable = (next_u64() & 1) == 0;
+                        ref_log.push(SpecEvt::Detach(ts));
+                        ref_log.push(SpecEvt::Refused(ts));
+                        tx.send_reliable(OverlayEvent::ControlDetachedAt(ts)).unwrap();
+                        tx.send_reliable(OverlayEvent::JoinRefused { retryable }).unwrap();
+                    }
+                    _ => {
+                        let rev = next_u64() % 13; // includes 0 and 1..=12!
+                        let tag = format!("m-{step}");
+                        ref_log.push(SpecEvt::Netmap(rev, step));
+                        assert!(intercept(&tx, make_netmap(rev, &tag), true, "", "").is_none());
+                    }
+                }
+                assert!(
+                    tx.inner.state.lock().unwrap().reliable <= MAX_RELIABLE_EVENTS,
+                    "case {case_idx} step {step} exceeded MAX_RELIABLE_EVENTS"
+                );
+            }
+            drop(tx);
+            let mut actual = Vec::new();
+            while let Some(e) = rx.recv().await {
+                if let OverlayEvent::Reattach { outbound } = &e {
+                    let _ = outbound.try_send(signaling::ClientMsg::OverlayEndpoints {
+                        candidates: vec![],
+                    });
+                }
+                actual.push(e);
+            }
+            let actual_reattach_id = reattach_rxs
+                .iter_mut()
+                .filter_map(|(id, orx)| orx.try_recv().ok().map(|_| *id))
+                .last();
+            let expected_reattach_id = ref_log.iter().rev().find_map(|s| match s {
+                SpecEvt::Reattach(id) => Some(*id),
+                _ => None,
+            });
+            assert_eq!(
+                actual_reattach_id, expected_reattach_id,
+                "case {case_idx}: latest Reattach sender mismatch"
+            );
+
+            for init_rev in [0u64, 1, 4, 8, 11, 15] {
+                // Reference uncompacted model
+                let mut ref_ep = 0u64;
+                let mut ref_rev = init_rev;
+                let mut ref_det: Option<std::time::Instant> = None;
+                let mut ref_rebuild = false;
+                let mut ref_last_map: Option<usize> = None;
+                for s in &ref_log {
+                    match *s {
+                        SpecEvt::Rebuild => ref_rebuild = true,
+                        SpecEvt::Detach(t) | SpecEvt::Refused(t) => {
+                            ref_det = Some(ref_det.map_or(t, |p| p.min(t)));
+                        }
+                        SpecEvt::Reattach(_) => {}
+                        SpecEvt::Netmap(r, step_id) => {
+                            if tunnel_core::overlay::runtime::accept_netmap_version(
+                                &mut ref_ep, &mut ref_rev, 0, r,
+                            ) {
+                                ref_ep = 0;
+                                ref_det = None;
+                                ref_last_map = Some(step_id);
+                            }
+                        }
+                    }
+                }
+
+                // Actual compacted stream
+                let mut act_ep = 0u64;
+                let mut act_rev = init_rev;
+                let mut act_det: Option<std::time::Instant> = None;
+                let mut act_rebuild = false;
+                let mut act_last_map: Option<usize> = None;
+                for e in &actual {
+                    match e {
+                        OverlayEvent::RebuildDirect => act_rebuild = true,
+                        OverlayEvent::ControlDetachedAt(t) => {
+                            act_det = Some(act_det.map_or(*t, |p| p.min(*t)));
+                        }
+                        OverlayEvent::Netmap { network, .. } => {
+                            if tunnel_core::overlay::runtime::accept_netmap_version(
+                                &mut act_ep,
+                                &mut act_rev,
+                                0,
+                                network.auth_revision,
+                            ) {
+                                act_ep = 0;
+                                act_det = None;
+                                act_last_map = network
+                                    .self_name
+                                    .as_deref()
+                                    .and_then(|s| s.strip_prefix("m-"))
+                                    .and_then(|s| s.parse::<usize>().ok());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(act_rebuild, ref_rebuild, "case {case_idx} init_rev {init_rev} rebuild");
+                assert_eq!(act_rev, ref_rev, "case {case_idx} init_rev {init_rev} rev");
+                assert_eq!(act_det, ref_det, "case {case_idx} init_rev {init_rev} detach deadline");
+                assert_eq!(act_last_map, ref_last_map, "case {case_idx} init_rev {init_rev} accepted netmap");
+            }
+        }
     }
 }
