@@ -511,6 +511,11 @@ struct Installed {
     /// stays off for [`EARLY_STANDBY_HOLDOFF`] (the proof-gated copies of F2
     /// still cover a real outage).
     biz_proof_ok_at: Option<Instant>,
+    /// #279 — `(arm instant, business tx)` snapshotted when a business proof
+    /// was armed: the data stage owes an answer only to business sent AFTER
+    /// it ([`business_data_owed`]). `None` (or a stale instant) keeps the
+    /// strict proof.
+    proof_tx_mark: Option<(Instant, u64)>,
     /// #280 — when an answered-but-unconfirmed handshake on this direct
     /// carrier comes due (`RESPONDER_CONFIRM_DEADLINE` after we answered); the
     /// 1 s scout sets it so [`business_poke_recheck`] pulls the sweep forward.
@@ -647,6 +652,7 @@ impl Installed {
             early_standby: false,
             early_standby_logged: None,
             biz_proof_ok_at: None,
+            proof_tx_mark: None,
             confirm_due: None,
             stalled: false,
             initiated: false,
@@ -908,6 +914,30 @@ async fn request_reconciled_org_fallbacks(
     let sent = request_org_fallbacks(enabled, installed, peers, relay, now).await;
     finish_org_recovery_queries(sent.clone(), wg, installed);
     sent
+}
+
+/// #279 — whether a business proof whose handshake was answered still owes
+/// DATA back: only if business was sent after the proof armed. The proof was
+/// armed by a send that went unanswered; if that send was simply lost and the
+/// sender is sparse (field 2026-11-17: one packet per 15 s, past the 12 s data
+/// window), nothing is owed, and convicting read the single loss as a one-way
+/// data path. A sender that keeps sending (TCP retransmits, a one-way stream:
+/// the 11-03 blackhole) still owes, and is judged as before. Without a
+/// snapshot for THIS proof the strict proof stands.
+/// `OVERLAY_BUSINESS_DATA_OWED=0` restores the strict proof everywhere.
+fn business_data_owed(
+    mark: Option<(Instant, u64)>,
+    armed_at: Instant,
+    tx_now: Option<u64>,
+) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_DATA_OWED", true)) {
+        return true;
+    }
+    match (mark, tx_now) {
+        (Some((at, tx_at_arm)), Some(tx)) if at == armed_at => tx > tx_at_arm,
+        _ => true,
+    }
 }
 
 /// §6.3 F1 kill switch: `OVERLAY_BUSINESS_POKE_FAST=0` restores the pre-F1
@@ -8411,10 +8441,15 @@ mod tests {
             ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
             ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
         );
+        // peer C: like A, but nothing was sent after its proof armed.
+        let c = WgKeypair::generate().public.to_bytes();
+        let ic = Ipv4Addr::new(100, 64, 0, 4);
+        let nc = ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
         let mut by_node = HashMap::new();
         for (nid, pk, ip, poke_age) in [
             (na, a, ia, window + Duration::from_secs(2)),
             (nb, b, ib, Duration::from_secs(1)),
+            (nc, c, ic, window + Duration::from_secs(2)),
         ] {
             wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
             wg.test_latch_handshake_done(&pk);
@@ -8434,6 +8469,14 @@ mod tests {
             );
             // The handshake answered (stamped after each arm instant); no data.
             wg.test_stamp_initiator_hs(&pk);
+        }
+        // A kept sending after its proof armed (the 11-03 blackhole); C's
+        // sender is sparse: its one unanswered packet was simply lost.
+        for (nid, pk, sent_after) in [(na, a, 5), (nc, c, 0)] {
+            wg.test_set_ip_traffic(&pk, 10, 10);
+            let at = by_node[&nid].poke.unwrap().at;
+            by_node.get_mut(&nid).unwrap().proof_tx_mark = Some((at, 10));
+            wg.test_set_ip_traffic(&pk, 10 + sent_after, 10);
         }
         let tun: Arc<dyn TunIo> = tun_mock;
         let mut relay = None;
@@ -8466,6 +8509,10 @@ mod tests {
         assert!(
             by_node[&nb].poke.is_some(),
             "B is inside its window: still pending, not settled by the handshake"
+        );
+        assert!(
+            by_node.contains_key(&nc) && by_node[&nc].poke.is_none(),
+            "nothing sent since C's proof armed: the handshake settles it, no data owed"
         );
         wg.test_stamp_data_rx(&b);
         rt.sweep_carrier_health(
@@ -8943,6 +8990,20 @@ mod tests {
             0,
             "an active proof failure must retain the existing no-strike policy"
         );
+    }
+
+    #[test]
+    fn business_data_is_owed_only_for_business_sent_after_the_proof_armed() {
+        let at = Instant::now();
+        let other = at.checked_sub(Duration::from_secs(1)).unwrap();
+        assert!(business_data_owed(Some((at, 10)), at, Some(11)), "sent");
+        assert!(
+            !business_data_owed(Some((at, 10)), at, Some(10)),
+            "none sent"
+        );
+        assert!(business_data_owed(Some((other, 10)), at, Some(10)), "stale");
+        assert!(business_data_owed(None, at, Some(10)), "no mark");
+        assert!(business_data_owed(Some((at, 10)), at, None), "no counters");
     }
 
     #[test]

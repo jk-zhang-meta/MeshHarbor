@@ -561,6 +561,7 @@ impl OverlayRuntime {
                     from_business: true,
                     from_confirm: false,
                 });
+                e.proof_tx_mark = Some((now, traffic.0));
                 info!(peer = %nid, tier = ?e.tier,
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
             }
@@ -618,6 +619,7 @@ impl OverlayRuntime {
                     from_business: true,
                     from_confirm: false,
                 });
+                e.proof_tx_mark = Some((now, tx));
                 armed = true;
                 info!(peer = %nid, tier = ?e.tier, watch_ms = window.as_millis() as u64,
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
@@ -922,7 +924,18 @@ impl OverlayRuntime {
             // the triggers; an unanswered one rides into the tick, which
             // kills it once the tier's handshake-deadline window closes.
             let poke = e.poke.map(|p| {
-                let (answered, data_pending) = poke_settled(wg, &e.pubkey, e.is_direct, p);
+                let (mut answered, mut data_pending) = poke_settled(wg, &e.pubkey, e.is_direct, p);
+                if data_pending
+                    && !super::business_data_owed(
+                        e.proof_tx_mark,
+                        p.at,
+                        wg.peer_business_traffic(&e.pubkey).map(|t| t.0),
+                    )
+                {
+                    // Handshake answered and no business sent since the
+                    // proof armed: the path is proven, nothing is owed.
+                    (answered, data_pending) = (true, false);
+                }
                 PokeState {
                     since_poke: now.saturating_duration_since(p.at),
                     answered,
@@ -1218,6 +1231,7 @@ impl OverlayRuntime {
                         from_business: true,
                         from_confirm: false,
                     });
+                    e.proof_tx_mark = wg.peer_business_traffic(&e.pubkey).map(|t| (now, t.0));
                     info!(peer = %nid, tier = ?e.tier,
                         "overlay: existing proof rearmed for unanswered business traffic");
                 }
@@ -1256,6 +1270,7 @@ impl OverlayRuntime {
                         from_business: unanswered_traffic,
                         from_confirm: false,
                     });
+                    e.proof_tx_mark = wg.peer_business_traffic(&e.pubkey).map(|t| (now, t.0));
                     if pressured {
                         info!(
                             peer = %nid, tier = ?e.tier,
