@@ -1287,10 +1287,91 @@ async fn handle_tunnel_open(
         }
     }
 
-    // 5. Audit the open. RelayMode is "Direct" until ICE finishes —
+    let grant_id = new_session.grant_id();
+
+    // QUIC-over-TURN (Phase 3c): mint short-lived coturn creds for THIS
+    // session and hand the SAME set to both peers so each can allocate
+    // its own TURN relay. Empty when no TURN `shared_secret` is
+    // configured (dev / direct-only) — the QUIC path then stays on
+    // host/srflx candidates. `user_id` for the HMAC is the session id so
+    // both peers derive identical, session-scoped creds.
+    // FR-115 P4b — charged to the tunnel's org, so coturn's statistics name it.
+    let quic_ice_servers = meshharbor_remote_control::turn_creds::ice_servers_for(
+        &meshharbor_remote_control::turn_creds::charged(
+            &tunnel_session_id.to_hex(),
+            &orig.tenant_id.to_hex(),
+        ),
+        // Region-keyed map; `None` = default region until the agent's
+        // relay_home is threaded through (probe reports, PR3).
+        state.turn_map.cfg_for(None),
+    );
+
+    // 5. Enqueue `TunnelOpened` to the originator FIRST (while
+    // `tunnel_clients_by_session` is already registered) BEFORE standing up
+    // target `TunnelQuicSetup` or writing `PeerOpen`. If the originator's
+    // outbound queue is full/closed (`!send_msg`), roll back every session
+    // map entry immediately so neither dedicated tunnel clients nor
+    // agent-originated tunnels leak orphan sessions or target QUIC listeners.
+    if !send_msg(
+        &orig.outbound_tx,
+        ServerMsg::TunnelOpened {
+            session_id: tunnel_session_id,
+            transport: negotiated_transport.clone(),
+            dc_pool_size: 8,
+            sctp_rwnd_bytes: 8 * 1024 * 1024,
+            ice_servers: quic_ice_servers.clone(),
+            quic_auth_token: quic_auth_token.clone(),
+            open_nonce,
+            // P3-7-2a — the device's proof the grant was bound: a device
+            // that sent one and finds no echo carries no session flow here.
+            net_grant_id: grant_id.clone(),
+        },
+    )
+    .await
+    {
+        state.tunnel_clients_by_session.remove(&tunnel_session_id);
+        state.tunnel_session_parties.remove(&tunnel_session_id);
+        state.tunnel_presence_tokens.remove(&tunnel_session_id);
+        unindex_session_target(
+            &state.tunnel_sessions_by_target_agent,
+            agent_id,
+            tunnel_session_id,
+        );
+        if let Principal::TunnelClient(tc_id) = orig.principal {
+            crate::overlay::disconnect_stalled_tunnel_client(state, tc_id, &orig.outbound_tx);
+        }
+        warn!(
+            origin = %orig.log_id(),
+            %tunnel_session_id,
+            %agent_id,
+            "TunnelOpened delivery timed out or closed; rolled back tunnel session"
+        );
+        return None;
+    }
+
+    // 6. For quic-v1, tell the target agent to stand up its endpoint +
+    // authorize this token now that `TunnelOpened` is committed to the
+    // originator's outbound queue.
+    if let Some(token) = quic_auth_token {
+        let is_quic_derp =
+            negotiated_transport == tunnel_core::transport::TRANSPORT_QUIC_DERP_V1;
+        if let Err(e) = state.fleet.rc_hub.send_to_agent(
+            agent_id,
+            ServerMsg::TunnelQuicSetup {
+                session_id: tunnel_session_id,
+                quic_auth_token: token,
+                ice_servers: quic_ice_servers,
+                transport: is_quic_derp.then_some(negotiated_transport),
+                client_derp_pubkey: if is_quic_derp { derp_pubkey } else { None },
+            },
+        ) {
+            warn!(%agent_id, %e, "TunnelQuicSetup relay failed; client will fall back to webrtc-dc-v1");
+        }
+    }
+
+    // 7. Audit the open. RelayMode is "Direct" until ICE finishes —
     // T2.7 updates this after candidate selection. Under a grant the row
     // names the session, its grant, and the session's owner (P3-7-2a).
-    let grant_id = new_session.grant_id();
     let _ = state
         .tunnel_audit
         .append(&TunnelAuditEvent {
@@ -1317,75 +1398,9 @@ async fn handle_tunnel_open(
             client_os: orig.client_os,
             reason: None,
             session_id: new_session.grant_session_id(),
-            grant_id: grant_id.clone(),
+            grant_id,
         })
         .await;
-
-    // QUIC-over-TURN (Phase 3c): mint short-lived coturn creds for THIS
-    // session and hand the SAME set to both peers so each can allocate
-    // its own TURN relay. Empty when no TURN `shared_secret` is
-    // configured (dev / direct-only) — the QUIC path then stays on
-    // host/srflx candidates. `user_id` for the HMAC is the session id so
-    // both peers derive identical, session-scoped creds.
-    // FR-115 P4b — charged to the tunnel's org, so coturn's statistics name it.
-    let quic_ice_servers = meshharbor_remote_control::turn_creds::ice_servers_for(
-        &meshharbor_remote_control::turn_creds::charged(
-            &tunnel_session_id.to_hex(),
-            &orig.tenant_id.to_hex(),
-        ),
-        // Region-keyed map; `None` = default region until the agent's
-        // relay_home is threaded through (probe reports, PR3).
-        state.turn_map.cfg_for(None),
-    );
-
-    // For quic-v1, tell the agent to stand up its endpoint + authorize
-    // this token NOW. The client is already registered in
-    // `tunnel_clients_by_session` (step 4), so the agent's
-    // `TunnelQuicReady` can race back and be relayed to the client
-    // while it's still processing the `TunnelOpened` below.
-    if let Some(token) = quic_auth_token.clone()
-        && let Err(e) = state.fleet.rc_hub.send_to_agent(
-            agent_id,
-            ServerMsg::TunnelQuicSetup {
-                session_id: tunnel_session_id,
-                quic_auth_token: token,
-                ice_servers: quic_ice_servers.clone(),
-                transport: (negotiated_transport == tunnel_core::transport::TRANSPORT_QUIC_DERP_V1)
-                    .then(|| negotiated_transport.clone()),
-                client_derp_pubkey: if negotiated_transport
-                    == tunnel_core::transport::TRANSPORT_QUIC_DERP_V1
-                {
-                    derp_pubkey.clone()
-                } else {
-                    None
-                },
-            },
-        )
-    {
-        warn!(%agent_id, %e, "TunnelQuicSetup relay failed; client will fall back to webrtc-dc-v1");
-    }
-
-    // 6. Reply with TunnelOpened carrying the NEGOTIATED transport +
-    // (for quic-v1) the bearer token. ICE candidates + actual SDP come
-    // in T2.7 for the webrtc path; quic carries its own handshake. The
-    // SCTP rwnd value mirrors the vendored webrtc patch's target so the
-    // CLI's `diagnose` subcommand can verify the patch took effect.
-    send_msg(
-        &orig.outbound_tx,
-        ServerMsg::TunnelOpened {
-            session_id: tunnel_session_id,
-            transport: negotiated_transport,
-            dc_pool_size: 8,
-            sctp_rwnd_bytes: 8 * 1024 * 1024,
-            ice_servers: quic_ice_servers,
-            quic_auth_token,
-            open_nonce,
-            // P3-7-2a — the device's proof the grant was bound: a device
-            // that sent one and finds no echo carries no session flow here.
-            net_grant_id: grant_id,
-        },
-    )
-    .await;
 
     Some(new_session)
 }
