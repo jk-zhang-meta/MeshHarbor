@@ -1887,7 +1887,9 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
     let app = TestApp::spawn_with_settings(move |s| {
         s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
         s.app.rate_limit_trusted_hops = 0;
-        s.app.business_isolation = "off".into();
+        // Exercise enforced business isolation (`Side` scopes) AND NAT-mapped
+        // static endpoint ports (`139.199.6.6:443` while local listener is `:3478`).
+        s.app.business_isolation = "enforce".into();
         s.stats.geoip_mmdb = Some(mmdb);
     })
     .await;
@@ -1906,14 +1908,29 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
         connect_from(&app, &gz_tok, &["relay-server", "relay-control"], Some("139.199.6.6")).await;
     let mut hk_ws =
         connect_from(&app, &hk_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
     let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
 
-    join_node(&mut siat_ws, 71, "139.199.1.45:41641", json!({})).await;
-    join_node(&mut hk_leaf_ws, 72, "202.181.7.20:41641", json!({})).await;
-    join_node(&mut gz_ws, 73, "139.199.6.6:41641", json!({ "relay_backbone_ready": true })).await;
-    join_node(&mut hk_ws, 74, "202.181.7.6:41641", json!({ "relay_backbone_ready": true })).await;
+    let full_caps = json!({
+        "supports_path_trial_v1": true,
+        "supports_path_backbone_v1": true,
+        "supports_backbone_only_v1": true,
+    });
+    let gw_caps = json!({
+        "relay_backbone_ready": true,
+        "relay_port": 3478,
+        "supports_path_trial_v1": true,
+        "supports_path_backbone_v1": true,
+        "supports_backbone_only_v1": true,
+    });
+    join_node(&mut siat_ws, 71, "139.199.1.45:41641", full_caps.clone()).await;
+    join_node(&mut hk_leaf_ws, 72, "202.181.7.20:41641", full_caps).await;
+    // Give `po0-gz` only a private LAN candidate on join + a NAT-mapped `:443`
+    // static endpoint in policy, proving loopback bind uses listener port `:3478`!
+    join_node(&mut gz_ws, 73, "10.0.0.5:41641", gw_caps.clone()).await;
+    join_node(&mut hk_ws, 74, "202.181.7.6:41641", gw_caps).await;
 
     let siat_node = node_id(&app, &seeded, "gwep-siat45").await;
     let hk_leaf_node = node_id(&app, &seeded, "gwep-isvoro-hk").await;
@@ -1967,6 +1984,7 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
             admin,
             json!({
                 "serve": true,
+                "static_endpoints": ["139.199.6.6:443"],
                 "approved_backbone_edges": [
                     { "relay_agent_id": hk_id, "endpoint": "10.42.2.114:3478", "cross_border": true }
                 ]
@@ -2052,7 +2070,11 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
         .await
         .expect("po0-gz receives terminal self-relay leg on po0-gz");
     assert_eq!(gz_self_sess["relay_node_id"], json!(gz_node));
-    assert_eq!(gz_self_sess["relay_endpoints"][0], json!("127.0.0.1:3478"));
+    assert_eq!(
+        gz_self_sess["relay_endpoints"],
+        json!(["127.0.0.1:3478", "139.199.6.6:443"]),
+        "loopback bind must use listener port 3478 rather than NAT-mapped static port 443"
+    );
     let hk_leaf_sess = recv_t(&mut hk_leaf_ws, "rc:overlay.relay_session", wait)
         .await
         .expect("isvoro-hk receives exit leg on po0-hk");
@@ -2188,18 +2210,64 @@ async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavail
             let netmap = recv_t(&mut ws, "rc:overlay.netmap", Duration::from_secs(10))
                 .await
                 .unwrap_or_else(|| panic!("node {idx} failed to receive netmap on concurrent join"));
-            (ws, netmap["self_ip"].as_str().unwrap_or_default().to_string())
+            (ws, netmap)
         }));
     }
 
     let mut ips = std::collections::HashSet::new();
-    let mut kept = Vec::with_capacity(20);
+    let mut initial_views = Vec::with_capacity(20);
     for h in handles {
-        let (ws, ip) = h.await.expect("join task");
+        let (ws, netmap) = h.await.expect("join task");
+        let ip = netmap["self_ip"].as_str().unwrap_or_default().to_string();
         assert!(!ip.is_empty());
-        assert!(ips.insert(ip), "duplicate overlay IP allocated");
-        kept.push(ws);
+        assert!(ips.insert(ip.clone()), "duplicate overlay IP allocated");
+        initial_views.push((ws, ip, netmap));
     }
     assert_eq!(ips.len(), 20, "all 20 concurrent joiners must succeed on first attempt");
-    drop(kept);
+
+    // Verify full peer-table convergence across all 20 nodes under strict
+    // monotonic `auth_revision` acceptance (rejecting any out-of-order delta!).
+    for (idx, (mut ws, self_ip, netmap)) in initial_views.into_iter().enumerate() {
+        let mut rev = netmap["network"]["auth_revision"].as_u64().unwrap_or(0);
+        let mut known_peers: std::collections::HashMap<String, String> = netmap["peers"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| {
+                Some((
+                    p["node_id"].as_str()?.to_string(),
+                    p["overlay_ip"].as_str()?.to_string(),
+                ))
+            })
+            .collect();
+
+        while known_peers.len() < 19 {
+            let Some(frame) = recv_t(&mut ws, "rc:overlay.netmap_delta", Duration::from_secs(3)).await else {
+                break;
+            };
+            let delta_rev = frame["auth_revision"].as_u64().unwrap_or(0);
+            assert!(
+                delta_rev >= rev,
+                "node {idx} ({self_ip}) received out-of-order delta rev {delta_rev} < {rev}"
+            );
+            rev = delta_rev;
+            if let Some(upserts) = frame["upserts"].as_array() {
+                for u in upserts {
+                    if let (Some(nid), Some(pip)) =
+                        (u["node_id"].as_str(), u["overlay_ip"].as_str())
+                    {
+                        known_peers.insert(nid.to_string(), pip.to_string());
+                    }
+                }
+            }
+        }
+        let mut expected = ips.clone();
+        expected.remove(&self_ip);
+        let got: std::collections::HashSet<String> = known_peers.into_values().collect();
+        assert_eq!(
+            got, expected,
+            "node {idx} ({self_ip}) failed to converge to all 19 peer IPs"
+        );
+    }
 }

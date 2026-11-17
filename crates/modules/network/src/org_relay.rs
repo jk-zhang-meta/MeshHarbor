@@ -1060,6 +1060,7 @@ pub struct OrgRelaySession {
     /// revokes it.
     pub implicit: bool,
     pub members: [SessionMember; 2],
+    pub relay_port: u16,
     pub endpoints: Vec<String>,
     pub expires_at: Instant,
     /// The relay drops every Bind for a session not fully bound by its bind
@@ -1079,6 +1080,7 @@ pub struct LineLeg {
     pub relay_agent_id: ObjectId,
     pub vni: u32,
     pub generation: u64,
+    pub relay_port: u16,
     /// The exit relay's public endpoints, for `members[1]`.
     pub endpoints: Vec<String>,
     /// The exit relay's address on the private line (the approved edge's).
@@ -1093,11 +1095,12 @@ pub struct LineLeg {
     pub bridge_secrets: [String; 2],
 }
 
-/// What one member binds: its relay, VNI and endpoints.
+/// What one member binds: its relay, VNI, listener port, and endpoints.
 struct MemberLeg<'a> {
     relay_node_id: ObjectId,
     vni: u32,
     generation: u64,
+    relay_port: u16,
     endpoints: &'a [String],
 }
 
@@ -1243,12 +1246,14 @@ impl OrgRelaySession {
                 relay_node_id: l.relay.node_id,
                 vni: l.vni,
                 generation: l.generation,
+                relay_port: l.relay_port,
                 endpoints: &l.endpoints,
             },
             _ => MemberLeg {
                 relay_node_id: self.relay.node_id,
                 vni: self.vni,
                 generation: self.generation,
+                relay_port: self.relay_port,
                 endpoints: &self.endpoints,
             },
         }
@@ -1256,24 +1261,24 @@ impl OrgRelaySession {
 
     /// Endpoints offered to member `i` for its local `OrgRelayConn` bind.
     /// On a multi-hop line where member `i` IS its own terminal gateway relay,
-    /// prepend `127.0.0.1:<port>` so the member binds locally over loopback
-    /// without requiring NAT hairpinning on its public address.
+    /// prepend `127.0.0.1:<relay_port>` using the relay's actual local listener
+    /// port (not any external NAT-mapped static endpoint port).
     fn member_bind_endpoints(&self, i: usize) -> Vec<String> {
         let leg = self.member_leg(i);
         if !self.hops.is_empty() && self.members[i].party.node_id == leg.relay_node_id {
-            prepend_loopback_relay_endpoint(leg.endpoints)
+            prepend_loopback_relay_endpoint(leg.relay_port, leg.endpoints)
         } else {
             leg.endpoints.to_vec()
         }
     }
 }
 
-pub(super) fn prepend_loopback_relay_endpoint(endpoints: &[String]) -> Vec<String> {
-    let port = endpoints
-        .iter()
-        .find_map(|ep| ep.parse::<std::net::SocketAddr>().ok().map(|sa| sa.port()))
-        .filter(|&p| p > 0)
-        .unwrap_or(limits::DEFAULT_RELAY_PORT);
+pub(super) fn prepend_loopback_relay_endpoint(relay_port: u16, endpoints: &[String]) -> Vec<String> {
+    let port = if relay_port > 0 {
+        relay_port
+    } else {
+        limits::DEFAULT_RELAY_PORT
+    };
     let local = format!("127.0.0.1:{port}");
     let mut out = Vec::with_capacity(4);
     out.push(local.clone());
@@ -2149,6 +2154,7 @@ pub async fn peer_relay_mode(state: &NetworkState, tenant_id: ObjectId) -> PeerR
 struct Plan {
     relay: OverlayNode,
     relay_agent_id: ObjectId,
+    relay_port: u16,
     endpoints: Vec<String>,
     backbone_edges: Vec<meshharbor_remote_control::models::PeerRelayBackboneEdge>,
     /// Granted by role and zone (`auto`), not by an overlay policy.
@@ -2910,7 +2916,8 @@ async fn plan_mint_candidates_reusing(
     reuse: Option<&OrgRelaySession>,
     scope: ZoneScope,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
-    plan_mint_candidates_with_trial_diagnostics(state, requester, peer, reuse, scope, None).await
+    plan_mint_candidates_with_trial_diagnostics(state, requester, peer, reuse, scope, false, None)
+        .await
 }
 
 async fn plan_mint_candidates_with_trial_diagnostics(
@@ -2919,6 +2926,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     peer: &OverlayNode,
     reuse: Option<&OrgRelaySession>,
     scope: ZoneScope,
+    allow_member_relays: bool,
     mut diagnostic: Option<&mut TrialUnknownZoneDiagnostics>,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
@@ -3011,7 +3019,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         ) {
             return Err(D::ZoneDenied);
         }
-        if scope == ZoneScope::Pair {
+        if scope == ZoneScope::Pair && !allow_member_relays {
             let req_gw = nz_snap.gateway_set_for(req_res).unwrap_or_default();
             let peer_gw = nz_snap.gateway_set_for(peer_res).unwrap_or_default();
             let shared: std::collections::HashSet<ObjectId> =
@@ -3148,7 +3156,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
             continue;
         }
         let Some(relay_id) = node.id else { continue };
-        if scope != ZoneScope::NetworkZoneGraph && (relay_id == req_id || relay_id == peer_id) {
+        if !allow_member_relays && (relay_id == req_id || relay_id == peer_id) {
             continue;
         }
         // A relay a member measured lossy for this pair sits out its pin
@@ -3242,6 +3250,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         let plan = Plan {
             relay: node,
             relay_agent_id: agent_id,
+            relay_port: port,
             endpoints,
             backbone_edges: agent.peer_relay_policy.approved_backbone_edges,
             implicit,
@@ -4089,6 +4098,7 @@ async fn mint_line(
         relay_agent_id: plan.ingress.relay_agent_id,
         implicit: false,
         members: [member(m0), member(m1)],
+        relay_port: plan.ingress.relay_port,
         endpoints: plan.ingress.endpoints.clone(),
         expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
         bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
@@ -4100,6 +4110,7 @@ async fn mint_line(
             relay_agent_id: plan.exit.relay_agent_id,
             vni: exit_vni,
             generation: exit_generation,
+            relay_port: plan.exit.relay_port,
             endpoints: plan.exit.endpoints.clone(),
             private_endpoint: plan.private_endpoint.clone(),
             requires_cross_border_approval: true,
@@ -4442,7 +4453,7 @@ async fn network_zone_backbone_hints(
         };
         let Some(relay) = relay else { continue };
         let endpoints = if Some(relay.node_id) == requester.id {
-            prepend_loopback_relay_endpoint(&relay.endpoints)
+            prepend_loopback_relay_endpoint(relay.relay_port, &relay.endpoints)
         } else {
             relay.endpoints.clone()
         };
@@ -5285,6 +5296,7 @@ async fn mint_plan(
                 bind_secret: random_secret(),
             },
         ],
+        relay_port: plan.relay_port,
         endpoints: plan.endpoints.clone(),
         expires_at: Instant::now() + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
         bind_by: Instant::now() + Duration::from_secs(u64::from(limits::BIND_SECS)),
@@ -6573,6 +6585,7 @@ mod tests {
             relay_agent_id: relay,
             implicit: false,
             members: [member(ObjectId::new()), member(ObjectId::new())],
+            relay_port: limits::DEFAULT_RELAY_PORT,
             endpoints: vec!["relay".into()],
             expires_at: now - Duration::from_secs(1),
             bind_by: now,
@@ -6656,6 +6669,7 @@ mod tests {
                 relay_agent_id: ids[i],
                 vni: 10 + i as u32,
                 generation: 100 + i as u64,
+                relay_port: limits::DEFAULT_RELAY_PORT,
                 endpoints: vec![format!("relay{i}")],
                 private_endpoint: format!("10.0.0.{i}:1234"),
                 requires_cross_border_approval: true,
@@ -6672,6 +6686,7 @@ mod tests {
             relay_agent_id: ids[0],
             implicit: false,
             members: [member(ids[4]), member(ObjectId::new())],
+            relay_port: limits::DEFAULT_RELAY_PORT,
             endpoints: vec!["ingress".into()],
             expires_at: Instant::now(),
             bind_by: Instant::now(),
@@ -6786,11 +6801,20 @@ mod tests {
                         bind_secret: "t".into(),
                     },
                 ],
+                relay_port: limits::DEFAULT_RELAY_PORT,
                 endpoints: vec!["8.8.8.8:3478".into()],
                 expires_at: Instant::now() + Duration::from_secs(60),
                 bind_by: Instant::now() + Duration::from_secs(30),
                 hops: Vec::new(),
             },
+        );
+        assert_eq!(
+            prepend_loopback_relay_endpoint(3478, &["139.199.6.6:443".into()]),
+            vec![
+                "127.0.0.1:3478".to_string(),
+                "139.199.6.6:443".to_string()
+            ],
+            "loopback bind endpoint must use actual listener relay_port rather than NAT-mapped static port"
         );
         assert!(st.record_probe(a, relay, "8.8.8.8:3478".into(), true, Some(12)));
         assert!(

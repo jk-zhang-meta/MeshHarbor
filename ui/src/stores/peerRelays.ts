@@ -28,6 +28,10 @@ export interface RelayDeviceView {
   serving: boolean
   static_endpoints: string[]
   approved_backbone_edges?: PeerRelayBackboneEdge[]
+  country_code?: string | null
+  pinned_zone_id?: string | null
+  effective_zone_id?: string | null
+  effective_zone_name?: string | null
 }
 
 export interface PeerRelaySettings {

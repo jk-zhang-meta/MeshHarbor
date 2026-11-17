@@ -954,6 +954,7 @@ async fn request_inner(
             &peer,
             reuse.map(|(_, session)| session),
             ZoneScope::Pair,
+            false,
             Some(&mut trial_diagnostic),
         )
         .await
@@ -1033,7 +1034,7 @@ async fn request_inner(
                     wg_public_key: n.wg_public_key.clone(),
                     bind_secret: random_secret(),
                 };
-                let (relay, relay_agent_id, endpoints, implicit) =
+                let (relay, relay_agent_id, relay_port, endpoints, implicit) =
                     if let Some(plan) = candidate.as_ref() {
                         let r = &plan.relays[0];
                         (
@@ -1042,6 +1043,7 @@ async fn request_inner(
                                 node_ref: r.node_ref.clone(),
                             },
                             r.agent_id,
+                            r.relay_port,
                             r.endpoints.clone(),
                             false,
                         )
@@ -1053,6 +1055,7 @@ async fn request_inner(
                                 node_ref: p.relay.node_ref.clone(),
                             },
                             p.relay_agent_id,
+                            p.relay_port,
                             p.endpoints.iter().take(4).cloned().collect(),
                             p.implicit,
                         )
@@ -1066,6 +1069,7 @@ async fn request_inner(
                     relay_agent_id,
                     implicit,
                     members: [member(first), member(last)],
+                    relay_port,
                     endpoints,
                     expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
                     bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
@@ -1083,6 +1087,7 @@ async fn request_inner(
                             relay_agent_id: relay.agent_id,
                             vni: vnis[i + 1],
                             generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
+                            relay_port: relay.relay_port,
                             endpoints: relay.endpoints.clone(),
                             private_endpoint: edge.endpoint.clone(),
                             requires_cross_border_approval: edge.requires_cross_border_approval,
@@ -1868,6 +1873,7 @@ pub(super) async fn recheck_network_zone_trials(
                         relay_agent_id: b.exit.relay_agent_id,
                         vni: b.exit.vni,
                         generation: b.exit.generation,
+                        relay_port: b.exit.relay_port,
                         endpoints: b.exit.endpoints.clone(),
                         private_endpoint: b.private_endpoint.clone(),
                         requires_cross_border_approval: b.requires_cross_border_approval,
@@ -2109,6 +2115,7 @@ mod tests {
                         bind_secret: "b".into(),
                     },
                 ],
+                relay_port: limits::DEFAULT_RELAY_PORT,
                 endpoints: vec!["8.8.8.8:3478".into()],
                 expires_at: now + Duration::from_secs(60),
                 bind_by: now + Duration::from_secs(30),
@@ -2494,6 +2501,7 @@ mod tests {
             relay_agent_id: exit,
             vni: 500,
             generation: 501,
+            relay_port: limits::DEFAULT_RELAY_PORT,
             endpoints: vec!["exit".into()],
             private_endpoint: "10.0.0.2:3478".into(),
             requires_cross_border_approval: true,
@@ -2598,6 +2606,7 @@ mod tests {
             relay_agent_id: exit,
             vni: 800,
             generation: 801,
+            relay_port: limits::DEFAULT_RELAY_PORT,
             endpoints: vec!["exit".into()],
             private_endpoint: "10.0.0.2:3478".into(),
             requires_cross_border_approval: true,

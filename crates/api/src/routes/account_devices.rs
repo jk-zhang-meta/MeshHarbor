@@ -12,7 +12,7 @@ use meshharbor_core::{
 use meshharbor_db::models::{DeviceShareGrant, Tenant, TenantMember};
 use meshharbor_remote_control::models::{
     Agent, AgentStatus, DeviceZoneResolution, NetworkZone, OsKind, OverlayNetwork, OverlayNode,
-    resolve_device_zone,
+    PeerRelayPolicy, resolve_device_zone,
 };
 use meshharbor_services::dao::base::DaoError;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ struct StoredDevice {
     country_code: Option<String>,
     #[serde(default)]
     pinned_zone_id: Option<String>,
+    #[serde(default)]
+    peer_relay_policy: PeerRelayPolicy,
 }
 #[derive(Deserialize)]
 struct Count {
@@ -136,10 +138,12 @@ async fn aggregate_one(
     Ok(cursor.try_next().await.map_err(DaoError::from)?)
 }
 pub async fn list(
-    State(core): State<Core>,
+    State(state): State<crate::state::AppState>,
     auth: AuthUser,
     Query(q): Query<PageQuery>,
 ) -> Result<Json<DevicePage>, ApiError> {
+    let core = &state.core;
+    let fleet = state.modules.fleet.as_ref();
     let page = q.page.unwrap_or(1).max(1);
     let size = q.per_page.unwrap_or(25).clamp(1, 100);
     let skip = (page - 1)
@@ -152,11 +156,12 @@ pub async fn list(
         "items":[{"$sort":{"_id":1}},{"$skip":skip as i64},{"$limit":size as i64},
             {"$project":{
                 "_id":1,"name":1,"display_name":1,"os":1,"status":1,"tenant_id":1,
-                "machine_id":1,"public_ip":1,"country_code":1,"pinned_zone_id":1
+                "machine_id":1,"public_ip":1,"country_code":1,"pinned_zone_id":1,
+                "peer_relay_policy":1
             }}],
         "count":[{"$count":"total"}]
     }});
-    let row = aggregate_one(&core, Agent::COLLECTION, pipeline)
+    let row = aggregate_one(core, Agent::COLLECTION, pipeline)
         .await?
         .ok_or_else(|| ApiError::Internal("Missing account directory aggregate".into()))?;
     let row: OwnPage = bson::from_document(row).map_err(DaoError::from)?;
@@ -190,11 +195,14 @@ pub async fn list(
             .items
             .iter()
             .filter(|a| {
-                a.public_ip
-                    .as_deref()
-                    .and_then(|s| s.parse::<IpAddr>().ok())
-                    .and_then(canonical_public_ip)
+                fleet
+                    .and_then(|f| f.rc_hub.agent_live_public_ip(a.id))
                     .is_none()
+                    && a.public_ip
+                        .as_deref()
+                        .and_then(|s| s.parse::<IpAddr>().ok())
+                        .and_then(canonical_public_ip)
+                        .is_none()
             })
             .filter_map(|a| a.machine_id.clone().filter(|m| !m.is_empty()))
             .collect();
@@ -228,11 +236,14 @@ pub async fn list(
         .items
         .into_iter()
         .map(|a| {
-            let resolved_ip = a
-                .public_ip
-                .as_deref()
-                .and_then(|s| s.parse::<IpAddr>().ok())
-                .and_then(canonical_public_ip)
+            let live_ip = fleet.and_then(|f| f.rc_hub.agent_live_public_ip(a.id));
+            let resolved_ip = live_ip
+                .or_else(|| {
+                    a.public_ip
+                        .as_deref()
+                        .and_then(|s| s.parse::<IpAddr>().ok())
+                        .and_then(canonical_public_ip)
+                })
                 .or_else(|| {
                     a.machine_id
                         .as_ref()
@@ -241,14 +252,28 @@ pub async fn list(
             let loc = resolved_ip
                 .map(|ip| core.geoip.lookup_location(ip))
                 .unwrap_or_default();
-            let effective_cc = loc.country_code.clone().or(a.country_code);
+            // Authoritative zone country uses the exact policy resolver
+            // (`live_ip` -> `persisted_public_ip` -> `static_endpoints`),
+            // independent of fallback display GeoIP.
+            let zone_cc = fleet.and_then(|f| {
+                meshharbor_mod_fleet::socket::effective_country_from_sources(
+                    f,
+                    Some(a.id),
+                    a.public_ip.as_deref(),
+                    &a.peer_relay_policy.static_endpoints,
+                )
+            });
+            let display_cc = loc
+                .country_code
+                .clone()
+                .or_else(|| zone_cc.clone())
+                .or(a.country_code);
             let zones = tenant_zones
                 .get(&a.tenant_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let (effective_zone_id, effective_zone_name) =
-                match resolve_device_zone(zones, a.pinned_zone_id.as_deref(), effective_cc.as_deref())
-                {
+                match resolve_device_zone(zones, a.pinned_zone_id.as_deref(), zone_cc.as_deref()) {
                     DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
                     _ => (None, None),
                 };
@@ -263,7 +288,7 @@ pub async fn list(
                 status: a.status,
                 tenant_id: a.tenant_id.to_hex(),
                 public_ip: resolved_ip.map(|ip| ip.to_string()),
-                country_code: effective_cc,
+                country_code: display_cc,
                 country: loc.country,
                 region: loc.region,
                 city: loc.city,

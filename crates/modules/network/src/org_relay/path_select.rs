@@ -441,6 +441,7 @@ mod checked_edge_tests {
                 Plan {
                     relay: make_node(r_lossy_node, r_lossy_agent, "100.64.0.10"),
                     relay_agent_id: r_lossy_agent,
+                    relay_port: crate::org_relay::limits::DEFAULT_RELAY_PORT,
                     endpoints: vec![ep_lossy.clone()],
                     backbone_edges: Vec::new(),
                     implicit: false,
@@ -451,6 +452,7 @@ mod checked_edge_tests {
                 Plan {
                     relay: make_node(r_clean_node, r_clean_agent, "100.64.0.20"),
                     relay_agent_id: r_clean_agent,
+                    relay_port: crate::org_relay::limits::DEFAULT_RELAY_PORT,
                     endpoints: vec![ep_clean.clone()],
                     backbone_edges: Vec::new(),
                     implicit: false,

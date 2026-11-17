@@ -24,6 +24,7 @@ pub(super) struct TrialRelay {
     pub agent_id: ObjectId,
     pub zone: Option<BusinessZone>,
     pub node_ref: NodeRef,
+    pub relay_port: u16,
     pub endpoints: Vec<String>,
 }
 
@@ -240,6 +241,7 @@ pub(super) async fn plan_reusing(
                 relay.zone
             },
             node_ref: plan.relay.node_ref.clone(),
+            relay_port: plan.relay_port,
             endpoints: plan.endpoints.iter().take(4).cloned().collect(),
         });
     }

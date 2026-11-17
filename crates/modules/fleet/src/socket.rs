@@ -1655,10 +1655,22 @@ pub fn agent_effective_country(
     state: &FleetState,
     agent: &meshharbor_remote_control::models::Agent,
 ) -> Option<String> {
-    let live_ip = agent.id.and_then(|id| state.rc_hub.agent_live_public_ip(id));
-    let persisted_ip = agent
-        .public_ip
-        .as_deref()
+    effective_country_from_sources(
+        state,
+        agent.id,
+        agent.public_ip.as_deref(),
+        &agent.peer_relay_policy.static_endpoints,
+    )
+}
+
+pub fn effective_country_from_sources(
+    state: &FleetState,
+    agent_id: Option<bson::oid::ObjectId>,
+    persisted_public_ip: Option<&str>,
+    static_endpoints: &[String],
+) -> Option<String> {
+    let live_ip = agent_id.and_then(|id| state.rc_hub.agent_live_public_ip(id));
+    let persisted_ip = persisted_public_ip
         .and_then(|s| s.parse::<std::net::IpAddr>().ok())
         .and_then(meshharbor_core::user_analytics::canonical_public_ip);
     if let Some(ip) = live_ip.or(persisted_ip)
@@ -1666,7 +1678,7 @@ pub fn agent_effective_country(
     {
         return Some(cc.to_ascii_uppercase());
     }
-    for ep in &agent.peer_relay_policy.static_endpoints {
+    for ep in static_endpoints {
         if let Ok(sa) = ep.parse::<std::net::SocketAddr>()
             && let Some(ip) = meshharbor_core::user_analytics::canonical_public_ip(sa.ip())
             && let Some(cc) = state.core.geoip.security_lookup(ip).country_code

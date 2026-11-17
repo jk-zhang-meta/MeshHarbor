@@ -3068,7 +3068,7 @@ async fn connect_once(
                             // normal dispatch below.
                             #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
                             let parsed = match &overlay_evt_tx {
-                                Some(tx) => match crate::overlay::intercept(tx, parsed, ctx.is_primary, &cfg.agent_id, &cfg.tenant_id) {
+                                Some(tx) => match crate::overlay::intercept(tx, parsed, ctx.is_primary, &cfg.agent_id, &cfg.tenant_id).await {
                                     Some(p) => p,
                                     None => continue,
                                 },

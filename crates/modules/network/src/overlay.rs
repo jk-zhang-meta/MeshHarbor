@@ -560,10 +560,11 @@ async fn handle_overlay_join(
     // Phase 1 — drop malformed CIDRs so a bad advertisement can't poison state.
     let advertised_routes = sanitize_cidrs(advertised_routes);
 
-    // Serialize per-tenant OverlayJoin (network bootstrap, IPAM/rehydrate, and
-    // `auth_revision` access-projection commit) so a 20+-node fleet reconnect
-    // storm never races `get_or_create`, `unique_node_name`, or `auth_revision`.
-    let _tenant_join_guard = {
+    // Serialize per-tenant OverlayJoin (network bootstrap, IPAM/rehydrate,
+    // `auth_revision` access-projection commit, and full-netmap + peer-delta
+    // publication) so a 20+-node fleet reconnect storm never races
+    // `get_or_create`, `unique_node_name`, `auth_revision`, or peer delta order.
+    let mut tenant_join_guard = {
         #[cfg(feature = "access-authority-test-support")]
         let skip_lock = matches!(node_ref, NodeRef::Agent { agent_id } if ACCESS_PROJECTION_PAUSES.contains_key(&(state.pod.origin(), agent_id)));
         #[cfg(not(feature = "access-authority-test-support"))]
@@ -578,6 +579,7 @@ async fn handle_overlay_join(
     let network = match state.overlay_networks.get_or_create(tenant_id).await {
         Ok(n) => n,
         Err(e) => {
+            drop(tenant_join_guard.take());
             refuse(OverlayJoinRefusal::NetworkUnavailable, format!("{e}")).await;
             return;
         }
@@ -622,6 +624,7 @@ async fn handle_overlay_join(
                 same_node.wg_public_key = wg_public_key.clone();
                 order_auto_key_rotate_if_needed(state, &same_node, "auto_rejoin").await;
             }
+            drop(tenant_join_guard.take());
             refuse(
                 OverlayJoinRefusal::KeyUnauthorized,
                 "wg_public_key already held by another node or retired in network".to_string(),
@@ -651,6 +654,7 @@ async fn handle_overlay_join(
             {
                 Ok(g) => g.as_ref().map(temporary_mark_of),
                 Err(_) => {
+                    drop(tenant_join_guard.take());
                     refuse(
                         OverlayJoinRefusal::StoreUnavailable,
                         "temporary-device lookup failed".to_string(),
@@ -673,6 +677,7 @@ async fn handle_overlay_join(
             // A temporary device's node is born marked; an unmarked row under
             // its machine id is not its node.
             if temporary_mark.is_some() && existing.temporary.is_none() {
+                drop(tenant_join_guard.take());
                 refuse(
                     OverlayJoinRefusal::NetworkUnavailable,
                     "temporary device: existing node is not its own".to_string(),
@@ -738,6 +743,7 @@ async fn handle_overlay_join(
                         }
                         _ => OverlayJoinRefusal::StoreUnavailable,
                     };
+                    drop(tenant_join_guard.take());
                     refuse(refusal_reason, format!("{e}")).await;
                     warn!(%tenant_id, %e, "overlay.join: rehydrate failed");
                     return;
@@ -792,6 +798,7 @@ async fn handle_overlay_join(
                             DaoError::Validation(_) => OverlayJoinRefusal::AddressSpaceExhausted,
                             _ => OverlayJoinRefusal::StoreUnavailable,
                         };
+                        drop(tenant_join_guard.take());
                         refuse(reason, format!("{e}")).await;
                         return;
                     }
@@ -807,6 +814,7 @@ async fn handle_overlay_join(
                 // this very call appended.
                 let blocks = state.overlay_networks.block_list(&network).await;
                 let Some(ip) = blocks.ip_for_ordinal(host) else {
+                    drop(tenant_join_guard.take());
                     refuse(
                         OverlayJoinRefusal::NetworkUnavailable,
                         format!(
@@ -898,6 +906,7 @@ async fn handle_overlay_join(
                 Some(revision)
             }
             Err(error) => {
+                drop(tenant_join_guard.take());
                 refuse(
                     OverlayJoinRefusal::StoreUnavailable,
                     format!("access projection not committed: {error}"),
@@ -914,6 +923,7 @@ async fn handle_overlay_join(
             network
         }
         _ => {
+            drop(tenant_join_guard.take());
             refuse(
                 OverlayJoinRefusal::StoreUnavailable,
                 "authority changed during join".into(),
@@ -1093,6 +1103,7 @@ async fn handle_overlay_join(
         {
             schedule_join_netmap_retry(state, tenant_id, network_id, self_id);
         }
+        drop(tenant_join_guard.take());
         repush_forced_pairs_on_join(state, &self_node).await;
         return;
     }
@@ -1133,94 +1144,18 @@ async fn handle_overlay_join(
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
     let self_name_projection = state.overlay_nodes.name_projection(&self_node).await.ok().flatten();
-    let epoch = next_epoch();
-
-    if state
-        .overlay_networks
-        .current_auth_revision(tenant_id)
-        .await
-        .ok()
-        != Some(network.auth_revision.max(1))
-    {
-        drop(_tenant_join_guard);
-        refuse(
-            OverlayJoinRefusal::StoreUnavailable,
-            "authority changed before join netmap; retry".into(),
-        )
-        .await;
-        return;
-    }
-    drop(_tenant_join_guard);
-    // Full netmap → joiner.
     let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
-    send_to_node(
-        state,
-        &self_node,
-        ServerMsg::OverlayNetmap {
-            org_relay_discovery: true,
-            path_trial_v1: true,
-            self_ip: self_node.overlay_ip.clone(),
-            network: OverlayNetworkInfo {
-                // FR-47 P5d — the block containing THIS node's own address,
-                // because that is what its TUN netmask and NAT scope must be
-                // derived from. `cidr_for_ip` returns the network's only block
-                // for every network that has not grown, so this is byte-for-
-                // byte the previous value there — which is every network until
-                // `multi_block_enabled` is turned on.
-                //
-                // Falls back to the network's own cidr if the node's address
-                // somehow inverts under no block (a row leased under a
-                // since-changed range): the old value is a better answer than
-                // an empty string.
-                cidr: join_blocks
-                    .cidr_for_ip(&self_node.overlay_ip)
-                    .unwrap_or(&network.cidr)
-                    .to_string(),
-                cidrs: join_blocks.cidrs().to_vec(),
-                org_relay_fallback_v1: true,
-                org_relay_loss_v1: true,
-                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
-                mtu: network.mtu,
-                magic_domain,
-                nameservers,
-                // W2 MagicDNS — the joiner's own name, for self-resolution
-                // (`<own-name>.<domain>`): peers exclude self, so without
-                // this the node's resolver NXDOMAINs its own name.
-                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
-                self_node_id: self_node.id,
-                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
-                // NAT-traversal Phase B — the STUN endpoints a node queries to
-                // gather its srflx candidates, derived from the configured
-                // coturn workers (a `turn:host:port` UDP listener also answers
-                // STUN Binding). Empty when TURN is unconfigured → srflx inert.
-                stun_urls,
-                strict_stun,
-                relay_probe_targets: crate::org_relay::probe_targets(
-                    state,
-                    &self_node,
-                    Some(&lines),
-                )
-                .await,
-                backbone_probe_targets: crate::org_relay::backbone_probe_targets(
-                    state,
-                    &self_node,
-                    Some(&lines),
-                )
-                .await,
-                auth_revision: network.auth_revision.max(1),
-            },
-            peers,
-            epoch,
-        },
-    )
-    .await;
-
+    let relay_probe_targets =
+        crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
+    let backbone_probe_targets =
+        crate::org_relay::backbone_probe_targets(state, &self_node, Some(&lines)).await;
+    let epoch = next_epoch();
     let auth_revision = network.auth_revision.max(1);
-    // Upsert delta → every peer, shaped PER RECIPIENT. The joiner is live by
-    // construction. A recipient that may not see the joiner gets an explicit
-    // `removes` rather than mere omission: omitting a peer (or shipping
-    // `reachable: false`) is a no-op against an already-installed peer — only
-    // the removes branch tears down the WG peer, its route and its carrier.
+
+    // Pre-shape every recipient's delta BEFORE the final authority check and
+    // dispatch while still holding `tenant_join_guard`, so concurrent joins
+    // enqueue full netmaps and peer deltas in strict `auth_revision` order.
+    let mut peer_deltas: Vec<(&OverlayNode, ServerMsg)> = Vec::with_capacity(all.len());
     for peer in all.iter().filter(|n| n.id != self_node.id) {
         let peer_src = overlay_source_of(state, peer).await;
         // The shaped peer here is the JOINER, whose identity we already have.
@@ -1252,8 +1187,7 @@ async fn handle_overlay_join(
             }
             None => (vec![], vec![self_node.id.unwrap_or_default()]),
         };
-        send_to_node(
-            state,
+        peer_deltas.push((
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
@@ -1261,9 +1195,65 @@ async fn handle_overlay_join(
                 upserts,
                 removes,
             },
+        ));
+    }
+
+    if state
+        .overlay_networks
+        .current_auth_revision(tenant_id)
+        .await
+        .ok()
+        != Some(auth_revision)
+    {
+        drop(tenant_join_guard.take());
+        refuse(
+            OverlayJoinRefusal::StoreUnavailable,
+            "authority changed before join netmap; retry".into(),
         )
         .await;
+        return;
     }
+
+    // Full netmap → joiner, then deltas → peers, under `tenant_join_guard` so
+    // no later join can overtake this revision's publication.
+    send_to_node(
+        state,
+        &self_node,
+        ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
+            self_ip: self_node.overlay_ip.clone(),
+            network: OverlayNetworkInfo {
+                cidr: join_blocks
+                    .cidr_for_ip(&self_node.overlay_ip)
+                    .unwrap_or(&network.cidr)
+                    .to_string(),
+                cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
+                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
+                mtu: network.mtu,
+                magic_domain,
+                nameservers,
+                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_node_id: self_node.id,
+                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
+                stun_urls,
+                strict_stun,
+                relay_probe_targets,
+                backbone_probe_targets,
+                auth_revision,
+            },
+            peers,
+            epoch,
+        },
+    )
+    .await;
+
+    for (peer, delta) in peer_deltas {
+        send_to_node(state, peer, delta).await;
+    }
+    drop(tenant_join_guard);
 
     // P7 — a node that restarted mid-escalation lost its client-side DERP pin
     // (it lives in process memory); re-push any unexpired forced pairs so it
@@ -4186,6 +4176,8 @@ async fn fan_delta_to(
     }
 }
 
+const TUNNEL_CLIENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Deliver a `ServerMsg` to one overlay node, resolving its `node_ref`:
 /// agent nodes go through the Hub, tunnel-client nodes through the
 /// connection-lifetime registry. Best-effort — an offline node is
@@ -4211,7 +4203,9 @@ async fn send_to_node_checked(
                 .get(&tunnel_client_id)
                 .map(|e| e.value().clone());
             match tx {
-                Some(tx) => tx.send(msg).await.is_ok(),
+                Some(tx) => tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg))
+                    .await
+                    .is_ok_and(|r| r.is_ok()),
                 None => true,
             }
         }
@@ -4228,15 +4222,22 @@ pub async fn send_to_node(state: &NetworkState, node: &OverlayNode, msg: ServerM
         NodeRef::TunnelClient { tunnel_client_id } => {
             // Clone the Sender out of the DashMap Ref so the shard guard
             // isn't held across the `.await` (the established pattern in
-            // `remote_control::relay_to_client`).
+            // `remote_control::relay_to_client`). Bound the send so a stalled
+            // tunnel client can never backpressure tenant join/refan locks.
             let tx = state
                 .overlay_nodes_by_id
                 .get(tunnel_client_id)
                 .map(|e| e.value().clone());
             match tx {
                 Some(tx) => {
-                    if let Err(e) = tx.send(msg).await {
-                        debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
+                    match tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
+                        }
+                        Err(_) => {
+                            debug!(%tunnel_client_id, "overlay: client node channel backpressured; skipped");
+                        }
                     }
                 }
                 None => debug!(%tunnel_client_id, "overlay: client node not connected; skipped"),
@@ -4261,8 +4262,14 @@ pub async fn send_to_node_ref(state: &NetworkState, node_ref: &NodeRef, msg: Ser
                 .map(|e| e.value().clone());
             match tx {
                 Some(tx) => {
-                    if let Err(e) = tx.send(msg).await {
-                        debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
+                    match tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
+                        }
+                        Err(_) => {
+                            debug!(%tunnel_client_id, "overlay: client node channel backpressured; skipped");
+                        }
                     }
                 }
                 None => debug!(%tunnel_client_id, "overlay: client node not connected; skipped"),

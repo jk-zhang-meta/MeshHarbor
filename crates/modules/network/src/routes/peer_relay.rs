@@ -29,8 +29,9 @@ use axum::{
 use bson::{DateTime, oid::ObjectId};
 use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::models::{
-    Agent, AgentStatus, MAX_PEER_RELAY_BACKBONE_EDGES, PeerRelayAuditAction, PeerRelayAuditEvent,
-    PeerRelayDenyReason, PeerRelayMode, PeerRelayPolicy, RpcCap,
+    Agent, AgentStatus, DeviceZoneResolution, MAX_PEER_RELAY_BACKBONE_EDGES, NetworkZone,
+    PeerRelayAuditAction, PeerRelayAuditEvent, PeerRelayDenyReason, PeerRelayMode,
+    PeerRelayPolicy, RpcCap, resolve_device_zone,
 };
 use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
@@ -85,10 +86,29 @@ pub struct RelayDeviceView {
     pub static_endpoints: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub approved_backbone_edges: Vec<meshharbor_remote_control::models::PeerRelayBackboneEdge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 
-impl From<Agent> for RelayDeviceView {
-    fn from(a: Agent) -> Self {
+impl RelayDeviceView {
+    fn from_agent(
+        state: &NetworkState,
+        zones: &[NetworkZone],
+        a: Agent,
+    ) -> Self {
+        let country_code = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, &a);
+        let pinned_zone_id = a.pinned_zone_id.filter(|s| !s.trim().is_empty());
+        let (effective_zone_id, effective_zone_name) =
+            match resolve_device_zone(zones, pinned_zone_id.as_deref(), country_code.as_deref()) {
+                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+                _ => (None, None),
+            };
         Self {
             id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
             name: a.name,
@@ -96,6 +116,10 @@ impl From<Agent> for RelayDeviceView {
             serving: a.capabilities.has_rpc(RpcCap::RelayServer),
             static_endpoints: a.peer_relay_policy.static_endpoints,
             approved_backbone_edges: a.peer_relay_policy.approved_backbone_edges,
+            country_code,
+            pinned_zone_id,
+            effective_zone_id,
+            effective_zone_name,
         }
     }
 }
@@ -122,18 +146,15 @@ pub async fn get_settings(
         "MANAGE_AGENTS",
     )
     .await?;
-    let mode = state
-        .overlay_networks
-        .get_or_create(tid)
-        .await?
-        .peer_relay_mode;
+    let net = state.overlay_networks.get_or_create(tid).await?;
+    let mode = net.peer_relay_mode;
     let relays = state
         .fleet
         .agents
         .list_relay_approved(tid)
         .await?
         .into_iter()
-        .map(Into::into)
+        .map(|a| RelayDeviceView::from_agent(&state, &net.zones, a))
         .collect();
     Ok(Json(PeerRelaySettings { mode, relays }))
 }

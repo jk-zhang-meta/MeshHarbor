@@ -296,11 +296,19 @@ function removeStaticEndpoint(ep: string) {
 }
 
 function effectiveZoneIdFor(agentId: string): string | null {
+  const relay = peerRelayStore.relayForAgent(agentId)
   const a = agentId === props.agent.id ? props.agent : agentStore.agents.find((x) => x.id === agentId)
-  const direct = (a?.effective_zone_id || a?.pinned_zone_id || '').trim()
+  const direct = (
+    relay?.effective_zone_id ||
+    a?.effective_zone_id ||
+    relay?.pinned_zone_id ||
+    a?.pinned_zone_id ||
+    ''
+  ).trim()
   if (direct) return direct
+  if (!a && !relay) return null
   if (zonesStore.loadedTenantId === props.tenantId && zonesStore.zones.length > 0) {
-    const cc = (a?.country_code || '').trim().toUpperCase()
+    const cc = (relay?.country_code || a?.country_code || '').trim().toUpperCase()
     if (cc) {
       const matched = zonesStore.zones.find((z) => z.auto_countries.includes(cc))
       if (matched) return matched.id

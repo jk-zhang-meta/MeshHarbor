@@ -2377,8 +2377,19 @@ impl RelayProbeUpdates {
 ///
 /// Configured via `MESHHARBORD_OFFLINE_CONTINUITY_MAX_MS` (millisecond precision
 /// for deterministic tests) or `MESHHARBORD_OFFLINE_CONTINUITY_MAX_SECS` (seconds).
+#[cfg(test)]
+static TEST_OFFLINE_CONTINUITY_MAX_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Unset or `0` = unlimited offline continuity (the rc.307 default).
 pub fn offline_continuity_max_age() -> Option<Duration> {
+    #[cfg(test)]
+    {
+        let test_ms = TEST_OFFLINE_CONTINUITY_MAX_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if test_ms > 0 {
+            return Some(Duration::from_millis(test_ms));
+        }
+    }
     if let Some(ms) = crate::env::node_env("OFFLINE_CONTINUITY_MAX_MS")
         .and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -4768,16 +4779,57 @@ impl OverlayRuntime {
                 // AP/client isolation, an asymmetric firewall. Tear it down and
                 // switch the peer to relay (with a cooldown so the next netmap
                 // doesn't immediately re-upgrade it to direct).
+                () = async {
+                    match (control_detached_at, offline_continuity_max_age()) {
+                        (Some(detached_at), Some(max_age)) if !offline_continuity_expired => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(
+                                detached_at + max_age,
+                            ))
+                            .await
+                        }
+                        _ => std::future::pending::<()>().await,
+                    }
+                } => {
+                    if let (Some(detached_at), Some(max_age)) =
+                        (control_detached_at, offline_continuity_max_age())
+                        && !offline_continuity_expired
+                    {
+                        offline_continuity_expired = true;
+                        warn!(
+                            detached_ms = detached_at.elapsed().as_millis(),
+                            max_ms = max_age.as_millis(),
+                            "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
+                        );
+                        let mut all_ids: Vec<ObjectId> = by_node
+                            .keys()
+                            .chain(upgrade_probes.keys())
+                            .chain(current_peers.keys())
+                            .copied()
+                            .collect();
+                        all_ids.sort_unstable();
+                        all_ids.dedup();
+                        for nid in all_ids {
+                            invalidate_org_bind_identity(&nid, &mut org_q, &mut relay);
+                            self.evict_peer(
+                                nid, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                                &mut alloc_q, &mut upgrade_probes, &mut current_peers,
+                                &mut relay_refresh_cooldown,
+                            ).await;
+                        }
+                        org_discovery.invalidate();
+                        wg.sync_peer_ingress(&current_peers);
+                        if let Some(names) = &dns_names {
+                            sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                        }
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
+                }
                 _ = fallback.tick() => {
                     let t_arm = Instant::now();
                     if self.outbound.is_closed() && control_detached_at.is_none() {
                         control_detached_at = Some(Instant::now());
                         info!("overlay: control-WS channel closed — entering offline continuity window");
-                        if let Some(max_age) = offline_continuity_max_age()
-                            && !offline_continuity_expired
-                        {
-                            fallback.reset_after(max_age.min(FALLBACK_TICK));
-                        }
                     }
                     if let (Some(detached_at), Some(max_age)) =
                         (control_detached_at, offline_continuity_max_age())
@@ -5693,11 +5745,6 @@ impl OverlayRuntime {
                             control_detached_at = Some(Instant::now());
                             info!("overlay: control-WS detached — entering offline continuity window");
                         }
-                        if let Some(max_age) = offline_continuity_max_age()
-                            && !offline_continuity_expired
-                        {
-                            fallback.reset_after(max_age.min(FALLBACK_TICK));
-                        }
                     }
                     Some(OverlayEvent::JoinRefused { retryable }) => {
                         if control_detached_at.is_none() {
@@ -5706,11 +5753,6 @@ impl OverlayRuntime {
                                 retryable,
                                 "overlay: join refused on live control-WS — entering offline continuity window"
                             );
-                        }
-                        if let Some(max_age) = offline_continuity_max_age()
-                            && !offline_continuity_expired
-                        {
-                            fallback.reset_after(max_age.min(FALLBACK_TICK));
                         }
                         if retryable {
                             let delay = join_retry_delay(post_join_retry_attempt);
@@ -5823,6 +5865,11 @@ impl OverlayRuntime {
                                 applied_auth_revision,
                                 "overlay: ignoring stale full netmap with older auth_revision"
                             );
+                            if control_detached_at.is_some() && post_join_retry.is_none() {
+                                let delay = join_retry_delay(post_join_retry_attempt);
+                                post_join_retry_attempt = post_join_retry_attempt.saturating_add(1);
+                                post_join_retry = Some(Box::pin(tokio::time::sleep(delay)));
+                            }
                             continue;
                         }
                         // A full netmap is an authoritative full-table replacement
@@ -15552,6 +15599,7 @@ mod org_upgrade_tests {
         impl Drop for ResetTestDelay {
             fn drop(&mut self) {
                 TEST_JOIN_RETRY_BASE_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+                TEST_OFFLINE_CONTINUITY_MAX_MS.store(0, std::sync::atomic::Ordering::Relaxed);
             }
         }
         TEST_JOIN_RETRY_BASE_MS.store(25, std::sync::atomic::Ordering::Relaxed);
@@ -15579,7 +15627,10 @@ mod org_upgrade_tests {
         let plane = crate::overlay::carrier_plane::CarrierPlane::new();
         *plane.lan_only.lock().unwrap() = Some(Vec::new());
         *plane.mirrored_guest.lock().unwrap() = Some(true);
-        let rt = OverlayRuntime::new_relay(kp, out_tx, tf, 1280).with_carrier_plane(Some(plane));
+        let view_tx = tokio::sync::watch::channel(crate::localapi::OverlayView::default()).0;
+        let rt = OverlayRuntime::new_relay(kp, out_tx, tf, 1280)
+            .with_carrier_plane(Some(plane))
+            .with_peer_view(view_tx.clone());
         let rt_task = tokio::spawn(rt.run(evt_rx, Vec::new()));
 
         async fn recv_join(rx: &mut mpsc::Receiver<ClientMsg>, wait_ms: u64) -> bool {
@@ -15618,37 +15669,68 @@ mod org_upgrade_tests {
             "retryable pre-netmap refusal must re-send OverlayJoin"
         );
 
-        // 3. Deliver authoritative Netmap to enter steady-state post-netmap loop.
+        // 3. Deliver authoritative Netmap (with 1 peer) to enter steady-state post-netmap loop.
+        let peer_id = ObjectId::new();
+        let peer = NetmapPeer {
+            node_id: peer_id,
+            overlay_ip: "100.64.0.20".to_string(),
+            name: "peer-twenty".to_string(),
+            wg_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: true,
+            supports_forced_derp: false,
+            supports_derp_floor: false,
+            relay_strategy: None,
+            prefer_relay_ms: None,
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+            ingress_rules_preview: None,
+        };
+        let mk_net = |rev: u64| OverlayNetworkInfo {
+            cidr: "100.64.0.0/10".into(),
+            cidrs: vec!["100.64.0.0/10".into()],
+            mtu: 1280,
+            magic_domain: None,
+            nameservers: vec![],
+            self_name: None,
+            self_node_id: Some(ObjectId::new()),
+            self_name_revision: None,
+            stun_urls: vec![],
+            strict_stun: false,
+            relay_probe_targets: vec![],
+            backbone_probe_targets: vec![],
+            org_relay_fallback_v1: true,
+            org_relay_loss_v1: true,
+            path_quality_v1: false,
+            auth_revision: rev,
+        };
         evt_tx
             .send(OverlayEvent::Netmap {
                 self_ip: "100.64.0.10".into(),
-                network: OverlayNetworkInfo {
-                    cidr: "100.64.0.0/10".into(),
-                    cidrs: vec!["100.64.0.0/10".into()],
-                    mtu: 1280,
-                    magic_domain: None,
-                    nameservers: vec![],
-                    self_name: None,
-                    self_node_id: Some(ObjectId::new()),
-                    self_name_revision: None,
-                    stun_urls: vec![],
-                    strict_stun: false,
-                    relay_probe_targets: vec![],
-                    backbone_probe_targets: vec![],
-                    org_relay_fallback_v1: true,
-                    org_relay_loss_v1: true,
-                    path_quality_v1: false,
-                    auth_revision: 1,
-                },
-                peers: vec![],
+                network: mk_net(2),
+                peers: vec![peer.clone()],
                 org_relay_discovery: true,
                 path_trial_v1: false,
             })
             .await
             .unwrap();
 
-        // Drain any post-first-netmap initial messages before testing post-netmap refusal.
         tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(view_tx.borrow().peers.len(), 1);
         while out_rx.try_recv().is_ok() {}
 
         // 4. Post-netmap terminal refusal (`retryable: false`) must NOT retry.
@@ -15669,6 +15751,63 @@ mod org_upgrade_tests {
         assert!(
             recv_join(&mut out_rx, 500).await,
             "retryable post-netmap refusal must re-send OverlayJoin on open WS"
+        );
+
+        // 6. Restore authoritative Netmap, then verify repeated `JoinRefused` bursts
+        // do NOT postpone the fixed-deadline offline continuity lease eviction.
+        TEST_OFFLINE_CONTINUITY_MAX_MS.store(120, std::sync::atomic::Ordering::Relaxed);
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: mk_net(3),
+                peers: vec![peer],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(view_tx.borrow().peers.len(), 1);
+        while out_rx.try_recv().is_ok() {}
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(240) {
+            evt_tx
+                .send(OverlayEvent::JoinRefused { retryable: true })
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            while out_rx.try_recv().is_ok() {}
+            if view_tx.borrow().peers.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            view_tx.borrow().peers.is_empty(),
+            "repeated JoinRefused bursts must not postpone offline continuity expiry"
+        );
+
+        // 7. While detached, an overtaken stale full Netmap (`auth_revision: 1 < 3`)
+        // is ignored without rollback AND schedules a fresh retry `OverlayJoin`.
+        evt_tx
+            .send(OverlayEvent::ControlDetached)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        while out_rx.try_recv().is_ok() {}
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: mk_net(1),
+                peers: vec![],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            recv_join(&mut out_rx, 500).await,
+            "stale full netmap while detached must schedule retry OverlayJoin"
         );
 
         drop(evt_tx);

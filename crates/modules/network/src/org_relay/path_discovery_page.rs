@@ -84,7 +84,7 @@ pub(super) async fn page(
             return unavailable();
         };
         let endpoints = if Some(relay.node_id) == requester.id {
-            prepend_loopback_relay_endpoint(&relay.endpoints)
+            prepend_loopback_relay_endpoint(relay.relay_port, &relay.endpoints)
         } else {
             relay.endpoints.clone()
         };

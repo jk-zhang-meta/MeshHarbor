@@ -1347,7 +1347,7 @@ pub(crate) fn netmask_to_prefix(nm: std::net::Ipv4Addr) -> u8 {
 /// Forward an `rc:overlay.*` `ServerMsg` to the runtime. Returns the
 /// message untouched if it isn't an overlay message, so the caller's
 /// normal dispatch handles everything else.
-pub fn intercept(
+pub async fn intercept(
     evt_tx: &mpsc::Sender<OverlayEvent>,
     msg: ServerMsg,
     is_primary: bool,
@@ -1375,18 +1375,39 @@ pub fn intercept(
         }
         return None;
     }
-    intercept_with_bridge_installer(evt_tx, msg, is_primary, local_agent_id, |bridge| {
+    match classify_intercept(msg, is_primary, local_agent_id, |bridge| {
         crate::relay_server::install_bridge_from_wire(bridge)
-    })
+    }) {
+        InterceptOutcome::MustDeliver(evt) => {
+            if evt_tx.send(evt).await.is_err() {
+                warn!("overlay: event channel closed; dropping authoritative join/netmap event");
+            }
+            None
+        }
+        InterceptOutcome::Forward(evt) => {
+            if evt_tx.try_send(evt).is_err() {
+                warn!("overlay: event channel full/closed; dropping a netmap update");
+            }
+            None
+        }
+        InterceptOutcome::Consumed => None,
+        InterceptOutcome::PassThrough(other) => Some(other),
+    }
 }
 
-fn intercept_with_bridge_installer(
-    evt_tx: &mpsc::Sender<OverlayEvent>,
+enum InterceptOutcome {
+    MustDeliver(OverlayEvent),
+    Forward(OverlayEvent),
+    Consumed,
+    PassThrough(ServerMsg),
+}
+
+fn classify_intercept(
     msg: ServerMsg,
     is_primary: bool,
     local_agent_id: &str,
     install: impl FnOnce(meshharbor_remote_control::signaling::RelayBridgeWire),
-) -> Option<ServerMsg> {
+) -> InterceptOutcome {
     let evt = match msg {
         ServerMsg::OverlayNetmap {
             self_ip,
@@ -1395,13 +1416,15 @@ fn intercept_with_bridge_installer(
             org_relay_discovery,
             path_trial_v1,
             ..
-        } => OverlayEvent::Netmap {
-            self_ip,
-            network,
-            peers,
-            org_relay_discovery,
-            path_trial_v1,
-        },
+        } => {
+            return InterceptOutcome::MustDeliver(OverlayEvent::Netmap {
+                self_ip,
+                network,
+                peers,
+                org_relay_discovery,
+                path_trial_v1,
+            });
+        }
         ServerMsg::OverlayNetmapDelta {
             epoch,
             auth_revision,
@@ -1415,18 +1438,13 @@ fn intercept_with_bridge_installer(
         },
         // FR-47 — the server could not complete our join and said why.
         //
-        // Logged at ERROR and consumed here rather than forwarded as an
-        // `OverlayEvent`: there is no runtime to tell, because the runtime is
-        // exactly what never came up. Before this frame existed the same
-        // situation produced NOTHING on this host — the daemon simply waited
-        // on a netmap forever, which is indistinguishable from a slow server.
-        //
         // When `reason.is_retryable()` (`StoreUnavailable`, e.g. concurrent
         // authority / access-projection contention on a fleet-wide reconnect),
-        // forward `JoinRefused { retryable: true }` so the persistent runtime
-        // schedules a jittered re-join on the still-open control WS instead of
-        // stranding detached forever; terminal refusals (`retryable: false`,
-        // such as `AddressSpaceExhausted` or `KeyUnauthorized`) never retry.
+        // reliably forward `JoinRefused { retryable: true }` so the persistent
+        // runtime schedules a jittered re-join on the still-open control WS
+        // instead of stranding detached forever; terminal refusals
+        // (`retryable: false`, such as `AddressSpaceExhausted` or
+        // `KeyUnauthorized`) cancel pending retries and start continuity clocks.
         ServerMsg::OverlayJoinRefused { reason, detail } => {
             if reason.is_retryable() {
                 tracing::warn!(
@@ -1445,10 +1463,9 @@ fn intercept_with_bridge_installer(
                 );
             }
             record_join_refusal(reason, &detail);
-            let _ = evt_tx.try_send(OverlayEvent::JoinRefused {
+            return InterceptOutcome::MustDeliver(OverlayEvent::JoinRefused {
                 retryable: reason.is_retryable(),
             });
-            return None;
         }
         // T12 — a host with the TURN tier switched off never dials a coturn
         // worker. A pair grant stops here, before any allocation exists.
@@ -1462,7 +1479,7 @@ fn intercept_with_bridge_installer(
                      relay grants are ignored and no coturn worker is dialled"
                 );
             }
-            return None;
+            return InterceptOutcome::Consumed;
         }
         // The warm grant also carries the netcheck measurement, which waits
         // for it: forward it WITHOUT credentials, so the measurement completes
@@ -1520,7 +1537,7 @@ fn intercept_with_bridge_installer(
             if !is_primary =>
         {
             warn!("overlay: org-relay frame on a secondary org's WS; dropped");
-            return None;
+            return InterceptOutcome::Consumed;
         }
         trial @ (ServerMsg::OverlayPathTrialReturnPrepare { .. }
         | ServerMsg::OverlayPathTrialReturnCommit { .. }
@@ -1572,14 +1589,14 @@ fn intercept_with_bridge_installer(
             } else {
                 warn!("overlay: bridge grant source does not match local agent; dropped");
             }
-            return None;
+            return InterceptOutcome::Consumed;
         }
         ServerMsg::OverlayRelayBridgeRevoke {
             trial_id,
             generation,
         } => {
             crate::relay_server::revoke_bridge_from_wire(trial_id, generation);
-            return None;
+            return InterceptOutcome::Consumed;
         }
         ServerMsg::OverlayRelayServe {
             vni,
@@ -1597,23 +1614,20 @@ fn intercept_with_bridge_installer(
                 idle_secs,
                 max_lifetime_secs,
             );
-            return None;
+            return InterceptOutcome::Consumed;
         }
         ServerMsg::OverlayRelayRevoke { vni, scope } => {
             // A node can serve one VNI while using the same VNI on a different
             // relay. A scoped revoke belongs to exactly one of these roles.
             if scope.peer_node_id.is_none() {
                 crate::relay_server::revoke_from_wire(vni, scope.generation);
-                return None;
+                return InterceptOutcome::Consumed;
             }
             OverlayEvent::OrgRelayRevoke { vni, scope }
         }
-        other => return Some(other),
+        other => return InterceptOutcome::PassThrough(other),
     };
-    if evt_tx.try_send(evt).is_err() {
-        warn!("overlay: event channel full/closed; dropping a netmap update");
-    }
-    None
+    InterceptOutcome::Forward(evt)
 }
 
 /// The derived-port layout is split across two crates (agent-core computes,
@@ -1635,10 +1649,10 @@ mod derived_port_layout_lock {
             }
         };
         for (agent, tenant) in [("other", "org"), ("agent", "other")] {
-            assert!(super::intercept(&tx, msg(agent, tenant), false, "agent", "org").is_none());
+            assert!(super::intercept(&tx, msg(agent, tenant), false, "agent", "org").await.is_none());
             assert!(rx.try_recv().is_err());
         }
-        assert!(super::intercept(&tx, msg("agent", "org"), false, "agent", "org").is_none());
+        assert!(super::intercept(&tx, msg("agent", "org"), false, "agent", "org").await.is_none());
         assert!(
             matches!(rx.try_recv(), Ok(tunnel_core::overlay::runtime::OverlayEvent::SelfName { name, .. }) if name == "alias-label")
         );
@@ -2389,8 +2403,8 @@ mod overlay_fallback_tests {
 #[cfg(test)]
 mod org_relay_discovery_dispatch_tests {
     use super::*;
-    #[test]
-    fn scoped_revoke_routes_only_to_its_recipient_role() {
+    #[tokio::test]
+    async fn scoped_revoke_routes_only_to_its_recipient_role() {
         use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
         let (tx, mut rx) = mpsc::channel(4);
         let scope = RelayRevokeScopeWire {
@@ -2409,6 +2423,7 @@ mod org_relay_discovery_dispatch_tests {
                 "",
                 ""
             )
+            .await
             .is_none()
         );
         assert!(
@@ -2431,6 +2446,7 @@ mod org_relay_discovery_dispatch_tests {
                 "",
                 ""
             )
+            .await
             .is_none()
         );
         assert!(matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayRevoke {
@@ -2440,7 +2456,6 @@ mod org_relay_discovery_dispatch_tests {
 
     #[test]
     fn bridge_dispatch_checks_primary_enrollment_and_local_source() {
-        let (tx, _) = mpsc::channel(2);
         let local = bson::oid::ObjectId::new();
         let make = || ServerMsg::OverlayRelayBridgeServe {
             bridge: meshharbor_remote_control::signaling::RelayBridgeWire {
@@ -2466,12 +2481,12 @@ mod org_relay_discovery_dispatch_tests {
             (true, "not-an-object-id".into(), false),
         ] {
             let installed = std::cell::Cell::new(false);
-            assert!(
-                intercept_with_bridge_installer(&tx, make(), primary, &identity, |_| {
+            assert!(matches!(
+                classify_intercept(make(), primary, &identity, |_| {
                     installed.set(true);
-                })
-                .is_none()
-            );
+                }),
+                InterceptOutcome::Consumed
+            ));
             assert_eq!(installed.get(), expected);
         }
     }
@@ -2483,7 +2498,7 @@ mod org_relay_discovery_dispatch_tests {
             "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]
         }))
         .unwrap();
-        assert!(intercept(&tx, msg, true, "", "").is_none());
+        assert!(intercept(&tx, msg, true, "", "").await.is_none());
         assert!(matches!(
             rx.try_recv(),
             Ok(OverlayEvent::Netmap {
@@ -2504,9 +2519,9 @@ mod org_relay_discovery_dispatch_tests {
             next_cursor: None,
             scan: None,
         };
-        assert!(intercept(&tx, msg(), false, "", "").is_none());
+        assert!(intercept(&tx, msg(), false, "", "").await.is_none());
         assert!(rx.try_recv().is_err());
-        assert!(intercept(&tx, msg(), true, "", "").is_none());
+        assert!(intercept(&tx, msg(), true, "", "").await.is_none());
         assert!(
             matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayCandidates {
             peer_node_id: id, request_id: 17, ttl_secs: 0, candidates, ..
@@ -2516,23 +2531,32 @@ mod org_relay_discovery_dispatch_tests {
     }
 
     #[tokio::test]
-    async fn join_refused_forwards_retryability_to_runtime() {
-        let (tx, mut rx) = mpsc::channel(4);
+    async fn join_refused_forwards_retryability_reliably_even_when_channel_is_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(OverlayEvent::ControlDetached).unwrap();
+
+        let tx_clone = tx.clone();
         let transient = ServerMsg::OverlayJoinRefused {
             reason: signaling::OverlayJoinRefusal::StoreUnavailable,
             detail: "authority changed before join netmap; retry".into(),
         };
-        assert!(intercept(&tx, transient, true, "", "").is_none());
+        let send_task = tokio::spawn(async move {
+            assert!(intercept(&tx_clone, transient, true, "", "").await.is_none());
+        });
+        tokio::task::yield_now().await;
+        assert!(!send_task.is_finished(), "must wait for capacity rather than drop refusal");
+        assert!(matches!(rx.recv().await, Some(OverlayEvent::ControlDetached)));
+        send_task.await.unwrap();
         assert!(matches!(
-            rx.try_recv(),
-            Ok(OverlayEvent::JoinRefused { retryable: true })
+            rx.recv().await,
+            Some(OverlayEvent::JoinRefused { retryable: true })
         ));
 
         let terminal = ServerMsg::OverlayJoinRefused {
             reason: signaling::OverlayJoinRefusal::AddressSpaceExhausted,
             detail: "no free IPv4 in pool".into(),
         };
-        assert!(intercept(&tx, terminal, true, "", "").is_none());
+        assert!(intercept(&tx, terminal, true, "", "").await.is_none());
         assert!(matches!(
             rx.try_recv(),
             Ok(OverlayEvent::JoinRefused { retryable: false })

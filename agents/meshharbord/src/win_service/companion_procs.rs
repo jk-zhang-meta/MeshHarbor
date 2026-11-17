@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, FALSE, HANDLE, HMODULE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    CloseHandle, FALSE, HANDLE, HMODULE, INVALID_HANDLE_VALUE, STILL_ACTIVE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -42,9 +42,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::ProcessStatus::{K32EnumProcessModules, K32GetModuleFileNameExW};
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW,
-    TerminateProcess, WaitForSingleObject,
+    GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
+    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
 };
 
 /// A running process started from the companion's path.
@@ -99,36 +99,67 @@ fn matches_companion_path(path: &Path, normalized_exe: &str) -> bool {
     norm == normalized_exe || norm == format!("{normalized_exe}.old")
 }
 
+struct QuitSentinelGuard(PathBuf);
+impl Drop for QuitSentinelGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn verify_handle_matches(h: HANDLE, pid: u32, want: &str) -> bool {
+    // Prefer the loader's initial module entry when `PROCESS_VM_READ` is
+    // available (immune to later file renames), falling back to
+    // `QueryFullProcessImageNameW` on the already-pinned kernel process handle
+    // `h` (which matches both `exe` and `exe.old` without PID-reuse races).
+    let vm_path = unsafe {
+        let h_vm = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if h_vm.is_null() {
+            None
+        } else {
+            let h_vm = OwnedHandle(h_vm);
+            started_from(h_vm.0)
+        }
+    };
+    vm_path
+        .or_else(|| query_full_image_name(h))
+        .is_some_and(|p| matches_companion_path(&p, want))
+}
+
 /// Stop each pid that is STILL a process started from `exe`, and wait (up to
 /// `timeout` in total) for it to be gone. Returns the pids confirmed exited.
 ///
-/// The check and the kill go through ONE handle: a pid is only a number, and
-/// between [`find`] and here (a `spawn_blocking` hop at least) the process can
-/// exit and the pid be reused. Run as SYSTEM, `PROCESS_TERMINATE` opens almost
-/// anything, so a kill by a bare pid could take an unrelated process down.
-/// Holding the handle pins the process object; re-verifying its started-from
-/// path on that same handle makes "the process we verified" and "the process
-/// we kill" the same object. A pid that no longer verifies is left alone and
-/// not counted.
+/// Primary path (`SYSTEM` service host on perMachine installs, and same-IL
+/// per-user installs across all versions): open one handle with
+/// `PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION`,
+/// verify the executable path on that pinned handle, and `TerminateProcess`.
+///
+/// Cross-integrity fallback (unprivileged Medium-IL per-user daemon vs a
+/// companion manually launched elevated at High IL): Windows MIC denies
+/// `PROCESS_TERMINATE` and UIPI blocks `WM_COPYDATA` without UAC. Never spawn
+/// `exe` with CLI flags (which UIPI drops on elevated receivers and which
+/// causes pre-0.4.167 receivers to focus/show their window). Instead, pin each
+/// target via `PROCESS_QUERY_LIMITED_INFORMATION`, write a PID-scoped sidecar
+/// `<exe>.quit` in the install directory (unaffected by UIPI; watched by
+/// 0.4.167+ companions), and poll `GetExitCodeProcess` on the pinned handle. If
+/// an elevated pre-0.4.167 companion does not exit within `timeout`, omit it
+/// from `gone` so `swap()` aborts cleanly without renaming the live EXE aside.
 pub fn terminate_verified(exe: &Path, pids: &[u32], timeout: Duration) -> Vec<u32> {
     let want = normalize(exe);
     let deadline = std::time::Instant::now() + timeout;
     let mut gone = Vec::new();
+    let mut cooperative_wait: Vec<(u32, OwnedHandle)> = Vec::new();
     for &pid in pids {
         // SAFETY: plain OpenProcess; the handle is owned below.
         let h = unsafe {
             OpenProcess(
-                PROCESS_TERMINATE
-                    | PROCESS_SYNCHRONIZE
-                    | PROCESS_QUERY_INFORMATION
-                    | PROCESS_VM_READ,
+                PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
                 FALSE,
                 pid,
             )
         };
         if !h.is_null() {
             let h = OwnedHandle(h);
-            if started_from(h.0).is_none_or(|p| !matches_companion_path(&p, &want)) {
+            if !verify_handle_matches(h.0, pid, &want) {
                 continue;
             }
             // SAFETY: `h` is a live process handle with PROCESS_TERMINATE, just
@@ -146,25 +177,40 @@ pub fn terminate_verified(exe: &Path, pids: &[u32], timeout: Duration) -> Vec<u3
             }
             continue;
         }
-        // Medium-integrity user daemon vs elevated user companion: fall back to
-        // `PROCESS_QUERY_LIMITED_INFORMATION` verification + `--quit` single-instance IPC.
-        if loaded_path(pid).is_none_or(|p| !matches_companion_path(&p, &want)) {
+        let h_lim = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+        if h_lim.is_null() {
             continue;
         }
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = std::process::Command::new(exe)
-                .arg("--quit")
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
+        let h_lim = OwnedHandle(h_lim);
+        if query_full_image_name(h_lim.0).is_some_and(|p| matches_companion_path(&p, &want)) {
+            cooperative_wait.push((pid, h_lim));
         }
-        while std::time::Instant::now() < deadline {
-            if loaded_path(pid).is_none_or(|p| !matches_companion_path(&p, &want)) {
-                gone.push(pid);
-                break;
+    }
+    if !cooperative_wait.is_empty() {
+        let quit_path = PathBuf::from(format!("{}.quit", exe.display()));
+        let payload = cooperative_wait
+            .iter()
+            .map(|(pid, _)| pid.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _sentinel = std::fs::write(&quit_path, format!("{payload}\n"))
+            .ok()
+            .map(|()| QuitSentinelGuard(quit_path));
+        while !cooperative_wait.is_empty() && std::time::Instant::now() < deadline {
+            cooperative_wait.retain(|(pid, h_lim)| {
+                let mut code = 0u32;
+                // SAFETY: `h_lim` has `PROCESS_QUERY_LIMITED_INFORMATION`.
+                let ok = unsafe { GetExitCodeProcess(h_lim.0, &mut code) };
+                if ok != 0 && (code as i32) != STILL_ACTIVE {
+                    gone.push(*pid);
+                    false
+                } else {
+                    true
+                }
+            });
+            if !cooperative_wait.is_empty() {
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(100));
         }
     }
     gone

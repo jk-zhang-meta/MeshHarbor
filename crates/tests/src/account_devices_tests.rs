@@ -783,6 +783,21 @@ async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_pres
         .unwrap()
         .id
         .unwrap();
+    let static_cn_router = AgentDao::new(&app.db)
+        .create(
+            tid,
+            me.id,
+            "static-cn-gw".into(),
+            ObjectId::new().to_hex(),
+            OsKind::Linux,
+            "0.4.167".into(),
+            "synthetic-tok-3".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
     app.db
         .collection::<Document>("agents")
         .update_one(
@@ -796,6 +811,22 @@ async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_pres
         .update_one(
             doc! { "_id": hk_dev },
             doc! { "$set": { "public_ip": "202.181.7.10" } },
+        )
+        .await
+        .unwrap();
+    // Auto router with no persisted `public_ip` and only an approved public CN `static_endpoints`
+    // must resolve to `"cn"` in `/api/account/devices`, matching `agent_effective_country`.
+    app.db
+        .collection::<Document>("agents")
+        .update_one(
+            doc! { "_id": static_cn_router },
+            doc! { "$set": {
+                "peer_relay_policy": {
+                    "serve": true,
+                    "static_endpoints": ["139.199.1.45:3478"],
+                    "approved_backbone_edges": []
+                }
+            } },
         )
         .await
         .unwrap();
@@ -835,7 +866,7 @@ async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_pres
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().await.unwrap();
     let items = body["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3);
 
     let cn_row = items.iter().find(|r| r["id"] == cn_dev.to_hex()).unwrap();
     assert_eq!(cn_row["public_ip"], json!("139.199.1.45"));
@@ -853,4 +884,12 @@ async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_pres
     assert!(hk_row.get("pinned_zone_id").is_none());
     assert_eq!(hk_row["effective_zone_id"], json!("non-cn"));
     assert_eq!(hk_row["effective_zone_name"], json!("非 CN 区"));
+
+    let static_cn_row = items
+        .iter()
+        .find(|r| r["id"] == static_cn_router.to_hex())
+        .unwrap();
+    assert_eq!(static_cn_row["country_code"], json!("CN"));
+    assert_eq!(static_cn_row["effective_zone_id"], json!("cn"));
+    assert_eq!(static_cn_row["effective_zone_name"], json!("CN 区"));
 }

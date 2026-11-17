@@ -298,7 +298,13 @@ pub(super) async fn prepare_reusing(
             None
         };
         let candidates = plan_mint_candidates_with_trial_diagnostics(
-            state, requester, peer, reuse, scope, diagnostic,
+            state,
+            requester,
+            peer,
+            reuse,
+            scope,
+            network_zones_active,
+            diagnostic,
         )
         .await?;
         for plan in candidates {
@@ -460,6 +466,7 @@ mod tests {
         Plan {
             relay: node,
             relay_agent_id: agent,
+            relay_port: crate::org_relay::limits::DEFAULT_RELAY_PORT,
             endpoints: vec![],
             backbone_edges: vec![],
             implicit,

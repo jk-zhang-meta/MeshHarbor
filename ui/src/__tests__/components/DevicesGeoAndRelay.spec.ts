@@ -1611,5 +1611,105 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
         ],
       },
     )
+    wrapper.unmount()
+
+    // Also verify cross_border defaults accurately when the target relay is outside
+    // page 1 of `agentStore.agents` (>100 agents) and only present in `peerRelayStore.relays`!
+    const zonesStore = useNetworkZonesStore()
+    zonesStore.loadedTenantId = TID
+    zonesStore.zones = [
+      {
+        id: 'cn',
+        name: 'CN 区',
+        auto_countries: ['CN'],
+        is_default: false,
+        gateway_relay_ids: [gzAgent.id],
+        cross_zone_mode: 'router_only',
+      },
+      {
+        id: 'non-cn',
+        name: '非 CN 区',
+        auto_countries: ['HK', 'US'],
+        is_default: true,
+        gateway_relay_ids: [hkAgent.id],
+        cross_zone_mode: 'router_only',
+      },
+    ]
+    agentStore.agents = [hkAgent] // `gzAgent` is NOT in page 1 of `agentStore.agents`!
+    peerRelayStore.relays = [
+      {
+        id: gzAgent.id,
+        name: gzAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+        pinned_zone_id: 'cn',
+        effective_zone_id: 'cn',
+        effective_zone_name: 'CN 区',
+      },
+      {
+        id: hkAgent.id,
+        name: hkAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+        effective_zone_id: 'non-cn',
+        effective_zone_name: '非 CN 区',
+      },
+    ]
+    mockApi.put.mockClear()
+
+    wrapper = mount(PeerRelayPolicyDialog, {
+      props: {
+        modelValue: true,
+        tenantId: TID,
+        agent: hkAgent,
+      },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    const selectField2 = document.body.querySelector('.v-select .v-field') as HTMLElement
+    selectField2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    const option2 = Array.from(document.body.querySelectorAll('.v-list-item')).find((el) =>
+      el.textContent?.includes('po0-gz'),
+    ) as HTMLElement
+    option2.click()
+    await flushPromises()
+
+    const epInput2 = document.body.querySelector(
+      '[data-testid="backbone-endpoint-input"]',
+    ) as HTMLInputElement
+    const actualInput2 =
+      epInput2.tagName === 'INPUT'
+        ? epInput2
+        : (epInput2.querySelector('input') as HTMLInputElement)
+    actualInput2.value = '172.31.8.41:3478'
+    actualInput2.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const saveBtn2 = document.body.querySelector(
+      '[data-testid="peer-relay-save"]',
+    ) as HTMLButtonElement
+    saveBtn2.click()
+    await flushPromises()
+
+    expect(mockApi.put).toHaveBeenCalledWith(
+      `/tenant/${TID}/agent/${hkAgent.id}/peer-relay-policy`,
+      {
+        serve: true,
+        approved_backbone_edges: [
+          {
+            relay_agent_id: gzAgent.id,
+            endpoint: '172.31.8.41:3478',
+            cross_border: true,
+          },
+        ],
+      },
+    )
   })
 })

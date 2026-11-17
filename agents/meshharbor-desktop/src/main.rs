@@ -77,22 +77,20 @@ fn main() {
     // whether this person has been through the Welcome tour. A login start
     // for someone who switched it off ends here, before any window or tray.
     let argv: Vec<String> = std::env::args().collect();
-    let quit_requested = argv.iter().any(|a| a == "--quit");
     let launch = first_run::parse_launch_args(&argv);
     let state = meshharbor_node_core::desktop_state::load();
     let action = first_run::decide_startup(&launch, state.first_run_done, state.autostart_opt_out);
     tracing::info!(
         ?launch,
         ?action,
-        quit_requested,
         first_run_done = state.first_run_done,
         "startup"
     );
-    if !quit_requested && action == first_run::StartupAction::Exit {
+    if action == first_run::StartupAction::Exit {
         return;
     }
     let show_view = match &action {
-        first_run::StartupAction::Show(view) if !quit_requested => Some(view.clone()),
+        first_run::StartupAction::Show(view) => Some(view.clone()),
         _ => None,
     };
     first_run::set_launch_view(show_view.clone());
@@ -100,11 +98,6 @@ fn main() {
     tauri::Builder::default()
         .manage(account_window::CenterPolicy::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if args.iter().any(|a| a == "--quit") {
-                tracing::info!("meshharbor-desktop received --quit via single-instance IPC; exiting");
-                app.exit(0);
-                return;
-            }
             // Second invocation: focus the existing window instead
             // of starting a new tray. Prevents "10 trays running"
             // when an operator double-clicks the launcher.
@@ -230,10 +223,6 @@ fn main() {
             }
         })
         .setup(move |app| {
-            if quit_requested {
-                app.handle().exit(0);
-                return Ok(());
-            }
             // Install the tray icon + menu. The main window starts
             // hidden (visible:false in tauri.conf.json); operator
             // opens it from the tray menu.
@@ -262,6 +251,11 @@ fn main() {
             // from `cmd_get_pending_consents`.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(consent_watch_loop(handle));
+            #[cfg(target_os = "windows")]
+            {
+                let quit_handle = app.handle().clone();
+                tauri::async_runtime::spawn(quit_sentinel_watch_loop(quit_handle));
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -349,9 +343,53 @@ fn wants_banner(live: &[meshharbor_localapi::RcSessionInfo]) -> bool {
     live.iter().any(|s| !s.asking)
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn quit_sentinel_path_for(current_exe: &std::path::Path) -> std::path::PathBuf {
+    let raw = current_exe.to_string_lossy();
+    let base = raw.strip_suffix(".old").unwrap_or(&raw);
+    std::path::PathBuf::from(format!("{base}.quit"))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn sentinel_requests_pid(contents: &str, pid: u32) -> bool {
+    contents
+        .split_whitespace()
+        .filter_map(|tok| tok.parse::<u32>().ok())
+        .any(|target| target == pid)
+}
+
+#[cfg(target_os = "windows")]
+async fn quit_sentinel_watch_loop(app: tauri::AppHandle) {
+    let Some(exe) = std::env::current_exe().ok() else {
+        return;
+    };
+    let sentinel = quit_sentinel_path_for(&exe);
+    let own_pid = std::process::id();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if let Ok(contents) = std::fs::read_to_string(&sentinel)
+            && sentinel_requests_pid(&contents, own_pid)
+        {
+            tracing::info!(pid = own_pid, path = %sentinel.display(), "meshharbor-desktop observed quit sentinel; exiting");
+            app.exit(0);
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_sentinel_matches_own_pid_and_strips_old_suffix() {
+        assert_eq!(
+            quit_sentinel_path_for(std::path::Path::new(r"C:\MeshHarbor\meshharbor-desktop.exe.old")),
+            std::path::PathBuf::from(r"C:\MeshHarbor\meshharbor-desktop.exe.quit")
+        );
+        assert!(sentinel_requests_pid("100\n32528\n", 32528));
+        assert!(!sentinel_requests_pid("100\n99999\n", 32528));
+    }
 
     /// FR-93 P6h — the banner waits while the desktop's own dialog is still
     /// asking about every session, and comes up as soon as one of them sees
