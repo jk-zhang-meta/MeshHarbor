@@ -1418,6 +1418,9 @@ pub enum OverlayEvent {
     /// B3 — control-WS session detached while the persistent runtime remains
     /// up. Starts the bounded offline-continuity lease clock when configured.
     ControlDetached,
+    /// B3 — timestamped control-WS detach preserved across queue coalescing so
+    /// backlogged readers enforce the original continuity deadline.
+    ControlDetachedAt(Instant),
     /// FR-47 — the server refused our `OverlayJoin` on a live control-WS.
     /// When `retryable` is `true` (`StoreUnavailable`, e.g. transient access
     /// projection contention), the runtime schedules a jittered re-join on the
@@ -3497,7 +3500,7 @@ impl OverlayRuntime {
                     continue;
                 }
                 Some(OverlayEvent::NetmapDelta { .. }) => continue, // pre-netmap; ignore
-                Some(OverlayEvent::ControlDetached) => {
+                Some(OverlayEvent::ControlDetached | OverlayEvent::ControlDetachedAt(_)) => {
                     pre_join_retry = None;
                     pre_join_retry_attempt = 0;
                     continue;
@@ -5746,6 +5749,21 @@ impl OverlayRuntime {
                             info!("overlay: control-WS detached — entering offline continuity window");
                         }
                     }
+                    Some(OverlayEvent::ControlDetachedAt(at)) => {
+                        post_join_retry = None;
+                        post_join_retry_attempt = 0;
+                        match &mut control_detached_at {
+                            Some(prev) => {
+                                if at < *prev {
+                                    *prev = at;
+                                }
+                            }
+                            None => {
+                                control_detached_at = Some(at);
+                                info!("overlay: control-WS detached — entering offline continuity window");
+                            }
+                        }
+                    }
                     Some(OverlayEvent::JoinRefused { retryable }) => {
                         if control_detached_at.is_none() {
                             control_detached_at = Some(Instant::now());
@@ -5764,6 +5782,9 @@ impl OverlayRuntime {
                     }
                     Some(OverlayEvent::Reattach { outbound }) => {
                         let t_arm = Instant::now();
+                        if control_detached_at.is_none() {
+                            control_detached_at = Some(t_arm);
+                        }
                         post_join_retry = None;
                         post_join_retry_attempt = 0;
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::Reattach);

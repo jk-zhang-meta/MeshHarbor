@@ -1904,6 +1904,11 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
         serve: true,
         approved_backbone_edges: [
           {
+            relay_agent_id: gzAgent.id,
+            endpoint: '172.31.8.41:3478',
+            cross_border: true,
+          },
+          {
             relay_agent_id: countrylessOffPageId,
             endpoint: '172.31.8.88:3478',
             cross_border: true,

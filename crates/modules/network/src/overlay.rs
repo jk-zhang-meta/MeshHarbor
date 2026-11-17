@@ -1253,6 +1253,17 @@ async fn handle_overlay_join(
     for (peer, delta) in peer_deltas {
         send_to_node(state, peer, delta).await;
     }
+    if state
+        .overlay_networks
+        .current_auth_revision(tenant_id)
+        .await
+        .ok()
+        != Some(auth_revision)
+        && state.org_relay.live_conn(ident.connection_key()).as_deref() == Some(connection_id)
+        && let Some(self_id) = self_node.id
+    {
+        schedule_join_netmap_retry(state, tenant_id, network_id, self_id);
+    }
     drop(tenant_join_guard);
 
     // P7 — a node that restarted mid-escalation lost its client-side DERP pin
@@ -1325,9 +1336,15 @@ fn schedule_join_netmap_retry(
                 return;
             }
             let done = {
+                // Acquire `tenant_overlay_join_lock` BEFORE `slot.lock` (matching
+                // `handle_overlay_join -> cancel_join_netmap_retry` lock order) so
+                // deferred full-netmap + peer-delta publication cannot be overtaken
+                // by a newer concurrent join revision.
+                let _tenant_guard = tenant_overlay_join_lock(tenant_id).lock_owned().await;
                 let _guard = slot.lock.lock().await;
                 if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
                     drop(_guard);
+                    drop(_tenant_guard);
                     cleanup_join_netmap_retry_slot(key, slot);
                     return;
                 }
@@ -1475,64 +1492,10 @@ async fn try_complete_join_netmap(
         return false;
     }
     let epoch = next_epoch();
-    if state
-        .overlay_networks
-        .current_auth_revision(tenant_id)
-        .await
-        .ok()
-        != Some(network.auth_revision.max(1))
-    {
-        return false;
-    }
-    if let Some((connection, revision)) = access {
-        let written=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(bson::doc! {
-            "_id":self_id,"deleted_at":null,"access_connection_id":connection,"access_connection_origin":state.pod.origin(),
-            "access_projection_revision":revision as i64,
-        },bson::doc! {"$set":{"access_sent_auth_revision":revision as i64,"access_sent_epoch":epoch as i64}}).await;
-        if !written.is_ok_and(|r| r.matched_count == 1) {
-            return false;
-        }
-    }
     let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
-    if !send_to_node_checked(
-        state,
-        &self_node,
-        ServerMsg::OverlayNetmap {
-            org_relay_discovery: true,
-            path_trial_v1: true,
-            self_ip: self_node.overlay_ip.clone(),
-            network: OverlayNetworkInfo {
-                cidr: join_blocks
-                    .cidr_for_ip(&self_node.overlay_ip)
-                    .unwrap_or(&network.cidr)
-                    .to_string(),
-                cidrs: join_blocks.cidrs().to_vec(),
-                org_relay_fallback_v1: true,
-                org_relay_loss_v1: true,
-                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
-                mtu: network.mtu,
-                magic_domain,
-                nameservers,
-                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
-                self_node_id: self_node.id,
-                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
-                stun_urls,
-                strict_stun,
-                relay_probe_targets,
-                backbone_probe_targets,
-                auth_revision: network.auth_revision.max(1),
-            },
-            peers,
-            epoch,
-        },
-        access.is_some(),
-    )
-    .await
-    {
-        return false;
-    }
     let auth_revision = network.auth_revision.max(1);
     let self_reachable = is_reachable(&reach, &self_node);
+    let mut peer_deltas: Vec<(&OverlayNode, ServerMsg)> = Vec::with_capacity(all.len());
     for peer in all.iter().filter(|n| n.id != self_node.id) {
         if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
             return false;
@@ -1565,8 +1528,7 @@ async fn try_complete_join_netmap(
             }
             None => (vec![], vec![self_node.id.unwrap_or_default()]),
         };
-        send_to_node(
-            state,
+        peer_deltas.push((
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
@@ -1574,8 +1536,78 @@ async fn try_complete_join_netmap(
                 upserts,
                 removes,
             },
-        )
-        .await;
+        ));
+    }
+    if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+        return false;
+    }
+    if state
+        .overlay_networks
+        .current_auth_revision(tenant_id)
+        .await
+        .ok()
+        != Some(auth_revision)
+    {
+        return false;
+    }
+    if let Some((connection, revision)) = access {
+        let written=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(bson::doc! {
+            "_id":self_id,"deleted_at":null,"access_connection_id":connection,"access_connection_origin":state.pod.origin(),
+            "access_projection_revision":revision as i64,
+        },bson::doc! {"$set":{"access_sent_auth_revision":revision as i64,"access_sent_epoch":epoch as i64}}).await;
+        if !written.is_ok_and(|r| r.matched_count == 1) {
+            return false;
+        }
+    }
+    if !send_to_node_checked(
+        state,
+        &self_node,
+        ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
+            self_ip: self_node.overlay_ip.clone(),
+            network: OverlayNetworkInfo {
+                cidr: join_blocks
+                    .cidr_for_ip(&self_node.overlay_ip)
+                    .unwrap_or(&network.cidr)
+                    .to_string(),
+                cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
+                path_quality_v1: state.path_quality.mode() != crate::path_quality::Mode::Off,
+                mtu: network.mtu,
+                magic_domain,
+                nameservers,
+                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_node_id: self_node.id,
+                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
+                stun_urls,
+                strict_stun,
+                relay_probe_targets,
+                backbone_probe_targets,
+                auth_revision,
+            },
+            peers,
+            epoch,
+        },
+        access.is_some(),
+    )
+    .await
+    {
+        return false;
+    }
+    for (peer, delta) in peer_deltas {
+        send_to_node(state, peer, delta).await;
+    }
+    if access.is_none()
+        && state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await
+            .ok()
+            != Some(auth_revision)
+    {
+        return false;
     }
     repush_forced_pairs_on_join(state, &self_node).await;
     if lines.has_network_zones() {
@@ -3378,6 +3410,7 @@ async fn push_access_barrier_if_local(
         .ok_or_else(|| anyhow::anyhow!("online access target lacks a connection binding"))?;
     access_refresh_checkpoint(state, tenant_id, "receiver")?;
     let generation = std::sync::atomic::AtomicU64::new(1);
+    let _tenant_guard = tenant_overlay_join_lock(tenant_id).lock_owned().await;
     anyhow::ensure!(
         try_complete_join_netmap(
             state,
