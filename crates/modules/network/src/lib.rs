@@ -86,9 +86,19 @@ pub mod routes {
     pub mod tunnel;
 }
 
-/// Outbound channel for a connected node, keyed by its id. Used here for
-/// **tunnel-client** overlay nodes (`overlay_nodes_by_id`); the host keeps
-/// an alias of the same shape for its per-forward-session map until P7b.
+/// Per-connection backpressure disconnect triggers for tunnel-client WS sockets,
+/// fenced by `mpsc::WeakSender::same_channel` so an old stall cannot close a
+/// newly rebound connection.
+pub(crate) type TunnelClientCancels = Arc<
+    DashMap<
+        ObjectId,
+        (
+            mpsc::WeakSender<ServerMsg>,
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
+        ),
+    >,
+>;
 pub type TunnelClientOutbound = Arc<DashMap<ObjectId, mpsc::Sender<ServerMsg>>>;
 
 /// The module's state: the core, the fleet module it is built on, and what
@@ -116,6 +126,7 @@ pub struct NetworkState {
     /// via the Hub's `send_to_agent`). Used by the overlay broker to fan
     /// netmaps/deltas to client nodes.
     pub overlay_nodes_by_id: TunnelClientOutbound,
+    pub(crate) tunnel_client_cancels: TunnelClientCancels,
     /// Serializes lifecycle and overlay dispatch for one tunnel-client id.
     /// Weak entries do not keep a connection or its mutex alive.
     pub(crate) tunnel_overlay_locks:
@@ -329,6 +340,7 @@ impl Module for NetworkState {
             overlay_nodes: Arc::new(OverlayNodeDao::new(db)),
             overlay_policies: Arc::new(OverlayPolicyDao::new(db)),
             overlay_nodes_by_id: Arc::new(DashMap::new()),
+            tunnel_client_cancels: Arc::new(DashMap::new()),
             tunnel_overlay_locks: Arc::new(DashMap::new()),
             admission_nodes: Arc::new(DashMap::new()),
             derp_registry: Arc::new(DashMap::new()),

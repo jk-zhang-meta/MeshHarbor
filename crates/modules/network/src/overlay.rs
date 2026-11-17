@@ -1216,7 +1216,7 @@ async fn handle_overlay_join(
 
     // Full netmap → joiner, then deltas → peers, under `tenant_join_guard` so
     // no later join can overtake this revision's publication.
-    send_to_node(
+    let mut needs_retry = !send_to_node_checked(
         state,
         &self_node,
         ServerMsg::OverlayNetmap {
@@ -1247,18 +1247,22 @@ async fn handle_overlay_join(
             peers,
             epoch,
         },
+        true,
     )
     .await;
 
     for (peer, delta) in peer_deltas {
-        send_to_node(state, peer, delta).await;
+        if !send_to_node_checked(state, peer, delta, true).await {
+            needs_retry = true;
+        }
     }
-    if state
-        .overlay_networks
-        .current_auth_revision(tenant_id)
-        .await
-        .ok()
-        != Some(auth_revision)
+    if (needs_retry
+        || state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await
+            .ok()
+            != Some(auth_revision))
         && state.org_relay.live_conn(ident.connection_key()).as_deref() == Some(connection_id)
         && let Some(self_id) = self_node.id
     {
@@ -1590,22 +1594,26 @@ async fn try_complete_join_netmap(
             peers,
             epoch,
         },
-        access.is_some(),
+        true,
     )
     .await
     {
         return false;
     }
+    let mut all_peers_delivered = true;
     for (peer, delta) in peer_deltas {
-        send_to_node(state, peer, delta).await;
+        if !send_to_node_checked(state, peer, delta, true).await {
+            all_peers_delivered = false;
+        }
     }
     if access.is_none()
-        && state
-            .overlay_networks
-            .current_auth_revision(tenant_id)
-            .await
-            .ok()
-            != Some(auth_revision)
+        && (!all_peers_delivered
+            || state
+                .overlay_networks
+                .current_auth_revision(tenant_id)
+                .await
+                .ok()
+                != Some(auth_revision))
     {
         return false;
     }
@@ -1839,8 +1847,15 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
                     let _ = state.fleet.rc_hub.send_to_agent(agent_id, msg.clone());
                 }
                 NodeRef::TunnelClient { tunnel_client_id } => {
-                    if let Some(tx) = state.overlay_nodes_by_id.get(&tunnel_client_id) {
-                        let _ = tx.try_send(msg.clone());
+                    let tx = state
+                        .overlay_nodes_by_id
+                        .get(&tunnel_client_id)
+                        .map(|e| e.value().clone());
+                    if let Some(tx) = tx
+                        && let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                            tx.try_send(msg.clone())
+                    {
+                        disconnect_stalled_tunnel_client(state, tunnel_client_id, &tx);
                     }
                 }
             }
@@ -4212,6 +4227,57 @@ async fn fan_delta_to(
 const TUNNEL_CLIENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Deliver a `ServerMsg` to one overlay node, resolving its `node_ref`:
+pub(crate) fn disconnect_stalled_tunnel_client(
+    state: &NetworkState,
+    tunnel_client_id: ObjectId,
+    stalled_tx: &tokio::sync::mpsc::Sender<ServerMsg>,
+) {
+    if let Some(entry) = state.tunnel_client_cancels.get(&tunnel_client_id) {
+        let (weak_tx, flag, notify) = entry.value();
+        if weak_tx
+            .upgrade()
+            .is_some_and(|cur| cur.same_channel(stalled_tx))
+        {
+            flag.store(true, std::sync::atomic::Ordering::Release);
+            notify.notify_one();
+        }
+    }
+}
+
+async fn send_to_tunnel_client_bounded(
+    state: &NetworkState,
+    tunnel_client_id: ObjectId,
+    msg: ServerMsg,
+) -> bool {
+    // Clone the Sender out of the DashMap Ref so the shard guard isn't held
+    // across `.await`. Bound the send so a stalled tunnel client never
+    // backpressures tenant join/refan locks, and force-close the stalled WS
+    // on timeout so the client reconnects and resyncs via full `OverlayNetmap`
+    // rather than continuing with a missing peer upsert or removal.
+    let tx = state
+        .overlay_nodes_by_id
+        .get(&tunnel_client_id)
+        .map(|e| e.value().clone());
+    match tx {
+        Some(tx) => match tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
+                false
+            }
+            Err(_) => {
+                warn!(%tunnel_client_id, "overlay: client node channel backpressured; disconnecting WS to force full resync");
+                disconnect_stalled_tunnel_client(state, tunnel_client_id, &tx);
+                false
+            }
+        },
+        None => {
+            debug!(%tunnel_client_id, "overlay: client node not connected; skipped");
+            true
+        }
+    }
+}
+
 /// agent nodes go through the Hub, tunnel-client nodes through the
 /// connection-lifetime registry. Best-effort — an offline node is
 /// simply skipped (it re-syncs on its next join).
@@ -4231,16 +4297,7 @@ async fn send_to_node_checked(
                 || state.fleet.rc_hub.send_to_agent(agent_id, msg).is_ok()
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
-            let tx = state
-                .overlay_nodes_by_id
-                .get(&tunnel_client_id)
-                .map(|e| e.value().clone());
-            match tx {
-                Some(tx) => tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg))
-                    .await
-                    .is_ok_and(|r| r.is_ok()),
-                None => true,
-            }
+            send_to_tunnel_client_bounded(state, tunnel_client_id, msg).await
         }
     }
 }
@@ -4253,28 +4310,7 @@ pub async fn send_to_node(state: &NetworkState, node: &OverlayNode, msg: ServerM
             }
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
-            // Clone the Sender out of the DashMap Ref so the shard guard
-            // isn't held across the `.await` (the established pattern in
-            // `remote_control::relay_to_client`). Bound the send so a stalled
-            // tunnel client can never backpressure tenant join/refan locks.
-            let tx = state
-                .overlay_nodes_by_id
-                .get(tunnel_client_id)
-                .map(|e| e.value().clone());
-            match tx {
-                Some(tx) => {
-                    match tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
-                        }
-                        Err(_) => {
-                            debug!(%tunnel_client_id, "overlay: client node channel backpressured; skipped");
-                        }
-                    }
-                }
-                None => debug!(%tunnel_client_id, "overlay: client node not connected; skipped"),
-            }
+            let _ = send_to_tunnel_client_bounded(state, *tunnel_client_id, msg).await;
         }
     }
 }
@@ -4289,24 +4325,7 @@ pub async fn send_to_node_ref(state: &NetworkState, node_ref: &NodeRef, msg: Ser
             }
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
-            let tx = state
-                .overlay_nodes_by_id
-                .get(tunnel_client_id)
-                .map(|e| e.value().clone());
-            match tx {
-                Some(tx) => {
-                    match tokio::time::timeout(TUNNEL_CLIENT_SEND_TIMEOUT, tx.send(msg)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            debug!(%tunnel_client_id, %e, "overlay: client node channel closed; skipped");
-                        }
-                        Err(_) => {
-                            debug!(%tunnel_client_id, "overlay: client node channel backpressured; skipped");
-                        }
-                    }
-                }
-                None => debug!(%tunnel_client_id, "overlay: client node not connected; skipped"),
-            }
+            let _ = send_to_tunnel_client_bounded(state, *tunnel_client_id, msg).await;
         }
     }
 }

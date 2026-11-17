@@ -361,7 +361,7 @@ impl OverlayEventTx {
 
             let evt_to_push: Option<OverlayEvent> = match evt {
                 OverlayEvent::RebuildDirect => {
-                    if st.buf.iter().any(|q| {
+                    if let Some(pos) = st.buf.iter().position(|q| {
                         matches!(
                             q,
                             QueuedOverlayEvent::Reliable {
@@ -370,7 +370,8 @@ impl OverlayEventTx {
                             }
                         )
                     }) {
-                        return Ok(());
+                        st.buf.remove(pos);
+                        st.reliable = st.reliable.saturating_sub(1);
                     }
                     Some(OverlayEvent::RebuildDirect)
                 }
@@ -520,23 +521,45 @@ impl OverlayEventTx {
                     org_relay_discovery,
                     path_trial_v1,
                 } => {
-                    let max_queued_rev = st
-                        .buf
-                        .iter()
-                        .filter_map(|q| match q {
+                    let first_netmap_pos = st.buf.iter().position(|q| {
+                        matches!(
+                            q,
                             QueuedOverlayEvent::Reliable {
-                                evt: OverlayEvent::Netmap { network, .. },
+                                evt: OverlayEvent::Netmap { .. },
                                 ..
-                            } => Some(network.auth_revision),
-                            _ => None,
+                            }
+                        )
+                    });
+                    // Once at least one `Netmap` sits at `first_netmap_pos`, the runtime is
+                    // guaranteed to have entered its main loop for every subsequent event in
+                    // `st.buf[first_netmap_pos..]`, so both `Netmap`s and `NetmapDelta`s at or
+                    // after `first_netmap_pos` raise `applied_auth_revision`.
+                    let max_queued_rev = first_netmap_pos
+                        .map(|fpos| {
+                            st.buf
+                                .range(fpos..)
+                                .enumerate()
+                                .filter_map(|(off, q)| match q {
+                                    QueuedOverlayEvent::Reliable {
+                                        evt: OverlayEvent::Netmap { network, .. },
+                                        ..
+                                    } => Some(network.auth_revision),
+                                    QueuedOverlayEvent::Droppable(OverlayEvent::NetmapDelta {
+                                        auth_revision,
+                                        ..
+                                    }) if off > 0 => Some(*auth_revision),
+                                    _ => None,
+                                })
+                                .max()
+                                .unwrap_or(0)
                         })
-                        .max()
                         .unwrap_or(0);
                     if network.auth_revision > 0 && network.auth_revision < max_queued_rev {
                         // Guaranteed rejected by `accept_netmap_version` because an
-                        // earlier queued `Netmap` already has a higher `auth_revision`.
-                        // Never let a stale snapshot advance `tail_start` or evict a
-                        // post-`Netmap` detach deadline!
+                        // earlier queued `Netmap` or post-`Netmap` `NetmapDelta` already
+                        // raised `applied_auth_revision` above `network.auth_revision`.
+                        // Never let a stale snapshot advance `tail_start`, evict an
+                        // authoritative earlier `Netmap`, or erase a detach deadline!
                         let tail_start = tail_start_of(&st.buf);
                         let tail_detached = st.buf.range(tail_start..).any(|q| {
                             matches!(
@@ -568,9 +591,10 @@ impl OverlayEventTx {
                             // An unversioned `Netmap` (`auth_revision == 0`) is unconditionally
                             // accepted by `accept_netmap_version` and unconditionally clears
                             // `control_detached_at` and `post_join_retry`, without lowering
-                            // `applied_auth_revision`. Drop all earlier detaches, refusals,
-                            // and `auth_revision == 0` snapshots while keeping `RebuildDirect`,
-                            // `Reattach`, and any `auth_revision > 0` snapshot.
+                            // `applied_auth_revision`. Drop all earlier detaches/refusals, and
+                            // drop earlier `auth_revision == 0` snapshots except when one is the
+                            // very first `Netmap` and a `NetmapDelta` follows it (needed to exit
+                            // the pre-first-netmap loop before that delta runs).
                             let mut idx = 0;
                             while idx < st.buf.len() {
                                 let drop_it = match &st.buf[idx] {
@@ -584,7 +608,26 @@ impl OverlayEventTx {
                                     QueuedOverlayEvent::Reliable {
                                         evt: OverlayEvent::Netmap { network: n, .. },
                                         ..
-                                    } => n.auth_revision == 0,
+                                    } if n.auth_revision == 0 => {
+                                        let is_first_netmap = !st.buf.range(..idx).any(|q| {
+                                            matches!(
+                                                q,
+                                                QueuedOverlayEvent::Reliable {
+                                                    evt: OverlayEvent::Netmap { .. },
+                                                    ..
+                                                }
+                                            )
+                                        });
+                                        let has_later_delta = st.buf.range(idx + 1..).any(|q| {
+                                            matches!(
+                                                q,
+                                                QueuedOverlayEvent::Droppable(
+                                                    OverlayEvent::NetmapDelta { .. }
+                                                )
+                                            )
+                                        });
+                                        !(is_first_netmap && has_later_delta)
+                                    }
                                     _ => false,
                                 };
                                 if drop_it {
@@ -748,9 +791,26 @@ impl OverlayEventTx {
                     continue;
                 }
                 // 3. Evict an older positive-revision `Netmap(r1)` that is dominated by a
-                //    later `Netmap(r2)` (`r2 >= r1 > 0`). Removing `Netmap(r1)` places any
-                //    surrounding detaches into the same pre-`Netmap(r2)` segment, which
-                //    Step 2 then merges cleanly without ever crossing `Netmap(r2)`!
+                //    later `Netmap(r2)` (`r2 >= r1 > 0` AND `r2 >= max_intervening_delta_rev`).
+                //    Accounting for intervening `NetmapDelta` revisions ensures a later
+                //    snapshot that will be rejected after a higher-revision delta can never
+                //    evict the earlier full snapshot!
+                let max_delta_between =
+                    |buf: &std::collections::VecDeque<QueuedOverlayEvent>,
+                     start: usize,
+                     end: usize|
+                     -> u64 {
+                        buf.range(start..end)
+                            .filter_map(|q| match q {
+                                QueuedOverlayEvent::Droppable(OverlayEvent::NetmapDelta {
+                                    auth_revision,
+                                    ..
+                                }) => Some(*auth_revision),
+                                _ => None,
+                            })
+                            .max()
+                            .unwrap_or(0)
+                    };
                 let netmap_entries: Vec<(usize, u64)> = st
                     .buf
                     .iter()
@@ -763,15 +823,20 @@ impl OverlayEventTx {
                         _ => None,
                     })
                     .collect();
+                let buf_len = st.buf.len();
                 let dominated_pos = netmap_entries.iter().enumerate().find_map(|(k, &(pos, rev))| {
                     if rev == 0 {
                         return None;
                     }
-                    let dominated_in_buf = netmap_entries[k + 1..]
-                        .iter()
-                        .any(|&(_, later_rev)| later_rev >= rev);
-                    let dominated_by_incoming =
-                        incoming_pos_netmap_rev.is_some_and(|in_rev| in_rev >= rev);
+                    let dominated_in_buf = netmap_entries[k + 1..].iter().any(
+                        |&(later_pos, later_rev)| {
+                            later_rev >= rev
+                                && later_rev >= max_delta_between(&st.buf, pos + 1, later_pos)
+                        },
+                    );
+                    let dominated_by_incoming = incoming_pos_netmap_rev.is_some_and(|in_rev| {
+                        in_rev >= rev && in_rev >= max_delta_between(&st.buf, pos + 1, buf_len)
+                    });
                     (dominated_in_buf || dominated_by_incoming).then_some(pos)
                 });
                 if let Some(evict_pos) = dominated_pos {
@@ -3503,8 +3568,115 @@ mod org_relay_discovery_dispatch_tests {
         }
         assert!(live2_rx.recv().await.is_some());
 
+        // 2b. Reproduce Round 6 P1 #1: initial rev=99 with installed peer A, then
+        //     `D(t0), Reattach(live), N100(empty), Delta101(upsert B), N100(empty) × 70`.
+        //     `N100(empty)` MUST survive before `Delta101(upsert B)` so peer A is removed,
+        //     peer B is installed, `rev == 101`, and `control_detached_at` is cleared (`None`)!
+        let peer_a = bson::oid::ObjectId::new();
+        let peer_b = bson::oid::ObjectId::new();
+        let make_peer = |id: bson::oid::ObjectId| -> signaling::NetmapPeer {
+            serde_json::from_value(serde_json::json!({
+                "node_id": id.to_hex(),
+                "name": format!("peer-{id}"),
+                "wg_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "overlay_ip": "100.64.0.2",
+                "reachable": true
+            }))
+            .unwrap()
+        };
+        let (tx3, mut rx3) = overlay_event_channel(64);
+        for i in 0..2 {
+            tx3.try_send(OverlayEvent::SelfName {
+                node_id: bson::oid::ObjectId::new(),
+                revision: i.to_string(),
+                name: format!("stall3-{i}"),
+            })
+            .unwrap();
+        }
+        tokio::task::yield_now().await;
+        tx3.send_reliable(OverlayEvent::ControlDetachedAt(t0)).unwrap();
+        let (live3_tx, _live3_rx) = mpsc::channel(4);
+        tx3.send_reliable(OverlayEvent::Reattach { outbound: live3_tx })
+            .unwrap();
+        assert!(intercept(&tx3, make_netmap(100, "n100-first"), true, "", "").is_none());
+        let delta101 = ServerMsg::OverlayNetmapDelta {
+            epoch: 1,
+            auth_revision: 101,
+            upserts: vec![make_peer(peer_b)],
+            removes: vec![],
+        };
+        assert!(intercept(&tx3, delta101, true, "", "").is_none());
+        for _ in 0..70 {
+            assert!(intercept(&tx3, make_netmap(100, "n100-stale"), true, "", "").is_none());
+        }
+        assert!(tx3.inner.state.lock().unwrap().reliable <= MAX_RELIABLE_EVENTS);
+        drop(tx3);
+
+        let mut cur_ep = 0u64;
+        let mut cur_rev = 99u64;
+        let mut cur_det: Option<std::time::Instant> = None;
+        let mut cur_peers: std::collections::BTreeSet<bson::oid::ObjectId> =
+            [peer_a].into_iter().collect();
+        let mut peer_vers: std::collections::HashMap<bson::oid::ObjectId, (u64, u64)> =
+            [(peer_a, (99, 0))].into_iter().collect();
+        while let Some(e) = rx3.recv().await {
+            match e {
+                OverlayEvent::ControlDetachedAt(at) => {
+                    cur_det = Some(cur_det.map_or(at, |p| p.min(at)));
+                }
+                OverlayEvent::Netmap { network, peers, .. } => {
+                    if tunnel_core::overlay::runtime::accept_netmap_version(
+                        &mut cur_ep,
+                        &mut cur_rev,
+                        0,
+                        network.auth_revision,
+                    ) {
+                        cur_ep = 0;
+                        cur_det = None;
+                        cur_peers = peers.iter().map(|p| p.node_id).collect();
+                        peer_vers = peers
+                            .iter()
+                            .map(|p| (p.node_id, (cur_rev, 0)))
+                            .collect();
+                    }
+                }
+                OverlayEvent::NetmapDelta {
+                    epoch,
+                    auth_revision,
+                    mut upserts,
+                    mut removes,
+                } => {
+                    if tunnel_core::overlay::runtime::filter_netmap_delta_by_peer(
+                        &mut cur_ep,
+                        &mut cur_rev,
+                        &mut peer_vers,
+                        epoch,
+                        auth_revision,
+                        &mut upserts,
+                        &mut removes,
+                    ) {
+                        for r in removes {
+                            cur_peers.remove(&r);
+                        }
+                        for u in upserts {
+                            cur_peers.insert(u.node_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(cur_rev, 101);
+        assert_eq!(cur_det, None, "accepted N100 before Delta101 must clear detach deadline");
+        assert_eq!(
+            cur_peers,
+            [peer_b].into_iter().collect(),
+            "revoked peer A must be evicted by N100 and peer B installed by Delta101"
+        );
+
         // 3. Deterministic 250-sequence equivalence oracle over 120-step mixed workloads
-        //    (`RebuildDirect`, `ControlDetachedAt`, `Reattach`, `JoinRefused`, `Netmap` with rev in {0,1..12}).
+        //    INCLUDING `NetmapDelta` peer upserts/removals across BOTH pre-first-netmap
+        //    and main-loop runtime states!
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next_u64 = || {
             seed ^= seed << 13;
@@ -3513,7 +3685,7 @@ mod org_relay_discovery_dispatch_tests {
             seed
         };
         for case_idx in 0..250usize {
-            let (tx, mut rx) = overlay_event_channel(2);
+            let (tx, mut rx) = overlay_event_channel(128);
             for i in 0..2 {
                 tx.try_send(OverlayEvent::SelfName {
                     node_id: bson::oid::ObjectId::new(),
@@ -3530,13 +3702,25 @@ mod org_relay_discovery_dispatch_tests {
                 Detach(std::time::Instant),
                 Reattach(usize),
                 Refused(std::time::Instant),
-                Netmap(u64, usize),
+                Netmap(u64, Vec<bson::oid::ObjectId>),
+                Delta {
+                    epoch: u64,
+                    rev: u64,
+                    upsert: Option<bson::oid::ObjectId>,
+                    remove: Option<bson::oid::ObjectId>,
+                },
             }
+            let pool = [
+                peer_a,
+                peer_b,
+                bson::oid::ObjectId::new(),
+                bson::oid::ObjectId::new(),
+            ];
             let mut ref_log = Vec::new();
             let mut reattach_rxs = Vec::new();
             for step in 0..120usize {
                 let ts = base + std::time::Duration::from_millis((step as u64 + 1) * 10);
-                match next_u64() % 5 {
+                match next_u64() % 6 {
                     0 => {
                         ref_log.push(SpecEvt::Rebuild);
                         tx.send_reliable(OverlayEvent::RebuildDirect).unwrap();
@@ -3549,8 +3733,6 @@ mod org_relay_discovery_dispatch_tests {
                         let id = reattach_rxs.len() + 1;
                         let (otx, orx) = mpsc::channel(4);
                         reattach_rxs.push((id, orx));
-                        // Note: Reattach uses `Instant::now()` only when no earlier detach exists in tail;
-                        // precede with explicit `ControlDetachedAt(ts)` so exact timestamps are deterministic!
                         ref_log.push(SpecEvt::Detach(ts));
                         ref_log.push(SpecEvt::Reattach(id));
                         tx.send_reliable(OverlayEvent::ControlDetachedAt(ts)).unwrap();
@@ -3563,11 +3745,47 @@ mod org_relay_discovery_dispatch_tests {
                         tx.send_reliable(OverlayEvent::ControlDetachedAt(ts)).unwrap();
                         tx.send_reliable(OverlayEvent::JoinRefused { retryable }).unwrap();
                     }
+                    4 => {
+                        let rev = next_u64() % 13;
+                        let epoch = (step as u64) + 1;
+                        let pid = pool[(next_u64() as usize) % pool.len()];
+                        let is_upsert = (next_u64() & 1) == 0;
+                        let (upsert, remove) = if is_upsert {
+                            (Some(pid), None)
+                        } else {
+                            (None, Some(pid))
+                        };
+                        ref_log.push(SpecEvt::Delta {
+                            epoch,
+                            rev,
+                            upsert,
+                            remove,
+                        });
+                        let dmsg = ServerMsg::OverlayNetmapDelta {
+                            epoch,
+                            auth_revision: rev,
+                            upserts: upsert.into_iter().map(&make_peer).collect(),
+                            removes: remove.into_iter().collect(),
+                        };
+                        assert!(intercept(&tx, dmsg, true, "", "").is_none());
+                    }
                     _ => {
-                        let rev = next_u64() % 13; // includes 0 and 1..=12!
-                        let tag = format!("m-{step}");
-                        ref_log.push(SpecEvt::Netmap(rev, step));
-                        assert!(intercept(&tx, make_netmap(rev, &tag), true, "", "").is_none());
+                        let rev = next_u64() % 13;
+                        let mask = next_u64() & 0b1111;
+                        let ids: Vec<bson::oid::ObjectId> = pool
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, p)| (((mask >> i) & 1) == 1).then_some(*p))
+                            .collect();
+                        let nmsg: ServerMsg = serde_json::from_value(serde_json::json!({
+                            "t": "rc:overlay.netmap",
+                            "self_ip": "100.64.0.1",
+                            "network": { "cidr": "100.64.0.0/10", "mtu": 1280, "auth_revision": rev },
+                            "peers": ids.iter().map(|p| make_peer(*p)).collect::<Vec<_>>()
+                        }))
+                        .unwrap();
+                        ref_log.push(SpecEvt::Netmap(rev, ids));
+                        assert!(intercept(&tx, nmsg, true, "", "").is_none());
                     }
                 }
                 assert!(
@@ -3598,46 +3816,125 @@ mod org_relay_discovery_dispatch_tests {
                 "case {case_idx}: latest Reattach sender mismatch"
             );
 
-            for init_rev in [0u64, 1, 4, 8, 11, 15] {
-                // Reference uncompacted model
+            // Check BOTH pre-first-netmap mode (`None`) AND main-loop mode (`Some(init_rev)`)!
+            for mode in [None, Some(0u64), Some(1), Some(4), Some(8), Some(11), Some(15)] {
+                let mut ref_in_main = mode.is_some();
                 let mut ref_ep = 0u64;
-                let mut ref_rev = init_rev;
+                let mut ref_rev = mode.unwrap_or(0);
                 let mut ref_det: Option<std::time::Instant> = None;
                 let mut ref_rebuild = false;
-                let mut ref_last_map: Option<usize> = None;
+                let mut ref_peers: std::collections::BTreeSet<bson::oid::ObjectId> =
+                    if ref_in_main {
+                        [peer_a].into_iter().collect()
+                    } else {
+                        Default::default()
+                    };
+                let mut ref_vers: std::collections::HashMap<bson::oid::ObjectId, (u64, u64)> =
+                    if ref_in_main {
+                        [(peer_a, (ref_rev, 0))].into_iter().collect()
+                    } else {
+                        Default::default()
+                    };
                 for s in &ref_log {
-                    match *s {
-                        SpecEvt::Rebuild => ref_rebuild = true,
+                    match s {
+                        SpecEvt::Rebuild => {
+                            if ref_in_main {
+                                ref_rebuild = true;
+                            }
+                        }
                         SpecEvt::Detach(t) | SpecEvt::Refused(t) => {
-                            ref_det = Some(ref_det.map_or(t, |p| p.min(t)));
+                            if ref_in_main {
+                                ref_det = Some(ref_det.map_or(*t, |p| p.min(*t)));
+                            }
                         }
                         SpecEvt::Reattach(_) => {}
-                        SpecEvt::Netmap(r, step_id) => {
-                            if tunnel_core::overlay::runtime::accept_netmap_version(
-                                &mut ref_ep, &mut ref_rev, 0, r,
+                        SpecEvt::Netmap(r, ids) => {
+                            if !ref_in_main {
+                                ref_in_main = true;
+                                ref_ep = 0;
+                                ref_rev = *r;
+                                ref_det = None;
+                                ref_peers = ids.iter().copied().collect();
+                                ref_vers = ids.iter().map(|p| (*p, (ref_rev, 0))).collect();
+                            } else if tunnel_core::overlay::runtime::accept_netmap_version(
+                                &mut ref_ep, &mut ref_rev, 0, *r,
                             ) {
                                 ref_ep = 0;
                                 ref_det = None;
-                                ref_last_map = Some(step_id);
+                                ref_peers = ids.iter().copied().collect();
+                                ref_vers = ids.iter().map(|p| (*p, (ref_rev, 0))).collect();
+                            }
+                        }
+                        SpecEvt::Delta {
+                            epoch,
+                            rev,
+                            upsert,
+                            remove,
+                        } => {
+                            if ref_in_main {
+                                let mut ups: Vec<signaling::NetmapPeer> =
+                                    upsert.iter().map(|p| make_peer(*p)).collect();
+                                let mut rems: Vec<bson::oid::ObjectId> =
+                                    remove.iter().copied().collect();
+                                if tunnel_core::overlay::runtime::filter_netmap_delta_by_peer(
+                                    &mut ref_ep,
+                                    &mut ref_rev,
+                                    &mut ref_vers,
+                                    *epoch,
+                                    *rev,
+                                    &mut ups,
+                                    &mut rems,
+                                ) {
+                                    for r in rems {
+                                        ref_peers.remove(&r);
+                                    }
+                                    for u in ups {
+                                        ref_peers.insert(u.node_id);
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                // Actual compacted stream
+                let mut act_in_main = mode.is_some();
                 let mut act_ep = 0u64;
-                let mut act_rev = init_rev;
+                let mut act_rev = mode.unwrap_or(0);
                 let mut act_det: Option<std::time::Instant> = None;
                 let mut act_rebuild = false;
-                let mut act_last_map: Option<usize> = None;
+                let mut act_peers: std::collections::BTreeSet<bson::oid::ObjectId> =
+                    if act_in_main {
+                        [peer_a].into_iter().collect()
+                    } else {
+                        Default::default()
+                    };
+                let mut act_vers: std::collections::HashMap<bson::oid::ObjectId, (u64, u64)> =
+                    if act_in_main {
+                        [(peer_a, (act_rev, 0))].into_iter().collect()
+                    } else {
+                        Default::default()
+                    };
                 for e in &actual {
                     match e {
-                        OverlayEvent::RebuildDirect => act_rebuild = true,
-                        OverlayEvent::ControlDetachedAt(t) => {
-                            act_det = Some(act_det.map_or(*t, |p| p.min(*t)));
+                        OverlayEvent::RebuildDirect => {
+                            if act_in_main {
+                                act_rebuild = true;
+                            }
                         }
-                        OverlayEvent::Netmap { network, .. } => {
-                            if tunnel_core::overlay::runtime::accept_netmap_version(
+                        OverlayEvent::ControlDetachedAt(t) => {
+                            if act_in_main {
+                                act_det = Some(act_det.map_or(*t, |p| p.min(*t)));
+                            }
+                        }
+                        OverlayEvent::Netmap { network, peers, .. } => {
+                            if !act_in_main {
+                                act_in_main = true;
+                                act_ep = 0;
+                                act_rev = network.auth_revision;
+                                act_det = None;
+                                act_peers = peers.iter().map(|p| p.node_id).collect();
+                                act_vers = peers.iter().map(|p| (p.node_id, (act_rev, 0))).collect();
+                            } else if tunnel_core::overlay::runtime::accept_netmap_version(
                                 &mut act_ep,
                                 &mut act_rev,
                                 0,
@@ -3645,20 +3942,45 @@ mod org_relay_discovery_dispatch_tests {
                             ) {
                                 act_ep = 0;
                                 act_det = None;
-                                act_last_map = network
-                                    .self_name
-                                    .as_deref()
-                                    .and_then(|s| s.strip_prefix("m-"))
-                                    .and_then(|s| s.parse::<usize>().ok());
+                                act_peers = peers.iter().map(|p| p.node_id).collect();
+                                act_vers = peers.iter().map(|p| (p.node_id, (act_rev, 0))).collect();
+                            }
+                        }
+                        OverlayEvent::NetmapDelta {
+                            epoch,
+                            auth_revision,
+                            upserts,
+                            removes,
+                        } => {
+                            if act_in_main {
+                                let mut ups = upserts.clone();
+                                let mut rems = removes.clone();
+                                if tunnel_core::overlay::runtime::filter_netmap_delta_by_peer(
+                                    &mut act_ep,
+                                    &mut act_rev,
+                                    &mut act_vers,
+                                    *epoch,
+                                    *auth_revision,
+                                    &mut ups,
+                                    &mut rems,
+                                ) {
+                                    for r in rems {
+                                        act_peers.remove(&r);
+                                    }
+                                    for u in ups {
+                                        act_peers.insert(u.node_id);
+                                    }
+                                }
                             }
                         }
                         _ => {}
                     }
                 }
-                assert_eq!(act_rebuild, ref_rebuild, "case {case_idx} init_rev {init_rev} rebuild");
-                assert_eq!(act_rev, ref_rev, "case {case_idx} init_rev {init_rev} rev");
-                assert_eq!(act_det, ref_det, "case {case_idx} init_rev {init_rev} detach deadline");
-                assert_eq!(act_last_map, ref_last_map, "case {case_idx} init_rev {init_rev} accepted netmap");
+                assert_eq!(act_in_main, ref_in_main, "case {case_idx} mode {mode:?} in_main");
+                assert_eq!(act_rebuild, ref_rebuild, "case {case_idx} mode {mode:?} rebuild");
+                assert_eq!(act_rev, ref_rev, "case {case_idx} mode {mode:?} rev");
+                assert_eq!(act_det, ref_det, "case {case_idx} mode {mode:?} detach deadline");
+                assert_eq!(act_peers, ref_peers, "case {case_idx} mode {mode:?} peers");
             }
         }
     }

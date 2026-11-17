@@ -5590,10 +5590,27 @@ async fn audit_mint(
 fn push_control(state: &NetworkState, node: &NodeRef, msg: ServerMsg) -> bool {
     match node {
         NodeRef::Agent { agent_id } => state.fleet.rc_hub.send_to_agent(*agent_id, msg).is_ok(),
-        NodeRef::TunnelClient { tunnel_client_id } => state
-            .overlay_nodes_by_id
-            .get(tunnel_client_id)
-            .is_some_and(|tx| tx.try_send(msg).is_ok()),
+        NodeRef::TunnelClient { tunnel_client_id } => {
+            let tx = state
+                .overlay_nodes_by_id
+                .get(tunnel_client_id)
+                .map(|e| e.value().clone());
+            match tx {
+                Some(tx) => match tx.try_send(msg) {
+                    Ok(()) => true,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        crate::overlay::disconnect_stalled_tunnel_client(
+                            state,
+                            *tunnel_client_id,
+                            &tx,
+                        );
+                        false
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+                },
+                None => false,
+            }
+        }
     }
 }
 

@@ -192,6 +192,8 @@ pub async fn handle_tunnel_client_socket(
     // agent's WS handler can push relayed `TcpForwardAccept` etc.
     // back to this client.
     let (outbound_tx, outbound_rx) = mpsc::channel::<ServerMsg>(OUTBOUND_CAP);
+    let stalled_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stall_cancel = Arc::new(tokio::sync::Notify::new());
     let pump = tokio::spawn(pump_server_messages(outbound_rx, socket_tx.clone()));
 
     // Register this connection in the overlay registry (keyed by
@@ -210,6 +212,14 @@ pub async fn handle_tunnel_client_socket(
         state
             .overlay_nodes_by_id
             .insert(tunnel_client_id, outbound_tx.clone());
+        state.tunnel_client_cancels.insert(
+            tunnel_client_id,
+            (
+                outbound_tx.downgrade(),
+                Arc::clone(&stalled_flag),
+                Arc::clone(&stall_cancel),
+            ),
+        );
     }
 
     // The opening observation belongs to the connection just bound above.
@@ -296,7 +306,21 @@ pub async fn handle_tunnel_client_socket(
     );
 
     // Main read loop.
-    while let Some(msg) = socket_rx.next().await {
+    loop {
+        if stalled_flag.load(std::sync::atomic::Ordering::Acquire) {
+            warn!(%tunnel_client_id, "tunnel-client outbound channel stalled; closing WS to force resync");
+            break;
+        }
+        let msg = tokio::select! {
+            () = stall_cancel.notified() => {
+                warn!(%tunnel_client_id, "tunnel-client outbound channel stalled; closing WS to force resync");
+                break;
+            }
+            next = socket_rx.next() => match next {
+                Some(m) => m,
+                None => break,
+            },
+        };
         let text = match msg {
             Ok(Message::Text(t)) => t,
             Ok(Message::Close(_)) | Err(_) => break,
@@ -573,11 +597,22 @@ pub async fn handle_tunnel_client_socket(
             crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id)
                 .await;
             state.overlay_nodes_by_id.remove(&tunnel_client_id);
+            state
+                .tunnel_client_cancels
+                .remove_if(&tunnel_client_id, |_, (_, flag, _)| {
+                    Arc::ptr_eq(flag, &stalled_flag)
+                });
             crate::overlay::handle_overlay_leave(
                 &state,
                 crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
             )
             .await;
+        } else {
+            state
+                .tunnel_client_cancels
+                .remove_if(&tunnel_client_id, |_, (_, flag, _)| {
+                    Arc::ptr_eq(flag, &stalled_flag)
+                });
         }
     }
     release_tunnel_overlay_lock(&state, tunnel_client_id, &overlay_lock);
@@ -610,6 +645,10 @@ pub async fn handle_tunnel_client_socket(
     // some other clone is still alive.
     drop(outbound_tx);
     pump.abort();
+    if stalled_flag.load(std::sync::atomic::Ordering::Acquire) {
+        let mut guard = socket_tx.lock().await;
+        let _ = guard.close().await;
+    }
     business_observation
         .finish(&state.core, &connection_id)
         .await;
