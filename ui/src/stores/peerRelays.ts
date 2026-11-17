@@ -130,6 +130,22 @@ export const usePeerRelaysStore = defineStore('peerRelays', () => {
     return relays.value.find((r) => r.id === agentId)
   }
 
+  function syncAgentZone(
+    agentId: string,
+    zone: {
+      pinned_zone_id: string | null
+      effective_zone_id: string | null
+      effective_zone_name: string | null
+    },
+  ) {
+    const r = relays.value.find((item) => item.id === agentId)
+    if (r) {
+      r.pinned_zone_id = zone.pinned_zone_id
+      r.effective_zone_id = zone.effective_zone_id
+      r.effective_zone_name = zone.effective_zone_name
+    }
+  }
+
   return {
     mode,
     relays,
@@ -139,5 +155,6 @@ export const usePeerRelaysStore = defineStore('peerRelays', () => {
     setMode,
     setDevicePolicy,
     relayForAgent,
+    syncAgentZone,
   }
 })

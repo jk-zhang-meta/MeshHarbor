@@ -298,25 +298,38 @@ function removeStaticEndpoint(ep: string) {
 function effectiveZoneIdFor(agentId: string): string | null {
   const relay = peerRelayStore.relayForAgent(agentId)
   const a = agentId === props.agent.id ? props.agent : agentStore.agents.find((x) => x.id === agentId)
-  const direct = (
-    relay?.effective_zone_id ||
-    a?.effective_zone_id ||
-    relay?.pinned_zone_id ||
-    a?.pinned_zone_id ||
-    ''
-  ).trim()
-  if (direct) return direct
   if (!a && !relay) return null
-  if (zonesStore.loadedTenantId === props.tenantId && zonesStore.zones.length > 0) {
+
+  // When live tenant zones are loaded in `zonesStore`, evaluate directly against
+  // the current zone rules + live `pinned_zone_id`/`country_code` (preferring
+  // the live `Agent` record over cached `RelayDeviceView`), so neither a device
+  // zone reassignment nor a `saveZones` edit leaves stale zone metadata in play.
+  if (zonesStore.loadedTenantId === props.tenantId) {
+    if (zonesStore.zones.length === 0) return null
+    const pinned = ((a ? a.pinned_zone_id : relay?.pinned_zone_id) || '').trim()
+    if (pinned) {
+      return zonesStore.zones.find((z) => z.id === pinned)?.id ?? null
+    }
     const cc = (relay?.country_code || a?.country_code || '').trim().toUpperCase()
     if (cc) {
       const matched = zonesStore.zones.find((z) => z.auto_countries.includes(cc))
       if (matched) return matched.id
+      return zonesStore.zones.find((z) => z.is_default)?.id ?? null
     }
-    const def = zonesStore.zones.find((z) => z.is_default)
-    if (def) return def.id
+    const serverEffective = ((a ? a.effective_zone_id : relay?.effective_zone_id) || '').trim()
+    if (serverEffective && zonesStore.zones.some((z) => z.id === serverEffective)) {
+      return serverEffective
+    }
+    return zonesStore.zones.find((z) => z.is_default)?.id ?? null
   }
-  return null
+
+  const direct = (
+    (a ? a.effective_zone_id || a.pinned_zone_id : '') ||
+    relay?.effective_zone_id ||
+    relay?.pinned_zone_id ||
+    ''
+  ).trim()
+  return direct || null
 }
 
 watch(edgeTargetId, (targetId) => {

@@ -3,6 +3,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
+import { usePeerRelaysStore } from '@/stores/peerRelays'
 import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'
 import { isKeepBusyPattern, type KeepBusyPattern } from '@/composables/keepBusy'
@@ -1809,6 +1810,7 @@ export const useAgentStore = defineStore('agents', () => {
       agents.value[idx]!.effective_zone_id = resp.effective_zone_id
       agents.value[idx]!.effective_zone_name = resp.effective_zone_name
     }
+    usePeerRelaysStore().syncAgentZone(agentId, resp)
     return resp
   }
 

@@ -1711,5 +1711,106 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
         ],
       },
     )
+    wrapper.unmount()
+
+    // Also verify that reassigning a CN relay to `non-cn` via `agentStore.updateZoneAssignment`
+    // immediately updates both `agentStore` and `peerRelayStore` without a reload, so selecting
+    // another CN relay defaults `cross_border = true` rather than using stale CN metadata!
+    const szAgent = makeAgent({
+      id: '6af76c3a52bb8c8c18ba4999',
+      name: 'sz-relay',
+      country_code: 'CN',
+      pinned_zone_id: 'cn',
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      peer_relay_policy: { serve: true, static_endpoints: [], approved_backbone_edges: [] },
+    })
+    agentStore.agents = [szAgent, gzAgent]
+    peerRelayStore.relays = [
+      {
+        id: szAgent.id,
+        name: szAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+        country_code: 'CN',
+        pinned_zone_id: 'cn',
+        effective_zone_id: 'cn',
+        effective_zone_name: 'CN 区',
+      },
+      {
+        id: gzAgent.id,
+        name: gzAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+        country_code: 'CN',
+        pinned_zone_id: 'cn',
+        effective_zone_id: 'cn',
+        effective_zone_name: 'CN 区',
+      },
+    ]
+    mockApi.put.mockImplementationOnce(async () => ({
+      agent_id: szAgent.id,
+      pinned_zone_id: 'non-cn',
+      effective_zone_id: 'non-cn',
+      effective_zone_name: '非 CN 区',
+    }))
+    await agentStore.updateZoneAssignment(TID, szAgent.id, 'non-cn')
+    mockApi.put.mockClear()
+    mockApi.put.mockImplementation(async (_url: string, body: unknown) => body)
+
+    wrapper = mount(PeerRelayPolicyDialog, {
+      props: {
+        modelValue: true,
+        tenantId: TID,
+        agent: agentStore.agents[0]!,
+      },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    const selectField3 = document.body.querySelector('.v-select .v-field') as HTMLElement
+    selectField3.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    const option3 = Array.from(document.body.querySelectorAll('.v-list-item')).find((el) =>
+      el.textContent?.includes('po0-gz'),
+    ) as HTMLElement
+    option3.click()
+    await flushPromises()
+
+    const epInput3 = document.body.querySelector(
+      '[data-testid="backbone-endpoint-input"]',
+    ) as HTMLInputElement
+    const actualInput3 =
+      epInput3.tagName === 'INPUT'
+        ? epInput3
+        : (epInput3.querySelector('input') as HTMLInputElement)
+    actualInput3.value = '172.31.8.41:3478'
+    actualInput3.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    const saveBtn3 = document.body.querySelector(
+      '[data-testid="peer-relay-save"]',
+    ) as HTMLButtonElement
+    saveBtn3.click()
+    await flushPromises()
+
+    expect(mockApi.put).toHaveBeenCalledWith(
+      `/tenant/${TID}/agent/${szAgent.id}/peer-relay-policy`,
+      {
+        serve: true,
+        approved_backbone_edges: [
+          {
+            relay_agent_id: gzAgent.id,
+            endpoint: '172.31.8.41:3478',
+            cross_border: true,
+          },
+        ],
+      },
+    )
   })
 })

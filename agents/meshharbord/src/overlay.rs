@@ -88,9 +88,264 @@ impl RuntimeFingerprint {
     }
 }
 
+const MAX_RELIABLE_EVENTS: usize = 64;
+
+enum QueuedOverlayEvent {
+    Reliable(OverlayEvent),
+    Droppable(OverlayEvent),
+}
+
+struct OverlayEventQueueState {
+    buf: std::collections::VecDeque<QueuedOverlayEvent>,
+    droppable: usize,
+    reliable: usize,
+    closed: bool,
+}
+
+struct OverlayEventQueue {
+    state: std::sync::Mutex<OverlayEventQueueState>,
+    notify: tokio::sync::Notify,
+    senders: std::sync::atomic::AtomicUsize,
+    droppable_cap: usize,
+}
+
+/// Non-blocking, bounded FIFO sender feeding [`OverlayRuntime`] via a dedicated
+/// pump task so `signaling`'s `select!` loop never awaits runtime queue
+/// capacity (breaking the circular wait against `ControlTx::send`) while still
+/// guaranteeing reliable delivery of `JoinRefused`, `Netmap`, `ControlDetached`,
+/// `Reattach`, and `RebuildDirect`.
+pub struct OverlayEventTx {
+    inner: Arc<OverlayEventQueue>,
+    runtime_weak: mpsc::WeakSender<OverlayEvent>,
+}
+
+impl Clone for OverlayEventTx {
+    fn clone(&self) -> Self {
+        self.inner
+            .senders
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            inner: Arc::clone(&self.inner),
+            runtime_weak: self.runtime_weak.clone(),
+        }
+    }
+}
+
+impl Drop for OverlayEventTx {
+    fn drop(&mut self) {
+        if self
+            .inner
+            .senders
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            self.inner.notify.notify_waiters();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct WeakOverlayEventTx {
+    inner: std::sync::Weak<OverlayEventQueue>,
+    runtime_weak: mpsc::WeakSender<OverlayEvent>,
+}
+
+impl WeakOverlayEventTx {
+    pub fn upgrade(&self) -> Option<OverlayEventTx> {
+        let inner = self.inner.upgrade()?;
+        inner
+            .senders
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |n| (n > 0).then_some(n + 1),
+            )
+            .ok()?;
+        Some(OverlayEventTx {
+            inner,
+            runtime_weak: self.runtime_weak.clone(),
+        })
+    }
+}
+
+pub fn overlay_event_channel(droppable_cap: usize) -> (OverlayEventTx, mpsc::Receiver<OverlayEvent>) {
+    let (runtime_tx, runtime_rx) = mpsc::channel::<OverlayEvent>(1);
+    let runtime_weak = runtime_tx.downgrade();
+    let inner = Arc::new(OverlayEventQueue {
+        state: std::sync::Mutex::new(OverlayEventQueueState {
+            buf: std::collections::VecDeque::with_capacity(droppable_cap.min(64)),
+            droppable: 0,
+            reliable: 0,
+            closed: false,
+        }),
+        notify: tokio::sync::Notify::new(),
+        senders: std::sync::atomic::AtomicUsize::new(1),
+        droppable_cap,
+    });
+    let queue_for_task = Arc::clone(&inner);
+    tokio::spawn(async move {
+        loop {
+            let notified = queue_for_task.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let next = {
+                let mut st = queue_for_task.state.lock().unwrap_or_else(|e| e.into_inner());
+                match st.buf.pop_front() {
+                    Some(QueuedOverlayEvent::Reliable(evt)) => {
+                        st.reliable = st.reliable.saturating_sub(1);
+                        Some(evt)
+                    }
+                    Some(QueuedOverlayEvent::Droppable(evt)) => {
+                        st.droppable = st.droppable.saturating_sub(1);
+                        Some(evt)
+                    }
+                    None => None,
+                }
+            };
+            if let Some(evt) = next {
+                if runtime_tx.send(evt).await.is_err() {
+                    let mut st = queue_for_task.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.closed = true;
+                    st.buf.clear();
+                    st.droppable = 0;
+                    st.reliable = 0;
+                    break;
+                }
+                continue;
+            }
+            if queue_for_task
+                .senders
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                let empty = queue_for_task
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .buf
+                    .is_empty();
+                if empty {
+                    break;
+                }
+                continue;
+            }
+            tokio::select! {
+                () = runtime_tx.closed() => {
+                    let mut st = queue_for_task.state.lock().unwrap_or_else(|e| e.into_inner());
+                    st.closed = true;
+                    st.buf.clear();
+                    st.droppable = 0;
+                    st.reliable = 0;
+                    break;
+                }
+                () = notified => {}
+            }
+        }
+    });
+    (
+        OverlayEventTx {
+            inner,
+            runtime_weak,
+        },
+        runtime_rx,
+    )
+}
+
+impl OverlayEventTx {
+    pub fn is_closed(&self) -> bool {
+        self.runtime_weak.upgrade().is_none_or(|tx| tx.is_closed())
+    }
+
+    pub async fn closed(&self) {
+        if let Some(tx) = self.runtime_weak.upgrade() {
+            tx.closed().await;
+        }
+    }
+
+    pub fn downgrade(&self) -> WeakOverlayEventTx {
+        WeakOverlayEventTx {
+            inner: Arc::downgrade(&self.inner),
+            runtime_weak: self.runtime_weak.clone(),
+        }
+    }
+
+    pub fn try_send(&self, evt: OverlayEvent) -> Result<(), OverlayEvent> {
+        if self.is_closed() {
+            return Err(evt);
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.closed || st.droppable >= self.inner.droppable_cap {
+                return Err(evt);
+            }
+            st.buf.push_back(QueuedOverlayEvent::Droppable(evt));
+            st.droppable += 1;
+        }
+        self.inner.notify.notify_one();
+        Ok(())
+    }
+
+    pub fn send_reliable(&self, evt: OverlayEvent) -> Result<(), OverlayEvent> {
+        if self.is_closed() {
+            return Err(evt);
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.closed {
+                return Err(evt);
+            }
+            if st.reliable >= MAX_RELIABLE_EVENTS {
+                if matches!(evt, OverlayEvent::ControlDetached)
+                    && matches!(
+                        st.buf.back(),
+                        Some(QueuedOverlayEvent::Reliable(OverlayEvent::ControlDetached))
+                    )
+                {
+                    return Ok(());
+                }
+                if matches!(evt, OverlayEvent::RebuildDirect)
+                    && st.buf.iter().any(|q| {
+                        matches!(
+                            q,
+                            QueuedOverlayEvent::Reliable(OverlayEvent::RebuildDirect)
+                        )
+                    })
+                {
+                    return Ok(());
+                }
+                if let Some(pos) = st.buf.iter().position(|q| {
+                    matches!(
+                        q,
+                        QueuedOverlayEvent::Reliable(
+                            OverlayEvent::JoinRefused { .. }
+                                | OverlayEvent::ControlDetached
+                                | OverlayEvent::Netmap { .. }
+                        )
+                    )
+                }) {
+                    st.buf.remove(pos);
+                    st.reliable = st.reliable.saturating_sub(1);
+                } else if let Some(pos) = st
+                    .buf
+                    .iter()
+                    .position(|q| matches!(q, QueuedOverlayEvent::Reliable(_)))
+                {
+                    st.buf.remove(pos);
+                    st.reliable = st.reliable.saturating_sub(1);
+                }
+            }
+            st.buf.push_back(QueuedOverlayEvent::Reliable(evt));
+            st.reliable += 1;
+        }
+        self.inner.notify.notify_one();
+        Ok(())
+    }
+}
+
 struct RuntimeSlot {
     fingerprint: RuntimeFingerprint,
-    evt_tx: mpsc::Sender<OverlayEvent>,
+    evt_tx: OverlayEventTx,
 }
 
 /// rc.307 (B) — the process-lifetime runtime slots. The overlay runtime used
@@ -203,7 +458,7 @@ pub async fn maybe_start(
     // explicitly (signaling::run already holds the broker) instead of the old
     // `consent::set_shared` process global.
     services: crate::ssh::SessionServices,
-) -> Option<mpsc::Sender<OverlayEvent>> {
+) -> Option<OverlayEventTx> {
     if !cfg.overlay_enabled {
         // Drop THIS org's persistent-runtime slot entry: once the sessions'
         // event-sender clones are gone too, its channel closes and it tears
@@ -256,26 +511,17 @@ pub async fn maybe_start(
             })
     };
     if let Some((evt_tx, lan_ips_same)) = existing {
-        match evt_tx
-            .send(OverlayEvent::Reattach {
-                outbound: outbound.clone(),
-            })
-            .await
-        {
+        match evt_tx.send_reliable(OverlayEvent::Reattach {
+            outbound: outbound.clone(),
+        }) {
             Ok(()) => {
                 if lan_ips_same {
                     info!("overlay: re-attached the persistent node runtime (carriers intact)");
                 } else {
-                    // R4 — the LAN IP set moved while the runtime persisted:
-                    // reattach (control plane) + rebuild the direct plane in
-                    // place (data plane). Replaces the old fresh-spawn path,
-                    // which raced the surviving runtime for the stable ports.
                     info!(
                         "overlay: re-attached the persistent runtime; LAN addresses changed — requesting a direct-plane rebuild"
                     );
-                    let _ = evt_tx.send(OverlayEvent::RebuildDirect).await;
-                    // Store the NEW set so the next reconnect compares
-                    // against what the rebuild actually bound.
+                    let _ = evt_tx.send_reliable(OverlayEvent::RebuildDirect);
                     if let Some(s) = RUNTIME_SLOTS
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -287,8 +533,6 @@ pub async fn maybe_start(
                 return Some(evt_tx);
             }
             Err(_) => {
-                // The runtime exited (self_ip change, TUN failure). Remove the
-                // dead slot and fall through to a fresh spawn.
                 RUNTIME_SLOTS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -312,7 +556,7 @@ pub async fn maybe_start(
         return None;
     }
 
-    let (evt_tx, evt_rx) = mpsc::channel::<OverlayEvent>(64);
+    let (evt_tx, evt_rx) = overlay_event_channel(64);
 
     // Pick the overlay surface: the userspace netstack (+ loopback SOCKS front)
     // when `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` names a port or when OS TUN
@@ -844,7 +1088,7 @@ pub fn note_control_detached(tenant_id: &str) {
         .get(tenant_id)
         .map(|s| s.evt_tx.clone());
     if let Some(tx) = evt_tx {
-        let _ = tx.try_send(OverlayEvent::ControlDetached);
+        let _ = tx.send_reliable(OverlayEvent::ControlDetached);
     }
 }
 
@@ -1347,8 +1591,8 @@ pub(crate) fn netmask_to_prefix(nm: std::net::Ipv4Addr) -> u8 {
 /// Forward an `rc:overlay.*` `ServerMsg` to the runtime. Returns the
 /// message untouched if it isn't an overlay message, so the caller's
 /// normal dispatch handles everything else.
-pub async fn intercept(
-    evt_tx: &mpsc::Sender<OverlayEvent>,
+pub fn intercept(
+    evt_tx: &OverlayEventTx,
     msg: ServerMsg,
     is_primary: bool,
     local_agent_id: &str,
@@ -1363,12 +1607,15 @@ pub async fn intercept(
     } = msg
     {
         if agent_id == local_agent_id && tenant_id == local_tenant_id {
-            if let Err(error) = evt_tx.try_send(OverlayEvent::SelfName {
-                node_id,
-                revision,
-                name,
-            }) {
-                warn!(%error, "overlay self DNS metadata queue unavailable; awaiting next reconciliation");
+            if evt_tx
+                .try_send(OverlayEvent::SelfName {
+                    node_id,
+                    revision,
+                    name,
+                })
+                .is_err()
+            {
+                warn!("overlay self DNS metadata queue unavailable; awaiting next reconciliation");
             }
         } else {
             warn!("overlay self DNS metadata ignored: enrollment scope mismatch");
@@ -1379,7 +1626,7 @@ pub async fn intercept(
         crate::relay_server::install_bridge_from_wire(bridge)
     }) {
         InterceptOutcome::MustDeliver(evt) => {
-            if evt_tx.send(evt).await.is_err() {
+            if evt_tx.send_reliable(evt).is_err() {
                 warn!("overlay: event channel closed; dropping authoritative join/netmap event");
             }
             None
@@ -1638,7 +1885,7 @@ fn classify_intercept(
 mod derived_port_layout_lock {
     #[tokio::test]
     async fn self_dns_metadata_is_bound_to_enrollment_and_secondary_is_supported() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (tx, mut rx) = super::overlay_event_channel(4);
         let msg = |agent: &str, tenant: &str| {
             meshharbor_remote_control::signaling::ServerMsg::OverlaySelfName {
                 agent_id: agent.into(),
@@ -1649,12 +1896,13 @@ mod derived_port_layout_lock {
             }
         };
         for (agent, tenant) in [("other", "org"), ("agent", "other")] {
-            assert!(super::intercept(&tx, msg(agent, tenant), false, "agent", "org").await.is_none());
+            assert!(super::intercept(&tx, msg(agent, tenant), false, "agent", "org").is_none());
+            tokio::task::yield_now().await;
             assert!(rx.try_recv().is_err());
         }
-        assert!(super::intercept(&tx, msg("agent", "org"), false, "agent", "org").await.is_none());
+        assert!(super::intercept(&tx, msg("agent", "org"), false, "agent", "org").is_none());
         assert!(
-            matches!(rx.try_recv(), Ok(tunnel_core::overlay::runtime::OverlayEvent::SelfName { name, .. }) if name == "alias-label")
+            matches!(rx.recv().await, Some(tunnel_core::overlay::runtime::OverlayEvent::SelfName { name, .. }) if name == "alias-label")
         );
     }
 
@@ -2406,7 +2654,7 @@ mod org_relay_discovery_dispatch_tests {
     #[tokio::test]
     async fn scoped_revoke_routes_only_to_its_recipient_role() {
         use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
-        let (tx, mut rx) = mpsc::channel(4);
+        let (tx, mut rx) = overlay_event_channel(4);
         let scope = RelayRevokeScopeWire {
             relay_node_id: bson::oid::ObjectId::new(),
             generation: 7,
@@ -2423,9 +2671,9 @@ mod org_relay_discovery_dispatch_tests {
                 "",
                 ""
             )
-            .await
             .is_none()
         );
+        tokio::task::yield_now().await;
         assert!(
             rx.try_recv().is_err(),
             "serving revoke must not reach member runtime"
@@ -2446,10 +2694,9 @@ mod org_relay_discovery_dispatch_tests {
                 "",
                 ""
             )
-            .await
             .is_none()
         );
-        assert!(matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayRevoke {
+        assert!(matches!(rx.recv().await, Some(OverlayEvent::OrgRelayRevoke {
             vni: 1, scope: got,
         }) if got == member_scope));
     }
@@ -2492,16 +2739,16 @@ mod org_relay_discovery_dispatch_tests {
     }
     #[tokio::test]
     async fn org_relay_discovery_old_netmap_capability_is_forwarded_as_false() {
-        let (tx, mut rx) = mpsc::channel(2);
+        let (tx, mut rx) = overlay_event_channel(2);
         let msg: ServerMsg = serde_json::from_value(serde_json::json!({
             "t":"rc:overlay.netmap", "self_ip":"100.64.0.1",
             "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]
         }))
         .unwrap();
-        assert!(intercept(&tx, msg, true, "", "").await.is_none());
+        assert!(intercept(&tx, msg, true, "", "").is_none());
         assert!(matches!(
-            rx.try_recv(),
-            Ok(OverlayEvent::Netmap {
+            rx.recv().await,
+            Some(OverlayEvent::Netmap {
                 org_relay_discovery: false,
                 ..
             })
@@ -2509,7 +2756,7 @@ mod org_relay_discovery_dispatch_tests {
     }
     #[tokio::test]
     async fn org_relay_discovery_signaling_candidates_reach_runtime_only_on_primary_org() {
-        let (tx, mut rx) = mpsc::channel(4);
+        let (tx, mut rx) = overlay_event_channel(4);
         let peer_node_id = bson::oid::ObjectId::new();
         let msg = || ServerMsg::OverlayOrgRelayCandidates {
             peer_node_id,
@@ -2519,11 +2766,12 @@ mod org_relay_discovery_dispatch_tests {
             next_cursor: None,
             scan: None,
         };
-        assert!(intercept(&tx, msg(), false, "", "").await.is_none());
+        assert!(intercept(&tx, msg(), false, "", "").is_none());
+        tokio::task::yield_now().await;
         assert!(rx.try_recv().is_err());
-        assert!(intercept(&tx, msg(), true, "", "").await.is_none());
+        assert!(intercept(&tx, msg(), true, "", "").is_none());
         assert!(
-            matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayCandidates {
+            matches!(rx.recv().await, Some(OverlayEvent::OrgRelayCandidates {
             peer_node_id: id, request_id: 17, ttl_secs: 0, candidates, ..
         }) if id == peer_node_id && candidates.is_empty())
         );
@@ -2531,35 +2779,76 @@ mod org_relay_discovery_dispatch_tests {
     }
 
     #[tokio::test]
-    async fn join_refused_forwards_retryability_reliably_even_when_channel_is_full() {
-        let (tx, mut rx) = mpsc::channel(1);
-        tx.try_send(OverlayEvent::ControlDetached).unwrap();
+    async fn join_refused_and_netmap_deliver_without_deadlocking_full_bidirectional_queues() {
+        // Reproduce the exact bidirectional burst:
+        // - runtime -> signaling outbound channel (`capacity = 1`) is FULL (`outbound_tx.send` parked),
+        // - signaling -> runtime droppable queue (`droppable_cap = 2`) is overflowed while
+        //   `OverlayJoinRefused` and `OverlayNetmap` arrive on the signaling task BEFORE it
+        //   drains `outbound_rx`.
+        let (evt_tx, mut evt_rx) = overlay_event_channel(2);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<u32>(1);
+        outbound_tx.try_send(1).unwrap();
 
-        let tx_clone = tx.clone();
+        let runtime_task = tokio::spawn(async move {
+            // Runtime is blocked waiting for signaling to drain `outbound_rx` before reading `evt_rx`.
+            outbound_tx.send(2).await.unwrap();
+            let mut got = Vec::new();
+            while let Some(e) = evt_rx.recv().await {
+                got.push(e);
+            }
+            got
+        });
+        tokio::task::yield_now().await;
+
+        // Signaling processes a burst synchronously (never awaiting runtime capacity):
+        for i in 0..8u64 {
+            let delta = ServerMsg::OverlayNetmapDelta {
+                epoch: i,
+                auth_revision: 1,
+                upserts: vec![],
+                removes: vec![],
+            };
+            assert!(intercept(&evt_tx, delta, true, "", "").is_none());
+        }
         let transient = ServerMsg::OverlayJoinRefused {
             reason: signaling::OverlayJoinRefusal::StoreUnavailable,
             detail: "authority changed before join netmap; retry".into(),
         };
-        let send_task = tokio::spawn(async move {
-            assert!(intercept(&tx_clone, transient, true, "", "").await.is_none());
-        });
-        tokio::task::yield_now().await;
-        assert!(!send_task.is_finished(), "must wait for capacity rather than drop refusal");
-        assert!(matches!(rx.recv().await, Some(OverlayEvent::ControlDetached)));
-        send_task.await.unwrap();
-        assert!(matches!(
-            rx.recv().await,
-            Some(OverlayEvent::JoinRefused { retryable: true })
-        ));
-
+        assert!(intercept(&evt_tx, transient, true, "", "").is_none());
+        let netmap: ServerMsg = serde_json::from_value(serde_json::json!({
+            "t": "rc:overlay.netmap",
+            "self_ip": "100.64.0.1",
+            "network": { "cidr": "100.64.0.0/10", "mtu": 1280, "auth_revision": 2 },
+            "peers": []
+        }))
+        .unwrap();
+        assert!(intercept(&evt_tx, netmap, true, "", "").is_none());
         let terminal = ServerMsg::OverlayJoinRefused {
             reason: signaling::OverlayJoinRefusal::AddressSpaceExhausted,
             detail: "no free IPv4 in pool".into(),
         };
-        assert!(intercept(&tx, terminal, true, "", "").await.is_none());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(OverlayEvent::JoinRefused { retryable: false })
-        ));
+        assert!(intercept(&evt_tx, terminal, true, "", "").is_none());
+
+        // Signaling remains completely unblocked and immediately drains `outbound_rx`!
+        assert_eq!(outbound_rx.recv().await, Some(1));
+        assert_eq!(outbound_rx.recv().await, Some(2));
+        drop(evt_tx);
+
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(2), runtime_task)
+            .await
+            .expect("must not deadlock when both queues fill")
+            .unwrap();
+
+        // Reliable events (`JoinRefused(true)` -> `Netmap` -> `JoinRefused(false)`) arrive in exact FIFO order!
+        let reliable: Vec<&str> = delivered
+            .iter()
+            .filter_map(|e| match e {
+                OverlayEvent::JoinRefused { retryable: true } => Some("refused_retry"),
+                OverlayEvent::Netmap { .. } => Some("netmap"),
+                OverlayEvent::JoinRefused { retryable: false } => Some("refused_terminal"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reliable, vec!["refused_retry", "netmap", "refused_terminal"]);
     }
 }
