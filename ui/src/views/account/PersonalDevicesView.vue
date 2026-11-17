@@ -12,9 +12,56 @@
     <p class="text-body-2 my-3">{{ $t('mh.mine.countNote') }}</p>
     <h2 class="text-h6 mt-4">{{ $t('mh.mine.ownedTable') }}</h2>
     <v-progress-linear v-if="loading" indeterminate />
-    <v-table data-testid="owned-devices-table"><thead><tr><th>{{ $t('mh.mine.col.device') }}</th><th>{{ $t('mh.mine.col.registered') }}</th><th>{{ $t('mh.mine.col.os') }}</th><th>{{ $t('mh.mine.col.status') }}</th><th>{{ $t('mh.mine.col.org') }}</th><th>{{ $t('mh.mine.col.access') }}</th></tr></thead><tbody>
-      <tr v-for="device in owned?.items ?? []" :key="device.id"><td>{{ device.name }}<br /><code>{{ device.id }}</code></td><td>{{ device.machine_name }}</td><td>{{ device.os }}</td><td>{{ device.status }}</td><td><code>{{ device.tenant_id }}</code></td><td><v-btn size="small" :disabled="device.status !== 'online'" :to="nativeDesktop ? undefined : { name: 'agent-remote', params: { tenantId: device.tenant_id, agentId: device.id } }" :href="nativeDesktop ? remoteUrl(device) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">{{ $t('mh.mine.openDesktop') }}</v-btn> <v-btn size="small" variant="tonal" class="ml-1" :data-testid="'share-device-' + device.id" :to="{ path: '/device-shares', query: { ...(nativeDesktop ? { desktop: '1' } : {}), direction: 'sent', share_device: device.id } }">{{ $t('mh.mine.share') }}</v-btn></td></tr>
-      <tr v-if="owned && owned.items.length === 0"><td colspan="6">{{ owned.total === 0 ? $t('mh.mine.noneOwned') : $t('mh.mine.nonePage') }}</td></tr>
+    <v-table data-testid="owned-devices-table"><thead><tr><th>{{ $t('mh.mine.col.device') }}</th><th>{{ $t('mh.mine.col.registered') }}</th><th>{{ $t('mh.mine.col.os') }}</th><th>{{ $t('mh.mine.col.status') }}</th><th>{{ $t('mh.dev.col.location') }}</th><th>{{ $t('mh.mine.col.org') }}</th><th>{{ $t('mh.mine.col.access') }}</th></tr></thead><tbody>
+      <tr v-for="device in owned?.items ?? []" :key="device.id">
+        <td>
+          <div class="d-flex align-center flex-wrap ga-1">
+            <span>{{ device.name }}</span>
+            <v-chip
+              v-if="rowZone(device).hasZone"
+              size="x-small"
+              :color="rowZone(device).pinned ? 'primary' : 'secondary'"
+              variant="tonal"
+              :prepend-icon="rowZone(device).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
+              :title="rowZone(device).pinned ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(device).zoneLabel }) : $t('mh.dev.zoneAutoTitle', { zone: rowZone(device).zoneLabel })"
+              data-testid="owned-device-zone-badge"
+            >
+              {{ rowZone(device).badgeText }}
+            </v-chip>
+          </div>
+          <code>{{ device.id }}</code>
+        </td>
+        <td>{{ device.machine_name }}</td>
+        <td>{{ device.os }}</td>
+        <td>{{ device.status }}</td>
+        <td>
+          <div v-if="rowLocation(device).hasAny" class="device-loc-cell" data-testid="owned-device-location-cell">
+            <div class="device-loc-primary">
+              <span v-if="rowLocation(device).countryCode" class="geo-code-pill">{{ rowLocation(device).countryCode }}</span>
+              <span class="text-caption font-weight-medium">{{ rowLocation(device).locationText || '—' }}</span>
+            </div>
+            <div class="device-loc-ip text-caption text-medium-emphasis text-mono">
+              <span>{{ rowLocation(device).publicIp || '—' }}</span>
+              <v-btn
+                v-if="rowLocation(device).publicIp"
+                :icon="copiedIp === rowLocation(device).publicIp ? 'mdi-check' : 'mdi-content-copy'"
+                size="x-small"
+                variant="text"
+                density="compact"
+                :color="copiedIp === rowLocation(device).publicIp ? 'success' : undefined"
+                class="ml-1 device-loc-copy"
+                :aria-label="$t('mh.dev.copyIpFor', { name: device.name })"
+                :title="$t('mh.dev.copyIp')"
+                @click="copyPublicIp(rowLocation(device).publicIp)"
+              />
+            </div>
+          </div>
+          <span v-else class="text-caption text-medium-emphasis" data-testid="owned-device-location-empty">—</span>
+        </td>
+        <td><code>{{ device.tenant_id }}</code></td>
+        <td><v-btn size="small" :disabled="device.status !== 'online'" :to="nativeDesktop ? undefined : { name: 'agent-remote', params: { tenantId: device.tenant_id, agentId: device.id } }" :href="nativeDesktop ? remoteUrl(device) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">{{ $t('mh.mine.openDesktop') }}</v-btn> <v-btn size="small" variant="tonal" class="ml-1" :data-testid="'share-device-' + device.id" :to="{ path: '/device-shares', query: { ...(nativeDesktop ? { desktop: '1' } : {}), direction: 'sent', share_device: device.id } }">{{ $t('mh.mine.share') }}</v-btn></td>
+      </tr>
+      <tr v-if="owned && owned.items.length === 0"><td colspan="7">{{ owned.total === 0 ? $t('mh.mine.noneOwned') : $t('mh.mine.nonePage') }}</td></tr>
     </tbody></v-table>
     <v-pagination v-if="owned && owned.total > 25" v-model="page" :length="Math.ceil(owned.total / 25)" :disabled="loading" />
     <p class="text-body-2 mt-2">{{ $t('mh.mine.footer') }}</p>
@@ -28,13 +75,20 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { appOrigin } from '@/utils/deployment'
+import { formatDeviceLocation, formatDeviceZone, type DeviceZoneFields, type GeoLocationFields } from '@/utils/deviceLocation'
 import DeviceSharesView from '@/views/account/DeviceSharesView.vue'
-interface OwnedDevice { id: string; name: string; machine_name: string; os: string; status: string; tenant_id: string }
+interface OwnedDevice extends GeoLocationFields, DeviceZoneFields { id: string; name: string; machine_name: string; os: string; status: string; tenant_id: string }
 interface OwnedPage { items: OwnedDevice[]; page: number; total: number }
 interface ShareCounts { active_devices: number; active_grants: number; total_records: number; expired_records: number; revoked_records: number }
 interface Summary { own_devices: number; received: ShareCounts; sent: ShareCounts }
 const auth = useAuthStore(), route = useRoute(), { t } = useI18n()
-const page = ref(1), owned = ref<OwnedPage | null>(null), summary = ref<Summary | null>(null), loading = ref(false), error = ref('')
+const page = ref(1), owned = ref<OwnedPage | null>(null), summary = ref<Summary | null>(null), loading = ref(false), error = ref(''), copiedIp = ref('')
+const rowLocation = (d: OwnedDevice) => formatDeviceLocation(d)
+const rowZone = (d: OwnedDevice) => formatDeviceZone(d)
+async function copyPublicIp(ip: string) {
+  if (!ip) return
+  try { await navigator.clipboard?.writeText(ip); copiedIp.value = ip; setTimeout(() => { if (copiedIp.value === ip) copiedIp.value = '' }, 1500) } catch { /* ignore */ }
+}
 const nativeDesktop = computed(() => route.query.desktop === '1')
 const buckets = [{ key: 'received', label: 'mh.shares.tabReceived' }, { key: 'sent', label: 'mh.shares.tabSent' }] as const
 const base = appOrigin(window.location.origin).replace(/\/$/, '')
@@ -62,3 +116,21 @@ const refresh = setInterval(visibleRefresh, 30_000)
 document.addEventListener('visibilitychange', visibleRefresh)
 onBeforeUnmount(() => { alive = false; ++generation; clearInterval(refresh); document.removeEventListener('visibilitychange', visibleRefresh) })
 </script>
+<style scoped>
+.device-loc-cell { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }
+.device-loc-primary { display: inline-flex; align-items: center; gap: 6px; }
+.device-loc-ip { display: inline-flex; align-items: center; line-height: 1.2; }
+.device-loc-copy { height: 18px !important; width: 18px !important; }
+.geo-code-pill {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.4px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+}
+</style>

@@ -1253,6 +1253,39 @@ impl OrgRelaySession {
             },
         }
     }
+
+    /// Endpoints offered to member `i` for its local `OrgRelayConn` bind.
+    /// On a multi-hop line where member `i` IS its own terminal gateway relay,
+    /// prepend `127.0.0.1:<port>` so the member binds locally over loopback
+    /// without requiring NAT hairpinning on its public address.
+    fn member_bind_endpoints(&self, i: usize) -> Vec<String> {
+        let leg = self.member_leg(i);
+        if !self.hops.is_empty() && self.members[i].party.node_id == leg.relay_node_id {
+            prepend_loopback_relay_endpoint(leg.endpoints)
+        } else {
+            leg.endpoints.to_vec()
+        }
+    }
+}
+
+pub(super) fn prepend_loopback_relay_endpoint(endpoints: &[String]) -> Vec<String> {
+    let port = endpoints
+        .iter()
+        .find_map(|ep| ep.parse::<std::net::SocketAddr>().ok().map(|sa| sa.port()))
+        .filter(|&p| p > 0)
+        .unwrap_or(limits::DEFAULT_RELAY_PORT);
+    let local = format!("127.0.0.1:{port}");
+    let mut out = Vec::with_capacity(4);
+    out.push(local.clone());
+    for ep in endpoints {
+        if out.len() >= 4 {
+            break;
+        }
+        if ep != &local {
+            out.push(ep.clone());
+        }
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -1786,7 +1819,7 @@ impl OrgRelayState {
         let minted_for_it = self.sessions.iter().any(|e| {
             e.member_index(reporter).is_some_and(|i| {
                 let leg = e.member_leg(i);
-                leg.relay_node_id == relay_node_id && leg.endpoints.contains(&endpoint)
+                leg.relay_node_id == relay_node_id && e.member_bind_endpoints(i).contains(&endpoint)
             })
         }) || self.trials.has_member_leg(reporter, relay_node_id, &endpoint);
         let offered = |offers: &DashMap<ObjectId, Vec<(ObjectId, String)>>| {
@@ -3115,7 +3148,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
             continue;
         }
         let Some(relay_id) = node.id else { continue };
-        if relay_id == req_id || relay_id == peer_id {
+        if scope != ZoneScope::NetworkZoneGraph && (relay_id == req_id || relay_id == peer_id) {
             continue;
         }
         // A relay a member measured lossy for this pair sits out its pin
@@ -3145,8 +3178,9 @@ async fn plan_mint_candidates_with_trial_diagnostics(
             approved_routes: &relay_routes,
         };
         let granted = agent.peer_relay_policy.serve
-            && evaluate_overlay(&acl.policies, &req_src, relay_ref).visible
-            && evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible;
+            && (relay_id == req_id || evaluate_overlay(&acl.policies, &req_src, relay_ref).visible)
+            && (relay_id == peer_id
+                || evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible);
         // `auto`: requester, peer and relay all observed in ONE zone on their
         // live connections; unknown anywhere refuses (hard isolation).
         // GEO-04 — a relay is judged like any node: its own addresses can
@@ -3287,10 +3321,23 @@ fn sla_rank_key(
     load: usize,
     now: Instant,
 ) -> (u8, u128, u128, u128, u16, u128, u128) {
+    let self_zero = path_search::SlaVerdict::Reachable {
+        rtt_ms: 0,
+        jitter_ms: 0,
+        loss_permille: 0,
+    };
     path_search::evaluate_sla_legs(
         [
-            org_relay.sla_verdict(a, relay_id, now),
-            org_relay.sla_verdict(b, relay_id, now),
+            if a == relay_id {
+                self_zero
+            } else {
+                org_relay.sla_verdict(a, relay_id, now)
+            },
+            if b == relay_id {
+                self_zero
+            } else {
+                org_relay.sla_verdict(b, relay_id, now)
+            },
         ],
         [load],
     )
@@ -4394,10 +4441,15 @@ async fn network_zone_backbone_hints(
             plan.relays.first()
         };
         let Some(relay) = relay else { continue };
+        let endpoints = if Some(relay.node_id) == requester.id {
+            prepend_loopback_relay_endpoint(&relay.endpoints)
+        } else {
+            relay.endpoints.clone()
+        };
         out.push(OrgRelayCandidateWire {
             path: identity.path,
             requester_at_exit: identity.requester_at_exit,
-            endpoints: relay.endpoints.clone(),
+            endpoints,
         });
     }
     out
@@ -5445,7 +5497,7 @@ fn member_message(s: &OrgRelaySession, i: usize) -> Option<ServerMsg> {
         generation: leg.generation,
         peer_node_id: other.party.node_id,
         relay_node_id: leg.relay_node_id,
-        relay_endpoints: leg.endpoints.to_vec(),
+        relay_endpoints: s.member_bind_endpoints(i),
         bind_secret: me.bind_secret.clone(),
         bind_secs: limits::BIND_SECS,
         max_lifetime_secs: remaining,
@@ -6185,6 +6237,9 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
                 approved_routes: &relay_routes,
             };
             for m in &s.members {
+                if m.party.node_id == relay_id {
+                    continue;
+                }
                 let node = match state.overlay_nodes.base.find_by_id(m.party.node_id).await {
                     Ok(n) => n,
                     Err(meshharbor_services::dao::base::DaoError::NotFound) => {

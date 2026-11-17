@@ -75,7 +75,9 @@ pub(super) fn build(s: &OrgRelaySession, now: Instant) -> Result<Delivery, Deliv
     for member in &s.members {
         check_secret(&member.bind_secret)?;
     }
-    let check_relay = |node_id,
+    let total_relays = s.hops.len() + 1;
+    let check_relay = |relay_index: usize,
+                       node_id,
                        node_ref: &NodeRef,
                        agent_id,
                        vni,
@@ -83,11 +85,26 @@ pub(super) fn build(s: &OrgRelaySession, now: Instant) -> Result<Delivery, Deliv
                        endpoints: &[String],
                        seen_nodes: &mut HashSet<ObjectId>,
                        seen_agents: &mut HashSet<ObjectId>| {
-        if !matches!(node_ref, NodeRef::Agent { agent_id: actual } if *actual == agent_id)
-            || s.members
-                .iter()
-                .any(|m| m.party.node_id == node_id || &m.party.node_ref == node_ref)
-        {
+        if !matches!(node_ref, NodeRef::Agent { agent_id: actual } if *actual == agent_id) {
+            return Err(DeliveryError::InvalidIdentity);
+        }
+        // Terminal Self-Relay Invariant:
+        // - Single-hop (`total_relays == 1`): neither member may match the relay.
+        // - Multi-hop (`total_relays >= 2`): `R_0` may match `members[0]` only,
+        //   `R_{N-1}` may match `members[1]` only, and interior relays `0 < i < N-1`
+        //   may match neither member.
+        let matches_m0 = s.members[0].party.node_id == node_id || &s.members[0].party.node_ref == node_ref;
+        let matches_m1 = s.members[1].party.node_id == node_id || &s.members[1].party.node_ref == node_ref;
+        let forbidden_member_overlap = if total_relays == 1 {
+            matches_m0 || matches_m1
+        } else if relay_index == 0 {
+            matches_m1
+        } else if relay_index + 1 == total_relays {
+            matches_m0
+        } else {
+            matches_m0 || matches_m1
+        };
+        if forbidden_member_overlap {
             return Err(DeliveryError::InvalidIdentity);
         }
         if !seen_nodes.insert(node_id) || !seen_agents.insert(agent_id) {
@@ -102,6 +119,7 @@ pub(super) fn build(s: &OrgRelaySession, now: Instant) -> Result<Delivery, Deliv
         Ok(())
     };
     check_relay(
+        0,
         s.relay.node_id,
         &s.relay.node_ref,
         s.relay_agent_id,
@@ -111,8 +129,9 @@ pub(super) fn build(s: &OrgRelaySession, now: Instant) -> Result<Delivery, Deliv
         &mut seen_nodes,
         &mut seen_agents,
     )?;
-    for hop in &s.hops {
+    for (hop_idx, hop) in s.hops.iter().enumerate() {
         check_relay(
+            hop_idx + 1,
             hop.relay.node_id,
             &hop.relay.node_ref,
             hop.relay_agent_id,
@@ -400,5 +419,69 @@ mod tests {
         let mut bad = s;
         bad.expires_at = now;
         assert!(matches!(build(&bad, now), Err(DeliveryError::Expired)));
+    }
+
+    #[test]
+    fn terminal_self_relay_invariant_allows_multi_hop_ends_and_rejects_single_or_interior() {
+        let now = Instant::now();
+
+        // 1-hop self-relay (`[m0]` or `[m1]`) MUST be rejected!
+        let single = fixture(1);
+        let mut bad_single_m0 = single.clone();
+        bad_single_m0.members[0].party = bad_single_m0.relay.clone();
+        assert!(matches!(
+            build(&bad_single_m0, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
+        let mut bad_single_m1 = single;
+        bad_single_m1.members[1].party = bad_single_m1.relay.clone();
+        assert!(matches!(
+            build(&bad_single_m1, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
+
+        // 2-hop `[m0, r1]`, `[r0, m1]`, and `[m0, m1]` MUST all succeed!
+        let two = fixture(2);
+        let mut ok_ingress = two.clone();
+        ok_ingress.members[0].party = ok_ingress.relay.clone();
+        assert!(build(&ok_ingress, now).is_ok());
+
+        let mut ok_exit = two.clone();
+        ok_exit.members[1].party = ok_exit.hops[0].relay.clone();
+        assert!(build(&ok_exit, now).is_ok());
+
+        let mut ok_both = two.clone();
+        ok_both.members[0].party = ok_both.relay.clone();
+        ok_both.members[1].party = ok_both.hops[0].relay.clone();
+        assert!(build(&ok_both, now).is_ok());
+
+        // Swapped ends (`[m1, r1]` or `[r0, m0]`) MUST be rejected!
+        let mut bad_swap_0 = two.clone();
+        bad_swap_0.members[1].party = bad_swap_0.relay.clone();
+        assert!(matches!(
+            build(&bad_swap_0, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
+        let mut bad_swap_1 = two;
+        bad_swap_1.members[0].party = bad_swap_1.hops[0].relay.clone();
+        assert!(matches!(
+            build(&bad_swap_1, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
+
+        // 3-hop interior self-relay (`[r0, m0, r2]` or `[r0, m1, r2]`) MUST be rejected!
+        let three = fixture(3);
+        let mut bad_mid_0 = three.clone();
+        bad_mid_0.members[0].party = bad_mid_0.hops[0].relay.clone();
+        assert!(matches!(
+            build(&bad_mid_0, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
+        let mut bad_mid_1 = three;
+        bad_mid_1.members[1].party = bad_mid_1.hops[0].relay.clone();
+        assert!(matches!(
+            build(&bad_mid_1, now),
+            Err(DeliveryError::InvalidIdentity)
+        ));
     }
 }

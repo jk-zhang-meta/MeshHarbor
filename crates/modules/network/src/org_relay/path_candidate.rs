@@ -316,7 +316,10 @@ pub(super) async fn prepare_reusing(
                 }
                 continue;
             }
-            if plan.relay.node_ref == requester.node_ref || plan.relay.node_ref == peer.node_ref {
+            if !network_zones_active
+                && (plan.relay.node_ref == requester.node_ref
+                    || plan.relay.node_ref == peer.node_ref)
+            {
                 return Err(Deny::PolicyUnreadable);
             }
             if ((enforce_pair_zone && !linked_servers && za != zb) || network_zones_active)

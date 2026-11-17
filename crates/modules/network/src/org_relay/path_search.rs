@@ -189,6 +189,14 @@ pub(super) struct SearchRelayWithSla {
     pub ingress: Option<SlaVerdict>,
     pub exit: Option<SlaVerdict>,
     pub load: usize,
+    /// True when this relay IS the orientation's starting member (`members[0]`):
+    /// it may ONLY serve as the ingress relay `R_0` of a `>= 2`-relay path
+    /// (never a 1-hop self-relay and never an interior or terminal relay).
+    pub is_start_member: bool,
+    /// True when this relay IS the orientation's ending member (`members[1]`):
+    /// it may ONLY serve as the terminal relay `R_{N-1}` of a `>= 2`-relay path
+    /// (never a 1-hop self-relay and never an ingress or interior relay).
+    pub is_end_member: bool,
 }
 
 impl From<SearchRelay> for SearchRelayWithSla {
@@ -198,6 +206,8 @@ impl From<SearchRelay> for SearchRelayWithSla {
             ingress: r.ingress.map(SlaVerdict::from),
             exit: r.exit.map(SlaVerdict::from),
             load: r.load,
+            is_start_member: false,
+            is_end_member: false,
         }
     }
 }
@@ -522,6 +532,9 @@ pub(super) fn shortest_sla(
         let mut previous: Vec<Option<(usize, usize)>> = vec![None; relays.len()];
         let mut queue = BinaryHeap::new();
         for (i, relay) in relays.iter().enumerate() {
+            if relay.is_end_member {
+                continue;
+            }
             let Some(verdict) = relay.ingress else {
                 continue;
             };
@@ -536,7 +549,8 @@ pub(super) fn shortest_sla(
             if costs[node] != Some(cost) {
                 continue;
             }
-            if let Some(verdict) = relays[node].exit
+            if !relays[node].is_start_member
+                && let Some(verdict) = relays[node].exit
                 && verdict.leg_metrics().0 <= threshold
             {
                 let candidate = (add(cost, step(threshold, verdict, None)), node);
@@ -544,9 +558,12 @@ pub(super) fn shortest_sla(
                     best = Some(candidate);
                 }
             }
+            if relays[node].is_end_member {
+                continue;
+            }
             for &edge_index in &adjacency[node] {
                 let edge = &edges[edge_index];
-                if edge.verdict.leg_metrics().0 > threshold {
+                if relays[edge.to].is_start_member || edge.verdict.leg_metrics().0 > threshold {
                     continue;
                 }
                 let next = add(
@@ -1103,6 +1120,8 @@ mod tests {
             ingress: ing,
             exit: ex,
             load,
+            is_start_member: false,
+            is_end_member: false,
         };
         let reach = |rtt_ms, jitter_ms, loss_permille| SlaVerdict::Reachable {
             rtt_ms,

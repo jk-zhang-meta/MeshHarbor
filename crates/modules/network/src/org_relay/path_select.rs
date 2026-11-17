@@ -163,31 +163,47 @@ pub(super) fn select_from_prepared(
             .plans
             .get(&relay.node_id)
             .ok_or(Deny::PolicyUnreadable)?;
-        let a_probe = super::scoped_sla_verdict(
-            &org_relay.probes,
-            a,
-            relay.node_id,
-            &plan.endpoints,
-            cutoff(
+        let is_a = relay.node_id == a;
+        let is_b = relay.node_id == b;
+        let self_zero = path_search::SlaVerdict::Reachable {
+            rtt_ms: 0,
+            jitter_ms: 0,
+            loss_permille: 0,
+        };
+        let a_probe = if is_a {
+            self_zero
+        } else {
+            super::scoped_sla_verdict(
+                &org_relay.probes,
                 a,
-                prepared.requester_identity,
                 relay.node_id,
-                relay.agent_id,
-            ),
-            now,
-        );
-        let b_probe = super::scoped_sla_verdict(
-            &org_relay.probes,
-            b,
-            relay.node_id,
-            &plan.endpoints,
-            cutoff(b, prepared.peer_identity, relay.node_id, relay.agent_id),
-            now,
-        );
+                &plan.endpoints,
+                cutoff(
+                    a,
+                    prepared.requester_identity,
+                    relay.node_id,
+                    relay.agent_id,
+                ),
+                now,
+            )
+        };
+        let b_probe = if is_b {
+            self_zero
+        } else {
+            super::scoped_sla_verdict(
+                &org_relay.probes,
+                b,
+                relay.node_id,
+                &plan.endpoints,
+                cutoff(b, prepared.peer_identity, relay.node_id, relay.agent_id),
+                now,
+            )
+        };
         let load = org_relay.sessions_on_relay(relay.node_id);
         // Compare the established single-relay planner's actual SLA rank. Its
         // missing-RTT and probe-freshness semantics differ from path search.
         // This candidate cannot introduce an ineligible relay into a long path.
+        // Never allow a 1-hop self-relay (`!is_a && !is_b`).
         let req_end_ok = prepared
             .requester_gateways
             .as_ref()
@@ -198,7 +214,7 @@ pub(super) fn select_from_prepared(
             .as_ref()
             .is_none_or(|gw| gw.contains(&relay.agent_id))
             && (!restrict_bz || relay.zone == prepared.peer_zone);
-        if req_end_ok && peer_end_ok {
+        if !is_a && !is_b && req_end_ok && peer_end_ok {
             let (class, eff_cost, rtt, jitter_ms, loss_permille, unknown_legs, unreachable_legs) =
                 super::sla_rank_key(org_relay, a, b, relay.node_id, load, now);
             let rank = (class, eff_cost, load, rtt);
@@ -212,15 +228,19 @@ pub(super) fn select_from_prepared(
         }
         forward.push(SearchRelayWithSla {
             node_id: relay.node_id,
-            ingress: (eligible && req_end_ok).then_some(a_probe),
-            exit: (eligible && peer_end_ok).then_some(b_probe),
+            ingress: (eligible && req_end_ok && !is_b).then_some(a_probe),
+            exit: (eligible && peer_end_ok && !is_a).then_some(b_probe),
             load,
+            is_start_member: is_a,
+            is_end_member: is_b,
         });
         reverse.push(SearchRelayWithSla {
             node_id: relay.node_id,
-            ingress: (eligible && peer_end_ok).then_some(b_probe),
-            exit: (eligible && req_end_ok).then_some(a_probe),
+            ingress: (eligible && peer_end_ok && !is_a).then_some(b_probe),
+            exit: (eligible && req_end_ok && !is_b).then_some(a_probe),
             load,
+            is_start_member: is_b,
+            is_end_member: is_a,
         });
     }
     let edges: Vec<_> = prepared

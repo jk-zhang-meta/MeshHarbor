@@ -6,12 +6,17 @@ use axum::{
 };
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use meshharbor_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_core::{
+    ApiError, Core, extractors::auth::AuthUser, user_analytics::canonical_public_ip,
+};
 use meshharbor_db::models::{DeviceShareGrant, Tenant, TenantMember};
-use meshharbor_remote_control::models::{Agent, AgentStatus, OsKind};
+use meshharbor_remote_control::models::{
+    Agent, AgentStatus, DeviceZoneResolution, NetworkZone, OsKind, OverlayNetwork, OverlayNode,
+    resolve_device_zone,
+};
 use meshharbor_services::dao::base::DaoError;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{collections::HashMap, net::IpAddr, time::Duration};
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +34,22 @@ pub struct DeviceRow {
     /// Stored device status, not a promise that a service/PDP is available.
     pub status: AgentStatus,
     pub tenant_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_zone_name: Option<String>,
 }
 #[derive(Serialize)]
 pub struct DevicePage {
@@ -46,6 +67,14 @@ struct StoredDevice {
     os: OsKind,
     status: AgentStatus,
     tenant_id: ObjectId,
+    #[serde(default)]
+    machine_id: Option<String>,
+    #[serde(default)]
+    public_ip: Option<String>,
+    #[serde(default)]
+    country_code: Option<String>,
+    #[serde(default)]
+    pinned_zone_id: Option<String>,
 }
 #[derive(Deserialize)]
 struct Count {
@@ -121,7 +150,10 @@ pub async fn list(
     // One facet guarantees items and total use the exact same authorization filter.
     pipeline.push(doc! {"$facet":{
         "items":[{"$sort":{"_id":1}},{"$skip":skip as i64},{"$limit":size as i64},
-            {"$project":{"_id":1,"name":1,"display_name":1,"os":1,"status":1,"tenant_id":1}}],
+            {"$project":{
+                "_id":1,"name":1,"display_name":1,"os":1,"status":1,"tenant_id":1,
+                "machine_id":1,"public_ip":1,"country_code":1,"pinned_zone_id":1
+            }}],
         "count":[{"$count":"total"}]
     }});
     let row = aggregate_one(&core, Agent::COLLECTION, pipeline)
@@ -129,19 +161,116 @@ pub async fn list(
         .ok_or_else(|| ApiError::Internal("Missing account directory aggregate".into()))?;
     let row: OwnPage = bson::from_document(row).map_err(DaoError::from)?;
     let total = row.count.first().map(|c| c.total).unwrap_or(0);
+
+    // Best-effort enrichment for logical zones and fallback public IP from live overlay_nodes.
+    let mut tenant_zones: HashMap<ObjectId, Vec<NetworkZone>> = HashMap::new();
+    let mut node_public_ips: HashMap<(ObjectId, String), IpAddr> = HashMap::new();
+    if !row.items.is_empty() {
+        let mut tenant_ids: Vec<ObjectId> = row.items.iter().map(|a| a.tenant_id).collect();
+        tenant_ids.sort_unstable();
+        tenant_ids.dedup();
+        if let Ok(mut net_cursor) = core
+            .db
+            .collection::<Document>(OverlayNetwork::COLLECTION)
+            .find(doc! { "tenant_id": { "$in": &tenant_ids } })
+            .projection(doc! { "tenant_id": 1, "zones": 1 })
+            .max_time(Duration::from_secs(3))
+            .await
+        {
+            while let Ok(Some(doc)) = net_cursor.try_next().await {
+                if let Ok(tid) = doc.get_object_id("tenant_id")
+                    && let Some(raw_zones) = doc.get("zones")
+                    && let Ok(zones) = bson::from_bson::<Vec<NetworkZone>>(raw_zones.clone())
+                {
+                    tenant_zones.insert(tid, zones);
+                }
+            }
+        }
+        let missing_ip_machines: Vec<String> = row
+            .items
+            .iter()
+            .filter(|a| {
+                a.public_ip
+                    .as_deref()
+                    .and_then(|s| s.parse::<IpAddr>().ok())
+                    .and_then(canonical_public_ip)
+                    .is_none()
+            })
+            .filter_map(|a| a.machine_id.clone().filter(|m| !m.is_empty()))
+            .collect();
+        if !missing_ip_machines.is_empty()
+            && let Ok(mut node_cursor) = core
+                .db
+                .collection::<OverlayNode>(OverlayNode::COLLECTION)
+                .find(doc! {
+                    "tenant_id": { "$in": &tenant_ids },
+                    "machine_id": { "$in": &missing_ip_machines },
+                    "deleted_at": null
+                })
+                .max_time(Duration::from_secs(3))
+                .await
+        {
+            while let Ok(Some(n)) = node_cursor.try_next().await {
+                if let Some(ip) = n
+                    .srflx_endpoints
+                    .iter()
+                    .chain(&n.lan_endpoints)
+                    .filter_map(|e| e.parse::<std::net::SocketAddr>().ok())
+                    .find_map(|sa| canonical_public_ip(sa.ip()))
+                {
+                    node_public_ips.insert((n.tenant_id, n.machine_id), ip);
+                }
+            }
+        }
+    }
+
     let items = row
         .items
         .into_iter()
-        .map(|a| DeviceRow {
-            id: a.id.to_hex(),
-            name: a
-                .display_name
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| a.name.clone()),
-            machine_name: a.name,
-            os: a.os,
-            status: a.status,
-            tenant_id: a.tenant_id.to_hex(),
+        .map(|a| {
+            let resolved_ip = a
+                .public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<IpAddr>().ok())
+                .and_then(canonical_public_ip)
+                .or_else(|| {
+                    a.machine_id
+                        .as_ref()
+                        .and_then(|m| node_public_ips.get(&(a.tenant_id, m.clone())).copied())
+                });
+            let loc = resolved_ip
+                .map(|ip| core.geoip.lookup_location(ip))
+                .unwrap_or_default();
+            let effective_cc = loc.country_code.clone().or(a.country_code);
+            let zones = tenant_zones
+                .get(&a.tenant_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let (effective_zone_id, effective_zone_name) =
+                match resolve_device_zone(zones, a.pinned_zone_id.as_deref(), effective_cc.as_deref())
+                {
+                    DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+                    _ => (None, None),
+                };
+            DeviceRow {
+                id: a.id.to_hex(),
+                name: a
+                    .display_name
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| a.name.clone()),
+                machine_name: a.name,
+                os: a.os,
+                status: a.status,
+                tenant_id: a.tenant_id.to_hex(),
+                public_ip: resolved_ip.map(|ip| ip.to_string()),
+                country_code: effective_cc,
+                country: loc.country,
+                region: loc.region,
+                city: loc.city,
+                pinned_zone_id: a.pinned_zone_id.filter(|s| !s.trim().is_empty()),
+                effective_zone_id,
+                effective_zone_name,
+            }
         })
         .collect();
     Ok(Json(DevicePage { items, page, total }))

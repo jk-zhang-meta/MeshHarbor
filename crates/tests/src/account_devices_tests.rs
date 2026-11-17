@@ -721,3 +721,136 @@ async fn account_devices_raw_scalar_boundaries_reject_arrays_and_nonbooleans() {
         "reading summary never deletes malformed or historical records"
     );
 }
+
+#[tokio::test]
+async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_present() {
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb, crate::agent_self_tests::city_fixture_mmdb()).unwrap();
+    let mmdb = mmdb.to_str().unwrap().to_owned();
+
+    let bootstrap = ObjectId::new();
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.auth.account_approval.enabled = true;
+        s.auth.account_approval.owner_user_id = Some(bootstrap.to_hex());
+        s.stats.geoip_mmdb = Some(mmdb);
+    })
+    .await;
+    actor(
+        &app,
+        "geo_bootstrap",
+        Some(bootstrap),
+        AccountApprovalState::Approved,
+    )
+    .await;
+    let me = actor(&app, "geo_owner", None, AccountApprovalState::Approved).await;
+    let tid = app
+        .state
+        .tenants
+        .create("my-devices-geo".into(), format!("my-devices-geo-{}", ObjectId::new()), me.id)
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+
+    let cn_dev = AgentDao::new(&app.db)
+        .create(
+            tid,
+            me.id,
+            "siat45".into(),
+            ObjectId::new().to_hex(),
+            OsKind::Linux,
+            "0.4.167".into(),
+            "synthetic-tok-1".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    let hk_dev = AgentDao::new(&app.db)
+        .create(
+            tid,
+            me.id,
+            "isvoro-hk".into(),
+            ObjectId::new().to_hex(),
+            OsKind::Linux,
+            "0.4.167".into(),
+            "synthetic-tok-2".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    app.db
+        .collection::<Document>("agents")
+        .update_one(
+            doc! { "_id": cn_dev },
+            doc! { "$set": { "public_ip": "139.199.1.45", "pinned_zone_id": "cn" } },
+        )
+        .await
+        .unwrap();
+    app.db
+        .collection::<Document>("agents")
+        .update_one(
+            doc! { "_id": hk_dev },
+            doc! { "$set": { "public_ip": "202.181.7.10" } },
+        )
+        .await
+        .unwrap();
+    app.db
+        .collection::<Document>("overlay_networks")
+        .insert_one(doc! {
+            "tenant_id": tid,
+            "cidr": "100.64.0.0/10",
+            "mtu": 1280,
+            "zones": [
+                {
+                    "id": "cn",
+                    "name": "CN 区",
+                    "auto_countries": ["CN"],
+                    "is_default": false,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "router_only"
+                },
+                {
+                    "id": "non-cn",
+                    "name": "非 CN 区",
+                    "auto_countries": ["HK", "US"],
+                    "is_default": true,
+                    "gateway_relay_ids": [],
+                    "cross_zone_mode": "router_only"
+                }
+            ]
+        })
+        .await
+        .unwrap();
+
+    let resp = app
+        .auth_get("/api/account/devices?page=1&per_page=25", &me.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+
+    let cn_row = items.iter().find(|r| r["id"] == cn_dev.to_hex()).unwrap();
+    assert_eq!(cn_row["public_ip"], json!("139.199.1.45"));
+    assert_eq!(cn_row["country_code"], json!("CN"));
+    assert_eq!(cn_row["country"], json!("中国"));
+    assert_eq!(cn_row["region"], json!("广东省"));
+    assert_eq!(cn_row["city"], json!("深圳市"));
+    assert_eq!(cn_row["pinned_zone_id"], json!("cn"));
+    assert_eq!(cn_row["effective_zone_id"], json!("cn"));
+    assert_eq!(cn_row["effective_zone_name"], json!("CN 区"));
+
+    let hk_row = items.iter().find(|r| r["id"] == hk_dev.to_hex()).unwrap();
+    assert_eq!(hk_row["public_ip"], json!("202.181.7.10"));
+    assert_eq!(hk_row["country_code"], json!("HK"));
+    assert!(hk_row.get("pinned_zone_id").is_none());
+    assert_eq!(hk_row["effective_zone_id"], json!("non-cn"));
+    assert_eq!(hk_row["effective_zone_name"], json!("非 CN 区"));
+}

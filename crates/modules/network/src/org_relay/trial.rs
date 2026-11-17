@@ -144,7 +144,8 @@ impl PathTrials {
                 !returned(t)
                     && t.session.member_index(reporter).is_some_and(|i| {
                         let leg = t.session.member_leg(i);
-                        leg.relay_node_id == relay_node_id && leg.endpoints.contains(endpoint)
+                        leg.relay_node_id == relay_node_id
+                            && t.session.member_bind_endpoints(i).contains(endpoint)
                     })
             })
     }
@@ -449,7 +450,7 @@ fn start_message(trial: &Trial, index: usize) -> ServerMsg {
             vni: leg.vni,
             generation: leg.generation,
             relay_node_id: leg.relay_node_id,
-            relay_endpoints: leg.endpoints.to_vec(),
+            relay_endpoints: s.member_bind_endpoints(index),
             bind_secret: s.members[index].bind_secret.clone(),
             bind_secs: limits::BIND_SECS,
             max_lifetime_secs: limits::MAX_LIFETIME_SECS,

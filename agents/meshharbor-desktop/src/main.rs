@@ -77,20 +77,22 @@ fn main() {
     // whether this person has been through the Welcome tour. A login start
     // for someone who switched it off ends here, before any window or tray.
     let argv: Vec<String> = std::env::args().collect();
+    let quit_requested = argv.iter().any(|a| a == "--quit");
     let launch = first_run::parse_launch_args(&argv);
     let state = meshharbor_node_core::desktop_state::load();
     let action = first_run::decide_startup(&launch, state.first_run_done, state.autostart_opt_out);
     tracing::info!(
         ?launch,
         ?action,
+        quit_requested,
         first_run_done = state.first_run_done,
         "startup"
     );
-    if action == first_run::StartupAction::Exit {
+    if !quit_requested && action == first_run::StartupAction::Exit {
         return;
     }
     let show_view = match &action {
-        first_run::StartupAction::Show(view) => Some(view.clone()),
+        first_run::StartupAction::Show(view) if !quit_requested => Some(view.clone()),
         _ => None,
     };
     first_run::set_launch_view(show_view.clone());
@@ -98,6 +100,11 @@ fn main() {
     tauri::Builder::default()
         .manage(account_window::CenterPolicy::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--quit") {
+                tracing::info!("meshharbor-desktop received --quit via single-instance IPC; exiting");
+                app.exit(0);
+                return;
+            }
             // Second invocation: focus the existing window instead
             // of starting a new tray. Prevents "10 trays running"
             // when an operator double-clicks the launcher.
@@ -223,6 +230,10 @@ fn main() {
             }
         })
         .setup(move |app| {
+            if quit_requested {
+                app.handle().exit(0);
+                return Ok(());
+            }
             // Install the tray icon + menu. The main window starts
             // hidden (visible:false in tauri.conf.json); operator
             // opens it from the tray menu.

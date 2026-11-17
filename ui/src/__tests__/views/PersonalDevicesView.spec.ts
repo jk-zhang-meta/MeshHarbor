@@ -57,4 +57,33 @@ describe('personal devices and authoritative sharing record counts', () => {
     const w = await open('?desktop=1'); const link = w.findAll('a').find(a => a.text() === 'Open desktop')!
     expect(link.attributes('target')).toBe('_blank'); expect(link.attributes('rel')).toContain('noopener'); expect(link.attributes('href')).toContain(`/tenant/${tenant}/agent/${id}/remote`)
   })
+  it('renders public IP, 国家 · 省 · 市 location, and logical zone badge when returned by /account/devices', async () => {
+    vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/summary') ? counts() : ({
+      items: [{
+        id,
+        tenant_id: tenant,
+        name: 'siat45',
+        machine_name: 'siat45',
+        os: 'linux',
+        status: 'online',
+        public_ip: '218.17.152.45',
+        country_code: 'CN',
+        country: '中国',
+        region: '广东省',
+        city: '深圳市',
+        pinned_zone_id: 'cn',
+        effective_zone_id: 'cn',
+        effective_zone_name: 'CN 区',
+      }],
+      page: 1,
+      total: 1,
+    }))
+    const w = await open()
+    const locCell = w.get('[data-testid="owned-device-location-cell"]')
+    expect(locCell.find('.geo-code-pill').text()).toBe('CN')
+    expect(locCell.text()).toContain('中国 · 广东省 · 深圳市')
+    expect(locCell.text()).toContain('218.17.152.45')
+    const zoneBadge = w.get('[data-testid="owned-device-zone-badge"]')
+    expect(zoneBadge.text()).toBe('CN 区')
+  })
 })

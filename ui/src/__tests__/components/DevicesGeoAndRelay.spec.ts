@@ -251,6 +251,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     await wrapper.find('[data-testid="zones-save-btn"]').trigger('click')
     await flushPromises()
 
+    console.log("BODY:", document.body.textContent?.slice(0, 500));
     expect(mockApi.put).toHaveBeenCalledWith(`/tenant/${TID}/network-zones`, {
       zones: [
         {
@@ -1509,5 +1510,106 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     await wrapper.find('[data-testid="zones-save-btn"]').trigger('click')
     await flushPromises()
     expect(mockApi.put).toHaveBeenCalledTimes(1)
+  })
+
+  it('PeerRelayPolicyDialog auto-defaults cross_border across zones and auto-commits pending backbone edge on Save', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const tenantStore = useTenantStore()
+    tenantStore.myPermissions = ADMINISTRATOR
+    tenantStore.isOwner = true
+    vi.spyOn(tenantStore, 'ensureMyMembership').mockResolvedValue()
+
+    const gzAgent = makeAgent({
+      id: '6af76c3a52bb8c8c18ba4438',
+      name: 'po0-gz',
+      country_code: 'CN',
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      peer_relay_policy: { serve: true, static_endpoints: [], approved_backbone_edges: [] },
+    })
+    const hkAgent = makeAgent({
+      id: '6af76e93468ec5c40e12c271',
+      name: 'po0-hk',
+      country_code: 'HK',
+      effective_zone_id: 'non-cn',
+      effective_zone_name: '非 CN 区',
+      peer_relay_policy: { serve: true, static_endpoints: [], approved_backbone_edges: [] },
+    })
+    const agentStore = useAgentStore()
+    agentStore.agents = [gzAgent, hkAgent]
+
+    const peerRelayStore = usePeerRelaysStore()
+    peerRelayStore.relays = [
+      {
+        id: gzAgent.id,
+        name: gzAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+      },
+      {
+        id: hkAgent.id,
+        name: hkAgent.name,
+        status: 'online',
+        serving: true,
+        static_endpoints: [],
+        approved_backbone_edges: [],
+      },
+    ]
+    mockApi.put.mockImplementation(async (_url: string, body: unknown) => body)
+    mockApi.get.mockResolvedValue({ mode: 'on', relays: peerRelayStore.relays })
+
+    wrapper = mount(PeerRelayPolicyDialog, {
+      props: {
+        modelValue: true,
+        tenantId: TID,
+        agent: gzAgent,
+      },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    // Select cross-zone router `po0-hk` via the VSelect dropdown and type endpoint WITHOUT clicking `+ Add`:
+    const selectField = document.body.querySelector('.v-select .v-field') as HTMLElement
+    selectField.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    const option = Array.from(document.body.querySelectorAll('.v-list-item')).find((el) =>
+      el.textContent?.includes('po0-hk'),
+    ) as HTMLElement
+    option.click()
+    await flushPromises()
+
+    const epInput = document.body.querySelector(
+      '[data-testid="backbone-endpoint-input"]',
+    ) as HTMLInputElement
+    const actualInput =
+      epInput.tagName === 'INPUT' ? epInput : (epInput.querySelector('input') as HTMLInputElement)
+    actualInput.value = '10.42.2.114:3478'
+    actualInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Click Save directly -> auto-adds pending backbone edge with auto-defaulted `cross_border: true`!
+    const saveBtn = document.body.querySelector(
+      '[data-testid="peer-relay-save"]',
+    ) as HTMLButtonElement
+    saveBtn.click()
+    await flushPromises()
+
+    expect(mockApi.put).toHaveBeenCalledWith(
+      `/tenant/${TID}/agent/${gzAgent.id}/peer-relay-policy`,
+      {
+        serve: true,
+        approved_backbone_edges: [
+          {
+            relay_agent_id: hkAgent.id,
+            endpoint: '10.42.2.114:3478',
+            cross_border: true,
+          },
+        ],
+      },
+    )
   })
 })

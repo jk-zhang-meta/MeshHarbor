@@ -475,6 +475,15 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
     .await;
 }
 
+fn tenant_overlay_join_lock(tenant_id: ObjectId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<dashmap::DashMap<ObjectId, std::sync::Arc<tokio::sync::Mutex<()>>>> =
+        std::sync::LazyLock::new(dashmap::DashMap::new);
+    LOCKS
+        .entry(tenant_id)
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 /// Join: IPAM (allocate or rehydrate) → persist → full netmap to the
 /// joiner → upsert delta to each permitted peer.
 #[allow(clippy::too_many_arguments)]
@@ -550,6 +559,21 @@ async fn handle_overlay_join(
     let base_name = dns_label(&display_name, &machine_id);
     // Phase 1 — drop malformed CIDRs so a bad advertisement can't poison state.
     let advertised_routes = sanitize_cidrs(advertised_routes);
+
+    // Serialize per-tenant OverlayJoin (network bootstrap, IPAM/rehydrate, and
+    // `auth_revision` access-projection commit) so a 20+-node fleet reconnect
+    // storm never races `get_or_create`, `unique_node_name`, or `auth_revision`.
+    let _tenant_join_guard = {
+        #[cfg(feature = "access-authority-test-support")]
+        let skip_lock = matches!(node_ref, NodeRef::Agent { agent_id } if ACCESS_PROJECTION_PAUSES.contains_key(&(state.pod.origin(), agent_id)));
+        #[cfg(not(feature = "access-authority-test-support"))]
+        let skip_lock = false;
+        if skip_lock {
+            None
+        } else {
+            Some(tenant_overlay_join_lock(tenant_id).lock_owned().await)
+        }
+    };
 
     let network = match state.overlay_networks.get_or_create(tenant_id).await {
         Ok(n) => n,
@@ -1118,6 +1142,7 @@ async fn handle_overlay_join(
         .ok()
         != Some(network.auth_revision.max(1))
     {
+        drop(_tenant_join_guard);
         refuse(
             OverlayJoinRefusal::StoreUnavailable,
             "authority changed before join netmap; retry".into(),
@@ -1125,6 +1150,7 @@ async fn handle_overlay_join(
         .await;
         return;
     }
+    drop(_tenant_join_guard);
     // Full netmap → joiner.
     let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
     send_to_node(

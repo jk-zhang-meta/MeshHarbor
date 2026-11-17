@@ -1421,20 +1421,33 @@ fn intercept_with_bridge_installer(
         // situation produced NOTHING on this host — the daemon simply waited
         // on a netmap forever, which is indistinguishable from a slow server.
         //
-        // Deliberately not retried here even when `is_retryable()`: the
-        // signalling loop already reconnects on its own ladder, and a retry
-        // at this layer would race it. The flag is carried for the operator
-        // and for whoever adds a backoff decision later.
+        // When `reason.is_retryable()` (`StoreUnavailable`, e.g. concurrent
+        // authority / access-projection contention on a fleet-wide reconnect),
+        // forward `JoinRefused { retryable: true }` so the persistent runtime
+        // schedules a jittered re-join on the still-open control WS instead of
+        // stranding detached forever; terminal refusals (`retryable: false`,
+        // such as `AddressSpaceExhausted` or `KeyUnauthorized`) never retry.
         ServerMsg::OverlayJoinRefused { reason, detail } => {
-            tracing::error!(
-                ?reason,
-                %detail,
-                retryable = reason.is_retryable(),
-                "overlay: the server REFUSED our join — this node has no overlay \
-                 address and will not appear in the mesh"
-            );
+            if reason.is_retryable() {
+                tracing::warn!(
+                    ?reason,
+                    %detail,
+                    retryable = true,
+                    "overlay: join transiently refused by server — runtime will back off and retry"
+                );
+            } else {
+                tracing::error!(
+                    ?reason,
+                    %detail,
+                    retryable = false,
+                    "overlay: the server REFUSED our join — this node has no overlay \
+                     address and will not appear in the mesh"
+                );
+            }
             record_join_refusal(reason, &detail);
-            let _ = evt_tx.try_send(OverlayEvent::ControlDetached);
+            let _ = evt_tx.try_send(OverlayEvent::JoinRefused {
+                retryable: reason.is_retryable(),
+            });
             return None;
         }
         // T12 — a host with the TURN tier switched off never dials a coturn
@@ -2500,5 +2513,29 @@ mod org_relay_discovery_dispatch_tests {
         }) if id == peer_node_id && candidates.is_empty())
         );
         assert!(rx.try_recv().is_err()); // no serving/session/TURN action
+    }
+
+    #[tokio::test]
+    async fn join_refused_forwards_retryability_to_runtime() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let transient = ServerMsg::OverlayJoinRefused {
+            reason: signaling::OverlayJoinRefusal::StoreUnavailable,
+            detail: "authority changed before join netmap; retry".into(),
+        };
+        assert!(intercept(&tx, transient, true, "", "").is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(OverlayEvent::JoinRefused { retryable: true })
+        ));
+
+        let terminal = ServerMsg::OverlayJoinRefused {
+            reason: signaling::OverlayJoinRefusal::AddressSpaceExhausted,
+            detail: "no free IPv4 in pool".into(),
+        };
+        assert!(intercept(&tx, terminal, true, "", "").is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(OverlayEvent::JoinRefused { retryable: false })
+        ));
     }
 }

@@ -42,8 +42,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::ProcessStatus::{K32EnumProcessModules, K32GetModuleFileNameExW};
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-    PROCESS_VM_READ, TerminateProcess, WaitForSingleObject,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW,
+    TerminateProcess, WaitForSingleObject,
 };
 
 /// A running process started from the companion's path.
@@ -82,7 +83,7 @@ pub fn find(exe: &Path) -> Vec<CompanionProcess> {
             continue;
         }
         if let Some(path) = loaded_path(pid)
-            && normalize(&path) == want
+            && matches_companion_path(&path, &want)
         {
             out.push(CompanionProcess {
                 pid,
@@ -91,6 +92,11 @@ pub fn find(exe: &Path) -> Vec<CompanionProcess> {
         }
     }
     out
+}
+
+fn matches_companion_path(path: &Path, normalized_exe: &str) -> bool {
+    let norm = normalize(path);
+    norm == normalized_exe || norm == format!("{normalized_exe}.old")
 }
 
 /// Stop each pid that is STILL a process started from `exe`, and wait (up to
@@ -120,25 +126,45 @@ pub fn terminate_verified(exe: &Path, pids: &[u32], timeout: Duration) -> Vec<u3
                 pid,
             )
         };
-        if h.is_null() {
+        if !h.is_null() {
+            let h = OwnedHandle(h);
+            if started_from(h.0).is_none_or(|p| !matches_companion_path(&p, &want)) {
+                continue;
+            }
+            // SAFETY: `h` is a live process handle with PROCESS_TERMINATE, just
+            // verified to be ours. The exit code (1) marks a kill, distinct from
+            // the tray's own clean quit.
+            unsafe {
+                TerminateProcess(h.0, 1);
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            // SAFETY: `h` has SYNCHRONIZE; the wait is bounded.
+            let waited =
+                unsafe { WaitForSingleObject(h.0, left.as_millis().min(u32::MAX as u128) as u32) };
+            if waited == WAIT_OBJECT_0 {
+                gone.push(pid);
+            }
             continue;
         }
-        let h = OwnedHandle(h);
-        if started_from(h.0).is_none_or(|p| normalize(&p) != want) {
+        // Medium-integrity user daemon vs elevated user companion: fall back to
+        // `PROCESS_QUERY_LIMITED_INFORMATION` verification + `--quit` single-instance IPC.
+        if loaded_path(pid).is_none_or(|p| !matches_companion_path(&p, &want)) {
             continue;
         }
-        // SAFETY: `h` is a live process handle with PROCESS_TERMINATE, just
-        // verified to be ours. The exit code (1) marks a kill, distinct from
-        // the tray's own clean quit.
-        unsafe {
-            TerminateProcess(h.0, 1);
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = std::process::Command::new(exe)
+                .arg("--quit")
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
         }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        // SAFETY: `h` has SYNCHRONIZE; the wait is bounded.
-        let waited =
-            unsafe { WaitForSingleObject(h.0, left.as_millis().min(u32::MAX as u128) as u32) };
-        if waited == WAIT_OBJECT_0 {
-            gone.push(pid);
+        while std::time::Instant::now() < deadline {
+            if loaded_path(pid).is_none_or(|p| !matches_companion_path(&p, &want)) {
+                gone.push(pid);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
     gone
@@ -199,11 +225,31 @@ fn snapshot() -> Vec<(u32, String)> {
 fn loaded_path(pid: u32) -> Option<PathBuf> {
     // SAFETY: plain OpenProcess; owned below.
     let h = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid) };
-    if h.is_null() {
+    if !h.is_null() {
+        let h = OwnedHandle(h);
+        if let Some(p) = started_from(h.0) {
+            return Some(p);
+        }
+    }
+    // Fallback for elevated companion processes in the user session where
+    // `PROCESS_VM_READ` is denied to a medium-integrity per-user daemon.
+    let h_lim = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+    if h_lim.is_null() {
         return None;
     }
-    let h = OwnedHandle(h);
-    started_from(h.0)
+    let h_lim = OwnedHandle(h_lim);
+    query_full_image_name(h_lim.0)
+}
+
+fn query_full_image_name(h: HANDLE) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 32_768];
+    let mut len = buf.len() as u32;
+    // SAFETY: `h` has at least `PROCESS_QUERY_LIMITED_INFORMATION`; `buf` & `len` valid.
+    let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 || len == 0 {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
 }
 
 /// [`loaded_path`] on a handle the caller already holds (with at least

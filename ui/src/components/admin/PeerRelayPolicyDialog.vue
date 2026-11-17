@@ -109,6 +109,7 @@
                 density="compact"
                 variant="outlined"
                 hide-details
+                data-testid="backbone-target-select"
                 style="min-width: 190px; flex: 1 1 190px"
               />
               <v-text-field
@@ -118,6 +119,7 @@
                 density="compact"
                 variant="outlined"
                 hide-details
+                data-testid="backbone-endpoint-input"
                 style="min-width: 180px; flex: 1 1 180px"
                 @keyup.enter="addBackboneEdge"
               />
@@ -126,6 +128,7 @@
                 :label="t('mh.peerRelay.backboneCrossBorder')"
                 density="compact"
                 hide-details
+                data-testid="backbone-cross-border-checkbox"
               />
               <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="addBackboneEdge">
                 {{ t('mh.peerRelay.backboneAdd') }}
@@ -166,6 +169,7 @@ import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent } from '@/stores/agents'
+import { useNetworkZonesStore } from '@/stores/networkZones'
 import { useTenantStore } from '@/stores/tenant'
 import { canManageRelays } from '@/utils/permissions'
 import {
@@ -190,6 +194,7 @@ const { fullscreen } = useResponsiveDialog()
 const { showSuccess } = useSnackbar()
 const peerRelayStore = usePeerRelaysStore()
 const agentStore = useAgentStore()
+const zonesStore = useNetworkZonesStore()
 const tenantStore = useTenantStore()
 const isAdmin = computed(() =>
   canManageRelays(tenantStore.myPermissions, tenantStore.isOwner),
@@ -290,6 +295,31 @@ function removeStaticEndpoint(ep: string) {
   staticEndpoints.value = staticEndpoints.value.filter((x) => x !== ep)
 }
 
+function effectiveZoneIdFor(agentId: string): string | null {
+  const a = agentId === props.agent.id ? props.agent : agentStore.agents.find((x) => x.id === agentId)
+  const direct = (a?.effective_zone_id || a?.pinned_zone_id || '').trim()
+  if (direct) return direct
+  if (zonesStore.loadedTenantId === props.tenantId && zonesStore.zones.length > 0) {
+    const cc = (a?.country_code || '').trim().toUpperCase()
+    if (cc) {
+      const matched = zonesStore.zones.find((z) => z.auto_countries.includes(cc))
+      if (matched) return matched.id
+    }
+    const def = zonesStore.zones.find((z) => z.is_default)
+    if (def) return def.id
+  }
+  return null
+}
+
+watch(edgeTargetId, (targetId) => {
+  if (!targetId) return
+  const srcZone = effectiveZoneIdFor(props.agent.id)
+  const dstZone = effectiveZoneIdFor(targetId)
+  if (srcZone && dstZone) {
+    edgeCrossBorder.value = srcZone !== dstZone
+  }
+})
+
 function addBackboneEdge() {
   const ep = edgeEndpoint.value.trim()
   if (
@@ -323,10 +353,17 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    // Allow unadded text in staticInput to be validated/included on Save if non-empty
+    // Allow unadded text in staticInput or pending backbone edge inputs to be validated/included on Save
     if (serve.value && staticInput.value.trim()) {
       addStaticEndpoint()
       if (staticError.value) {
+        saving.value = false
+        return
+      }
+    }
+    if (serve.value && (edgeTargetId.value || edgeEndpoint.value.trim())) {
+      addBackboneEdge()
+      if (backboneError.value) {
         saving.value = false
         return
       }

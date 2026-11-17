@@ -813,8 +813,12 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     grant_relay(&app, &seeded, &gz_node).await;
     grant_relay(&app, &seeded, &hk_node).await;
     grant_relay(&app, &seeded, &hy_node).await;
-    let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
-    let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
+    for _ in 0..3 {
+        let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
+    }
+    for _ in 0..2 {
+        let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
+    }
     let _ = recv_t(&mut hy_ws, "rc:overlay.peer_relay_serve", wait).await;
 
     // Define `"cn"` (gateway `[po0-gz]`) and `"non-cn"` (gateways `[po0-hk, hyonix-la]`)
@@ -1735,6 +1739,12 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
     assert!(rev1 > rev0);
 
     assert_eq!(approve(&app, &seeded, &r_b_id, true).await, 200);
+    let approve_a_after_b = recv_t(&mut r_a_ws, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .unwrap();
+    let rev1_b = approve_a_after_b["revision"].as_u64().unwrap();
+    assert!(rev1_b > rev1);
+    let rev1 = rev1_b;
     let _ = recv_t(&mut r_b_ws, "rc:overlay.peer_relay_serve", wait)
         .await
         .unwrap();
@@ -1865,4 +1875,331 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
 
     drop(leaf_ws);
     drop(r_b_ws);
+}
+
+#[tokio::test]
+async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_self_relay() {
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
+    let mmdb = mmdb.to_str().unwrap().to_owned();
+
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.stats.geoip_mmdb = Some(mmdb);
+    })
+    .await;
+    let seeded = app.seed_tenant("nz-gw-endpoint").await;
+    let admin = &seeded.admin.access_token;
+    let wait = Duration::from_secs(5);
+
+    let (_siat_id, siat_tok) = enroll(&app, &seeded, "gwep-siat45").await;
+    let (_hk_leaf_id, hk_leaf_tok) = enroll(&app, &seeded, "gwep-isvoro-hk").await;
+    let (gz_id, gz_tok) = enroll(&app, &seeded, "gwep-po0-gz").await;
+    let (hk_id, hk_tok) = enroll(&app, &seeded, "gwep-po0-hk").await;
+
+    let mut siat_ws = connect_from(&app, &siat_tok, &[], Some("139.199.1.45")).await;
+    let mut hk_leaf_ws = connect_from(&app, &hk_leaf_tok, &[], Some("202.181.7.20")).await;
+    let mut gz_ws =
+        connect_from(&app, &gz_tok, &["relay-server", "relay-control"], Some("139.199.6.6")).await;
+    let mut hk_ws =
+        connect_from(&app, &hk_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
+
+    let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
+    let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
+
+    join_node(&mut siat_ws, 71, "139.199.1.45:41641", json!({})).await;
+    join_node(&mut hk_leaf_ws, 72, "202.181.7.20:41641", json!({})).await;
+    join_node(&mut gz_ws, 73, "139.199.6.6:41641", json!({ "relay_backbone_ready": true })).await;
+    join_node(&mut hk_ws, 74, "202.181.7.6:41641", json!({ "relay_backbone_ready": true })).await;
+
+    let siat_node = node_id(&app, &seeded, "gwep-siat45").await;
+    let hk_leaf_node = node_id(&app, &seeded, "gwep-isvoro-hk").await;
+    let gz_node = node_id(&app, &seeded, "gwep-po0-gz").await;
+    let hk_node = node_id(&app, &seeded, "gwep-po0-hk").await;
+
+    set_mode(&app, &seeded, "on").await;
+    assert_eq!(approve(&app, &seeded, &gz_id, true).await, 200);
+    assert_eq!(approve(&app, &seeded, &hk_id, true).await, 200);
+    grant_relay(&app, &seeded, &gz_node).await;
+    grant_relay(&app, &seeded, &hk_node).await;
+    let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
+    let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
+
+    // Configure CN (`po0-gz` sole gateway, `router_only`) <-> Non-CN (`po0-hk` gateway, `router_only`)
+    // linked via Tencent private network `172.31.8.41:3478 <-> 10.42.2.114:3478`.
+    assert_eq!(
+        put(
+            &app,
+            &tenant_url(&seeded, "/network-zones"),
+            admin,
+            json!({
+                "zones": [
+                    {
+                        "id": "cn",
+                        "name": "CN 区",
+                        "auto_countries": ["CN"],
+                        "is_default": false,
+                        "gateway_relay_ids": [gz_id],
+                        "cross_zone_mode": "router_only"
+                    },
+                    {
+                        "id": "non-cn",
+                        "name": "非 CN 区",
+                        "auto_countries": ["HK", "US"],
+                        "is_default": true,
+                        "gateway_relay_ids": [hk_id],
+                        "cross_zone_mode": "router_only"
+                    }
+                ]
+            }),
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        put(
+            &app,
+            &tenant_url(&seeded, &format!("/peer-relays/{gz_id}")),
+            admin,
+            json!({
+                "serve": true,
+                "approved_backbone_edges": [
+                    { "relay_agent_id": hk_id, "endpoint": "10.42.2.114:3478", "cross_border": true }
+                ]
+            }),
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        put(
+            &app,
+            &tenant_url(&seeded, &format!("/peer-relays/{hk_id}")),
+            admin,
+            json!({
+                "serve": true,
+                "approved_backbone_edges": [
+                    { "relay_agent_id": gz_id, "endpoint": "172.31.8.41:3478", "cross_border": true }
+                ]
+            }),
+        )
+        .await
+        .0,
+        200
+    );
+
+    // 1. CN leaf `siat45` -> Non-CN gateway `po0-hk` mints 2-hop `[po0-gz, po0-hk]`
+    //    where `po0-hk` acts as its own terminal exit relay over `127.0.0.1:3478`!
+    siat_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.relay_request",
+                "peer_node_id": hk_node,
+                "reason": "direct_timeout",
+                "request_id": 101,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let siat_sess = recv_t(&mut siat_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("siat45 receives ingress leg on po0-gz");
+    assert_eq!(siat_sess["relay_node_id"], json!(gz_node));
+    let hk_self_sess = recv_t(&mut hk_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("po0-hk receives terminal self-relay leg on po0-hk");
+    assert_eq!(hk_self_sess["relay_node_id"], json!(hk_node));
+    assert_eq!(
+        hk_self_sess["relay_endpoints"][0],
+        json!("127.0.0.1:3478"),
+        "terminal self-relay must prepend 127.0.0.1:3478: {hk_self_sess}"
+    );
+    // Probe report from `po0-hk` on `127.0.0.1:3478` must be accepted as minted!
+    let hk_oid = ObjectId::parse_str(&hk_node).unwrap();
+    assert!(app.state.network().org_relay.record_probe_with_sla(
+        hk_oid,
+        hk_oid,
+        "127.0.0.1:3478".into(),
+        true,
+        Some(0),
+        Some(0),
+        Some(0),
+    ));
+
+    // 2. CN gateway `po0-gz` -> Non-CN leaf `isvoro-hk` mints 2-hop `[po0-gz, po0-hk]`
+    //    where `po0-gz` acts as its own terminal ingress relay over `127.0.0.1:3478`!
+    gz_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.relay_request",
+                "peer_node_id": hk_leaf_node,
+                "reason": "direct_timeout",
+                "request_id": 102,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let gz_self_sess = recv_t(&mut gz_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("po0-gz receives terminal self-relay leg on po0-gz");
+    assert_eq!(gz_self_sess["relay_node_id"], json!(gz_node));
+    assert_eq!(gz_self_sess["relay_endpoints"][0], json!("127.0.0.1:3478"));
+    let hk_leaf_sess = recv_t(&mut hk_leaf_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("isvoro-hk receives exit leg on po0-hk");
+    assert_eq!(hk_leaf_sess["relay_node_id"], json!(hk_node));
+
+    // 3. CN gateway `po0-gz` <-> Non-CN gateway `po0-hk` mints 2-hop `[po0-gz, po0-hk]`
+    //    where BOTH gateways bind their own local `127.0.0.1:3478`!
+    gz_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.org_relay_discover",
+                "peer_node_id": hk_node,
+                "request_id": 103,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let disc = recv_t(&mut gz_ws, "rc:overlay.org_relay_candidates", wait)
+        .await
+        .expect("discover candidates for po0-gz -> po0-hk");
+    let cands = disc["candidates"].as_array().expect("candidates array");
+    assert!(
+        cands.iter().any(|c| {
+            c["path"]["relay_node_ids"] == json!([gz_node, hk_node])
+                && c["endpoints"][0] == json!("127.0.0.1:3478")
+        }),
+        "discover must offer [po0-gz, po0-hk] with 127.0.0.1:3478 first: {cands:?}"
+    );
+
+    gz_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.relay_request",
+                "peer_node_id": hk_node,
+                "reason": "direct_timeout",
+                "request_id": 104,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let gz_to_hk_sess = recv_t(&mut gz_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("po0-gz receives self-relay leg for po0-gz <-> po0-hk");
+    assert_eq!(gz_to_hk_sess["relay_node_id"], json!(gz_node));
+    assert_eq!(gz_to_hk_sess["relay_endpoints"][0], json!("127.0.0.1:3478"));
+    let hk_from_gz_sess = recv_t(&mut hk_ws, "rc:overlay.relay_session", wait)
+        .await
+        .expect("po0-hk receives self-relay leg for po0-gz <-> po0-hk");
+    assert_eq!(hk_from_gz_sess["relay_node_id"], json!(hk_node));
+    assert_eq!(hk_from_gz_sess["relay_endpoints"][0], json!("127.0.0.1:3478"));
+
+    // 4. Same-zone `po0-gz -> siat45` (where `po0-gz` is the ONLY CN gateway) MUST NOT
+    //    mint a 1-hop self-relay `[po0-gz]`!
+    gz_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.relay_request",
+                "peer_node_id": siat_node,
+                "reason": "direct_timeout",
+                "request_id": 105,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    for _ in 0..40 {
+        if audit_rows(&app, &seeded).await.iter().any(|r| {
+            r["action"] == json!("mint")
+                && r["requester_node_id"] == json!(gz_node)
+                && r["peer_node_id"] == json!(siat_node)
+                && r["denied"].is_string()
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        audit_rows(&app, &seeded).await.iter().any(|r| {
+            r["action"] == json!("mint")
+                && r["requester_node_id"] == json!(gz_node)
+                && r["peer_node_id"] == json!(siat_node)
+                && r["denied"].is_string()
+        }),
+        "1-hop self-relay must be refused even under NetworkZones"
+    );
+
+    // 5. `reconcile_acl` preserves all 3 active multi-hop terminal self-relay sessions!
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let gz_oid = ObjectId::parse_str(&gz_node).unwrap();
+    assert!(meshharbor_mod_network::org_relay::reconcile_acl(app.state.network(), tid).await);
+    assert_eq!(app.state.network().org_relay.sessions_on_relay(gz_oid), 3);
+    assert_eq!(app.state.network().org_relay.sessions_on_relay(hk_oid), 3);
+}
+
+#[tokio::test]
+async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavailable_refusal() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("nz-concurrent-join-20").await;
+
+    let mut sockets = Vec::with_capacity(20);
+    for idx in 0..20u8 {
+        let (_, tok) = enroll(&app, &seeded, &format!("cj-node-{idx:02}")).await;
+        let ws = connect_from(&app, &tok, &[], None).await;
+        sockets.push((idx, ws));
+    }
+
+    // Fire all 20 `rc:overlay.join` frames simultaneously (with `supports_join_refusal: true`)
+    // simulating a 20-node fleet reconnecting on server restart!
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(20));
+    let mut handles = Vec::with_capacity(20);
+    for (idx, mut ws) in sockets {
+        let bar = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            let msg = json!({
+                "t": "rc:overlay.join",
+                "wg_public_key": BASE64.encode([100 + idx; 32]),
+                "mtu": 1280,
+                "endpoints": [format!("198.51.100.{}:41641", idx + 1)],
+                "srflx_endpoints": [format!("198.51.100.{}:41641", idx + 1)],
+                "supports_join_refusal": true,
+                "supports_org_relay": true,
+                "org_primary": true,
+            });
+            bar.wait().await;
+            ws.send(Message::Text(msg.to_string().into()))
+                .await
+                .expect("send concurrent join");
+            let netmap = recv_t(&mut ws, "rc:overlay.netmap", Duration::from_secs(10))
+                .await
+                .unwrap_or_else(|| panic!("node {idx} failed to receive netmap on concurrent join"));
+            (ws, netmap["self_ip"].as_str().unwrap_or_default().to_string())
+        }));
+    }
+
+    let mut ips = std::collections::HashSet::new();
+    let mut kept = Vec::with_capacity(20);
+    for h in handles {
+        let (ws, ip) = h.await.expect("join task");
+        assert!(!ip.is_empty());
+        assert!(ips.insert(ip), "duplicate overlay IP allocated");
+        kept.push(ws);
+    }
+    assert_eq!(ips.len(), 20, "all 20 concurrent joiners must succeed on first attempt");
+    drop(kept);
 }

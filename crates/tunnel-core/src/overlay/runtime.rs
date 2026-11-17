@@ -1418,6 +1418,13 @@ pub enum OverlayEvent {
     /// B3 — control-WS session detached while the persistent runtime remains
     /// up. Starts the bounded offline-continuity lease clock when configured.
     ControlDetached,
+    /// FR-47 — the server refused our `OverlayJoin` on a live control-WS.
+    /// When `retryable` is `true` (`StoreUnavailable`, e.g. transient access
+    /// projection contention), the runtime schedules a jittered re-join on the
+    /// open control-WS; terminal refusals (`retryable: false`) never retry.
+    JoinRefused {
+        retryable: bool,
+    },
     /// rc.307 (B) — a fresh control-WS session re-binding a PERSISTENT
     /// runtime: swap the outbound sender, re-send the join (the server
     /// replies with a full netmap the authoritative reconcile arm applies),
@@ -2382,6 +2389,32 @@ pub fn offline_continuity_max_age() -> Option<Duration> {
         .and_then(|s| s.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
         .map(Duration::from_secs)
+}
+
+#[cfg(test)]
+static TEST_JOIN_RETRY_BASE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// FR-47 — exponential backoff + jitter for retrying a transiently refused
+/// `OverlayJoin` (`StoreUnavailable`) on a still-open control-WS session.
+fn join_retry_delay(attempt: u32) -> Duration {
+    let shift = attempt.min(4);
+    #[cfg(test)]
+    {
+        let test_ms = TEST_JOIN_RETRY_BASE_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if test_ms > 0 {
+            return Duration::from_millis(test_ms.saturating_mul(1u64 << shift));
+        }
+    }
+    if let Some(base_ms) = crate::env::node_env("JOIN_RETRY_BASE_MS")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+    {
+        return Duration::from_millis(base_ms.saturating_mul(1u64 << shift));
+    }
+    let base_ms = 500u64.saturating_mul(1u64 << shift);
+    let jitter_ms = rand::random::<u64>() % 351;
+    Duration::from_millis(base_ms + jitter_ms)
 }
 
 /// One node's overlay runtime. Construct with [`OverlayRuntime::new`] (or
@@ -3376,11 +3409,26 @@ impl OverlayRuntime {
 
         // Phase 1 — wait for the first full netmap (it carries self_ip).
         let mut pending_self_name: Option<SelfNameUpdate> = None;
+        let mut pre_join_retry_attempt: u32 = 0;
+        let mut pre_join_retry: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
         let (self_ip, mut network, first_peers, mut server_org_discovery, mut server_path_trial_v1) = loop {
             let event = tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
                     if changed {
+                        pre_join_retry = None;
                         let _ = self.outbound.send(self.make_join(advertised.clone())).await;
+                    }
+                    continue;
+                }
+                () = async {
+                    match pre_join_retry.as_mut() {
+                        Some(sleep) => sleep.await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    pre_join_retry = None;
+                    if self.outbound.send(self.make_join(advertised.clone())).await.is_ok() {
+                        info!(attempt = pre_join_retry_attempt, "overlay: rc:overlay.join re-sent after retryable refusal (pre-netmap)");
                     }
                     continue;
                 }
@@ -3412,6 +3460,8 @@ impl OverlayRuntime {
                 // rc.307 (B) — the session died before the first netmap:
                 // re-bind + re-join on the fresh one, keep waiting.
                 Some(OverlayEvent::Reattach { outbound }) => {
+                    pre_join_retry = None;
+                    pre_join_retry_attempt = 0;
                     self.outbound.swap(outbound);
                     if self
                         .outbound
@@ -3425,8 +3475,22 @@ impl OverlayRuntime {
                     }
                     continue;
                 }
+                Some(OverlayEvent::JoinRefused { retryable }) => {
+                    if retryable {
+                        let delay = join_retry_delay(pre_join_retry_attempt);
+                        pre_join_retry_attempt = pre_join_retry_attempt.saturating_add(1);
+                        pre_join_retry = Some(Box::pin(tokio::time::sleep(delay)));
+                    } else {
+                        pre_join_retry = None;
+                    }
+                    continue;
+                }
                 Some(OverlayEvent::NetmapDelta { .. }) => continue, // pre-netmap; ignore
-                Some(OverlayEvent::ControlDetached) => continue,    // pre-netmap; ignore
+                Some(OverlayEvent::ControlDetached) => {
+                    pre_join_retry = None;
+                    pre_join_retry_attempt = 0;
+                    continue;
+                }
                 Some(OverlayEvent::RelayGrant { .. }) => continue,  // pre-netmap; ignore
                 Some(OverlayEvent::WarmRelayGrant { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::ForceDerp { .. }) => continue,   // pre-netmap; ignore
@@ -3454,6 +3518,8 @@ impl OverlayRuntime {
             .collect();
         let mut control_detached_at: Option<Instant> = None;
         let mut offline_continuity_expired = false;
+        let mut post_join_retry_attempt: u32 = 0;
+        let mut post_join_retry: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
 
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
@@ -4268,6 +4334,7 @@ impl OverlayRuntime {
             tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
                     if changed {
+                        post_join_retry = None;
                         backbone_policy = super::orgrelay::backbone::configured_local_policy();
                         probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
                             &network.relay_probe_targets,
@@ -4278,6 +4345,48 @@ impl OverlayRuntime {
                         // No Reattach: keep WG/direct paths and discovery state.
                         if self.outbound.send(self.make_join(advertised.clone())).await.is_err() {
                             warn!("overlay: listener readiness rejoin send failed; normal reattach will retry");
+                        }
+                    }
+                }
+                () = async {
+                    match post_join_retry.as_mut() {
+                        Some(sleep) => sleep.await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    post_join_retry = None;
+                    if self
+                        .outbound
+                        .send(self.make_join(advertised.clone()))
+                        .await
+                        .is_err()
+                    {
+                        warn!("overlay: retryable join re-send failed; awaiting next session");
+                    } else {
+                        info!(
+                            attempt = post_join_retry_attempt,
+                            "overlay: rc:overlay.join re-sent after retryable refusal"
+                        );
+                        if srflx_keepalive.is_some() {
+                            srflx_reattach_tx.send_modify(|n| *n += 1);
+                        } else if !srflx_advertised.is_empty() {
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlaySrflx {
+                                    candidates: srflx_advertised.clone(),
+                                    nat: srflx_my_nat.clone(),
+                                    udp_dialer_ok: Some(super::dialer::advertised_dialer_ok()),
+                                })
+                                .await;
+                        }
+                        if let Some(r) = relay.as_mut() {
+                            let _ = r.forget_ungranted_pending();
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlayEndpoints {
+                                    candidates: r.all_endpoints(),
+                                })
+                                .await;
                         }
                     }
                 }
@@ -5578,6 +5687,8 @@ impl OverlayRuntime {
                     // on a CHANGE). Carriers/TUN/WG stay untouched — that is
                     // the point.
                     Some(OverlayEvent::ControlDetached) => {
+                        post_join_retry = None;
+                        post_join_retry_attempt = 0;
                         if control_detached_at.is_none() {
                             control_detached_at = Some(Instant::now());
                             info!("overlay: control-WS detached — entering offline continuity window");
@@ -5588,8 +5699,31 @@ impl OverlayRuntime {
                             fallback.reset_after(max_age.min(FALLBACK_TICK));
                         }
                     }
+                    Some(OverlayEvent::JoinRefused { retryable }) => {
+                        if control_detached_at.is_none() {
+                            control_detached_at = Some(Instant::now());
+                            info!(
+                                retryable,
+                                "overlay: join refused on live control-WS — entering offline continuity window"
+                            );
+                        }
+                        if let Some(max_age) = offline_continuity_max_age()
+                            && !offline_continuity_expired
+                        {
+                            fallback.reset_after(max_age.min(FALLBACK_TICK));
+                        }
+                        if retryable {
+                            let delay = join_retry_delay(post_join_retry_attempt);
+                            post_join_retry_attempt = post_join_retry_attempt.saturating_add(1);
+                            post_join_retry = Some(Box::pin(tokio::time::sleep(delay)));
+                        } else {
+                            post_join_retry = None;
+                        }
+                    }
                     Some(OverlayEvent::Reattach { outbound }) => {
                         let t_arm = Instant::now();
+                        post_join_retry = None;
+                        post_join_retry_attempt = 0;
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::Reattach);
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         server_path_trial_v1 = false;
@@ -5704,6 +5838,8 @@ impl OverlayRuntime {
                             .collect();
                         control_detached_at = None;
                         offline_continuity_expired = false;
+                        post_join_retry = None;
+                        post_join_retry_attempt = 0;
                         // A re-join can only reconcile onto the SAME identity.
                         // A different self_ip (re-enroll / tenant renumber) or
                         // network shape (cidr → netmask/NAT guard, magic
@@ -15407,5 +15543,135 @@ mod org_upgrade_tests {
         let _ = rt_task.await;
         hk_task.abort();
         cn_task.abort();
+    }
+
+    #[tokio::test]
+    async fn join_refused_retryable_resends_join_both_pre_and_post_netmap_while_terminal_does_not()
+    {
+        struct ResetTestDelay;
+        impl Drop for ResetTestDelay {
+            fn drop(&mut self) {
+                TEST_JOIN_RETRY_BASE_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        TEST_JOIN_RETRY_BASE_MS.store(25, std::sync::atomic::Ordering::Relaxed);
+        let _reset = ResetTestDelay;
+
+        struct IdleTun;
+        #[async_trait::async_trait]
+        impl TunIo for IdleTun {
+            async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+                std::future::pending().await
+            }
+            async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let kp = WgKeypair::generate();
+        let (out_tx, mut out_rx) = mpsc::channel(32);
+        let tun: Arc<dyn TunIo> = Arc::new(IdleTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let (evt_tx, evt_rx) = mpsc::channel(16);
+        let plane = crate::overlay::carrier_plane::CarrierPlane::new();
+        *plane.lan_only.lock().unwrap() = Some(Vec::new());
+        *plane.mirrored_guest.lock().unwrap() = Some(true);
+        let rt = OverlayRuntime::new_relay(kp, out_tx, tf, 1280).with_carrier_plane(Some(plane));
+        let rt_task = tokio::spawn(rt.run(evt_rx, Vec::new()));
+
+        async fn recv_join(rx: &mut mpsc::Receiver<ClientMsg>, wait_ms: u64) -> bool {
+            let deadline = Instant::now() + Duration::from_millis(wait_ms);
+            while Instant::now() < deadline {
+                if let Ok(Some(msg)) =
+                    tokio::time::timeout(Duration::from_millis(20), rx.recv()).await
+                    && matches!(msg, ClientMsg::OverlayJoin { .. })
+                {
+                    return true;
+                }
+            }
+            false
+        }
+
+        // 0. Startup sends initial OverlayJoin.
+        assert!(recv_join(&mut out_rx, 500).await, "expected initial join");
+
+        // 1. Pre-netmap terminal refusal (`retryable: false`) must NOT retry.
+        evt_tx
+            .send(OverlayEvent::JoinRefused { retryable: false })
+            .await
+            .unwrap();
+        assert!(
+            !recv_join(&mut out_rx, 120).await,
+            "terminal pre-netmap refusal must never retry join"
+        );
+
+        // 2. Pre-netmap retryable refusal (`retryable: true`) MUST re-send OverlayJoin.
+        evt_tx
+            .send(OverlayEvent::JoinRefused { retryable: true })
+            .await
+            .unwrap();
+        assert!(
+            recv_join(&mut out_rx, 500).await,
+            "retryable pre-netmap refusal must re-send OverlayJoin"
+        );
+
+        // 3. Deliver authoritative Netmap to enter steady-state post-netmap loop.
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.10".into(),
+                network: OverlayNetworkInfo {
+                    cidr: "100.64.0.0/10".into(),
+                    cidrs: vec!["100.64.0.0/10".into()],
+                    mtu: 1280,
+                    magic_domain: None,
+                    nameservers: vec![],
+                    self_name: None,
+                    self_node_id: Some(ObjectId::new()),
+                    self_name_revision: None,
+                    stun_urls: vec![],
+                    strict_stun: false,
+                    relay_probe_targets: vec![],
+                    backbone_probe_targets: vec![],
+                    org_relay_fallback_v1: true,
+                    org_relay_loss_v1: true,
+                    path_quality_v1: false,
+                    auth_revision: 1,
+                },
+                peers: vec![],
+                org_relay_discovery: true,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        // Drain any post-first-netmap initial messages before testing post-netmap refusal.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        while out_rx.try_recv().is_ok() {}
+
+        // 4. Post-netmap terminal refusal (`retryable: false`) must NOT retry.
+        evt_tx
+            .send(OverlayEvent::JoinRefused { retryable: false })
+            .await
+            .unwrap();
+        assert!(
+            !recv_join(&mut out_rx, 120).await,
+            "terminal post-netmap refusal must never retry join"
+        );
+
+        // 5. Post-netmap retryable refusal (`retryable: true`) MUST re-send OverlayJoin.
+        evt_tx
+            .send(OverlayEvent::JoinRefused { retryable: true })
+            .await
+            .unwrap();
+        assert!(
+            recv_join(&mut out_rx, 500).await,
+            "retryable post-netmap refusal must re-send OverlayJoin on open WS"
+        );
+
+        drop(evt_tx);
+        let _ = rt_task.await;
     }
 }

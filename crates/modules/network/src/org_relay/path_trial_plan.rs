@@ -201,11 +201,22 @@ pub(super) async fn plan_reusing(
     } else {
         prepared.peer_zone
     };
+    let (first_id, last_id) = if requester_at_exit { (b, a) } else { (a, b) };
     let mut indices = Vec::with_capacity(nodes.len());
     let mut relays = Vec::with_capacity(nodes.len());
     let mut unique = std::collections::HashSet::with_capacity(nodes.len());
-    for &node_id in nodes {
+    for (pos, &node_id) in nodes.iter().enumerate() {
         if !unique.insert(node_id) {
+            return Err(D::RequesterUnsupported);
+        }
+        let forbidden_member = if pos == 0 {
+            node_id == last_id
+        } else if pos + 1 == nodes.len() {
+            node_id == first_id
+        } else {
+            node_id == first_id || node_id == last_id
+        };
+        if forbidden_member || (!nz_active && (node_id == a || node_id == b)) {
             return Err(D::RequesterUnsupported);
         }
         let index = prepared
@@ -359,12 +370,26 @@ pub(super) fn incumbent_session_sla_rank(
     }
     let m0 = current_session.members[0].party.node_id;
     let m1 = current_session.members[1].party.node_id;
+    let self_zero = path_search::SlaVerdict::Reachable {
+        rtt_ms: 0,
+        jitter_ms: 0,
+        loss_permille: 0,
+    };
     let mut legs = Vec::with_capacity(relays.len() + 1);
-    legs.push(org_relay.sla_verdict(m0, relays[0], now));
+    legs.push(if !current_session.hops.is_empty() && m0 == relays[0] {
+        self_zero
+    } else {
+        org_relay.sla_verdict(m0, relays[0], now)
+    });
     for pair in relays.windows(2) {
         legs.push(org_relay.backbone_sla_verdict(pair[0], pair[1], now));
     }
-    legs.push(org_relay.sla_verdict(m1, *relays.last().unwrap(), now));
+    let last_relay = *relays.last().unwrap();
+    legs.push(if !current_session.hops.is_empty() && m1 == last_relay {
+        self_zero
+    } else {
+        org_relay.sla_verdict(m1, last_relay, now)
+    });
     let loads = relays.iter().map(|&r| org_relay.sessions_on_relay(r));
     let (class, eff_cost, _, _, _, _, _) = path_search::evaluate_sla_legs(legs, loads);
     (class, eff_cost)

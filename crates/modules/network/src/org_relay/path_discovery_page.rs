@@ -83,10 +83,15 @@ pub(super) async fn page(
         let Some(relay) = relay else {
             return unavailable();
         };
+        let endpoints = if Some(relay.node_id) == requester.id {
+            prepend_loopback_relay_endpoint(&relay.endpoints)
+        } else {
+            relay.endpoints.clone()
+        };
         candidates.push(OrgRelayCandidateWire {
             path: identity.path,
             requester_at_exit: identity.requester_at_exit,
-            endpoints: relay.endpoints.clone(),
+            endpoints,
         });
     }
     if state.org_relay.eligibility_generation() != epoch {
