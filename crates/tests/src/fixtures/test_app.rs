@@ -586,6 +586,7 @@ fn test_settings() -> Settings {
             shared_secret: None,
             force_relay: None,
             ttl_secs: None,
+            stun_urls: None,
         },
         relay: meshharbor_config::RelaySettings::default(),
         releases: meshharbor_config::ReleasesSettings::default(),

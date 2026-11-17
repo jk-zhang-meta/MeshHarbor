@@ -6025,6 +6025,78 @@ fn filter_ice_for_allowed_countries(
     out
 }
 
+/// `turn.stun_urls` parsed: `(zone id, url)`, zone `None` for a global entry.
+/// Only `stun:` URLs are kept (a `turn:` here would be a TURN server nobody
+/// holds credentials for); an entry with an empty zone tag is dropped rather
+/// than read as global, since that is a typo, not an intent. Order kept,
+/// duplicates dropped.
+fn parse_configured_stun_urls(raw: &str) -> Vec<(Option<String>, String)> {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (zone, url) = match entry.split_once('=') {
+            Some((z, u)) => {
+                let z = z.trim().to_ascii_lowercase();
+                if z.is_empty() {
+                    continue;
+                }
+                (Some(z), u.trim())
+            }
+            None => (None, entry),
+        };
+        let has_host_port = url
+            .strip_prefix("stun:")
+            .and_then(|rest| rest.split('?').next())
+            .is_some_and(|hp| !hp.is_empty() && hp.contains(':'));
+        if !has_host_port {
+            continue;
+        }
+        let item = (zone, url.to_string());
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn configured_stun_urls(state: &NetworkState) -> Vec<(Option<String>, String)> {
+    state
+        .settings
+        .turn
+        .stun_urls
+        .as_deref()
+        .map(parse_configured_stun_urls)
+        .unwrap_or_default()
+}
+
+/// The configured entries a node in `zone` may use: global ones (unless
+/// `pinned_only`) and those pinned to its zone.
+fn configured_stun_for_zone(
+    cfg: &[(Option<String>, String)],
+    zone: Option<&str>,
+    pinned_only: bool,
+) -> Vec<String> {
+    cfg.iter()
+        .filter(|(z, _)| match z {
+            None => !pinned_only,
+            Some(z) => Some(z.as_str()) == zone,
+        })
+        .map(|(_, u)| u.clone())
+        .collect()
+}
+
+fn prepend_unique(mut first: Vec<String>, rest: Vec<String>) -> Vec<String> {
+    for u in rest {
+        if !first.contains(&u) {
+            first.push(u);
+        }
+    }
+    first
+}
+
 fn stun_policy_for_node(
     state: &NetworkState,
     node: &OverlayNode,
@@ -6033,14 +6105,30 @@ fn stun_policy_for_node(
     if lines.restricted_read_failed {
         return (Vec::new(), true);
     }
+    let configured = configured_stun_urls(state);
     if !lines.has_network_zones() {
-        return (stun_urls_from_turn(state), false);
+        return (
+            prepend_unique(
+                configured_stun_for_zone(&configured, None, false),
+                stun_urls_from_turn(state),
+            ),
+            false,
+        );
     }
-    let policy = lines
-        .network_zones
-        .ice_policy_for(lines.network_zones.resolve_node_sync(node));
+    let resolution = lines.network_zones.resolve_node_sync(node);
+    let zone_id = match resolution {
+        meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => Some(z.id.clone()),
+        _ => None,
+    };
+    let policy = lines.network_zones.ice_policy_for(resolution);
     if !policy.strict {
-        return (stun_urls_from_turn(state), false);
+        return (
+            prepend_unique(
+                configured_stun_for_zone(&configured, zone_id.as_deref(), false),
+                stun_urls_from_turn(state),
+            ),
+            false,
+        );
     }
     let mut turn_urls: Vec<String> = build_turn_config(&state.settings.turn)
         .map(|cfg| cfg.urls)
@@ -6060,9 +6148,25 @@ fn stun_policy_for_node(
             }
         }
     }
+    for u in configured_stun_for_zone(&configured, None, false) {
+        if !candidates.contains(&u) {
+            candidates.push(u);
+        }
+    }
     candidates
         .retain(|u| crate::network_zones::url_matches_countries(state, u, &policy.allowed_countries));
-    (candidates, true)
+    // A zone-pinned entry is the operator's explicit assignment, so it skips
+    // the country filter. That filter cannot express "this zone only": a
+    // zone's infra countries include each gateway's observed country, and a
+    // gateway whose control egress is abroad (field: the CN gateway reads HK)
+    // would otherwise admit the other zone's STUN host.
+    (
+        prepend_unique(
+            candidates,
+            configured_stun_for_zone(&configured, zone_id.as_deref(), true),
+        ),
+        true,
+    )
 }
 
 pub async fn on_agent_policy_changed(
@@ -7219,7 +7323,50 @@ mod tests {
             shared_secret: secret.then(|| "fixture-only-secret".to_string()),
             force_relay: Some(false),
             ttl_secs: Some(600),
+            stun_urls: None,
         }
+    }
+
+    #[test]
+    fn configured_stun_urls_parse_global_and_zone_pinned_entries() {
+        let got = parse_configured_stun_urls(
+            " stun:198.51.100.7:3478 , CN=stun:203.0.113.9:3478,non-cn = stun:192.0.2.1:3478,\
+             turn:192.0.2.2:3478,=stun:192.0.2.3:3478,,stun:198.51.100.7:3478",
+        );
+        assert_eq!(
+            got,
+            vec![
+                (None, "stun:198.51.100.7:3478".to_string()),
+                (Some("cn".to_string()), "stun:203.0.113.9:3478".to_string()),
+                (
+                    Some("non-cn".to_string()),
+                    "stun:192.0.2.1:3478".to_string()
+                ),
+            ],
+            "trimmed, zone ids lowercased, non-STUN and empty-zone entries and duplicates dropped"
+        );
+    }
+
+    #[test]
+    fn a_zone_sees_global_and_its_own_pinned_stun_urls_only() {
+        let cfg = parse_configured_stun_urls(
+            "stun:198.51.100.7:3478,cn=stun:203.0.113.9:3478,non-cn=stun:192.0.2.1:3478",
+        );
+        assert_eq!(
+            configured_stun_for_zone(&cfg, Some("cn"), false),
+            vec!["stun:198.51.100.7:3478", "stun:203.0.113.9:3478"]
+        );
+        assert_eq!(
+            configured_stun_for_zone(&cfg, Some("cn"), true),
+            vec!["stun:203.0.113.9:3478"],
+            "pinned only"
+        );
+        assert_eq!(
+            configured_stun_for_zone(&cfg, None, false),
+            vec!["stun:198.51.100.7:3478"],
+            "a node in no zone gets no pinned entry"
+        );
+        assert!(configured_stun_for_zone(&cfg, None, true).is_empty());
     }
 
     fn overlay_stun_urls_for_settings(turn: &meshharbor_config::TurnSettings) -> Vec<String> {

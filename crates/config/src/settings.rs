@@ -1502,6 +1502,17 @@ pub struct TurnSettings {
     /// Ephemeral-credential TTL in seconds; 600 (the historical hardcode)
     /// when unset. Env: `MESHHARBOR__TURN__TTL_SECS`.
     pub ttl_secs: Option<u32>,
+    /// STUN-only endpoints for overlay srflx discovery, comma-separated, each
+    /// `stun:host:port` (global) or `<zone-id>=stun:host:port` (only for
+    /// nodes resolved into that Logical Network Zone). Never offered as TURN.
+    /// A strict (`RouterOnly`) zone otherwise derives its STUN list from UDP
+    /// TURN URLs in its countries alone, so a TLS-only TURN deployment hands
+    /// every node an empty list and the whole fleet loses hole-punching.
+    /// Global entries in a strict zone still pass the country filter; a
+    /// zone-pinned entry is the operator's explicit assignment and does not.
+    /// Env: `MESHHARBOR__TURN__STUN_URLS`.
+    #[serde(default)]
+    pub stun_urls: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
