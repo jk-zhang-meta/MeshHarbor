@@ -6533,6 +6533,23 @@ impl WgDevice {
             .then(|| Duration::from_millis(mono_ms_now().saturating_sub(resp)))
     }
 
+    /// #280 — retire the pending confirmation of every handshake answered
+    /// at-or-before `upto`: a verification round trip WE initiated after it
+    /// completed, so the path it was judged on works both ways. A handshake
+    /// answered later stays pending (compare-and-clear, never a blind zero).
+    pub fn peer_retire_responder_unconfirmed(&self, peer_public: &[u8; 32], upto: Instant) {
+        let Some(p) = self.peers.get(peer_public) else {
+            return;
+        };
+        let upto = upto.saturating_duration_since(wg_epoch()).as_millis() as u64;
+        let _ = p
+            .stats
+            .resp_hs_at
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |at| {
+                (at != 0 && at <= upto).then_some(0)
+            });
+    }
+
     /// Stage 2 — how long since the last INITIATOR-role handshake completion
     /// for `peer_public` (`None` = never, or unknown peer). Drives the
     /// stale-proof poke trigger (`lifecycle::should_poke`).

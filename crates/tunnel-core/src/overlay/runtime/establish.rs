@@ -149,6 +149,7 @@ pub(super) fn poke_settled(
     let hs = wg.peer_initiator_hs_answered(pubkey, p.at);
     let data_pending = hs
         && p.from_business
+        && !p.from_confirm
         && is_direct
         && super::business_data_proof()
         && !wg.peer_data_rx_since(pubkey, p.at);
@@ -505,46 +506,52 @@ impl OverlayRuntime {
                 samples.remove(nid);
                 continue;
             };
-            let retapped = samples.get(nid).and_then(|s| s.retapped);
-            let Some(previous) = samples.insert(
+            let previous = samples.get(nid).copied();
+            let mut retapped = previous.and_then(|s| s.retapped);
+            // §6.3 F1 — a business proof still unanswered after
+            // BUSINESS_POKE_RETAP_AFTER gets ONE fresh initiation, so its 2 s
+            // window judges two attempts. Once per proof (keyed by its arm
+            // instant), never for a Major poke. Judged BEFORE the traffic
+            // sample below: a proof armed by sparse traffic (one packet per
+            // 15 s, field 2026-11-17) sees no new tx in the next second, and
+            // gating the re-send on fresh tx meant it never fired — one lost
+            // initiation or response then convicted a healthy carrier.
+            if let Some(p) = e.poke
+                && p.from_business
+                && !p.from_major
+                && super::business_poke_fast()
+                && retapped != Some(p.at)
+                && now.saturating_duration_since(p.at)
+                    >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
+                && !wg.peer_initiator_hs_answered(&e.pubkey, p.at)
+                && wg.retap_carrier_revalidation(&e.pubkey)
+            {
+                retapped = Some(p.at);
+                info!(peer = %nid, tier = ?e.tier,
+                    "overlay: business proof still unanswered — second initiation");
+            }
+            let (pending, arm) = match previous {
+                Some(prev) if prev.installed_at == e.since && traffic.1 == prev.traffic.1 => {
+                    super::business_scout_step(prev.pending, traffic.0 > prev.traffic.0)
+                }
+                _ => (false, false),
+            };
+            samples.insert(
                 *nid,
                 BusinessTrafficSample {
                     installed_at: e.since,
                     traffic,
                     retapped,
+                    pending,
                 },
-            ) else {
-                continue;
-            };
-            if previous.installed_at != e.since
-                || traffic.0 <= previous.traffic.0
-                || traffic.1 != previous.traffic.1
-            {
+            );
+            if !arm {
                 continue;
             }
             // Do not settle answered proofs here: the normal sweep remains
             // their only consumer. In particular, a healthy one-way stream
             // cannot turn this faster sampler into a per-second rekey loop.
-            if let Some(p) = e.poke.filter(|p| p.from_major || p.from_business) {
-                // §6.3 F1 — the one exception: a business proof still
-                // unanswered after BUSINESS_POKE_RETAP_AFTER gets ONE fresh
-                // initiation, so its 2 s window judges two attempts. Once per
-                // proof (keyed by its arm instant), never for a Major poke.
-                if p.from_business
-                    && !p.from_major
-                    && super::business_poke_fast()
-                    && retapped != Some(p.at)
-                    && now.saturating_duration_since(p.at)
-                        >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
-                    && !wg.peer_initiator_hs_answered(&e.pubkey, p.at)
-                    && wg.retap_carrier_revalidation(&e.pubkey)
-                {
-                    if let Some(s) = samples.get_mut(nid) {
-                        s.retapped = Some(p.at);
-                    }
-                    info!(peer = %nid, tier = ?e.tier,
-                        "overlay: business proof still unanswered — second initiation");
-                }
+            if e.poke.is_some_and(|p| p.from_major || p.from_business) {
                 continue;
             }
             if wg.request_carrier_revalidation(&e.pubkey) {
@@ -552,6 +559,7 @@ impl OverlayRuntime {
                     at: now,
                     from_major: false,
                     from_business: true,
+                    from_confirm: false,
                 });
                 info!(peer = %nid, tier = ?e.tier,
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
@@ -608,6 +616,7 @@ impl OverlayRuntime {
                     at: now,
                     from_major: false,
                     from_business: true,
+                    from_confirm: false,
                 });
                 armed = true;
                 info!(peer = %nid, tier = ?e.tier, watch_ms = window.as_millis() as u64,
@@ -932,6 +941,11 @@ impl OverlayRuntime {
                 .as_ref()
                 .map(|p| (p.since_poke, p.answered, p.from_major));
             if let Some(p) = poke.as_ref().filter(|p| p.answered) {
+                if let Some(arm) = e.poke.filter(|a| a.from_confirm) {
+                    wg.peer_retire_responder_unconfirmed(&e.pubkey, arm.at);
+                    info!(peer = %nid, tier = ?e.tier,
+                        "overlay: our verification round trip completed — the unconfirmed answered handshake was a lost keepalive, direct carrier kept (#280)");
+                }
                 e.poke = None;
                 // F6 — the path is alive: no early copies for a while (the
                 // traffic that armed this proof is one-way, not lost).
@@ -1116,6 +1130,32 @@ impl OverlayRuntime {
             } else {
                 None
             };
+            // #280 — the confirmation is ONE keepalive: verify with our own
+            // round trip before convicting (`super::responder_verify`). A
+            // business or Major proof already out judges this path within its
+            // own window, so it is not doubled.
+            let unconfirmed = match unconfirmed {
+                Some(age) if super::responder_verify() => {
+                    if e.poke.is_some_and(|p| p.from_business || p.from_major) {
+                        None
+                    } else if wg.request_carrier_revalidation(&e.pubkey) {
+                        e.poke = Some(PokeArm {
+                            at: now,
+                            from_major: false,
+                            from_business: true,
+                            from_confirm: true,
+                        });
+                        info!(
+                            peer = %nid, tier = ?e.tier, unconfirmed_ms = age.as_millis() as u64,
+                            "overlay: a handshake we answered is unconfirmed on the direct carrier — verifying with our own round trip before convicting (#280)"
+                        );
+                        None
+                    } else {
+                        Some(age)
+                    }
+                }
+                other => other,
+            };
             if let Some(age) = unconfirmed {
                 warn!(
                     peer = %nid, tier = ?e.tier, unconfirmed_ms = age.as_millis() as u64,
@@ -1156,6 +1196,7 @@ impl OverlayRuntime {
                         at: now,
                         from_major,
                         from_business: false,
+                        from_confirm: false,
                     });
                     // FR-68 — each poke re-keys a peer and can demote a healthy
                     // direct carrier, so this is what turns "the mesh feels
@@ -1175,6 +1216,7 @@ impl OverlayRuntime {
                         at: now,
                         from_major: false,
                         from_business: true,
+                        from_confirm: false,
                     });
                     info!(peer = %nid, tier = ?e.tier,
                         "overlay: existing proof rearmed for unanswered business traffic");
@@ -1212,6 +1254,7 @@ impl OverlayRuntime {
                         at: now,
                         from_major: false,
                         from_business: unanswered_traffic,
+                        from_confirm: false,
                     });
                     if pressured {
                         info!(
@@ -4802,6 +4845,7 @@ mod tests {
                 at,
                 from_major: false,
                 from_business: true,
+                from_confirm: false,
             })
         };
         assert!(!standby_tee_wanted(None, false, true, now));
@@ -4813,12 +4857,14 @@ mod tests {
             at: old,
             from_major: true,
             from_business: false,
+            from_confirm: false,
         });
         assert!(standby_tee_wanted(major, false, true, now));
         let other = Some(PokeArm {
             at: old,
             from_major: false,
             from_business: false,
+            from_confirm: false,
         });
         assert!(!standby_tee_wanted(other, false, true, now));
     }
@@ -4845,6 +4891,7 @@ mod tests {
             at: now,
             from_major: false,
             from_business: true,
+            from_confirm: false,
         });
         assert!(
             d(young, false, true, true, false),
@@ -4925,6 +4972,7 @@ mod tests {
             at: Instant::now(),
             from_major: false,
             from_business: true,
+            from_confirm: false,
         });
         assert_eq!(rt.watch_early_standby(&wg, &mut by_node), (false, false));
         by_node.get_mut(&nid).unwrap().poke = None;
@@ -5105,6 +5153,7 @@ mod tests {
                         - Duration::from_secs(1),
                     from_major: false,
                     from_business: true,
+                    from_confirm: false,
                 }),
                 ..Installed::base(f.pk, f.ip, DirectTier::Lan, now)
             },
@@ -5260,6 +5309,7 @@ mod tests {
             at: ancient,
             from_major: true,
             from_business: true,
+            from_confirm: false,
         });
         let mut by_node = HashMap::from([(nid, inst)]);
         let mut relay = None;

@@ -359,6 +359,12 @@ struct PokeArm {
     at: Instant,
     from_major: bool,
     from_business: bool,
+    /// #280 verification — armed because a handshake WE answered went
+    /// unconfirmed. Rides the business window (2 s, one re-send) but is
+    /// settled by our own handshake round trip alone: the pair may be idle,
+    /// so no data is owed back, and a completed round trip proves both
+    /// directions of the path the lost keepalive was judged on.
+    from_confirm: bool,
 }
 
 /// A separate sampling baseline keeps the cheap business scout from changing
@@ -370,6 +376,26 @@ struct BusinessTrafficSample {
     /// §6.3 F1 — the arm instant of the business proof this carrier already
     /// re-sent an initiation for (at most one re-send per proof).
     retapped: Option<Instant>,
+    /// The previous sample saw business tx with rx flat: a send is waiting
+    /// for its answer ([`business_scout_step`]).
+    pending: bool,
+}
+
+/// The business scout's arming rule over consecutive 1 s samples whose rx did
+/// not move: returns `(pending, arm)`. A send seen in one sample only makes
+/// the carrier PENDING; the proof arms when the NEXT sample still has rx
+/// flat, i.e. the send has gone unanswered for at least one whole tick. Arming
+/// on the first sample read any request whose answer landed a few ms after
+/// the tick as "unanswered": field 2026-11-17, a 15 s periodic sender
+/// phase-locked just ahead of the scout tick rekeyed a 70 ms-RTT carrier on
+/// every send, and each of those rekeys was a chance to convict it.
+/// The caller resets `pending` whenever rx moves or the carrier is rebuilt.
+fn business_scout_step(was_pending: bool, tx_moved: bool) -> (bool, bool) {
+    if was_pending {
+        (false, true)
+    } else {
+        (tx_moved, false)
+    }
 }
 
 /// F5 — the business watch's per-carrier state ([`business_watch_step`]).
@@ -900,6 +926,18 @@ fn business_poke_fast() -> bool {
 fn responder_confirm() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| crate::env::flag("OVERLAY_RESPONDER_CONFIRM", true))
+}
+
+/// #280 kill switch: `OVERLAY_RESPONDER_VERIFY=0` restores the immediate
+/// conviction. Default ON: an unconfirmed answered handshake first gets one
+/// verification round trip of our own (`PokeArm::from_confirm`), and only an
+/// unanswered verification convicts. The confirmation is ONE keepalive, so
+/// convicting on its absence alone read a single lost datagram as a one-way
+/// path — field 2026-11-17, siat45 ↔ wsl-debian at ~10 % burst loss: the
+/// carrier was torn down every few minutes while both directions delivered.
+fn responder_verify() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_RESPONDER_VERIFY", true))
 }
 
 fn business_data_proof() -> bool {
@@ -6661,6 +6699,7 @@ mod tests {
                 at: now,
                 from_major: false,
                 from_business: true,
+                from_confirm: false,
             }),
             ..Installed::base(
                 [1; 32],
@@ -8217,6 +8256,7 @@ mod tests {
                     at: armed_at,
                     from_major: false,
                     from_business: false,
+                    from_confirm: false,
                 }),
                 ..Installed::base(pk, overlay_ip, DirectTier::Public, Instant::now())
             },
@@ -8387,6 +8427,7 @@ mod tests {
                         at: Instant::now().checked_sub(poke_age).unwrap(),
                         from_major: false,
                         from_business: true,
+                        from_confirm: false,
                     }),
                     ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
                 },
@@ -8579,6 +8620,7 @@ mod tests {
                         at: poke_at,
                         from_major: false,
                         from_business: true,
+                        from_confirm: false,
                     }),
                     ..Installed::base(pk_b, ip_b, DirectTier::Srflx, Instant::now())
                 },
@@ -8618,7 +8660,7 @@ mod tests {
     /// direct carrier whose answered handshake stayed unconfirmed past
     /// RESPONDER_CONFIRM_DEADLINE, while a confirmed one keeps its carrier.
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_unconfirmed_answered_handshake_convicts_the_direct_carrier() {
+    async fn an_unconfirmed_answered_handshake_is_verified_before_it_convicts() {
         let kp = WgKeypair::generate();
         let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
         let (tun_mock, _inj, _del) = MockTun::new();
@@ -8636,10 +8678,13 @@ mod tests {
         let b = WgKeypair::generate().public.to_bytes();
         let na = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let nb = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let c = WgKeypair::generate().public.to_bytes();
+        let nc = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
         let mut by_node = HashMap::new();
         for (nid, pk, ip) in [
             (na, a, Ipv4Addr::new(100, 64, 0, 7)),
             (nb, b, Ipv4Addr::new(100, 64, 0, 8)),
+            (nc, c, Ipv4Addr::new(100, 64, 0, 9)),
         ] {
             wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
             wg.test_latch_handshake_done(&pk);
@@ -8657,6 +8702,7 @@ mod tests {
         // near zero, so a backdated stamp would saturate.)
         wg.test_stamp_responder_hs(&a, Duration::ZERO);
         wg.test_stamp_responder_hs(&b, Duration::ZERO);
+        wg.test_stamp_responder_hs(&c, Duration::ZERO);
         let mut samples = HashMap::new();
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         let now = Instant::now();
@@ -8673,7 +8719,7 @@ mod tests {
             wait <= deadline + Duration::from_millis(300) && wait < FALLBACK_TICK,
             "rechecked at the confirmation deadline, not on the 5 s grid: {wait:?}"
         );
-        // B's initiator keepalive arrives; A's never does.
+        // B's initiator keepalive arrives; A's and C's never do.
         wg.test_stamp_data_rx(&b);
         tokio::time::sleep(deadline + Duration::from_millis(300)).await;
         let tun: Arc<dyn TunIo> = tun_mock;
@@ -8692,13 +8738,53 @@ mod tests {
             )
             .await;
         assert!(
+            !lost,
+            "one missing keepalive is verified first, never convicted on its own"
+        );
+        for nid in [na, nc] {
+            let p = by_node[&nid]
+                .poke
+                .expect("a verification round trip is out");
+            assert!(p.from_confirm && p.from_business && !p.from_major);
+        }
+        assert!(
+            by_node[&nb].poke.is_none(),
+            "a confirmed answer needs no proof"
+        );
+        // C's verification completes (our initiation answered); A's path is
+        // dead, so its verification never does.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        wg.test_stamp_initiator_hs(&c);
+        tokio::time::sleep(business_poke_window() + Duration::from_millis(300)).await;
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
             lost,
-            "an answered handshake never confirmed convicts the direct carrier"
+            "an unanswered verification convicts the direct carrier"
         );
         assert!(!by_node.contains_key(&na), "A rebuilds via relay");
         assert!(
             by_node.contains_key(&nb),
             "a confirmed answer keeps B's direct carrier"
+        );
+        assert!(
+            by_node.contains_key(&nc),
+            "a verified path keeps C's carrier"
+        );
+        assert!(by_node[&nc].poke.is_none());
+        assert_eq!(
+            wg.peer_responder_unconfirmed_age(&c),
+            None,
+            "the verified answer is retired, so it cannot re-arm"
         );
     }
 
@@ -8758,6 +8844,7 @@ mod tests {
             at: earlier,
             from_major: false,
             from_business: false,
+            from_confirm: false,
         });
         wg.test_set_ip_traffic(&pk, 1, 0);
         rt.sweep_carrier_health(
@@ -8803,6 +8890,7 @@ mod tests {
             at: major_at,
             from_major: true,
             from_business: false,
+            from_confirm: false,
         });
         wg.test_set_ip_traffic(&pk, 3, 0);
         rt.sweep_carrier_health(
@@ -8830,6 +8918,7 @@ mod tests {
             at,
             from_major: false,
             from_business: true,
+            from_confirm: false,
         });
         assert!(
             rt.sweep_carrier_health(
@@ -8854,6 +8943,17 @@ mod tests {
             0,
             "an active proof failure must retain the existing no-strike policy"
         );
+    }
+
+    #[test]
+    fn business_scout_arms_only_after_a_whole_unanswered_tick() {
+        // A send in this sample is pending, never armed at once.
+        assert_eq!(business_scout_step(false, true), (true, false));
+        // Still no rx one tick later: armed, and the pending mark is spent.
+        assert_eq!(business_scout_step(true, false), (false, true));
+        assert_eq!(business_scout_step(true, true), (false, true));
+        // Nothing sent, nothing owed.
+        assert_eq!(business_scout_step(false, false), (false, false));
     }
 
     #[tokio::test]
@@ -8895,8 +8995,10 @@ mod tests {
             at,
             from_major: false,
             from_business: true,
+            from_confirm: false,
         });
-        wg.test_set_ip_traffic(&pk, 20, 10);
+        // No new business tx since the proof armed (a sparse sender): the
+        // re-send must not wait for more traffic (field 2026-11-17).
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         assert_eq!(
             samples[&nid].retapped,
@@ -8915,6 +9017,7 @@ mod tests {
             at: major,
             from_major: true,
             from_business: false,
+            from_confirm: false,
         });
         wg.test_set_ip_traffic(&pk, 30, 10);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
@@ -8979,6 +9082,11 @@ mod tests {
         );
         wg.test_bump_rx_any(&pk);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(
+            by_node[&nid].poke.is_none(),
+            "one sample of tx without rx is only pending: the answer may land just after the tick"
+        );
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         let armed = by_node[&nid]
             .poke
             .expect("the one-second scout must start proof before the next health sweep");
@@ -9039,6 +9147,7 @@ mod tests {
             at: major,
             from_major: true,
             from_business: false,
+            from_confirm: false,
         });
         wg.test_set_ip_traffic(&pk, 13, 11);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
@@ -9049,6 +9158,7 @@ mod tests {
             at: normal,
             from_major: false,
             from_business: false,
+            from_confirm: false,
         });
         wg.test_set_ip_traffic(&pk, 14, 11);
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
@@ -9125,6 +9235,8 @@ mod tests {
             Some((1, 0)),
             "failed business sends still require path validation"
         );
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none(), "pending for one tick first");
         rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
         let proof = by_node[&nid]
             .poke
@@ -9219,6 +9331,7 @@ mod tests {
                 - Duration::from_secs(1),
             from_major: false,
             from_business: true,
+            from_confirm: false,
         });
         assert!(
             rt.sweep_and_repair_carriers(
@@ -9401,6 +9514,7 @@ mod tests {
                     at: now,
                     from_major: false,
                     from_business: true,
+                    from_confirm: false,
                 }),
                 ..Installed::base(
                     [0; 32],
@@ -9512,6 +9626,7 @@ mod tests {
                 .unwrap(),
             from_major: false,
             from_business: false,
+            from_confirm: false,
         });
         rt.sweep_carrier_health(
             &mut wg,
@@ -9557,6 +9672,7 @@ mod tests {
                         .unwrap(),
                     from_major: false,
                     from_business: false,
+                    from_confirm: false,
                 }),
                 ..Installed::base(pk, overlay_ip, DirectTier::Lan, Instant::now())
             },
