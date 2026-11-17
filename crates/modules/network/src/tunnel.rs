@@ -301,6 +301,8 @@ pub async fn handle_tunnel_client_socket(
         state.clone(),
         socket_tx.clone(),
         outbound_tx.clone(),
+        Arc::clone(&stalled_flag),
+        Arc::clone(&stall_cancel),
         tunnel_client_id,
         tenant_id,
     );
@@ -312,6 +314,7 @@ pub async fn handle_tunnel_client_socket(
             break;
         }
         let msg = tokio::select! {
+            biased;
             () = stall_cancel.notified() => {
                 warn!(%tunnel_client_id, "tunnel-client outbound channel stalled; closing WS to force resync");
                 break;
@@ -331,13 +334,17 @@ pub async fn handle_tunnel_client_socket(
             Ok(m) => m,
             Err(e) => {
                 warn!(%tunnel_client_id, %e, "tunnel-client sent malformed JSON; dropping");
-                send_error(
+                if !send_error(
                     &outbound_tx,
                     None,
                     "bad_request",
                     &format!("malformed JSON: {e}"),
                 )
-                .await;
+                .await
+                {
+                    stalled_flag.store(true, std::sync::atomic::Ordering::Release);
+                    break;
+                }
                 continue;
             }
         };
@@ -583,6 +590,7 @@ pub async fn handle_tunnel_client_socket(
     }
 
     revocation_handle.abort();
+    let _ = revocation_handle.await;
 
     // Overlay teardown: drop this node from the registry + mark it
     // offline so peers' netmaps lose it. Best-effort; no-op if the
@@ -643,12 +651,19 @@ pub async fn handle_tunnel_client_socket(
     // clones the revocation task held are dropped when its handle
     // aborts. Defensive `pump.abort()` covers the edge case where
     // some other clone is still alive.
+    drop(orig);
     drop(outbound_tx);
     pump.abort();
+    let _ = pump.await;
     if stalled_flag.load(std::sync::atomic::Ordering::Acquire) {
-        let mut guard = socket_tx.lock().await;
-        let _ = guard.close().await;
+        let _ = tokio::time::timeout(Duration::from_millis(100), async {
+            let mut guard = socket_tx.lock().await;
+            let _ = guard.close().await;
+        })
+        .await;
     }
+    drop(socket_tx);
+    drop(socket_rx);
     business_observation
         .finish(&state.core, &connection_id)
         .await;
@@ -1882,12 +1897,23 @@ async fn audit_peer_close(state: &NetworkState, session: &TunnelSession, orig: &
 // Wire helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Push `msg` onto the per-connection outbound channel. The pump task
-/// serialises + writes to the socket. A closed channel means the
-/// socket has gone away or the pump exited — log + drop.
-async fn send_msg(outbound: &mpsc::Sender<ServerMsg>, msg: ServerMsg) {
-    if let Err(e) = outbound.send(msg).await {
-        debug!(%e, "outbound channel closed; dropping ServerMsg");
+const TUNNEL_HANDLER_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Push `msg` onto the per-connection outbound channel with a bounded timeout
+/// so a non-reading peer can never stall the handler task and block forced
+/// teardown/resynchronization. Returns `false` when the channel is closed or
+/// remains full past [`TUNNEL_HANDLER_SEND_TIMEOUT`].
+async fn send_msg(outbound: &mpsc::Sender<ServerMsg>, msg: ServerMsg) -> bool {
+    match tokio::time::timeout(TUNNEL_HANDLER_SEND_TIMEOUT, outbound.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            debug!(%e, "outbound channel closed; dropping ServerMsg");
+            false
+        }
+        Err(_) => {
+            warn!("tunnel outbound channel stalled; dropping ServerMsg");
+            false
+        }
     }
 }
 
@@ -1896,7 +1922,7 @@ async fn send_error(
     session_id: Option<ObjectId>,
     code: &str,
     message: &str,
-) {
+) -> bool {
     send_msg(
         outbound,
         ServerMsg::Error {
@@ -1906,7 +1932,7 @@ async fn send_error(
             open_nonce: None,
         },
     )
-    .await;
+    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2159,6 +2185,8 @@ fn spawn_revocation_check(
     state: NetworkState,
     socket_tx: Arc<Mutex<SplitSink<WebSocket, Message>>>,
     outbound_tx: mpsc::Sender<ServerMsg>,
+    stalled_flag: Arc<std::sync::atomic::AtomicBool>,
+    stall_cancel: Arc<tokio::sync::Notify>,
     tunnel_client_id: ObjectId,
     tenant_id: ObjectId,
 ) -> tokio::task::JoinHandle<()> {
@@ -2187,7 +2215,7 @@ fn spawn_revocation_check(
                 }
                 Ok(_) => {
                     info!(%tunnel_client_id, "tunnel-client revoked mid-session; closing WS");
-                    send_msg(
+                    let _ = send_msg(
                         &outbound_tx,
                         ServerMsg::TunnelRevoked {
                             reason: "status changed to Quarantined or soft-deleted".into(),
@@ -2197,8 +2225,13 @@ fn spawn_revocation_check(
                     // Give the pump a moment to flush the revocation
                     // message before slamming the socket shut.
                     tokio::time::sleep(Duration::from_millis(50)).await;
-                    let mut guard = socket_tx.lock().await;
-                    let _ = guard.close().await;
+                    let _ = tokio::time::timeout(Duration::from_millis(100), async {
+                        let mut guard = socket_tx.lock().await;
+                        let _ = guard.close().await;
+                    })
+                    .await;
+                    stalled_flag.store(true, std::sync::atomic::Ordering::Release);
+                    stall_cancel.notify_one();
                     return;
                 }
                 Err(e) => {
