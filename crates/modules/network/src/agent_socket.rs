@@ -424,8 +424,11 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
     /// (rc.307 B).
     async fn closed(&self, ctx: &AgentCtx, removal_was_ours: bool) {
         if removal_was_ours {
-            crate::overlay::handle_overlay_leave(&self.state, NodeIdentity::Agent(ctx.agent_id))
-                .await;
+            crate::overlay::handle_overlay_disconnect(
+                &self.state,
+                NodeIdentity::Agent(ctx.agent_id),
+            )
+            .await;
         }
     }
 }

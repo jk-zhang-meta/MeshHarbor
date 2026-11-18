@@ -1204,7 +1204,8 @@ async fn a_line_ends_with_its_edge_and_with_either_relay() {
 /// `LINE_RECONNECT_GRACE`, since it carries traffic without the control
 /// plane: a member that reconnects from its own zone keeps the line, and one
 /// that reconnects from the other zone loses it once the grace has passed.
-/// (A member that goes offline loses it at once, as `device_left`.) Field,
+/// (A member that goes offline loses it as `device_left` once
+/// `DEVICE_LEFT_GRACE` passes without it back.) Field,
 /// 2026-10-26: revoking at every closed connection tore a line down on one
 /// relay only while a restarting center closed its connections.
 #[tokio::test]

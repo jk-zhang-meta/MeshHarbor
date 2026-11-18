@@ -263,6 +263,7 @@ struct Rig {
     b_node: String,
     r_node: String,
     r_agent: String,
+    r_tok: String,
 }
 
 impl Rig {
@@ -325,6 +326,7 @@ impl Rig {
             b_node,
             r_node,
             r_agent,
+            r_tok,
         }
     }
 
@@ -4134,4 +4136,95 @@ async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
             .is_err(),
         "a removed middle bridge must stop forwarding"
     );
+}
+
+/// The relay `r` (re)joins under a process instance.
+async fn relay_join_as(ws: &mut Ws, instance: &str) {
+    let msg = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": BASE64.encode([3u8; 32]),
+        "mtu": 1280,
+        "endpoints": ["8.8.8.8:41641"],
+        "supports_org_relay": true,
+        "supports_server_relay_strategy": true,
+        "relay_port": 3478,
+        "org_primary": true,
+        "instance": instance,
+    });
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .expect("send join");
+    recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("a netmap answers the join");
+}
+
+/// Field, 2026-11-17: a relay whose control WS cycled on a slow pong lost
+/// every session it served (`device_left`, 12–17 per event) although its UDP
+/// relay kept forwarding throughout. A closed connection now gives the
+/// sessions `DEVICE_LEFT_GRACE`: the same process back keeps them, a
+/// restarted one (a new instance) loses them at its rejoin, and nothing is
+/// revoked while the node is still away inside the grace.
+#[tokio::test]
+async fn a_relay_control_reconnect_keeps_its_sessions_and_a_restart_ends_them() {
+    let mut rig = Rig::up("mint-leave-grace", true, Some(true)).await;
+    relay_join_as(&mut rig.r, "proc-1").await;
+    rig.arm().await;
+    rig.request().await;
+    let (serve, _, _) = rig.expect_minted().await;
+    let vni = serve["vni"].clone();
+    let network = rig.app.state.network();
+    let relay = ObjectId::parse_str(&rig.r_node).unwrap();
+
+    // The control connection closes; the same process comes back.
+    rig.r.close(None).await.expect("close r");
+    let quiet = Duration::from_secs(2);
+    for (name, ws) in [("a", &mut rig.a), ("b", &mut rig.b)] {
+        assert!(
+            recv_t(ws, "rc:overlay.relay_revoke", quiet).await.is_none(),
+            "{name}: nothing is revoked while the relay is away inside the grace"
+        );
+    }
+    assert!(network.org_relay.leave_pending(relay));
+    let r_tok = rig.r_tok.clone();
+    rig.r = connect_from(&rig.app, &r_tok, &["relay-server"], None).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    relay_join_as(&mut rig.r, "proc-1").await;
+    assert!(
+        !network.org_relay.leave_pending(relay),
+        "the same process back settles the leave"
+    );
+    assert_eq!(
+        network.org_relay.sessions_on_relay(relay),
+        1,
+        "and keeps the session"
+    );
+    for (name, ws) in [("a", &mut rig.a), ("b", &mut rig.b)] {
+        assert!(
+            recv_t(ws, "rc:overlay.relay_revoke", quiet).await.is_none(),
+            "{name}: a reconnect of the same process keeps the session"
+        );
+    }
+
+    // Closed again, and back as a restarted process: its sessions end now.
+    rig.r.close(None).await.expect("close r");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(network.org_relay.leave_pending(relay));
+    rig.r = connect_from(&rig.app, &r_tok, &["relay-server"], None).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    relay_join_as(&mut rig.r, "proc-2").await;
+    for (name, ws) in [("a", &mut rig.a), ("b", &mut rig.b)] {
+        let v = recv_t(ws, "rc:overlay.relay_revoke", Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("{name}: a restarted relay's sessions are revoked"));
+        assert_eq!(v["vni"], vni, "{name}: the revoke names the session");
+    }
+    assert_eq!(network.org_relay.sessions_on_relay(relay), 0);
+    let reasons: Vec<String> = audit_rows(&rig.app, &rig.seeded)
+        .await
+        .iter()
+        .filter(|r| r["action"] == json!("revoke"))
+        .filter_map(|r| r["reason"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(reasons, vec!["device_left".to_string()], "{reasons:?}");
 }

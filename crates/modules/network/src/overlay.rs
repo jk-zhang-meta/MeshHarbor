@@ -1086,6 +1086,7 @@ async fn handle_overlay_join(
         state.admission_nodes.insert(id, self_node.clone());
         // Before the netmap, so the node's first requests already count afresh.
         forget_restarted_grants(state, id, instance.as_deref());
+        crate::org_relay::node_rejoined(state, id, instance.as_deref()).await;
     }
 
     if lines.restricted_read_failed
@@ -1872,6 +1873,18 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
 }
 
 pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
+    overlay_leave(state, ident, true).await;
+}
+
+/// An agent's control connection closed without a graceful leave: the same
+/// as [`handle_overlay_leave`], except that its org-relay sessions get
+/// [`crate::org_relay::DEVICE_LEFT_GRACE`] to see it back
+/// ([`crate::org_relay::connection_lost`]).
+pub async fn handle_overlay_disconnect(state: &NetworkState, ident: NodeIdentity) {
+    overlay_leave(state, ident, false).await;
+}
+
+async fn overlay_leave(state: &NetworkState, ident: NodeIdentity, graceful: bool) {
     let Some((tenant_id, machine_id, _name)) = resolve_tenant_and_machine(state, ident).await
     else {
         return;
@@ -1889,7 +1902,11 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
     // FR-19 — a party that leaves takes its relay sessions with it: the
     // other member and the relay hear the revoke now rather than at the
     // session's absolute lifetime.
-    crate::org_relay::revoke_node(state, self_id, "device_left").await;
+    if graceful {
+        crate::org_relay::revoke_node(state, self_id, "device_left").await;
+    } else {
+        crate::org_relay::connection_lost(state, self_id).await;
+    }
     let _ = state
         .overlay_nodes
         .mark_status(self_id, AgentStatus::Offline)

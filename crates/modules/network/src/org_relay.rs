@@ -1371,6 +1371,18 @@ pub struct OrgRelayState {
     bound_upgrade_cooldown: DashMap<String, Instant>,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
+    /// Nodes whose control connection closed without a graceful leave, and
+    /// the sessions they held at that moment ([`connection_lost`]).
+    pending_leaves: DashMap<ObjectId, PendingLeave>,
+    leave_seq: AtomicU64,
+}
+
+/// A node whose control connection closed: what it held, and which process
+/// it was, so a rejoin of the same process keeps them ([`node_rejoined`]).
+struct PendingLeave {
+    seq: u64,
+    instance: Option<String>,
+    held: Vec<(String, u32, u64)>,
 }
 
 struct LiveConnection {
@@ -1718,6 +1730,12 @@ impl OrgRelayState {
             }
             None => false,
         }
+    }
+
+    /// Is `node_id`'s closed connection still inside its leave grace
+    /// ([`connection_lost`])?
+    pub fn leave_pending(&self, node_id: ObjectId) -> bool {
+        self.pending_leaves.contains_key(&node_id)
     }
 
     pub fn sessions_on_relay(&self, relay_node_id: ObjectId) -> usize {
@@ -5745,6 +5763,95 @@ pub async fn revoke_relay_agent(
 ) -> usize {
     revoke_where(state, reason, |s| {
         s.tenant_id == tenant_id && s.relayed_by_agent(agent_id)
+    })
+    .await
+}
+
+/// How long the sessions a node takes part in — as a member, the relay or a
+/// hop — outlive its control connection closing without a graceful leave.
+/// The relay server and the overlay runtime are process-wide and outlive the
+/// connection, so the sessions keep carrying traffic; a rejoin of the same
+/// process inside the grace keeps them. Field, 2026-11-17: a relay whose
+/// control WS cycled on a slow pong (28 s) lost every session it served
+/// (12–17 per event) while its UDP data plane was healthy throughout.
+pub const DEVICE_LEFT_GRACE: Duration = Duration::from_secs(60);
+
+fn device_left_grace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__OVERLAY__DEVICE_LEFT_GRACE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
+}
+
+/// `node_id`'s control connection closed without a graceful leave. Its
+/// sessions are revoked as `device_left` only if it is not back, as the same
+/// process, within [`DEVICE_LEFT_GRACE`]: a restarted process lost them, and
+/// is settled at its rejoin. Only the sessions held now are ever revoked, so
+/// one minted after a rejoin cannot be taken by this leave.
+pub async fn connection_lost(state: &NetworkState, node_id: ObjectId) {
+    if !device_left_grace_enabled() {
+        revoke_node(state, node_id, "device_left").await;
+        return;
+    }
+    state.org_relay.forget_node(node_id);
+    let held: Vec<(String, u32, u64)> = state
+        .org_relay
+        .sessions
+        .iter()
+        .filter(|e| e.involves(node_id))
+        .map(|e| (e.pair_key.clone(), e.vni, e.generation))
+        .collect();
+    if held.is_empty() {
+        return;
+    }
+    let seq = state.org_relay.leave_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    let instance = state
+        .node_instances
+        .get(&node_id)
+        .map(|e| e.value().clone());
+    state.org_relay.pending_leaves.insert(
+        node_id,
+        PendingLeave {
+            seq,
+            instance,
+            held,
+        },
+    );
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(DEVICE_LEFT_GRACE).await;
+        if let Some((_, leave)) = state
+            .org_relay
+            .pending_leaves
+            .remove_if(&node_id, |_, l| l.seq == seq)
+        {
+            let n = revoke_held(&state, "device_left", leave.held).await;
+            info!(%node_id, revoked = n, "org-relay: node not back within the leave grace — its sessions revoked");
+        }
+    });
+}
+
+/// `node_id` joined again (called after its instance is recorded). The same
+/// process keeps what it held when its connection closed; a new one lost it,
+/// so that is revoked now rather than at the end of the grace.
+pub async fn node_rejoined(state: &NetworkState, node_id: ObjectId, instance: Option<&str>) {
+    let Some((_, leave)) = state.org_relay.pending_leaves.remove(&node_id) else {
+        return;
+    };
+    if leave.instance.as_deref() == instance {
+        info!(%node_id, kept = leave.held.len(), "org-relay: node back as the same process inside the leave grace — its sessions kept");
+        return;
+    }
+    revoke_held(state, "device_left", leave.held).await;
+}
+
+async fn revoke_held(state: &NetworkState, reason: &str, held: Vec<(String, u32, u64)>) -> usize {
+    revoke_where(state, reason, |s| {
+        held.iter()
+            .any(|(pk, vni, g)| s.pair_key == *pk && s.vni == *vni && s.generation == *g)
     })
     .await
 }
