@@ -2051,12 +2051,16 @@ async fn receiver_failure_and_old_connection_ack_cannot_complete_activation() {
                 *seen.lock().await = (epoch, network.auth_revision);
                 if flag.load(Ordering::SeqCst) {
                     let current = conn.lock().await.clone();
+                    // Ack the way the real daemon does: a FULL netmap re-anchors its
+                    // delta baseline and is acked with epoch 0, never the map's own
+                    // epoch (tunnel-core `runtime.rs`). Echoing `epoch` here hid that
+                    // the barrier could not complete against a real device.
                     overlay::relay_overlay_msg_from_node(
                         &st,
                         NodeIdentity::Agent(aid),
                         &current,
                         ClientMsg::OverlayNetmapAck {
-                            epoch,
+                            epoch: 0,
                             auth_revision: network.auth_revision,
                         },
                     )

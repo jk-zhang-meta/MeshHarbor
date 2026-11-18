@@ -407,11 +407,24 @@ async fn handle_overlay_netmap_ack(
         return;
     };
     let Some(node_id) = self_node.id else { return };
-    let result=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(bson::doc! {
+    let mut receipt_filter = bson::doc! {
         "_id":node_id,"deleted_at":null,"access_connection_id":connection_id,
         "access_connection_origin":state.pod.origin(),
-        "access_sent_auth_revision":auth_revision as i64,"access_sent_epoch":epoch as i64,
-    },bson::doc! {"$set":{"access_applied_connection_id":connection_id,"access_applied_origin":state.pod.origin(),
+        "access_sent_auth_revision":auth_revision as i64,
+    };
+    // Epoch 0 is how the daemon acks a FULL netmap: it re-anchors its delta
+    // baseline to 0 on a full table (tunnel-core `runtime.rs`, the Netmap
+    // arm) and never echoes the map's own epoch. The access barrier sends a
+    // full netmap, so requiring the epoch there made the receipt impossible
+    // and every online personal re-enroll answered 503 after 5 s (field
+    // 11-18). The connection and the freshly reserved auth_revision still
+    // bind the receipt: no netmap carrying this revision predates the new
+    // authority.
+    if epoch != 0 {
+        receipt_filter.insert("access_sent_epoch", epoch as i64);
+    }
+    let result=state.core.db.collection::<bson::Document>("overlay_nodes").update_one(receipt_filter,
+        bson::doc! {"$set":{"access_applied_connection_id":connection_id,"access_applied_origin":state.pod.origin(),
         "access_applied_auth_revision":auth_revision as i64,"access_applied_epoch":epoch as i64}}).await;
     if result.as_ref().is_ok_and(|r| r.matched_count == 1) {
         debug!(%node_id,auth_revision,"exact-connection access netmap applied");
@@ -3579,7 +3592,8 @@ async fn wait_access_applied(
         if raw.get_i64("access_sent_auth_revision").ok() == Some(revision as i64)
             && raw.get_i64("access_applied_auth_revision").ok() == Some(revision as i64)
             && sent_epoch.is_some()
-            && raw.get_i64("access_applied_epoch").ok() == sent_epoch
+            // A full-netmap ack carries epoch 0 (see `handle_overlay_netmap_ack`).
+            && matches!(raw.get_i64("access_applied_epoch").ok(), Some(e) if Some(e) == sent_epoch || e == 0)
             && raw.get_str("access_applied_connection_id").ok() == Some(connection.as_str())
             && raw.get_str("access_applied_origin").ok() == Some(origin.as_str())
         {
