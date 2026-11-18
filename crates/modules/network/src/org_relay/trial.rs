@@ -728,6 +728,43 @@ pub(super) fn has_active_or_incumbent_trial(
         })
 }
 
+/// Bound sessions `reporter_id` may re-optimize: at most `limit`, past their
+/// bind window, unexpired, and with no active or incumbent trial on the pair.
+///
+/// ⚠️ Lock order. `claim_mint` holds `trials.entries` and then writes
+/// `sessions`, so `trials.entries` is always taken BEFORE a `sessions` shard
+/// lock. Never consult a trial while a `sessions` guard is alive. The sessions
+/// are snapshotted first and their guards dropped; only then are trials checked.
+/// Field, 2026-11-18: checking the trial from inside `sessions.iter().filter()`
+/// deadlocked both tokio workers against a concurrent `claim_mint` while
+/// relays restarted back to back. The server froze, and every device lost its
+/// control connection until the process was restarted.
+pub(super) fn bound_upgrade_candidates(
+    org_relay: &OrgRelayState,
+    tenant_id: ObjectId,
+    reporter_id: ObjectId,
+    is_backbone_relay: bool,
+    now: Instant,
+    limit: usize,
+) -> Vec<OrgRelaySession> {
+    let snapshot: Vec<OrgRelaySession> = org_relay
+        .sessions
+        .iter()
+        .filter(|e| {
+            e.tenant_id == tenant_id
+                && now >= e.bind_by
+                && now < e.expires_at
+                && (is_backbone_relay || e.member_index(reporter_id).is_some())
+        })
+        .map(|e| e.value().clone())
+        .collect();
+    snapshot
+        .into_iter()
+        .filter(|s| !has_active_or_incumbent_trial(org_relay, &s.pair_key, now))
+        .take(limit)
+        .collect()
+}
+
 /// Finalized, non-returned trial sessions eligible for a subsequent make-before-break
 /// `start_bound_upgrade` pass (excluding pairs that already have another in-flight
 /// trial or return).
@@ -2229,6 +2266,62 @@ mod tests {
         );
         assert_eq!(entries[&next].session.generation, 2);
     }
+    /// Field, 2026-11-18. The trials lock is held, as `claim_mint` holds it.
+    /// While the re-optimizer looks for candidates, a writer to the same
+    /// session (as `claim_mint` writes it) must not wait on a `sessions` guard
+    /// the re-optimizer keeps while it waits for that trials lock (ABBA).
+    #[test]
+    fn bound_upgrade_candidates_never_hold_a_sessions_guard_while_waiting_for_trials() {
+        use std::sync::{Arc, mpsc};
+        let state = Arc::new(OrgRelayState::new());
+        let (tenant, requester, peer, relay) = (
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+        );
+        let mut session = fixture_trial(tenant, requester, peer, relay, 1, 1, 1).session;
+        session.tenant_id = tenant;
+        session.bind_by = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        let key = session.pair_key.clone();
+        state.sessions.insert(key.clone(), session);
+
+        // Held as `claim_mint` holds it, before it writes `sessions`.
+        let trials = state.trials.entries.lock().unwrap();
+        let (cand_tx, cand_rx) = mpsc::channel();
+        {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                let now = Instant::now();
+                let got = bound_upgrade_candidates(&state, tenant, requester, false, now, 16);
+                let _ = cand_tx.send(got.len());
+            });
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let (write_tx, write_rx) = mpsc::channel();
+        {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            std::thread::spawn(move || {
+                if let dashmap::mapref::entry::Entry::Occupied(mut e) = state.sessions.entry(key) {
+                    e.get_mut().generation += 1;
+                }
+                let _ = write_tx.send(());
+            });
+        }
+        let writer_done = write_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        drop(trials);
+        let candidates = cand_rx.recv_timeout(Duration::from_secs(5));
+        assert!(
+            writer_done,
+            "a sessions writer under the trials lock waited on the re-optimizer's \
+             sessions guard: lock-order inversion (deadlock in the field)"
+        );
+        assert_eq!(candidates, Ok(1), "the bound session is a candidate");
+    }
+
     #[test]
     fn concurrent_trials_cannot_claim_the_same_last_relay_slot() {
         use std::sync::{Arc, Barrier, atomic::AtomicUsize};

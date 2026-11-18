@@ -3493,20 +3493,14 @@ async fn reoptimize_bound_sessions(state: &NetworkState, reporter: &OverlayNode)
             .retain(|_, until| *until > now);
     }
     let is_backbone_relay = state.org_relay.join_extras(reporter_id).relay_backbone_ready;
-    let mut bound: Vec<OrgRelaySession> = state
-        .org_relay
-        .sessions
-        .iter()
-        .filter(|e| {
-            e.tenant_id == reporter.tenant_id
-                && now >= e.bind_by
-                && now < e.expires_at
-                && (is_backbone_relay || e.member_index(reporter_id).is_some())
-                && !trial::has_active_or_incumbent_trial(&state.org_relay, &e.pair_key, now)
-        })
-        .take(16)
-        .map(|e| e.value().clone())
-        .collect();
+    let mut bound = trial::bound_upgrade_candidates(
+        &state.org_relay,
+        reporter.tenant_id,
+        reporter_id,
+        is_backbone_relay,
+        now,
+        16,
+    );
     if bound.len() < 16 {
         let rem = 16 - bound.len();
         bound.extend(
