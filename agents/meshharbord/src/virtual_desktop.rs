@@ -184,26 +184,89 @@ fn live_x_server(dir: &Path) -> bool {
 }
 
 /// FR-120 P3 — the desktop runtime the package carries, so a host with no X
-/// packages, and an account that cannot install any, still gets a desktop:
-/// `<exe>/../lib/meshharbor/vd/` (`/usr/lib/meshharbor/vd` for a system
-/// install, `~/.local/lib/meshharbor/vd` for a per-user one), next to the
-/// libraries the daemon already ships there.
+/// packages, and an account that cannot install any, still gets a desktop.
 ///
-/// Layout: `bin/{Xvfb,xkbcomp,twm,xterm}`, `lib/` (their libraries, found
-/// through each binary's own `RUNPATH`, never `LD_LIBRARY_PATH`, which would
-/// leak into every program started from the desktop's terminal), and
-/// `share/X11/xkb`. The bundled `Xvfb` looks for `xkbcomp` in its working
-/// directory (the package build points it there), so it runs from `bin/`.
+/// It ships as ONE file, [`BUNDLE_ARCHIVE`], in `<exe>/../lib/meshharbor/`
+/// (`/usr/lib/meshharbor` for a system install, `~/.local/lib/meshharbor` for
+/// a per-user one), next to the libraries the daemon already ships there, and
+/// is unpacked beside it into `vd/` on first use.
+///
+/// ⚠️ One file, not a directory, because a per-user install is updated by the
+/// RUNNING daemon's transaction (`scripts/linux-inplace-upgrade.py`,
+/// `library_snapshot`), which copies that directory's regular `*.so*` files
+/// and refuses anything else: a `vd/` directory in the package would fail
+/// every per-user update from a daemon that predates it. The `.so` in the
+/// name is what lets that transaction carry it.
+///
+/// Layout once unpacked: `bin/{Xvfb,xkbcomp,twm,xterm}`, `lib/` (their
+/// libraries, found through each binary's own `RUNPATH`, never
+/// `LD_LIBRARY_PATH`, which would leak into every program started from the
+/// desktop's terminal), `share/X11/{xkb,locale}`. The bundled `Xvfb` looks
+/// for `xkbcomp` in its working directory (`scripts/build-vd-bundle.py`
+/// points it there), so it runs from `bin/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bundle {
     pub root: std::path::PathBuf,
 }
 
+/// FR-120 P3 — the bundle's file name in `lib/meshharbor/`.
+pub const BUNDLE_ARCHIVE: &str = "meshharbor-vd.so.tar.xz";
+
+/// Written into `vd/` after it is unpacked: the archive's SHA-256, so a new
+/// package's bundle replaces the old one.
+const BUNDLE_STAMP: &str = ".archive-sha256";
+
 impl Bundle {
-    /// The bundle next to the running executable, when its X server is there.
+    /// The bundle next to the running executable, unpacked first when the
+    /// package's archive is newer than what is unpacked. `None` when the
+    /// package carries none or it cannot be unpacked (logged).
     pub fn find() -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
-        Self::at(exe.parent()?.join("../lib/meshharbor/vd"))
+        let lib = exe.parent()?.parent()?.join("lib/meshharbor");
+        match Self::unpack_if_needed(&lib) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %format!("{e:#}"), dir = %lib.display(), "virtual-desktop: the bundled desktop runtime could not be unpacked");
+                None
+            }
+        }
+    }
+
+    fn unpack_if_needed(lib: &Path) -> Result<Option<Self>> {
+        use sha2::Digest as _;
+        let archive = lib.join(BUNDLE_ARCHIVE);
+        let dir = lib.join("vd");
+        let unpacked = || Self::at(dir.clone());
+        let Ok(bytes) = std::fs::read(&archive) else {
+            return Ok(unpacked());
+        };
+        let sha = hex::encode(sha2::Sha256::digest(&bytes));
+        if std::fs::read_to_string(dir.join(BUNDLE_STAMP)).is_ok_and(|s| s.trim() == sha)
+            && let Some(b) = unpacked()
+        {
+            return Ok(Some(b));
+        }
+        let tmp = lib.join(format!(".vd-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let st = Command::new("tar")
+            .args(["--no-same-owner", "-xJf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&tmp)
+            .status()
+            .context("spawning tar")?;
+        if !st.success() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            bail!("tar exited {:?} unpacking {}", st.code(), archive.display());
+        }
+        std::fs::write(tmp.join("vd").join(BUNDLE_STAMP), &sha)?;
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::rename(tmp.join("vd"), &dir)
+            .with_context(|| format!("placing {}", dir.display()))?;
+        let _ = std::fs::remove_dir_all(&tmp);
+        info!(dir = %dir.display(), "virtual-desktop: unpacked the bundled desktop runtime");
+        Ok(unpacked())
     }
 
     fn at(root: std::path::PathBuf) -> Option<Self> {
@@ -1434,6 +1497,46 @@ mod tests {
         ] {
             assert!(auto_decision(&f).is_err(), "{f:?}");
         }
+    }
+
+    /// FR-120 P3 — the package's archive is unpacked once, re-unpacked when
+    /// a new package brings different bytes, and its absence leaves an
+    /// unpacked runtime in use.
+    #[cfg(unix)]
+    #[test]
+    fn the_bundle_is_unpacked_once_and_replaced_by_a_new_archive() {
+        let base = std::env::temp_dir().join(format!("mh-vd-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("lib");
+        std::fs::create_dir_all(base.join("src/vd/bin")).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        let pack = |marker: &str| {
+            std::fs::write(base.join("src/vd/bin/Xvfb"), marker).unwrap();
+            let st = Command::new("tar")
+                .arg("-cJf")
+                .arg(lib.join(BUNDLE_ARCHIVE))
+                .arg("-C")
+                .arg(base.join("src"))
+                .arg("vd")
+                .status()
+                .unwrap();
+            assert!(st.success());
+        };
+        assert_eq!(Bundle::unpack_if_needed(&lib).unwrap(), None);
+        pack("one");
+        let b = Bundle::unpack_if_needed(&lib).unwrap().expect("unpacked");
+        assert_eq!(std::fs::read_to_string(b.bin("Xvfb")).unwrap(), "one");
+        // Unchanged archive: the unpacked copy is used as it is.
+        std::fs::write(b.bin("Xvfb"), "touched").unwrap();
+        Bundle::unpack_if_needed(&lib).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(b.bin("Xvfb")).unwrap(), "touched");
+        // A new package's archive replaces it.
+        pack("two");
+        let b = Bundle::unpack_if_needed(&lib).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(b.bin("Xvfb")).unwrap(), "two");
+        std::fs::remove_file(lib.join(BUNDLE_ARCHIVE)).unwrap();
+        assert!(Bundle::unpack_if_needed(&lib).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// FR-120 P2 — a socket an X server killed hard left behind (the daemon's

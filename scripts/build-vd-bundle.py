@@ -21,7 +21,10 @@ directory is compiled in as /usr/bin, which a bare host lacks. The bundle
 rewrites that one string to "." and the daemon starts Xvfb with `bin/` as its
 working directory, so it runs the bundle's own xkbcomp.
 
-Usage: build-vd-bundle.py <amd64|arm64> <out.tar.xz>
+Usage: build-vd-bundle.py <amd64|arm64> <out>/meshharbor-vd.so.tar.xz
+
+The package carries the result as usr/lib/meshharbor/meshharbor-vd.so.tar.xz
+(one file: see `virtual_desktop::Bundle` for why), unpacked by the daemon.
 """
 
 import hashlib
