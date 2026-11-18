@@ -42,6 +42,13 @@ pub struct SystemEnrollRequest {
     pub replace: bool,
     #[serde(default)]
     pub calling_uid: Option<u32>,
+    /// Windows: the unprivileged caller's own account SID (`S-1-5-21-…`). The
+    /// elevated step grants exactly this account READ on the system config it
+    /// locks down, so the person's own desktop app keeps working after the
+    /// promotion; it held the same credential in its per-user config before.
+    /// `None` from an older caller: administrators-only, as before.
+    #[serde(default)]
+    pub calling_sid: Option<String>,
     /// Existing per-user `config.toml` snapshot captured by the unprivileged
     /// caller before elevation, merged into `/etc/meshharbor/config.toml` or
     /// `%PROGRAMDATA%\meshharbor\meshharbor\config.toml` so `machine_id`,
@@ -81,6 +88,7 @@ impl SystemEnrollRequest {
         let calling_uid = Some(unsafe { libc::geteuid() });
         #[cfg(not(unix))]
         let calling_uid = None;
+        let calling_sid = own_user_sid().filter(|s| is_user_account_sid(s));
 
         let mut seed_config_toml = None;
         let mut seed_temporary_json = None;
@@ -98,10 +106,100 @@ impl SystemEnrollRequest {
             device_name,
             replace,
             calling_uid,
+            calling_sid,
             seed_config_toml,
             seed_temporary_json,
             seed_history_json,
         })
+    }
+}
+
+/// A local or domain ACCOUNT SID (`S-1-5-21-<a>-<b>-<c>-<rid>`), never a
+/// well-known group such as Everyone or Users. It is spliced into an SDDL
+/// string, so only this exact digits-and-dashes shape is accepted.
+pub fn is_user_account_sid(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("S-1-5-21-") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 10 && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// This process's own account SID string. `None` off Windows or on failure.
+pub fn own_user_sid() -> Option<String> {
+    #[cfg(windows)]
+    {
+        win_sid::own_sid().ok()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[cfg(windows)]
+mod win_sid {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    pub(super) fn own_sid() -> Result<String, String> {
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: the current-process pseudo handle; `token` receives a handle closed below.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(format!(
+                "OpenProcessToken: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let out = sid_of_token(token);
+        // SAFETY: the handle OpenProcessToken returned, closed once.
+        unsafe { CloseHandle(token) };
+        out
+    }
+
+    fn sid_of_token(token: HANDLE) -> Result<String, String> {
+        let mut len: u32 = 0;
+        // SAFETY: the documented size query: no buffer, the size written to `len`.
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len) };
+        if len == 0 {
+            return Err(format!(
+                "GetTokenInformation(TokenUser): {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // In u64s so the TOKEN_USER (which holds a pointer) is aligned.
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        // SAFETY: `buf` holds at least `len` bytes and outlives the call.
+        if unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len) }
+            == 0
+        {
+            return Err(format!(
+                "GetTokenInformation(TokenUser): {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: a TOKEN_USER whose SID points into `buf`, alive below.
+        let sid = unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid };
+        let mut text: windows_sys::core::PWSTR = std::ptr::null_mut();
+        // SAFETY: a valid SID; `text` receives a LocalAlloc'd string, freed below.
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+            return Err(format!(
+                "ConvertSidToStringSidW: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: a NUL-terminated wide string the call allocated.
+        let n = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+        // SAFETY: `n` units were just read from `text`.
+        let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, n) });
+        // SAFETY: the one allocation ConvertSidToStringSidW made, freed once.
+        unsafe { LocalFree(text as _) };
+        Ok(s)
     }
 }
 
@@ -1246,6 +1344,24 @@ end run"#;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_account_sid_may_be_granted_config_read() {
+        assert!(super::is_user_account_sid(
+            "S-1-5-21-1111111111-2222222222-3333333333-1001"
+        ));
+        for bad in [
+            "S-1-1-0",        // Everyone
+            "S-1-5-32-545",   // BUILTIN\\Users
+            "S-1-5-11",       // Authenticated Users
+            "S-1-5-21-1-2-3", // too short
+            "S-1-5-21-1-2-3-4-5",
+            "S-1-5-21-1-2-3-4)(A;;FA;;;WD",
+            "",
+        ] {
+            assert!(!super::is_user_account_sid(bad), "{bad}");
+        }
+    }
+
     use super::*;
 
     fn sample_req() -> SystemEnrollRequest {
@@ -1255,6 +1371,7 @@ mod tests {
             device_name: "workstation-01".to_string(),
             replace: false,
             calling_uid: Some(1000),
+            calling_sid: None,
             seed_config_toml: None,
             seed_temporary_json: None,
             seed_history_json: None,

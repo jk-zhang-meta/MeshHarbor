@@ -44,7 +44,7 @@ async fn execute(request_file: &Path) -> Result<()> {
     #[cfg(windows)]
     let (target_path, existing_sys) = {
         let p = crate::config::machine_global_config_path();
-        let existing = win_security::prepare_and_load_trusted_windows_config(&p)?;
+        let existing = win_security::prepare_and_load_trusted_windows_config(&p, reader_sid(&req))?;
         (p, existing)
     };
     #[cfg(not(windows))]
@@ -167,7 +167,7 @@ async fn execute(request_file: &Path) -> Result<()> {
     ensure_trusted_unix_config_paths(&target_path)?;
     crate::config::save(&target_path, &cfg).context("saving system config")?;
     #[cfg(windows)]
-    win_security::harden_saved_config_subtree(&target_path)?;
+    win_security::harden_saved_config_subtree(&target_path, reader_sid(&req))?;
 
     let history = device_invite::read_history(&target_path);
     if !history.is_empty()
@@ -506,6 +506,18 @@ fn remove_dir_if_empty(dir: &Path) -> Result<bool> {
     }
 }
 
+/// The one account (besides SYSTEM and Administrators) that may READ the system
+/// config: the person who promoted, so their own desktop app, which reads it
+/// for the server and tenant, keeps working (field 11-18: "Connect" answered
+/// "reading config ... Access is denied" right after a promotion). Read only,
+/// never write: nothing the signed-in user can write decides what SYSTEM runs.
+#[cfg(windows)]
+fn reader_sid(req: &personal_system::SystemEnrollRequest) -> Option<&str> {
+    req.calling_sid
+        .as_deref()
+        .filter(|s| personal_system::is_user_account_sid(s))
+}
+
 #[cfg(windows)]
 mod win_security {
     use anyhow::{Context, Result, bail};
@@ -539,6 +551,23 @@ mod win_security {
     /// Administrators own it; SYSTEM and Administrators alone have Full Access; inheritance off.
     pub(super) const DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
     pub(super) const FILE_SDDL: &str = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)";
+
+    /// [`DIR_SDDL`] plus, for a validated account SID, inheritable READ
+    /// (`FR` = FILE_GENERIC_READ: no write, delete, or ACL right).
+    fn config_dir_sddl(reader: Option<&str>) -> String {
+        match reader {
+            Some(sid) => format!("{DIR_SDDL}(A;OICI;FR;;;{sid})"),
+            None => DIR_SDDL.to_string(),
+        }
+    }
+
+    /// [`FILE_SDDL`] plus the same READ for a validated account SID.
+    fn config_file_sddl(reader: Option<&str>) -> String {
+        match reader {
+            Some(sid) => format!("{FILE_SDDL}(A;;FR;;;{sid})"),
+            None => FILE_SDDL.to_string(),
+        }
+    }
     /// `%ProgramFiles%\MeshHarbor`: Administrators own it; SYSTEM + Administrators Full Access;
     /// Builtin Users read+execute (`0x1200a9`); inheritance off.
     pub(super) const PF_DIR_SDDL: &str =
@@ -975,7 +1004,10 @@ mod win_security {
 
     pub(super) fn prepare_and_load_trusted_windows_config(
         config_path: &Path,
+        reader: Option<&str>,
     ) -> Result<Option<crate::config::AgentConfig>> {
+        let dir_sddl = config_dir_sddl(reader);
+        let file_sddl = config_file_sddl(reader);
         enable_admin_security_privileges();
         if let Some(link) = meshharbor_node_core::recording_dir::link_component(config_path) {
             bail!(
@@ -1004,7 +1036,7 @@ mod win_security {
         // `config_dir` (`%ProgramData%\meshharbor\meshharbor`): if already present, must
         // ALREADY have both trusted owner AND zero non-admin writers before anything inside
         // it is trusted.
-        ensure_trusted_directory(config_dir, DIR_SDDL, true)
+        ensure_trusted_directory(config_dir, &dir_sddl, true)
             .with_context(|| untrusted_hint(config_dir))?;
 
         for sidecar in [
@@ -1014,7 +1046,7 @@ mod win_security {
         ] {
             if let Some((f, _len)) = open_verified_private_file(&sidecar)? {
                 drop(f);
-                apply_sddl_to_path(&sidecar, FILE_SDDL)?;
+                apply_sddl_to_path(&sidecar, &file_sddl)?;
             }
         }
 
@@ -1034,20 +1066,25 @@ mod win_security {
             .read_to_string(&mut raw)
             .with_context(|| format!("reading verified system config {}", config_path.display()))?;
         drop(file);
-        apply_sddl_to_path(config_path, FILE_SDDL)?;
+        apply_sddl_to_path(config_path, &file_sddl)?;
         let parsed: crate::config::AgentConfig = toml::from_str(&raw)
             .with_context(|| format!("parsing verified system config {}", config_path.display()))?;
         Ok(Some(parsed))
     }
 
-    pub(super) fn harden_saved_config_subtree(config_path: &Path) -> Result<()> {
+    pub(super) fn harden_saved_config_subtree(
+        config_path: &Path,
+        reader: Option<&str>,
+    ) -> Result<()> {
+        let dir_sddl = config_dir_sddl(reader);
+        let file_sddl = config_file_sddl(reader);
         let Some(config_dir) = config_path.parent() else {
             return Ok(());
         };
         if let Some(root_dir) = config_dir.parent() {
             ensure_trusted_directory(root_dir, DIR_SDDL, true)?;
         }
-        ensure_trusted_directory(config_dir, DIR_SDDL, true)?;
+        ensure_trusted_directory(config_dir, &dir_sddl, true)?;
         for file_path in [
             config_path.to_path_buf(),
             config_path.with_extension("toml.prev"),
@@ -1055,7 +1092,7 @@ mod win_security {
             meshharbor_node_core::device_invite::history_path(config_path),
         ] {
             if file_path.exists() {
-                apply_sddl_to_path(&file_path, FILE_SDDL)?;
+                apply_sddl_to_path(&file_path, &file_sddl)?;
                 let verified = open_verified_private_file(&file_path)?.ok_or_else(|| {
                     anyhow::anyhow!("{} disappeared during security verification", file_path.display())
                 })?;
@@ -1957,6 +1994,7 @@ mod tests {
             device_name: "box".into(),
             replace: false,
             calling_uid: Some(1000),
+            calling_sid: None,
             seed_config_toml: Some("not = [valid toml".into()),
             seed_temporary_json: None,
             seed_history_json: None,
