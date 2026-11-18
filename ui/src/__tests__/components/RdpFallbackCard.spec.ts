@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
 import {
@@ -143,57 +143,50 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
     )
   })
 
-  describe('3. Never auto-switches without per-device confirmation in viewer localStorage', () => {
-    it('does not auto-invoke cmd_open_rdp when per-device toggle is off (default)', async () => {
+  describe('3. FR-120: switches to RDP by itself; a viewer opt-out brings the buttons back', () => {
+    it('auto-invokes cmd_open_rdp by default, with no chooser, and honours a per-device opt-out', async () => {
       const openRdpSpy = vi.fn(async () => undefined)
       ;(window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__ = {
         openRdp: openRdpSpy,
       }
 
-      expect(getDeviceAutoRdpFallback(DEVICE_ID)).toBe(false)
-
-      const wrapper = mount(RdpFallbackCard, {
-        props: {
-          phase: 'connected',
-          mediaUnavailableReason: 'no_display',
-          mediaUnavailableHint: 'No physical display attached',
-          rdpAvailable: true,
-          rdpMeshReachable: true,
-          rdpPort: 3389,
-          deviceId: DEVICE_ID,
-          deviceName: DEVICE_NAME,
-        },
-      })
-      await nextTick()
-
-      // Must NOT auto-switch when toggle is off
-      expect(openRdpSpy).not.toHaveBeenCalled()
-
-      // Enabling the per-device toggle requires confirming the screen-lock warning first
-      const toggle = wrapper.find('[data-test="rdp-auto-toggle"]')
-      ;(toggle.element as HTMLInputElement).checked = true
-      await toggle.trigger('change')
-
-      // Still false until confirmed
-      expect(getDeviceAutoRdpFallback(DEVICE_ID)).toBe(false)
-      const prompt = wrapper.find('[data-test="rdp-auto-confirm-prompt"]')
-      expect(prompt.exists()).toBe(true)
-      expect(prompt.text()).toContain(RDP_SCREEN_LOCK_WARNING)
-
-      // Cancel keeps it off
-      await wrapper.find('[data-test="rdp-auto-confirm-cancel"]').trigger('click')
-      expect(getDeviceAutoRdpFallback(DEVICE_ID)).toBe(false)
-      expect(wrapper.find('[data-test="rdp-auto-confirm-prompt"]').exists()).toBe(false)
-
-      // Try again and accept confirmation -> saved for THIS device only
-      ;(toggle.element as HTMLInputElement).checked = true
-      await toggle.trigger('change')
-      await wrapper.find('[data-test="rdp-auto-confirm-accept"]').trigger('click')
       expect(getDeviceAutoRdpFallback(DEVICE_ID)).toBe(true)
-      expect(getDeviceAutoRdpFallback('66366f7a7230306d6c657299')).toBe(false)
 
-      // Direct helper call without confirmation is also rejected
-      expect(setDeviceAutoRdpFallback('66366f7a7230306d6c657299', true, false)).toBe(false)
+      const props = {
+        phase: 'connected',
+        mediaUnavailableReason: 'no_display',
+        mediaUnavailableHint: 'No physical display attached',
+        rdpAvailable: true,
+        rdpMeshReachable: true,
+        rdpPort: 3389,
+        deviceId: DEVICE_ID,
+        deviceName: DEVICE_NAME,
+      }
+      const wrapper = mount(RdpFallbackCard, { props })
+      await flushPromises()
+
+      expect(openRdpSpy).toHaveBeenCalledTimes(1)
+      expect(wrapper.find('[data-test="rdp-auto-status"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-fallback-connect-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-fallback-retry-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-auto-confirm-prompt"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="rdp-screen-lock-warning"]').text()).toContain(
+        RDP_SCREEN_LOCK_WARNING,
+      )
+
+      // The opt-out is per device and per viewer: this device only.
+      expect(setDeviceAutoRdpFallback(DEVICE_ID, false)).toBe(false)
+      expect(getDeviceAutoRdpFallback('66366f7a7230306d6c657299')).toBe(true)
+      openRdpSpy.mockClear()
+      const optedOut = mount(RdpFallbackCard, { props })
+      await flushPromises()
+      expect(openRdpSpy).not.toHaveBeenCalled()
+      expect(optedOut.find('[data-test="rdp-fallback-connect-btn"]').exists()).toBe(true)
+      expect(optedOut.find('[data-test="rdp-fallback-retry-btn"]').exists()).toBe(true)
+
+      // Clearing the opt-out returns to the default.
+      expect(setDeviceAutoRdpFallback(DEVICE_ID, true)).toBe(true)
     })
 
     it('invokes cmd_open_rdp when user explicitly clicks "用 RDP 连接" with desktop bridge', async () => {
@@ -202,6 +195,8 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         core: { invoke: invokeSpy },
       }
       expect(hasDesktopRdpBridge()).toBe(true)
+      // The manual button is what an opted-out viewer gets.
+      setDeviceAutoRdpFallback(DEVICE_ID, false)
 
       const wrapper = mount(RdpFallbackCard, {
         props: {
@@ -262,11 +257,18 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(notice.exists()).toBe(true)
       expect(notice.text()).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
 
-      await wrapper.find('[data-test="rdp-fallback-connect-btn"]').trigger('click')
-      await nextTick()
+      // The automatic launch ran and failed: its error shows, and the buttons
+      // come back as the recovery.
+      await flushPromises()
+      expect(openRdpErrSpy).toHaveBeenCalledTimes(1)
       const errEl = wrapper.find('[data-test="rdp-fallback-bridge-error"]')
       expect(errEl.exists()).toBe(true)
       expect(errEl.text()).toContain('经网格无法连到目标 RDP 端口')
+      expect(wrapper.find('[data-test="rdp-auto-status"]').exists()).toBe(false)
+
+      await wrapper.find('[data-test="rdp-fallback-connect-btn"]').trigger('click')
+      await flushPromises()
+      expect(openRdpErrSpy).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -499,7 +501,9 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       })
       expect(wrapper.find('[data-test="rdp-mesh-hint"]').exists()).toBe(false)
       expect(wrapper.find('[data-test="rdp-fallback-no-bridge"]').exists()).toBe(true)
-      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(true)
+      // No bridge, so nothing automatic can run here: the retry stays.
+      expect(wrapper.find('[data-test="rdp-fallback-retry-btn"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
     })
 
     it('desktop menu: hint instead of "Connect with RDP" when not reachable, and no dropdown without RDP', async () => {

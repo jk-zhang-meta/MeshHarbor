@@ -424,35 +424,39 @@ function storageKeyForDevice(deviceId: string): string {
 }
 
 /**
- * Read the viewer-local per-device "自动改用 RDP" setting from `localStorage`.
- * Defaults to `false`. Never reads any server-pushed field.
+ * Whether the viewer switches to RDP by itself for this device when remote
+ * control cannot show a screen. FR-120: ON unless this viewer opted the device
+ * out (`localStorage` value `0`). The operator's rule is that Connect never
+ * asks which transport to use; the screen-lock effect is stated in the status
+ * line instead of a confirm dialog. Never reads any server-pushed field.
  */
 export function getDeviceAutoRdpFallback(
   deviceId: string | null | undefined,
   storage: Pick<Storage, 'getItem'> | null = typeof window !== 'undefined' ? window.localStorage : null,
 ): boolean {
-  if (!deviceId || typeof deviceId !== 'string' || !deviceId.trim() || !storage) {
+  if (!deviceId || typeof deviceId !== 'string' || !deviceId.trim()) {
     return false
   }
+  if (!storage) {
+    return true
+  }
   try {
-    return storage.getItem(storageKeyForDevice(deviceId)) === '1'
+    return storage.getItem(storageKeyForDevice(deviceId)) !== '0'
   } catch {
-    return false
+    return true
   }
 }
 
 /**
- * Update the viewer-local per-device "自动改用 RDP" setting in `localStorage`.
- *
- * Contract (`V0011-1794327403` §5(c)):
- * - Turning it ON (`enabled === true`) requires `confirmedScreenLockWarning === true`
- *   (the user must explicitly confirm the screen-lock warning first). If
- *   `confirmedScreenLockWarning` is `false`, the setting stays `false`.
+ * Set this viewer's per-device auto-RDP choice: `false` stores the opt-out
+ * (`0`), `true` clears it back to the default (on). Returns the effective value.
+ * `_confirmedScreenLockWarning` is kept for callers of the pre-FR-120 shape and
+ * no longer gates anything.
  */
 export function setDeviceAutoRdpFallback(
   deviceId: string | null | undefined,
   enabled: boolean,
-  confirmedScreenLockWarning: boolean,
+  _confirmedScreenLockWarning = true,
   storage: Pick<Storage, 'setItem' | 'removeItem' | 'getItem'> | null = typeof window !== 'undefined'
     ? window.localStorage
     : null,
@@ -462,18 +466,15 @@ export function setDeviceAutoRdpFallback(
   }
   const key = storageKeyForDevice(deviceId)
   try {
-    if (!enabled) {
+    if (enabled) {
       storage.removeItem(key)
-      return false
+    } else {
+      storage.setItem(key, '0')
     }
-    if (!confirmedScreenLockWarning) {
-      return getDeviceAutoRdpFallback(deviceId, storage)
-    }
-    storage.setItem(key, '1')
-    return true
   } catch {
-    return false
+    // Storage refused: the effective value is whatever it still says.
   }
+  return getDeviceAutoRdpFallback(deviceId, storage)
 }
 
 interface DesktopBridgeWindow {

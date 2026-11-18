@@ -6,7 +6,7 @@
     role="region"
     aria-label="改用 RDP"
   >
-    <div class="rc-rdp-fallback-title">改用 RDP</div>
+    <div class="rc-rdp-fallback-title">{{ autoLaunched ? '已自动改用 RDP' : '改用 RDP' }}</div>
     <p class="rc-rdp-fallback-reason" data-test="rdp-fallback-reason">
       {{ displayReason }}
     </p>
@@ -24,7 +24,10 @@
       {{ RDP_UNPINNED_CERT_MSTSC_NOTICE }}
     </p>
 
-    <div class="rc-rdp-fallback-actions">
+    <p v-if="autoLaunched" class="rc-rdp-auto-status" data-test="rdp-auto-status">
+      远控无法显示这台设备的画面，已自动用 RDP 打开。
+    </p>
+    <div v-if="showManualActions" class="rc-rdp-fallback-actions">
       <button
         v-if="hasBridge && meshReachable"
         type="button"
@@ -68,48 +71,6 @@
       </div>
     </div>
 
-    <div v-if="meshReachable" class="rc-rdp-auto-row">
-      <label class="rc-rdp-auto-label">
-        <input
-          type="checkbox"
-          data-test="rdp-auto-toggle"
-          :checked="autoFallbackEnabled"
-          @change="onToggleAutoFallback"
-        />
-        <span>自动改用 RDP（仅针对此设备）</span>
-      </label>
-    </div>
-
-    <div
-      v-if="confirmingAutoFallback"
-      class="rc-rdp-auto-confirm"
-      data-test="rdp-auto-confirm-prompt"
-      role="alertdialog"
-      aria-label="确认开启自动改用 RDP"
-    >
-      <p class="rc-rdp-auto-confirm-text">
-        注意：{{ RDP_SCREEN_LOCK_WARNING }}。确认要为此设备开启“自动改用 RDP”吗？
-      </p>
-      <div class="rc-rdp-auto-confirm-actions">
-        <button
-          type="button"
-          class="rc-rdp-btn rc-rdp-btn-primary"
-          data-test="rdp-auto-confirm-accept"
-          @click="onConfirmAutoFallback"
-        >
-          确认开启
-        </button>
-        <button
-          type="button"
-          class="rc-rdp-btn rc-rdp-btn-secondary"
-          data-test="rdp-auto-confirm-cancel"
-          @click="onCancelAutoFallback"
-        >
-          取消
-        </button>
-      </div>
-    </div>
-
     <p v-if="bridgeError" class="rc-rdp-bridge-error" data-test="rdp-fallback-bridge-error">
       {{ bridgeError }}
     </p>
@@ -126,7 +87,6 @@ import {
   getDeviceAutoRdpFallback,
   hasDesktopRdpBridge,
   invokeDesktopOpenRdp,
-  setDeviceAutoRdpFallback,
   shouldShowRdpFallbackCard,
 } from '@/utils/rdpFallback'
 
@@ -168,9 +128,10 @@ const emit = defineEmits<{
 const busy = ref(false)
 const copied = ref(false)
 const bridgeError = ref<string | null>(null)
-const confirmingAutoFallback = ref(false)
 const autoFallbackEnabled = ref(getDeviceAutoRdpFallback(props.deviceId))
 const autoTriggeredForCurrentFailure = ref(false)
+/** FR-120 — RDP opened by itself for the current failure; no chooser to show. */
+const autoLaunched = ref(false)
 
 const visible = computed(() =>
   shouldShowRdpFallbackCard({
@@ -185,6 +146,16 @@ const hasBridge = computed(() => hasDesktopRdpBridge())
 const hasPinnedCert = computed(() => Boolean(props.rdpCertSha256?.trim()))
 // RDP over the mesh: an RDP server the overlay cannot deliver to is not offered.
 const meshReachable = computed(() => props.rdpMeshReachable === true)
+// Buttons only when the automatic path is not taken: it cannot run here (no
+// desktop bridge, or RDP not reachable over the mesh), this viewer opted the
+// device out, or the automatic launch failed (then they are the recovery).
+const showManualActions = computed(
+  () =>
+    !autoLaunched.value &&
+    (!(hasBridge.value && meshReachable.value) ||
+      !autoFallbackEnabled.value ||
+      bridgeError.value !== null),
+)
 
 const displayReason = computed(() => {
   if (props.mediaUnavailableHint?.trim()) {
@@ -210,8 +181,8 @@ watch(
   () => props.deviceId,
   (id) => {
     autoFallbackEnabled.value = getDeviceAutoRdpFallback(id)
-    confirmingAutoFallback.value = false
     autoTriggeredForCurrentFailure.value = false
+    autoLaunched.value = false
   },
 )
 
@@ -220,6 +191,7 @@ watch(
   async (isVisible) => {
     if (!isVisible) {
       autoTriggeredForCurrentFailure.value = false
+      autoLaunched.value = false
       bridgeError.value = null
       return
     }
@@ -246,6 +218,7 @@ async function triggerOpenRdp(auto: boolean) {
       port: props.rdpPort ?? 3389,
       certSha256: props.rdpCertSha256,
     })
+    if (auto) autoLaunched.value = true
     emit('switch-to-rdp', { auto })
   } catch (err) {
     bridgeError.value = err instanceof Error ? err.message : String(err)
@@ -256,28 +229,6 @@ async function triggerOpenRdp(auto: boolean) {
 
 async function onClickConnectRdp() {
   await triggerOpenRdp(false)
-}
-
-function onToggleAutoFallback(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  if (input.checked) {
-    // Revert checkbox until the user explicitly confirms the screen-lock warning.
-    input.checked = false
-    confirmingAutoFallback.value = true
-  } else {
-    confirmingAutoFallback.value = false
-    autoFallbackEnabled.value = setDeviceAutoRdpFallback(props.deviceId, false, false)
-  }
-}
-
-function onConfirmAutoFallback() {
-  confirmingAutoFallback.value = false
-  autoFallbackEnabled.value = setDeviceAutoRdpFallback(props.deviceId, true, true)
-}
-
-function onCancelAutoFallback() {
-  confirmingAutoFallback.value = false
-  autoFallbackEnabled.value = getDeviceAutoRdpFallback(props.deviceId)
 }
 
 async function onCopyCliCommand() {
@@ -390,37 +341,10 @@ async function onCopyCliCommand() {
   color: #93c5fd;
 }
 
-.rc-rdp-auto-row {
-  margin-top: 10px;
-  font-size: 12.5px;
-  color: #d1d5db;
-}
 
-.rc-rdp-auto-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-}
 
-.rc-rdp-auto-confirm {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 6px;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-}
 
-.rc-rdp-auto-confirm-text {
-  font-size: 12.5px;
-  color: #fde68a;
-  margin: 0 0 8px;
-}
 
-.rc-rdp-auto-confirm-actions {
-  display: flex;
-  gap: 8px;
-}
 
 .rc-rdp-bridge-error {
   margin: 8px 0 0;
@@ -438,5 +362,10 @@ async function onCopyCliCommand() {
   margin: -4px 0 10px;
   font-size: 12px;
   color: #fcd34d;
+}
+.rc-rdp-auto-status {
+  font-size: 13px;
+  color: #d1d5db;
+  margin: 0 0 10px;
 }
 </style>
