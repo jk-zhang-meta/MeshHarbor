@@ -4103,7 +4103,7 @@ fn virtual_desktop_requested() -> bool {
 #[cfg(target_os = "linux")]
 fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDesktop>> {
     if !virtual_desktop_requested() {
-        return Ok(None);
+        return Ok(maybe_start_automatic_virtual_desktop());
     }
     let startup = node_env("VIRTUAL_DESKTOP_STARTUP")
         .map(|s| {
@@ -4118,6 +4118,7 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
             .unwrap_or_else(|| "1920x1080".to_string()),
         wm: node_env("VIRTUAL_DESKTOP_WM").unwrap_or_else(|| "openbox".to_string()),
         startup,
+        cookie_auth: false,
     };
     let vd = virtual_desktop::start(&cfg).context("starting virtual desktop")?;
     // Point capture at the virtual display + (by default) pin media to TURNS/TCP.
@@ -4151,6 +4152,49 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
         "virtual-desktop active — capturing it"
     );
     Ok(Some(vd))
+}
+
+/// FR-120 P2 — a host with no screen at all (no display manager, no
+/// graphical session, no X server, no display in the daemon's environment)
+/// gets a virtual desktop by itself, from the host's X packages or the
+/// package's own bundle, so Connect shows a desktop instead of "no display".
+/// Unlike the configured mode it never fails the daemon: anything that stops
+/// it leaves the host as it was, with `no_display` on Connect. Its X server is
+/// guarded by a private cookie, never `-ac`, and media is not pinned to TCP.
+/// `MESHHARBORD_VIRTUAL_DESKTOP=0` is the kill switch.
+#[cfg(target_os = "linux")]
+fn maybe_start_automatic_virtual_desktop() -> Option<virtual_desktop::VirtualDesktop> {
+    let facts = virtual_desktop::host_facts();
+    if let Err(why) = virtual_desktop::auto_decision(&facts) {
+        tracing::debug!(why, "virtual-desktop: no automatic desktop (FR-120)");
+        return None;
+    }
+    let bundle = virtual_desktop::Bundle::find();
+    let cfg = virtual_desktop::auto_config(bundle.as_ref());
+    match virtual_desktop::start(&cfg) {
+        Ok(vd) => {
+            // SAFETY (edition 2024): as in `maybe_start_virtual_desktop`, this
+            // runs early in `run_cmd`, before the session tasks that read them.
+            unsafe {
+                std::env::set_var("DISPLAY", vd.display());
+                if let Some(auth) = virtual_desktop::xauthority() {
+                    std::env::set_var("XAUTHORITY", auth);
+                }
+            }
+            virtual_desktop::mark_auto_started();
+            tracing::info!(
+                display = vd.display(),
+                bundled = bundle.is_some(),
+                wm = %cfg.wm,
+                "virtual-desktop: this host has no screen, so it got one by itself — capturing it (FR-120)"
+            );
+            Some(vd)
+        }
+        Err(e) => {
+            tracing::info!(error = %format!("{e:#}"), bundled = bundle.is_some(), "virtual-desktop: this host has no screen, and no desktop could be started for it (FR-120)");
+            None
+        }
+    }
 }
 
 /// Resolves when the OS asks this process to stop — SIGTERM on Unix.

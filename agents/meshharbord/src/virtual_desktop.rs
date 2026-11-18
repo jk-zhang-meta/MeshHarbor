@@ -33,9 +33,27 @@ const X11_UNIX_DIR: &str = "/tmp/.X11-unix";
 /// disagreed: one skipped `node_env`'s config fallback, so a knob set through
 /// `mh config` was seen by one and not the other.
 pub fn requested() -> bool {
+    explicit_setting() == Some(true) || AUTO_STARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// FR-120 P2 — what the operator set, if anything: `Some(true)` for `1` /
+/// `true`, `Some(false)` for any other value (`0` is the kill switch for the
+/// automatic desktop), `None` when unset, which lets a headless host start
+/// one by itself ([`auto_decision`]).
+pub fn explicit_setting() -> Option<bool> {
     tunnel_core::env::node_env("VIRTUAL_DESKTOP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+}
+
+/// FR-120 P2 — this daemon started its virtual desktop by itself, because the
+/// host has no screen of its own. Set once, at startup, only after the desktop
+/// came up; from then on [`requested`] answers yes, so the indicator, the
+/// recorder and the capture cascade treat it exactly as the configured one.
+static AUTO_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// FR-120 P2 — record that the automatic desktop is up (see [`AUTO_STARTED`]).
+pub fn mark_auto_started() {
+    AUTO_STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// How long the graceful teardown waits after SIGTERM before it SIGKILLs
@@ -71,6 +89,215 @@ pub struct Config {
     pub resolution: String,
     pub wm: String,
     pub startup: Vec<String>,
+    /// FR-120 P2 — guard the X server with a private MIT cookie instead of
+    /// `-ac`. The automatic desktop always does: it comes up by itself on
+    /// shared servers, where `-ac` would let any other local account connect
+    /// to the display and type into this daemon's desktop. The configured
+    /// mode keeps `-ac`, because its desktop may be owned by another user who
+    /// has no copy of the cookie.
+    pub cookie_auth: bool,
+}
+
+// ---------------------------------------------------------------------------
+// FR-120 P2 — a headless host gets a desktop by itself
+// ---------------------------------------------------------------------------
+
+/// What the automatic decision is made from, read once at startup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostFacts {
+    /// `VIRTUAL_DESKTOP` as set by the operator ([`explicit_setting`]).
+    pub explicit: Option<bool>,
+    /// A display manager is enabled (`display-manager.service`): this is a
+    /// desktop machine whose login screen may simply not be up YET — a root
+    /// daemon starts before GDM, and taking `DISPLAY` then would show a
+    /// virtual desktop instead of the person's.
+    pub display_manager: bool,
+    /// logind shows an active X11 or Wayland session (a person, or xrdp).
+    pub graphical_session: bool,
+    /// The daemon itself was started with `DISPLAY` or `WAYLAND_DISPLAY`.
+    pub display_env: bool,
+    /// An X server answers on `/tmp/.X11-unix` (a stale socket does not count).
+    pub live_x_server: bool,
+    /// The daemon runs as root. A desktop it started would be root's, and
+    /// every remote-control grant would become a root shell, which no
+    /// SSH gate was asked about; a system install keeps `no_display`.
+    pub root: bool,
+}
+
+/// FR-120 P2 — should this daemon start its own desktop, with nobody asking?
+/// `Ok(())` when yes; otherwise the reason it does not, for the log. Only a
+/// host with no screen at all qualifies: anything that may show a person's
+/// desktop, now or after a login, keeps the capture cascade as it was.
+pub fn auto_decision(f: &HostFacts) -> Result<(), &'static str> {
+    match f.explicit {
+        Some(true) => return Err("configured (VIRTUAL_DESKTOP=1)"),
+        Some(false) => return Err("switched off (VIRTUAL_DESKTOP=0)"),
+        None => {}
+    }
+    if f.display_manager {
+        return Err("a display manager is enabled");
+    }
+    if f.graphical_session {
+        return Err("logind shows a graphical session");
+    }
+    if f.display_env {
+        return Err("the daemon has a display of its own (DISPLAY / WAYLAND_DISPLAY)");
+    }
+    if f.live_x_server {
+        return Err("an X server is already running");
+    }
+    if f.root {
+        return Err("the daemon runs as root (a system install)");
+    }
+    Ok(())
+}
+
+/// FR-120 P2 — [`HostFacts`] read from this host.
+#[cfg(target_os = "linux")]
+pub fn host_facts() -> HostFacts {
+    let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    HostFacts {
+        explicit: explicit_setting(),
+        display_manager: ["/etc/systemd/system/display-manager.service"]
+            .iter()
+            .any(|p| Path::new(p).exists()),
+        graphical_session: crate::companion::graphical_session().is_ok(),
+        display_env: env_set("DISPLAY") || env_set("WAYLAND_DISPLAY"),
+        live_x_server: live_x_server(Path::new(X11_UNIX_DIR)),
+        // SAFETY: `geteuid` reads the caller's own credentials; it cannot fail.
+        root: unsafe { libc::geteuid() } == 0,
+    }
+}
+
+/// Does any X server answer on a socket in `dir`? A server killed hard leaves
+/// its socket behind, and the daemon's own desktop from before a restart is
+/// exactly that, so only a socket that accepts a connection counts.
+#[cfg(unix)]
+fn live_x_server(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(|e| e.ok()).any(|e| {
+        e.file_name().to_string_lossy().starts_with('X')
+            && std::os::unix::net::UnixStream::connect(e.path()).is_ok()
+    })
+}
+
+/// FR-120 P3 — the desktop runtime the package carries, so a host with no X
+/// packages, and an account that cannot install any, still gets a desktop:
+/// `<exe>/../lib/meshharbor/vd/` (`/usr/lib/meshharbor/vd` for a system
+/// install, `~/.local/lib/meshharbor/vd` for a per-user one), next to the
+/// libraries the daemon already ships there.
+///
+/// Layout: `bin/{Xvfb,xkbcomp,twm,xterm}`, `lib/` (their libraries, found
+/// through each binary's own `RUNPATH`, never `LD_LIBRARY_PATH`, which would
+/// leak into every program started from the desktop's terminal), and
+/// `share/X11/xkb`. The bundled `Xvfb` looks for `xkbcomp` in its working
+/// directory (the package build points it there), so it runs from `bin/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bundle {
+    pub root: std::path::PathBuf,
+}
+
+impl Bundle {
+    /// The bundle next to the running executable, when its X server is there.
+    pub fn find() -> Option<Self> {
+        let exe = std::env::current_exe().ok()?;
+        Self::at(exe.parent()?.join("../lib/meshharbor/vd"))
+    }
+
+    fn at(root: std::path::PathBuf) -> Option<Self> {
+        let root = root.canonicalize().ok()?;
+        root.join("bin/Xvfb").is_file().then_some(Self { root })
+    }
+
+    pub fn bin(&self, name: &str) -> std::path::PathBuf {
+        self.root.join("bin").join(name)
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.bin(name).is_file()
+    }
+
+    fn xkb_dir(&self) -> Option<std::path::PathBuf> {
+        let d = self.root.join("share/X11/xkb");
+        d.is_dir().then_some(d)
+    }
+}
+
+/// FR-120 P2 — the automatic desktop's configuration: the host's own window
+/// manager and terminal where it has them, else the bundle's, and a terminal
+/// open on it, since a bare root window gives the person nothing to do.
+pub fn auto_config(bundle: Option<&Bundle>) -> Config {
+    let pick = |host: &[&str], bundled: &str| -> Option<String> {
+        host.iter()
+            .find(|b| binary_on_path(b).is_some())
+            .map(|b| b.to_string())
+            .or_else(|| {
+                bundle
+                    .filter(|b| b.has(bundled))
+                    .map(|b| b.bin(bundled).to_string_lossy().into_owned())
+            })
+    };
+    let wm = pick(&["openbox", "twm"], "twm").unwrap_or_else(|| "openbox".to_string());
+    let terminal = pick(&["x-terminal-emulator", "xterm"], "xterm");
+    Config {
+        resolution: tunnel_core::env::node_env("VIRTUAL_DESKTOP_RESOLUTION")
+            .unwrap_or_else(|| "1920x1080".to_string()),
+        wm,
+        startup: terminal.into_iter().collect(),
+        cookie_auth: true,
+    }
+}
+
+/// A private `Xauthority` holding one MIT-MAGIC-COOKIE-1 for `display`, in a
+/// fresh 0700 directory of this daemon's own. Returns the file's path.
+///
+/// The entry is `FamilyWild`, so it matches the display over every local
+/// transport (the socket in `/tmp/.X11-unix` and Linux's abstract one).
+#[cfg(unix)]
+fn write_xauthority(display: &str) -> Result<std::path::PathBuf> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    let number = display.trim_start_matches(':');
+    // SAFETY: `geteuid` reads the caller's own credentials; it cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let dir = std::env::temp_dir().join(format!("meshharbor-vd-{uid}-{number}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    let cookie: [u8; 16] = rand::random();
+    let path = dir.join("Xauthority");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    f.write_all(&xauth_entry(number, &cookie))?;
+    Ok(path)
+}
+
+/// One `.Xauthority` record: family, then address, display number, auth name
+/// and data, each a big-endian u16 length and its bytes.
+fn xauth_entry(number: &str, cookie: &[u8]) -> Vec<u8> {
+    const FAMILY_WILD: u16 = 0xFFFF;
+    let mut out = FAMILY_WILD.to_be_bytes().to_vec();
+    for field in [&b""[..], number.as_bytes(), b"MIT-MAGIC-COOKIE-1", cookie] {
+        out.extend_from_slice(&(field.len() as u16).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+
+/// FR-120 P2 — the cookie file of the running desktop, when it has one: the
+/// daemon exports it as `XAUTHORITY` next to `DISPLAY`.
+static XAUTHORITY: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn xauthority() -> Option<std::path::PathBuf> {
+    XAUTHORITY.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// FR-108 P2 — the X server behind the desktop. Only Xorg with the dummy
@@ -179,8 +406,14 @@ EndSection
 /// an input device's) leaks into the desktop. Like Xvfb's: no TCP, no access
 /// control on the loopback socket, and no screen saver. `-dpms` too, since
 /// Xorg, unlike Xvfb, carries DPMS and would blank the screen.
-fn xorg_args(display: &str, conf: &Path, configdir: &Path, log: &Path) -> Vec<String> {
-    vec![
+fn xorg_args(
+    display: &str,
+    conf: &Path,
+    configdir: &Path,
+    log: &Path,
+    auth: Option<&Path>,
+) -> Vec<String> {
+    let mut a = vec![
         display.to_string(),
         "-config".into(),
         conf.display().to_string(),
@@ -191,13 +424,23 @@ fn xorg_args(display: &str, conf: &Path, configdir: &Path, log: &Path) -> Vec<St
         "-noreset".into(),
         "-nolisten".into(),
         "tcp".into(),
-        "-ac".into(),
         "-s".into(),
         "0".into(),
         "-dpms".into(),
         "-novtswitch".into(),
         "-sharevts".into(),
-    ]
+    ];
+    a.extend(access_args(auth));
+    a
+}
+
+/// FR-120 P2 — who may connect: the holders of the cookie in `auth`, or
+/// (`None`, the configured mode as before) anyone on this host (`-ac`).
+fn access_args(auth: Option<&Path>) -> Vec<String> {
+    match auth {
+        Some(file) => vec!["-auth".into(), file.display().to_string()],
+        None => vec!["-ac".into()],
+    }
 }
 
 /// Where the desktop's Xorg keeps its config and log: private to the daemon.
@@ -465,6 +708,15 @@ pub fn teardown() {
         };
         let Some(handle) = handle else { return };
         kill_tree(&handle.roots, handle.pgid, TEARDOWN_GRACE);
+        // FR-120 P2 — and its cookie with it.
+        if let Some(dir) = XAUTHORITY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .and_then(|a| a.parent().map(Path::to_path_buf))
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         // FR-108 P2 — the desktop is gone, so nothing is left to switch.
         if let Some((dpy, server)) = SERVER.lock().unwrap_or_else(|e| e.into_inner()).take()
             && server == Server::XorgDummy
@@ -686,11 +938,47 @@ fn kill_tree_with(p: &mut dyn Procs, roots: &[i32], pgid: Option<i32>, grace: Du
 /// Bring up Xvfb + WM + startup apps. Errors (with an actionable message)
 /// if the required binaries are missing or Xvfb doesn't come up.
 pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
-    preflight(cfg)?;
+    let bundle = Bundle::find();
+    preflight(cfg, bundle.as_ref())?;
     let (w, h) = parse_resolution(&cfg.resolution);
     let mut children = Vec::new();
 
-    let (x, server, dpy) = spawn_x_server(w, h)?;
+    let (x, server, dpy, auth) = spawn_x_server(w, h, cfg.cookie_auth, bundle.as_ref())?;
+    *XAUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = auth.clone();
+    // FR-120 P3 — the desktop's own programs find the bundled ones (the
+    // twm menu's terminal) by name; the bundle is never put first.
+    let path_env = bundle.as_ref().map(|b| {
+        let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default();
+        dirs.push(b.root.join("bin"));
+        std::env::join_paths(dirs).unwrap_or_default()
+    });
+    let home = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir());
+    // libX11's locale database, which a host with no X packages lacks; twm
+    // cannot make a font set without one.
+    let locale_dir = bundle
+        .as_ref()
+        .map(|b| b.root.join("share/X11/locale"))
+        .filter(|d| d.is_dir() && !Path::new("/usr/share/X11/locale").is_dir());
+    let desktop_env = |cmd: &mut Command| {
+        cmd.env("DISPLAY", &dpy)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(a) = &auth {
+            cmd.env("XAUTHORITY", a);
+        }
+        if let Some(p) = &path_env {
+            cmd.env("PATH", p);
+        }
+        if let Some(h) = &home {
+            cmd.current_dir(h);
+        }
+        if let Some(l) = &locale_dir {
+            cmd.env("XLOCALEDIR", l);
+        }
+        with_wslg_pulse(cmd);
+    };
     // The desktop's group id is the X server's pid (a group leader's pgid ==
     // its pid).
     let pgid = group_of(&x);
@@ -698,12 +986,19 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
     *SERVER.lock().unwrap_or_else(|e| e.into_inner()) = Some((dpy.clone(), server));
     info!(display = dpy.as_str(), resolution = %cfg.resolution, ?server, "virtual-desktop: X server up");
 
-    let mut wm_cmd = Command::new(&cfg.wm);
-    wm_cmd
-        .env("DISPLAY", &dpy)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    with_wslg_pulse(&mut wm_cmd);
+    let wm = resolve_binary(&cfg.wm, bundle.as_ref());
+    let mut wm_cmd = Command::new(&wm);
+    desktop_env(&mut wm_cmd);
+    // FR-120 P2 — twm with no config of its own asks the person to place
+    // every new window by hand, the terminal included; give it one.
+    if Path::new(&wm).file_name().is_some_and(|n| n == "twm")
+        && let Some(rc) = auth
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(|d| write_twmrc(d).ok())
+    {
+        wm_cmd.arg("-f").arg(rc);
+    }
     join_group(&mut wm_cmd, pgid);
     match wm_cmd.spawn() {
         Ok(c) => children.push(c),
@@ -714,11 +1009,7 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
 
     for app in &cfg.startup {
         let mut app_cmd = Command::new(app);
-        app_cmd
-            .env("DISPLAY", &dpy)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        with_wslg_pulse(&mut app_cmd);
+        desktop_env(&mut app_cmd);
         join_group(&mut app_cmd, pgid);
         match app_cmd.spawn() {
             Ok(c) => children.push(c),
@@ -747,12 +1038,27 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
 /// LEADS a new process group of its own (`process_group(0)`), so the whole
 /// desktop tree is separable from the daemon and can be torn down as a unit
 /// (#1684) without ever signalling the daemon or its other children.
-fn spawn_x_server(w: u32, h: u32) -> Result<(Child, Server, String)> {
+fn spawn_x_server(
+    w: u32,
+    h: u32,
+    cookie_auth: bool,
+    bundle: Option<&Bundle>,
+) -> Result<(Child, Server, String, Option<std::path::PathBuf>)> {
+    let auth_for = |dpy: &str| -> Result<Option<std::path::PathBuf>> {
+        if !cookie_auth {
+            return Ok(None);
+        }
+        #[cfg(unix)]
+        return write_xauthority(dpy).map(Some);
+        #[cfg(not(unix))]
+        bail!("virtual-desktop: cookie auth is Unix-only");
+    };
     if let Some(xorg) = xorg_dummy() {
         let dpy = pick_display(X11_UNIX_DIR);
-        match spawn_xorg(&xorg, &dpy, w, h) {
+        let auth = auth_for(&dpy)?;
+        match spawn_xorg(&xorg, &dpy, w, h, auth.as_deref()) {
             Ok(mut child) => match wait_display_ready(&dpy, Duration::from_secs(15)) {
-                Ok(()) => return Ok((child, Server::XorgDummy, dpy)),
+                Ok(()) => return Ok((child, Server::XorgDummy, dpy, auth)),
                 Err(e) => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -766,8 +1072,24 @@ fn spawn_x_server(w: u32, h: u32) -> Result<(Child, Server, String)> {
     }
     // Picked afresh: a failed Xorg may have left its lock behind on the first.
     let dpy = pick_display(X11_UNIX_DIR);
-    let mut cmd = Command::new("Xvfb");
-    cmd.args(xvfb_args(&dpy, w, h))
+    let auth = auth_for(&dpy)?;
+    // FR-120 P3 — the host's Xvfb where it has one, else the bundle's, which
+    // runs from its own `bin/` (where it looks for `xkbcomp`) with its own
+    // keymaps.
+    let host_xvfb = binary_on_path("Xvfb").is_some();
+    let mut cmd = match bundle.filter(|_| !host_xvfb) {
+        Some(b) => {
+            let mut c = Command::new(b.bin("Xvfb"));
+            c.current_dir(b.root.join("bin"));
+            if let Some(xkb) = b.xkb_dir() {
+                c.arg("-xkbdir").arg(xkb);
+            }
+            info!(bundle = %b.root.display(), "virtual-desktop: using the bundled X server");
+            c
+        }
+        None => Command::new("Xvfb"),
+    };
+    cmd.args(xvfb_args(&dpy, w, h, auth.as_deref()))
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     lead_new_group(&mut cmd);
@@ -775,14 +1097,69 @@ fn spawn_x_server(w: u32, h: u32) -> Result<(Child, Server, String)> {
     if let Err(e) = wait_display_ready(&dpy, Duration::from_secs(15)) {
         // No `VirtualDesktop` yet, so Drop won't fire: kill what we spawned.
         let _ = child.kill();
+        let _ = child.wait();
         return Err(e);
     }
-    Ok((child, Server::Xvfb, dpy))
+    Ok((child, Server::Xvfb, dpy, auth))
 }
+
+/// FR-120 P3 — `name` as given when the host has it (or it is a path), else
+/// the bundle's copy when there is one.
+fn resolve_binary(name: &str, bundle: Option<&Bundle>) -> std::path::PathBuf {
+    if binary_on_path(name).is_none()
+        && let Some(b) = bundle.filter(|b| !name.contains('/') && b.has(name))
+    {
+        return b.bin(name);
+    }
+    std::path::PathBuf::from(name)
+}
+
+/// FR-120 P2 — a twm config for a desktop nobody sits at: windows placed by
+/// themselves, and a click on the background opens a terminal.
+fn write_twmrc(dir: &Path) -> Result<std::path::PathBuf> {
+    let path = dir.join("twmrc");
+    std::fs::write(&path, TWMRC).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+const TWMRC: &str = r##"TitleFont "fixed"
+MenuFont "fixed"
+IconFont "fixed"
+ResizeFont "fixed"
+IconManagerFont "fixed"
+RandomPlacement
+UsePPosition "on"
+NoGrabServer
+DecorateTransients
+RestartPreviousState
+BorderWidth 1
+Color
+{
+    DefaultBackground "#2b3a4a"
+    DefaultForeground "#ffffff"
+    TitleBackground "#2b3a4a"
+    TitleForeground "#ffffff"
+    MenuBackground "#2b3a4a"
+    MenuForeground "#ffffff"
+    MenuTitleBackground "#1d2733"
+    MenuTitleForeground "#ffffff"
+    BorderColor "#5f7a94"
+}
+Button1 = : root : f.menu "desktop"
+Button3 = : root : f.menu "desktop"
+Button1 = : title : f.move
+Button3 = : title : f.lower
+Menu "desktop"
+{
+    "MeshHarbor"  f.title
+    "Terminal"    f.exec "exec xterm &"
+    "Refresh"     f.refresh
+}
+"##;
 
 /// FR-108 P2 — start Xorg with the dummy driver on `dpy`, its config and log
 /// in a directory of its own.
-fn spawn_xorg(xorg: &Path, dpy: &str, w: u32, h: u32) -> Result<Child> {
+fn spawn_xorg(xorg: &Path, dpy: &str, w: u32, h: u32, auth: Option<&Path>) -> Result<Child> {
     let dir = xorg_dir(dpy);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("conf.d")).context("creating the Xorg directory")?;
@@ -799,6 +1176,7 @@ fn spawn_xorg(xorg: &Path, dpy: &str, w: u32, h: u32) -> Result<Child> {
         &conf,
         &dir.join("conf.d"),
         &dir.join("Xorg.log"),
+        auth,
     ))
     .stdout(Stdio::null())
     .stderr(Stdio::null());
@@ -844,15 +1222,12 @@ fn group_of(_leader: &Child) -> Option<i32> {
 /// Extracted from `start` so the flags are assertable — the screen-saver
 /// disable below is invisible at runtime until it has already cost someone a
 /// black screen, which is not a thing to leave un-locked.
-fn xvfb_args(display: &str, w: u32, h: u32) -> Vec<String> {
-    vec![
+fn xvfb_args(display: &str, w: u32, h: u32, auth: Option<&Path>) -> Vec<String> {
+    let mut a = vec![
         display.to_string(),
         "-screen".into(),
         "0".into(),
         format!("{w}x{h}x24"),
-        // No access control: the agent may run as root while the desktop is
-        // owned by another user, and this is a loopback-only server.
-        "-ac".into(),
         "-nolisten".into(),
         "tcp".into(),
         // A remote-desktop host must never blank itself. X's BUILT-IN screen
@@ -870,17 +1245,23 @@ fn xvfb_args(display: &str, w: u32, h: u32) -> Vec<String> {
         // setting to turn off and not something a server flag can reach.
         "-s".into(),
         "0".into(),
-    ]
+    ];
+    // Access control (see `access_args`): with no cookie, none — the agent
+    // may run as root while the desktop is owned by another user, and this
+    // is a loopback-only server.
+    a.extend(access_args(auth));
+    a
 }
 
 /// Confirm the required binaries exist, else bail with the apt line.
-fn preflight(cfg: &Config) -> Result<()> {
+fn preflight(cfg: &Config, bundle: Option<&Bundle>) -> Result<()> {
     let mut missing = Vec::new();
-    // FR-108 P2 — Xorg with the dummy driver needs no Xvfb.
-    if xorg_dummy().is_none() && binary_on_path("Xvfb").is_none() {
+    // FR-108 P2 — Xorg with the dummy driver needs no Xvfb; FR-120 P3 — nor
+    // does a package that carries its own.
+    if xorg_dummy().is_none() && binary_on_path("Xvfb").is_none() && bundle.is_none() {
         missing.push("xvfb".to_string());
     }
-    if binary_on_path(&cfg.wm).is_none() {
+    if binary_on_path(&cfg.wm).is_none() && !bundle.is_some_and(|b| b.has(&cfg.wm)) {
         missing.push(cfg.wm.clone());
     }
     if !missing.is_empty() {
@@ -961,7 +1342,7 @@ mod tests {
     /// so assert it as a pair rather than trusting the flag survived an edit.
     #[test]
     fn xvfb_args_disable_the_builtin_screen_saver() {
-        let a = xvfb_args(":99", 1920, 1080);
+        let a = xvfb_args(":99", 1920, 1080, None);
         let i = a
             .iter()
             .position(|s| s == "-s")
@@ -977,10 +1358,100 @@ mod tests {
 
     #[test]
     fn xvfb_args_carry_the_display_and_geometry() {
-        let a = xvfb_args(":7", 1280, 720);
+        let a = xvfb_args(":7", 1280, 720, None);
         assert_eq!(a.first().map(String::as_str), Some(":7"));
         assert!(a.iter().any(|s| s == "1280x720x24"), "got {a:?}");
         assert!(a.iter().any(|s| s == "-ac"));
+    }
+
+    /// FR-120 P2 — the automatic desktop is guarded by its cookie and never
+    /// open to every local account: `-auth <file>` replaces `-ac`, on both
+    /// servers.
+    #[test]
+    fn a_cookie_replaces_open_access_on_both_servers() {
+        let auth = Path::new("/tmp/meshharbor-vd-1000-99/Xauthority");
+        let x = xvfb_args(":99", 1920, 1080, Some(auth));
+        let o = xorg_args(
+            ":99",
+            Path::new("/c"),
+            Path::new("/d"),
+            Path::new("/l"),
+            Some(auth),
+        );
+        for a in [x, o] {
+            assert!(!a.iter().any(|s| s == "-ac"), "{a:?}");
+            let i = a.iter().position(|s| s == "-auth").expect("-auth");
+            assert_eq!(a[i + 1], auth.display().to_string());
+        }
+    }
+
+    /// FR-120 P2 — one FamilyWild record, in the layout libXau reads.
+    #[test]
+    fn xauth_entry_is_one_familywild_record() {
+        let e = xauth_entry("99", &[7u8; 16]);
+        let mut want = vec![0xFF, 0xFF, 0, 0, 0, 2, b'9', b'9', 0, 18];
+        want.extend_from_slice(b"MIT-MAGIC-COOKIE-1");
+        want.extend_from_slice(&[0, 16]);
+        want.extend_from_slice(&[7u8; 16]);
+        assert_eq!(e, want);
+    }
+
+    /// FR-120 P2 — only a host with no screen at all, now or after a login,
+    /// starts a desktop by itself, and the operator's setting always wins.
+    #[test]
+    fn only_a_screenless_host_starts_a_desktop_by_itself() {
+        let headless = HostFacts::default();
+        assert_eq!(auto_decision(&headless), Ok(()));
+        for f in [
+            HostFacts {
+                explicit: Some(true),
+                ..headless
+            },
+            HostFacts {
+                explicit: Some(false),
+                ..headless
+            },
+            HostFacts {
+                display_manager: true,
+                ..headless
+            },
+            HostFacts {
+                graphical_session: true,
+                ..headless
+            },
+            HostFacts {
+                display_env: true,
+                ..headless
+            },
+            HostFacts {
+                live_x_server: true,
+                ..headless
+            },
+            HostFacts {
+                root: true,
+                ..headless
+            },
+        ] {
+            assert!(auto_decision(&f).is_err(), "{f:?}");
+        }
+    }
+
+    /// FR-120 P2 — a socket an X server killed hard left behind (the daemon's
+    /// own desktop, before a restart) is no running server.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_x_socket_is_no_running_server() {
+        let dir = std::env::temp_dir().join(format!("mh-x11-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!live_x_server(&dir));
+        let sock = dir.join("X5");
+        drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
+        assert!(sock.exists());
+        assert!(!live_x_server(&dir), "a dead socket must not count");
+        let _l = std::os::unix::net::UnixListener::bind(dir.join("X6")).unwrap();
+        assert!(live_x_server(&dir), "a listening one must");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// FR-108 P2 — the config starts at the configured size exactly, declares
@@ -1011,6 +1482,7 @@ mod tests {
             Path::new("/tmp/x/xorg.conf"),
             Path::new("/tmp/x/conf.d"),
             Path::new("/tmp/x/Xorg.log"),
+            None,
         );
         assert_eq!(a.first().map(String::as_str), Some(":101"));
         let after = |flag: &str| {
@@ -1102,8 +1574,9 @@ mod tests {
             resolution: "1920x1080".into(),
             wm: "definitely-not-a-real-wm-binary-xyz".into(),
             startup: vec![],
+            cookie_auth: false,
         };
-        let err = preflight(&cfg).unwrap_err().to_string();
+        let err = preflight(&cfg, None).unwrap_err().to_string();
         assert!(err.contains("apt install"), "err: {err}");
         assert!(
             err.contains("definitely-not-a-real-wm-binary-xyz"),
