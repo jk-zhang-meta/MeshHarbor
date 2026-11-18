@@ -1689,11 +1689,36 @@ async fn handle_overlay_endpoints(
     // Every successful write advances provenance, including repeated values:
     // concurrent A→B→A writes may have read the same old A.
     state.org_relay.note_probe_endpoint_change(self_id);
+    let before = self_node.clone();
     let mut updated = self_node;
     updated.endpoints = candidates;
     let epoch = next_epoch();
     fan_upsert_shaped(state, &updated, epoch, true).await;
-    maybe_sync_serving_relay_backbone(state, &updated, None).await;
+    if relay_addresses_moved(&before, &updated) {
+        maybe_sync_serving_relay_backbone(state, &updated, None).await;
+    }
+}
+
+/// Did a trickle change the addresses a serving relay is reached at
+/// ([`crate::org_relay::relay_endpoints`], the only node input of the
+/// backbone endpoints)? Clients re-advertise unchanged candidates on a timer
+/// (the plane srflx forwarder, every NAT keepalive), and each sync bumps the
+/// tenant's zone AND auth revision and re-pushes every relay's directive.
+/// Field, 2026-11-17: once strict zones regained STUN, seven relays'
+/// 20 s re-adverts made 21 bumps a minute, and a join that spanned one was
+/// refused "authority changed before join netmap".
+fn relay_addresses_moved(before: &OverlayNode, after: &OverlayNode) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__OVERLAY__BACKBONE_SYNC_ON_CHANGE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    }) {
+        return true;
+    }
+    crate::org_relay::relay_endpoints(before, 0, &[])
+        != crate::org_relay::relay_endpoints(after, 0, &[])
 }
 
 /// NAT-traversal Phase B/C — the node trickled its server-reflexive (srflx)
@@ -1736,6 +1761,7 @@ async fn handle_overlay_srflx(
     // Every successful write advances provenance, including repeated values:
     // concurrent A→B→A writes may have read the same old A.
     state.org_relay.note_probe_endpoint_change(self_id);
+    let before = self_node.clone();
     let mut updated = self_node;
     updated.srflx_endpoints = candidates;
     updated.srflx_nat = nat;
@@ -1753,7 +1779,9 @@ async fn handle_overlay_srflx(
     } else {
         crate::org_relay::recheck_trial_zones(state, identity_id, "zone_conflict").await;
     }
-    maybe_sync_serving_relay_backbone(state, &updated, None).await;
+    if relay_addresses_moved(&before, &updated) {
+        maybe_sync_serving_relay_backbone(state, &updated, None).await;
+    }
 }
 
 /// Phase B (overlay v3) — store a node's measured capability vector and fan

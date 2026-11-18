@@ -2271,3 +2271,115 @@ async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavail
         );
     }
 }
+
+/// Field, 2026-11-17: clients re-advertise unchanged srflx candidates on a
+/// timer (every NAT keepalive), and every advert from a serving relay bumped
+/// the tenant's zone and auth revisions and re-pushed every relay's
+/// directive — 21 a minute with seven relays, and a join spanning one was
+/// refused "authority changed before join netmap". A re-advert that moves
+/// none of the relay's addresses now changes nothing; one that moves them
+/// still re-publishes its same-zone peer's backbone endpoints.
+#[tokio::test]
+async fn an_unchanged_relay_readvert_does_not_bump_the_zone_revision() {
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
+    let mmdb = mmdb.to_str().unwrap().to_owned();
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.stats.geoip_mmdb = Some(mmdb);
+    })
+    .await;
+    let seeded = app.seed_tenant("nz-readvert").await;
+    let admin = &seeded.admin.access_token;
+    let wait = Duration::from_secs(5);
+    let (hk_id, hk_tok) = enroll(&app, &seeded, "ra-po0-hk").await;
+    let (hy_id, hy_tok) = enroll(&app, &seeded, "ra-hyonix-la").await;
+    let caps = ["relay-server", "relay-control"];
+    let mut hk_ws = connect_from(&app, &hk_tok, &caps, Some("202.181.7.6")).await;
+    let mut hy_ws = connect_from(&app, &hy_tok, &caps, Some("8.8.4.4")).await;
+    let _ = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait).await;
+    let _ = recv_t(&mut hy_ws, "rc:overlay.peer_relay_serve", wait).await;
+    let ready = json!({ "relay_backbone_ready": true });
+    join_node(&mut hk_ws, 35, "202.181.7.6:41641", ready.clone()).await;
+    join_node(&mut hy_ws, 36, "8.8.4.4:41641", ready).await;
+    let hk_node = node_id(&app, &seeded, "ra-po0-hk").await;
+    let hy_node = node_id(&app, &seeded, "ra-hyonix-la").await;
+    set_mode(&app, &seeded, "on").await;
+    assert_eq!(approve(&app, &seeded, &hk_id, true).await, 200);
+    assert_eq!(approve(&app, &seeded, &hy_id, true).await, 200);
+    grant_relay(&app, &seeded, &hk_node).await;
+    grant_relay(&app, &seeded, &hy_node).await;
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({ "zones": [{
+            "id": "non-cn", "name": "Non-CN", "auto_countries": ["HK", "US"],
+            "is_default": true, "gateway_relay_ids": [hk_id, hy_id],
+            "cross_zone_mode": "direct_preferred"
+        }]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{body}");
+    let quiet = Duration::from_millis(1500);
+    // Settle: drain every directive the setup produced.
+    while recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", quiet)
+        .await
+        .is_some()
+    {}
+    while recv_t(&mut hy_ws, "rc:overlay.peer_relay_serve", quiet)
+        .await
+        .is_some()
+    {}
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let before = zone_and_auth_revision(&app, tid).await;
+
+    let srflx =
+        |ip: &str| json!({ "t": "rc:overlay.srflx", "candidates": [format!("{ip}:41641")] });
+    for _ in 0..3 {
+        hy_ws
+            .send(Message::Text(srflx("8.8.4.4").to_string().into()))
+            .await
+            .unwrap();
+    }
+    assert!(
+        recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", quiet)
+            .await
+            .is_none(),
+        "an unchanged re-advert re-pushes no directive"
+    );
+    assert_eq!(
+        zone_and_auth_revision(&app, tid).await,
+        before,
+        "nor bumps the revisions"
+    );
+
+    hy_ws
+        .send(Message::Text(srflx("8.8.8.8").to_string().into()))
+        .await
+        .unwrap();
+    let moved = recv_t(&mut hk_ws, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("a moved relay address re-publishes its peer's backbone endpoints");
+    assert_eq!(
+        moved["backbone_endpoints"],
+        json!(["8.8.8.8:3478"]),
+        "{moved}"
+    );
+    assert!(zone_and_auth_revision(&app, tid).await.0 > before.0);
+}
+
+async fn zone_and_auth_revision(app: &TestApp, tid: ObjectId) -> (u64, u64) {
+    let n = app
+        .state
+        .network()
+        .overlay_networks
+        .find_for_tenant(tid)
+        .await
+        .unwrap()
+        .unwrap();
+    (n.zone_revision, n.auth_revision)
+}
