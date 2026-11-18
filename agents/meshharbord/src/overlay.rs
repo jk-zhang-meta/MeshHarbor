@@ -1843,19 +1843,33 @@ fn netstack_tun_factory(
         let handle_rx = handle_tx.subscribe();
         let org = org_key.to_string();
         tokio::spawn(async move {
-            match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, socks_port)).await {
-                Ok(l) => {
-                    info!(
-                        port = socks_port, %org,
-                        "overlay netstack: SOCKS5 front on 127.0.0.1"
-                    );
-                    serve_socks5(handle_rx, view_rx, l).await;
+            // The bind is RETRIED until it succeeds. The port is marked bound
+            // above, so a failure here used to be final: after an update or a
+            // restart whose old process had not yet let go of the port
+            // (Windows, `os error 10048`), the front never came up and every
+            // mesh TCP connection from this node (RDP, SSH, forwards) was
+            // refused until the next restart (FR-120 field, 2026-11-18).
+            let mut delay = std::time::Duration::from_millis(500);
+            let mut failures = 0u32;
+            let l = loop {
+                match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, socks_port)).await {
+                    Ok(l) => break l,
+                    Err(e) => {
+                        failures += 1;
+                        if failures == 1 || failures.is_multiple_of(30) {
+                            warn!(port = socks_port, %org, error = %e, failures,
+                                "overlay netstack: SOCKS bind failed — retrying until the port is free")
+                        }
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_secs(10));
+                    }
                 }
-                Err(e) => {
-                    warn!(port = socks_port, %org, error = %e,
-                        "overlay netstack: SOCKS bind failed")
-                }
-            }
+            };
+            info!(
+                port = socks_port, %org, after_failures = failures,
+                "overlay netstack: SOCKS5 front on 127.0.0.1"
+            );
+            serve_socks5(handle_rx, view_rx, l).await;
         });
     }
 
