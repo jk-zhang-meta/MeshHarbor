@@ -492,6 +492,20 @@ fn fold_seeded_user_config(
     Ok(Some(sys_cfg))
 }
 
+/// Remove `dir` only if it is empty: `Ok(true)` when it is gone (or was never there),
+/// `Ok(false)` when it holds anything. The emptiness test is the removal itself
+/// (`rmdir` / `RemoveDirectoryW` refuse a non-empty directory), so nothing that
+/// appears between a look and the delete can be lost.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn remove_dir_if_empty(dir: &Path) -> Result<bool> {
+    match std::fs::remove_dir(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("removing empty directory {}", dir.display())),
+    }
+}
+
 #[cfg(windows)]
 mod win_security {
     use anyhow::{Context, Result, bail};
@@ -911,6 +925,54 @@ mod win_security {
         Ok(Some((f, size)))
     }
 
+    fn untrusted_hint(dir: &Path) -> String {
+        format!(
+            "{} already exists, was not created by an administrator, and is not empty, so its \
+             contents cannot be trusted. Check what is in it, delete it from an elevated prompt, \
+             and grant administrator rights again",
+            dir.display()
+        )
+    }
+
+    /// `Some(trusted)` for an existing plain directory, `None` when absent. `require_clean`
+    /// is the same writer check [`ensure_trusted_directory`] applies to it.
+    fn dir_trust(dir: &Path, require_clean: bool) -> Result<Option<bool>> {
+        let Some(handle) = open_plain_dir_handle(dir)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            check_security_handle(handle.as_raw_handle() as HANDLE, dir, require_clean).is_ok(),
+        ))
+    }
+
+    /// Remove an untrusted `%ProgramData%\meshharbor` tree, but ONLY while it is empty.
+    /// Safe against a planter: removal is `RemoveDirectoryW`, which fails rather than
+    /// delete anything placed inside, and a directory recreated after it is refused by
+    /// the ownership check that follows. Anything non-empty is left for that check to
+    /// refuse with [`untrusted_hint`].
+    pub(super) fn reclaim_empty_untrusted_tree(
+        root_dir: &Path,
+        config_dir: &Path,
+    ) -> Result<()> {
+        let root = dir_trust(root_dir, false)?;
+        let cfg = dir_trust(config_dir, true)?;
+        if root != Some(false) && cfg != Some(false) {
+            return Ok(());
+        }
+        if cfg.is_some() && !super::remove_dir_if_empty(config_dir)? {
+            return Ok(());
+        }
+        if root == Some(false) && !super::remove_dir_if_empty(root_dir)? {
+            return Ok(());
+        }
+        tracing::warn!(
+            root = %root_dir.display(),
+            "removed an empty machine-global config tree that was not created by an \
+             administrator; recreating it with administrator-only permissions"
+        );
+        Ok(())
+    }
+
     pub(super) fn prepare_and_load_trusted_windows_config(
         config_path: &Path,
     ) -> Result<Option<crate::config::AgentConfig>> {
@@ -929,14 +991,21 @@ mod win_security {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("config dir {} has no parent", config_dir.display()))?;
 
+        // An untrusted but EMPTY tree holds nothing to trust, so it is removed and
+        // recreated below with DIR_SDDL instead of blocking promotion for good (field:
+        // a 11-10 leftover `ProgramData\meshharbor\meshharbor`, both empty and owned by
+        // the signed-in user, refused every "Grant administrator rights" click).
+        reclaim_empty_untrusted_tree(root_dir, config_dir)?;
         // `root_dir` (`%ProgramData%\meshharbor`): must be owned by SYSTEM/Administrators
         // if already present (refuses attacker-precreated ProgramData\meshharbor), then
         // locked down to DIR_SDDL.
-        ensure_trusted_directory(root_dir, DIR_SDDL, false)?;
+        ensure_trusted_directory(root_dir, DIR_SDDL, false)
+            .with_context(|| untrusted_hint(root_dir))?;
         // `config_dir` (`%ProgramData%\meshharbor\meshharbor`): if already present, must
         // ALREADY have both trusted owner AND zero non-admin writers before anything inside
         // it is trusted.
-        ensure_trusted_directory(config_dir, DIR_SDDL, true)?;
+        ensure_trusted_directory(config_dir, DIR_SDDL, true)
+            .with_context(|| untrusted_hint(config_dir))?;
 
         for sidecar in [
             config_path.with_extension("toml.prev"),
@@ -1904,6 +1973,22 @@ mod tests {
         bad_toml.seed_temporary_json = None;
         bad_toml.seed_history_json = Some("[broken]".into());
         assert!(parse_seed_migration_inputs(&bad_toml).is_err());
+    }
+
+    #[test]
+    fn an_untrusted_tree_is_only_ever_removed_while_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("meshharbor");
+        let cfg = root.join("meshharbor");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("config.toml"), "planted").unwrap();
+        assert!(!remove_dir_if_empty(&cfg).unwrap(), "a non-empty dir is kept");
+        assert!(cfg.join("config.toml").exists(), "and nothing inside it is touched");
+        std::fs::remove_file(cfg.join("config.toml")).unwrap();
+        assert!(!remove_dir_if_empty(&root).unwrap(), "a parent holding a dir is kept");
+        assert!(remove_dir_if_empty(&cfg).unwrap());
+        assert!(remove_dir_if_empty(&root).unwrap());
+        assert!(remove_dir_if_empty(&root).unwrap(), "already gone is gone");
     }
 
     #[test]

@@ -883,6 +883,15 @@ async fn promote_personal_device_to_system(
         }
     };
 
+    // The unprivileged daemon answering LocalAPI now. After the promotion it must
+    // LEAVE: it keeps the LocalAPI pipe, so the new SYSTEM service cannot bind it
+    // and this app goes on talking to the old daemon (field 11-18: the
+    // service was up and anchored, yet the grant reported a failure).
+    let old_daemon = daemon_node_status()
+        .await
+        .filter(|st| st.system_privileged.or(st.privileged) != Some(true))
+        .and_then(|st| st.pid.map(|pid| (pid, st.started_at_ms)));
+
     tokio::task::spawn_blocking(move || {
         let exe = agent_exe_path()?;
         let user_cfg = config::default_config_path().ok();
@@ -896,6 +905,19 @@ async fn promote_personal_device_to_system(
         .map_err(|e| format!("reading existing user config before system promotion: {e}"))?;
         personal_system::invoke_elevated_enroll_system(&exe, &req, false)?;
         if !personal_system::is_process_elevated() {
+            // Stop the per-user daemon of the USER config through its own stop event
+            // (this process shares its session). The elevated side can only name the
+            // system config, whose event no per-user daemon holds.
+            if let Some(ref p) = user_cfg {
+                let _ = no_window_command(&exe)
+                    .arg("--config")
+                    .arg(p)
+                    .args(["service", "stop"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
             let _ = no_window_command(&exe)
                 .args(["service", "uninstall"])
                 .stdin(std::process::Stdio::null())
@@ -909,13 +931,28 @@ async fn promote_personal_device_to_system(
     .await
     .map_err(|e| format!("System promotion task failed: {e}"))??;
 
-    // Wait up to 20s for the elevated root/SYSTEM service to answer LocalAPI.
-    for _ in 0..40 {
-        if let Some(st) = daemon_node_status().await
-            && !st.node_id.is_empty()
-            && st.system_privileged.or(st.privileged) == Some(true)
-        {
-            return Ok(());
+    // Wait for the root/SYSTEM service to answer LocalAPI. On Windows it retries
+    // binding the pipe every 30 s, so the budget covers one missed bind plus the
+    // old daemon's 15 s clean-stop grace.
+    for i in 0..150 {
+        match daemon_node_status().await {
+            Some(st)
+                if !st.node_id.is_empty()
+                    && st.system_privileged.or(st.privileged) == Some(true) =>
+            {
+                return Ok(());
+            }
+            // Still the SAME unprivileged process (pid + start time) 20 s on: its
+            // clean stop did not take, so end it. The match proves it is the
+            // process holding the pipe, never a recycled pid.
+            Some(st)
+                if i >= 40
+                    && st.pid.is_some()
+                    && st.pid.map(|p| (p, st.started_at_ms)) == old_daemon =>
+            {
+                end_stale_daemon(st.pid.unwrap_or_default());
+            }
+            _ => {}
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -923,6 +960,26 @@ async fn promote_personal_device_to_system(
         "System service was configured, but did not become reachable with Administrator / root privileges in time."
             .to_string(),
     )
+}
+
+/// End a per-user daemon that outlived its promotion. Same user, so no elevation.
+fn end_stale_daemon(pid: u32) {
+    tracing::warn!(pid, "the per-user daemon did not stop after the promotion; ending it");
+    let pid = pid.to_string();
+    let mut cmd = if cfg!(windows) {
+        let mut c = no_window_command("taskkill");
+        c.args(["/PID", pid.as_str(), "/F"]);
+        c
+    } else {
+        let mut c = no_window_command("kill");
+        c.args(["-TERM", pid.as_str()]);
+        c
+    };
+    let _ = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// What the Overview's "Grant administrator rights" card needs to know.

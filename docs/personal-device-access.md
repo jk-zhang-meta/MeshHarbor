@@ -57,6 +57,13 @@ It changes only where and as whom the daemon runs:
 
 Locked by `native_session_tests::native_session_mints_a_promotion_token_only_with_manage_agents`.
 
+Two Windows traps, both met in the field on 11-18 (fixed in 0.4.171):
+
+| Trap | Handling |
+|---|---|
+| `%ProgramData%\meshharbor` already exists but was created by a non-administrator (an empty leftover) | The elevated step refuses an untrusted tree, because a planted `config.toml` there would be read by SYSTEM. An **empty** untrusted tree is removed and recreated administrator-only (`reclaim_empty_untrusted_tree`). Removal is `RemoveDirectoryW`, which cannot delete anything placed inside, and a tree recreated after it is still refused. A non-empty one is refused with a message saying what to check. |
+| The per-user daemon keeps running after the promotion | It holds the LocalAPI pipe `\\.\pipe\meshharbor`, so the SYSTEM service logs `pipe bind failed` every 30 s and the app keeps talking to the old daemon. The elevated side can only name the system config, whose stop event no per-user daemon holds. So the app stops the daemon of the **user** config from its own session (`service stop`), ends that same process (pid + start time) if it still answers 20 s later, and waits up to 75 s for a privileged answer. |
+
 Tray **Sign out of account…** ends only the GUI's account session (shares,
 permissions, web hand-off). The device stays enrolled and keeps its own agent
 credential, so the mesh, the Devices list (served by the daemon over LocalAPI)
