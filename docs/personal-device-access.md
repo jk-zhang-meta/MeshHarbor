@@ -18,6 +18,51 @@ devices. Existing fleets need an explicit, reviewed migration identifying the
 actual owner and excluding invited devices. Do not infer personal ownership
 from `owner_user_id`: invited devices also store their inviter in that field.
 
+## Administrator / root rights for an existing personal device
+
+Signing in promotes a personal device to its root / SYSTEM service when the OS
+account can elevate (`personal_system::can_current_user_elevate`). The
+promotion happens only during sign-in: an update never adds it. So a device
+signed in before promotion existed (0.4.162), or one whose owner declined the
+prompt, stays a per-user daemon. The desktop Onboarding card hides once the
+device is enrolled.
+
+Such a device gets a **Grant administrator rights…** card in the desktop app's
+Overview. It is shown when all of these hold:
+
+- the live daemon reports `personal_enrolled = true` and
+  `system_privileged = false` (`None` from an older daemon never offers it);
+- the OS account can elevate;
+- an account session is saved in the OS vault.
+
+Without a saved session, the card points at the tray's **Sign in…**, whose
+device login promotes as well.
+
+The grant (`cmd_grant_system`) runs in two steps:
+
+1. It mints one single-use, `anchor` enrollment token with the saved session
+   (`POST /api/tenant/{id}/agent/enroll-token`, `MANAGE_AGENTS`, the same right
+   a device-login approval needs).
+2. It runs the same elevated `enroll-personal-system` handoff as sign-in. The
+   OS asks for approval once.
+
+It changes only where and as whom the daemon runs:
+
+| What | Effect |
+|---|---|
+| Server device row | Re-enrolls with the device's existing credential as proof, so the server keeps the same row and leaves `personal_access_owner_id` untouched. |
+| Local switches | An ordinary token answers `personal_device: false`, but the device's own config is the merge base, so SSH, exec, RDP and mesh switches keep their values. Locked by `promotion_with_an_ordinary_token_keeps_the_devices_own_switches`. |
+| Session revoked | A revoked session (tray **Sign out**) mints nothing (HTTP 401). |
+| Account without `MANAGE_AGENTS` | Gets a "may not manage devices" refusal (HTTP 403), and its session is kept. |
+
+Locked by `native_session_tests::native_session_mints_a_promotion_token_only_with_manage_agents`.
+
+Tray **Sign out of account…** ends only the GUI's account session (shares,
+permissions, web hand-off). The device stays enrolled and keeps its own agent
+credential, so the mesh, the Devices list (served by the daemon over LocalAPI)
+and remote access keep working. Removing the device from the organization is
+**Leave**, not sign-out.
+
 ## Invitations
 
 The person accepting an invitation chooses eight capabilities:

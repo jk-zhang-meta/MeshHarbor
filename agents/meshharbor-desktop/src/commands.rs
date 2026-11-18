@@ -925,6 +925,97 @@ async fn promote_personal_device_to_system(
     )
 }
 
+/// What the Overview's "Grant administrator rights" card needs to know.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct SystemGrantState {
+    /// Show the card: a personal device, signed in before system promotion
+    /// existed or declined it, whose OS account could have it.
+    pub offered: bool,
+    /// An account session is saved here, so the grant needs no browser.
+    pub signed_in: bool,
+}
+
+/// The organization and name a promotion re-enrolls into, when the live
+/// daemon says this is a personal enrollment that is NOT system-privileged.
+/// `None` (older daemon) on either field is unknown, never "offer it".
+pub(crate) fn system_grant_target(st: &NodeStatus) -> Option<(String, String)> {
+    if st.personal_enrolled != Some(true) || st.system_privileged != Some(false) {
+        return None;
+    }
+    let tenant = st
+        .orgs
+        .iter()
+        .find(|o| o.primary)
+        .and_then(|o| o.tenant_id.clone())
+        .or_else(|| st.tenant_id.clone())
+        .filter(|t| t.len() == 24 && t.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    let name = st.name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((tenant, name.to_string()))
+}
+
+/// The OS account's elevation capability, probed once per app run: on Unix
+/// the probe spawns `sudo -n true`, which must not run on every status poll.
+fn can_elevate_cached() -> bool {
+    static CAN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CAN.get_or_init(meshharbor_node_core::personal_system::can_current_user_elevate)
+}
+
+#[tauri::command]
+pub async fn cmd_system_grant_state() -> SystemGrantState {
+    let Some(live) = daemon_node_status().await else {
+        return SystemGrantState::default();
+    };
+    if system_grant_target(&live).is_none() {
+        return SystemGrantState::default();
+    }
+    let can = tokio::task::spawn_blocking(can_elevate_cached)
+        .await
+        .unwrap_or(false);
+    if !can {
+        return SystemGrantState::default();
+    }
+    let signed_in = match tokio::task::spawn_blocking(server_origin_blocking).await {
+        Ok(Ok(server)) => crate::user_account::has_saved_session(&server).await,
+        _ => false,
+    };
+    SystemGrantState {
+        offered: true,
+        signed_in,
+    }
+}
+
+/// Promote this already-enrolled personal device to its root / SYSTEM service
+/// without a browser: mint the single-use token with the saved account
+/// session, then run the same elevated `enroll-personal-system` handoff a
+/// sign-in runs (one UAC / administrator prompt). Errors with
+/// [`crate::user_account::NO_ACCOUNT_SESSION`] when nobody is signed in here.
+#[tauri::command]
+pub async fn cmd_grant_system() -> Result<StatusReport, String> {
+    let live = daemon_node_status()
+        .await
+        .ok_or("The MeshHarbor service is not answering; start it and try again.")?;
+    let (tenant, name) = system_grant_target(&live).ok_or(
+        "This device already runs with administrator rights, or is not a personal device.",
+    )?;
+    let can = tokio::task::spawn_blocking(
+        meshharbor_node_core::personal_system::can_current_user_elevate,
+    )
+    .await
+    .map_err(|e| format!("Privilege check task failed: {e}"))?;
+    if !can {
+        return Err("This operating-system account has no administrator rights.".into());
+    }
+    let server = tokio::task::spawn_blocking(server_origin_blocking)
+        .await
+        .map_err(|e| format!("task join: {e}"))??;
+    let token = crate::user_account::mint_promotion_token(&server, &tenant).await?;
+    promote_personal_device_to_system(server, token, name).await?;
+    Ok(cmd_status().await)
+}
+
 async fn enroll_personal_device_user_mode(
     server: String,
     enrollment_token: String,
@@ -3876,6 +3967,63 @@ mod tests {
                           "primary":true,"enabled":true,"connected":true}}]}}"#
         ))
         .expect("a NodeStatus the daemon could send")
+    }
+
+    fn grant_status(
+        personal: Option<bool>,
+        system: Option<bool>,
+        org_tenant: Option<&str>,
+        name: &str,
+    ) -> NodeStatus {
+        let mut st = daemon_status("aaaaaaaaaaaaaaaaaaaaaaaa", None);
+        st.personal_enrolled = personal;
+        st.system_privileged = system;
+        st.orgs[0].tenant_id = org_tenant.map(str::to_string);
+        st.name = name.to_string();
+        st
+    }
+
+    const T: &str = "0123456789abcdef01234567";
+
+    #[test]
+    fn grant_is_offered_only_to_a_personal_device_known_to_be_unprivileged() {
+        assert_eq!(
+            system_grant_target(&grant_status(Some(true), Some(false), Some(T), " box ")),
+            Some((T.to_string(), "box".to_string()))
+        );
+        // Already system, a temporary (invitation-only) device, or an older
+        // daemon that does not say: never offer.
+        for (personal, system) in [
+            (Some(true), Some(true)),
+            (Some(false), Some(false)),
+            (None, Some(false)),
+            (Some(true), None),
+        ] {
+            assert_eq!(
+                system_grant_target(&grant_status(personal, system, Some(T), "box")),
+                None,
+                "personal={personal:?} system={system:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grant_needs_a_valid_org_and_a_name() {
+        // The node-level tenant is the fallback when the primary org has none.
+        let mut st = grant_status(Some(true), Some(false), None, "box");
+        st.tenant_id = Some(T.to_string());
+        assert_eq!(system_grant_target(&st).map(|t| t.0), Some(T.to_string()));
+        for bad in ["", "not-hex-not-hex-not-hex!", "0123"] {
+            assert_eq!(
+                system_grant_target(&grant_status(Some(true), Some(false), Some(bad), "box")),
+                None,
+                "tenant {bad:?}"
+            );
+        }
+        assert_eq!(
+            system_grant_target(&grant_status(Some(true), Some(false), Some(T), "  ")),
+            None
+        );
     }
 
     fn report(enrolled: bool) -> StatusReport {

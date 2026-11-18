@@ -138,6 +138,8 @@ fn main() {
             commands::cmd_invite_features,
             commands::cmd_leave,
             commands::cmd_login_wait,
+            commands::cmd_system_grant_state,
+            commands::cmd_grant_system,
             commands::cmd_login_cancel,
             commands::cmd_re_enroll,
             commands::cmd_set_device_name,

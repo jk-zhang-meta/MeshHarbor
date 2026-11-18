@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-//! GUI-only user session. Enrollment credentials and daemon IPC never enter
-//! this module; public callers receive only a loopback launch URL or status.
+//! GUI-only user session. Daemon IPC never enters this module; public callers
+//! receive only a loopback launch URL or status — with ONE exception,
+//! [`mint_promotion_token`]: a single-use enrollment token, minted under this
+//! session, handed straight to this device's own system promotion.
 use meshharbor_node_core::user_session::{
     self, NativeSession, UserProfile, WebTarget,
     vault::{self, SavedSession},
@@ -168,6 +170,35 @@ pub async fn prepare(server: &str, target: WebTarget) -> Result<String, String> 
         }
     });
     Ok(url)
+}
+
+/// The error text [`mint_promotion_token`] returns when no account is signed
+/// in here; the UI matches on it to point at the tray's "Sign in…", which
+/// grants the same rights as part of signing in.
+pub const NO_ACCOUNT_SESSION: &str = "no_account_session";
+
+/// Whether a user session for `server` is saved in the OS vault (not whether
+/// the server still honours it).
+pub async fn has_saved_session(server: &str) -> bool {
+    let scope = server.to_owned();
+    matches!(
+        tokio::task::spawn_blocking(move || vault::load(&scope)).await,
+        Ok(Ok(Some(_)))
+    )
+}
+
+/// A single-use enrollment token for `tenant_id`, minted with the saved
+/// session (`MANAGE_AGENTS`, the same right a device-login approval needs).
+/// Its only caller promotes this device to its system service.
+pub async fn mint_promotion_token(server: &str, tenant_id: &str) -> Result<String, String> {
+    let _operation = SESSION_OP.lock().await;
+    if !has_saved_session(server).await {
+        return Err(NO_ACCOUNT_SESSION.into());
+    }
+    let session = refreshed(server).await?;
+    user_session::mint_promotion_enrollment(server, &session.access_token, tenant_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub async fn sign_out(server: &str) -> Result<(), String> {

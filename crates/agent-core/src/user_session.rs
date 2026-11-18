@@ -150,6 +150,71 @@ pub async fn revoke(server: &str, access_token: &str) -> Result<()> {
     Ok(())
 }
 
+/// The organization refused this account the device-management right the
+/// token needs (`MANAGE_AGENTS`). Not a dead session: the vault stays.
+#[derive(Debug)]
+pub struct EnrollmentNotPermitted;
+impl std::fmt::Display for EnrollmentNotPermitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "Your account may not manage devices in this organization, so it cannot \
+             grant this device administrator rights. Ask an organization admin, or run \
+             `mh login` and have an admin approve it.",
+        )
+    }
+}
+impl std::error::Error for EnrollmentNotPermitted {}
+
+/// Mint ONE single-use enrollment token for `tenant_id` with this user
+/// session, exactly as the dashboard mints one
+/// (`POST /api/tenant/{id}/agent/enroll-token`, gated on `MANAGE_AGENTS`), with
+/// `anchor` set as a device-login approval sets it, so a Windows promotion can
+/// also anchor the SYSTEM service.
+///
+/// Its one use: promoting an already-enrolled personal device to its system
+/// service. A device-login approval mints the same grant under the same
+/// permission; this skips the browser round trip for a GUI that already holds
+/// the user's session. The token is never stored; it expires in minutes.
+pub async fn mint_promotion_enrollment(
+    server: &str,
+    access_token: &str,
+    tenant_id: &str,
+) -> Result<String> {
+    if tenant_id.len() != 24 || !tenant_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("this device's organization id is not valid");
+    }
+    let reply = http()?
+        .post(endpoint(
+            server,
+            &format!("/api/tenant/{tenant_id}/agent/enroll-token"),
+        )?)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "anchor": true }))
+        .send()
+        .await
+        .context("account server is unavailable; nothing was changed")?;
+    match reply.status().as_u16() {
+        401 => return Err(SessionDenied(401).into()),
+        403 => return Err(EnrollmentNotPermitted.into()),
+        s if !(200..300).contains(&s) => {
+            bail!("the server refused to issue an enrollment token (HTTP {s})")
+        }
+        _ => {}
+    }
+    #[derive(Deserialize)]
+    struct Minted {
+        enrollment_token: String,
+    }
+    let minted: Minted = reply
+        .json()
+        .await
+        .context("invalid enrollment token response")?;
+    if minted.enrollment_token.trim().is_empty() {
+        bail!("the server returned an empty enrollment token");
+    }
+    Ok(minted.enrollment_token)
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "purpose", rename_all = "snake_case")]
 pub enum WebTarget {
@@ -551,6 +616,54 @@ mod tests {
             assert!(request.contains("\"purpose\":\"dashboard\""));
             assert!(request.contains("\"form_origin\":\"http://127.0.0.1:12345\""));
             assert!(!request.lines().next().unwrap().contains("fixture_access"));
+        }
+    }
+
+    #[tokio::test]
+    async fn promotion_mint_posts_an_anchor_request_and_classifies_refusals() {
+        const T: &str = "0123456789abcdef01234567";
+        let (server, task) = http_fixture(
+            serde_json::json!({"enrollment_token":"fixture.enroll.jwt"}),
+            200,
+        )
+        .await;
+        assert_eq!(
+            mint_promotion_enrollment(&server, "fixture_access", T)
+                .await
+                .unwrap(),
+            "fixture.enroll.jwt"
+        );
+        let request = task.await.unwrap();
+        assert!(request.starts_with(&format!("POST /base/api/tenant/{T}/agent/enroll-token ")));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture_access")
+        );
+        assert!(request.contains("\"anchor\":true"));
+
+        // 403 is a missing right, NOT a dead session (the vault must survive);
+        // 401 is a dead session.
+        let (server, _t) = http_fixture(serde_json::json!({}), 403).await;
+        let err = mint_promotion_enrollment(&server, "a", T)
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<EnrollmentNotPermitted>().is_some());
+        assert!(err.downcast_ref::<SessionDenied>().is_none());
+        let (server, _t) = http_fixture(serde_json::json!({}), 401).await;
+        let err = mint_promotion_enrollment(&server, "a", T)
+            .await
+            .unwrap_err();
+        assert!(err.downcast_ref::<SessionDenied>().is_some());
+        let (server, _t) = http_fixture(serde_json::json!({"enrollment_token":" "}), 200).await;
+        assert!(mint_promotion_enrollment(&server, "a", T).await.is_err());
+        // A malformed organization id never reaches the network.
+        for bad in ["", "0123", "../../admin/xxxxxxxxxxxxxxxxx"] {
+            assert!(
+                mint_promotion_enrollment("http://127.0.0.1:9/base", "a", bad)
+                    .await
+                    .is_err()
+            );
         }
     }
 

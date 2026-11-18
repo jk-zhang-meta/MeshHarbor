@@ -1649,6 +1649,45 @@ mod tests {
         .unwrap()
     }
 
+    /// The desktop's "Grant administrator rights" promotes with an ORDINARY
+    /// enrollment token: its enroll answer says `personal_device: false`, so
+    /// the fresh config has SSH, exec, RDP and the mesh OFF. The device's own
+    /// (seeded user-mode) settings must win, or the grant would cut the
+    /// device out of its own mesh.
+    #[test]
+    fn promotion_with_an_ordinary_token_keeps_the_devices_own_switches() {
+        let dir = std::env::temp_dir().join(format!(
+            "mh-psexec-grant-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.toml");
+
+        let mut user_cfg = mk_cfg("https://mh.example", "t1", "aid-own", "my-box");
+        user_cfg.overlay_enabled = true;
+        user_cfg.ssh_enabled = true;
+        user_cfg.exec_enabled = true;
+        user_cfg.rdp_over_mesh = true;
+        let fresh = mk_cfg("https://mh.example", "t1", "aid-own", "my-box");
+        assert!(!fresh.overlay_enabled && !fresh.ssh_enabled && !fresh.exec_enabled);
+
+        let combined = fold_seeded_user_config(
+            &target,
+            None,
+            Some(user_cfg),
+            &BTreeMap::new(),
+            &fresh,
+            false,
+        )
+        .unwrap();
+        let (merged, outcome) =
+            merge_and_promote_personal_enrollment(&target, combined, fresh, false).unwrap();
+        assert_eq!(outcome, crate::enrollment::EnrollOutcome::RefreshedPrimary);
+        assert_eq!(merged.agent_id, "aid-own");
+        assert!(merged.overlay_enabled, "the mesh must stay on");
+        assert!(merged.ssh_enabled && merged.exec_enabled && merged.rdp_over_mesh);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn same_org_siat_conversion_clears_temporary_marker_and_enables_overlay() {
         let dir = std::env::temp_dir().join(format!(

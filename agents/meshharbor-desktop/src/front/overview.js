@@ -557,7 +557,77 @@
     show(banner);
   }
 
+  /*
+   * "Grant administrator rights": a personal device that runs as the signed-in
+   * user although that user is an OS administrator (signed in before sign-in
+   * promoted, or the prompt was declined). Re-asked at most every 30 s off the
+   * status poll, and on focus; never while a grant is running.
+   */
+  let grantBusy = false;
+  let grantAskedAt = 0;
+  async function refreshGrant(force) {
+    if (grantBusy || (!force && Date.now() - grantAskedAt < 30000)) return;
+    grantAskedAt = Date.now();
+    let g;
+    try {
+      g = await invoke('cmd_system_grant_state');
+    } catch {
+      return;
+    }
+    const card = $('ov-grant-system');
+    if (!card) return;
+    card.hidden = !g.offered;
+    const btn = $('ov-btn-grant-system');
+    if (btn) btn.hidden = !g.signed_in;
+    // The sign-in hint comes and goes with the session; an error from a failed
+    // grant stays until the next attempt.
+    const msg = $('ov-grant-system-msg');
+    if (g.offered && !g.signed_in) {
+      grantMsg(GRANT_HINT, false);
+    } else if (msg && msg.textContent === GRANT_HINT) {
+      grantMsg('', false);
+    }
+  }
+
+  const GRANT_HINT =
+    'Sign in to your account from the tray menu ("Sign in…"): signing in grants these rights too.';
+
+  function grantMsg(text, isError) {
+    const el = $('ov-grant-system-msg');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'small' + (isError ? ' error' : ' muted');
+    el.hidden = !text;
+  }
+
+  async function grantSystem() {
+    const btn = $('ov-btn-grant-system');
+    grantBusy = true;
+    btn.disabled = true;
+    grantMsg('Waiting for your operating system to approve…', false);
+    try {
+      await invoke('cmd_grant_system');
+      grantMsg('', false);
+      hide($('ov-grant-system'));
+      window.MeshHarbor.refreshStatus();
+    } catch (e) {
+      const text = String(e);
+      grantMsg(
+        text.includes('no_account_session')
+          ? 'Sign in to your account first: tray menu → "Sign in…". Signing in grants these rights too.'
+          : 'Not granted: ' + text,
+        true,
+      );
+    } finally {
+      grantBusy = false;
+      btn.disabled = false;
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
+    on('status', () => void refreshGrant(false));
+    $('ov-btn-grant-system').addEventListener('click', () => void grantSystem());
+    window.addEventListener('focus', () => void refreshGrant(true));
     on('status', paintStatus);
     on('deviceView', paintDeviceView);
     // FR-84 D4 — the encoder matrix and the drop folder.

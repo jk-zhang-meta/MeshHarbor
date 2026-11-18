@@ -95,6 +95,25 @@
         </div>
 
         <!--
+          A personal device signed in before sign-in granted system rights (or
+          that declined the prompt) runs as the signed-in user. Your OS account
+          could have more; this grants it with one administrator prompt.
+        -->
+        <div id="ov-grant-system" class="banner banner-warn" hidden>
+          <div>
+            <strong>This device runs with your user's rights only</strong>
+            <p class="muted small" style="margin: 4px 0 8px">
+              Your account on this computer is an administrator, so MeshHarbor can run
+              as a system service (Administrator / root, the default for a new sign-in):
+              commands and SSH get full rights, and the device stays reachable when
+              nobody is signed in. Your operating system asks for approval once.
+            </p>
+            <button type="button" class="primary" id="ov-btn-grant-system">Grant administrator rights…</button>
+            <p class="small" id="ov-grant-system-msg" style="margin: 8px 0 0; white-space: pre-wrap" hidden></p>
+          </div>
+        </div>
+
+        <!--
           macOS only, and hidden entirely elsewhere. Without these two grants
           the product looks broken rather than blocked: the remote screen is
           wallpaper-only and every injected click vanishes, with no error

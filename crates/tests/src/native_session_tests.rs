@@ -1668,3 +1668,54 @@ async fn personal_device_login_mints_anchor_token_and_defaults_to_system_privile
         relogin_claims.jti
     );
 }
+
+/// The desktop's "Grant administrator rights": the GUI's saved native session
+/// mints the single-use, anchor-capable enrollment token a device-login
+/// approval would mint, under the same `MANAGE_AGENTS` gate, through the real
+/// client (`mint_promotion_enrollment`) against the real route.
+#[tokio::test]
+async fn native_session_mints_a_promotion_token_only_with_manage_agents() {
+    use meshharbor_node_core::user_session::{
+        EnrollmentNotPermitted, SessionDenied, mint_promotion_enrollment,
+    };
+    let app = TestApp::spawn_with_settings(|s| s.auth.native_device_login_enabled = true).await;
+    let seeded = app.seed_tenant("grantsys").await;
+    let tenant = seeded.tenant_id.as_str();
+
+    let admin = grant(&app, &seeded.admin.access_token).await;
+    let admin_access = admin["access_token"].as_str().unwrap();
+    let token = mint_promotion_enrollment(&app.base_url, admin_access, tenant)
+        .await
+        .expect("an admin's native session mints a promotion token");
+    let claims = app
+        .state
+        .auth
+        .verify_enrollment_token(&token)
+        .expect("a standard enrollment token");
+    assert_eq!(claims.tenant_id, tenant);
+    assert!(claims.anchor, "Windows promotion anchors with this token");
+
+    // A plain member's session is refused as a missing right, not a dead session.
+    let member = grant(&app, &seeded.member.access_token).await;
+    let err = mint_promotion_enrollment(
+        &app.base_url,
+        member["access_token"].as_str().unwrap(),
+        tenant,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.downcast_ref::<EnrollmentNotPermitted>().is_some(), "{err:#}");
+
+    // Once the session is revoked (tray sign-out) it mints nothing.
+    let revoked = app
+        .auth_post("/api/native/session/revoke", admin_access)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status().as_u16(), 204);
+    let err = mint_promotion_enrollment(&app.base_url, admin_access, tenant)
+        .await
+        .unwrap_err();
+    assert!(err.downcast_ref::<SessionDenied>().is_some(), "{err:#}");
+}
