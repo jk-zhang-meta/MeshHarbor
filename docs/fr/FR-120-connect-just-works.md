@@ -22,7 +22,7 @@ Operator, 2026-11-18: "对于 headless machine 应当自动转对应的方法 �
 | E2 | "This device cannot capture its screen" on a headless arm64 server, with an RDP/retry card | the host (Ubuntu 22.04) runs no X server, no display manager, has no Xvfb, and its account cannot install packages; logind shows only `tty` sessions. Correction (11-18): the daemon's own log reports `code="no_display"` for every session (`capture unavailable … no primary display: connection refused`), which is right — the earlier note that it claimed an X11 session was a misreading | P2/P3 |
 | E3 | The card's "用 RDP 连接" / "重试远控" did nothing | the stage's pointer handlers captured presses on the overlay and forwarded them to the host | fixed in UI `f19f0bb46` |
 | E4 | A chooser at all | `RdpFallbackCard` asks; "自动改用 RDP" is an opt-in per device, default off (`ui/src/utils/rdpFallback.ts` `getDeviceAutoRdpFallback`) | fixed — P1 (`8123cc10d`) |
-| E5 | Virtual-desktop mode exists but never engages by itself | `MESHHARBORD_VIRTUAL_DESKTOP=1` only (`agents/meshharbord/src/main.rs` `maybe_start_virtual_desktop`), and it runs the HOST's Xvfb + openbox (`agents/meshharbord/src/virtual_desktop.rs`) — nothing is bundled | P2/P3 on the branch |
+| E5 | Virtual-desktop mode exists but never engages by itself | `MESHHARBORD_VIRTUAL_DESKTOP=1` only (`agents/meshharbord/src/main.rs` `maybe_start_virtual_desktop`), and it runs the HOST's Xvfb + openbox (`agents/meshharbord/src/virtual_desktop.rs`) — nothing is bundled | fixed in 0.4.173 (P2/P3) |
 
 ## Design
 
@@ -65,8 +65,8 @@ flowchart TD
 |---|---|---|---|
 | P0 | Field evidence E1–E5; E1 and E3 fixed and shipped | — | ✅ 2026-11-18 |
 | P1 | Viewer auto-switch; no chooser when an automatic path exists | viewer `localStorage` `meshharbor:rdp-auto-fallback:v1:<device>` = `0` | ✅ shipped `8123cc10d`, deployed 2026-11-18 (server UI) |
-| P2 | Automatic virtual desktop on a screenless host (per-user daemons) | `MESHHARBORD_VIRTUAL_DESKTOP=0` | 🔨 branch `feat/fr-120-connect-just-works` |
-| P3 | Bundled X server + WM + terminal in the Linux packages | a package without the archive keeps `no_display` | 🔨 same branch; bundle built for amd64 + arm64 |
+| P2 | Automatic virtual desktop on a screenless host (per-user daemons) | `MESHHARBORD_VIRTUAL_DESKTOP=0` | ✅ released in 0.4.173 (2026-11-18); browser session not yet field-verified |
+| P3 | Bundled X server + WM + terminal in the Linux packages | a package without the archive keeps `no_display` | ✅ released in 0.4.173: tar.gz + daemon .deb, amd64 + arm64 |
 | P4 | Connect / SSH option audit | — | planned |
 | P5 | Docs: `docs/remote-control.md` §5.1f, `docs/README.md` row | — | ✅ with P2/P3 |
 
@@ -105,3 +105,5 @@ flowchart TD
 |---|---|---|
 | 2026-11-18 | 0.4.172 + UI f19f0bb46 | E1 fixed (two Windows hosts hand-granted, then shipped); E3 fixed and deployed; E2/E4/E5 reproduced on a headless arm64 host |
 | 2026-11-18 | bundle only (arm64), by hand | on the headless arm64 host (no X packages): the bundled Xvfb starts, a client holding the cookie connects, one without it is refused (`Cannot open display`), twm and xterm stay up. twm first died for lack of fonts (`unable to open fontset`); the generated config names `fixed` and the bundle carries libX11's locale data |
+| 2026-11-18 | branch build (0.4.172 version string), by hand on the headless arm64 host | the daemon started its desktop by itself at startup (`virtual-desktop: this host has no screen, so it got one by itself`), unpacked from the bundled archive; the desktop brief turned from `no_display` to `capture_arm=x11 input_reach=full`; `capture-smoke` returned a 1920x1080 frame showing twm and the terminal; without the cookie a client is refused (`No protocol specified`). First frame showed the terminal in X's 6x13 `fixed` font — unreadable — hence the bundled DejaVu Sans Mono and X resources (cbf96455a), checked by hand. Wrong turn: the bundle as a `vd/` directory would have failed every per-user update (1f2bf1b11) |
+| 2026-11-18 | 0.4.173 published, 16 Linux root nodes rolled | all back online on 0.4.173; mesh 9 direct / 10 org relay. The field host lost its TCP path to the server (`connect to <server>:443 timed out`, from 14:22Z — an outage of its uplink, logged by the daemon itself, not by this change) and has not yet updated; a browser Connect on it is the open check |
