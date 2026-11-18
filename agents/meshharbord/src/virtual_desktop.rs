@@ -1024,6 +1024,24 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
         .as_ref()
         .map(|b| b.root.join("share/X11/locale"))
         .filter(|d| d.is_dir() && !Path::new("/usr/share/X11/locale").is_dir());
+    // FR-120 P2 — the automatic desktop's own files sit beside its cookie: a
+    // readable terminal (X resources), and a fontconfig configuration that
+    // adds the bundle's font to the host's (a server can have the config
+    // and no font at all, measured on the field host).
+    let private_dir = auth.as_deref().and_then(Path::parent);
+    let resources = private_dir.and_then(|d| {
+        let p = d.join("Xresources");
+        std::fs::write(&p, XRESOURCES).ok().map(|()| p)
+    });
+    let fonts_conf = private_dir
+        .zip(bundle.as_ref())
+        .filter(|(_, b)| b.root.join("share/fonts").is_dir())
+        .and_then(|(d, b)| {
+            let p = d.join("fonts.conf");
+            std::fs::write(&p, fonts_conf(&b.root.join("share/fonts"), d))
+                .ok()
+                .map(|()| p)
+        });
     let desktop_env = |cmd: &mut Command| {
         cmd.env("DISPLAY", &dpy)
             .stdout(Stdio::null())
@@ -1039,6 +1057,12 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
         }
         if let Some(l) = &locale_dir {
             cmd.env("XLOCALEDIR", l);
+        }
+        if let Some(f) = &fonts_conf {
+            cmd.env("FONTCONFIG_FILE", f);
+        }
+        if let Some(r) = &resources {
+            cmd.env("XENVIRONMENT", r);
         }
         with_wslg_pulse(cmd);
     };
@@ -1175,6 +1199,30 @@ fn resolve_binary(name: &str, bundle: Option<&Bundle>) -> std::path::PathBuf {
         return b.bin(name);
     }
     std::path::PathBuf::from(name)
+}
+
+/// FR-120 P2 — the terminal's look: X's built-in `fixed` (6x13 pixels) is
+/// unreadable on a 1920x1080 desktop, so xterm uses an outline font at a
+/// readable size, in a window big enough to work in. Read through
+/// `XENVIRONMENT`, so the twm menu's terminals get it too.
+const XRESOURCES: &str = "XTerm*faceName: DejaVu Sans Mono
+XTerm*faceSize: 12
+XTerm*geometry: 110x32+40+40
+XTerm*saveLines: 10000
+XTerm*background: #1e1e1e
+XTerm*foreground: #e6e6e6
+XTerm*cursorColor: #e6e6e6
+XTerm*selectToClipboard: true
+";
+
+/// FR-120 P3 — a fontconfig configuration: the host's own, when it has one,
+/// plus the bundle's fonts, with a cache in the desktop's private directory.
+fn fonts_conf(fonts: &Path, cache: &Path) -> String {
+    format!(
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n</fontconfig>\n",
+        fonts.display(),
+        cache.join("fontconfig").display()
+    )
 }
 
 /// FR-120 P2 — a twm config for a desktop nobody sits at: windows placed by

@@ -9,7 +9,8 @@ glibc 2.31 or newer and nothing else from the host:
 
     vd/bin/{Xvfb,xkbcomp,twm,xterm}
     vd/lib/       every shared library they need except glibc's own
-    vd/share/X11/xkb   keymaps
+    vd/share/X11/{xkb,locale}   keymaps, libX11's locale data
+    vd/share/fonts     DejaVu Sans Mono, for the terminal
     vd/share/doc/<package>/copyright
 
 Every binary and library gets a RUNPATH ($ORIGIN/../lib, $ORIGIN), so nothing
@@ -188,6 +189,13 @@ def main() -> None:
     # XLOCALEDIR here only when the host lacks its own.
     shutil.copytree(os.path.join(stage, "usr/share/X11/locale"),
                     os.path.join(vd, "share/X11/locale"), symlinks=True)
+    # A readable terminal font: X's built-in "fixed" is 6x13 pixels, unreadable
+    # on a 1920x1080 desktop. The daemon points fontconfig here only when the
+    # host has no configuration of its own.
+    os.makedirs(os.path.join(vd, "share/fonts"))
+    for ttf in ("DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf"):
+        shutil.copy2(os.path.join(stage, "usr/share/fonts/truetype/dejavu", ttf),
+                     os.path.join(vd, "share/fonts", ttf))
     for name in names:
         cp = os.path.join(stage, "usr/share/doc", name, "copyright")
         if os.path.isfile(cp):
