@@ -85,14 +85,13 @@ flowchart TD
   its threads run is unsound; the configured mode has always set them at startup. The desktop
   persists for the daemon's lifetime, so apps survive a reconnect. Cost: one idle Xvfb + twm +
   xterm (tens of MB) on each qualifying host.
-- **Root daemons are excluded.** A root daemon's desktop would hand every remote-control grant a
-  root shell that no SSH gate was asked about; a system install on a headless server keeps SSH.
+- ~~Root daemons are excluded~~ — reversed 2026-11-19 by the operator ("我要求拥有root权限的 headless机器 自动安装rdp 使得我们的远控可以使用"): root daemons get the automatic desktop too (0.4.174). A remote-control grant on such a host is a root desktop. The bundled desktop is used instead of installing xrdp: an xrdp install would open 3389 on every server (public relays included) and log in with system passwords, while the bundle needs no package, no port and no password.
 - **twm + xterm** are bundled (small, few libraries); openbox stays the configured mode's default
   and is preferred where the host has it.
 
 ## Open decisions
 
-- Whether root daemons should get a desktop run as an unprivileged account.
+- Whether a root daemon's desktop should run as an unprivileged account instead of root.
 
 ## Out of scope
 
@@ -108,3 +107,4 @@ flowchart TD
 | 2026-11-18 | branch build (0.4.172 version string), by hand on the headless arm64 host | the daemon started its desktop by itself at startup (`virtual-desktop: this host has no screen, so it got one by itself`), unpacked from the bundled archive; the desktop brief turned from `no_display` to `capture_arm=x11 input_reach=full`; `capture-smoke` returned a 1920x1080 frame showing twm and the terminal; without the cookie a client is refused (`No protocol specified`). First frame showed the terminal in X's 6x13 `fixed` font — unreadable — hence the bundled DejaVu Sans Mono and X resources (cbf96455a), checked by hand. Wrong turn: the bundle as a `vd/` directory would have failed every per-user update (1f2bf1b11) |
 | 2026-11-18 | 0.4.173 published, 16 Linux root nodes rolled | all back online on 0.4.173; mesh 9 direct / 10 org relay. The field host lost its TCP path to the server (`connect to <server>:443 timed out`, from 14:22Z — an outage of its uplink, logged by the daemon itself, not by this change) and has not yet updated; a browser Connect on it is the open check |
 | 2026-11-18 | 0.4.173 by the field host's own per-user update (15:55Z) | transaction `activated`; the bundle archive arrived through the transaction (its SHA-256 equals the release bundle's) and replaced the branch build's unpacked copy; the desktop came up by itself 4 s after the restart; `capture-smoke` frame shows the terminal with a legible prompt. Open: a browser Connect session on the released agent |
+| 2026-11-19 | 0.4.173, root host with xrdp running | Connect showed `x11_not_enabled`: the root daemon read xrdp's seatless session (`:10`, `Remote=yes`, no seat) as a desktop it may not capture, and 0.4.173 excluded root daemons. The RDP fallback then failed with `os error 10061` — on the CONTROLLER: its netstack SOCKS front (127.0.0.1:19086) had lost its one bind attempt to the old process during the 0.4.172 auto-update (`os error 10048`) and was never retried, so every mesh TCP connection from it was refused. Fixed in 0.4.174: root included, remote seatless sessions ignored, the SOCKS bind retried |

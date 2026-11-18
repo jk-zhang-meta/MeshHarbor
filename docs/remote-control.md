@@ -276,7 +276,7 @@ The overlay reaches a session's ICE three ways. The interface-name rule RC alway
 | macOS | CoreGraphics `CGDisplayStream`, through `scrap` (`agents/meshharbord/src/capture/scrap_backend.rs:8`) | The one macOS capture path today: there is no ScreenCaptureKit code. It reports no damage, so every frame counts as changed | — |
 | Linux, a host with scanout (X11 or Wayland) | **DRM/KMS** — the scanout plane read below the compositor (FR-36, opt-in `MESHHARBORD_DRM_CAPTURE=1`) | Compositor-independent, needs no consent, sees the greeter and a locked screen — the unattended path | the portal, then X11 |
 | Linux Wayland, **no** scanout (WSL2, containers, nested compositors) | **`xdg-desktop-portal` ScreenCast → PipeWire**, through a privilege-dropped helper in the user's session (FR-45, opt-in `MESHHARBORD_PORTAL_CAPTURE=1`) — or `org.gnome.Mutter.ScreenCast` directly where no portal backend can run (`MESHHARBORD_MUTTER_CAPTURE=1`, GNOME only, unattended). A **per-user** install in its own Wayland session with no key set switches these on by itself: mutter on GNOME, else the portal (FR-93 P2) | The only route a Wayland compositor sanctions; **attended** — a logged-in user and a consent dialog, never the greeter or a locked screen | X11 |
-| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb — by itself on a per-user install with no screen (§5.1f, FR-120), or when configured (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
+| Linux X11 | `XShm` via scrap, with XDamage deciding whether a frame is worth taking (FR-29) | Zero-copy via shared memory; on a headless box the daemon starts its own Xvfb — by itself on a host with no screen (§5.1f, FR-120), or when configured (`MESHHARBORD_VIRTUAL_DESKTOP=1`) | `NoopCapture` carrying the reason (§5.1a) |
 
 The portal path, and macOS's Screen Recording grant, produce a system permission prompt the *first* time. That's a feature, not a bug — it's the user consent layer. The Linux arms, their order and their gates are [`linux-capture.md`](linux-capture.md).
 
@@ -677,7 +677,7 @@ sequenceDiagram
 
 Connect to a Linux host with no screen used to end at `no_display` ("This
 host has no display to capture"), which the operator read as "remote desktop
-does not work here". Since FR-120 a **per-user** daemon on such a host starts
+does not work here". Since FR-120 the daemon on such a host — a per-user install or a root one — starts
 its own virtual desktop at startup, with nobody asking, so Connect opens a
 desktop with a terminal on it.
 
@@ -690,9 +690,7 @@ flowchart TD
     F -->|display manager enabled| N[capture cascade as before]
     F -->|graphical logind session| N
     F -->|live X server / DISPLAY / WAYLAND_DISPLAY| N
-    F -->|none| R{daemon runs as root?}
-    R -->|yes| N
-    R -->|no| X{X server: host Xvfb, else the package's bundle}
+    F -->|none, or only a remote seatless session such as xrdp| X{X server: host Xvfb, else the package's bundle}
     X -->|started| VD[DISPLAY + XAUTHORITY exported, desktop captured]
     X -->|cannot start| ND[no_display, logged; the daemon runs on]
 ```
@@ -701,7 +699,8 @@ flowchart TD
 |---|---|---|
 | A **display manager** counts as a screen | a root daemon starts before GDM; taking `DISPLAY` then would show the virtual desktop instead of the person's | `virtual_desktop.rs` `auto_decision` |
 | A **stale** X socket does not count | the daemon's own desktop, killed hard before a restart, leaves one; only a socket that accepts a connection is a server | `live_x_server` |
-| **Root daemons are excluded** | their desktop would be root's, turning every remote-control grant into a root shell that no SSH gate was asked about | `HostFacts.root` |
+| A **remote seatless** session (xrdp, VNC) is no screen | nobody sits in front of it and a root daemon cannot capture it; its X server is skipped when the daemon looks for a running one (a root host running xrdp read its `:10` as `x11_not_enabled`) | `graphical_session_of`, `live_x_server` |
+| **Root daemons included** (operator, 2026-11-19) | a headless server with a system install must be remote-controllable too; its desktop runs as root, so a remote-control grant on such a host is a root desktop — grant RC accordingly. Until 0.4.174 root daemons were excluded | `auto_decision` |
 | A **private cookie**, never `-ac` | the automatic desktop comes up on shared servers, where `-ac` lets any local account connect and type into it; the configured mode keeps `-ac`, since its desktop may be another user's | `access_args`, `write_xauthority` |
 | A failure **never fails the daemon** | the host keeps `no_display`; only the configured mode refuses to start without its desktop | `main.rs` `maybe_start_automatic_virtual_desktop` |
 | Media is **not** pinned to TCP | that pin is the WSL / hostile-NAT answer of the configured mode, not a property of a headless host | same |

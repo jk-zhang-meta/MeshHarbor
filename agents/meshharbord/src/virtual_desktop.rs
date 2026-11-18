@@ -112,16 +112,16 @@ pub struct HostFacts {
     /// daemon starts before GDM, and taking `DISPLAY` then would show a
     /// virtual desktop instead of the person's.
     pub display_manager: bool,
-    /// logind shows an active X11 or Wayland session (a person, or xrdp).
+    /// logind shows an active X11 or Wayland session on this machine's own
+    /// screen. A REMOTE session on no seat (xrdp, a VNC server) does not
+    /// count: nobody sits in front of it, and a root daemon cannot capture
+    /// it, so the host is as screenless as one with no session at all.
     pub graphical_session: bool,
     /// The daemon itself was started with `DISPLAY` or `WAYLAND_DISPLAY`.
     pub display_env: bool,
-    /// An X server answers on `/tmp/.X11-unix` (a stale socket does not count).
+    /// An X server answers on `/tmp/.X11-unix` (a stale socket does not count,
+    /// nor does the X server of a remote seatless session).
     pub live_x_server: bool,
-    /// The daemon runs as root. A desktop it started would be root's, and
-    /// every remote-control grant would become a root shell, which no
-    /// SSH gate was asked about; a system install keeps `no_display`.
-    pub root: bool,
 }
 
 /// FR-120 P2 — should this daemon start its own desktop, with nobody asking?
@@ -146,9 +146,6 @@ pub fn auto_decision(f: &HostFacts) -> Result<(), &'static str> {
     if f.live_x_server {
         return Err("an X server is already running");
     }
-    if f.root {
-        return Err("the daemon runs as root (a system install)");
-    }
     Ok(())
 }
 
@@ -156,29 +153,90 @@ pub fn auto_decision(f: &HostFacts) -> Result<(), &'static str> {
 #[cfg(target_os = "linux")]
 pub fn host_facts() -> HostFacts {
     let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let sessions = graphical_sessions();
+    let remote_displays: Vec<u32> = sessions
+        .iter()
+        .filter(|g| g.remote_seatless)
+        .filter_map(|g| g.display)
+        .collect();
     HostFacts {
         explicit: explicit_setting(),
         display_manager: ["/etc/systemd/system/display-manager.service"]
             .iter()
             .any(|p| Path::new(p).exists()),
-        graphical_session: crate::companion::graphical_session().is_ok(),
+        graphical_session: sessions.iter().any(|g| !g.remote_seatless),
         display_env: env_set("DISPLAY") || env_set("WAYLAND_DISPLAY"),
-        live_x_server: live_x_server(Path::new(X11_UNIX_DIR)),
-        // SAFETY: `geteuid` reads the caller's own credentials; it cannot fail.
-        root: unsafe { libc::geteuid() } == 0,
+        live_x_server: live_x_server(Path::new(X11_UNIX_DIR), &remote_displays),
     }
+}
+
+/// FR-120 — one active graphical logind session, as the automatic decision
+/// sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphicalSession {
+    /// `Remote=yes` on no seat: xrdp's or a VNC server's session.
+    pub remote_seatless: bool,
+    /// Its X display number (`:10` → 10), when it has one.
+    pub display: Option<u32>,
+}
+
+/// [`GraphicalSession`] out of one `loginctl show-session` text; `None` for
+/// a session that is not an active X11/Wayland one.
+pub fn graphical_session_of(show: &str) -> Option<GraphicalSession> {
+    let field = |k: &str| {
+        show.lines()
+            .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+            .map(str::trim)
+            .unwrap_or("")
+    };
+    if !matches!(field("Type"), "x11" | "wayland") || field("Active") != "yes" {
+        return None;
+    }
+    Some(GraphicalSession {
+        remote_seatless: field("Remote") == "yes" && field("Seat").is_empty(),
+        display: field("Display")
+            .strip_prefix(':')
+            .and_then(|d| d.split('.').next())
+            .and_then(|d| d.parse().ok()),
+    })
+}
+
+/// Every active graphical logind session on this host (none without logind).
+#[cfg(target_os = "linux")]
+fn graphical_sessions() -> Vec<GraphicalSession> {
+    let Ok(list) = Command::new("loginctl")
+        .args(["list-sessions", "--no-legend", "--no-pager"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&list.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter_map(|id| {
+            let out = Command::new("loginctl")
+                .args(["show-session", id, "--no-pager"])
+                .output()
+                .ok()?;
+            graphical_session_of(&String::from_utf8_lossy(&out.stdout))
+        })
+        .collect()
 }
 
 /// Does any X server answer on a socket in `dir`? A server killed hard leaves
 /// its socket behind, and the daemon's own desktop from before a restart is
 /// exactly that, so only a socket that accepts a connection counts.
 #[cfg(unix)]
-fn live_x_server(dir: &Path) -> bool {
+fn live_x_server(dir: &Path, ignore: &[u32]) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
     entries.filter_map(|e| e.ok()).any(|e| {
-        e.file_name().to_string_lossy().starts_with('X')
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(n) = name.strip_prefix('X') else {
+            return false;
+        };
+        !n.parse::<u32>().is_ok_and(|n| ignore.contains(&n))
             && std::os::unix::net::UnixStream::connect(e.path()).is_ok()
     })
 }
@@ -1538,10 +1596,6 @@ mod tests {
                 live_x_server: true,
                 ..headless
             },
-            HostFacts {
-                root: true,
-                ..headless
-            },
         ] {
             assert!(auto_decision(&f).is_err(), "{f:?}");
         }
@@ -1587,6 +1641,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// FR-120 — xrdp's session (Remote, no seat) is no screen; a person's
+    /// session on seat0 is one, and a tty session is no graphical session.
+    #[test]
+    fn a_remote_seatless_session_is_no_screen() {
+        let xrdp = "Type=x11\nActive=yes\nRemote=yes\nSeat=\nDisplay=:10\nService=xrdp-sesman\n";
+        assert_eq!(
+            graphical_session_of(xrdp),
+            Some(GraphicalSession {
+                remote_seatless: true,
+                display: Some(10)
+            })
+        );
+        let seat0 = "Type=wayland\nActive=yes\nRemote=no\nSeat=seat0\nDisplay=\n";
+        assert_eq!(
+            graphical_session_of(seat0),
+            Some(GraphicalSession {
+                remote_seatless: false,
+                display: None
+            })
+        );
+        assert_eq!(
+            graphical_session_of("Type=tty\nActive=yes\nRemote=yes\n"),
+            None
+        );
+        assert_eq!(
+            graphical_session_of("Type=x11\nActive=no\nSeat=seat0\n"),
+            None
+        );
+    }
+
     /// FR-120 P2 — a socket an X server killed hard left behind (the daemon's
     /// own desktop, before a restart) is no running server.
     #[cfg(unix)]
@@ -1595,13 +1679,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mh-x11-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(!live_x_server(&dir));
+        assert!(!live_x_server(&dir, &[]));
         let sock = dir.join("X5");
         drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
         assert!(sock.exists());
-        assert!(!live_x_server(&dir), "a dead socket must not count");
+        assert!(!live_x_server(&dir, &[]), "a dead socket must not count");
         let _l = std::os::unix::net::UnixListener::bind(dir.join("X6")).unwrap();
-        assert!(live_x_server(&dir), "a listening one must");
+        assert!(live_x_server(&dir, &[]), "a listening one must");
+        assert!(
+            !live_x_server(&dir, &[6]),
+            "nor a remote seatless session's own server (xrdp's)"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
