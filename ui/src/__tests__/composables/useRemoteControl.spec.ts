@@ -9,6 +9,7 @@ import { frameRateAnswerOf } from '@/composables/frameRate'
 // carry the important invariants.
 import {
   browserButton,
+  isOverlayUiTarget,
   grantHoldsRecord,
   openRecordChannel,
   kbdCodeToHid,
@@ -195,6 +196,29 @@ function keyEvent(code: string, mods: Partial<{ ctrl: boolean; alt: boolean; met
     shiftKey: !!mods.shift,
   } as KeyboardEvent
 }
+
+describe('isOverlayUiTarget', () => {
+  it('claims presses on the cannot-capture panel and marked UI, never the video', () => {
+    const stage = document.createElement('div')
+    const video = document.createElement('video')
+    const overlay = document.createElement('div')
+    overlay.className = 'no-media-overlay'
+    const rdp = document.createElement('button')
+    overlay.appendChild(rdp)
+    const marked = document.createElement('div')
+    marked.setAttribute('data-rc-ui', '')
+    const inner = document.createElement('span')
+    marked.appendChild(inner)
+    stage.append(video, overlay, marked)
+    expect(isOverlayUiTarget(rdp)).toBe(true)
+    expect(isOverlayUiTarget(overlay)).toBe(true)
+    expect(isOverlayUiTarget(inner)).toBe(true)
+    expect(isOverlayUiTarget(video)).toBe(false)
+    expect(isOverlayUiTarget(stage)).toBe(false)
+    expect(isOverlayUiTarget(null)).toBe(false)
+    expect(isOverlayUiTarget(window)).toBe(false)
+  })
+})
 
 describe('browserButton', () => {
   it.each([

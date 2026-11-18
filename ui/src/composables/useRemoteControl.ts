@@ -11633,6 +11633,7 @@ export function useRemoteControl(
     }
 
     function onPointerMove(ev: PointerEvent) {
+      if (fromOverlayUi(ev)) return
       // FR-111 — a finger's moves are the recognizer's to read.
       if (isGestureTouch(ev)) {
         touchStep('move', ev)
@@ -11670,7 +11671,17 @@ export function useRemoteControl(
       pendingMove = null
     }
 
+    // The stage also hosts real UI over the video: the "cannot capture" panel
+    // with its RDP / retry buttons, and anything marked `data-rc-ui`. A press
+    // there is the viewer's own, never the host's: capturing it to the stage
+    // retargeted the click away from the button (field 11-18: "用 RDP 连接" and
+    // "重试远控" did nothing) and forwarded a stray click to the host.
+    function fromOverlayUi(ev: Event): boolean {
+      return isOverlayUiTarget(ev.target)
+    }
+
     function onPointerDown(ev: PointerEvent) {
+      if (fromOverlayUi(ev)) return
       ev.preventDefault()
       // FR-111 — a finger presses nothing yet: the recognizer decides what it
       // is (a tap, a drag, a long press, half of a two-finger gesture). One
@@ -11730,6 +11741,9 @@ export function useRemoteControl(
     }
 
     function onPointerUp(ev: PointerEvent) {
+      // A press that started on the video holds pointer capture, so its up is
+      // targeted at the stage; an overlay target means the press was the UI's.
+      if (fromOverlayUi(ev)) return
       if (isGestureTouch(ev)) {
         try { surface.releasePointerCapture(ev.pointerId) } catch { /* noop */ }
         touchStep('up', ev)
@@ -11796,6 +11810,7 @@ export function useRemoteControl(
     const pixelWheel = createWheelSteps()
     let pixelWheelIdle: ReturnType<typeof setTimeout> | null = null
     function onWheel(ev: WheelEvent) {
+      if (fromOverlayUi(ev)) return
       ev.preventDefault()
       // Browser uses positive Y for down; agent does the same.
       if (ev.deltaMode !== 0) {
@@ -12565,7 +12580,10 @@ export function useRemoteControl(
     }
 
     // Disable the OS-native context menu so right-click forwards cleanly.
-    function onContextMenu(ev: MouseEvent) { ev.preventDefault() }
+    function onContextMenu(ev: MouseEvent) {
+      if (fromOverlayUi(ev)) return
+      ev.preventDefault()
+    }
 
     surface.addEventListener('pointermove', onPointerMove)
     // FR-1 P6 — where supported (Chromium), also sample at device rate:
@@ -15440,6 +15458,14 @@ export function translateModifierForHost(
     return 0xe3
   }
   return code
+}
+
+/** Whether a pointer/wheel event's target is the viewer's own UI drawn over
+ *  the video (the "cannot capture" panel, or anything marked `data-rc-ui`),
+ *  which the stage must leave alone instead of forwarding to the host. */
+export function isOverlayUiTarget(target: EventTarget | null): boolean {
+  const el = target as Element | null
+  return typeof el?.closest === 'function' && el.closest('.no-media-overlay, [data-rc-ui]') !== null
 }
 
 export { browserButton, kbdCodeToHid }
