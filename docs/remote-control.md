@@ -266,6 +266,66 @@ The overlay reaches a session's ICE three ways. The interface-name rule RC alway
 
 **Verify on a device.** Each session logs one line, `rc ICE: overlay excluded (device policy rc_overlay=off, the default)` (or `allowed …`), with `overlay_blocks=N`. A dropped remote candidate logs at DEBUG. With `rc_overlay` on, nothing is filtered beyond the name rule, which is the behaviour from before the switch existed.
 
+### 4.5 A session follows the zone routes (FR-121)
+
+Logical network zones (`crates/modules/network/src/network_zones.rs`) route the mesh like a router:
+a zone is the LAN behind one of the router's ports, its gateways are the router, and the backbone
+edges the administrator draws are the router's links. The mesh's pair rule,
+`pair_requires_backbone_only` (`network_zones.rs:333`), says two devices in the same zone may meet
+directly, and two in different zones where either is gateway-only (`router_only`) meet only gateway
+to gateway; which gateways, and over how many hops, the mesh decides from measurements
+(`org_relay.rs` `select_path`). Remote desktop is WebRTC, outside the mesh, so before FR-121 it
+ignored all of that: a host in a gateway-only zone could pair directly with a controller anywhere.
+Now every session gets a **zone route**, decided by the hub with that same rule
+(`crates/modules/fleet/src/hub.rs:918` `zones_need_gateways`), and both ends obey it.
+
+```mermaid
+flowchart TD
+    S[session] --> Z{tenant has zones?}
+    Z -->|no| O["Open<br/>nothing changes"]
+    Z -->|yes| C{controller on a mesh node?<br/>its local agent names it}
+    C -->|no| D["direct<br/>each public candidate placed by its address<br/>(country → auto_countries → default zone);<br/>one that may not meet the host is dropped"]
+    C -->|yes| P{zones need gateways?}
+    P -->|no| DM["direct_mesh<br/>as direct, plus a relay inside the mesh<br/>on both ends as the fallback"]
+    P -->|yes| M["mesh<br/>only the two ends' relays inside the mesh;<br/>the mesh carries the media gateway to gateway"]
+```
+
+| Route | Hub (`hub.rs:1278` `zone_admits_candidate`) | Device (`agents/meshharbord/src/rc_overlay.rs:151` `with_zone`) | Viewer (`ui/src/composables/useRemoteControl.ts:3953` `zoneRoutePlan`) |
+|---|---|---|---|
+| `Open` | passes everything | unchanged | unchanged |
+| `direct` | drops a public controller candidate whose zone may not meet the host directly; LAN, mDNS names pass | admits no public address it was not handed — an inbound check from a stranger (a would-be `prflx`) gets no answer | unchanged; if the session then does not connect, one sentence says why |
+| `direct_mesh` | as `direct`, plus the controller's own mesh relay | as `direct`, plus its own loopback TURN first among its servers | adds its local agent's relay |
+| `mesh` | only the controller's relay on its overlay address one way, only the device's relay inside the mesh the other | relay candidates only, through its own loopback TURN only | adds its local agent's relay; the hub passes nothing else, so ICE can pair only those |
+
+**Relaying inside the mesh.** Each end relays through its OWN loopback TURN
+(`agents/meshharbord/src/rc_local_turn.rs:145` `self_ice_server`), whose relay addresses are the
+node's overlay address. On a TUN node that is an OS socket on the overlay IP; on a netstack node —
+every zone gateway runs one — the relay socket is a netstack UDP socket
+(`crates/tunnel-core/src/transport/turn_host.rs:117` `start_netstack`). Either way what the relay
+sends is mesh traffic, so in-zone it goes direct or by an in-zone relay, and cross-zone it goes over
+the gateways the mesh chose. A relay pair on a loopback / overlay address is not treated as a
+constrained transport (`peer.rs` `detect_constrained_transport`); the mesh carrier underneath decides that.
+
+**When the route is decided.** The request never waits for the browser's probe of its local agent
+(the first-frame budget, `rcLocalRelay.spec.ts`), so a descriptor found late rides `rc:sdp.offer`,
+and the hub settles the route there (`hub.rs:1383` `settle_zone_route`) and passes it on with
+`rc:sdp.offer` to the device, which rebuilds its decision (`rc_overlay.rs:183` `rezone`), keeping the
+TURN the daemon resolved at `rc:request` for a delegated worker.
+
+> ⚠️ The controller's node is named by its local agent's descriptor and is **not verified**, on
+> purpose: a false claim buys nothing. On `mesh` only a relay on an overlay address passes (a
+> descriptor naming a public address is not a relay, `session_zone`), and on `direct` every public
+> candidate is placed by its own address anyway.
+>
+> ⚠️ A strict policy with no zone table — the fail-closed reading of a zone snapshot the server could
+> not read — is **unresolved**, never "no zones": nothing meets such a device directly by an address.
+
+**Verify on a device.** The session's `rc ICE: overlay …` line carries `zone_strict`,
+`zone_mesh_fallback`, `zone_mesh_only` and `zone_turn`; the hub logs `rc zone route: settled …` and
+each candidate the zones drop (`rc zone route: a candidate the zones do not allow dropped`). The
+nominated pair is in `per-session ICE path detected`: on `mesh` both ends are `relay` on overlay
+addresses.
+
 ## 5. Capture & encode pipeline
 
 ### 5.1 Capture targets per OS

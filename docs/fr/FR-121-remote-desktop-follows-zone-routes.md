@@ -49,28 +49,31 @@ flowchart LR
    candidate in both directions and tells the host `zone_route = mesh`; the host gathers relay
    only (`RTCIceTransportPolicy::Relay`) through ITS OWN loopback TURN. Media then travels
    relay socket → mesh → relay socket, so the mesh's own path choice (E1, E2) carries it: in-zone
-   direct or relay, cross-zone gateway to gateway. A controller on no mesh node gets the session
-   refused with `zone_requires_mesh_controller` and one sentence in the viewer.
+   direct or relay, cross-zone gateway to gateway. A controller on no mesh node cannot be placed
+   on a mesh route; its public candidates are placed one by one (`direct`), a cross-zone session
+   then does not connect, and the viewer says why in one sentence.
 3. **Same-zone session.** Unchanged P2P, plus: a controller's public candidate whose address
    belongs to another zone is dropped (defence in depth for a strict host), the viewer's ICE
    servers are the host zone's, and the mesh relay path is offered as a fallback candidate.
 4. **Loopback TURN inside the mesh (P1).** `LocalTurnHost` gets a relay generator backed by the
    netstack's `NsUdpSocket` (send/recv any overlay address), so every node — TUN or netstack —
    hosts it; peers a relay may reach are limited to overlay addresses.
-5. **Viewer (P4).** The viewer always probes its local agent and offers its relay when one
-   answers (no per-device opt-in on this path); `rc:ready`/`rc:answer` say which route the hub
-   chose, for the status line.
+5. **Viewer (P4).** The viewer always probes its local agent (cached for a minute) but never
+   holds the request for it; a descriptor found late rides `rc:sdp.offer`, where the hub settles
+   the route and passes it to the device. On a zoned route the viewer adds its local relay; the
+   hub passes on only the candidates the route allows, so no relay-only policy is needed in the
+   browser.
 
 ## Phases
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
 | P0 | Evidence E1–E5; this spec | — | ✅ 2026-11-19 |
-| P1 | Netstack relay generator for the loopback TURN; hosted on every node | `MESHHARBORD_LOCAL_TURN=0` | planned |
-| P2 | Host side: `zone_route = mesh` → relay-only through its own loopback TURN; strict-zone address filter (`RcOverlay` zone state) | an older server never sends `zone_route` | planned |
-| P3 | Hub: per-session zone route decision, candidate filtering both ways, viewer ICE servers, `zone_requires_mesh_controller` | `app.rc_zone_routes = off` | planned |
-| P4 | Viewer: local relay always offered, route on the status line, the refusal sentence | — | planned |
-| P5 | Docs: `docs/remote-control.md` § zone routes (mermaid), `docs/overlay-communication.md` cross-reference, `docs/README.md` row | — | planned |
+| P1 | Netstack relay generator for the loopback TURN; hosted on every node | `MESHHARBORD_LOCAL_TURN=0` | ✅ on master (unit: `a_netstack_turn_relays_into_the_mesh`, mutation-checked); field pending |
+| P2 | Host side: `zone_route` (`direct` / `direct_mesh` / `mesh`) on `rc:request`, superseded by `rc:sdp.offer`; relay-only through its own loopback TURN on `mesh`; the address filter on every zoned route | an older server never sends `zone_route` | ✅ on master; field pending |
+| P3 | Hub: per-session zone route by the mesh's pair rule, settled at the offer; candidate filtering both ways (trickle, SDP, file children); viewer ICE servers | a tenant without zones is `Open` | ✅ on master; field pending |
+| P4 | Viewer: probe always (cached, never before the request), descriptor on the offer when late, local relay added on zoned routes, one sentence when a zoned session from no mesh node fails | — | ✅ on master; field pending |
+| P5 | Docs: `docs/remote-control.md` §4.5 (mermaid, table), `docs/README.md` row | — | ✅ |
 
 ## Acceptance criteria
 
@@ -79,7 +82,7 @@ flowchart LR
 - [ ] Same-zone sessions keep their direct pair (p50 unchanged within 10 %).
 - [ ] A browser on no mesh node, cross-zone to a gateway-only host, gets the one-sentence refusal, no hang.
 - [ ] Works with both ends on the userspace netstack (no TUN).
-- [ ] `docs/remote-control.md` describes the zone routes with a mermaid diagram, and `docs/README.md` indexes it.
+- [x] `docs/remote-control.md` describes the zone routes with a mermaid diagram, and `docs/README.md` indexes it.
 
 ## Out of scope
 
@@ -90,3 +93,4 @@ flowchart LR
 
 | Date | Version | Result |
 |---|---|---|
+| 2026-11-19 | branch, before release | integration: 104 remote-control / share / zone tests pass; 4 `business_isolation_tests` (`staged_*zone*`) fail identically on master `047208482` (baseline, pre-existing) |
