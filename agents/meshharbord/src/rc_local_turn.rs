@@ -80,7 +80,8 @@ const BIND_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_HEAD: usize = 16 * 1024;
 
 /// Browser origins allowed to read the descriptor across the public→loopback
-/// (Private-Network-Access) boundary. An origin outside this set gets no CORS
+/// (Private-Network-Access) boundary, besides the servers this daemon is
+/// enrolled with ([`set_server_origins`]). An origin outside both gets no CORS
 /// headers → the browser blocks the read → the probe is a graceful no-op.
 const ALLOWED_ORIGINS: &[&str] = &[
     "https://meshharbor.itachi.fans",
@@ -422,7 +423,8 @@ where
         return;
     };
     let (verb, path, origin) = parse_request_head(&head);
-    let allow = allowed_origin(origin.as_deref());
+    let allowed = allowed_origin(origin.as_deref());
+    let allow = allowed.as_deref();
 
     let response = match verb.as_str() {
         "OPTIONS" => preflight_response(allow),
@@ -643,10 +645,52 @@ fn parse_request_head(head: &str) -> (String, String, Option<String>) {
     (verb, path, origin)
 }
 
+/// FR-121 — the web origins of the servers this daemon is enrolled with (the
+/// primary and every `[[orgs]]` entry): the pages that may read the
+/// descriptor. Field (2026-11-19): the list held only a pre-rename host, so on
+/// the production origin every probe was blocked and a browser on a mesh node
+/// was never placed on it — the zone route could not use the mesh.
+static SERVER_ORIGINS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// Record the enrolled servers' origins (`server_url` values).
+pub fn set_server_origins<'a>(server_urls: impl IntoIterator<Item = &'a str>) {
+    let mut origins: Vec<String> = Vec::new();
+    for o in server_urls.into_iter().filter_map(origin_of) {
+        if !origins.contains(&o) {
+            origins.push(o);
+        }
+    }
+    *SERVER_ORIGINS.write().unwrap_or_else(|e| e.into_inner()) = origins;
+}
+
+/// The browser `Origin` of `url`: `scheme://host[:port]`, lower-case, the
+/// scheme's default port omitted — what a page on that server sends.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    let authority = authority.to_ascii_lowercase();
+    let default = if scheme == "https" { ":443" } else { ":80" };
+    let authority = authority.strip_suffix(default).unwrap_or(&authority);
+    Some(format!("{scheme}://{authority}"))
+}
+
 /// The origin to reflect in `Access-Control-Allow-Origin`, or `None` to emit no
 /// CORS headers (an origin outside the allowlist).
-fn allowed_origin(origin: Option<&str>) -> Option<&str> {
-    origin.filter(|o| ALLOWED_ORIGINS.contains(o))
+fn allowed_origin(origin: Option<&str>) -> Option<String> {
+    let o = origin?;
+    let enrolled = SERVER_ORIGINS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|s| s == o);
+    (enrolled || ALLOWED_ORIGINS.contains(&o)).then(|| o.to_string())
 }
 
 /// CORS + Private-Network-Access headers, emitted only for an allowed origin.
@@ -751,15 +795,46 @@ mod tests {
     #[test]
     fn allowlist_only_passes_known_origins() {
         assert_eq!(
-            allowed_origin(Some("https://meshharbor.itachi.fans")),
+            allowed_origin(Some("https://meshharbor.itachi.fans")).as_deref(),
             Some("https://meshharbor.itachi.fans")
         );
         assert_eq!(
-            allowed_origin(Some("http://localhost:5000")),
+            allowed_origin(Some("http://localhost:5000")).as_deref(),
             Some("http://localhost:5000")
         );
         assert_eq!(allowed_origin(Some("https://evil.example")), None);
         assert_eq!(allowed_origin(None), None);
+    }
+
+    /// FR-121 — the page of the server the daemon is enrolled with may read
+    /// the descriptor (a path on the server does not change its origin); a
+    /// look-alike host, another scheme or another port may not.
+    #[test]
+    fn the_enrolled_servers_page_may_read_the_descriptor() {
+        assert_eq!(
+            origin_of("https://WWW.Example.org:443/meshharbor/").as_deref(),
+            Some("https://www.example.org")
+        );
+        assert_eq!(
+            origin_of("http://192.0.2.7:8080/x").as_deref(),
+            Some("http://192.0.2.7:8080")
+        );
+        assert_eq!(origin_of("wss://example.org"), None);
+        set_server_origins([
+            "https://www.example.org/meshharbor",
+            "https://org2.example.net",
+        ]);
+        for ok in ["https://www.example.org", "https://org2.example.net"] {
+            assert_eq!(allowed_origin(Some(ok)).as_deref(), Some(ok));
+        }
+        for no in [
+            "https://www.example.org.evil.example",
+            "http://www.example.org",
+            "https://www.example.org:8443",
+        ] {
+            assert_eq!(allowed_origin(Some(no)), None, "{no}");
+        }
+        set_server_origins(std::iter::empty());
     }
 
     #[test]

@@ -5614,6 +5614,11 @@ async fn run_cmd(
     // a co-located corp-Chrome controller (which can't punch direct) relays
     // through the overlay instead of the capped far coturn. Default-OFF; inert
     // without an overlay IP. Spawned before `cfg` moves into the signaling task.
+    // FR-121 — the enrolled servers' pages are the ones that may read it.
+    meshharbord::rc_local_turn::set_server_origins(
+        std::iter::once(cfg.server_url.as_str())
+            .chain(cfg.orgs.iter().map(|o| o.server_url.as_str())),
+    );
     meshharbord::rc_local_turn::spawn(
         overlay_view_tx.subscribe(),
         cfg.agent_id.clone(),
