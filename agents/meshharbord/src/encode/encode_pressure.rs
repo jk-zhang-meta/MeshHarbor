@@ -406,6 +406,158 @@ impl DownscaleTier {
     }
 }
 
+/// Long-edge caps the software (libvpx) pump steps through, largest first.
+/// The first is the pump's own software cap (`sw_res_cap_long_edge`).
+pub const SW_TIER_LONG_EDGES: [u32; 4] = [1920, 1600, 1280, 1024];
+
+/// The frame rate the software tier defends: the software pace's floor.
+pub const SW_TIER_FPS: f32 = 30.0;
+
+/// Windows (≈2 s each) the encode must miss [`SW_TIER_FPS`] before the tier
+/// steps down, and windows of proven headroom, under motion, before it steps
+/// back up.
+pub const SW_TIER_DOWN_WINDOWS: u32 = 3;
+pub const SW_TIER_UP_WINDOWS: u32 = 15;
+
+/// Fresh frames a window must carry to count as "under motion" for a step up:
+/// a static screen encodes cheaply and would predict headroom it does not have.
+pub const SW_TIER_MOTION_FRAMES: u64 = 10;
+
+/// Spacing before a step up (each change rebuilds the encoder and sends a
+/// keyframe); a step down only waits for its own evidence.
+pub const SW_TIER_UP_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The software pump's resolution tier. libvpx's cost follows the pixels, not
+/// the bitrate (FR-112 §2), and its pace never goes below 30 fps, so on a host
+/// that cannot encode its screen at 30 (a one-core server: 1920×1080 at
+/// 4:4:4 took 60–67 ms a frame, 8–13 fps, and the pointer felt it) shrinking
+/// the frame is the only lever left. Measured, not guessed: a step down goes
+/// straight to the largest tier whose predicted cost (cost scales with the
+/// pixel count) fits 90 % of the 30 fps budget; a step up needs the next
+/// tier's predicted cost under 60 % of it, sustained under motion. Pure; kill
+/// switch `MESHHARBORD_SW_AUTO_DOWNSCALE=0`.
+pub struct SoftwareTier {
+    tier: usize,
+    ewma_ms: f32,
+    down_run: u32,
+    up_run: u32,
+    last_change: Option<std::time::Instant>,
+    enabled: bool,
+}
+
+impl SoftwareTier {
+    pub fn new() -> Self {
+        Self::with_enabled(!matches!(
+            node_env("SW_AUTO_DOWNSCALE").as_deref(),
+            Some("0") | Some("false") | Some("off")
+        ))
+    }
+
+    fn with_enabled(enabled: bool) -> Self {
+        Self {
+            tier: 0,
+            ewma_ms: 0.0,
+            down_run: 0,
+            up_run: 0,
+            last_change: None,
+            enabled,
+        }
+    }
+
+    /// The long-edge cap (`None` = the pump's own software cap applies).
+    pub fn cap(&self) -> Option<u32> {
+        (self.tier > 0).then(|| SW_TIER_LONG_EDGES[self.tier])
+    }
+
+    /// Fold one heartbeat window: its average encode time, the fresh frames
+    /// it captured, the long edge it encoded at and the screen's own. Returns
+    /// the new cap when the tier changes.
+    pub fn observe(
+        &mut self,
+        avg_encode_ms: f32,
+        fresh_frames: u64,
+        encoded_long_edge: u32,
+        native_long_edge: u32,
+        now: std::time::Instant,
+    ) -> Option<Option<u32>> {
+        if !self.enabled
+            || !avg_encode_ms.is_finite()
+            || avg_encode_ms <= 0.0
+            || encoded_long_edge == 0
+            || native_long_edge == 0
+        {
+            return None;
+        }
+        const ALPHA: f32 = 0.4;
+        self.ewma_ms = if self.ewma_ms <= 0.0 {
+            avg_encode_ms
+        } else {
+            (1.0 - ALPHA) * self.ewma_ms + ALPHA * avg_encode_ms
+        };
+        let budget = 1000.0 / SW_TIER_FPS;
+        // A tier larger than the screen encodes the screen.
+        let eff = |edge: u32| edge.min(native_long_edge);
+        let predict = |edge: u32| {
+            let r = eff(edge) as f32 / encoded_long_edge as f32;
+            self.ewma_ms * r * r
+        };
+        if self.ewma_ms > budget {
+            self.down_run += 1;
+            self.up_run = 0;
+        } else {
+            self.down_run = 0;
+            let up_fits = self.tier > 0
+                && fresh_frames >= SW_TIER_MOTION_FRAMES
+                && predict(SW_TIER_LONG_EDGES[self.tier - 1]) < 0.6 * budget;
+            self.up_run = if up_fits { self.up_run + 1 } else { 0 };
+        }
+        if self.down_run >= SW_TIER_DOWN_WINDOWS {
+            // The largest smaller tier that fits, else the smallest that
+            // shrinks the frame at all; none when the frame is already
+            // at or under the floor.
+            let smaller: Vec<usize> = (self.tier + 1..SW_TIER_LONG_EDGES.len())
+                .filter(|&i| eff(SW_TIER_LONG_EDGES[i]) < encoded_long_edge)
+                .collect();
+            let next = smaller
+                .iter()
+                .copied()
+                .find(|&i| predict(SW_TIER_LONG_EDGES[i]) <= 0.9 * budget)
+                .or(smaller.last().copied());
+            match next {
+                Some(i) => return Some(self.change(i, now)),
+                None => self.down_run = 0,
+            }
+        }
+        let cooled = self
+            .last_change
+            .is_none_or(|t| now.duration_since(t) >= SW_TIER_UP_COOLDOWN);
+        if self.up_run >= SW_TIER_UP_WINDOWS && cooled {
+            return Some(self.change(self.tier - 1, now));
+        }
+        None
+    }
+
+    fn change(&mut self, tier: usize, now: std::time::Instant) -> Option<u32> {
+        self.tier = tier;
+        // The next windows measure the new size; the old average says nothing.
+        self.ewma_ms = 0.0;
+        self.down_run = 0;
+        self.up_run = 0;
+        self.last_change = Some(now);
+        self.cap()
+    }
+
+    pub fn ewma_ms(&self) -> f32 {
+        self.ewma_ms
+    }
+}
+
+impl Default for SoftwareTier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for DownscaleTier {
     fn default() -> Self {
         Self::new()
@@ -429,6 +581,88 @@ mod tests {
             high_ms: 25.0,
             low_ms: 15.0,
             enabled: true,
+        }
+    }
+
+    /// The one-core host: 1920×1080 at 65 ms a frame. Three windows of
+    /// evidence, then one step straight to the tier that holds 30 fps.
+    #[test]
+    fn a_one_core_host_drops_straight_to_the_tier_that_holds_30_fps() {
+        let mut t = SoftwareTier::with_enabled(true);
+        let now = std::time::Instant::now();
+        assert_eq!(t.observe(65.0, 20, 1920, 1920, now), None);
+        assert_eq!(t.observe(65.0, 20, 1920, 1920, now), None);
+        assert_eq!(t.observe(65.0, 20, 1920, 1920, now), Some(Some(1280)));
+        assert_eq!(t.cap(), Some(1280));
+        // At 1280 it costs ~29 ms: it holds, and 1600 would not fit.
+        for _ in 0..40 {
+            assert_eq!(
+                t.observe(
+                    29.0,
+                    30,
+                    1280,
+                    1920,
+                    now + std::time::Duration::from_secs(120)
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_just_over_budget_gives_up_the_least() {
+        let mut t = SoftwareTier::with_enabled(true);
+        let now = std::time::Instant::now();
+        for _ in 0..2 {
+            assert_eq!(t.observe(36.0, 20, 1920, 1920, now), None);
+        }
+        assert_eq!(t.observe(36.0, 20, 1920, 1920, now), Some(Some(1600)));
+    }
+
+    /// A static screen encodes cheaply; it is no evidence of headroom.
+    /// Motion with headroom steps back up, once the cooldown has passed.
+    #[test]
+    fn only_headroom_under_motion_steps_back_up() {
+        let mut t = SoftwareTier::with_enabled(true);
+        let t0 = std::time::Instant::now();
+        for _ in 0..3 {
+            t.observe(36.0, 20, 1920, 1920, t0);
+        }
+        assert_eq!(t.cap(), Some(1600));
+        let later = t0 + std::time::Duration::from_secs(120);
+        for _ in 0..40 {
+            assert_eq!(t.observe(4.0, 2, 1600, 1920, later), None, "static");
+        }
+        let soon = t0 + std::time::Duration::from_secs(10);
+        let mut t2 = SoftwareTier::with_enabled(true);
+        for _ in 0..3 {
+            t2.observe(36.0, 20, 1920, 1920, t0);
+        }
+        for _ in 0..20 {
+            assert_eq!(t2.observe(10.0, 20, 1600, 1920, soon), None, "cooldown");
+        }
+        let mut stepped = None;
+        for _ in 0..SW_TIER_UP_WINDOWS {
+            stepped = t.observe(10.0, 20, 1600, 1920, later);
+        }
+        assert_eq!(stepped, Some(None), "back to the software cap");
+    }
+
+    #[test]
+    fn a_small_screen_only_takes_tiers_that_shrink_it() {
+        let now = std::time::Instant::now();
+        let mut t = SoftwareTier::with_enabled(true);
+        for _ in 0..2 {
+            t.observe(50.0, 20, 1280, 1280, now);
+        }
+        assert_eq!(t.observe(50.0, 20, 1280, 1280, now), Some(Some(1024)));
+        let mut floor = SoftwareTier::with_enabled(true);
+        for _ in 0..10 {
+            assert_eq!(floor.observe(50.0, 20, 1024, 1024, now), None);
+        }
+        let mut off = SoftwareTier::with_enabled(false);
+        for _ in 0..10 {
+            assert_eq!(off.observe(90.0, 20, 1920, 1920, now), None);
         }
     }
 

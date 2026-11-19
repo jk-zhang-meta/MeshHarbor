@@ -443,6 +443,7 @@ What it changes here:
 | bitrate base | `w·h·fps·0.20` at the target | `bitrate_base_for_fps` (`encode/mod.rs:719`): the old figure at 30, ×√(fps/30) at the rate the pump runs at |
 | OpenH264's per-frame budget | configured for 30 whatever the rate | `set_frame_rate`: the rate the pump runs at, the keyframe period kept at 2 s |
 | the auto-fps-cap (a software encoder dropped to 30) | always | only where the tier is off: Windows and macOS by default |
+| resolution (VP9 4:4:4, libvpx) | the 1920 software cap, whatever the host | `SoftwareTier` (`encode/encode_pressure.rs:439`): when the encode misses 30 fps for three windows, one step straight to the largest of 1600 / 1280 / 1024 whose predicted cost (it scales with the pixels) fits 90 % of the 30 fps budget; back up one tier only when the next one's predicted cost is under 60 % of it for 15 windows **under motion** (≥ 10 fresh frames a window: a static screen encodes cheaply and proves nothing), at most once a minute. A one-core server encoding 1920×1080 at 65 ms a frame (8–13 fps, a pointer that lagged) lands on 1280. An explicit resolution pick still wins (the soft slot) |
 
 ⚠️ The pace steps per heartbeat window on the encode cost alone. A host whose capture is the costly stage is not
 paced by it, and is limited by its own loop as before.
@@ -545,6 +546,7 @@ All keys live in the agent config (`mh config set …`) with
 | `MESHHARBORD_VP9_DIRECT_MAX_Q` | 16 | FR-74 P3 — the libvpx VP9 4:4:4 pump's worst quality on direct transports (q-index 64); 63 = the pre-P3 behaviour |
 | `MESHHARBORD_SW_FPS_60` | on (Linux), off (Windows, macOS) | FR-112 P2 — software encoders target 60, paced down to what they sustain, never below 30; `0` = 30 and the old base everywhere, `1` opts Windows or macOS in ([§ Software encoders](#software-encoders-at-60-fps-fr-112)) |
 | `MESHHARBORD_ENCODER_CLOCK` | on | FR-112 P1 — the encoding and capture threads ask for their clock (a Linux `uclamp_min`); `0` = the scheduler's default ([`encoders.md`](encoders.md#software-encoders-the-clock-and-60-fps-fr-112)) |
+| `MESHHARBORD_SW_AUTO_DOWNSCALE` | on | Env only. The VP9 4:4:4 software pump's resolution tier (`SoftwareTier`); `0` keeps the 1920 cap whatever the encode costs |
 | `MESHHARBORD_SW_PACE_UP_MARGIN` | 2.5 | Env only. FR-112 P2d: how far (fps) a software encoder's estimate must clear a higher step before its pace moves up to it (0–10). `0` = 0.4.142's pace, which steps up as soon as the estimate quantises higher ([§ Software encoders](#software-encoders-at-60-fps-fr-112)) |
 
 ⚠️ Three keys an older `config.toml` may still carry are **deleted, not off**

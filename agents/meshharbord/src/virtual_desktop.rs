@@ -827,9 +827,23 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
     } else {
         &[]
     };
+    // What the session prints goes next to its Xauthority: a session that
+    // keeps dying says why (0.4.179's panel abort on a host without a MIME
+    // database printed its reason to /dev/null).
+    let log = env
+        .auth
+        .as_deref()
+        .and_then(Path::parent)
+        .map(|d| d.join("session.log"));
+    let log_for_launch = log.clone();
     let launch = move |env: &DesktopEnv| -> std::io::Result<Child> {
         let mut cmd = env.command(&argv[0]);
         cmd.args(&argv[1..]).env("XDG_SESSION_TYPE", "x11");
+        if let Some(f) = log_for_launch.as_deref().and_then(|p| session_log(p).ok())
+            && let Ok(f2) = f.try_clone()
+        {
+            cmd.stdout(f2).stderr(f);
+        }
         for k in unset {
             cmd.env_remove(k);
         }
@@ -866,7 +880,8 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
                 }
                 restarts.retain(|t| t.elapsed() < Duration::from_secs(600));
                 if restarts.len() >= 5 {
-                    warn!(%session, ?status, "virtual-desktop: the desktop session keeps ending — not restarting it again");
+                    let tail = log.as_deref().map(|p| log_tail(p, 12)).unwrap_or_default();
+                    warn!(%session, ?status, log = ?log, %tail, "virtual-desktop: the desktop session keeps ending — not restarting it again");
                     return;
                 }
                 restarts.push(Instant::now());
@@ -889,6 +904,50 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
         })
         .context("spawning the session supervisor")?;
     Ok(first)
+}
+
+/// The session's log, appended across its restarts and started afresh once
+/// it passes 1 MiB. Private to this daemon's user.
+fn session_log(path: &Path) -> std::io::Result<std::fs::File> {
+    const MAX: u64 = 1 << 20;
+    let big = std::fs::metadata(path).is_ok_and(|m| m.len() > MAX);
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true);
+    if big {
+        o.write(true).truncate(true);
+    } else {
+        o.append(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        o.mode(0o600);
+    }
+    o.open(path)
+}
+
+/// The last `n` non-empty lines of `path`, joined with " | " (at most 2 KiB,
+/// cut at a char boundary).
+fn log_tail(path: &Path, n: usize) -> String {
+    let Ok(bytes) = std::fs::read(path) else {
+        return String::new();
+    };
+    let start = bytes.len().saturating_sub(64 << 10);
+    let text = String::from_utf8_lossy(&bytes[start..]);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut tail = lines[lines.len().saturating_sub(n)..].join(" | ");
+    if tail.len() > 2048 {
+        let mut cut = tail.len() - 2048;
+        while !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        tail = tail[cut..].to_string();
+    }
+    tail
 }
 
 /// A private `Xauthority` holding one MIT-MAGIC-COOKIE-1 for `display`, in a
@@ -2059,6 +2118,32 @@ mod tests {
     /// The screen-saver disable is the whole point of this argv and is
     /// invisible at runtime until it has already blanked someone's session,
     /// so assert it as a pair rather than trusting the flag survived an edit.
+    /// A desktop session that keeps dying leaves its reason in a log the
+    /// daemon quotes, and the log does not grow without bound.
+    #[test]
+    fn a_dying_session_leaves_its_reason() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("session.log");
+        for i in 0..3 {
+            let mut f = session_log(&p).unwrap();
+            writeln!(f, "start {i}\n\n").unwrap();
+        }
+        let mut f = session_log(&p).unwrap();
+        writeln!(f, "Gtk:ERROR: assertion failed\nBail out!").unwrap();
+        drop(f);
+        assert_eq!(
+            log_tail(&p, 3),
+            "start 2 | Gtk:ERROR: assertion failed | Bail out!"
+        );
+        assert_eq!(log_tail(&dir.path().join("none"), 3), "");
+        std::fs::write(&p, vec![b'x'; (1 << 20) + 1]).unwrap();
+        let mut f = session_log(&p).unwrap();
+        writeln!(f, "fresh").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fresh\n");
+    }
+
     #[test]
     fn xvfb_args_disable_the_builtin_screen_saver() {
         let a = xvfb_args(":99", 1920, 1080, None);

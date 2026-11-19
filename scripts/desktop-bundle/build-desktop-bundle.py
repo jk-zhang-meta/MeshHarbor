@@ -26,8 +26,12 @@ Layout:
 
 Usage: build-desktop-bundle.py <outdir>   (writes meshharbor-vd-{amd64,arm64}.tar.xz)
 Runs on an amd64 Debian/Ubuntu host with gcc and gcc-aarch64-linux-gnu: the
-generated files (schemas, pixbuf loader cache, zh_CN locale) are made by the
-amd64 bundle's own tools and reused for arm64, whose formats are the same.
+generated files (schemas, pixbuf loader cache, zh_CN locale, and every cache a
+package's trigger builds on a real system: the MIME database, the icon theme
+caches, the GIO module cache, the desktop-file MIME cache, the GTK input
+method cache) are made by the amd64 bundle's own tools and reused for arm64,
+whose formats are the same. dpkg never runs here, so nothing else would make
+them, and a host's own copies must never be what makes the desktop work.
 """
 
 import hashlib
@@ -346,7 +350,76 @@ def generate(vd, root, triplet, ld, libdirs):
                  os.path.join(locdir, "zh_CN.UTF-8")],
                 env={"I18NPATH": os.path.join(root, "usr/share/i18n")})
     gen["locale"] = os.path.join(locdir, "zh_CN.UTF-8")
+    gen.update(generate_trigger_caches(vd, root, triplet, ld, libdirs))
+    check_icons_decode(vd, root, ld, libdirs, out)
     return gen
+
+
+def generate_trigger_caches(vd, root, triplet, ld, libdirs):
+    """What dpkg triggers build on a real system. Without the MIME database
+    GLib cannot tell an SVG from text, every icon fails to load, and
+    xfce4-panel aborts (a GTK assertion) on a host that has no
+    shared-mime-info of its own: the desktop restarted until the daemon gave
+    up, and the session was a black screen."""
+    gen = {}
+    share = os.path.join(root, "usr/share")
+    run_bundled(vd, root, ld, libdirs, "usr/bin/update-mime-database", [os.path.join(share, "mime")])
+    if not os.path.isfile(os.path.join(share, "mime/mime.cache")):
+        sys.exit("update-mime-database wrote no mime.cache")
+    gen["mime"] = os.path.join(share, "mime")
+    apps = os.path.join(share, "applications")
+    run_bundled(vd, root, ld, libdirs, "usr/bin/update-desktop-database", [apps])
+    gen["mimeinfo"] = open(os.path.join(apps, "mimeinfo.cache"), "rb").read()
+    gen["icon_caches"] = {}
+    icons = os.path.join(share, "icons")
+    for theme in sorted(os.listdir(icons)):
+        tdir = os.path.join(icons, theme)
+        if os.path.isfile(os.path.join(tdir, "index.theme")):
+            run_bundled(vd, root, ld, libdirs, "usr/bin/gtk-update-icon-cache",
+                        ["--force", "--quiet", "--ignore-theme-index", tdir])
+            gen["icon_caches"][theme] = open(os.path.join(tdir, "icon-theme.cache"), "rb").read()
+    if "hicolor" not in gen["icon_caches"] or "Adwaita" not in gen["icon_caches"]:
+        sys.exit(f"icon caches missing: {sorted(gen['icon_caches'])}")
+    gio = os.path.join(root, "usr/lib", triplet, "gio/modules")
+    run_bundled(vd, root, ld, libdirs, "usr/bin/gio-querymodules", [gio])
+    gen["giomodules"] = (gio_module_names(gio), open(os.path.join(gio, "giomodule.cache"), "rb").read())
+    imdir = os.path.join(root, "usr/lib", triplet, "gtk-3.0/3.0.0/immodules")
+    query = next(q for q in (os.path.join(root, "usr/lib", triplet, d, "gtk-query-immodules-3.0")
+                             for d in ("libgtk-3-0t64", "libgtk-3-0")) if os.path.exists(q))
+    mods = sorted(os.path.join(imdir, f) for f in os.listdir(imdir) if f.endswith(".so"))
+    out = run_bundled(vd, root, ld, libdirs, os.path.relpath(query, root), mods).stdout
+    if not mods or any(os.path.basename(m) not in out for m in mods):
+        sys.exit("gtk-query-immodules-3.0 did not list every module")
+    gen["immodules"] = out.replace(root, "@MHVD_ROOT@")
+    return gen
+
+
+def gio_module_names(gio):
+    return sorted(f for f in os.listdir(gio) if f.endswith(".so"))
+
+
+def check_icons_decode(vd, root, ld, libdirs, pixbuf_cache):
+    """The bundle alone decodes an SVG icon: its own MIME database and pixbuf
+    loaders, nothing from the build host (XDG dirs pointed at the bundle)."""
+    tmp = tempfile.mkdtemp(prefix="vd-check-")
+    try:
+        cache = os.path.join(tmp, "loaders.cache")
+        with open(cache, "w") as fh:
+            fh.write(pixbuf_cache)
+        svg = os.path.join(root, "usr/share/icons/Adwaita/scalable/status/image-missing.svg")
+        png = os.path.join(tmp, "out.png")
+        env = {"XDG_DATA_DIRS": os.path.join(root, "usr/share"), "XDG_DATA_HOME": tmp,
+               "HOME": tmp, "GDK_PIXBUF_MODULE_FILE": cache}
+        try:
+            run_bundled(vd, root, ld, libdirs, "usr/bin/gdk-pixbuf-thumbnailer",
+                        ["-s", "32", svg, png], env=env)
+        except subprocess.CalledProcessError as e:
+            sys.exit(f"the bundle cannot decode an SVG icon by itself: {e.stderr.strip()}")
+        if not os.path.isfile(png) or os.path.getsize(png) == 0:
+            sys.exit("the bundle cannot decode an SVG icon by itself (no output)")
+        print("check: the bundle decodes an SVG icon with its own MIME database and loaders")
+    finally:
+        shutil.rmtree(tmp)
 
 
 def place_generated(vd, root, triplet, gen, src_triplet):
@@ -359,8 +432,35 @@ def place_generated(vd, root, triplet, gen, src_triplet):
     if os.path.abspath(gen["locale"]) != os.path.abspath(dst):
         shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(gen["locale"], dst)
+    # The trigger caches (arch-independent but for paths, made once).
+    share = os.path.join(root, "usr/share")
+    mime = os.path.join(share, "mime")
+    if os.path.abspath(gen["mime"]) != os.path.abspath(mime):
+        shutil.rmtree(mime, ignore_errors=True)
+        shutil.copytree(gen["mime"], mime, symlinks=True)
+    with open(os.path.join(share, "applications/mimeinfo.cache"), "wb") as fh:
+        fh.write(gen["mimeinfo"])
+    for theme, data in gen["icon_caches"].items():
+        tdir = os.path.join(share, "icons", theme)
+        if not os.path.isdir(tdir):
+            sys.exit(f"{triplet}: icon theme {theme} missing")
+        c = os.path.join(tdir, "icon-theme.cache")
+        with open(c, "wb") as fh:
+            fh.write(data)
+        # GTK ignores a cache older than its theme directory.
+        newest = max(os.stat(d).st_mtime for d, _, _ in os.walk(tdir))
+        os.utime(c, (newest + 2, newest + 2))
+    gio = os.path.join(root, "usr/lib", triplet, "gio/modules")
+    names, data = gen["giomodules"]
+    if gio_module_names(gio) != names:
+        sys.exit(f"{triplet}: GIO modules differ from the generating arch: {gio_module_names(gio)} vs {names}")
+    with open(os.path.join(gio, "giomodule.cache"), "wb") as fh:
+        fh.write(data)
+    imcache = os.path.join(root, "usr/lib", triplet, "gtk-3.0/3.0.0/immodules.cache")
+    with open(imcache, "w") as fh:
+        fh.write(gen["immodules"].replace(src_triplet, triplet))
     with open(os.path.join(vd, "relocate.list"), "w") as fh:
-        fh.write(os.path.relpath(cache, vd) + "\netc/session.conf\n")
+        fh.write(os.path.relpath(cache, vd) + "\n" + os.path.relpath(imcache, vd) + "\netc/session.conf\n")
     for rel in BUILD_ONLY_DIRS:
         shutil.rmtree(os.path.join(root, rel), ignore_errors=True)
 

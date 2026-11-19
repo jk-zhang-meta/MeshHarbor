@@ -5123,6 +5123,13 @@ async fn media_pump_vp9_444_dc(
         TargetResolution,
         crate::encode::policy::RungReason,
     )> = None;
+    // The software resolution tier (libvpx's cost follows the pixels; on a
+    // host that cannot encode its screen at 30 fps this is the lever left),
+    // with what it measures by: the fresh frames per window and the sizes
+    // the last frame was encoded at and captured at.
+    let mut res_tier = crate::encode::encode_pressure::SoftwareTier::new();
+    let mut res_tier_last_captured: u64 = 0;
+    let mut res_tier_dims: (u32, u32);
     // P7 — downscale-stage timing (this pump has no per-stage accumulators
     // like the ffmpeg pump's rc.88 trio, so track ops explicitly). Phase A —
     // scale_ops counts REAL resamples only.
@@ -5639,7 +5646,10 @@ async fn media_pump_vp9_444_dc(
             slow_link_cap: None,
             refined: false,
             refined_cap: None,
-            soft_cap: crate::encode::sw_res_cap_long_edge(),
+            soft_cap: match (crate::encode::sw_res_cap_long_edge(), res_tier.cap()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
         });
         let effective_target = dims_plan.effective_target;
         // Phase B — hand the effective box to the capture backend so a
@@ -5687,6 +5697,10 @@ async fn media_pump_vp9_444_dc(
         // the controller asked for, so TargetResolution alone is stale).
         let encoded_dims_packed = pack_dims(frame.width, frame.height);
         encoded_dims.store(encoded_dims_packed, std::sync::atomic::Ordering::Relaxed);
+        res_tier_dims = (
+            frame.width.max(frame.height),
+            cap_native_w.max(cap_native_h),
+        );
 
         // Lock-screen overlay (M3 phase 3, Z-path). Same logic as
         // the legacy track pump — when the user-context worker
@@ -6229,6 +6243,26 @@ async fn media_pump_vp9_444_dc(
             if sw_tier && encode_ops > 0 {
                 governor.pace_software(avg_encode_ms as f32, target_fps);
             }
+            if encode_ops > 0 {
+                let fresh = frames_captured.saturating_sub(res_tier_last_captured);
+                if let Some(cap) = res_tier.observe(
+                    avg_encode_ms as f32,
+                    fresh,
+                    res_tier_dims.0,
+                    res_tier_dims.1,
+                    std::time::Instant::now(),
+                ) {
+                    info!(
+                        %session_id,
+                        cap_long_edge = ?cap,
+                        avg_encode_ms,
+                        encoded_long_edge = res_tier_dims.0,
+                        native_long_edge = res_tier_dims.1,
+                        "VP9-444 DC pump: software resolution tier changed (the encoder cannot hold 30 fps at this size, or has headroom again)"
+                    );
+                }
+            }
+            res_tier_last_captured = frames_captured;
             encode_us = 0;
             encode_ops = 0;
             // P8 Phase 4 — shared / mixed-dial pipeline seconds (SVC
