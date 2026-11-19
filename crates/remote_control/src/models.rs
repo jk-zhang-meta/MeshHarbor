@@ -672,6 +672,17 @@ pub struct VideoCell {
     /// Verified hardware encode (see [`AgentCaps::video_cells`]).
     #[serde(default)]
     pub hw: bool,
+    /// The frame rate a real session MEASURED this cell sustaining at its
+    /// smallest resolution, when that was too slow to be worth picking —
+    /// a probe proves an open, only a session proves a cell. Set today on
+    /// the software VP9 4:4:4 cell (libvpx) of a host whose CPU cannot
+    /// encode its screen: a one-core server held 11-12 fps at 1024 px under
+    /// motion while H.264 cost half as much a frame. A viewer's automatic
+    /// pick skips the cell below 20; an explicit pick still gets it.
+    /// `None` = not measured, or fast enough. Absent on the wire then, so an
+    /// older reader sees nothing new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sustain_fps: Option<u32>,
 }
 
 /// FR-77 — a codec the agent can produce. Same contract as [`RpcCap`]: the
@@ -830,6 +841,7 @@ impl VideoCell {
             backend: backend.wire().to_string(),
             chroma: chroma.iter().map(|c| c.wire().to_string()).collect(),
             hw,
+            sustain_fps: None,
         }
     }
 
@@ -9323,6 +9335,7 @@ mod tests {
                     backend: "nvenc".into(),
                     chroma: vec!["yuv420".into()],
                     hw: true,
+                    sustain_fps: None,
                 },
                 // A backend this build does not know. It was `vulkan` until
                 // FR-78 taught the vocabulary that one, which silently turned
@@ -9332,12 +9345,14 @@ mod tests {
                     backend: "mediacodec".into(),
                     chroma: vec!["yuv420".into()],
                     hw: true,
+                    sustain_fps: None,
                 },
                 VideoCell {
                     codec: "vp9".into(),
                     backend: "libvpx".into(),
                     chroma: vec!["yuv420".into(), "yuv422".into(), "yuv444".into()],
                     hw: false,
+                    sustain_fps: None,
                 },
             ],
             ..Default::default()

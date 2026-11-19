@@ -1209,6 +1209,10 @@ export interface RcVideoInfo {
   fps_trial?: boolean
   /** FR-119 P2b-3 — the host screen's refresh rate, when the agent read it. */
   refresh_hz?: number
+  /** The rate a session measured this host's software VP9 4:4:4 encoder
+   *  delivering at its smallest size, sent only when that was too slow to be
+   *  worth picking (a one-core server). See `SW_SUSTAIN_PICK_FLOOR_FPS`. */
+  sw_sustain_fps?: number
 }
 
 /** FR-93 P2 (FR-45 AC8 option b) — the capture pill: which Linux arm serves
@@ -1616,6 +1620,10 @@ export function parseControlInbound(data: unknown): RcControlInbound {
                 ? { refresh_hz: obj.refresh_hz }
                 : {}),
             }
+          : {}),
+        // A session's verdict on the host's software VP9 4:4:4 encoder.
+        ...(typeof obj.sw_sustain_fps === 'number' && Number.isFinite(obj.sw_sustain_fps)
+          ? { sw_sustain_fps: obj.sw_sustain_fps }
           : {}),
       },
     }
@@ -3505,7 +3513,18 @@ export interface AutoTransportInputs {
   viewerH264High444?: boolean
   /** FR-77 P3b — the agent opened a HARDWARE VP9 4:4:4 cell (vp9_qsv profile 1). */
   agentVp9Hw444?: boolean
+  /** The rate a real session measured the agent's software VP9 (libvpx)
+   *  delivering at its smallest size — the libvpx cell's `sustain_fps`, or
+   *  the live `rc:video-info` of this page's last session. Present only
+   *  when it was slow; under `SW_SUSTAIN_PICK_FLOOR_FPS` the automatic pick
+   *  leaves the software VP9 rung for the H.264 track. */
+  agentVp9SwSustainFps?: number
 }
+
+/** Below this measured rate the software VP9 rung is not worth picking: a
+ *  one-core server delivered 11-12 fps there at 1024 px, the pointer far
+ *  ahead of the window it dragged, while H.264 cost half as much a frame. */
+export const SW_SUSTAIN_PICK_FLOOR_FPS = 20
 
 /** rc.190 — pure HW×HW transport rank for `videoTransport === 'auto'`.
  *
@@ -3641,6 +3660,19 @@ export function pickAutoTransport(inputs: AutoTransportInputs): {
       transport: 'data-channel-h264',
       chromaOverride: null,
       reason: 'H.264-DC: HW encode on agent + HW decode here (beats the SW-encode tier)',
+    }
+  }
+  // The agent's software VP9 was measured too slow on this host: the H.264
+  // track (OpenH264, half the cost a frame) serves it better — unless this
+  // browser cannot play that track, in which case VP9 is still the only way.
+  const vp9SwTooSlow = typeof inputs.agentVp9SwSustainFps === 'number'
+    && inputs.agentVp9SwSustainFps < SW_SUSTAIN_PICK_FLOOR_FPS
+    && inputs.viewerRtpH264 !== false
+  if (hasVp9Dc && inputs.viewerVp9Decodable && vp9SwTooSlow) {
+    return {
+      transport: null,
+      chromaOverride: null,
+      reason: `webrtc H.264: this host's software VP9 was measured at ${inputs.agentVp9SwSustainFps} fps even at its smallest size`,
     }
   }
   if (hasVp9Dc && inputs.viewerVp9Decodable) {
@@ -5980,6 +6012,10 @@ export function useRemoteControl(
    *  `Set<string>` (not RcVideoTransport): the vp9-worker ban site keys by
    *  `sessionDcTransport`, which is a plain string. */
   const failedDcTransports = new Set<string>()
+  /** A live `rc:video-info` said this host's software VP9 4:4:4 cannot keep
+   *  up even at its smallest size: the automatic pick leaves it from now on
+   *  (this page), and the session in progress reconnects once on H.264. */
+  let liveVp9SwSustainFps: number | undefined
   /** P7 — whether this browser decodes HEVC Rext 4:4:4 (narrow: Chrome ≥137
    *  + NV driver ≥572.16, or Intel Gen11+ ≥117). Gates the "HEVC · crisp
    *  text (4:4:4)" picker entry together with the agent's `hevc_chroma`. */
@@ -10882,6 +10918,24 @@ export function useRemoteControl(
         // honest stats badge (replaces the hardcoded "VP9 4:4:4 SW").
         videoInfo.value = parsed.info
         console.info('[rc] video-info', parsed.info)
+        const swFps = parsed.info.sw_sustain_fps
+        if (
+          typeof swFps === 'number'
+          && swFps < SW_SUSTAIN_PICK_FLOOR_FPS
+          && liveVp9SwSustainFps === undefined
+        ) {
+          liveVp9SwSustainFps = swFps
+          // Only an AUTOMATIC software-VP9 pick moves; an explicit one is the
+          // operator's, and a hardware VP9 cell is not what was measured.
+          if (videoTransport.value === 'auto'
+            && sessionDcTransport === 'data-channel-vp9-444'
+            && parsed.info.encoder === 'libvpx'
+            && lastConnectArgs) {
+            console.warn(`[rc] this host's software VP9 delivers ${swFps} fps even at its smallest size - reconnecting on H.264`)
+            notice.value = `This device's processor cannot keep up with VP9 (${swFps} fps measured) - switching to H.264...`
+            scheduleReconnect()
+          }
+        }
       } else if (parsed?.kind === 'media_unavailable') {
         // FR-80 — the host cannot capture. Surfaced on the canvas, because
         // the alternative the operator had was a black rectangle and a
@@ -11107,6 +11161,10 @@ export function useRemoteControl(
         // Sharper can upgrade the SW VP9 rung to full chroma - see the
         // chroma note on `pickAutoTransport`.
         priority: priority.value,
+        // A session's verdict on the agent's software VP9: this page's live
+        // one first (the caps may not have caught up yet), else the cell's.
+        agentVp9SwSustainFps: liveVp9SwSustainFps
+          ?? caps?.video_cells?.find((c) => c.codec === 'vp9' && c.backend === 'libvpx')?.sustain_fps,
       })
       preferredTransport = pick.transport
       chromaOverride = pick.chromaOverride

@@ -1814,6 +1814,12 @@ async fn connect_once(
         hello_caps.rdp_mesh_reachable,
     );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
+    // A session's verdict on the software VP9 4:4:4 cell, as the hello carried it.
+    let mut last_announced_sw = hello_caps
+        .video_cells
+        .iter()
+        .find(|c| c.codec == "vp9" && c.backend == "libvpx")
+        .and_then(|c| c.sustain_fps);
     let (arch, arch_emulated) = crate::arch::native();
     let hello = ClientMsg::AgentHello {
         machine_name: if ctx.is_primary {
@@ -2494,7 +2500,9 @@ async fn connect_once(
                     (Some(r.available), r.port, r.cert_sha256, Some(reachable))
                 };
                 let relay_server_now = relay_server_ready();
+                let sw_now = crate::encode::sw_capacity::libvpx_444_sustain_fps();
                 let caps = if relay_server_now == last_announced_relay_server
+                    && sw_now == last_announced_sw
                     && caps_now == last_announced_permissions
                     && record_now == last_announced_record
                     && keep_busy_now == last_announced_keep_busy
@@ -2519,6 +2527,7 @@ async fn connect_once(
                     last_announced_privacy = privacy_now;
                     last_announced_session_policy = session_policy_now;
                     last_announced_rdp = rdp_now;
+                    last_announced_sw = sw_now;
                     // Our own caps AS THE HELLO BUILT THEM — the server replaces
                     // its stored blob with this, so anything the hello carried
                     // (`multi_org` `tun`, `record`) must be here too — with the
@@ -7795,7 +7804,26 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     // RDP over the mesh — whether that server is reachable through the overlay
     // (OS-TUN mode, or the owner's `rdp_over_mesh` on a netstack node).
     caps.rdp_mesh_reachable = Some(crate::rdp_mesh::mesh_reachable(rdp.available));
+    // A session's verdict on the software VP9 4:4:4 cell (a host whose CPU
+    // cannot encode its screen): the viewer's automatic pick then leaves the
+    // cell. Live: the heartbeat re-announces when a session records one.
+    stamp_sw_capacity(
+        &mut caps.video_cells,
+        crate::encode::sw_capacity::libvpx_444_sustain_fps(),
+    );
     caps
+}
+
+/// Put `sustain_fps` on the libvpx VP9 cell (and only there).
+fn stamp_sw_capacity(
+    cells: &mut [meshharbor_remote_control::models::VideoCell],
+    fps: Option<u32>,
+) {
+    for c in cells.iter_mut() {
+        if c.codec == "vp9" && c.backend == "libvpx" {
+            c.sustain_fps = fps;
+        }
+    }
 }
 
 /// FR-97 P4a — whether this process may send the real Ctrl+Alt+Del now, the

@@ -283,6 +283,11 @@ export interface VideoCell {
   backend: string
   chroma: string[]
   hw: boolean
+  /** The frame rate a real session measured this cell sustaining at its
+   *  smallest resolution, sent only when that was too slow to pick (the
+   *  software VP9 4:4:4 cell on a host whose CPU cannot encode its screen).
+   *  The automatic transport pick skips the cell below 20. */
+  sustain_fps?: number
 }
 
 /** FR-92 P5b — what a device says about its keep busy on each heartbeat. A

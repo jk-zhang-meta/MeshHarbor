@@ -24,6 +24,10 @@ pub mod caps_cache;
 pub mod cells;
 pub mod color;
 pub mod hwid;
+// FR-121 follow-up — what a session measured the software VP9 4:4:4 cell
+// delivering (the VP9 pump records it; the caps advertise it).
+#[cfg_attr(not(feature = "vp9-444"), allow(dead_code))]
+pub mod sw_capacity;
 
 #[cfg(feature = "openh264-encoder")]
 pub mod openh264_backend;

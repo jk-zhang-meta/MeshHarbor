@@ -119,6 +119,7 @@ import {
   displayMatchWireMessage,
   HeldRequest,
   pickAutoTransport,
+  SW_SUSTAIN_PICK_FLOOR_FPS,
   AV1_CODEC_STRING,
   priorityWireMessage,
   codecChoiceToSettings,
@@ -2846,6 +2847,56 @@ describe('pickAutoTransport (rc.190 HW×HW codec auto-rank)', () => {
     viewerVp9Decodable: false,
     viewerH264Hw: false,
     ...over,
+  })
+
+  // A one-core server delivered 11-12 fps on software VP9 4:4:4 even at its
+  // 1024 px floor; a session recorded it on the libvpx cell. The automatic
+  // pick then takes the H.264 track (half the cost a frame) instead.
+  it('a software VP9 measured too slow leaves the automatic pick for H.264', () => {
+    const vp9Host = {
+      agentTransports: ['data-channel-vp9-444'],
+      agentHwEncoders: ['libvpx-vp9-444-sw'],
+      viewerVp9Decodable: true,
+      priority: 'sharper' as const,
+    }
+    expect(pickAutoTransport(base(vp9Host)).transport).toBe('data-channel-vp9-444')
+    const slow = pickAutoTransport(base({ ...vp9Host, agentVp9SwSustainFps: 12 }))
+    expect(slow.transport).toBeNull()
+    expect(slow.reason).toContain('12 fps')
+    // At the floor it is still worth it; and a browser that cannot play the
+    // H.264 track keeps VP9, the only way it has.
+    expect(pickAutoTransport(base({ ...vp9Host, agentVp9SwSustainFps: SW_SUSTAIN_PICK_FLOOR_FPS })).transport)
+      .toBe('data-channel-vp9-444')
+    expect(pickAutoTransport(base({ ...vp9Host, agentVp9SwSustainFps: 12, viewerRtpH264: false })).transport)
+      .toBe('data-channel-vp9-444')
+  })
+
+  it('an explicit 4:4:4 still gets the slow software VP9 cell; a hardware pair is untouched', () => {
+    const explicit = pickAutoTransport(base({
+      agentTransports: ['data-channel-vp9-444'],
+      agentHwEncoders: ['libvpx-vp9-444-sw'],
+      viewerVp9Decodable: true,
+      chromaPref: 'yuv444',
+      agentVp9SwSustainFps: 12,
+    }))
+    expect(explicit.transport).toBe('data-channel-vp9-444')
+    const hw = pickAutoTransport(base({
+      agentTransports: ['data-channel-vp9-444', 'data-channel-hevc'],
+      agentHwEncoders: ['ffmpeg-hevc_nvenc', 'libvpx-vp9-444-sw'],
+      viewerHevcHw: true,
+      viewerHevcDecodable: true,
+      viewerVp9Decodable: true,
+      agentVp9SwSustainFps: 12,
+    }))
+    expect(hw.transport).toBe('data-channel-hevc')
+  })
+
+  it('the live video-info carries the verdict', () => {
+    const p = parseControlInbound(JSON.stringify({
+      t: 'rc:video-info', codec: 'vp9', encoder: 'libvpx', hardware: false, chroma: 'yuv444',
+      transport: 'relay', native_w: 1920, native_h: 1080, viewers: 1, sw_sustain_fps: 12,
+    }))
+    expect(p?.kind === 'video_info' && p.info.sw_sustain_fps).toBe(12)
   })
 
   // #2231 — Firefox's WebCodecs decodes VP9 profile 0, not profile 1. Before

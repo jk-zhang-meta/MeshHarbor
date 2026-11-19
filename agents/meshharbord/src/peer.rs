@@ -5130,6 +5130,10 @@ async fn media_pump_vp9_444_dc(
     let mut res_tier = crate::encode::encode_pressure::SoftwareTier::new();
     let mut res_tier_last_captured: u64 = 0;
     let mut res_tier_dims: (u32, u32);
+    // And, at the smallest size, whether this host can deliver the cell at
+    // all (`encode::sw_capacity`): frames per wall-clock second of a window.
+    let mut sw_verdict = crate::encode::sw_capacity::Verdict::default();
+    let mut res_tier_last_hb = std::time::Instant::now();
     // P7 — downscale-stage timing (this pump has no per-stage accumulators
     // like the ffmpeg pump's rc.88 trio, so track ops explicitly). Phase A —
     // scale_ops counts REAL resamples only.
@@ -5448,7 +5452,8 @@ async fn media_pump_vp9_444_dc(
                     cap_reason,
                     None,
                     capturer.arm(),
-                    None,
+                    crate::encode::sw_capacity::libvpx_444_sustain_fps()
+                        .map(|f| format!(r#","sw_sustain_fps":{f}"#)),
                 );
                 let cdc = control_dc.lock().await.clone();
                 if let Some(cdc) = cdc
@@ -6243,8 +6248,33 @@ async fn media_pump_vp9_444_dc(
             if sw_tier && encode_ops > 0 {
                 governor.pace_software(avg_encode_ms as f32, target_fps);
             }
+            let hb_now = std::time::Instant::now();
+            let window_secs = hb_now
+                .duration_since(res_tier_last_hb)
+                .as_secs_f32()
+                .max(0.001);
+            res_tier_last_hb = hb_now;
             if encode_ops > 0 {
                 let fresh = frames_captured.saturating_sub(res_tier_last_captured);
+                let floor_edge = *crate::encode::encode_pressure::SW_TIER_LONG_EDGES
+                    .last()
+                    .unwrap_or(&1024);
+                let delivered = encode_ops as f32 / window_secs;
+                if let Some(fps) = sw_verdict.observe(
+                    res_tier_dims.0 <= floor_edge,
+                    fresh >= crate::encode::encode_pressure::SW_TIER_MOTION_FRAMES,
+                    delivered,
+                ) && crate::encode::sw_capacity::record_libvpx_444(fps, res_tier_dims.0)
+                {
+                    info!(
+                        %session_id,
+                        delivered_fps = fps,
+                        long_edge = res_tier_dims.0,
+                        "VP9-444 DC pump: this host cannot deliver VP9 4:4:4 at a usable rate even at the smallest size — recorded; a viewer's automatic pick takes H.264 from now on"
+                    );
+                    // Tell this viewer now (`rc:video-info` carries it).
+                    video_info_sent = false;
+                }
                 if let Some(cap) = res_tier.observe(
                     avg_encode_ms as f32,
                     fresh,
