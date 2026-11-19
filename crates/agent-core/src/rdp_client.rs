@@ -200,6 +200,40 @@ pub fn allocate_session_loopback_ip() -> std::net::Ipv4Addr {
     std::net::Ipv4Addr::new(127, 77, x, y)
 }
 
+/// FR-120 — the loopback address a desktop RDP session to `device_id` always
+/// uses on Windows: `127.78.x.y`, derived from the device id (FNV-1a), so it
+/// is the same on every session to that device and differs between devices.
+///
+/// `mstsc.exe` keys a remembered logon ("Remember me") by `TERMSRV/<address>`.
+/// With a fresh address per session that credential never matched again, so
+/// every fallback to RDP asked for the Windows password anew; with a stable
+/// one the person types it once per device. The range is apart from the
+/// per-session `127.77.x.y` of `mh rdp`, whose temporary credentials must
+/// never land on a remembered one, and from a user-saved `127.0.0.1`.
+pub fn device_loopback_ip(device_id: &str) -> std::net::Ipv4Addr {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in device_id.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    let slot = (h as usize) % (254 * 254);
+    std::net::Ipv4Addr::new(127, 78, (slot / 254) as u8 + 1, (slot % 254) as u8 + 1)
+}
+
+/// FR-120 — [`bind_unique_session_loopback_listener`] for the desktop app,
+/// which runs at most one RDP session per device: the device's own stable
+/// address ([`device_loopback_ip`]) on Windows, falling back to a unique one
+/// if that address cannot be bound.
+pub async fn bind_device_loopback_listener(device_id: &str) -> Result<tokio::net::TcpListener> {
+    if cfg!(windows)
+        && let Ok(listener) =
+            tokio::net::TcpListener::bind((device_loopback_ip(device_id), 0)).await
+    {
+        return Ok(listener);
+    }
+    bind_unique_session_loopback_listener().await
+}
+
 /// Bind the per-session local loopback listener the RDP client connects to.
 ///
 /// Windows binds a unique `127.77.x.y:0`: the `TERMSRV/<ip>` credential target
@@ -2323,6 +2357,16 @@ impl DesktopRdpSessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-120 — one device, one remembered-logon address; two devices, two.
+    #[test]
+    fn a_device_keeps_its_loopback_address() {
+        let a = device_loopback_ip("6af76f0e52bb0000aaaa0001");
+        assert_eq!(a, device_loopback_ip("6af76f0e52bb0000aaaa0001"));
+        assert_ne!(a, device_loopback_ip("6af76f0e52bb0000aaaa0002"));
+        assert_eq!(a.octets()[..2], [127, 78]);
+        assert!(a.octets()[2] >= 1 && a.octets()[3] >= 1);
+    }
 
     #[test]
     fn cmd_open_rdp_argument_construction_contains_zero_passwords_and_validates_inputs() {

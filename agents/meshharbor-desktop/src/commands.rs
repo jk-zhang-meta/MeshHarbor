@@ -2199,7 +2199,7 @@ pub use meshharbor_node_core::rdp_client::{
 static ACTIVE_DESKTOP_RDP_SESSIONS: LazyLock<DesktopRdpSessionRegistry> =
     LazyLock::new(DesktopRdpSessionRegistry::default);
 
-/// Resolve `target` over LocalAPI, bind a unique `127.77.x.y:0` loopback tunnel,
+/// Resolve `target` over LocalAPI, bind the device's `127.78.x.y:0` loopback tunnel,
 /// and spawn the OS native RDP client (`mstsc.exe` / FreeRDP). The loopback
 /// tunnel is automatically torn down as soon as the native RDP client exits.
 ///
@@ -2232,9 +2232,12 @@ pub async fn launch_desktop_rdp_session(
         );
         return Ok(());
     };
-    let listener = meshharbor_node_core::rdp_client::bind_unique_session_loopback_listener()
-        .await
-        .map_err(|e| e.to_string())?;
+    // FR-120 — the device's own stable loopback address, so the Windows
+    // password the RDP client asks for once can be remembered for next time.
+    let listener =
+        meshharbor_node_core::rdp_client::bind_device_loopback_listener(&device.device_id)
+            .await
+            .map_err(|e| e.to_string())?;
     let local_tunnel_addr = listener
         .local_addr()
         .map_err(|e| format!("failed to query local RDP tunnel address: {e}"))?;
