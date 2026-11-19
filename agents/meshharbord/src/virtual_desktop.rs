@@ -290,10 +290,6 @@ impl Bundle {
     pub fn find() -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let lib = exe.parent()?.parent()?.join("lib/meshharbor");
-        #[cfg(unix)]
-        if unsafe { libc::geteuid() } == 0 {
-            open_to_sessions(&lib);
-        }
         match Self::unpack_if_needed(&lib) {
             Ok(b) => b,
             Err(e) => {
@@ -470,12 +466,24 @@ const DESKTOP_UNSET_VARS: &[&str] = &["LC_ALL"];
 /// FR-120 P4 — the session name [`auto_config`] gives the bundle's desktop.
 pub const BUNDLED_SESSION: &str = "meshharbor:bundled-xfce";
 
-/// FR-120 P4 — a root daemon's desktop runs as the signed-in user, who must
-/// reach the bundle: the package directory holding it is made traversable
-/// and readable (0755) when it is not. Field: a bootstrap copy left
-/// `/usr/lib/meshharbor` 0700 on a clean field host (2026-11-19), which also
-/// kept every non-root `meshharbord` from loading its own libraries. Only a
-/// root-owned directory is touched, and only bits are added.
+/// FR-120 P4 — the package's library directory (`/usr/lib/meshharbor`)
+/// serves every account: `mh`, run by a person, is `meshharbord` loading its
+/// FFmpeg from there, and the desktop bundle lives there too. A root daemon
+/// opens it (0755) when it is not. Field: a bootstrap copy left it 0700 on a
+/// clean host (2026-11-19), where `mh` failed for everyone but root with
+/// `libavutil.so.61: cannot open shared object file`.
+pub fn open_package_dir() {
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } == 0
+        && let Some(lib) = std::env::current_exe()
+            .ok()
+            .and_then(|e| Some(e.parent()?.parent()?.join("lib/meshharbor")))
+    {
+        open_to_sessions(&lib);
+    }
+}
+
+/// Only a root-owned directory is touched, and only bits are added.
 #[cfg(unix)]
 fn open_to_sessions(dir: &Path) {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -568,7 +576,11 @@ pub fn auto_config(bundle: Option<&Bundle>) -> Config {
                     .map(|b| b.bin(bundled).to_string_lossy().into_owned())
             })
     };
-    let wm = pick(&["openbox", "twm"], "twm").unwrap_or_else(|| "openbox".to_string());
+    // The window manager is the fallback when a full desktop does not start;
+    // the P4 bundle carries no twm, but its xfwm4 runs on its own.
+    let wm = pick(&["openbox", "twm"], "twm")
+        .or_else(|| pick(&[], "xfwm4"))
+        .unwrap_or_else(|| "openbox".to_string());
     // FR-120 P4 — the host's own desktop first; else the bundle's.
     let session = installed_session().or_else(|| {
         bundle
@@ -1944,7 +1956,14 @@ fn preflight(cfg: &Config, bundle: Option<&Bundle>) -> Result<()> {
     if xorg_dummy().is_none() && binary_on_path("Xvfb").is_none() && bundle.is_none() {
         missing.push("xvfb".to_string());
     }
-    if binary_on_path(&cfg.wm).is_none() && !bundle.is_some_and(|b| b.has(&cfg.wm)) {
+    // FR-120 P4 — a full desktop brings its own window manager; `wm` is then
+    // only the fallback if the session fails, and its absence must not keep
+    // the desktop from starting (field: the P4 bundle has no twm, and a clean
+    // host has no openbox, so every such host refused its own desktop).
+    if cfg.session.is_none()
+        && binary_on_path(&cfg.wm).is_none()
+        && !bundle.is_some_and(|b| b.has(&cfg.wm))
+    {
         missing.push(cfg.wm.clone());
     }
     if !missing.is_empty() {
@@ -2128,8 +2147,29 @@ mod tests {
         std::fs::write(out, xz).unwrap();
     }
 
-    /// FR-120 P4 — a root-owned package directory left 0700 is opened to the
-    /// desktop's user (bits added, never removed); one already open is left.
+    /// FR-120 P4 — a full desktop session does not need the fallback window
+    /// manager to exist (the P4 bundle carries no twm; a clean host has no
+    /// openbox); the bare desktop still does.
+    #[test]
+    fn a_full_session_needs_no_fallback_window_manager() {
+        let cfg = |session: Option<&str>| Config {
+            resolution: "1280x720".into(),
+            wm: "mh-no-such-window-manager".into(),
+            startup: vec![],
+            cookie_auth: true,
+            session: session.map(str::to_string),
+        };
+        // (Xvfb may be missing on the test host; the window manager is not
+        // what it may complain about.)
+        if let Err(e) = preflight(&cfg(Some(BUNDLED_SESSION)), None) {
+            assert!(!e.to_string().contains("mh-no-such-window-manager"), "{e}");
+        }
+        let bare = preflight(&cfg(None), None).unwrap_err().to_string();
+        assert!(bare.contains("mh-no-such-window-manager"), "{bare}");
+    }
+
+    /// FR-120 P4 — a root-owned package directory left 0700 is opened to
+    /// every account (bits added, never removed); one already open is left.
     #[cfg(unix)]
     #[test]
     fn a_closed_package_directory_is_opened_to_the_session() {

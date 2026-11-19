@@ -4102,6 +4102,7 @@ fn virtual_desktop_requested() -> bool {
 /// process lifetime. Config comes from env (`MESHHARBORD_VIRTUAL_DESKTOP_*`).
 #[cfg(target_os = "linux")]
 fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDesktop>> {
+    virtual_desktop::open_package_dir();
     if !virtual_desktop_requested() {
         return Ok(maybe_start_automatic_virtual_desktop());
     }
