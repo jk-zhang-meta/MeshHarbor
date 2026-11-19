@@ -791,22 +791,46 @@ the best full desktop session the host has installed — Xfce, then MATE,
 LXQt, LXDE, KDE on X11 (`virtual_desktop::SESSIONS`; GNOME is left out on
 purpose, gnome-shell needs GL and a seat) — on its own D-Bus session bus, and
 starts it again if the person logs out of it or it crashes (at most five
-times in ten minutes). Only a host with none gets the window manager and the
-terminal.
+times in ten minutes).
 
-A **root** daemon on a screenless host with no desktop installs one itself,
-once, in the background (`desktop_install.rs`):
+A host with none gets the **package's own Xfce** (FR-120 P4), root or not,
+the same on every distribution: the Linux packages carry it in
+`meshharbor-vd.so.tar.xz` (built by `scripts/desktop-bundle/build-desktop-bundle.py`
+from Debian 13 packages: Xfce 4.20 with its terminal, file manager, editor,
+image viewer, task manager and whisker menu; WenQuanYi + DejaVu fonts; the
+elementary-xfce icons; a compiled `zh_CN.UTF-8`).
+
+```mermaid
+flowchart LR
+    D[daemon] -->|unpack once, relocate| V["vd/: root/usr (glibc + Xfce)<br/>bin/ wrappers · lib/mhvd-shim.so"]
+    D -->|"Xvfb (bin/, own xkb)"| X((":99"))
+    D -->|"dbus-launch --config-file=vd/etc/session.conf"| S[xfce4-session]
+    S --> P["xfwm4 · panel · xfdesktop · xfconfd<br/>(bundle's loader + shim)"]
+    P -->|"exec a HOST program"| H["host shell / apps<br/>host environment restored"]
+```
 
 | What | Detail |
 |---|---|
-| Packages | `apt-get` (Debian/Ubuntu) or `dnf` (Fedora/RHEL): Xfce with its terminal, file manager, editor, image viewer, task manager and whisker menu; Noto CJK + DejaVu fonts; an icon theme; Xorg with the dummy driver + `xrandr`, so from the next daemon start the resolution follows the viewer (FR-108); Mesa software GL. Lists are filtered to what the host's archive carries |
-| Never | a display manager (`--no-install-recommends`; one would take the machine's screen and switch the automatic desktop off at the next start) |
-| Gates | root; ≥ 3 GiB free on `/`; ≥ 1.5 GiB RAM; no failure in the last 24 h (`/var/lib/meshharbor/desktop-install.json`); kill switch `MESHHARBORD_VIRTUAL_DESKTOP_INSTALL=0` |
-| After | the running desktop switches to Xfce on the same X server (`switch_to_session`), so `DISPLAY` and `XAUTHORITY` stay valid; the log is `/var/log/meshharbor-desktop-install.log` |
+| **Its own glibc** | every bundled program runs through the bundle's dynamic loader (`bin/<name>` wrapper → `root/usr/lib/<triplet>/ld-linux-*.so.* --library-path … --preload lib/mhvd-shim.so`), so the host's glibc version does not matter and is never touched; any kernel ≥ 3.2, amd64 and arm64 |
+| **The shim** (`scripts/desktop-bundle/mhvd-shim.c`) | an `exec` of a HOST program (the terminal's shell, an app from the menu) gets the host environment back — each variable the desktop set restored from `MHVD_ORIG_<NAME>` or removed, the bundle's `bin/` taken off `PATH`. A compiled-in `/usr/…` path the bundle carries goes to the bundle's copy on every way in: `exec*` and `posix_spawn*` (a script runs from the bundle, an ELF through its loader), `dlopen`, `bindtextdomain`, read-only `open`/`fopen` and the `stat`/`access`/`statx`/`opendir` checks (a FILE prefers the bundle's copy; a DIRECTORY only when the host has none, so listings like `/usr/share/applications` stay the host's), and a command position inside a shell command (`system`, `popen`, any `sh -c`) |
+| **Unpacking** | in-process (`lzma-rs` → `tar` through a pipe, `virtual_desktop::unpack_tar_xz`): no host `tar` or `xz` (a minimal Debian has no `xz`); owners are not restored and set-id bits are dropped |
+| **Who can read it** | a root daemon's desktop runs as the signed-in user; a root-owned `lib/meshharbor` that is not `0755` is opened to it before use (`open_to_sessions`) |
+| **Fonts** | a private `fonts.conf`: the host's own when it has one, plus the bundle's fonts; a host with no fontconfig (a minimal server) also gets the bundle's rules (`conf.d`: aliases, hinting) |
+| **Environment** (`Bundle::desktop_vars`) | `XDG_DATA_DIRS` / `XDG_CONFIG_DIRS` (bundle first, host after, so host apps appear in the menu), GSettings schemas, the pixbuf loader cache, GIO modules, `GTK_PATH`, `LOCPATH`, and `LANG` = `zh_CN.UTF-8` when the host's is Chinese, else the built-in `C.UTF-8` (a host locale this glibc may not read would leave plain C); `LC_ALL` is dropped from the session and restored for host programs |
+| **D-Bus** | the bundle's own session bus, whose config names the bundle's service directory, so `xfconfd` and the rest are activated from the bundle |
+| **Relocation** | `relocate.list` names the files that must hold the unpacked location (the pixbuf cache, the bus config); the daemon writes it in before the directory goes live (`virtual_desktop::relocate`) |
+| **Never** | a display manager, a package manager, the network; nothing outside `lib/meshharbor/vd/` and the desktop's private directory |
 | Xfce's first start | decided ahead: the default panel (no "choose a panel" dialog over a remote session) and no compositing (shadows cost every frame sent); a person's own settings are never overwritten |
 
-A per-user daemon cannot install anything, and keeps the bundled window
-manager and terminal unless its host already has a desktop.
+⚠️ **A clean host is the only real test.** A host that has Xfce installed
+hides every compiled-in path the bundle fails to redirect: the host's own
+`dbus-daemon`, `xfconfd` and `/usr/share/xfwm4/defaults` simply answer. The
+first run on a host with no desktop packages (2026-11-19) found three at once:
+`dbus-launch` starts `dbus-daemon` with `execl`, which glibc implements
+without its `execve` PLT entry (so the HOST's bus ran and could not activate
+`xfconfd`); xfwm4 exits on a missing `/usr/share/xfwm4/defaults`; an autostart
+`sh -c "… || exec /usr/lib/…/xfce4-notifyd"` runs in the host's shell. Field
+checks run on such a host as an unprivileged account.
 
 The desktop lives as long as the daemon. twm runs with a generated config
 (windows place themselves; a click on the background opens a terminal), and

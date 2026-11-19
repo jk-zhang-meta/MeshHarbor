@@ -116,6 +116,11 @@ thiserror = { workspace = true }
 # Hashing (for machine_id derivation)
 sha2 = { workspace = true }
 hex = { workspace = true }
+# FR-120 P4: the packaged desktop runtime (`meshharbor-vd.so.tar.xz`) is
+# unpacked in-process — a minimal Debian host has no `xz` (field, 2026-11-19),
+# so `tar -xJf` cannot be relied on. Pure Rust, so the arm64 cross needs no C.
+lzma-rs = "0.3"
+tar = { version = "0.4", default-features = false }
 # The device key (`peer_auth`) and the vault proxy's SCRAM. (The pinned-key
 # `.asc` check that first brought it here, `pgp_verify`, moved to tunnel-core
 # in FR-97 P6b.) Already in the graph via remote_control/derp-relay — a direct

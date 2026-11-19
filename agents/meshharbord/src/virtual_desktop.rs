@@ -259,12 +259,18 @@ fn live_x_server(dir: &Path, ignore: &[u32]) -> bool {
 /// every per-user update from a daemon that predates it. The `.so` in the
 /// name is what lets that transaction carry it.
 ///
-/// Layout once unpacked: `bin/{Xvfb,xkbcomp,twm,xterm}`, `lib/` (their
-/// libraries, found through each binary's own `RUNPATH`, never
-/// `LD_LIBRARY_PATH`, which would leak into every program started from the
-/// desktop's terminal), `share/X11/{xkb,locale}`. The bundled `Xvfb` looks
-/// for `xkbcomp` in its working directory (`scripts/build-vd-bundle.py`
-/// points it there), so it runs from `bin/`.
+/// Layout once unpacked (FR-120 P4, `scripts/desktop-bundle/`): a full Xfce
+/// desktop on its OWN glibc, so it runs on any host glibc —
+/// `root/usr/...` (the Debian packages' files, glibc and the dynamic loader
+/// included), `bin/` (a wrapper per program that runs it through the
+/// bundle's loader with `lib/mhvd-shim.so` preloaded), `etc/session.conf`
+/// (the desktop's D-Bus), `DESKTOP` (the marker) and `ENV` (its triplet and
+/// loader). The shim hands every HOST program the desktop starts — the
+/// terminal's shell, an application from the menu — the host environment
+/// back, so nothing of the bundle leaks into it. The bundled `Xvfb` looks for
+/// `xkbcomp` in its working directory, so it runs from `bin/`. An older
+/// bundle (FR-120 P3: `bin/{Xvfb,xkbcomp,twm,xterm}`, `share/X11`) still
+/// works, as a window manager and a terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bundle {
     pub root: std::path::PathBuf,
@@ -284,6 +290,10 @@ impl Bundle {
     pub fn find() -> Option<Self> {
         let exe = std::env::current_exe().ok()?;
         let lib = exe.parent()?.parent()?.join("lib/meshharbor");
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            open_to_sessions(&lib);
+        }
         match Self::unpack_if_needed(&lib) {
             Ok(b) => b,
             Err(e) => {
@@ -310,18 +320,13 @@ impl Bundle {
         let tmp = lib.join(format!(".vd-new-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        let st = Command::new("tar")
-            .args(["--no-same-owner", "-xJf"])
-            .arg(&archive)
-            .arg("-C")
-            .arg(&tmp)
-            .status()
-            .context("spawning tar")?;
-        if !st.success() {
+        if let Err(e) = unpack_tar_xz(&bytes, &tmp) {
             let _ = std::fs::remove_dir_all(&tmp);
-            bail!("tar exited {:?} unpacking {}", st.code(), archive.display());
+            return Err(e.context(format!("unpacking {}", archive.display())));
         }
+        drop(bytes);
         std::fs::write(tmp.join("vd").join(BUNDLE_STAMP), &sha)?;
+        relocate(&tmp.join("vd"), &dir)?;
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::rename(tmp.join("vd"), &dir)
             .with_context(|| format!("placing {}", dir.display()))?;
@@ -344,9 +349,209 @@ impl Bundle {
     }
 
     fn xkb_dir(&self) -> Option<std::path::PathBuf> {
-        let d = self.root.join("share/X11/xkb");
-        d.is_dir().then_some(d)
+        self.share("X11/xkb")
     }
+
+    /// `rel` under the bundle's share tree: `root/usr/share` (FR-120 P4)
+    /// or `share` (P3).
+    fn share(&self, rel: &str) -> Option<std::path::PathBuf> {
+        [
+            self.root.join("root/usr/share").join(rel),
+            self.root.join("share").join(rel),
+        ]
+        .into_iter()
+        .find(|d| d.is_dir())
+    }
+
+    /// FR-120 P4 — does the bundle carry a full desktop?
+    pub fn has_desktop(&self) -> bool {
+        self.root.join("DESKTOP").is_file() && self.has("xfce4-session") && self.has("dbus-launch")
+    }
+
+    /// FR-120 P4 — the bundle's `ENV` (its triplet, loader, library dirs).
+    fn env_file(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(self.root.join("ENV"))
+            .ok()?
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix(key)
+                    .and_then(|r| r.strip_prefix('='))
+                    .map(|v| v.trim().to_string())
+            })
+    }
+
+    /// FR-120 P4 — what the bundled desktop's own programs need, as set on
+    /// its session, and the shim's bookkeeping. Every variable here except the
+    /// shim's own is listed in `MHVD_VARS`, with its host value (if any) in
+    /// `MHVD_ORIG_<NAME>`, so a host program the desktop starts gets the host
+    /// environment back. `host` reads the daemon's environment.
+    pub fn desktop_vars(&self, host: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+        let usr = self.root.join("root");
+        let u = usr.to_string_lossy().into_owned();
+        let trip = self
+            .env_file("TRIPLET")
+            .unwrap_or_else(|| "x86_64-linux-gnu".into());
+        let host_lang = host("LANG").unwrap_or_default();
+        // A UTF-8 locale this glibc has: its built-in C.UTF-8, or the zh_CN
+        // the bundle compiles; a host locale it may not be able to read
+        // would leave the desktop in plain C.
+        let lang = if host_lang.starts_with("zh_CN") {
+            "zh_CN.UTF-8".to_string()
+        } else {
+            "C.UTF-8".to_string()
+        };
+        let managed: Vec<(&str, String)> = vec![
+            (
+                "XDG_DATA_DIRS",
+                format!("{u}/usr/share:/usr/local/share:/usr/share"),
+            ),
+            ("XDG_CONFIG_DIRS", format!("{u}/etc/xdg:/etc/xdg")),
+            (
+                "GSETTINGS_SCHEMA_DIR",
+                format!("{u}/usr/share/glib-2.0/schemas"),
+            ),
+            (
+                "GDK_PIXBUF_MODULE_FILE",
+                format!("{u}/usr/lib/{trip}/gdk-pixbuf-2.0/2.10.0/loaders.cache"),
+            ),
+            ("GIO_MODULE_DIR", format!("{u}/usr/lib/{trip}/gio/modules")),
+            ("GTK_PATH", format!("{u}/usr/lib/{trip}/gtk-3.0")),
+            ("LOCPATH", format!("{u}/usr/lib/locale")),
+            ("LANG", lang),
+            ("XDG_CURRENT_DESKTOP", "XFCE".to_string()),
+        ];
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
+        for (k, v) in &managed {
+            names.push(k);
+            if let Some(orig) = host(k) {
+                out.push((format!("MHVD_ORIG_{k}"), orig));
+            }
+            out.push(((*k).to_string(), v.clone()));
+        }
+        // LC_ALL would override LANG with a locale this glibc may not have:
+        // the session drops it (`desktop_unset_vars`) and a host program gets
+        // it back.
+        names.push("LC_ALL");
+        if let Some(orig) = host("LC_ALL") {
+            out.push(("MHVD_ORIG_LC_ALL".to_string(), orig));
+        }
+        out.push(("MHVD_VARS".to_string(), names.join(":")));
+        out.push(("MHVD_ROOT".to_string(), u.clone()));
+        out.push((
+            "MHVD_BIN".to_string(),
+            self.root.join("bin").to_string_lossy().into_owned(),
+        ));
+        out.push((
+            "MHVD_SHIM".to_string(),
+            self.root
+                .join("lib/mhvd-shim.so")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        if let Some(ld) = self.env_file("LD") {
+            out.push(("MHVD_LD".to_string(), format!("{u}/{ld}")));
+        }
+        if let Some(libs) = self.env_file("LIBS") {
+            let joined: Vec<String> = libs
+                .split(':')
+                .filter(|d| !d.is_empty())
+                .map(|d| format!("{u}/{d}"))
+                .collect();
+            out.push(("MHVD_LIBS".to_string(), joined.join(":")));
+        }
+        out
+    }
+}
+
+/// FR-120 P4 — variables the bundled desktop's session must not inherit.
+const DESKTOP_UNSET_VARS: &[&str] = &["LC_ALL"];
+
+/// FR-120 P4 — the session name [`auto_config`] gives the bundle's desktop.
+pub const BUNDLED_SESSION: &str = "meshharbor:bundled-xfce";
+
+/// FR-120 P4 — a root daemon's desktop runs as the signed-in user, who must
+/// reach the bundle: the package directory holding it is made traversable
+/// and readable (0755) when it is not. Field: a bootstrap copy left
+/// `/usr/lib/meshharbor` 0700 on a clean field host (2026-11-19), which also
+/// kept every non-root `meshharbord` from loading its own libraries. Only a
+/// root-owned directory is touched, and only bits are added.
+#[cfg(unix)]
+fn open_to_sessions(dir: &Path) {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let Ok(md) = std::fs::metadata(dir) else {
+        return;
+    };
+    if !md.is_dir() || md.uid() != 0 || md.mode() & 0o055 == 0o055 {
+        return;
+    }
+    let mode = (md.mode() & 0o7777) | 0o755;
+    match std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)) {
+        Ok(()) => {
+            info!(dir = %dir.display(), mode = format!("{mode:o}"), "virtual-desktop: opened the package directory to the desktop's user")
+        }
+        Err(e) => {
+            warn!(dir = %dir.display(), error = %e, "virtual-desktop: the package directory is not readable by the desktop's user")
+        }
+    }
+}
+
+/// FR-120 P4 — unpack a `.tar.xz` into `dest` without any host tool: a
+/// minimal Debian host has no `xz`, so `tar -xJf` failed there (field,
+/// 2026-11-19). The decoder streams into the tar reader through a pipe, so the
+/// unpacked tar never sits in memory. Owners are not restored (the old
+/// `--no-same-owner`); modes are, without set-id bits.
+fn unpack_tar_xz(xz: &[u8], dest: &Path) -> Result<()> {
+    let (rx, tx) = std::io::pipe().context("creating a pipe")?;
+    std::thread::scope(|s| {
+        let decoder = s.spawn(move || {
+            let mut out = std::io::BufWriter::with_capacity(1 << 20, tx);
+            let r = lzma_rs::xz_decompress(&mut &xz[..], &mut out);
+            r.map_err(|e| anyhow::anyhow!("xz: {e}"))
+                .and_then(|()| std::io::Write::flush(&mut out).context("xz: writing"))
+        });
+        let mut archive = tar::Archive::new(std::io::BufReader::with_capacity(1 << 20, rx));
+        archive.set_preserve_permissions(false);
+        archive.set_preserve_ownerships(false);
+        let mut untar = archive.unpack(dest).context("tar");
+        let mut rest = archive.into_inner();
+        if untar.is_ok() {
+            // The tar ends before the stream does (record padding); drain it
+            // so the decoder is not cut off with a broken pipe.
+            untar = std::io::copy(&mut rest, &mut std::io::sink())
+                .map(drop)
+                .context("tar: draining");
+        }
+        // On a tar error the reader is dropped here, ending the decoder.
+        drop(rest);
+        let decoded = decoder
+            .join()
+            .map_err(|_| anyhow::anyhow!("xz decoder panicked"))?;
+        match (decoded, untar) {
+            (Ok(()), r) => r,
+            (Err(d), Ok(())) => Err(d),
+            (Err(d), Err(t)) => Err(t.context(format!("{d:#}"))),
+        }
+    })
+}
+
+/// FR-120 P4 — write the unpacked bundle's own location into the files that
+/// must name it (`relocate.list`: the pixbuf loader cache, the D-Bus session
+/// config), before it is moved to `final_dir`.
+fn relocate(staged: &Path, final_dir: &Path) -> Result<()> {
+    let Ok(list) = std::fs::read_to_string(staged.join("relocate.list")) else {
+        return Ok(());
+    };
+    let root = final_dir.join("root");
+    let root = root.to_string_lossy();
+    for rel in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let p = staged.join(rel);
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("relocating {}", p.display()))?;
+        std::fs::write(&p, text.replace("@MHVD_ROOT@", &root))
+            .with_context(|| format!("relocating {}", p.display()))?;
+    }
+    Ok(())
 }
 
 /// FR-120 P2 — the automatic desktop's configuration: the host's own window
@@ -364,7 +569,12 @@ pub fn auto_config(bundle: Option<&Bundle>) -> Config {
             })
     };
     let wm = pick(&["openbox", "twm"], "twm").unwrap_or_else(|| "openbox".to_string());
-    let session = installed_session();
+    // FR-120 P4 — the host's own desktop first; else the bundle's.
+    let session = installed_session().or_else(|| {
+        bundle
+            .filter(|b| b.has_desktop())
+            .map(|_| BUNDLED_SESSION.to_string())
+    });
     // A full desktop brings its own terminal; the bare one is the fallback.
     let terminal = session
         .is_none()
@@ -421,6 +631,8 @@ struct DesktopEnv {
     fonts_conf: Option<std::path::PathBuf>,
     resources: Option<std::path::PathBuf>,
     pgid: Option<i32>,
+    /// FR-120 P4 — the bundle the desktop came from, for its own session.
+    bundle: Option<Bundle>,
 }
 
 impl DesktopEnv {
@@ -489,18 +701,20 @@ fn account_home() -> Option<std::path::PathBuf> {
 /// session), and no compositing (shadows and fades cost every frame a
 /// remote viewer is sent). Only files that do not exist yet are written, so
 /// a person's own settings always win.
-fn preseed_xfce(home: &Path) {
+fn preseed_xfce(home: &Path, bundled_panel: Option<std::path::PathBuf>) {
     let dir = home.join(".config/xfce4/xfconf/xfce-perchannel-xml");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let panel = dir.join("xfce4-panel.xml");
     if !panel.exists() {
-        for src in [
+        let host = [
             "/etc/xdg/xfce4/panel/default.xml",
             "/etc/xdg/xdg-xfce/xfce4/panel/default.xml",
-        ] {
-            if std::fs::copy(src, &panel).is_ok() {
+        ]
+        .map(std::path::PathBuf::from);
+        for src in bundled_panel.into_iter().chain(host) {
+            if std::fs::copy(&src, &panel).is_ok() {
                 break;
             }
         }
@@ -537,16 +751,60 @@ fn session_argv(session: &str, dbus_launch: bool) -> Vec<String> {
 /// minutes, so a session that cannot start does not spin). Returns the first
 /// session's pid.
 fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
+    // FR-120 P4 — the bundle's own desktop: its xfce4-session under its own
+    // D-Bus (whose config names the bundle's service directory, so xfconfd
+    // and the rest are activated from the bundle), with its environment.
+    let bundled = if session == BUNDLED_SESSION {
+        Some(
+            env.bundle
+                .clone()
+                .filter(Bundle::has_desktop)
+                .context("the package's desktop runtime is not unpacked")?,
+        )
+    } else {
+        None
+    };
     if session.contains("xfce")
         && let Some(h) = &env.home
     {
-        preseed_xfce(h);
+        preseed_xfce(
+            h,
+            bundled
+                .as_ref()
+                .map(|b| b.root.join("root/etc/xdg/xfce4/panel/default.xml")),
+        );
     }
     let gen_ = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let argv = session_argv(session, binary_on_path("dbus-launch").is_some());
+    let (argv, extra): (Vec<String>, Vec<(String, String)>) = match &bundled {
+        Some(b) => (
+            vec![
+                b.bin("dbus-launch").to_string_lossy().into_owned(),
+                format!(
+                    "--config-file={}",
+                    b.root.join("etc/session.conf").display()
+                ),
+                "--exit-with-session".into(),
+                b.bin("xfce4-session").to_string_lossy().into_owned(),
+            ],
+            b.desktop_vars(|k| std::env::var(k).ok()),
+        ),
+        None => (
+            session_argv(session, binary_on_path("dbus-launch").is_some()),
+            Vec::new(),
+        ),
+    };
+    let unset: &[&str] = if bundled.is_some() {
+        DESKTOP_UNSET_VARS
+    } else {
+        &[]
+    };
     let launch = move |env: &DesktopEnv| -> std::io::Result<Child> {
         let mut cmd = env.command(&argv[0]);
         cmd.args(&argv[1..]).env("XDG_SESSION_TYPE", "x11");
+        for k in unset {
+            cmd.env_remove(k);
+        }
+        cmd.envs(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         if let Some(rt) = env
             .auth
             .as_deref()
@@ -602,36 +860,6 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
         })
         .context("spawning the session supervisor")?;
     Ok(first)
-}
-
-/// FR-120 P4 — replace the running desktop's window manager and terminal
-/// with `session` (a full desktop that was just installed), on the same X
-/// server, so `DISPLAY` and `XAUTHORITY` stay valid for every client.
-#[cfg(target_os = "linux")]
-pub fn switch_to_session(session: &str) -> Result<()> {
-    let env = DESKTOP_ENV
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .context("no virtual desktop is running")?;
-    {
-        let mut tree = VD_TREE.lock().unwrap_or_else(|e| e.into_inner());
-        let t = tree.as_mut().context("no virtual desktop is running")?;
-        // roots[0] is the X server; the rest are the old WM and its apps.
-        for pid in t.roots.drain(1..) {
-            // SAFETY: plain signal + non-blocking reap of our own children.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-        }
-    }
-    std::thread::sleep(Duration::from_millis(500));
-    let pid = spawn_session(&env, session)?;
-    if let Some(t) = VD_TREE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        t.roots.push(pid);
-    }
-    info!(%session, display = %env.display, "virtual-desktop: switched to the full desktop");
-    Ok(())
 }
 
 /// A private `Xauthority` holding one MIT-MAGIC-COOKIE-1 for `display`, in a
@@ -1333,11 +1561,17 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
     *XAUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = auth.clone();
     // FR-120 P3 — the desktop's own programs find the bundled ones (the
     // twm menu's terminal) by name; the bundle is never put first.
+    // FR-120 P4 — the bundled desktop's programs find each other first; the
+    // shim takes the directory out again for every host program they start.
     let path_env = bundle.as_ref().map(|b| {
         let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).collect())
             .unwrap_or_default();
-        dirs.push(b.root.join("bin"));
+        if cfg.session.as_deref() == Some(BUNDLED_SESSION) {
+            dirs.insert(0, b.root.join("bin"));
+        } else {
+            dirs.push(b.root.join("bin"));
+        }
         std::env::join_paths(dirs).unwrap_or_default()
     });
     let home = account_home();
@@ -1345,8 +1579,8 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
     // cannot make a font set without one.
     let locale_dir = bundle
         .as_ref()
-        .map(|b| b.root.join("share/X11/locale"))
-        .filter(|d| d.is_dir() && !Path::new("/usr/share/X11/locale").is_dir());
+        .and_then(|b| b.share("X11/locale"))
+        .filter(|_| !Path::new("/usr/share/X11/locale").is_dir());
     // FR-120 P2 — the automatic desktop's own files sit beside its cookie: a
     // readable terminal (X resources), and a fontconfig configuration that
     // adds the bundle's font to the host's (a server can have the config
@@ -1357,11 +1591,15 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
         std::fs::write(&p, XRESOURCES).ok().map(|()| p)
     });
     let fonts_conf = private_dir
-        .zip(bundle.as_ref())
-        .filter(|(_, b)| b.root.join("share/fonts").is_dir())
-        .and_then(|(d, b)| {
+        .zip(
+            bundle
+                .as_ref()
+                .and_then(|b| b.share("fonts").map(|f| (b, f))),
+        )
+        .and_then(|(d, (b, fonts))| {
             let p = d.join("fonts.conf");
-            std::fs::write(&p, fonts_conf(&b.root.join("share/fonts"), d))
+            let rules = bundled_font_rules(b, Path::new("/etc/fonts/fonts.conf"));
+            std::fs::write(&p, fonts_conf(&fonts, d, rules.as_deref()))
                 .ok()
                 .map(|()| p)
         });
@@ -1377,6 +1615,7 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
         fonts_conf,
         resources,
         pgid,
+        bundle: bundle.clone(),
     };
     *DESKTOP_ENV.lock().unwrap_or_else(|e| e.into_inner()) = Some(env.clone());
     children.push(x);
@@ -1533,12 +1772,29 @@ XTerm*selectToClipboard: true
 
 /// FR-120 P3 — a fontconfig configuration: the host's own, when it has one,
 /// plus the bundle's fonts, with a cache in the desktop's private directory.
-fn fonts_conf(fonts: &Path, cache: &Path) -> String {
+/// FR-120 P4: a host with no fontconfig of its own (a minimal server) gets
+/// the bundle's rules (`rules`: its `etc/fonts/conf.d` — aliases, hinting),
+/// without which "Sans" and "Monospace" match no family.
+fn fonts_conf(fonts: &Path, cache: &Path, rules: Option<&Path>) -> String {
+    let rules = rules
+        .map(|r| {
+            format!(
+                "  <include ignore_missing=\"yes\">{}</include>\n",
+                r.display()
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n</fontconfig>\n",
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>\n{rules}  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n</fontconfig>\n",
         fonts.display(),
         cache.join("fontconfig").display()
     )
+}
+
+/// The bundle's fontconfig rules, for a host that has none of its own.
+fn bundled_font_rules(bundle: &Bundle, host_conf: &Path) -> Option<std::path::PathBuf> {
+    let rules = bundle.root.join("root/etc/fonts/conf.d");
+    (!host_conf.exists() && rules.is_dir()).then_some(rules)
 }
 
 /// FR-120 P2 — a twm config for a desktop nobody sits at: windows placed by
@@ -1859,6 +2115,89 @@ mod tests {
         }
     }
 
+    /// `<src>/vd` as a `.tar.xz` at `out`, built in-process like the bundle
+    /// builder's `tarfile` (no host `tar`/`xz`).
+    #[cfg(unix)]
+    fn pack_tar_xz(src: &Path, out: &Path) {
+        let mut b = tar::Builder::new(Vec::new());
+        b.follow_symlinks(false);
+        b.append_dir_all("vd", src.join("vd")).unwrap();
+        let tar = b.into_inner().unwrap();
+        let mut xz = Vec::new();
+        lzma_rs::xz_compress(&mut &tar[..], &mut xz).unwrap();
+        std::fs::write(out, xz).unwrap();
+    }
+
+    /// FR-120 P4 — a root-owned package directory left 0700 is opened to the
+    /// desktop's user (bits added, never removed); one already open is left.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_package_directory_is_opened_to_the_session() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let d = std::env::temp_dir().join(format!("mh-vd-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir(&d).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o1700)).unwrap();
+        open_to_sessions(&d);
+        if std::fs::metadata(&d).unwrap().uid() == 0 {
+            assert_eq!(mode(&d), 0o1755);
+        } else {
+            assert_eq!(mode(&d), 0o1700, "not root-owned: untouched");
+        }
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o775)).unwrap();
+        open_to_sessions(&d);
+        assert_eq!(mode(&d), 0o775);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// FR-120 P4 — the runtime unpacks with no host tool (a minimal Debian
+    /// has no `xz`): executable modes and symlinks survive, and a truncated
+    /// archive is an error that leaves no runtime behind.
+    #[cfg(unix)]
+    #[test]
+    fn the_bundle_unpacks_without_host_tools() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let base = std::env::temp_dir().join(format!("mh-vd-xz-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("lib");
+        std::fs::create_dir_all(base.join("src/vd/bin")).unwrap();
+        std::fs::create_dir_all(base.join("src/vd/root/usr/lib")).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        let xvfb = base.join("src/vd/bin/Xvfb");
+        std::fs::write(&xvfb, "#!/bin/sh\n".repeat(50_000)).unwrap();
+        std::fs::set_permissions(&xvfb, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("libX.so.6.4", base.join("src/vd/root/usr/lib/libX.so.6"))
+            .unwrap();
+        std::fs::write(base.join("src/vd/root/usr/lib/libX.so.6.4"), "elf").unwrap();
+        pack_tar_xz(&base.join("src"), &lib.join(BUNDLE_ARCHIVE));
+        let b = Bundle::unpack_if_needed(&lib).unwrap().expect("unpacked");
+        let mode = std::fs::metadata(b.bin("Xvfb"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+        let link = b.root.join("root/usr/lib/libX.so.6");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("libX.so.6.4"));
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "elf");
+        // A truncated archive (an interrupted package write): an error, and
+        // neither a half runtime nor a staging directory is left.
+        let full = std::fs::read(lib.join(BUNDLE_ARCHIVE)).unwrap();
+        std::fs::remove_dir_all(lib.join("vd")).unwrap();
+        std::fs::write(lib.join(BUNDLE_ARCHIVE), &full[..full.len() / 2]).unwrap();
+        assert!(Bundle::unpack_if_needed(&lib).is_err());
+        let left: Vec<_> = std::fs::read_dir(&lib)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            vec![std::ffi::OsString::from(BUNDLE_ARCHIVE)],
+            "{left:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// FR-120 P3 — the package's archive is unpacked once, re-unpacked when
     /// a new package brings different bytes, and its absence leaves an
     /// unpacked runtime in use.
@@ -1872,15 +2211,7 @@ mod tests {
         std::fs::create_dir_all(&lib).unwrap();
         let pack = |marker: &str| {
             std::fs::write(base.join("src/vd/bin/Xvfb"), marker).unwrap();
-            let st = Command::new("tar")
-                .arg("-cJf")
-                .arg(lib.join(BUNDLE_ARCHIVE))
-                .arg("-C")
-                .arg(base.join("src"))
-                .arg("vd")
-                .status()
-                .unwrap();
-            assert!(st.success());
+            pack_tar_xz(&base.join("src"), &lib.join(BUNDLE_ARCHIVE));
         };
         assert_eq!(Bundle::unpack_if_needed(&lib).unwrap(), None);
         pack("one");
@@ -1896,6 +2227,96 @@ mod tests {
         assert_eq!(std::fs::read_to_string(b.bin("Xvfb")).unwrap(), "two");
         std::fs::remove_file(lib.join(BUNDLE_ARCHIVE)).unwrap();
         assert!(Bundle::unpack_if_needed(&lib).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// FR-120 P4 — the full-desktop bundle: unpacking writes its own
+    /// location into the files that name it; it counts as a desktop only
+    /// with its session and its D-Bus; and its session's environment lists
+    /// every variable it sets, with the host's value kept for host programs.
+    #[cfg(unix)]
+    #[test]
+    fn the_desktop_bundle_is_relocated_and_brings_its_environment() {
+        let base = std::env::temp_dir().join(format!("mh-vd-desk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("lib");
+        let vd = base.join("src/vd");
+        for d in ["bin", "etc", "lib", "root/usr/share/fonts"] {
+            std::fs::create_dir_all(vd.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&lib).unwrap();
+        for b in ["Xvfb", "xfce4-session"] {
+            std::fs::write(vd.join("bin").join(b), "#!/bin/sh\n").unwrap();
+        }
+        std::fs::write(vd.join("DESKTOP"), "xfce4-session\n").unwrap();
+        std::fs::write(
+            vd.join("ENV"),
+            "TRIPLET=aarch64-linux-gnu\nLD=usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1\nLIBS=usr/lib/aarch64-linux-gnu:usr/lib\n",
+        )
+        .unwrap();
+        std::fs::write(
+            vd.join("etc/session.conf"),
+            "<servicedir>@MHVD_ROOT@/usr/share/dbus-1/services</servicedir>",
+        )
+        .unwrap();
+        std::fs::write(vd.join("relocate.list"), "etc/session.conf\n").unwrap();
+        pack_tar_xz(&base.join("src"), &lib.join(BUNDLE_ARCHIVE));
+        let b = Bundle::unpack_if_needed(&lib).unwrap().expect("unpacked");
+        let conf = std::fs::read_to_string(b.root.join("etc/session.conf")).unwrap();
+        assert!(!conf.contains("@MHVD_ROOT@"), "{conf}");
+        assert!(
+            conf.contains(&*b.root.join("root").to_string_lossy()),
+            "{conf}"
+        );
+        // A host with no fontconfig gets the bundle's rules; one with its
+        // own keeps only its own.
+        std::fs::create_dir_all(b.root.join("root/etc/fonts/conf.d")).unwrap();
+        let none = base.join("no-such-fonts.conf");
+        let rules = bundled_font_rules(&b, &none).expect("rules for a bare host");
+        let conf = fonts_conf(&b.root.join("root/usr/share/fonts"), &base, Some(&rules));
+        assert!(
+            conf.contains(&format!(
+                "<include ignore_missing=\"yes\">{}</include>",
+                rules.display()
+            )),
+            "{conf}"
+        );
+        assert_eq!(bundled_font_rules(&b, &lib.join(BUNDLE_ARCHIVE)), None);
+        assert!(!fonts_conf(&base, &base, None).contains("conf.d"));
+        assert!(!b.has_desktop(), "no D-Bus launcher yet");
+        std::fs::write(b.bin("dbus-launch"), "#!/bin/sh\n").unwrap();
+        assert!(b.has_desktop());
+        assert_eq!(b.share("fonts"), Some(b.root.join("root/usr/share/fonts")));
+
+        let host = |k: &str| match k {
+            "LANG" => Some("en_US.UTF-8".to_string()),
+            "LC_ALL" => Some("en_US.UTF-8".to_string()),
+            _ => None,
+        };
+        let vars: std::collections::HashMap<String, String> =
+            b.desktop_vars(host).into_iter().collect();
+        assert_eq!(vars["LANG"], "C.UTF-8", "a locale the bundle's glibc has");
+        assert_eq!(vars["MHVD_ORIG_LANG"], "en_US.UTF-8");
+        assert_eq!(vars["MHVD_ORIG_LC_ALL"], "en_US.UTF-8");
+        assert!(
+            !vars.contains_key("MHVD_ORIG_XDG_DATA_DIRS"),
+            "unset on the host stays unset"
+        );
+        let listed: Vec<&str> = vars["MHVD_VARS"].split(':').collect();
+        for k in [
+            "XDG_DATA_DIRS",
+            "GSETTINGS_SCHEMA_DIR",
+            "GDK_PIXBUF_MODULE_FILE",
+            "LANG",
+            "LC_ALL",
+        ] {
+            assert!(listed.contains(&k), "{k}");
+        }
+        assert!(vars["GDK_PIXBUF_MODULE_FILE"].contains("aarch64-linux-gnu"));
+        assert!(vars["MHVD_LD"].ends_with("ld-linux-aarch64.so.1"));
+        assert_eq!(vars["MHVD_LIBS"].split(':').count(), 2);
+        let zh = b.desktop_vars(|k| (k == "LANG").then(|| "zh_CN.UTF-8".to_string()));
+        assert!(zh.contains(&("LANG".to_string(), "zh_CN.UTF-8".to_string())));
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1927,14 +2348,14 @@ mod tests {
         let home = std::env::temp_dir().join(format!("mh-xfce-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let dir = home.join(".config/xfce4/xfconf/xfce-perchannel-xml");
-        preseed_xfce(&home);
+        preseed_xfce(&home, None);
         assert!(
             std::fs::read_to_string(dir.join("xfwm4.xml"))
                 .unwrap()
                 .contains("use_compositing")
         );
         std::fs::write(dir.join("xfwm4.xml"), "mine").unwrap();
-        preseed_xfce(&home);
+        preseed_xfce(&home, None);
         assert_eq!(
             std::fs::read_to_string(dir.join("xfwm4.xml")).unwrap(),
             "mine"

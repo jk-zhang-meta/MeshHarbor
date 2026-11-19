@@ -5948,6 +5948,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lzma-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+dependencies = [
+ "byteorder",
+ "crc",
+]
+
+[[package]]
 name = "lzw"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6868,6 +6878,7 @@ dependencies = [
  "ipnet",
  "libc",
  "libloading 0.8.9",
+ "lzma-rs",
  "meshharbor-cli",
  "meshharbor-hive-node",
  "meshharbor-node-core",
@@ -6899,6 +6910,7 @@ dependencies = [
  "subtle",
  "symphonia",
  "sysinfo",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

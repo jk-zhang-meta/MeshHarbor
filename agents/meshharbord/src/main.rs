@@ -4183,11 +4183,6 @@ fn maybe_start_automatic_virtual_desktop() -> Option<virtual_desktop::VirtualDes
                 }
             }
             virtual_desktop::mark_auto_started();
-            // FR-120 P4 — a host with no desktop installed gets one, in the
-            // background, when the daemon is root and the host has room.
-            if cfg.session.is_none() {
-                meshharbord::desktop_install::spawn_if_needed();
-            }
             tracing::info!(
                 display = vd.display(),
                 bundled = bundle.is_some(),
