@@ -1573,7 +1573,8 @@ pub async fn resolve_exec_target(
         )
         .await
         .ok()?;
-    page.items
+    let by_name = page
+        .items
         .iter()
         .find(|a| a.name == target)
         .or_else(|| {
@@ -1581,7 +1582,31 @@ pub async fn resolve_exec_target(
                 .iter()
                 .find(|a| a.name.eq_ignore_ascii_case(target))
         })
-        .cloned()
+        // The admin's friendly label, which the device list shows over `name`.
+        .or_else(|| {
+            page.items.iter().find(|a| {
+                a.display_name
+                    .as_deref()
+                    .is_some_and(|d| d.eq_ignore_ascii_case(target))
+            })
+        })
+        .cloned();
+    if by_name.is_some() {
+        return by_name;
+    }
+    // The MagicDNS label, which `mh ping` resolves and `mh devices` lists:
+    // it stays when a re-enrollment (a promotion to the system service)
+    // changes the device's technical `name`, so the name an operator has
+    // always typed keeps working.
+    let node = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&state.core.db)
+        .find_live_agent_by_label(tenant_id, target)
+        .await
+        .ok()
+        .flatten()?;
+    let meshharbor_remote_control::models::NodeRef::Agent { agent_id } = node.node_ref else {
+        return None;
+    };
+    state.agents.find_live_in_tenant(tenant_id, agent_id).await.ok()
 }
 
 /// The agent's measured regions ordered by RTT (nearest first) — the

@@ -932,6 +932,24 @@ impl OverlayNodeDao {
     /// (`deleted_at: null`) on purpose: a tombstone keeps the address it once
     /// held as a forensic record, and handing that out would send the caller
     /// to whoever holds it now.
+    /// The LIVE agent-backed node whose MagicDNS label is `label` in
+    /// `tenant_id` — what `mh ping <name>` resolves, so `mh ssh` / `mh exec`
+    /// resolve the same name. Labels are stored lower-case.
+    pub async fn find_live_agent_by_label(
+        &self,
+        tenant_id: ObjectId,
+        label: &str,
+    ) -> DaoResult<Option<OverlayNode>> {
+        self.base
+            .find_one(doc! {
+                "tenant_id": tenant_id,
+                "node_ref.kind": "agent",
+                "name": label.trim().to_ascii_lowercase(),
+                "deleted_at": bson::Bson::Null,
+            })
+            .await
+    }
+
     pub async fn find_live_by_agent(
         &self,
         tenant_id: ObjectId,
