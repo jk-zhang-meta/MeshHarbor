@@ -1956,6 +1956,7 @@ fn spawn_x_server(
         None => Command::new("Xvfb"),
     };
     cmd.args(xvfb_args(&dpy, w, h, auth.as_deref()))
+        .args(socket_dir_args())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     lead_new_group(&mut cmd);
@@ -2085,6 +2086,7 @@ fn spawn_xorg(xorg: &Path, dpy: &str, w: u32, h: u32, auth: Option<&Path>) -> Re
         &dir.join("Xorg.log"),
         auth,
     ))
+    .args(socket_dir_args())
     .stdout(Stdio::null())
     .stderr(Stdio::null());
     lead_new_group(&mut cmd);
@@ -2217,6 +2219,59 @@ fn pick_display(x11_dir: &str) -> String {
     ":99".to_string()
 }
 
+/// Extra listen arguments for the X server: none where `/tmp/.X11-unix` can
+/// take a socket; `-nolisten unix` where it cannot, so the server keeps only
+/// Linux's abstract socket (`@/tmp/.X11-unix/X<N>`), which every libxcb client
+/// tries first anyway.
+///
+/// Field (2026-11-19): WSLg bind-mounts its own socket directory over
+/// `/tmp/.X11-unix` READ-ONLY. Xvfb could not create its socket there and
+/// exited, leaving a stale lock, and every WSL distro was left with
+/// `no_display`.
+fn socket_dir_args() -> Vec<&'static str> {
+    if x11_dir_writable(Path::new(X11_UNIX_DIR)) {
+        Vec::new()
+    } else {
+        vec!["-nolisten", "unix"]
+    }
+}
+
+/// Can an X server create its socket in `dir`? A missing directory can be
+/// (the server creates it); an existing one must be writable, which a
+/// read-only mount is not, even for root.
+#[cfg(unix)]
+fn x11_dir_writable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    if !dir.exists() {
+        return true;
+    }
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: `c` is a valid NUL-terminated path for the duration of the call.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn x11_dir_writable(_dir: &Path) -> bool {
+    true
+}
+
+/// Does an X server answer on display `n`'s abstract socket? Linux only (the
+/// abstract namespace); `false` elsewhere.
+#[cfg(target_os = "linux")]
+fn abstract_x_socket_answers(n: &str) -> bool {
+    use std::os::linux::net::SocketAddrExt;
+    std::os::unix::net::SocketAddr::from_abstract_name(format!("{X11_UNIX_DIR}/X{n}").as_bytes())
+        .and_then(|a| std::os::unix::net::UnixStream::connect_addr(&a))
+        .is_ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn abstract_x_socket_answers(_n: &str) -> bool {
+    false
+}
+
 /// `"1920x1080"` → `(1920, 1080)`; anything unparseable → `(1920, 1080)`.
 fn parse_resolution(s: &str) -> (u32, u32) {
     let mut it = s.split(['x', 'X']);
@@ -2238,7 +2293,7 @@ fn wait_display_ready(display: &str, timeout: Duration) -> Result<()> {
     let sock = Path::new(X11_UNIX_DIR).join(format!("X{n}"));
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if sock.exists() {
+        if sock.exists() || abstract_x_socket_answers(n) {
             std::thread::sleep(Duration::from_millis(300));
             return Ok(());
         }
@@ -2717,6 +2772,32 @@ mod tests {
             "nor a remote seatless session's own server (xrdp's)"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-120 — WSLg's read-only socket directory: the server listens only on
+    /// the abstract socket there, and is found ready by it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_read_only_socket_directory_takes_the_abstract_socket() {
+        let dir = std::env::temp_dir().join(format!("mh-x11ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            x11_dir_writable(&dir),
+            "a missing directory is created by the server"
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(x11_dir_writable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        use std::os::linux::net::SocketAddrExt;
+        let n = format!("9{}", std::process::id() % 100_000);
+        assert!(!abstract_x_socket_answers(&n));
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(
+            format!("{X11_UNIX_DIR}/X{n}").as_bytes(),
+        )
+        .unwrap();
+        let _l = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
+        assert!(abstract_x_socket_answers(&n));
+        assert!(wait_display_ready(&format!(":{n}"), Duration::from_secs(2)).is_ok());
     }
 
     /// FR-120 — an application's private Xvfb is nobody's screen; every other
