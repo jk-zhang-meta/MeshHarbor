@@ -3963,17 +3963,56 @@ export function zoneRoutePlan(
 export const ZONE_REQUIRES_MESH_CONTROLLER =
   '这台设备和你不在同一个网络分区时，只能经网格连接：请从已登录 MeshHarbor 的设备上发起远控。'
 
+/** FR-121 — the same, when the browser itself kept the page from reaching
+ *  this machine's MeshHarbor (Chrome's Local Network Access permission). */
+export const ZONE_NEEDS_LOCAL_ACCESS =
+  '这台设备和你不在同一个网络分区，需要经本机的 MeshHarbor 走网格：请在浏览器地址栏左侧允许本网站访问本机设备（本地网络），然后重新连接。'
+
+/** FR-121 — Chrome's Local Network Access permission for this page to reach
+ *  the loopback agent: `denied` makes every probe fail at once, `prompt`
+ *  means the first probe raises the browser's own question. `unknown` where
+ *  the browser has no such permission (no gate). Field (2026-11-19, Chrome
+ *  156): an unanswered prompt blocked the probe, so the hub never learned the
+ *  controller's mesh node. */
+export async function localNetworkPermission(): Promise<'granted' | 'prompt' | 'denied' | 'unknown'> {
+  const perms = (globalThis.navigator as Navigator | undefined)?.permissions
+  if (!perms?.query) return 'unknown'
+  for (const name of ['loopback-network', 'local-network-access']) {
+    try {
+      const st = await perms.query({ name } as unknown as PermissionDescriptor)
+      if (st.state === 'granted' || st.state === 'prompt' || st.state === 'denied') return st.state
+    } catch {
+      // This browser does not know the name; try the next.
+    }
+  }
+  return 'unknown'
+}
+
+
+/** FR-121 — how long a probe may wait while the browser asks the person for
+ *  Local Network Access: long enough to answer, short of the probe cache. */
+export const LOCAL_RELAY_PERMISSION_WAIT_MS = 55_000
 
 /** Discover any enrolled local agent's loopback TURN endpoint. */
 export async function probeLocalRelay(): Promise<LocalRelayDescriptor | null> {
+  // FR-121 — Chrome's Local Network Access: refused means no probe can pass;
+  // not yet asked means the first request raises the browser's question, and
+  // the probe waits for the answer instead of aborting under it (nothing
+  // waits on the probe: a late answer serves the next attempt via the cache).
+  const permission = await localNetworkPermission()
+  if (permission === 'denied') return null
+  const waitMs = permission === 'prompt' ? LOCAL_RELAY_PERMISSION_WAIT_MS : 800
   // Silent ports share one startup wait instead of ten consecutive timeouts.
   const controllers = LOCAL_RELAY_PROBE_PORTS.map(() => new AbortController())
   try {
     return await Promise.any(LOCAL_RELAY_PROBE_PORTS.map(async (port, index) => {
       const ctl = controllers[index]
-      const timer = setTimeout(() => ctl.abort(), 800)
+      const timer = setTimeout(() => ctl.abort(), waitMs)
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/rc-local-turn`, { signal: ctl.signal })
+        // `targetAddressSpace` declares the loopback request the way Local
+        // Network Access expects it (ignored by browsers without the gate).
+        const init = { signal: ctl.signal, targetAddressSpace: 'loopback' } as RequestInit
+        const res = await fetch(`http://127.0.0.1:${port}/rc-local-turn`, init)
         const desc = res.ok ? parseLocalRelayDescriptor(await res.json()) : null
         if (!desc) throw new Error('No valid local relay on this port')
         return desc
@@ -9376,6 +9415,12 @@ export function useRemoteControl(
     // connect: the likely reason, said once, while the ladder keeps trying.
     if (zoneRoutePlan(sessionZoneRoute, sessionLocalRelay) === 'no_local_agent') {
       notice.value = ZONE_REQUIRES_MESH_CONTROLLER
+      // The browser may be what kept this page from its own MeshHarbor.
+      void localNetworkPermission().then((p) => {
+        if ((p === 'denied' || p === 'prompt') && notice.value === ZONE_REQUIRES_MESH_CONTROLLER) {
+          notice.value = ZONE_NEEDS_LOCAL_ACCESS
+        }
+      })
     }
     // Free the agent's session slot BEFORE retrying: the default
     // max_simultaneous_sessions is 1, and the agent only notices a

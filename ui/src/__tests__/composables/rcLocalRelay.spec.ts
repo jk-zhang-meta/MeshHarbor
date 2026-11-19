@@ -67,6 +67,47 @@ describe('local relay discovery startup budget', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  // FR-121 — Chrome's Local Network Access permission.
+  function stubPermission(state: 'granted' | 'prompt' | 'denied') {
+    vi.stubGlobal('navigator', {
+      ...globalThis.navigator,
+      permissions: { query: vi.fn(async () => ({ state })) },
+    })
+  }
+
+  it('does not probe at all when the browser refused this page local network access', async () => {
+    stubPermission('denied')
+    const fetchMock = vi.fn((_url, init) => pendingUntilAbort(init.signal))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await probeLocalRelay()).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('waits for the person to answer the local network access prompt instead of aborting under it', async () => {
+    stubPermission('prompt')
+    const inits: RequestInit[] = []
+    vi.stubGlobal('fetch', vi.fn((url, init) => {
+      inits.push(init)
+      if (new URL(url).port === String(LOCAL_RELAY_PROBE_PORTS[0])) {
+        // The person clicks "allow" five seconds in.
+        return new Promise<Response>((resolve) => setTimeout(() => resolve(Response.json(descriptor)), 5000))
+      }
+      return pendingUntilAbort(init.signal)
+    }))
+    const settled = vi.fn()
+    const request = probeLocalRelay().then(settled)
+    try {
+      await vi.advanceTimersByTimeAsync(800)
+      expect(settled).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(4200)
+      expect(settled).toHaveBeenCalledWith(descriptor)
+      expect(inits.every((i) => (i as { targetAddressSpace?: string }).targetAddressSpace === 'loopback')).toBe(true)
+    } finally {
+      await vi.runAllTimersAsync()
+      await request
+    }
+  })
+
   it('falls back to normal TURN when endpoints refuse or return unusable responses', async () => {
     let call = 0
     vi.stubGlobal('fetch', vi.fn(() => {
