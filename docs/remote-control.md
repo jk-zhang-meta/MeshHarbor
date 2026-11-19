@@ -627,9 +627,9 @@ machine awake while a session is live, per OS:
 | | Windows | Linux | macOS |
 |---|---|---|---|
 | The lock signal | the input desktop moves to `winsta0\Winlogon` (`lock_state`) | logind's `LockedHint` for seat0's active session, polled every 2 s ([`lock_state.rs:347`](../agents/meshharbord/src/lock_state.rs#L347)); GNOME, KDE and light-locker set it | the session dictionary's `CGSSessionScreenIsLocked`, or another user on the console, polled every 2 s ([`lock_state.rs:357`](../agents/meshharbord/src/lock_state.rs#L357)); only the GUI session's half can ask, so the root half says nothing |
-| What the session does | paints the "Host locked" overlay and suppresses input: the worker can neither capture nor inject there | **nothing**: the lock screen is captured like any other screen, and input reaches it | **nothing**: no overlay, and input is not suppressed |
-| `rc:host_locked` | `{locked}` | `{locked, input: "passes"}` ([`peer.rs:10005`](../agents/meshharbord/src/peer.rs#L10005)), retried until the control DC carries it | `{locked, input: "unknown"}`, the same way: whether the lock screen's password field takes injected keys is not measured |
-| The viewer's chip | "input is suppressed" | "Your input reaches it, so you can type the password to unlock" | "The remote host is on its lock screen.", claiming neither way ([`useRemoteControl.ts:1426`](../ui/src/composables/useRemoteControl.ts#L1426) `hostLockedChipTitle`) |
+| What the session does | a worker that runs as the person paints the "Host locked" overlay and suppresses input: it can neither capture nor inject there. A SystemContext worker streams the real lock screen and injects into it | **nothing**: the lock screen is captured like any other screen, and input reaches it | **nothing**: no overlay, and input is not suppressed |
+| `rc:host_locked` | `{locked, input}`: `passes` from a SystemContext worker, `blocked` from one that runs as the person (§5.1g); agents before that sent `{locked}` | `{locked, input: "passes"}` ([`peer.rs:10005`](../agents/meshharbord/src/peer.rs#L10005)), retried until the control DC carries it | `{locked, input: "unknown"}`, the same way: whether the lock screen's password field takes injected keys is not measured |
+| The viewer's chip | `passes`: "Your input reaches it"; `blocked`: "cannot show or control", and RDP opens where the host has it; no `input`: "input is suppressed" | "Your input reaches it, so you can type the password to unlock" | "The remote host is on its lock screen.", claiming neither way ([`useRemoteControl.ts:1426`](../ui/src/composables/useRemoteControl.ts#L1426) `hostLockedChipTitle`) |
 | A request that waits for consent | `rc:consent.pending{host_locked}` (FR-34, §11.2) | not yet: the read is a `loginctl` run, which does not belong on the signalling loop | `rc:consent.pending{host_locked}`, from the same session dictionary ([`lock_state.rs:301-320`](../agents/meshharbord/src/lock_state.rs#L301-L320)) |
 | Holding the machine awake while a session is live (FR-55) | `PowerCreateRequest` | a logind **block** inhibitor ([`power.rs:670`](../agents/meshharbord/src/power.rs#L670)): `sleep:idle` for a root daemon, `idle` only for a per-user one | `IOPMAssertion` |
 
@@ -839,6 +839,62 @@ The desktop lives as long as the daemon. twm runs with a generated config
 (windows place themselves; a click on the background opens a terminal), and
 the daemon's own X clients — capture, input, clipboard — reach it through the
 exported `DISPLAY` and `XAUTHORITY`.
+
+### 5.1g RDP only where remote control cannot serve, and a Windows logon asked for once
+
+Operator rule (2026-11-05): no MeshHarbor feature asks for a password. Remote
+control never does. RDP is different in kind: Windows itself requires the
+target account's credentials for an RDP logon, and nothing MeshHarbor could do
+on the host to skip that would be anything but a bypass of the Windows sign-in.
+So the rule becomes two smaller ones: use RDP only where remote control cannot
+serve the host, and where RDP is used, ask for the Windows account at most once
+per (controlling computer, device).
+
+```mermaid
+flowchart TD
+    C[Connect] --> S{what does the host say?}
+    S -->|a picture| RC[remote control]
+    RC --> L{console locked?}
+    L -->|"SystemContext worker: input passes"| U[sign in to Windows on its own lock screen, through remote control]
+    L -->|"worker runs as the person: input blocked"| R
+    S -->|"rc:media-unavailable, or agent_offline"| R{RDP reachable over the mesh, desktop bridge present?}
+    S -->|"the attempt failed on the way"| T[remote control once more, by itself]
+    T -->|"fails again within 60 s"| R
+    R -->|no| M[the card: one sentence, or the manual buttons]
+    R -->|yes| K{a logon saved for this device on this computer?}
+    K -->|yes| O[RDP opens and signs in, nothing asked]
+    K -->|"no, Windows controller"| A[the operating system's credential dialog, once] --> O
+    K -->|"no, Linux or macOS controller"| F[FreeRDP asks]
+```
+
+| Rule | Why | Anchor |
+|---|---|---|
+| A **locked console is remote control's to serve** where the worker is SYSTEM | a SystemContext worker captures `winsta0\Winlogon` and injects into it, so the person signs in to Windows at Windows' own lock screen. The worker now says so: `rc:host_locked` carries `input: "passes"`, and the viewer's chip reads "Your input reaches it". Before, both Windows workers sent the bare message and the chip said "input is suppressed" on a host that was taking the keys | [`peer.rs:11218`](../agents/meshharbord/src/peer.rs#L11218) `windows_lock_screen_input` |
+| A worker that **runs as the signed-in person** says `input: "blocked"`, and the viewer switches to RDP | it can neither capture nor drive the secure desktop: the session shows the "Host locked" picture and nothing typed arrives. FR-120 drew this arrow; nothing implemented it, because the viewer could not tell the two workers apart | [`rdpFallback.ts:431`](../ui/src/utils/rdpFallback.ts#L431) `rdpFallbackMode`, [`RemoteControl.vue:1316`](../ui/src/views/remote/RemoteControl.vue#L1316) |
+| ⚠️ **No `input` at all is not `blocked`** | agents before this change send the bare message from both workers. Reading it as `blocked` would open RDP on every SystemContext host the moment its screen locked, and an RDP logon takes the console session away from remote control | `parseControlInbound`, `useRemoteControl.ts` |
+| An attempt that **failed on the way** gets one automatic remote-control retry before RDP | signalling, ICE and stall failures say nothing about the host. FR-120 P1 opened RDP on the first of them; with a saved logon that signs in silently and locks the screen of whoever is at the machine. A second failure inside 60 s opens RDP. The retry time is kept per device for the page's life, because the card is unmounted while the retry runs | [`rdpFallback.ts:465`](../ui/src/utils/rdpFallback.ts#L465) `nextRdpFallbackStep`, [`RdpFallbackCard.vue:237`](../ui/src/components/remote/RdpFallbackCard.vue#L237) |
+| The Windows logon is **asked for once, in the operating system's dialog** | `CredUIPromptForWindowsCredentialsW`, opened by the desktop app. The password goes from that dialog to Credential Manager inside one process: no web view, no pipe, no file, no server. "Remember" is ticked by default; unticked, the logon serves that one session | [`rdp_client.rs:2630`](../crates/agent-core/src/rdp_client.rs#L2630) `resolve_desktop_rdp_logon`, [`:1743`](../crates/agent-core/src/rdp_client.rs#L1743) `prompt_logon` |
+| It is saved **per device, not per address** | `MeshHarbor:rdp:<org>:<device>` in the controlling computer's store (Credential Manager, `secret-tool`, Keychain). Each session installs it as a session-scoped `TERMSRV/<this session's loopback address>` and removes it when the client exits, so a changed loopback address or port never brings the prompt back. `mstsc` "Remember me" was keyed by the address alone | [`rdp_client.rs:2511`](../crates/agent-core/src/rdp_client.rs#L2511), `WindowsSessionTargetGuard` |
+| A `TERMSRV/<address>` entry the **person keeps** is theirs | told `mstsc` to remember, or saved by hand: `mstsc` signs in with it, and it is never overwritten or removed | [`rdp_client.rs:2584`](../crates/agent-core/src/rdp_client.rs#L2584) `decide_desktop_rdp_logon` |
+| Every failure is **soft** | a store that cannot be read or written, or a dialog that cannot open, ends with the RDP client asking, as before. Only closing the dialog stops the session | `resolve_desktop_rdp_logon` |
+| `mh rdp <device>` uses a saved logon **without a flag** | saving it was the person's choice; requiring `--use-saved-credentials` on every connect brought the prompt back. Naming another account (`--user`, `<user>@<device>`) leaves the saved one alone | [`rdp_client.rs:2716`](../crates/agent-core/src/rdp_client.rs#L2716), [`rdpcmd.rs:206`](../agents/meshharbor-cli/src/rdpcmd.rs#L206) |
+| **Kill switch** | `MESHHARBOR_RDP_PASSWORDLESS_DISABLED=1` (or `--no-saved-credentials`): nothing is read, written or asked here, and the RDP client asks | `is_kill_switch_enabled` |
+
+A changed Windows password: the card's "重新输入" link sends the same request
+with `reset=1`, which forgets the saved logon and asks again
+([`commands.rs:2213`](../agents/meshharbor-desktop/src/commands.rs#L2213));
+`mh rdp <device> --clear-credentials` does the same from a terminal.
+
+⚠️ **What stays impossible, and why.** A first RDP connection to a device
+needs that device's Windows account, typed once: an RDP logon is a Windows
+sign-in, and the only ways around it from a SYSTEM agent (attaching the
+person's session with `tscon`, a temporary account) turn a remote-control grant
+into a Windows sign-in bypass. `mstsc`'s first-connection certificate question
+is also still `mstsc`'s own, where the device reported no fingerprint to pin.
+
+⚠️ **Not yet field-proven.** The dialog and the silent sign-in need a person
+at a Windows controller; the logic is unit-tested and the `credui` unpack is
+tested without a window. See FR-120's field log.
 
 ### 5.2 Encoder selection
 
