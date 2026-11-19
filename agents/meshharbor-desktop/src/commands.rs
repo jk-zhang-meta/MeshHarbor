@@ -1774,9 +1774,14 @@ fn open_web_window_for_server<R: tauri::Runtime>(
             if let Some(req) = bridge_req {
                 let app_handle = app_for_bridge.clone();
                 tauri::async_runtime::spawn(async move {
-                    let res =
-                        launch_desktop_rdp_session(req.target, req.org, req.port, req.cert_sha256)
-                            .await;
+                    let res = launch_desktop_rdp_session(
+                        req.target,
+                        req.org,
+                        req.port,
+                        req.cert_sha256,
+                        req.forget,
+                    )
+                    .await;
                     if let Err(ref e) = res {
                         tracing::warn!(%e, "WebView2 bridge open_rdp failed");
                     }
@@ -2234,6 +2239,9 @@ pub const WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT: &str = r#"(function () {
           if (typeof payload.certSha256 === 'string' && payload.certSha256.trim()) {
             u.searchParams.set('cert_sha256', payload.certSha256.trim());
           }
+          if (payload.resetCredential === true) {
+            u.searchParams.set('reset', '1');
+          }
           return new Promise(function (resolve, reject) {
             // Outer bound only: device lookup (<= 1.5 s) + the 5 s pre-check +
             // LocalAPI round trips. The real verdict arrives via the result event.
@@ -2261,6 +2269,8 @@ pub struct DesktopBridgeOpenRdpRequest {
     pub port: Option<u16>,
     pub cert_sha256: Option<String>,
     pub req_id: Option<String>,
+    /// `reset=1`: forget the Windows logon saved for this device and ask again.
+    pub forget: bool,
 }
 
 /// Parse and origin-validate a `/__meshharbor_desktop__/open_rdp` URL intercepted
@@ -2282,8 +2292,10 @@ pub fn parse_desktop_bridge_open_rdp_url(
     let mut port: Option<u16> = None;
     let mut cert_sha256: Option<String> = None;
     let mut req_id: Option<String> = None;
+    let mut forget = false;
     for (k, v) in req_url.query_pairs() {
         match k.as_ref() {
+            "reset" => forget = v.trim() == "1",
             "target" => {
                 let t = v.trim();
                 if !t.is_empty() {
@@ -2329,6 +2341,7 @@ pub fn parse_desktop_bridge_open_rdp_url(
         port,
         cert_sha256,
         req_id,
+        forget,
     })
 }
 
@@ -2374,6 +2387,7 @@ pub async fn launch_desktop_rdp_session(
     org: Option<String>,
     port: Option<u16>,
     cert_sha256: Option<String>,
+    forget_saved_logon: bool,
 ) -> Result<(), String> {
     let opts = build_open_rdp_options(
         &target,
@@ -2451,7 +2465,9 @@ pub async fn launch_desktop_rdp_session(
         );
     }
 
-    let plan = match plan_desktop_open_rdp_invocation(
+    // The credential-free plan first: it validates the invocation while the
+    // caller still waits, and it is what runs when no logon is resolved.
+    let plain_plan = match plan_desktop_open_rdp_invocation(
         &device,
         local_tunnel_addr,
         Some(remote_port),
@@ -2464,33 +2480,109 @@ pub async fn launch_desktop_rdp_session(
             return Err(e);
         }
     };
-    let mut child = match meshharbor_node_core::rdp_client::spawn_planned_rdp_client(&plan) {
-        Ok(c) => c,
-        Err(e) => {
-            tunnel_task.abort();
-            return Err(e.to_string());
-        }
-    };
+
+    // The Windows logon: the one saved for this device on this computer, or
+    // asked for once in the operating system's own dialog and then saved
+    // (`resolve_desktop_rdp_logon`). The caller is answered when the client
+    // has started, or just before that dialog opens: a person takes longer
+    // than the viewer's bridge waits.
+    let (verdict_tx, verdict_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     tokio::task::spawn_blocking(move || {
+        use meshharbor_node_core::rdp_client as rdp;
         let _guard = session_guard;
-        let _ = child.wait();
+        let verdict_tx = std::sync::Mutex::new(Some(verdict_tx));
+        let answer = |verdict: Result<(), String>| {
+            if let Some(tx) = verdict_tx.lock().ok().and_then(|mut slot| slot.take()) {
+                let _ = tx.send(verdict);
+            }
+        };
+        let kill_env = std::env::var(rdp::KILL_SWITCH_ENV).ok();
+        let ask = |device_name: &str| {
+            answer(Ok(()));
+            rdp::prompt_os_rdp_logon(device_name)
+        };
+        let logon = match rdp::resolve_desktop_rdp_logon(
+            &device,
+            std::env::consts::OS,
+            kill_env.as_deref(),
+            forget_saved_logon,
+            rdp::loopback_address_has_own_logon(local_tunnel_addr.ip()),
+            &rdp::OsRdpCredentialStore,
+            &ask,
+        ) {
+            Ok(logon) => logon,
+            Err(cancelled) => {
+                tracing::info!(device = %device.device_name, "{cancelled}");
+                answer(Err(cancelled.to_string()));
+                tunnel_task.abort();
+                return;
+            }
+        };
+        let mut plan = plain_plan;
+        let mut session_target = None;
+        if let Some(cred) = logon.as_ref() {
+            match rdp::plan_desktop_rdp_invocation_with_logon(
+                &device,
+                local_tunnel_addr,
+                Some(remote_port),
+                pinned_cert.as_deref(),
+                std::env::consts::OS,
+                Some(cred),
+            ) {
+                Ok(with_logon) => {
+                    // A target that cannot be installed leaves the RDP client
+                    // asking, as it did before a logon was saved.
+                    if let Some(target) = with_logon.windows_session_target.as_deref() {
+                        match rdp::WindowsSessionTargetGuard::install(target, cred) {
+                            Ok(guard) => session_target = Some(guard),
+                            Err(e) => {
+                                tracing::warn!(%e, "RDP logon target not installed; the client asks")
+                            }
+                        }
+                    }
+                    plan = with_logon;
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "RDP plan with the saved logon refused; the client asks")
+                }
+            }
+        }
+        drop(logon);
+        match rdp::spawn_planned_rdp_client(&plan) {
+            Ok(mut child) => {
+                answer(Ok(()));
+                let _ = child.wait();
+            }
+            Err(e) => answer(Err(e.to_string())),
+        }
+        drop(session_target);
         tunnel_task.abort();
     });
-    Ok(())
+    verdict_rx.await.unwrap_or(Ok(()))
 }
 
 /// RC/RDP Phase C — launch a native OS RDP client session (`mstsc.exe` / FreeRDP)
-/// over a per-session `127.77.x.y:0` loopback tunnel to `target`. Credentials
-/// are prompted directly by the OS RDP client; no password is collected or
-/// passed in command-line arguments.
+/// over the device's loopback tunnel to `target`. The Windows logon is the one
+/// saved for the device in this computer's OS credential store, asked for once
+/// in the operating system's own dialog; `reset_credential` forgets it and
+/// asks again. No password is passed in command-line arguments, to the web
+/// view, or to any server.
 #[tauri::command]
 pub async fn cmd_open_rdp(
     target: String,
     org: Option<String>,
     port: Option<u16>,
     cert_sha256: Option<String>,
+    reset_credential: Option<bool>,
 ) -> Result<(), String> {
-    launch_desktop_rdp_session(target, org, port, cert_sha256).await
+    launch_desktop_rdp_session(
+        target,
+        org,
+        port,
+        cert_sha256,
+        reset_credential.unwrap_or(false),
+    )
+    .await
 }
 
 /// S2 — what [`cmd_tail_log`] returns to the log-viewer card.
@@ -5113,6 +5205,7 @@ mod tests {
                 port: Some(3389),
                 cert_sha256: None,
                 req_id: Some("rdp-1".to_string()),
+                forget: false,
             })
         );
         let req_evil: tauri::Url = "https://evil.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232"
@@ -5147,6 +5240,7 @@ mod tests {
                 port: Some(3389),
                 cert_sha256: None,
                 req_id: None,
+                forget: false,
             })
         );
 
@@ -5180,6 +5274,36 @@ mod tests {
             );
             assert_eq!(req, None);
         }
+    }
+
+    /// `reset=1` on the bridge URL means "forget the Windows logon saved for
+    /// this device and ask again"; nothing else does. The page-side script
+    /// sends it only for `resetCredential === true`, and never names a
+    /// password: the logon is asked for in the operating system's dialog.
+    #[test]
+    fn the_rdp_bridge_reads_reset_as_forget_the_saved_logon() {
+        let allowed: tauri::Url = "https://meshharbor.example.invalid/".parse().unwrap();
+        let forget = |extra: &str| {
+            let url: tauri::Url = format!(
+                "https://meshharbor.example.invalid/__meshharbor_desktop__/open_rdp?target=66366f7a7230306d6c657232{extra}"
+            )
+            .parse()
+            .unwrap();
+            parse_desktop_bridge_open_rdp_url(&url, &allowed)
+                .expect("a bridge request")
+                .forget
+        };
+        assert!(!forget(""));
+        assert!(forget("&reset=1"));
+        assert!(!forget("&reset=0"));
+        assert!(!forget("&reset=true"));
+        assert!(!forget("&reset="));
+        assert!(WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT.contains("payload.resetCredential === true"));
+        assert!(
+            !WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT
+                .to_ascii_lowercase()
+                .contains("password")
+        );
     }
 
     #[test]

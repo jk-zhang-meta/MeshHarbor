@@ -38,7 +38,7 @@ fn read_password_from_stdin_or_tty(user: &str, device_name: &str) -> Result<Stri
 }
 
 /// Top-level `mh rdp` execution entrypoint.
-pub async fn run(opts: RdpCliOptions) -> Result<i32> {
+pub async fn run(mut opts: RdpCliOptions) -> Result<i32> {
     validate_extra_client_args(&opts.extra_args)?;
     if opts.check && (opts.save_credentials || opts.use_saved_credentials || opts.clear_credentials)
     {
@@ -187,6 +187,30 @@ pub async fn run(opts: RdpCliOptions) -> Result<i32> {
         }
         None => None,
     };
+
+    // A credential saved for this device is used without a flag: saving it
+    // was the person's choice, and asking for `--use-saved-credentials` on
+    // every connect afterwards only brought the password prompt back. Read
+    // after the pre-check, like every other credential access here.
+    if !opts.use_saved_credentials && !opts.save_credentials {
+        let killed = is_kill_switch_enabled(opts.no_saved_credentials, kill_env.as_deref());
+        let saved = if killed {
+            None
+        } else {
+            store
+                .load(&RdpCredentialScope {
+                    org_id: device.org_id.clone(),
+                    device_id: device.device_id.clone(),
+                })
+                .ok()
+                .flatten()
+        };
+        let named_user = opts.user.as_deref().or(parsed_user.as_deref());
+        if uses_saved_credential_by_default(&opts, kill_env.as_deref(), saved.as_ref(), named_user)
+        {
+            opts.use_saved_credentials = true;
+        }
+    }
 
     let plan = match plan_rdp_session(
         &opts,

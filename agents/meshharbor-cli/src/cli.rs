@@ -540,9 +540,11 @@ enum Command {
     /// Open an RDP session to another device in this org over an authorized
     /// local loopback tunnel (`127.0.0.1:<ephemeral>`).
     ///
-    /// Passwordless credential storage is OFF by default. When explicitly opted
-    /// in via `--save-credentials` (read secret once from stdin/TTY) and
-    /// `--use-saved-credentials`, the RDP credential is stored and retrieved
+    /// Nothing is stored until you save a logon for a device with
+    /// `--save-credentials` (the secret is read once from stdin/TTY), or in
+    /// the desktop app's one-time dialog. Once saved it is used by every later
+    /// `mh rdp <device>` without a flag, and the RDP client does not ask. The
+    /// RDP credential is stored and retrieved
     /// ONLY in THIS client machine's OS secure store (Windows Credential
     /// Manager `CredWriteW`/`CredReadW`, Linux `secret-tool` via stdin, macOS
     /// Keychain `security -i` via stdin). The MeshHarbor server never receives
@@ -580,8 +582,9 @@ enum Command {
         /// CLI flags) into this client machine's OS secure store (opt-in; default OFF).
         #[arg(long)]
         save_credentials: bool,
-        /// Read the saved RDP credential for this device from this client
-        /// machine's OS secure store and sign in without prompting (opt-in; default OFF).
+        /// Require the saved RDP credential for this device: fail instead of
+        /// letting the RDP client ask when none is saved. A saved credential
+        /// is used without this flag too.
         #[arg(long)]
         use_saved_credentials: bool,
         /// Delete any saved RDP credential for this device from this client

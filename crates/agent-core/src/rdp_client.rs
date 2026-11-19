@@ -5,10 +5,14 @@
 //! `meshharbor-desktop` (RC/RDP Phase A).
 //!
 //! Security & trust boundaries:
-//! 1. **Default OFF + Kill Switch**: Saving (`--save-credentials`) and reading
-//!    (`--use-saved-credentials`) stored RDP credentials are both opt-in and
-//!    OFF by default. Either `--no-saved-credentials` or
-//!    `MESHHARBOR_RDP_PASSWORDLESS_DISABLED=1` immediately disables them.
+//! 1. **Asked once, saved only here + Kill Switch**: nothing is stored until
+//!    the person saves a logon for a device: `mh rdp --save-credentials`, or
+//!    the desktop app's one-time dialog, which is the operating system's own
+//!    ([`prompt_os_rdp_logon`]). A saved logon is then used by every later
+//!    session to that device ([`uses_saved_credential_by_default`],
+//!    [`resolve_desktop_rdp_logon`]). Either `--no-saved-credentials` or
+//!    `MESHHARBOR_RDP_PASSWORDLESS_DISABLED=1` turns all of it off, and the
+//!    RDP client asks as it always did.
 //! 2. **Server Never Sees RDP Secrets**: Resolves the device via the local
 //!    daemon (`meshharbor_localapi`) and opens an authorized local loopback TCP
 //!    forward to the remote RDP port. No RDP username, domain, or password is
@@ -1630,6 +1634,192 @@ mod os_store {
         delete_cred(&scope.store_target_name(), CRED_TYPE_GENERIC)
     }
 
+    const ERROR_CANCELLED: u32 = 1223;
+    const CREDUIWIN_GENERIC: u32 = 0x1;
+    const CREDUIWIN_CHECKBOX: u32 = 0x2;
+    /// Room for `CREDUI_MAX_USERNAME_LENGTH` (513), a domain and
+    /// `CREDUI_MAX_PASSWORD_LENGTH` (256), each with its terminator.
+    const UNPACK_CHARS: usize = 1024;
+
+    #[repr(C)]
+    struct CredUiInfoW {
+        cb_size: u32,
+        hwnd_parent: *mut c_void,
+        message_text: *const u16,
+        caption_text: *const u16,
+        banner: *mut c_void,
+    }
+
+    #[link(name = "credui")]
+    unsafe extern "system" {
+        fn CredUIPromptForWindowsCredentialsW(
+            ui_info: *const CredUiInfoW,
+            auth_error: u32,
+            auth_package: *mut u32,
+            in_auth_buffer: *const c_void,
+            in_auth_buffer_size: u32,
+            out_auth_buffer: *mut *mut c_void,
+            out_auth_buffer_size: *mut u32,
+            save: *mut i32,
+            flags: u32,
+        ) -> u32;
+        fn CredUnPackAuthenticationBufferW(
+            flags: u32,
+            auth_buffer: *const c_void,
+            auth_buffer_size: u32,
+            user_name: *mut u16,
+            max_user_name: *mut u32,
+            domain_name: *mut u16,
+            max_domain_name: *mut u32,
+            password: *mut u16,
+            max_password: *mut u32,
+        ) -> i32;
+        #[cfg(test)]
+        fn CredPackAuthenticationBufferW(
+            flags: u32,
+            user_name: *const u16,
+            password: *const u16,
+            packed: *mut u8,
+            packed_size: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoTaskMemFree(buffer: *mut c_void);
+    }
+
+    fn wipe(buf: &mut [u16]) {
+        for w in buf {
+            unsafe { std::ptr::write_volatile(w, 0) };
+        }
+    }
+
+    /// The account and password inside a packed authentication buffer, as
+    /// the credential dialog returns it. The password copy made here is wiped.
+    fn unpack_auth_buffer(buffer: *const c_void, size: u32) -> Result<StoredRdpCredential> {
+        let mut user = vec![0u16; UNPACK_CHARS];
+        let mut domain = vec![0u16; UNPACK_CHARS];
+        let mut password = vec![0u16; UNPACK_CHARS];
+        let (mut user_len, mut domain_len, mut password_len) = (
+            UNPACK_CHARS as u32,
+            UNPACK_CHARS as u32,
+            UNPACK_CHARS as u32,
+        );
+        let ok = unsafe {
+            CredUnPackAuthenticationBufferW(
+                0,
+                buffer,
+                size,
+                user.as_mut_ptr(),
+                &mut user_len,
+                domain.as_mut_ptr(),
+                &mut domain_len,
+                password.as_mut_ptr(),
+                &mut password_len,
+            )
+        };
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            wipe(&mut password);
+            bail!("CredUnPackAuthenticationBufferW failed: {err}");
+        }
+        let user_s = unsafe { wide_ptr_to_string(user.as_ptr()) };
+        let domain_s = unsafe { wide_ptr_to_string(domain.as_ptr()) };
+        let password_s = unsafe { wide_ptr_to_string(password.as_ptr()) };
+        wipe(&mut password);
+        let user_s = user_s.trim().to_string();
+        if user_s.is_empty() || password_s.is_empty() {
+            bail!("the credential dialog returned an empty account or password");
+        }
+        let domain_s = domain_s.trim().to_string();
+        Ok(if domain_s.is_empty() {
+            StoredRdpCredential::from_qualified_username(&user_s, password_s)
+        } else {
+            StoredRdpCredential::new(user_s, Some(domain_s), password_s)
+        })
+    }
+
+    pub fn prompt_logon(caption: &str, message: &str) -> Result<Option<super::PromptedRdpLogon>> {
+        let caption_w = to_wide_null(caption);
+        let message_w = to_wide_null(message);
+        let info = CredUiInfoW {
+            cb_size: std::mem::size_of::<CredUiInfoW>() as u32,
+            hwnd_parent: core::ptr::null_mut(),
+            message_text: message_w.as_ptr(),
+            caption_text: caption_w.as_ptr(),
+            banner: core::ptr::null_mut(),
+        };
+        let mut auth_package: u32 = 0;
+        let mut out: *mut c_void = core::ptr::null_mut();
+        let mut out_size: u32 = 0;
+        let mut save: i32 = 1;
+        let rc = unsafe {
+            CredUIPromptForWindowsCredentialsW(
+                &info,
+                0,
+                &mut auth_package,
+                core::ptr::null(),
+                0,
+                &mut out,
+                &mut out_size,
+                &mut save,
+                CREDUIWIN_GENERIC | CREDUIWIN_CHECKBOX,
+            )
+        };
+        if rc == ERROR_CANCELLED {
+            return Ok(None);
+        }
+        if rc != 0 || out.is_null() {
+            bail!("CredUIPromptForWindowsCredentialsW failed: error {rc}");
+        }
+        let unpacked = unpack_auth_buffer(out, out_size);
+        unsafe {
+            let bytes = std::slice::from_raw_parts_mut(out as *mut u8, out_size as usize);
+            for b in bytes {
+                std::ptr::write_volatile(b, 0);
+            }
+            CoTaskMemFree(out);
+        }
+        Ok(Some(super::PromptedRdpLogon {
+            credential: unpacked?,
+            save: save != 0,
+        }))
+    }
+
+    #[cfg(test)]
+    pub(super) fn pack_then_unpack(user: &str, password: &str) -> Result<StoredRdpCredential> {
+        let user_w = to_wide_null(user);
+        let password_w = to_wide_null(password);
+        let mut size: u32 = 0;
+        unsafe {
+            CredPackAuthenticationBufferW(
+                0,
+                user_w.as_ptr(),
+                password_w.as_ptr(),
+                core::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        let mut packed = vec![0u8; size as usize];
+        let ok = unsafe {
+            CredPackAuthenticationBufferW(
+                0,
+                user_w.as_ptr(),
+                password_w.as_ptr(),
+                packed.as_mut_ptr(),
+                &mut size,
+            )
+        };
+        if ok == 0 {
+            bail!(
+                "CredPackAuthenticationBufferW failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        unpack_auth_buffer(packed.as_ptr() as *const c_void, size)
+    }
+
     pub fn install_windows_session_target(target: &str, cred: &StoredRdpCredential) -> Result<()> {
         if target.eq_ignore_ascii_case("TERMSRV/127.0.0.1")
             || target.eq_ignore_ascii_case("TERMSRV/localhost")
@@ -1791,6 +1981,10 @@ mod os_store {
         Ok(out.status.success())
     }
 
+    pub fn prompt_logon(_caption: &str, _message: &str) -> Result<Option<super::PromptedRdpLogon>> {
+        anyhow::bail!("this platform has no OS credential dialog for an RDP logon")
+    }
+
     pub fn install_windows_session_target(
         _target: &str,
         _cred: &StoredRdpCredential,
@@ -1897,6 +2091,10 @@ mod os_store {
             .output()
             .context("failed to run `/usr/bin/security delete-generic-password`")?;
         Ok(out.status.success())
+    }
+
+    pub fn prompt_logon(_caption: &str, _message: &str) -> Result<Option<super::PromptedRdpLogon>> {
+        anyhow::bail!("this platform has no OS credential dialog for an RDP logon")
     }
 
     pub fn install_windows_session_target(
@@ -2265,7 +2463,7 @@ pub fn build_open_rdp_options(
 /// Pure invocation planner for desktop `cmd_open_rdp` that constructs the native
 /// RDP client command line (`mstsc.exe` on Windows, FreeRDP on Linux/macOS) and
 /// guarantees that zero passwords or credentials appear in `args`, `env`, or
-/// `stdin_payload`.
+/// `stdin_payload`: the RDP client asks for the logon itself.
 pub fn plan_desktop_open_rdp_invocation(
     device: &ResolvedRdpDevice,
     local_tunnel_addr: SocketAddr,
@@ -2273,24 +2471,270 @@ pub fn plan_desktop_open_rdp_invocation(
     cert_sha256: Option<&str>,
     platform: &str,
 ) -> std::result::Result<PlannedRdpInvocation, String> {
-    let opts = build_open_rdp_options(&device.device_id, None, port, cert_sha256, platform)?;
-    let store = NoSavedRdpCredentialStore;
-    let plan = plan_rdp_session(
-        &opts,
+    plan_desktop_rdp_invocation_with_logon(
         device,
         local_tunnel_addr,
-        &store,
-        None,
-        Some("1"),
+        port,
+        cert_sha256,
         platform,
+        None,
     )
+}
+
+/// A store that holds exactly the one credential a desktop session was
+/// resolved to use ([`resolve_desktop_rdp_logon`]), so [`plan_rdp_session`]
+/// plans with it and can neither save nor delete anything.
+struct OneCredentialStore<'a>(&'a StoredRdpCredential);
+
+impl RdpCredentialStore for OneCredentialStore<'_> {
+    fn save(&self, _scope: &RdpCredentialScope, _cred: &StoredRdpCredential) -> Result<()> {
+        bail!("the desktop RDP planner does not save credentials")
+    }
+
+    fn load(&self, _scope: &RdpCredentialScope) -> Result<Option<StoredRdpCredential>> {
+        Ok(Some(self.0.clone()))
+    }
+
+    fn delete(&self, _scope: &RdpCredentialScope) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// [`plan_desktop_open_rdp_invocation`] for a session whose Windows logon is
+/// already known (`logon`): the plan then carries it the only two ways a
+/// secret may travel. On Windows it names the `TERMSRV/<loopback>` target the
+/// caller installs for the session ([`WindowsSessionTargetGuard`]); elsewhere
+/// it is FreeRDP's `stdin`. Never `args`, never `env`.
+///
+/// With `logon` absent the plan is the credential-free one, and one that
+/// carried a credential anyway is refused.
+pub fn plan_desktop_rdp_invocation_with_logon(
+    device: &ResolvedRdpDevice,
+    local_tunnel_addr: SocketAddr,
+    port: Option<u16>,
+    cert_sha256: Option<&str>,
+    platform: &str,
+    logon: Option<&StoredRdpCredential>,
+) -> std::result::Result<PlannedRdpInvocation, String> {
+    let mut opts = build_open_rdp_options(&device.device_id, None, port, cert_sha256, platform)?;
+    let plan = match logon {
+        None => plan_rdp_session(
+            &opts,
+            device,
+            local_tunnel_addr,
+            &NoSavedRdpCredentialStore,
+            None,
+            Some("1"),
+            platform,
+        ),
+        Some(cred) => {
+            opts.use_saved_credentials = true;
+            opts.no_saved_credentials = false;
+            plan_rdp_session(
+                &opts,
+                device,
+                local_tunnel_addr,
+                &OneCredentialStore(cred),
+                None,
+                None,
+                platform,
+            )
+        }
+    }
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "RDP session planner returned no client invocation".to_string())?;
-    if plan.stdin_payload.is_some() || plan.windows_session_target.is_some() || !plan.env.is_empty()
-    {
-        return Err("Phase C desktop RDP invocation must not carry credentials".to_string());
+    if !plan.env.is_empty() {
+        return Err("a desktop RDP invocation must not carry an environment".to_string());
+    }
+    if logon.is_none() && (plan.stdin_payload.is_some() || plan.windows_session_target.is_some()) {
+        return Err(
+            "a desktop RDP invocation without a logon must not carry credentials".to_string(),
+        );
     }
     Ok(plan)
+}
+
+/// Where a desktop RDP session's Windows logon comes from. The person is
+/// asked for the target's account at most once per (this computer, device);
+/// the answer lives only in this computer's OS credential store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopRdpLogon {
+    /// The credential saved for this device: the session logs on by itself.
+    UseSaved(StoredRdpCredential),
+    /// Nothing saved yet: ask once in the operating system's own credential
+    /// dialog, save the answer, and log on with it.
+    AskOnce,
+    /// Leave the logon to the RDP client, which asks if it has to.
+    ClientPrompts,
+}
+
+/// The decision behind [`DesktopRdpLogon`], pure over what the caller read.
+///
+/// - The kill switch ([`KILL_SWITCH_ENV`]) leaves everything to the RDP client.
+/// - `address_has_own_logon`: Credential Manager already holds a
+///   `TERMSRV/<this session's loopback address>` entry that this session did
+///   not install, because the person told `mstsc` to remember the logon or
+///   saved one themselves. It is theirs: `mstsc` logs on with it, and it is
+///   never overwritten or removed. It wins over a credential saved here, since
+///   installing ours would mean replacing theirs.
+/// - A credential saved for the device is used, whatever loopback address or
+///   port this session got.
+/// - Otherwise a Windows controller asks once. Linux and macOS have no OS
+///   credential dialog this can call, so FreeRDP asks.
+pub fn decide_desktop_rdp_logon(
+    platform: &str,
+    kill_switch_env_val: Option<&str>,
+    saved: Option<StoredRdpCredential>,
+    address_has_own_logon: bool,
+) -> DesktopRdpLogon {
+    if is_kill_switch_enabled(false, kill_switch_env_val) {
+        return DesktopRdpLogon::ClientPrompts;
+    }
+    let windows = platform.trim().eq_ignore_ascii_case("windows");
+    if windows && address_has_own_logon {
+        return DesktopRdpLogon::ClientPrompts;
+    }
+    match saved {
+        Some(cred) => DesktopRdpLogon::UseSaved(cred),
+        None if windows => DesktopRdpLogon::AskOnce,
+        None => DesktopRdpLogon::ClientPrompts,
+    }
+}
+
+/// What the operating system's credential dialog returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptedRdpLogon {
+    pub credential: StoredRdpCredential,
+    /// The dialog's "remember" box, ticked unless the person unticks it.
+    pub save: bool,
+}
+
+/// The person closed the credential dialog: no RDP session is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RdpLogonCancelled;
+
+impl std::fmt::Display for RdpLogonCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("已取消输入 Windows 账户，未打开 RDP")
+    }
+}
+
+/// Resolve the logon a desktop RDP session to `device` uses, asking at most
+/// once ([`decide_desktop_rdp_logon`]). `Ok(None)` leaves it to the RDP client.
+///
+/// `forget` drops the credential saved for the device first (the Windows
+/// password changed, or another account is wanted), so the person is asked
+/// again. Every failure here is soft: a store that cannot be read or written,
+/// or a dialog that cannot open, ends with the RDP client asking, as it did
+/// before this existed. Only closing the dialog stops the session.
+pub fn resolve_desktop_rdp_logon(
+    device: &ResolvedRdpDevice,
+    platform: &str,
+    kill_switch_env_val: Option<&str>,
+    forget: bool,
+    address_has_own_logon: bool,
+    store: &dyn RdpCredentialStore,
+    prompt: &dyn Fn(&str) -> Result<Option<PromptedRdpLogon>>,
+) -> std::result::Result<Option<StoredRdpCredential>, RdpLogonCancelled> {
+    let scope = RdpCredentialScope {
+        org_id: device.org_id.clone(),
+        device_id: device.device_id.clone(),
+    };
+    let killed = is_kill_switch_enabled(false, kill_switch_env_val);
+    if forget && !killed {
+        let _ = store.delete(&scope);
+    }
+    let saved = if killed {
+        None
+    } else {
+        store.load(&scope).unwrap_or(None)
+    };
+    match decide_desktop_rdp_logon(platform, kill_switch_env_val, saved, address_has_own_logon) {
+        DesktopRdpLogon::UseSaved(cred) => Ok(Some(cred)),
+        DesktopRdpLogon::ClientPrompts => Ok(None),
+        DesktopRdpLogon::AskOnce => match prompt(&device.device_name) {
+            Ok(Some(answer)) => {
+                if answer.save {
+                    let _ = store.save(&scope, &answer.credential);
+                }
+                Ok(Some(answer.credential))
+            }
+            Ok(None) => Err(RdpLogonCancelled),
+            Err(_) => Ok(None),
+        },
+    }
+}
+
+/// The caption and message of the one-time logon dialog for `device_name`.
+/// The name comes from the network, so control characters are dropped and it
+/// is cut to a length a dialog shows whole.
+pub fn rdp_logon_prompt_text(device_name: &str) -> (String, String) {
+    let name: String = device_name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect();
+    let name = name.trim();
+    let shown = if name.is_empty() {
+        "这台设备"
+    } else {
+        name
+    };
+    (
+        "MeshHarbor 远程桌面".to_string(),
+        format!(
+            "输入「{shown}」的 Windows 账户和密码。只保存在这台电脑的凭据管理器里，以后连接这台设备不再询问。"
+        ),
+    )
+}
+
+/// Ask for the target's Windows account in the operating system's own
+/// credential dialog (Windows: `CredUIPromptForWindowsCredentialsW`). The
+/// password goes from that dialog into this process's memory and from there to
+/// Credential Manager; it never passes through a web view, a pipe or a file.
+/// `Ok(None)`: the person closed it. Other platforms have no such dialog here
+/// and answer an error, which [`resolve_desktop_rdp_logon`] treats as "let the
+/// RDP client ask".
+pub fn prompt_os_rdp_logon(device_name: &str) -> Result<Option<PromptedRdpLogon>> {
+    let (caption, message) = rdp_logon_prompt_text(device_name);
+    os_store::prompt_logon(&caption, &message)
+}
+
+/// Whether Credential Manager holds a `TERMSRV/<ip>` entry for the loopback
+/// address a session is about to use (always `false` off Windows, and on a
+/// read error: then the session installs nothing over it either, because
+/// [`WindowsSessionTargetGuard::install`] refuses to overwrite).
+pub fn loopback_address_has_own_logon(ip: std::net::IpAddr) -> bool {
+    WindowsSessionTargetGuard::exists(&format!("TERMSRV/{ip}")).unwrap_or(false)
+}
+
+/// `mh rdp <device>` with no credential flag: whether the session uses the
+/// credential saved for the device. It does when one is saved, since saving it
+/// (`--save-credentials`, or the desktop app's one-time dialog) was the
+/// person's choice, unless the kill switch is on, the run is one that never
+/// touches credentials (`--check`) or manages them (`--clear-credentials`),
+/// or the command names another account (`--user`, `<user>@<device>`) than
+/// the saved one: then that account is what was asked for.
+pub fn uses_saved_credential_by_default(
+    opts: &RdpCliOptions,
+    kill_switch_env_val: Option<&str>,
+    saved: Option<&StoredRdpCredential>,
+    named_user: Option<&str>,
+) -> bool {
+    let Some(saved) = saved else {
+        return false;
+    };
+    let same_account = match named_user.map(str::trim).filter(|u| !u.is_empty()) {
+        None => true,
+        Some(u) => {
+            u.eq_ignore_ascii_case(&saved.username)
+                || u.eq_ignore_ascii_case(&saved.qualified_username())
+        }
+    };
+    same_account
+        && !opts.check
+        && !opts.clear_credentials
+        && !is_kill_switch_enabled(opts.no_saved_credentials, kill_switch_env_val)
 }
 
 /// Canonical per-target key `(org_id, device_id)` used to deduplicate
@@ -2359,6 +2803,557 @@ mod tests {
     use super::*;
 
     /// FR-120 — one device, one remembered-logon address; two devices, two.
+    fn rdp_device() -> ResolvedRdpDevice {
+        ResolvedRdpDevice {
+            org_id: "66366f7a7230306d6c657231".to_string(),
+            device_id: "66366f7a7230306d6c657232".to_string(),
+            device_name: "office-pc".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[derive(Default)]
+    struct MemStore {
+        entries: std::sync::Mutex<BTreeMap<String, StoredRdpCredential>>,
+        fail_load: bool,
+        fail_save: bool,
+    }
+
+    impl MemStore {
+        fn holding(device: &ResolvedRdpDevice, cred: StoredRdpCredential) -> Self {
+            let store = Self::default();
+            store
+                .entries
+                .lock()
+                .unwrap()
+                .insert(scope_of(device).store_target_name(), cred);
+            store
+        }
+        fn saved(&self, device: &ResolvedRdpDevice) -> Option<StoredRdpCredential> {
+            self.entries
+                .lock()
+                .unwrap()
+                .get(&scope_of(device).store_target_name())
+                .cloned()
+        }
+    }
+
+    fn scope_of(device: &ResolvedRdpDevice) -> RdpCredentialScope {
+        RdpCredentialScope {
+            org_id: device.org_id.clone(),
+            device_id: device.device_id.clone(),
+        }
+    }
+
+    impl RdpCredentialStore for MemStore {
+        fn save(&self, scope: &RdpCredentialScope, cred: &StoredRdpCredential) -> Result<()> {
+            if self.fail_save {
+                bail!("store refuses writes");
+            }
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(scope.store_target_name(), cred.clone());
+            Ok(())
+        }
+        fn load(&self, scope: &RdpCredentialScope) -> Result<Option<StoredRdpCredential>> {
+            if self.fail_load {
+                bail!("store cannot be read");
+            }
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .get(&scope.store_target_name())
+                .cloned())
+        }
+        fn delete(&self, scope: &RdpCredentialScope) -> Result<bool> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .remove(&scope.store_target_name())
+                .is_some())
+        }
+    }
+
+    fn cred(user: &str, secret: &str) -> StoredRdpCredential {
+        StoredRdpCredential::new(user, None, secret)
+    }
+
+    /// A prompt that must not run: the test fails if the person is asked.
+    fn never_asked(_device: &str) -> Result<Option<PromptedRdpLogon>> {
+        panic!("the person was asked for a logon")
+    }
+
+    #[test]
+    fn the_desktop_logon_decision_asks_only_when_nothing_is_saved() {
+        let saved = || Some(cred("alice", "example-secret"));
+        // A saved credential is used on every platform.
+        for platform in ["windows", "linux", "macos"] {
+            assert_eq!(
+                decide_desktop_rdp_logon(platform, None, saved(), false),
+                DesktopRdpLogon::UseSaved(cred("alice", "example-secret")),
+                "{platform}"
+            );
+        }
+        // Nothing saved: a Windows controller asks once; the others have no
+        // OS credential dialog, so FreeRDP asks.
+        assert_eq!(
+            decide_desktop_rdp_logon("windows", None, None, false),
+            DesktopRdpLogon::AskOnce
+        );
+        assert_eq!(
+            decide_desktop_rdp_logon(" Windows ", None, None, false),
+            DesktopRdpLogon::AskOnce
+        );
+        assert_eq!(
+            decide_desktop_rdp_logon("linux", None, None, false),
+            DesktopRdpLogon::ClientPrompts
+        );
+        assert_eq!(
+            decide_desktop_rdp_logon("macos", None, None, false),
+            DesktopRdpLogon::ClientPrompts
+        );
+        // The kill switch leaves everything to the RDP client, saved or not.
+        for on in ["1", "true", "YES", "on"] {
+            assert_eq!(
+                decide_desktop_rdp_logon("windows", Some(on), saved(), false),
+                DesktopRdpLogon::ClientPrompts,
+                "{on}"
+            );
+        }
+        assert_eq!(
+            decide_desktop_rdp_logon("windows", Some("0"), None, false),
+            DesktopRdpLogon::AskOnce
+        );
+        // A logon the person keeps for this address in Credential Manager is
+        // theirs: mstsc uses it, and nothing is asked or installed over it.
+        assert_eq!(
+            decide_desktop_rdp_logon("windows", None, None, true),
+            DesktopRdpLogon::ClientPrompts
+        );
+        assert_eq!(
+            decide_desktop_rdp_logon("windows", None, saved(), true),
+            DesktopRdpLogon::ClientPrompts
+        );
+        // Off Windows there is no such entry to respect.
+        assert_eq!(
+            decide_desktop_rdp_logon("linux", None, saved(), true),
+            DesktopRdpLogon::UseSaved(cred("alice", "example-secret"))
+        );
+    }
+
+    #[test]
+    fn a_desktop_session_asks_once_then_never_again() {
+        let device = rdp_device();
+        let store = MemStore::default();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let prompt = |name: &str| {
+            assert_eq!(name, "office-pc");
+            asked.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(PromptedRdpLogon {
+                credential: cred("alice", "example-secret"),
+                save: true,
+            }))
+        };
+        // First session: asked, saved, used.
+        let first =
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &prompt);
+        assert_eq!(first, Ok(Some(cred("alice", "example-secret"))));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(store.saved(&device), Some(cred("alice", "example-secret")));
+        // Every later session: the saved one, nobody asked.
+        for _ in 0..3 {
+            let again = resolve_desktop_rdp_logon(
+                &device,
+                "windows",
+                None,
+                false,
+                false,
+                &store,
+                &never_asked,
+            );
+            assert_eq!(again, Ok(Some(cred("alice", "example-secret"))));
+        }
+        // Another device has its own entry: it is asked for separately.
+        let other = ResolvedRdpDevice {
+            device_id: "66366f7a7230306d6c657299".to_string(),
+            ..rdp_device()
+        };
+        let second =
+            resolve_desktop_rdp_logon(&other, "windows", None, false, false, &store, &|_: &str| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            });
+        assert_eq!(second, Err(RdpLogonCancelled));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(store.saved(&other), None);
+    }
+
+    #[test]
+    fn a_desktop_logon_respects_forget_the_remember_box_and_the_kill_switch() {
+        let device = rdp_device();
+        // `forget`: the saved credential is dropped and the person is asked again.
+        let store = MemStore::holding(&device, cred("alice", "old-example"));
+        let fresh = |_: &str| {
+            Ok(Some(PromptedRdpLogon {
+                credential: cred("alice", "new-example"),
+                save: true,
+            }))
+        };
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, true, false, &store, &fresh),
+            Ok(Some(cred("alice", "new-example")))
+        );
+        assert_eq!(store.saved(&device), Some(cred("alice", "new-example")));
+        // The box unticked: used for this session, nothing stored.
+        let store = MemStore::default();
+        let once = |_: &str| {
+            Ok(Some(PromptedRdpLogon {
+                credential: cred("alice", "example-secret"),
+                save: false,
+            }))
+        };
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &once),
+            Ok(Some(cred("alice", "example-secret")))
+        );
+        assert_eq!(store.saved(&device), None);
+        // Kill switch: the store is neither read, written nor cleared, and
+        // nobody is asked here, `forget` included.
+        let store = MemStore::holding(&device, cred("alice", "example-secret"));
+        assert_eq!(
+            resolve_desktop_rdp_logon(
+                &device,
+                "windows",
+                Some("1"),
+                true,
+                false,
+                &store,
+                &never_asked
+            ),
+            Ok(None)
+        );
+        assert_eq!(store.saved(&device), Some(cred("alice", "example-secret")));
+        // The person's own Credential Manager entry for the address wins.
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, false, true, &store, &never_asked),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_desktop_logon_fails_soft_to_the_rdp_clients_own_prompt() {
+        let device = rdp_device();
+        // The dialog cannot open: the RDP client asks, as before.
+        let store = MemStore::default();
+        let broken = |_: &str| -> Result<Option<PromptedRdpLogon>> { bail!("no dialog") };
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &broken),
+            Ok(None)
+        );
+        // The store cannot be read: treated as nothing saved, so asked.
+        let store = MemStore {
+            fail_load: true,
+            ..Default::default()
+        };
+        let answer = |_: &str| {
+            Ok(Some(PromptedRdpLogon {
+                credential: cred("alice", "example-secret"),
+                save: true,
+            }))
+        };
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &answer),
+            Ok(Some(cred("alice", "example-secret")))
+        );
+        // The store cannot be written: the session still logs on this once.
+        let store = MemStore {
+            fail_save: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &answer),
+            Ok(Some(cred("alice", "example-secret")))
+        );
+        // Linux, nothing saved: nobody is asked here.
+        let store = MemStore::default();
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "linux", None, false, false, &store, &never_asked),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_desktop_plan_with_a_logon_keeps_the_secret_out_of_argv_and_follows_the_address() {
+        let device = rdp_device();
+        let logon = cred("alice", "example-secret");
+        // Windows: the plan names the session's TERMSRV target, whatever
+        // loopback address and port the session got, and nothing else.
+        for addr in ["127.78.3.4:50001", "127.77.200.9:61234", "127.78.3.4:50999"] {
+            let addr: SocketAddr = addr.parse().unwrap();
+            let plan = plan_desktop_rdp_invocation_with_logon(
+                &device,
+                addr,
+                Some(3389),
+                None,
+                "windows",
+                Some(&logon),
+            )
+            .unwrap();
+            assert_eq!(plan.program, "mstsc.exe");
+            assert_eq!(plan.args, vec![format!("/v:{addr}")]);
+            assert_eq!(
+                plan.windows_session_target,
+                Some(format!("TERMSRV/{}", addr.ip()))
+            );
+            assert!(plan.stdin_payload.is_none() && plan.env.is_empty());
+            assert!(!format!("{plan:?}").contains("example-secret"));
+        }
+        // The shared 127.0.0.1 is never a credential target.
+        assert!(
+            plan_desktop_rdp_invocation_with_logon(
+                &device,
+                "127.0.0.1:50001".parse().unwrap(),
+                Some(3389),
+                None,
+                "windows",
+                Some(&logon),
+            )
+            .is_err()
+        );
+        // FreeRDP: the account in argv, the password on stdin only.
+        let plan = plan_desktop_rdp_invocation_with_logon(
+            &device,
+            "127.0.0.1:50001".parse().unwrap(),
+            Some(3389),
+            None,
+            "linux",
+            Some(&logon),
+        )
+        .unwrap();
+        assert!(plan.args.contains(&"/u:alice".to_string()));
+        assert!(plan.args.contains(&"/from-stdin:force".to_string()));
+        assert_eq!(plan.stdin_payload.as_deref(), Some("example-secret"));
+        assert!(plan.args.iter().all(|a| !a.contains("example-secret")));
+        assert!(plan.windows_session_target.is_none());
+        // No logon: the credential-free plan, as before.
+        let plain = plan_desktop_rdp_invocation_with_logon(
+            &device,
+            "127.78.3.4:50001".parse().unwrap(),
+            Some(3389),
+            None,
+            "windows",
+            None,
+        )
+        .unwrap();
+        assert!(plain.windows_session_target.is_none() && plain.stdin_payload.is_none());
+    }
+
+    #[test]
+    fn the_logon_dialog_text_names_the_device_safely() {
+        let (caption, message) = rdp_logon_prompt_text("office-pc");
+        assert!(caption.contains("MeshHarbor"));
+        assert!(message.contains("「office-pc」"));
+        let (_, hostile) = rdp_logon_prompt_text(&format!("a\r\nb\u{0}{}", "x".repeat(200)));
+        assert!(!hostile.contains('\n') && !hostile.contains('\u{0}'));
+        assert!(hostile.chars().count() < 160);
+        assert!(rdp_logon_prompt_text("  ").1.contains("这台设备"));
+    }
+
+    #[test]
+    fn mh_rdp_uses_a_saved_credential_without_a_flag() {
+        let plain = RdpCliOptions {
+            target: "office-pc".to_string(),
+            port: 3389,
+            ..Default::default()
+        };
+        let saved =
+            StoredRdpCredential::new("alice", Some("EXAMPLE".to_string()), "example-secret");
+        let saved = Some(&saved);
+        assert!(uses_saved_credential_by_default(&plain, None, saved, None));
+        assert!(!uses_saved_credential_by_default(&plain, None, None, None));
+        assert!(!uses_saved_credential_by_default(
+            &plain,
+            Some("1"),
+            saved,
+            None
+        ));
+        // The saved account named again is still the saved one; another
+        // account is what the command asked for, so the client asks.
+        assert!(uses_saved_credential_by_default(
+            &plain,
+            None,
+            saved,
+            Some("Alice")
+        ));
+        assert!(uses_saved_credential_by_default(
+            &plain,
+            None,
+            saved,
+            Some(r"example\alice")
+        ));
+        assert!(uses_saved_credential_by_default(
+            &plain,
+            None,
+            saved,
+            Some("  ")
+        ));
+        assert!(!uses_saved_credential_by_default(
+            &plain,
+            None,
+            saved,
+            Some("bob")
+        ));
+        let no_saved = RdpCliOptions {
+            no_saved_credentials: true,
+            ..plain.clone()
+        };
+        assert!(!uses_saved_credential_by_default(
+            &no_saved, None, saved, None
+        ));
+        let check = RdpCliOptions {
+            check: true,
+            ..plain.clone()
+        };
+        assert!(!uses_saved_credential_by_default(&check, None, saved, None));
+        let clear = RdpCliOptions {
+            clear_credentials: true,
+            ..plain
+        };
+        assert!(!uses_saved_credential_by_default(&clear, None, saved, None));
+    }
+
+    /// The dialog's packed buffer comes back as the account and password it
+    /// was given: this locks the `credui` FFI without opening any window.
+    #[cfg(windows)]
+    #[test]
+    fn a_packed_authentication_buffer_unpacks_to_its_account() {
+        let got = os_store::pack_then_unpack("alice", "example-secret").unwrap();
+        assert_eq!(got, cred("alice", "example-secret"));
+        let got = os_store::pack_then_unpack(r"EXAMPLE\alice", "example-secret").unwrap();
+        assert_eq!(got.username, "alice");
+        assert_eq!(got.domain.as_deref(), Some("EXAMPLE"));
+    }
+
+    /// The real Credential Manager through one desktop session's life: asked
+    /// once, saved per device, installed for whatever loopback address the
+    /// session got, removed when the client exits, and forgotten on request.
+    /// `cmdkey /list` is the witness, not this crate's own reads. It writes
+    /// and removes entries under a scope no device has, in the account that
+    /// runs it:
+    /// `cargo test -p meshharbor-node-core --lib the_real_credential_manager -- --ignored`
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes to this account's Credential Manager; run on a test machine with -- --ignored"]
+    fn the_real_credential_manager_serves_a_desktop_session_and_is_left_clean() {
+        fn cmdkey_lists(needle: &str) -> bool {
+            let out = std::process::Command::new("cmdkey")
+                .arg("/list")
+                .output()
+                .expect("cmdkey /list");
+            String::from_utf8_lossy(&out.stdout).contains(needle)
+        }
+        let device = ResolvedRdpDevice {
+            org_id: "ffffffffffffffffffffff01".to_string(),
+            device_id: "ffffffffffffffffffffff02".to_string(),
+            device_name: "credential-store-selftest".to_string(),
+            ..Default::default()
+        };
+        let store = OsRdpCredentialStore;
+        let scope = scope_of(&device);
+        let saved_name = scope.store_target_name();
+        let _ = store.delete(&scope);
+        let stable = std::net::IpAddr::V4(device_loopback_ip(&device.device_id));
+        let fallback: std::net::IpAddr = "127.77.250.9".parse().unwrap();
+        assert!(!cmdkey_lists(&saved_name), "starts without a saved logon");
+        assert!(!loopback_address_has_own_logon(stable));
+
+        // First session: asked once, and the answer is in Credential Manager.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let prompt = |_: &str| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(PromptedRdpLogon {
+                credential: cred("selftest-user", "example-not-a-password"),
+                save: true,
+            }))
+        };
+        let first =
+            resolve_desktop_rdp_logon(&device, "windows", None, false, false, &store, &prompt)
+                .unwrap()
+                .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(
+            cmdkey_lists(&saved_name),
+            "the saved logon is listed by cmdkey"
+        );
+        assert_eq!(store.load(&scope).unwrap(), Some(first));
+
+        // Later sessions, on the device's own address and on a fallback one:
+        // nobody is asked, and the logon is there for exactly the session.
+        for ip in [stable, fallback] {
+            let logon = resolve_desktop_rdp_logon(
+                &device,
+                "windows",
+                None,
+                false,
+                loopback_address_has_own_logon(ip),
+                &store,
+                &never_asked,
+            )
+            .unwrap()
+            .expect("the saved logon");
+            let plan = plan_desktop_rdp_invocation_with_logon(
+                &device,
+                SocketAddr::new(ip, 50001),
+                Some(3389),
+                None,
+                "windows",
+                Some(&logon),
+            )
+            .unwrap();
+            let target = plan
+                .windows_session_target
+                .clone()
+                .expect("a session target");
+            assert_eq!(target, format!("TERMSRV/{ip}"));
+            {
+                let _guard = WindowsSessionTargetGuard::install(&target, &logon).unwrap();
+                assert!(
+                    cmdkey_lists(&target),
+                    "{target} is listed during the session"
+                );
+                assert!(loopback_address_has_own_logon(ip));
+                assert_eq!(
+                    WindowsSessionTargetGuard::read(&target)
+                        .unwrap()
+                        .map(|c| c.username.clone()),
+                    Some("selftest-user".to_string())
+                );
+                // An entry already there is never overwritten.
+                assert!(WindowsSessionTargetGuard::install(&target, &logon).is_err());
+            }
+            assert!(
+                !cmdkey_lists(&target),
+                "{target} is gone when the client exits"
+            );
+            assert!(
+                cmdkey_lists(&saved_name),
+                "the saved logon outlives the session"
+            );
+        }
+
+        // Forget: the saved logon is dropped; closing the dialog saves nothing.
+        let closed = |_: &str| Ok(None);
+        assert_eq!(
+            resolve_desktop_rdp_logon(&device, "windows", None, true, false, &store, &closed),
+            Err(RdpLogonCancelled)
+        );
+        assert!(!cmdkey_lists(&saved_name), "nothing is left behind");
+        assert_eq!(store.load(&scope).unwrap(), None);
+    }
+
     #[test]
     fn a_device_keeps_its_loopback_address() {
         let a = device_loopback_ip("6af76f0e52bb0000aaaa0001");
