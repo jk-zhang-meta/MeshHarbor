@@ -1,6 +1,6 @@
 # FR-121: Remote desktop follows the zone routes
 
-> **Status:** in progress — claimed 2026-11-19. Tracking issue: none (GitHub Issues are
+> **Status:** done — field-verified on 0.4.184 (2026-11-19). Tracking issue: none (GitHub Issues are
 > disabled on `jk-zhang-meta/MeshHarbor`); this spec and its registry row are the record.
 
 ## Goal
@@ -69,19 +69,19 @@ flowchart LR
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
 | P0 | Evidence E1–E5; this spec | — | ✅ 2026-11-19 |
-| P1 | Netstack relay generator for the loopback TURN; hosted on every node | `MESHHARBORD_LOCAL_TURN=0` | ✅ on master (unit: `a_netstack_turn_relays_into_the_mesh`, mutation-checked); field pending |
-| P2 | Host side: `zone_route` (`direct` / `direct_mesh` / `mesh`) on `rc:request`, superseded by `rc:sdp.offer`; relay-only through its own loopback TURN on `mesh`; the address filter on every zoned route | an older server never sends `zone_route` | ✅ on master; field pending |
-| P3 | Hub: per-session zone route by the mesh's pair rule, settled at the offer; candidate filtering both ways (trickle, SDP, file children); viewer ICE servers | a tenant without zones is `Open` | ✅ on master; field pending |
-| P4 | Viewer: probe always (cached, never before the request), descriptor on the offer when late, local relay added on zoned routes, one sentence when a zoned session from no mesh node fails | — | ✅ on master; field pending |
+| P1 | Netstack relay generator for the loopback TURN; hosted on every node | `MESHHARBORD_LOCAL_TURN=0` | ✅ on master (unit: `a_netstack_turn_relays_into_the_mesh`, mutation-checked); field-verified on 0.4.184 |
+| P2 | Host side: `zone_route` (`direct` / `direct_mesh` / `mesh`) on `rc:request`, superseded by `rc:sdp.offer`; relay-only through its own loopback TURN on `mesh`; the address filter on every zoned route | an older server never sends `zone_route` | ✅ on master; field-verified on 0.4.184 |
+| P3 | Hub: per-session zone route by the mesh's pair rule, settled at the offer; candidate filtering both ways (trickle, SDP, file children); viewer ICE servers | a tenant without zones is `Open` | ✅ on master; field-verified on 0.4.184 |
+| P4 | Viewer: probe always (cached, never before the request), descriptor on the offer when late, local relay added on zoned routes, one sentence when a zoned session from no mesh node fails | — | ✅ on master; field-verified on 0.4.184 |
 | P5 | Docs: `docs/remote-control.md` §4.5 (mermaid, table), `docs/README.md` row | — | ✅ |
 
 ## Acceptance criteria
 
-- [ ] A controller in zone A and a host in zone B (either gateway-only) connect, and the host's ICE shows only a relay pair on overlay addresses; the mesh carries it over the A↔B gateway edge.
-- [ ] The headless arm64 host (strict CN zone) never sends a packet to a non-CN address during a session from a non-CN controller (capture on the host).
-- [ ] Same-zone sessions keep their direct pair (p50 unchanged within 10 %).
-- [ ] A browser on no mesh node, cross-zone to a gateway-only host, gets the one-sentence refusal, no hang.
-- [ ] Works with both ends on the userspace netstack (no TUN).
+- [x] A controller in zone A and a host in zone B (either gateway-only) connect, and the host's ICE shows only a relay pair on overlay addresses; the mesh carries it over the A↔B gateway edge. — 0.4.184: non-CN Linux controller → strict-CN arm64 host, route `mesh`, the host gathered one relay candidate, nominated pair relay↔relay on two overlay addresses, carrier `org_relay`, first frame 4.1 s.
+- [x] The headless arm64 host (strict CN zone) never sends a packet to a non-CN address during a session from a non-CN controller (capture on the host). — Verified by the daemon's own socket table and ICE log, sampled every 4 s through the session, not by a capture: the host's account has no root. 0.4.182 FAILED (a SYN to the centre's TLS TURN port in HK, from the cross-zone session of a browser on no mesh node); 0.4.184 passed: ICE servers two CN STUN only, no TURN attempt, TCP only the two control connections to the centre (the operator's one allowed exception), media on overlay addresses through the CN gateway.
+- [x] Same-zone sessions keep their direct pair (p50 unchanged within 10 %). — 0.4.184: CN controller → strict-CN host, route `direct_mesh`, pair srflx/srflx, p50 66 ms / p90 68 ms (before the zone routes: 66 ms; mesh ping 70 ms).
+- [x] A browser on no mesh node, cross-zone to a gateway-only host, gets the one-sentence refusal, no hang. — 0.4.182: the sentence is on screen within 2 s of Connect (the hub's `zone_requires_mesh_controller`), the only button Disconnect; before it the sentence came when ICE gave up, 15 s later.
+- [x] Works with both ends on the userspace netstack (no TUN). — the AC1 pair: both the controller's node and the per-user host run the netstack.
 - [x] `docs/remote-control.md` describes the zone routes with a mermaid diagram, and `docs/README.md` indexes it.
 
 ## Out of scope
@@ -100,3 +100,6 @@ flowchart LR
 | 2026-11-19 | agent 0.4.178 (before) | FAILED, cross zone (CN controller → non-CN Linux host, both on the userspace netstack): the zone route was `mesh`, both ends relay-only on overlay addresses, ICE `connected`, every data channel open, input and clipboard reached the host, and the host's video pump kept sending, yet the browser never got a frame (black screen). Cause: webrtc-rs SCTP packets are 1228 bytes, 1293 once DTLS and UDP/IP wrap them; the mesh's MTU is 1280 and the netstack does not fragment, so every full packet was dropped without an error (the browser's smaller SCTP packets passed). Reproduced headless from a CN mesh node |
 | 2026-11-19 | `822c218da` on the host only (after) | PASSED, same pair, same route: SCTP packets capped at 1180 bytes; first frame 3.0 s over the mesh, the host's Xfce desktop on screen, no oversize drop logged by the netstack |
 | 2026-11-19 | agent 0.4.179 (`b89e387dc`), rolled to all 20 online nodes | PASSED, cross zone to a second non-CN Linux host that never ran the test build: route `mesh`, first frame 0.99 s |
+| 2026-11-19 | agent 0.4.182 + server `1a4dd71` | PASSED AC4: a browser on no mesh node (local network access denied), cross zone to the strict-CN host: the one sentence within 2 s of Connect, Disconnect the only button. A full sweep of the Linux hosts found two kinds with no desktop (FR-120) and, on the strict-CN host during that same session, a SYN-SENT to the centre's TLS TURN port in HK: FAILED AC2 |
+| 2026-11-19 | cause of the AC2 failure | the CN zone declares CN; its one gateway's public address reads HK, and a strict zone's allowed countries were the declared ones PLUS each gateway's, so HK counted as inside the CN zone and the centre's TURN passed the filter for every CN device and its viewers. The mesh's STUN list had already worked around it (zone-pinned entries); the RC path and the overlay's TURN grants had not |
+| 2026-11-19 | agent + server 0.4.184 (`6ba17ed66`), rolled to all 20 online nodes | PASSED AC2: same session shape, the host's ICE servers two CN STUN only, no TURN attempt in its log, TCP only the two control connections to the centre. PASSED AC1 / AC5 (non-CN netstack controller on a mesh node → strict-CN per-user netstack host: route `mesh`, relay↔relay on overlay addresses, carrier `org_relay`, first frame 4.1 s, the bundled Xfce desktop on screen). PASSED AC3 (same zone, srflx/srflx, p50 66 ms / p90 68 ms, mesh ping 70 ms) |

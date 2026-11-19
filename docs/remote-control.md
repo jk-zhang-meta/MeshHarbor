@@ -320,6 +320,25 @@ TURN the daemon resolved at `rc:request` for a delegated worker.
 > ⚠️ A strict policy with no zone table — the fail-closed reading of a zone snapshot the server could
 > not read — is **unresolved**, never "no zones": nothing meets such a device directly by an address.
 
+**STUN and TURN servers in a strict zone.** A device in a gateway-only zone, and a viewer of one,
+get only the session's servers that sit in the zone (`hub.rs:1624` `zone_filtered_ice`), plus the
+STUN servers the operator tagged with the zone in `turn.stun_urls`. "In the zone" means the
+countries the zone declares (`auto_countries`); only a zone that declares none borrows its gateways'
+observed countries (`hub.rs:838` `zone_infra_countries`).
+
+> ⚠️ Field (2026-11-19): the CN zone declares CN and its one gateway's public address reads HK.
+> While the gateway's country was added to the zone's, HK counted as inside the CN zone, the
+> centre's TLS TURN in HK passed the filter, and a mainland host dialled it during a session
+> (blocked at the border, but business traffic leaving the zone). A gateway is admitted as a
+> gateway, by id, never by lending the zone its country. The overlay's TURN grants use the same
+> countries.
+
+**A browser on no mesh node, cross-zone.** Such a session can only fail on `direct`: every public
+candidate it has is dropped. The hub says so the first time it drops one with nothing public
+admitted and no local relay (`hub.rs:1445` `zone_note_controller_candidate`, error code
+`zone_requires_mesh_controller`), and the viewer shows its one sentence at once, not when ICE gives
+up 15 s later.
+
 **Verify on a device.** The session's `rc ICE: overlay …` line carries `zone_strict`,
 `zone_mesh_fallback`, `zone_mesh_only` and `zone_turn`; the hub logs `rc zone route: settled …` and
 each candidate the zones drop (`rc zone route: a candidate the zones do not allow dropped`). The
@@ -759,6 +778,8 @@ flowchart TD
 |---|---|---|
 | A **display manager** counts as a screen | a root daemon starts before GDM; taking `DISPLAY` then would show the virtual desktop instead of the person's | `virtual_desktop.rs` `auto_decision` |
 | A **stale** X socket does not count | the daemon's own desktop, killed hard before a restart, leaves one; only a socket that accepts a connection is a server | `live_x_server` |
+| An X server that is **nobody's screen** does not count | an application's private `Xvfb` (`xvfb-run`: a server running one had no desktop) and WSLg's display (rootless, not capturable: every WSL distro had none). Only a process whose name is `Xvfb` counts, so Xorg, Xvnc and Xwayland still do. The daemon's desktop takes the next free display | `virtual_desktop.rs:192` `unscreened_displays`, `:223` `xvfb_display` |
+| A **read-only** `/tmp/.X11-unix` takes the abstract socket | WSLg mounts its own socket directory there read-only; the X server then runs with `-nolisten unix` and listens only on `@/tmp/.X11-unix/X<N>`, which libxcb clients try first, and readiness is checked on either socket | `:2231` `socket_dir_args`, `:2263` `abstract_x_socket_answers` |
 | A **remote seatless** session (xrdp, VNC) is no screen | nobody sits in front of it and a root daemon cannot capture it; its X server is skipped when the daemon looks for a running one (a root host running xrdp read its `:10` as `x11_not_enabled`) | `graphical_session_of`, `live_x_server` |
 | **Root daemons included** (operator, 2026-11-19) | a headless server with a system install must be remote-controllable too; its desktop runs as root, so a remote-control grant on such a host is a root desktop — grant RC accordingly. Until 0.4.174 root daemons were excluded | `auto_decision` |
 | A **private cookie**, never `-ac` | the automatic desktop comes up on shared servers, where `-ac` lets any local account connect and type into it; the configured mode keeps `-ac`, since its desktop may be another user's | `access_args`, `write_xauthority` |
@@ -2748,6 +2769,15 @@ the matching MF encoder + `video/H264|H265|AV1` track +
 fail-closed (black video + WARN, not silent bitstream substitution).
 Caps probe-at-startup (0.1.30) filters codecs that enumerate-but-fail-
 to-activate, so the browser never sees a bait-and-switch.
+
+> ⚠️ **The WebRTC track picks only from what the TRACK can encode**
+> (`encode/caps.rs:2727` `rtp_track_codecs`, 0.4.185). `codecs` lists what an
+> encoder on the host opens, and on Linux that includes `av1` wherever FFmpeg
+> opens `av1_nvenc` — for the `data-channel-av1` pump. The track's AV1 opener
+> is the Windows MF one only, so a Linux track pinned to AV1 got a
+> `NoopEncoder`: every WSL distro on an NVIDIA host showed a black picture
+> whenever the session fell back to the WebRTC transport (Connect clicked
+> before the device's caps loaded). DataChannel transports keep the full list.
 
 ### 18.2 Data-channel handlers (0.1.31 → 0.1.33)
 
