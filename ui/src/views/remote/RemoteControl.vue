@@ -1190,7 +1190,7 @@
         ref="stageEl"
         class="video-frame"
         :class="[`scale-${rc.scaleMode.value}`, { 'drag-over': isDragOver }]"
-        :style="{ cursor: remoteCursorCss ?? 'none', touchAction: stageTouchActionCss }"
+        :style="{ cursor: stageCursorCss, touchAction: stageTouchActionCss }"
         tabindex="0"
         @scroll.passive="onStageScroll"
         @pointermove="onStagePointerMove"
@@ -1354,7 +1354,7 @@
              hasn't advertised yet or to mark additional controllers
              in multi-watcher sessions. -->
         <div
-          v-if="!remoteCursorVisible && !remoteCursorCss && cursorVisible && controllerInitials"
+          v-if="!localPointer && !remoteCursorVisible && !remoteCursorCss && cursorVisible && controllerInitials"
           class="cursor-badge"
           :style="{ transform: `translate(${cursorX}px, ${cursorY}px)` }"
         >
@@ -2345,6 +2345,7 @@ import {
   displayScale,
   persistMetricToggles,
   remoteCursorCssFor,
+  localPointerCursorCss,
   clampFitDimensions,
   type RcScaleMode,
   type RcResolutionSetting,
@@ -4509,7 +4510,47 @@ const displayScaleSettingHint = computed<string>(() => {
 // cursor (or hidden) → fall back to the canvas overlay / badge.
 const remoteCursorCss = computed(() => remoteCursorCssFor(rc.cursor.value))
 
+// Controlling, with the pointer over the picture (and not in relative mode,
+// where the browser hides the pointer): the viewer's own pointer, in the
+// host's cursor shape — no round trip between the hand and the pointer.
+// The host-positioned overlay stays for watching without control, relative
+// mode, and the pointer outside the picture.
+const localPointer = computed(
+  () => rc.inputGranted.value && !rc.relativeMouse.value && cursorVisible.value,
+)
+// A shape id is the host's hash of the image, so a data URL made once serves
+// every later sighting. Browsers ignore cursor images over 128 px.
+const cursorUrlCache = new Map<number, string>()
+function cursorUrlFor(id: number): string | null {
+  const hit = cursorUrlCache.get(id)
+  if (hit !== undefined) return hit || null
+  const shape = rc.cursor.value.shapes.get(id)
+  if (!shape) return null
+  let url = ''
+  try {
+    const { width, height } = shape.bitmap
+    if (width > 0 && height > 0 && width <= 128 && height <= 128) {
+      const c = document.createElement('canvas')
+      c.width = width
+      c.height = height
+      c.getContext('2d')?.drawImage(shape.bitmap, 0, 0)
+      url = c.toDataURL('image/png')
+    }
+  } catch {
+    url = ''
+  }
+  if (cursorUrlCache.size > 256) cursorUrlCache.clear()
+  cursorUrlCache.set(id, url)
+  return url || null
+}
+const stageCursorCss = computed(() =>
+  localPointer.value
+    ? localPointerCursorCss(rc.cursor.value, cursorUrlFor)
+    : (remoteCursorCss.value ?? 'none'),
+)
+
 const remoteCursorVisible = computed(() => {
+  if (localPointer.value) return false
   const pos = rc.cursor.value.pos
   if (!pos) return false
   // A known system cursor renders natively via remoteCursorCss, so

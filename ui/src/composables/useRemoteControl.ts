@@ -2058,6 +2058,30 @@ export function remoteCursorCssFor(state: RcCursor): string | null {
   return state.shapes.get(pos.id)?.css ?? null
 }
 
+/** The CSS cursor for the picture while the viewer CONTROLS it with the
+ *  pointer over it: the viewer's OWN pointer, in the host's cursor shape.
+ *  Drawing the host's cursor at the position the host reports back puts a
+ *  whole round trip (input out, injection, the cursor pump, back) between
+ *  the hand and the pointer — on a slow host the operator felt it as lag and
+ *  saw it as a ghost trailing the real pointer. The shape still follows the
+ *  host (I-beam over text, a hand over links): a standard one as its CSS
+ *  keyword, an app's own bitmap as a `url()` cursor with its hotspot, the
+ *  plain arrow until a shape is known. `urlFor` turns a shape id into a
+ *  data URL (null when the browser cannot use it as a cursor). */
+export function localPointerCursorCss(
+  state: RcCursor,
+  urlFor: (id: number) => string | null,
+): string {
+  const pos = state.pos
+  const shape = pos ? state.shapes.get(pos.id) : undefined
+  if (!pos || !shape) return 'default'
+  if (shape.css) return shape.css
+  const url = urlFor(pos.id)
+  if (!url) return 'default'
+  const clamp = (v: number, size: number) => Math.max(0, Math.min(Math.max(size - 1, 0), Math.round(v)))
+  return `url("${url}") ${clamp(shape.hotspotX, shape.bitmap.width)} ${clamp(shape.hotspotY, shape.bitmap.height)}, default`
+}
+
 interface IceServer {
   urls: string[]
   username?: string

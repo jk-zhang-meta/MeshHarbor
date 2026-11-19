@@ -120,6 +120,8 @@ import {
   HeldRequest,
   pickAutoTransport,
   SW_SUSTAIN_PICK_FLOOR_FPS,
+  localPointerCursorCss,
+  type RcCursor,
   AV1_CODEC_STRING,
   priorityWireMessage,
   codecChoiceToSettings,
@@ -7331,3 +7333,30 @@ describe('X14 — download-only child WebRTC offer proof & striped download', ()
   })
 })
 
+// The operator: "the mouse lag I felt is because the remote cursor was shown".
+// While controlling, the picture shows the viewer's own pointer in the host's
+// cursor shape; nothing waits for the host to report a position back.
+describe('localPointerCursorCss', () => {
+  const bmp = (w: number, h: number) => ({ width: w, height: h }) as unknown as ImageBitmap
+  const state = (shape?: { css?: string; hx?: number; hy?: number; w?: number; h?: number }): RcCursor => ({
+    pos: shape ? { x: 10, y: 20, id: 7 } : null,
+    shapes: new Map(shape
+      ? [[7, { bitmap: bmp(shape.w ?? 10, shape.h ?? 16), hotspotX: shape.hx ?? 1, hotspotY: shape.hy ?? 1, ...(shape.css ? { css: shape.css } : {}) }]]
+      : []),
+  })
+  const url = () => 'data:image/png;base64,AAA'
+
+  it('a standard shape is its CSS keyword; an app bitmap is a url() cursor at its hotspot', () => {
+    expect(localPointerCursorCss(state({ css: 'text' }), url)).toBe('text')
+    expect(localPointerCursorCss(state({ hx: 1, hy: 1 }), url)).toBe('url("data:image/png;base64,AAA") 1 1, default')
+  })
+
+  it('never hides the pointer: no shape yet, an unusable image, or a hidden host cursor is the arrow', () => {
+    expect(localPointerCursorCss(state(), url)).toBe('default')
+    expect(localPointerCursorCss(state({}), () => null)).toBe('default')
+  })
+
+  it('keeps the hotspot inside the image', () => {
+    expect(localPointerCursorCss(state({ hx: 40, hy: -3, w: 10, h: 16 }), url)).toBe('url("data:image/png;base64,AAA") 9 0, default')
+  })
+})

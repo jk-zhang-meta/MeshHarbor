@@ -988,6 +988,15 @@ one does. See [`keep-busy.md`](keep-busy.md).
 
 The agent does **not** render the cursor into the captured frame (it tells the OS "I'm capturing, hide the cursor"). Instead, it sends cursor shape + position over the `control` DC. The controller renders the cursor as a CSS overlay on top of the video. This eliminates the "delayed mouse" feeling that plagues lower-end remote desktop tools — the local cursor moves at native refresh, the video catches up.
 
+Which pointer the viewer shows (`localPointerCursorCss`, `ui/src/composables/useRemoteControl.ts:2071`):
+
+| Situation | Pointer on the picture |
+|---|---|
+| Controlling, pointer over the picture | the viewer's **own** pointer, in the host's shape: a standard cursor as its CSS keyword, an app's bitmap as a `url()` cursor with its hotspot, the arrow until a shape is known. No round trip between the hand and the pointer |
+| Watching without input, relative mouse, or the pointer outside the picture | the host's cursor at the position the host reports (the overlay), because the host's pointer is not the viewer's |
+
+⚠️ Until 2026-11-19 an app bitmap (every cursor of the bundled Xfce, which names none) was drawn at the host-reported position even while controlling: a full round trip behind the hand. On a one-core host the operator felt it as lag and saw it as a ghost trailing the pointer.
+
 ## 7. Signaling protocol (`rc:*` namespace)
 
 Extension to the existing WebSocket. All messages are JSON envelopes; the existing `WS Handler` routes by prefix.
