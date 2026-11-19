@@ -6187,10 +6187,10 @@ fn stun_policy_for_node(
     candidates
         .retain(|u| crate::network_zones::url_matches_countries(state, u, &policy.allowed_countries));
     // A zone-pinned entry is the operator's explicit assignment, so it skips
-    // the country filter. That filter cannot express "this zone only": a
-    // zone's infra countries include each gateway's observed country, and a
-    // gateway whose control egress is abroad (field: the CN gateway reads HK)
-    // would otherwise admit the other zone's STUN host.
+    // the country filter. That filter cannot express "this zone only": it
+    // judges a host by its country, and a zone that declares none borrows its
+    // gateways' (field: the CN gateway reads HK; before
+    // `zone_infra_countries`, that made every HK host "inside" the CN zone).
     (
         prepend_unique(
             candidates,

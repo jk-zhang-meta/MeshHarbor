@@ -824,6 +824,32 @@ pub struct ZoneRouteInfo {
 /// session can only fail (an advisory: the attempt is not ended).
 pub const ZONE_REQUIRES_MESH_CONTROLLER: &str = "zone_requires_mesh_controller";
 
+/// The countries a zone's STUN/TURN infrastructure may sit in, for its
+/// strict-zone ICE filter: the countries the operator declared for it
+/// (`auto_countries`); only a zone that declares none takes its gateways'
+/// observed countries instead.
+///
+/// Field (2026-11-19): the CN zone declares CN, and its one gateway's public
+/// address reads HK. Taking the union made HK "inside" the CN zone, so a CN
+/// device's remote-desktop ICE kept the centre's TLS TURN in HK, and the host
+/// dialled it from the mainland during a session — business traffic leaving
+/// the zone (blocked at the border, but attempted). A gateway is admitted as
+/// a gateway, by id, never by lending the whole zone its country.
+pub fn zone_infra_countries(
+    declared: &[String],
+    gateway_countries: impl IntoIterator<Item = String>,
+) -> std::collections::HashSet<String> {
+    let declared: std::collections::HashSet<String> =
+        declared.iter().map(|c| c.to_ascii_uppercase()).collect();
+    if !declared.is_empty() {
+        return declared;
+    }
+    gateway_countries
+        .into_iter()
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
 /// FR-121 — a tenant's zones as the hub routes a remote-desktop session.
 pub fn zone_route_infos(
     zones: &[meshharbor_remote_control::models::NetworkZone],
@@ -9871,10 +9897,27 @@ mod tests {
         );
     }
 
-    /// A session whose controller forwarded a loopback-TURN descriptor at
-    /// `overlay_ip`, on a device whose `rc_overlay` is as given, offered once.
-    /// Returns what the agent was told in `rc:request` and the `turn:` URLs
-    /// its `rc:sdp.offer` carried.
+    /// The CN zone declares CN; its gateway's address reads HK. HK must not
+    /// become "inside" the zone (the centre's TURN would pass the strict
+    /// filter). A zone that declares no country still takes its gateways'.
+    #[test]
+    fn a_zone_that_declares_its_countries_keeps_to_them() {
+        let set = |v: &[&str]| {
+            v.iter()
+                .map(|s| s.to_string())
+                .collect::<std::collections::HashSet<_>>()
+        };
+        assert_eq!(
+            zone_infra_countries(&["cn".into()], vec!["HK".to_string()]),
+            set(&["CN"])
+        );
+        assert_eq!(
+            zone_infra_countries(&[], vec!["hk".to_string(), "JP".to_string()]),
+            set(&["HK", "JP"])
+        );
+        assert!(zone_infra_countries(&[], Vec::<String>::new()).is_empty());
+    }
+
     /// FR-121 — a controller on no mesh node, cross-zone to a strict device:
     /// the moment its public address is dropped (nothing public passed), it
     /// is told once that the session can only fail, instead of ICE running
@@ -10030,6 +10073,10 @@ mod tests {
         }
     }
 
+    /// A session whose controller forwarded a loopback-TURN descriptor at
+    /// `overlay_ip`, on a device whose `rc_overlay` is as given, offered once.
+    /// Returns what the agent was told in `rc:request` and the `turn:` URLs
+    /// its `rc:sdp.offer` carried.
     async fn session_with_local_relay(overlay_ip: &str, rc_overlay: bool) -> (bool, Vec<String>) {
         let hub = test_hub().await;
         let agent_id = ObjectId::new();

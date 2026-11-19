@@ -1811,19 +1811,13 @@ fn compute_ice_policy_from_snapshot(
         },
         DeviceZoneResolution::Resolved(zone) => {
             let strict = zone.cross_zone_mode == CrossZoneMode::RouterOnly;
-            let mut allowed_countries: std::collections::HashSet<String> = zone
-                .auto_countries
-                .iter()
-                .map(|c| c.to_ascii_uppercase())
-                .collect();
-            for gw_hex in &zone.gateway_relay_ids {
-                if let Ok(gw_id) = ObjectId::parse_str(gw_hex)
-                    && let Some(gw) = approved_relays.iter().find(|r| r.id == Some(gw_id))
-                    && let Some(gw_cc) = agent_effective_country(state, gw)
-                {
-                    allowed_countries.insert(gw_cc);
-                }
-            }
+            let gateway_countries = zone.gateway_relay_ids.iter().filter_map(|gw_hex| {
+                let gw_id = ObjectId::parse_str(gw_hex).ok()?;
+                let gw = approved_relays.iter().find(|r| r.id == Some(gw_id))?;
+                agent_effective_country(state, gw)
+            });
+            let allowed_countries =
+                crate::hub::zone_infra_countries(&zone.auto_countries, gateway_countries);
             crate::hub::AgentZoneIcePolicy {
                 policy_revision: net.zone_revision,
                 strict,

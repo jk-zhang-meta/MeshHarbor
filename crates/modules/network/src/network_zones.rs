@@ -148,11 +148,7 @@ impl TenantZoneSnapshot {
         for z in &zones {
             let mut ordered = Vec::new();
             let mut set = HashSet::new();
-            let mut countries: HashSet<String> = z
-                .auto_countries
-                .iter()
-                .map(|c| c.to_ascii_uppercase())
-                .collect();
+            let mut gateway_countries = Vec::new();
             for gw_hex in &z.gateway_relay_ids {
                 if let Ok(gw_id) = ObjectId::parse_str(gw_hex)
                     && let Some(gw_cc) = serving_countries.get(&gw_id)
@@ -161,13 +157,19 @@ impl TenantZoneSnapshot {
                         ordered.push(gw_id);
                     }
                     if let Some(cc) = gw_cc {
-                        countries.insert(cc.clone());
+                        gateway_countries.push(cc.clone());
                     }
                 }
             }
             zone_gateways_ordered.insert(z.id.clone(), ordered);
             zone_gateways.insert(z.id.clone(), set);
-            zone_infra_countries.insert(z.id.clone(), countries);
+            zone_infra_countries.insert(
+                z.id.clone(),
+                meshharbor_mod_fleet::hub::zone_infra_countries(
+                    &z.auto_countries,
+                    gateway_countries,
+                ),
+            );
         }
 
         Self {
