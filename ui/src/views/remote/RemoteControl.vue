@@ -1279,6 +1279,19 @@
              of the generic "waiting for a video track" text, because that
              text describes a different failure and reading it while the real
              cause sits in the host's log is how an operator loses an hour. -->
+        <!-- FR-120 — the host's desktop could not be kept up: the agent's one
+             sentence, above the picture (a terminal is usually open on it). -->
+        <v-alert
+          v-if="rc.desktopNote.value"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          closable
+          class="desktop-note"
+          @click:close="rc.desktopNote.value = null"
+        >
+          {{ rc.desktopNote.value.text }}
+        </v-alert>
         <div v-if="rc.mediaUnavailable.value" class="no-media-overlay">
           <v-icon size="72" color="warning">mdi-monitor-off</v-icon>
           <p class="text-body-1 mt-3">This device cannot capture its screen.</p>
@@ -5555,6 +5568,14 @@ onBeforeUnmount(() => {
      letterbox, which is what we want for 1:1 Original and the
      user-driven Custom scale. */
   object-fit: fill;
+}
+.desktop-note {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(720px, calc(100% - 32px));
 }
 .remote-cursor-canvas {
   position: absolute;

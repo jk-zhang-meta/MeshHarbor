@@ -1614,6 +1614,31 @@ impl AgentPeer {
             })
         }));
 
+        // A host whose desktop session could not be kept up says so once,
+        // in one sentence, the moment the control channel opens — not a black
+        // picture that names nothing (0.4.179's minimal hosts, FR-120).
+        if let Some(note) = crate::virtual_desktop::session_failure() {
+            let stash = control_dc.clone();
+            tokio::spawn(async move {
+                for _ in 0..60 {
+                    let dc = stash.lock().await.clone();
+                    if let Some(dc) = dc {
+                        let payload = serde_json::json!({
+                            "t": "rc:desktop_note",
+                            "code": "desktop_failed",
+                            "text": note,
+                        })
+                        .to_string();
+                        if let Err(e) = dc.send_text(payload).await {
+                            debug!(%e, "rc:desktop_note send failed (control DC closed?)");
+                        }
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+            });
+        }
+
         // Spawn the host-locked emitter: watches the lock_state
         // monitor's transitions and emits `rc:host_locked` over the
         // `control` data channel so the viewer can render an explicit

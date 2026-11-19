@@ -804,6 +804,7 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
         );
     }
     let gen_ = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    *SESSION_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let (argv, extra): (Vec<String>, Vec<(String, String)>) = match &bundled {
         Some(b) => (
             vec![
@@ -836,6 +837,19 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
         .and_then(Path::parent)
         .map(|d| d.join("session.log"));
     let log_for_launch = log.clone();
+    // If the session cannot be kept up: a terminal on the same desktop (the
+    // bundle's, with the session's environment, else the host's), so the
+    // person who connects can still work and see why.
+    let fallback_terminal: Option<(std::path::PathBuf, Vec<(String, String)>)> = bundled
+        .as_ref()
+        .map(|b| (b.bin("xfce4-terminal"), extra.clone()))
+        .filter(|(t, _)| t.exists())
+        .or_else(|| {
+            ["x-terminal-emulator", "xterm"]
+                .into_iter()
+                .find_map(binary_on_path)
+                .map(|t| (t, Vec::new()))
+        });
     let launch = move |env: &DesktopEnv| -> std::io::Result<Child> {
         let mut cmd = env.command(&argv[0]);
         cmd.args(&argv[1..]).env("XDG_SESSION_TYPE", "x11");
@@ -882,6 +896,31 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
                 if restarts.len() >= 5 {
                     let tail = log.as_deref().map(|p| log_tail(p, 12)).unwrap_or_default();
                     warn!(%session, ?status, log = ?log, %tail, "virtual-desktop: the desktop session keeps ending — not restarting it again");
+                    let terminal = fallback_terminal.as_ref().is_some_and(|(t, vars)| {
+                        let mut cmd = env.command(t);
+                        if t.ends_with("xfce4-terminal") {
+                            cmd.arg("--disable-server");
+                        }
+                        for k in unset {
+                            cmd.env_remove(k);
+                        }
+                        cmd.envs(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+                        match cmd.spawn() {
+                            Ok(_c) => {
+                                // Torn down with the desktop, like the session.
+                                #[cfg(target_os = "linux")]
+                                if let Some(t) =
+                                    VD_TREE.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                                {
+                                    t.roots.push(_c.id() as i32);
+                                }
+                                true
+                            }
+                            Err(_) => false,
+                        }
+                    });
+                    *SESSION_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(failure_note(&tail, terminal, log.as_deref()));
                     return;
                 }
                 restarts.push(Instant::now());
@@ -904,6 +943,46 @@ fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
         })
         .context("spawning the session supervisor")?;
     Ok(first)
+}
+
+/// Set when the desktop session could not be kept up: the one sentence a
+/// viewer is told (`rc:desktop_note`), instead of a black picture that names
+/// nothing (0.4.179's minimal hosts).
+static SESSION_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The note for a viewer when this host's desktop session could not be kept
+/// up, if it could not.
+pub fn session_failure() -> Option<String> {
+    SESSION_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// One sentence: what happened, the session's own last error, what is left on
+/// the screen, and where the full log is.
+fn failure_note(tail: &str, terminal: bool, log: Option<&Path>) -> String {
+    let reason = tail
+        .rsplit(" | ")
+        .find(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("error") || l.contains("bail out") || l.contains("abort")
+        })
+        .map(|l| {
+            let l = l.trim();
+            let cut = l.char_indices().nth(160).map(|(i, _)| i).unwrap_or(l.len());
+            format!(" (last error: {})", &l[..cut])
+        })
+        .unwrap_or_default();
+    let left = if terminal {
+        "a terminal is open on it instead"
+    } else {
+        "only a bare screen is left"
+    };
+    let at = log
+        .map(|p| format!(" Log: {}.", p.display()))
+        .unwrap_or_default();
+    format!("The desktop on this computer kept closing{reason}; {left}.{at}")
 }
 
 /// The session's log, appended across its restarts and started afresh once
@@ -2118,6 +2197,27 @@ mod tests {
     /// The screen-saver disable is the whole point of this argv and is
     /// invisible at runtime until it has already blanked someone's session,
     /// so assert it as a pair rather than trusting the flag survived an edit.
+    /// The viewer's sentence names the session's own last error, what is left
+    /// on the screen, and the log.
+    #[test]
+    fn a_failed_desktop_is_one_sentence() {
+        let tail = "(xfce4-panel:1): Gtk-WARNING **: no icon | Wnck:ERROR:xutils.c:1510: assertion failed: (base) | Bail out! Wnck:ERROR";
+        let n = failure_note(tail, true, Some(Path::new("/tmp/x/session.log")));
+        assert_eq!(
+            n,
+            "The desktop on this computer kept closing (last error: Bail out! Wnck:ERROR); a terminal is open on it instead. Log: /tmp/x/session.log."
+        );
+        assert_eq!(
+            failure_note("", false, None),
+            "The desktop on this computer kept closing; only a bare screen is left."
+        );
+        let long = format!("ERROR {}", "x".repeat(400));
+        assert!(
+            failure_note(&long, true, None).len() < 260,
+            "the reason is cut"
+        );
+    }
+
     /// A desktop session that keeps dying leaves its reason in a log the
     /// daemon quotes, and the log does not grow without bound.
     #[test]

@@ -820,6 +820,10 @@ pub struct ZoneRouteInfo {
     pub router_only: bool,
 }
 
+/// FR-121 — the `rc:error` code that tells a controller on no mesh node its
+/// session can only fail (an advisory: the attempt is not ended).
+pub const ZONE_REQUIRES_MESH_CONTROLLER: &str = "zone_requires_mesh_controller";
+
 /// FR-121 — a tenant's zones as the hub routes a remote-desktop session.
 pub fn zone_route_infos(
     zones: &[meshharbor_remote_control::models::NetworkZone],
@@ -1390,6 +1394,9 @@ impl Hub {
             Role::Controller => self.zone_admits_candidate(agent_id, route, mesh_ip, c),
             Role::Agent => Self::zone_admits_agent_candidate(route, c),
         };
+        if matches!(role, Role::Controller) {
+            self.zone_note_controller_candidate(session_id, route, c, ok);
+        }
         if !ok {
             info!(
                 session = %session_id.to_hex(),
@@ -1400,6 +1407,69 @@ impl Hub {
             );
         }
         ok
+    }
+
+    /// FR-121 — a controller on no mesh node (a `Direct` route with no mesh
+    /// fallback) whose public address the zones do not let meet the device
+    /// can only fail: say so the moment that address is dropped, while nothing
+    /// public has passed, instead of letting ICE run out its clock (the
+    /// viewer showed the sentence only after a 15 s timeout and a redial).
+    /// Advisory, once per session: the attempt goes on, so a LAN path the
+    /// zones cannot see still connects (and clears the viewer's notice).
+    fn zone_note_controller_candidate(
+        &self,
+        session_id: ObjectId,
+        route: ZoneRoute,
+        candidate: &str,
+        admitted: bool,
+    ) {
+        if route
+            != (ZoneRoute::Direct {
+                mesh_fallback: false,
+            })
+        {
+            return;
+        }
+        let Some(ip) = meshharbor_core::ice_zones::candidate_ip(candidate) else {
+            return;
+        };
+        if !meshharbor_core::ice_zones::is_public_ip(ip) {
+            return;
+        }
+        let Some(arc) = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .map(|e| e.value().clone())
+        else {
+            return;
+        };
+        let tx = {
+            let mut s = arc.lock();
+            if admitted {
+                s.zone_public_admitted += 1;
+                return;
+            }
+            let decisive = matches!(candidate_type(candidate), Some("srflx") | Some("relay"));
+            if !decisive || s.zone_advised || s.zone_public_admitted > 0 || s.local_relay.is_some()
+            {
+                return;
+            }
+            s.zone_advised = true;
+            s.controller_tx.clone()
+        };
+        info!(
+            session = %session_id.to_hex(),
+            "rc zone route: the controller is on no mesh node and its zone cannot meet the device directly — told it"
+        );
+        if let Some(tx) = tx {
+            let _ = tx.try_send(ServerMsg::Error {
+                session_id: Some(session_id),
+                code: ZONE_REQUIRES_MESH_CONTROLLER.to_string(),
+                message: "this device is in another network zone; connect from a device signed in to MeshHarbor".to_string(),
+                open_nonce: None,
+            });
+        }
     }
 
     /// FR-121 — a session's route and the controller's mesh relay address.
@@ -9805,6 +9875,161 @@ mod tests {
     /// `overlay_ip`, on a device whose `rc_overlay` is as given, offered once.
     /// Returns what the agent was told in `rc:request` and the `turn:` URLs
     /// its `rc:sdp.offer` carried.
+    /// FR-121 — a controller on no mesh node, cross-zone to a strict device:
+    /// the moment its public address is dropped (nothing public passed), it
+    /// is told once that the session can only fail, instead of ICE running
+    /// out its 15 s clock first. A host name, or a public candidate that
+    /// passed, says nothing of the kind.
+    #[tokio::test]
+    async fn a_controller_on_no_mesh_node_is_told_at_once() {
+        let hub = test_hub().await;
+        let agent_id = ObjectId::new();
+        let tenant = ObjectId::new();
+        let _ = hub.register_agent(
+            agent_id,
+            tenant,
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
+        let zones = Arc::new(vec![ZoneRouteInfo {
+            id: "cn".into(),
+            auto_countries: vec!["CN".into()],
+            is_default: false,
+            router_only: true,
+        }]);
+        assert!(hub.set_agent_zone_ice_policy(
+            agent_id,
+            AgentZoneIcePolicy {
+                policy_revision: 1,
+                strict: true,
+                allowed_countries: ["CN".to_string()].into_iter().collect(),
+                zone: Some("cn".into()),
+                zones,
+            },
+        ));
+        let (ctl_tx, mut ctl_rx) = mpsc::channel(16);
+        let sid = hub
+            .create_session_full(
+                agent_id,
+                tenant,
+                "op".into(),
+                ctl_tx,
+                Permissions::default(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                OrgPolicy::Read(SessionPolicy::default()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            hub.session_zone(sid).0,
+            ZoneRoute::Direct {
+                mesh_fallback: false
+            }
+        );
+        grant_and_await_ready(&hub, sid, &mut ctl_rx).await;
+        let cand = |c: &str| serde_json::json!({ "candidate": c, "sdpMid": "0" });
+        let advisories = |rx: &mut mpsc::Receiver<ServerMsg>| {
+            let mut n = 0;
+            while let Ok(m) = rx.try_recv() {
+                if let ServerMsg::Error {
+                    code, session_id, ..
+                } = m
+                {
+                    assert_eq!(session_id, Some(sid));
+                    assert_eq!(code, ZONE_REQUIRES_MESH_CONTROLLER);
+                    n += 1;
+                }
+            }
+            n
+        };
+        // An mDNS host name passes and decides nothing.
+        assert!(hub.zone_admits_trickle(
+            agent_id,
+            sid,
+            Role::Controller,
+            &cand("candidate:1 1 udp 2122260223 4a2f.local 50000 typ host")
+        ));
+        assert_eq!(advisories(&mut ctl_rx), 0);
+        // Its public address (no GeoIP here: nowhere, so dropped) tells it, once.
+        let srflx =
+            cand("candidate:2 1 udp 1686052607 203.0.113.7 50000 typ srflx raddr 0.0.0.0 rport 0");
+        assert!(!hub.zone_admits_trickle(agent_id, sid, Role::Controller, &srflx));
+        assert!(!hub.zone_admits_trickle(agent_id, sid, Role::Controller, &srflx));
+        assert_eq!(advisories(&mut ctl_rx), 1);
+
+        // A public candidate that passed first: no advisory.
+        let (ctl_tx2, mut ctl_rx2) = mpsc::channel(16);
+        let sid2 = hub
+            .create_session_full(
+                agent_id,
+                tenant,
+                "op".into(),
+                ctl_tx2,
+                Permissions::default(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Prompt,
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                OrgPolicy::Read(SessionPolicy::default()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        {
+            grant_and_await_ready(&hub, sid2, &mut ctl_rx2).await;
+            hub.zone_note_controller_candidate(
+                sid2,
+                ZoneRoute::Direct {
+                    mesh_fallback: false,
+                },
+                "candidate:3 1 udp 1686052607 198.51.100.9 50000 typ srflx raddr 0.0.0.0 rport 0",
+                true,
+            );
+            assert!(!hub.zone_admits_trickle(agent_id, sid2, Role::Controller, &srflx));
+            let mut n = 0;
+            while let Ok(m) = ctl_rx2.try_recv() {
+                if matches!(m, ServerMsg::Error { .. }) {
+                    n += 1;
+                }
+            }
+            assert_eq!(
+                n, 0,
+                "something public passed: the session may still connect"
+            );
+        }
+    }
+
     async fn session_with_local_relay(overlay_ip: &str, rc_overlay: bool) -> (bool, Vec<String>) {
         let hub = test_hub().await;
         let agent_id = ObjectId::new();

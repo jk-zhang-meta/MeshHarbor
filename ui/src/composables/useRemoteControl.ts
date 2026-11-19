@@ -1512,6 +1512,7 @@ export type RcControlInbound =
   /** `input` (FR-97 P3b, P2d-1): what the lock screen does with input — see
    *  {@link HostLockedInput}. Windows never sends it. */
   | { kind: 'host_locked'; locked: boolean; input: HostLockedInput }
+  | { kind: 'desktop_note'; code: string; text: string }
   /** FR-92 — the device's keep-busy state (to every viewer, on change). */
   | { kind: 'keep_busy'; state: KeepBusyState }
   /** FR-108 — the device's answer to this viewer's display-match request. */
@@ -1564,6 +1565,12 @@ export function parseControlInbound(data: unknown): RcControlInbound {
     && typeof obj.agent_us === 'number'
   ) {
     return { kind: 'clock_echo', t0: obj.t0, agentUs: obj.agent_us }
+  }
+  // FR-120 — the host's desktop session could not be kept up: the agent's
+  // one sentence (what happened, its last error, what is left on screen).
+  // An unknown code is kept: the text is what the operator needs.
+  if (obj.t === 'rc:desktop_note' && typeof obj.code === 'string' && typeof obj.text === 'string' && obj.text) {
+    return { kind: 'desktop_note', code: obj.code, text: obj.text }
   }
   if (
     obj.t === 'rc:desktop_changed' &&
@@ -5566,6 +5573,9 @@ export function useRemoteControl(
    * always-false matches the pre-overlay behaviour for those agents.
    */
   const hostLocked = ref(false)
+  /** FR-120 — the agent said this host's desktop could not be kept up
+   *  (`rc:desktop_note`); shown above the picture until dismissed. */
+  const desktopNote = ref<{ code: string; text: string } | null>(null)
   /** FR-97 P3b — what the host says its lock screen does with input: a Linux
    *  lock screen TAKES it (captured and typed into like any other screen), so
    *  the chip must not say input is suppressed; a Mac's is `unknown` (P2d-1).
@@ -8894,6 +8904,7 @@ export function useRemoteControl(
       // FR-34 — a fresh attempt starts un-locked-known; the agent tells us
       // via rc:consent.pending if the host is locked.
       hostLocked.value = false
+      desktopNote.value = null
       phase.value = 'awaiting_consent'
       // Consent is human-paced on Prompt-mode devices; the SERVER owns
       // that timeout (consent_timeout). Ours only covers requesting/
@@ -9317,6 +9328,22 @@ export function useRemoteControl(
           notice.value = 'Still reaching your device through the cluster. Retrying automatically...'
         }
         scheduleReconnect({ notifyServer: false })
+        return
+      }
+      // FR-121 — the hub saw this browser's public address dropped by the
+      // zones with nothing public let through: it is on no mesh node, and the
+      // device is in another zone. An ADVISORY, said at once rather than
+      // after ICE's 15 s timeout and a redial; the attempt goes on (a LAN
+      // path the zones cannot see may still connect, and clears this).
+      if (msg.code === 'zone_requires_mesh_controller') {
+        if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+        console.warn('[rc] this device is in another network zone and this browser reaches no MeshHarbor of its own')
+        notice.value = ZONE_REQUIRES_MESH_CONTROLLER
+        void localNetworkPermission().then((p) => {
+          if ((p === 'denied' || p === 'prompt') && notice.value === ZONE_REQUIRES_MESH_CONTROLLER) {
+            notice.value = ZONE_NEEDS_LOCAL_ACCESS
+          }
+        })
         return
       }
       // Ladder pending → errors are stale fallout from the abandoned
@@ -10919,6 +10946,9 @@ export function useRemoteControl(
       if (parsed?.kind === 'host_locked') {
         hostLocked.value = parsed.locked
         hostLockedInput.value = parsed.input
+      } else if (parsed?.kind === 'desktop_note') {
+        desktopNote.value = { code: parsed.code, text: parsed.text }
+        console.warn('[rc] host desktop:', parsed.code, parsed.text)
       } else if (parsed?.kind === 'keep_busy') {
         keepBusy.value = parsed.state
       } else if (parsed?.kind === 'display_match') {
@@ -14967,6 +14997,7 @@ export function useRemoteControl(
      * padlock overlay frame.
      */
     hostLocked,
+    desktopNote,
     /** FR-97 P3b — what the lock screen does with input: the chip says it. */
     hostLockedInput,
     keepBusy,

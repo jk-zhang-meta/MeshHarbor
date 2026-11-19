@@ -201,6 +201,15 @@ pub struct LiveSession {
     /// network zones, decided at session create. See [`ZoneRoute`].
     pub zone_route: ZoneRoute,
 
+    /// FR-121 — the controller's public candidates its zone let through, on a
+    /// `Direct` route with no mesh fallback (a controller on no mesh node).
+    pub zone_public_admitted: u32,
+
+    /// FR-121 — the controller was told this session can only fail: its
+    /// public address the zones do not let meet the device was dropped, and
+    /// nothing public passed (`zone_requires_mesh_controller`, once).
+    pub zone_advised: bool,
+
     /// Multi-region relay: the region FROZEN at session create (load-aware
     /// pick over the agent's home + RTT-ordered prefs). Frozen so all three
     /// per-session issuance pushes (Ready / SdpOffer / SdpAnswer) carry the
@@ -378,6 +387,8 @@ impl LiveSession {
             local_relay: None,
             rc_overlay: false,
             zone_route: ZoneRoute::Open,
+            zone_public_admitted: 0,
+            zone_advised: false,
             relay_region: None,
             offer_seen: false,
             pending_request: None,

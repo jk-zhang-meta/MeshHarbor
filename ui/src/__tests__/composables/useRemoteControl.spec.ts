@@ -7360,3 +7360,13 @@ describe('localPointerCursorCss', () => {
     expect(localPointerCursorCss(state({ hx: 40, hy: -3, w: 10, h: 16 }), url)).toBe('url("data:image/png;base64,AAA") 9 0, default')
   })
 })
+
+// FR-120 — a host whose desktop session could not be kept up says so in one
+// sentence; the viewer keeps an unknown code (the text is what matters).
+describe('rc:desktop_note', () => {
+  it('parses the agent sentence and refuses an empty one', () => {
+    const p = parseControlInbound(JSON.stringify({ t: 'rc:desktop_note', code: 'desktop_failed', text: 'The desktop on this computer kept closing; a terminal is open on it instead.' }))
+    expect(p).toEqual({ kind: 'desktop_note', code: 'desktop_failed', text: 'The desktop on this computer kept closing; a terminal is open on it instead.' })
+    expect(parseControlInbound(JSON.stringify({ t: 'rc:desktop_note', code: 'x', text: '' }))).toBeNull()
+  })
+})
