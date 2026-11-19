@@ -817,14 +817,14 @@ flowchart TD
 
 ## 14. Where a remote screen opens
 
-**Connect** on the Devices page (`cmd_open_remote`, `commands.rs:2016`), the tray's **Open
+**Connect** on the Devices page (`cmd_open_remote`, `commands.rs:2066`), the tray's **Open
 MeshHarbor** and a viewer link followed inside the account window all end in one function,
-`open_authenticated_web` (`commands.rs:1863`). On every OS the page gets a window of its own,
+`open_authenticated_web` (`commands.rs:1859`). On every OS the page gets a window of its own,
 already signed in. Which window is the only thing that differs:
 
 | OS | The window | Engine | How it starts | With no Chromium-family browser |
 |---|---|---|---|---|
-| Windows | the companion's own (`meshharbor-web`, 1280×800; one window, a second Connect navigates it) | WebView2 | `open_web_window_for_server` (`commands.rs:1745`), on the main thread | does not arise: WebView2 is part of the system |
+| Windows | the companion's own (`meshharbor-web`, 1280×800; one window, a second Connect navigates it) | WebView2 | `open_web_window_for_server` (`commands.rs:1741`), on the main thread | does not arise: WebView2 is part of the system |
 | macOS | an **app window** of Chrome, Edge, Chromium or Brave: no tabs, no address bar, the page's title in the title bar | that browser's | `/usr/bin/open -n -a <bundle> --args --app=<url>` | a tab of the default browser |
 | Linux | the same, of `google-chrome`, `microsoft-edge`, `chromium` or `brave-browser` | that browser's | `<launcher> --app=<url>` | a tab of the default browser |
 
@@ -847,7 +847,7 @@ system webview and builds only where that is installed.
   and HEVC paths there, and one engine on all three platforms is worth more than owning the
   window. The account window (`account_window.rs`), which shows lists
   and no video, is the system webview on every OS.
-- **The fallback says so.** `cmd_open_remote` answers a `WebSurface` (`commands.rs:1815`):
+- **The fallback says so.** `cmd_open_remote` answers a `WebSurface` (`commands.rs:1811`):
   `window`, `app_window` or `browser_tab`. On `browser_tab` the Devices page shows "The remote
   screen opened in a tab of your default browser. Install Chrome, Edge, Chromium or Brave and it
   opens in a window of its own." (`viewerNoteFor`, `front/devices.js:89`), and `desktop.log`
@@ -909,13 +909,29 @@ sequenceDiagram
 
 ### A machine whose config the companion cannot read
 
-The viewer link needs this device's server and tenant. A per-user install reads them from its
-config. A **system install on macOS or Linux** keeps the config for root alone (it holds the
-device's tokens) while the companion runs as the person at the screen, so `enrollment_target`
-(`commands.rs:2052`) falls back to the device service's own `Status`, whose `orgs` rows carry
-each enrollment's server and tenant and are served on the person socket (§6). Before that
-fallback, Connect on such a machine ended at "Loading config: …" and opened nothing. A config
-that loads is the answer, right or wrong; the service is asked only when the file cannot be read.
+Opening a page needs this device's server (and, for a viewer link, its tenant). A per-user
+install reads them from its config. A **system install on macOS or Linux** keeps the config for
+root alone (it holds the device's tokens) while the companion runs as the person at the screen,
+so there the file never answers. `enrollment_sources` (`commands.rs:1961`) therefore
+reads the file as a probe and, when it tells nothing, asks the device service for its own
+`Status`, whose `orgs` rows carry each enrollment's server and tenant and are served on the
+person socket (§6). Three pure decisions sit on top of it, each unit-tested:
+
+| Who asks | Decision | From the file | From the service | Neither |
+|---|---|---|---|---|
+| Connect (`cmd_open_remote`) | `remote_target_from` (`:2097`) | the named org's server and tenant | the same, from its `orgs` row | an error that names the service |
+| tray **Open MeshHarbor**, **Sign out**, the invite preview, the administrator-rights card | `primary_server_from` (`:1996`) | `server_url` | the primary row's server | "This device isn't enrolled yet" |
+| the account window (`cmd_open_account`) | `account_centre_from` (`:2118`) | `server_url` | the primary row's server | the default centre, or an error when a file is there and unreadable |
+
+- **A config that loads is the answer, right or wrong.** The service is asked only when the file
+  cannot be read; a loaded file with a bad server is refused, not papered over.
+- Before this, on such a machine Connect ended at "Loading config: …", Open MeshHarbor and Sign
+  out at "This device isn't enrolled yet", and nothing opened (field, a promoted MacBook on
+  0.4.181).
+- ⚠️ **The companion probes this config, it does not run on it**: these reads and the tray's
+  account watch (every few seconds) use `config::read_if_present`. `config::load` is the
+  daemon's reader, and logs "the host must be re-enrolled" at ERROR for a file it cannot read:
+  through it, a healthy system install wrote that line to `desktop.log` fifteen times a minute.
 
 **Testing it.** `cargo test -p meshharbor-node-core --lib app_window` (the browser choice and the
 command line, both platforms, on any host); `node agents/meshharbor-desktop/tests/devices-viewer-note.cjs`
