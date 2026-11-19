@@ -1923,14 +1923,16 @@ fn spawn_x_server(
         let dpy = pick_display(X11_UNIX_DIR);
         let auth = auth_for(&dpy)?;
         match spawn_xorg(&xorg, &dpy, w, h, auth.as_deref()) {
-            Ok(mut child) => match wait_display_ready(&dpy, Duration::from_secs(15)) {
-                Ok(()) => return Ok((child, Server::XorgDummy, dpy, auth)),
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    warn!(%e, log = %xorg_dir(&dpy).join("Xorg.log").display(), "virtual-desktop: Xorg with the dummy driver did not come up — using Xvfb, so display match answers unsupported");
+            Ok(mut child) => {
+                match wait_display_ready(&dpy, Some(&mut child), Duration::from_secs(15)) {
+                    Ok(()) => return Ok((child, Server::XorgDummy, dpy, auth)),
+                    Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        warn!(%e, log = %xorg_dir(&dpy).join("Xorg.log").display(), "virtual-desktop: Xorg with the dummy driver did not come up — using Xvfb, so display match answers unsupported");
+                    }
                 }
-            },
+            }
             Err(e) => {
                 warn!(%e, "virtual-desktop: could not start Xorg with the dummy driver — using Xvfb, so display match answers unsupported")
             }
@@ -1961,7 +1963,7 @@ fn spawn_x_server(
         .stderr(Stdio::null());
     lead_new_group(&mut cmd);
     let mut child = cmd.spawn().context("spawn Xvfb")?;
-    if let Err(e) = wait_display_ready(&dpy, Duration::from_secs(15)) {
+    if let Err(e) = wait_display_ready(&dpy, Some(&mut child), Duration::from_secs(15)) {
         // No `VirtualDesktop` yet, so Drop won't fire: kill what we spawned.
         let _ = child.kill();
         let _ = child.wait();
@@ -2203,20 +2205,34 @@ fn binary_on_path(bin: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-/// Pick a free `:N` (`:99..=:120`) by requiring BOTH a missing X socket
-/// (`<x11_dir>/X<N>`) AND a missing lock (`/tmp/.X<N>-lock`). Xvfb refuses a
-/// display whose lock file exists even when the socket is gone — a crash-loop
-/// leaves stale `/tmp/.X<N>-lock` behind, which is exactly the WSL failure
-/// mode — so skip any display that still has one. Falls back to `:99`.
+/// Pick a free `:N` (`:99..=:120`). Falls back to `:99`.
 fn pick_display(x11_dir: &str) -> String {
-    for n in 99..=120 {
-        let socket = Path::new(x11_dir).join(format!("X{n}"));
-        let lock = Path::new("/tmp").join(format!(".X{n}-lock"));
-        if !socket.exists() && !lock.exists() {
-            return format!(":{n}");
-        }
-    }
-    ":99".to_string()
+    pick_display_in(x11_dir, 99..=120).unwrap_or_else(|| ":99".to_string())
+}
+
+/// The first `:N` in `range` with no X socket (`<x11_dir>/X<N>`), no lock
+/// (`/tmp/.X<N>-lock`) AND nobody answering on its abstract socket
+/// (`@/tmp/.X11-unix/X<N>`).
+///
+/// - The lock: Xvfb refuses a display whose lock file exists even when the
+///   socket is gone, and a crash-loop leaves a stale `/tmp/.X<N>-lock` behind.
+/// - The abstract socket: it lives in the NETWORK namespace, not under `/tmp`.
+///   Every WSL 2 distro of one Windows host shares one network namespace while
+///   each has its own `/tmp`, so another distro's desktop on `:99` passes both
+///   file checks yet answers on `@/tmp/.X11-unix/X99`, which every libxcb
+///   client tries FIRST. Field (2026-11-19): a fresh install beside enrolled
+///   distros took `:99` too; its session and capture reached the other
+///   distro's server ("Invalid MIT-MAGIC-COOKIE-1 key") and showed nothing.
+///   The same holds for containers on the host's network.
+fn pick_display_in(x11_dir: &str, range: std::ops::RangeInclusive<u32>) -> Option<String> {
+    range
+        .into_iter()
+        .find(|n| {
+            let socket = Path::new(x11_dir).join(format!("X{n}"));
+            let lock = Path::new("/tmp").join(format!(".X{n}-lock"));
+            !socket.exists() && !lock.exists() && !abstract_x_socket_answers(&n.to_string())
+        })
+        .map(|n| format!(":{n}"))
 }
 
 /// Extra listen arguments for the X server: none where `/tmp/.X11-unix` can
@@ -2287,12 +2303,23 @@ fn parse_resolution(s: &str) -> (u32, u32) {
     }
 }
 
-/// Poll for the Xvfb X socket to appear, then a short settle.
-fn wait_display_ready(display: &str, timeout: Duration) -> Result<()> {
+/// Poll for the X server's socket to appear, then a short settle. `server` is
+/// the X server we spawned: once it has exited, a socket that answers is
+/// someone else's (another WSL distro's, say), never ours to wait for.
+fn wait_display_ready(
+    display: &str,
+    mut server: Option<&mut Child>,
+    timeout: Duration,
+) -> Result<()> {
     let n = display.trim_start_matches(':');
     let sock = Path::new(X11_UNIX_DIR).join(format!("X{n}"));
     let start = Instant::now();
     while start.elapsed() < timeout {
+        if let Some(Ok(Some(status))) = server.as_deref_mut().map(Child::try_wait) {
+            bail!(
+                "virtual-desktop: the X server for display {display} exited before it came up ({status})"
+            );
+        }
         if sock.exists() || abstract_x_socket_answers(n) {
             std::thread::sleep(Duration::from_millis(300));
             return Ok(());
@@ -2797,7 +2824,40 @@ mod tests {
         .unwrap();
         let _l = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
         assert!(abstract_x_socket_answers(&n));
-        assert!(wait_display_ready(&format!(":{n}"), Duration::from_secs(2)).is_ok());
+        assert!(wait_display_ready(&format!(":{n}"), None, Duration::from_secs(2)).is_ok());
+    }
+
+    /// Another network-namespace sharer's X server (a sibling WSL distro, a
+    /// host-network container) is invisible to the socket and lock files but
+    /// owns the display's abstract socket: the picker passes over it, and an
+    /// X server of ours that died is not "ready" because that socket answers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_display_another_namespace_sharer_holds_is_not_free() {
+        use std::os::linux::net::SocketAddrExt;
+        let dir = std::env::temp_dir().join(format!("mh-x11pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir = dir.to_string_lossy().into_owned();
+        let base = 40_000 + std::process::id() % 20_000;
+        let held = format!("{base}");
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(
+            format!("{X11_UNIX_DIR}/X{held}").as_bytes(),
+        )
+        .unwrap();
+        let _sibling = std::os::unix::net::UnixListener::bind_addr(&addr).unwrap();
+        assert_eq!(
+            pick_display_in(&dir, base..=base + 1),
+            Some(format!(":{}", base + 1))
+        );
+        assert_eq!(pick_display_in(&dir, base..=base), None);
+        let mut ours = Command::new("true").spawn().unwrap();
+        let _ = ours.wait();
+        let err = wait_display_ready(&format!(":{held}"), Some(&mut ours), Duration::from_secs(2))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("exited before it came up"),
+            "{err}"
+        );
     }
 
     /// FR-120 — an application's private Xvfb is nobody's screen; every other
@@ -2926,8 +2986,14 @@ mod tests {
 
     #[test]
     fn pick_display_returns_first_free_when_dir_absent() {
-        // A dir that doesn't exist → no sockets → first candidate `:99`.
-        assert_eq!(pick_display("/nonexistent/x11/dir/zzz"), ":99");
+        // A dir that doesn't exist → no sockets → the first candidate. A range
+        // far above `:99`: on a WSL dev box a sibling distro's desktop may hold
+        // `:99`'s abstract socket, which the picker rightly passes over.
+        let n = 60_000 + std::process::id() % 5_000;
+        assert_eq!(
+            pick_display_in("/nonexistent/x11/dir/zzz", n..=n + 3),
+            Some(format!(":{n}"))
+        );
     }
 
     #[test]
