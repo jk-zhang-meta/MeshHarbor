@@ -6090,35 +6090,7 @@ fn filter_ice_for_allowed_countries(
 /// than read as global, since that is a typo, not an intent. Order kept,
 /// duplicates dropped.
 fn parse_configured_stun_urls(raw: &str) -> Vec<(Option<String>, String)> {
-    let mut out: Vec<(Option<String>, String)> = Vec::new();
-    for entry in raw.split(',') {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        let (zone, url) = match entry.split_once('=') {
-            Some((z, u)) => {
-                let z = z.trim().to_ascii_lowercase();
-                if z.is_empty() {
-                    continue;
-                }
-                (Some(z), u.trim())
-            }
-            None => (None, entry),
-        };
-        let has_host_port = url
-            .strip_prefix("stun:")
-            .and_then(|rest| rest.split('?').next())
-            .is_some_and(|hp| !hp.is_empty() && hp.contains(':'));
-        if !has_host_port {
-            continue;
-        }
-        let item = (zone, url.to_string());
-        if !out.contains(&item) {
-            out.push(item);
-        }
-    }
-    out
+    meshharbor_remote_control::turn_creds::parse_zone_stun_urls(raw)
 }
 
 fn configured_stun_urls(state: &NetworkState) -> Vec<(Option<String>, String)> {

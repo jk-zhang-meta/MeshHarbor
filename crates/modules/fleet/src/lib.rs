@@ -217,6 +217,15 @@ impl Module for FleetState {
         // own devices. The zones of the deployment's STUN/TURN hosts are
         // resolved off the hot path, now and every 10 minutes.
         rc_hub.set_geoip(core.geoip.clone());
+        // FR-121 — a session's ICE gets its device zone's STUN servers.
+        rc_hub.set_zone_stun(
+            settings
+                .turn
+                .stun_urls
+                .as_deref()
+                .map(meshharbor_remote_control::turn_creds::parse_zone_stun_urls)
+                .unwrap_or_default(),
+        );
         let ice_zones = Arc::new(meshharbor_core::ice_zones::IceServerZones::default());
         meshharbor_core::ice_zones::spawn_refresh(
             core.clone(),

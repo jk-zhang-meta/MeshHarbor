@@ -791,6 +791,8 @@ pub struct HubInner {
     ice_zones: std::sync::OnceLock<Arc<IceServerZones>>,
     /// Optional GeoIP database for synchronous literal-IP STUN/TURN country checks.
     geoip: std::sync::OnceLock<Arc<meshharbor_core::user_analytics::GeoIp>>,
+    /// FR-121 — `turn.stun_urls` parsed: `(zone id, url)`, `None` = global.
+    zone_stun: std::sync::OnceLock<Vec<(Option<String>, String)>>,
 }
 
 /// Per-device Logical Network Zone ICE/STUN policy cached on the Hub.
@@ -999,6 +1001,7 @@ impl Hub {
                 agent_zone_ice_policies: DashMap::new(),
                 ice_zones: std::sync::OnceLock::new(),
                 geoip: std::sync::OnceLock::new(),
+                zone_stun: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -1065,6 +1068,45 @@ impl Hub {
 
     pub fn set_geoip(&self, geoip: Arc<meshharbor_core::user_analytics::GeoIp>) {
         let _ = self.inner.geoip.set(geoip);
+    }
+
+    /// FR-121 — the operator's zone-tagged STUN servers (`turn.stun_urls`).
+    pub fn set_zone_stun(&self, stun: Vec<(Option<String>, String)>) {
+        let _ = self.inner.zone_stun.set(stun);
+    }
+
+    /// FR-121 — `ice` plus the STUN servers the operator pinned to
+    /// `agent_id`'s zone, first. Field (2026-11-19): a strict CN-zone session
+    /// kept only `turns:<hk-host>:5349`, which the border blocks, so neither
+    /// side gathered a server-reflexive address and a same-zone pair whose
+    /// mesh path is direct never connected. A zone's own STUN servers are what
+    /// the mesh already uses there; they are added after the zone filter
+    /// because the operator's tag, not GeoIP, says where they belong.
+    fn with_zone_stun(&self, agent_id: ObjectId, mut ice: Vec<IceServer>) -> Vec<IceServer> {
+        let Some(cfg) = self.inner.zone_stun.get() else {
+            return ice;
+        };
+        let Some(zone) = self.agent_zone_ice_policy(agent_id).and_then(|p| p.zone) else {
+            return ice;
+        };
+        let have: std::collections::HashSet<String> =
+            ice.iter().flat_map(|s| s.urls.iter().cloned()).collect();
+        let urls: Vec<String> = cfg
+            .iter()
+            .filter(|(z, u)| z.as_deref() == Some(zone.as_str()) && !have.contains(u))
+            .map(|(_, u)| u.clone())
+            .collect();
+        if !urls.is_empty() {
+            ice.insert(
+                0,
+                IceServer {
+                    urls,
+                    username: None,
+                    credential: None,
+                },
+            );
+        }
+        ice
     }
 
     /// #21 — the relay-locality gate, when isolation is on.
@@ -1138,7 +1180,11 @@ impl Hub {
     /// updates whose `policy_revision` is strictly older than what is already stored,
     /// and combines equal-revision discrepancies conservatively (`strict = cur.strict || policy.strict`,
     /// intersecting `allowed_countries` among strict policies) so ties can never relax restrictions.
-    pub fn set_agent_zone_ice_policy(&self, agent_id: ObjectId, policy: AgentZoneIcePolicy) -> bool {
+    pub fn set_agent_zone_ice_policy(
+        &self,
+        agent_id: ObjectId,
+        policy: AgentZoneIcePolicy,
+    ) -> bool {
         use dashmap::mapref::entry::Entry;
         match self.inner.agent_zone_ice_policies.entry(agent_id) {
             Entry::Occupied(mut e) => {
@@ -1386,7 +1432,12 @@ impl Hub {
         local_relay: Option<LocalRelayDescriptor>,
     ) {
         let Some(lr) = local_relay else { return };
-        let Some(arc) = self.inner.sessions.get(&session_id).map(|e| e.value().clone()) else {
+        let Some(arc) = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .map(|e| e.value().clone())
+        else {
             return;
         };
         let agent_id = {
@@ -1397,7 +1448,10 @@ impl Hub {
             s.local_relay = Some(lr.clone());
             s.agent_id
         };
-        let ctrl = lr.agent_id.as_deref().and_then(|a| ObjectId::parse_str(a).ok());
+        let ctrl = lr
+            .agent_id
+            .as_deref()
+            .and_then(|a| ObjectId::parse_str(a).ok());
         let route = self.zone_route_for(agent_id, ctrl);
         arc.lock().zone_route = route;
         info!(
@@ -1453,7 +1507,7 @@ impl Hub {
     /// this its relay candidate would sit on a server outside the zone.
     pub fn viewer_zone_ice(&self, agent_id: ObjectId, ice: Vec<IceServer>) -> Vec<IceServer> {
         if !self.agent_zone_strict(agent_id) {
-            return ice;
+            return self.with_zone_stun(agent_id, ice);
         }
         self.zone_local_ice(agent_id, ObjectId::new(), ice)
     }
@@ -1461,6 +1515,17 @@ impl Hub {
     /// #21 relay locality + Logical Network Zone strict country gate: the ICE
     /// servers of a session with `agent_id`, kept to the device's own zone.
     fn zone_local_ice(
+        &self,
+        agent_id: ObjectId,
+        session_id: ObjectId,
+        ice: Vec<IceServer>,
+    ) -> Vec<IceServer> {
+        let filtered = self.zone_filtered_ice(agent_id, session_id, ice);
+        self.with_zone_stun(agent_id, filtered)
+    }
+
+    /// [`Self::zone_local_ice`] before the zone's own STUN servers are added.
+    fn zone_filtered_ice(
         &self,
         agent_id: ObjectId,
         session_id: ObjectId,
@@ -11116,6 +11181,58 @@ mod ice_zone_gate_tests {
         assert_eq!(hub.agent_business_zone(agent), None);
     }
 
+    /// FR-121 — a session's ICE (the device's and the viewer's) leads with
+    /// the STUN servers the operator pinned to the device's zone, kept even
+    /// when the zone filter strips everything else; another zone's servers
+    /// never come along, and a device with no resolved zone gets none.
+    #[tokio::test]
+    async fn a_session_gets_its_zones_own_stun_servers() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, Some(turn()));
+        hub.set_zone_stun(meshharbor_remote_control::turn_creds::parse_zone_stun_urls(
+            "cn=stun:192.0.2.10:3478, non-cn=stun:198.51.100.10:3478, stun:203.0.113.10:3478",
+        ));
+        let ice = || ice_servers_for_session("u", "s", Some(&turn()));
+        let (agent, session) = (ObjectId::new(), ObjectId::new());
+        // No zone on record (handled as strict): no zone's STUN is added.
+        assert!(
+            !urls(hub.viewer_zone_ice(agent, ice()))
+                .iter()
+                .any(|u| u.contains("192.0.2.10"))
+        );
+        let policy = |strict: bool| AgentZoneIcePolicy {
+            // A newer revision: an equal one may never relax strictness.
+            policy_revision: if strict { 1 } else { 2 },
+            strict,
+            allowed_countries: ["CN".to_string()].into_iter().collect(),
+            zone: Some("cn".into()),
+            ..Default::default()
+        };
+        // A strict zone whose filter keeps nothing still gets its STUN.
+        hub.set_agent_zone_ice_policy(agent, policy(true));
+        for got in [
+            hub.viewer_zone_ice(agent, ice()),
+            hub.zone_local_ice(agent, session, ice()),
+        ] {
+            let got = urls(got);
+            assert_eq!(
+                got.first().map(String::as_str),
+                Some("stun:192.0.2.10:3478"),
+                "{got:?}"
+            );
+            assert!(
+                !got.iter()
+                    .any(|u| u.contains("198.51.100.10") || u.contains("203.0.113.10")),
+                "{got:?}"
+            );
+        }
+        // A zone that is not strict keeps its servers and leads with the STUN.
+        hub.set_agent_zone_ice_policy(agent, policy(false));
+        let got = urls(hub.viewer_zone_ice(agent, ice()));
+        assert_eq!(got[0], "stun:192.0.2.10:3478");
+        assert_eq!(&got[1..], &urls(ice())[..]);
+    }
+
     #[tokio::test]
     async fn warn_mode_hands_everything_out() {
         let (audit, _ev) = AuditSink::channel_for_tests();
@@ -11210,7 +11327,15 @@ mod ice_zone_gate_tests {
         // A snapshot the server could not read is strict with no zone table:
         // unresolved, so nothing meets it directly by an address.
         let unread = ObjectId::new();
-        let _ = hub.register_agent(unread, tenant, ObjectId::new(), OsKind::Linux, 3, false, false);
+        let _ = hub.register_agent(
+            unread,
+            tenant,
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
+        );
         assert!(hub.set_agent_zone_ice_policy(
             unread,
             AgentZoneIcePolicy {
@@ -11221,7 +11346,9 @@ mod ice_zone_gate_tests {
         ));
         assert_eq!(
             hub.zone_route_for(unread, None),
-            ZoneRoute::Direct { mesh_fallback: false }
+            ZoneRoute::Direct {
+                mesh_fallback: false
+            }
         );
         assert_eq!(
             hub.zone_route_for(host, Some(same)),

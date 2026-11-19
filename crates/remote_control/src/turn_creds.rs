@@ -399,6 +399,45 @@ pub fn org_of_username(username: &str) -> Option<&str> {
     (org.len() == 24 && org.bytes().all(|b| b.is_ascii_hexdigit())).then_some(org)
 }
 
+/// `turn.stun_urls` parsed: `(zone id, url)`, zone `None` for a global entry
+/// (`cn=stun:192.0.2.1:3478,stun:198.51.100.1:3478`). Only `stun:` URLs with a
+/// host and port are kept (a `turn:` here would be a TURN server nobody holds
+/// credentials for); an entry with an empty zone tag is dropped rather than
+/// read as global, since that is a typo, not an intent. Order kept,
+/// duplicates dropped. Shared by the mesh (overlay STUN) and remote desktop
+/// (FR-121: a session's ICE gets its device zone's servers).
+pub fn parse_zone_stun_urls(raw: &str) -> Vec<(Option<String>, String)> {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (zone, url) = match entry.split_once('=') {
+            Some((z, u)) => {
+                let z = z.trim().to_ascii_lowercase();
+                if z.is_empty() {
+                    continue;
+                }
+                (Some(z), u.trim())
+            }
+            None => (None, entry),
+        };
+        let has_host_port = url
+            .strip_prefix("stun:")
+            .and_then(|rest| rest.split('?').next())
+            .is_some_and(|hp| !hp.is_empty() && hp.contains(':'));
+        if !has_host_port {
+            continue;
+        }
+        let item = (zone, url.to_string());
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
 /// Public STUN redundancy for both REST/browser and per-session/native ICE.
 /// These are discovery servers, NOT relays: no credentials, TURN allocations,
 /// or forced-relay policy. Keep independent providers so one blocked UDP
