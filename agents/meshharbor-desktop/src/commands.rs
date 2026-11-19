@@ -964,7 +964,10 @@ async fn promote_personal_device_to_system(
 
 /// End a per-user daemon that outlived its promotion. Same user, so no elevation.
 fn end_stale_daemon(pid: u32) {
-    tracing::warn!(pid, "the per-user daemon did not stop after the promotion; ending it");
+    tracing::warn!(
+        pid,
+        "the per-user daemon did not stop after the promotion; ending it"
+    );
     let pid = pid.to_string();
     let mut cmd = if cfg!(windows) {
         let mut c = no_window_command("taskkill");
@@ -1803,13 +1806,88 @@ fn open_web_window_for_server<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Non-Windows viewers use the default browser after the authenticated
-/// one-use handoff has been created. Account data uses its dedicated WebView.
+/// The Chromium-family browsers that can open a page as an app window
+/// (`--app=<url>`: no tab strip, no address bar), best first, for macOS and
+/// Linux. Each is a path to check or a name to find on `PATH`.
+#[cfg(not(windows))]
+const APP_MODE_BROWSERS: &[&str] = if cfg!(target_os = "macos") {
+    &[
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    ]
+} else {
+    &[
+        "google-chrome-stable",
+        "google-chrome",
+        "microsoft-edge-stable",
+        "microsoft-edge",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+    ]
+};
+
+/// The first of [`APP_MODE_BROWSERS`] this machine has: an absolute path that
+/// is a file (also looked up under the user's own `~/Applications` on macOS),
+/// or a name on `PATH`.
+#[cfg(not(windows))]
+fn pick_app_mode_browser(
+    exists: impl Fn(&std::path::Path) -> bool,
+    path_dirs: &[std::path::PathBuf],
+    home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    APP_MODE_BROWSERS.iter().find_map(|cand| {
+        let p = std::path::Path::new(cand);
+        if p.is_absolute() {
+            let user = home.and_then(|h| p.strip_prefix("/").ok().map(|r| h.join(r)));
+            std::iter::once(p.to_path_buf())
+                .chain(user)
+                .find(|c| exists(c))
+        } else {
+            path_dirs.iter().map(|d| d.join(cand)).find(|c| exists(c))
+        }
+    })
+}
+
+/// Non-Windows viewers open in an APP WINDOW of a Chromium-family browser
+/// when the machine has one (operator, 2026-11-09: "我们不是软件显示吗" — the
+/// viewer belongs in a window of its own, not a browser tab), and in the
+/// default browser otherwise, after the authenticated one-use handoff has
+/// been created. A Chromium engine keeps what the viewer needs (WebCodecs,
+/// the loopback probe of the local agent). Account data uses its dedicated
+/// WebView.
 #[cfg(not(windows))]
 fn open_web_or_browser<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
 ) -> Result<(), String> {
+    let path_dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    if let Some(bin) = pick_app_mode_browser(|p| p.is_file(), &path_dirs, home.as_deref()) {
+        match std::process::Command::new(&bin)
+            .arg(format!("--app={url}"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                // A running browser takes the window and this process exits
+                // at once; reap it either way.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(browser = %bin.display(), %e, "app-window browser did not start; using the default browser");
+            }
+        }
+    }
     // shell::open is deprecated in favour of tauri-plugin-opener, but the
     // shell plugin is already shipped + initialised here; not worth a new
     // plugin dependency for the fallback path.
@@ -4693,6 +4771,27 @@ mod tests {
             assert_eq!(files_dir_value_for(Path::new("/home/bob/in"), home), "~/in");
             assert_eq!(files_dir_value_for(Path::new("/srv/in"), home), "/srv/in");
         }
+    }
+
+    /// The viewer's app window: the first Chromium-family browser found,
+    /// by path (or under the user's own Applications on macOS) or on PATH;
+    /// none found is the default browser.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_viewer_opens_in_the_first_app_mode_browser_found() {
+        let home = std::path::PathBuf::from("/Users/someone");
+        let path = vec![std::path::PathBuf::from("/usr/bin")];
+        let want = if cfg!(target_os = "macos") {
+            home.join("Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        } else {
+            std::path::PathBuf::from("/usr/bin/chromium")
+        };
+        let w = want.clone();
+        assert_eq!(
+            pick_app_mode_browser(move |p| p == w, &path, Some(&home)),
+            Some(want)
+        );
+        assert_eq!(pick_app_mode_browser(|_| false, &path, Some(&home)), None);
     }
 
     #[test]
