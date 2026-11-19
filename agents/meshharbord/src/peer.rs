@@ -11218,9 +11218,41 @@ async fn emit_host_locked(
             None => return,
         }
     };
-    let payload = format!(r#"{{"t":"rc:host_locked","locked":{locked}}}"#);
+    let payload = host_locked_payload(
+        locked,
+        cfg!(target_os = "windows"),
+        is_system_context_worker(),
+    );
     if let Err(e) = dc.send_text(payload).await {
         debug!(%e, "rc:host_locked send failed (control DC closed?)");
+    }
+}
+
+/// What a Windows worker's lock screen does with a viewer's input, as
+/// `rc:host_locked`'s `input`.
+///
+/// `passes`: a SystemContext worker shows the real lock screen and injects
+/// into it, so the person signs in to Windows there, through remote control.
+/// `blocked`: a worker that runs as the signed-in person can neither capture
+/// nor drive `winsta0\Winlogon`; the session shows the "Host locked" overlay
+/// and nothing typed arrives. That is the one locked state remote control
+/// cannot get out of by itself, so the viewer switches to RDP on it. Until
+/// this field existed both workers sent the bare message and the viewer could
+/// not tell them apart: its chip said "input is suppressed" on a SystemContext
+/// host whose lock screen was taking the keys.
+fn windows_lock_screen_input(sys_ctx_worker: bool) -> &'static str {
+    if sys_ctx_worker { "passes" } else { "blocked" }
+}
+
+/// The `rc:host_locked` this worker's lock monitor sends. Windows names what
+/// its lock screen does with input ([`windows_lock_screen_input`]); elsewhere
+/// this monitor never reports a lock (the Linux and macOS hints send their
+/// own message), so the bare shape stays.
+fn host_locked_payload(locked: bool, windows: bool, sys_ctx_worker: bool) -> String {
+    if windows {
+        host_locked_advisory_payload(locked, windows_lock_screen_input(sys_ctx_worker))
+    } else {
+        format!(r#"{{"t":"rc:host_locked","locked":{locked}}}"#)
     }
 }
 
@@ -11230,9 +11262,9 @@ async fn emit_host_locked(
 /// the field and shows its chip as before. FR-97 P2d-1 — a Mac's says
 /// `input: "unknown"` (`lock_state::LOCK_SCREEN_INPUT`).
 ///
-/// Always compiled (only Linux and a Mac send it) so the wire shape is locked
+/// Always compiled (Linux, a Mac, and a Windows worker through
+/// [`host_locked_payload`] send it) so the wire shape is locked
 /// by a test on every OS.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn host_locked_advisory_payload(locked: bool, input: &str) -> String {
     format!(r#"{{"t":"rc:host_locked","locked":{locked},"input":"{input}"}}"#)
 }
@@ -16267,6 +16299,29 @@ mod codec_cap_tests {
                 assert_eq!(v["t"], "rc:host_locked");
                 assert_eq!(v["locked"], locked);
                 assert_eq!(v["input"], input);
+            }
+        }
+    }
+
+    /// A Windows worker says what its lock screen does with input: a
+    /// SystemContext worker `passes` it, one running as the signed-in person
+    /// is `blocked`, which is what the viewer switches to RDP on. Other
+    /// platforms keep the bare message from this monitor.
+    #[test]
+    fn a_windows_worker_names_what_its_lock_screen_does_with_input() {
+        let parse = |s: String| serde_json::from_str::<serde_json::Value>(&s).expect("JSON");
+        for locked in [true, false] {
+            let system = parse(super::host_locked_payload(locked, true, true));
+            assert_eq!(system["t"], "rc:host_locked");
+            assert_eq!(system["locked"], locked);
+            assert_eq!(system["input"], "passes");
+            let attended = parse(super::host_locked_payload(locked, true, false));
+            assert_eq!(attended["locked"], locked);
+            assert_eq!(attended["input"], "blocked");
+            for sys in [true, false] {
+                let other = parse(super::host_locked_payload(locked, false, sys));
+                assert_eq!(other["locked"], locked);
+                assert!(other.get("input").is_none());
             }
         }
     }

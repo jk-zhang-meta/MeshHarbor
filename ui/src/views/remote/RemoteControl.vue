@@ -1321,6 +1321,29 @@
             @retry-rc="startSession"
           />
         </div>
+        <!-- A Windows host on a lock screen its worker can neither show nor
+             drive (`rc:host_locked` with `input: "blocked"`): the stream is
+             the "Host locked" picture and nothing typed arrives, so RDP is
+             the way in, and the card takes it without asking. -->
+        <div
+          v-else-if="lockedBlockedRdp"
+          class="no-media-overlay"
+          data-testid="rc-locked-rdp"
+        >
+          <v-icon size="72" color="warning">mdi-lock</v-icon>
+          <p class="text-body-1 mt-3">This device is on its lock screen.</p>
+          <RdpFallbackCard
+            :phase="rc.phase.value"
+            :host-locked-blocked="true"
+            :rdp-available="agent?.capabilities?.rdp_available ?? false"
+            :rdp-port="agent?.capabilities?.rdp_port ?? 3389"
+            :rdp-cert-sha256="agent?.capabilities?.rdp_cert_sha256 ?? null"
+            :rdp-mesh-reachable="agent?.capabilities?.rdp_mesh_reachable === true"
+            :device-id="agentId"
+            :device-name="agent?.name ?? null"
+            @retry-rc="startSession"
+          />
+        </div>
         <!-- FR-93 P2d-2 — the host is asking the person at its screen to share
              it. Before this the canvas stayed blank and the viewer re-created
              the session every 10 s, so the session the person answered for was
@@ -2453,6 +2476,15 @@ const agentStore = useAgentStore()
 const authStore = useAuthStore()
 const wsStore = useWsStore()
 const agent = ref<Agent | null>(null)
+/** The host is on a Windows lock screen remote control cannot show or drive,
+ *  and it has an RDP server: the overlay with the RDP card replaces the
+ *  "Host locked" picture. Without RDP the picture and its chip stay. */
+const lockedBlockedRdp = computed(
+  () =>
+    rc.hostLocked.value &&
+    rc.hostLockedInput.value === 'blocked' &&
+    agent.value?.capabilities?.rdp_available === true,
+)
 // The header's machine-name subtitle — the Devices grid's preference, per
 // user + org, so hiding it there hides it here too.
 const hideDeviceName = useHideDeviceName(() => `${authStore.user?.id ?? 'anon'}:${tenantId.value}`)

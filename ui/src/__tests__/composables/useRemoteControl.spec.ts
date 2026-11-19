@@ -2204,8 +2204,16 @@ describe('parseControlInbound', () => {
     // Only the known words count: anything else is Windows' meaning.
     const other = parseControlInbound('{"t":"rc:host_locked","locked":true,"input":"suppressed"}')
     expect(other).toEqual({ kind: 'host_locked', locked: true, input: 'suppressed' })
-    const odd = parseControlInbound('{"t":"rc:host_locked","locked":true,"input":"blocked"}')
+    const odd = parseControlInbound('{"t":"rc:host_locked","locked":true,"input":"sideways"}')
     expect(odd).toEqual({ kind: 'host_locked', locked: true, input: 'suppressed' })
+  })
+
+  it('a Windows worker that cannot show or drive its lock screen says blocked', () => {
+    // The agent's payload (`host_locked_payload`, peer.rs): a worker running
+    // as the signed-in person. A SystemContext worker says `passes`.
+    const r = parseControlInbound('{"t":"rc:host_locked","locked":true,"input":"blocked"}')
+    expect(r).toEqual({ kind: 'host_locked', locked: true, input: 'blocked' })
+    expect(hostLockedChipTitle('blocked')).toMatch(/cannot show or control/)
   })
 
   it('FR-97 P2d-1: a Mac lock hint claims neither way about input', () => {

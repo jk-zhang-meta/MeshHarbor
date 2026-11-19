@@ -406,17 +406,96 @@ export function shouldShowRdpFallbackCard(params: {
   errorCode?: string | null
   mediaUnavailableReason?: string | null
   rdpAvailable?: boolean | null
+  hostLockedBlocked?: boolean | null
 }): boolean {
-  if (params.rdpAvailable !== true) {
-    return false
-  }
+  return rdpFallbackMode(params) !== 'none'
+}
+
+/**
+ * Why the RDP card is up, which decides what the viewer does by itself:
+ * - `unserved`: remote control cannot show this host at all. The host said so
+ *   (`rc:media-unavailable`), its agent is not connected (`agent_offline`), or
+ *   it is on a Windows lock screen its worker can neither show nor drive
+ *   (`rc:host_locked` with `input: "blocked"`). RDP is the way in.
+ * - `failed`: this attempt failed on the way (signalling, WebRTC transport, a
+ *   stalled stream). Remote control may well serve the host on the next try,
+ *   and an RDP logon takes the console away from whoever is at the machine, so
+ *   remote control is tried once more before RDP.
+ * - `none`: no card.
+ */
+export type RdpFallbackMode = 'none' | 'unserved' | 'failed'
+
+/** Error codes that mean no agent is there to serve remote control. */
+const UNSERVED_ERROR_CODES: ReadonlySet<string> = new Set(['agent_offline'])
+
+export function rdpFallbackMode(params: {
+  phase: string
+  errorCode?: string | null
+  mediaUnavailableReason?: string | null
+  rdpAvailable?: boolean | null
+  /** The host is locked and reported `input: "blocked"`. */
+  hostLockedBlocked?: boolean | null
+}): RdpFallbackMode {
+  if (params.rdpAvailable !== true) return 'none'
   if (params.mediaUnavailableReason && isEligibleRdpFallbackErrorCode(params.mediaUnavailableReason)) {
-    return true
+    return 'unserved'
+  }
+  if (params.phase === 'connected' && params.hostLockedBlocked === true) {
+    return 'unserved'
   }
   if (params.phase === 'error' && isEligibleRdpFallbackErrorCode(params.errorCode)) {
-    return true
+    const code = (params.errorCode ?? '').trim().toLowerCase()
+    return UNSERVED_ERROR_CODES.has(code) ? 'unserved' : 'failed'
   }
-  return false
+  return 'none'
+}
+
+/** A `failed` attempt gets one automatic remote-control retry per this window;
+ *  a second failure inside it opens RDP. It bounds a host that connects and
+ *  drops in a loop to one retry a minute. */
+export const RDP_FALLBACK_RETRY_WINDOW_MS = 60_000
+
+/**
+ * What the viewer does by itself when the card comes up and the automatic
+ * path can run (desktop bridge, RDP reachable over the mesh, not opted out):
+ * `open-rdp` at once when remote control cannot show the host, `retry-rc`
+ * first when the attempt merely failed, and `open-rdp` when it failed again
+ * within {@link RDP_FALLBACK_RETRY_WINDOW_MS} of that retry.
+ */
+export function nextRdpFallbackStep(params: {
+  mode: RdpFallbackMode
+  nowMs: number
+  lastAutoRetryAtMs: number | null
+}): 'none' | 'retry-rc' | 'open-rdp' {
+  if (params.mode === 'none') return 'none'
+  if (params.mode === 'unserved') return 'open-rdp'
+  const last = params.lastAutoRetryAtMs
+  if (last !== null && params.nowMs - last >= 0 && params.nowMs - last < RDP_FALLBACK_RETRY_WINDOW_MS) {
+    return 'open-rdp'
+  }
+  return 'retry-rc'
+}
+
+// The card is unmounted while the retry runs (the page leaves the error
+// phase), so the time of the last automatic retry lives here, per device,
+// for the life of the page.
+const lastAutoRcRetryAtMs = new Map<string, number>()
+
+function retryKey(deviceId: string | null | undefined): string {
+  return (deviceId ?? '').trim().toLowerCase()
+}
+
+export function getLastAutoRcRetry(deviceId: string | null | undefined): number | null {
+  return lastAutoRcRetryAtMs.get(retryKey(deviceId)) ?? null
+}
+
+export function noteAutoRcRetry(deviceId: string | null | undefined, nowMs: number): void {
+  lastAutoRcRetryAtMs.set(retryKey(deviceId), nowMs)
+}
+
+/** Forget every automatic retry (tests). */
+export function resetAutoRcRetries(): void {
+  lastAutoRcRetryAtMs.clear()
 }
 
 function storageKeyForDevice(deviceId: string): string {
@@ -484,6 +563,7 @@ interface DesktopBridgeWindow {
       org?: string
       port?: number
       certSha256?: string
+      resetCredential?: boolean
     }) => Promise<unknown>
   }
   __TAURI__?: {
@@ -518,7 +598,9 @@ export function hasDesktopRdpBridge(win: unknown = typeof window !== 'undefined'
 
 /**
  * Invoke `cmd_open_rdp` over the available desktop bridge.
- * Never passes any password or credential field.
+ * Never passes any password or credential field: the desktop app holds the
+ * Windows logon in the controlling computer's own credential store, and asks
+ * for it in the operating system's dialog, never in this page.
  */
 export async function invokeDesktopOpenRdp(
   params: {
@@ -526,6 +608,9 @@ export async function invokeDesktopOpenRdp(
     org?: string | null
     port?: number | null
     certSha256?: string | null
+    /** Forget the Windows logon this computer saved for the device and ask
+     *  again (the password changed, or another account is wanted). */
+    resetCredential?: boolean
   },
   win: unknown = typeof window !== 'undefined' ? window : null,
 ): Promise<void> {
@@ -547,6 +632,7 @@ export async function invokeDesktopOpenRdp(
       org: cleanOrg,
       port: cleanPort,
       certSha256: cleanCert,
+      ...(params.resetCredential === true ? { resetCredential: true } : {}),
     })
     return
   }
@@ -557,6 +643,7 @@ export async function invokeDesktopOpenRdp(
       org: cleanOrg ?? null,
       port: cleanPort ?? null,
       certSha256: cleanCert ?? null,
+      ...(params.resetCredential === true ? { resetCredential: true } : {}),
     })
     return
   }

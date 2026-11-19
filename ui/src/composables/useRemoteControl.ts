@@ -1492,9 +1492,13 @@ export const APPS_UNAVAILABLE_NO_REASON =
 /** What the person at the viewer can do at the host's lock screen, from
  *  `rc:host_locked`'s `input`. `passes` (FR-97 P3b, Linux): it takes input
  *  like any other screen. `unknown` (FR-97 P2d-1, a Mac): not measured, so the
- *  chip claims neither way. Anything else, or no `input` at all (Windows,
- *  older agents), is Windows' meaning: input is suppressed. */
-export type HostLockedInput = 'passes' | 'unknown' | 'suppressed'
+ *  chip claims neither way. `blocked`: a Windows worker that runs as the
+ *  signed-in person, which can neither show nor drive the lock screen; the
+ *  one locked state remote control cannot leave by itself, so the viewer
+ *  switches to RDP on it (a SystemContext worker says `passes`). Anything
+ *  else, or no `input` at all (older Windows agents), is the old Windows
+ *  meaning: input is suppressed, and nothing is known about which worker. */
+export type HostLockedInput = 'passes' | 'unknown' | 'blocked' | 'suppressed'
 
 /** The "Host locked" chip's title for each {@link HostLockedInput}. */
 export function hostLockedChipTitle(input: HostLockedInput): string {
@@ -1503,6 +1507,8 @@ export function hostLockedChipTitle(input: HostLockedInput): string {
       return 'The remote host is on its lock screen. Your input reaches it, so you can type the password to unlock.'
     case 'unknown':
       return 'The remote host is on its lock screen.'
+    case 'blocked':
+      return 'The remote host is on its lock screen, which remote control cannot show or control on this device.'
     case 'suppressed':
       return 'The remote host is on the lock screen — input is suppressed.'
   }
@@ -1556,7 +1562,9 @@ export function parseControlInbound(data: unknown): RcControlInbound {
   const obj = parsed as Record<string, unknown>
   if (obj.t === 'rc:host_locked' && typeof obj.locked === 'boolean') {
     const input: HostLockedInput =
-      obj.input === 'passes' || obj.input === 'unknown' ? obj.input : 'suppressed'
+      obj.input === 'passes' || obj.input === 'unknown' || obj.input === 'blocked'
+        ? obj.input
+        : 'suppressed'
     return { kind: 'host_locked', locked: obj.locked, input }
   }
   if (

@@ -25,8 +25,21 @@
     </p>
 
     <p v-if="autoLaunched" class="rc-rdp-auto-status" data-test="rdp-auto-status">
-      远控无法显示这台设备的画面，已自动用 RDP 打开。
+      远控无法显示这台设备的画面，已自动用 RDP 打开。Windows 账户只在第一次询问，保存在这台电脑上。
     </p>
+    <p v-if="autoRetrying" class="rc-rdp-auto-status" data-test="rdp-auto-retry-status">
+      远控连接中断，正在自动重试一次；仍然失败才会改用 RDP。
+    </p>
+    <button
+      v-if="autoLaunched && hasBridge && meshReachable"
+      type="button"
+      class="rc-rdp-btn rc-rdp-btn-link"
+      data-test="rdp-reset-credential-btn"
+      :disabled="busy"
+      @click="onClickResetCredential"
+    >
+      Windows 密码改了，或想换账户？重新输入
+    </button>
     <div v-if="showManualActions" class="rc-rdp-fallback-actions">
       <button
         v-if="hasBridge && meshReachable"
@@ -85,9 +98,12 @@ import {
   RDP_UNPINNED_CERT_MSTSC_NOTICE,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
+  getLastAutoRcRetry,
   hasDesktopRdpBridge,
   invokeDesktopOpenRdp,
-  shouldShowRdpFallbackCard,
+  nextRdpFallbackStep,
+  noteAutoRcRetry,
+  rdpFallbackMode,
 } from '@/utils/rdpFallback'
 
 const props = withDefaults(
@@ -102,6 +118,9 @@ const props = withDefaults(
     rdpCertSha256?: string | null
     /** `AgentCaps.rdp_mesh_reachable`: RDP is offered only when true. */
     rdpMeshReachable?: boolean | null
+    /** The host is on a Windows lock screen its worker can neither show nor
+     *  drive (`rc:host_locked` with `input: "blocked"`). */
+    hostLockedBlocked?: boolean | null
     deviceId: string
     deviceName?: string | null
     org?: string | null
@@ -115,6 +134,7 @@ const props = withDefaults(
     rdpPort: null,
     rdpCertSha256: null,
     rdpMeshReachable: false,
+    hostLockedBlocked: false,
     deviceName: null,
     org: null,
   },
@@ -132,15 +152,19 @@ const autoFallbackEnabled = ref(getDeviceAutoRdpFallback(props.deviceId))
 const autoTriggeredForCurrentFailure = ref(false)
 /** FR-120 — RDP opened by itself for the current failure; no chooser to show. */
 const autoLaunched = ref(false)
+/** Remote control is being retried by itself before RDP is used. */
+const autoRetrying = ref(false)
 
-const visible = computed(() =>
-  shouldShowRdpFallbackCard({
+const mode = computed(() =>
+  rdpFallbackMode({
     phase: props.phase,
     errorCode: props.errorCode,
     mediaUnavailableReason: props.mediaUnavailableReason,
     rdpAvailable: props.rdpAvailable,
+    hostLockedBlocked: props.hostLockedBlocked,
   }),
 )
+const visible = computed(() => mode.value !== 'none')
 
 const hasBridge = computed(() => hasDesktopRdpBridge())
 const hasPinnedCert = computed(() => Boolean(props.rdpCertSha256?.trim()))
@@ -152,12 +176,16 @@ const meshReachable = computed(() => props.rdpMeshReachable === true)
 const showManualActions = computed(
   () =>
     !autoLaunched.value &&
+    !autoRetrying.value &&
     (!(hasBridge.value && meshReachable.value) ||
       !autoFallbackEnabled.value ||
       bridgeError.value !== null),
 )
 
 const displayReason = computed(() => {
+  if (props.hostLockedBlocked && !props.mediaUnavailableReason) {
+    return '这台设备停在 Windows 锁屏界面，它的远控在这种安装方式下无法显示或操作锁屏。'
+  }
   if (props.mediaUnavailableHint?.trim()) {
     return props.mediaUnavailableHint.trim()
   }
@@ -183,6 +211,7 @@ watch(
     autoFallbackEnabled.value = getDeviceAutoRdpFallback(id)
     autoTriggeredForCurrentFailure.value = false
     autoLaunched.value = false
+    autoRetrying.value = false
   },
 )
 
@@ -192,6 +221,7 @@ watch(
     if (!isVisible) {
       autoTriggeredForCurrentFailure.value = false
       autoLaunched.value = false
+      autoRetrying.value = false
       bridgeError.value = null
       return
     }
@@ -202,13 +232,26 @@ watch(
       !autoTriggeredForCurrentFailure.value
     ) {
       autoTriggeredForCurrentFailure.value = true
-      await triggerOpenRdp(true)
+      // RDP at once when remote control cannot show this host; when the
+      // attempt merely failed, remote control once more first.
+      const step = nextRdpFallbackStep({
+        mode: mode.value,
+        nowMs: Date.now(),
+        lastAutoRetryAtMs: getLastAutoRcRetry(props.deviceId),
+      })
+      if (step === 'retry-rc') {
+        noteAutoRcRetry(props.deviceId, Date.now())
+        autoRetrying.value = true
+        emit('retry-rc')
+      } else if (step === 'open-rdp') {
+        await triggerOpenRdp(true)
+      }
     }
   },
   { immediate: true },
 )
 
-async function triggerOpenRdp(auto: boolean) {
+async function triggerOpenRdp(auto: boolean, resetCredential = false) {
   bridgeError.value = null
   busy.value = true
   try {
@@ -217,6 +260,7 @@ async function triggerOpenRdp(auto: boolean) {
       org: props.org,
       port: props.rdpPort ?? 3389,
       certSha256: props.rdpCertSha256,
+      resetCredential,
     })
     if (auto) autoLaunched.value = true
     emit('switch-to-rdp', { auto })
@@ -229,6 +273,11 @@ async function triggerOpenRdp(auto: boolean) {
 
 async function onClickConnectRdp() {
   await triggerOpenRdp(false)
+}
+
+/** Forget the Windows logon saved for this device and ask for it again. */
+async function onClickResetCredential() {
+  await triggerOpenRdp(true, true)
 }
 
 async function onCopyCliCommand() {
@@ -297,6 +346,16 @@ async function onCopyCliCommand() {
 .rc-rdp-btn-primary {
   background: #2563eb;
   color: #fff;
+}
+
+.rc-rdp-btn-link {
+  padding: 0;
+  margin: 0 0 10px;
+  background: none;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 400;
+  text-decoration: underline;
 }
 
 .rc-rdp-btn-secondary {
