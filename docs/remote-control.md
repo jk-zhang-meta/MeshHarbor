@@ -820,7 +820,8 @@ flowchart LR
 | **D-Bus** | the bundle's own session bus, whose config names the bundle's service directory, so `xfconfd` and the rest are activated from the bundle |
 | **Relocation** | `relocate.list` names the files that must hold the unpacked location (the pixbuf cache, the bus config); the daemon writes it in before the directory goes live (`virtual_desktop::relocate`) |
 | **Never** | a display manager, a package manager, the network; nothing outside `lib/meshharbor/vd/` and the desktop's private directory |
-| Xfce's first start | decided ahead: the default panel (no "choose a panel" dialog over a remote session) and no compositing (shadows cost every frame sent); a person's own settings are never overwritten |
+| Xfce's first start | decided ahead: the default panel (no "choose a panel" dialog over a remote session), no compositing (shadows cost every frame sent), and no icons for the host's removable volumes (nothing could mount them); a person's own settings are never overwritten |
+| Fallback window manager | only for the bare desktop, or when the full session fails to start: the host's openbox or twm, else the bundle's xfwm4; a full session never waits for one (0.4.176 refused its own desktop on a clean host for want of openbox) |
 
 ⚠️ **A clean host is the only real test.** A host that has Xfce installed
 hides every compiled-in path the bundle fails to redirect: the host's own

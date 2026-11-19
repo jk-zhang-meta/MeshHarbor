@@ -731,9 +731,14 @@ fn preseed_xfce(home: &Path, bundled_panel: Option<std::path::PathBuf>) {
             }
         }
     }
-    let xfwm = dir.join("xfwm4.xml");
-    if !xfwm.exists() {
-        let _ = std::fs::write(&xfwm, XFWM4_XML);
+    for (name, xml) in [
+        ("xfwm4.xml", XFWM4_XML),
+        ("xfce4-desktop.xml", XFCE4_DESKTOP_XML),
+    ] {
+        let f = dir.join(name);
+        if !f.exists() {
+            let _ = std::fs::write(&f, xml);
+        }
     }
 }
 
@@ -741,6 +746,18 @@ const XFWM4_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfwm4" version="1.0">
   <property name="general" type="empty">
     <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+"#;
+
+/// The host's removable volumes (a VPS's virtual CD drives) are not shown on
+/// the desktop: a remote desktop has no udisks to mount them with.
+const XFCE4_DESKTOP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="desktop-icons" type="empty">
+    <property name="file-icons" type="empty">
+      <property name="show-removable" type="bool" value="false"/>
+    </property>
   </property>
 </channel>
 "#;
@@ -2393,6 +2410,11 @@ mod tests {
             std::fs::read_to_string(dir.join("xfwm4.xml"))
                 .unwrap()
                 .contains("use_compositing")
+        );
+        assert!(
+            std::fs::read_to_string(dir.join("xfce4-desktop.xml"))
+                .unwrap()
+                .contains(r#"name="show-removable" type="bool" value="false""#)
         );
         std::fs::write(dir.join("xfwm4.xml"), "mine").unwrap();
         preseed_xfce(&home, None);
