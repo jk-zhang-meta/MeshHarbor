@@ -53,7 +53,13 @@ use crate::util::*;
 
 pub(crate) const RECEIVE_MTU: usize = 8192;
 /// MTU for inbound packet (from DTLS)
-pub(crate) const INITIAL_MTU: u32 = 1228;
+/// meshharbor (FR-121): upstream's 1228 overflows a 1280-byte overlay packet
+/// once DTLS and UDP/IP wrap it (1228 + 37 GCM + 28 = 1293), and the mesh's
+/// userspace stack does not fragment, so every full packet a session sent
+/// over the mesh was lost: the handshake and input passed, video never did.
+/// 1180 fits 1280 under AES-GCM on IPv4 (1245) and IPv6 (1265) and under
+/// AES-CBC on IPv4 (1273); libwebrtc uses 1191 for the same reason.
+pub(crate) const INITIAL_MTU: u32 = 1180;
 /// initial MTU for outgoing packets (to DTLS)
 pub(crate) const INITIAL_RECV_BUF_SIZE: u32 = 1024 * 1024;
 pub(crate) const COMMON_HEADER_SIZE: u32 = 12;

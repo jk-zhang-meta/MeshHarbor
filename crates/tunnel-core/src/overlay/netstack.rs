@@ -68,7 +68,7 @@ use smoltcp::wire::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::tun::TunIo;
 
@@ -607,6 +607,17 @@ struct UdpConn {
     /// buffer (transient backpressure); retried next pass.
     pending: Option<(SocketAddr, Vec<u8>)>,
     app_send_closed: bool,
+    /// Datagrams dropped because they do not fit the overlay MTU, and when
+    /// that was last logged.
+    oversize_drops: u64,
+    oversize_logged: Option<std::time::Instant>,
+}
+
+/// The largest UDP payload to `dst` that fits one overlay packet of `mtu`
+/// bytes. The stack does not fragment, so a larger datagram is lost.
+fn max_udp_payload(mtu: usize, dst: &SocketAddr) -> usize {
+    let ip_header = if dst.is_ipv4() { 20 } else { 40 };
+    mtu.saturating_sub(ip_header + 8)
 }
 
 struct PollLoop {
@@ -848,6 +859,8 @@ impl PollLoop {
                 from_app,
                 pending: None,
                 app_send_closed: false,
+                oversize_drops: 0,
+                oversize_logged: None,
             },
         );
         let socket = NsUdpSocket {
@@ -1148,6 +1161,7 @@ impl PollLoop {
     /// Move datagrams between the UDP sockets and their app channels. Returns
     /// `true` if it made progress.
     fn service_udp(&mut self) -> bool {
+        let mtu = self.device.mtu;
         let mut progressed = false;
         let mut dead = Vec::new();
         let handles: Vec<SocketHandle> = self.udp_conns.keys().copied().collect();
@@ -1189,6 +1203,29 @@ impl PollLoop {
                 let Some((dst, payload)) = conn.pending.as_ref() else {
                     break;
                 };
+                if payload.len() > max_udp_payload(mtu, dst) {
+                    // Lost on the wire anyway: say so (the sender sees no
+                    // error), at most every 10 s per socket.
+                    conn.oversize_drops += 1;
+                    let now = std::time::Instant::now();
+                    if conn
+                        .oversize_logged
+                        .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(10))
+                    {
+                        conn.oversize_logged = Some(now);
+                        warn!(
+                            %dst,
+                            len = payload.len(),
+                            max = max_udp_payload(mtu, dst),
+                            mtu,
+                            drops = conn.oversize_drops,
+                            "netstack: UDP datagram larger than the overlay MTU dropped (no fragmentation)"
+                        );
+                    }
+                    conn.pending = None;
+                    progressed = true;
+                    continue;
+                }
                 if !sock.can_send() {
                     break;
                 }
@@ -2827,6 +2864,31 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), body)
             .await
             .expect("udp round trip in time");
+    }
+
+    /// FR-121: the stack does not fragment. A datagram that fills the
+    /// 1280-byte overlay packet crosses; one that does not fit (a full
+    /// upstream webrtc-rs SCTP packet inside DTLS, 1265 bytes) is dropped, and
+    /// the datagrams behind it still flow.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_datagram_larger_than_the_overlay_mtu_is_dropped() {
+        let a_ip = Ipv4Addr::new(10, 4, 0, 1);
+        let b_ip = Ipv4Addr::new(10, 4, 0, 2);
+        let a = Netstack::start(a_ip, 24, 1280);
+        let b = Netstack::start(b_ip, 24, 1280);
+        cross_link(&a, &b);
+
+        let mut b_udp = b.handle.udp_bind().await.unwrap();
+        let dst = SocketAddr::from((b_ip, b_udp.local_port()));
+        assert_eq!(max_udp_payload(1280, &dst), 1252);
+        let a_udp = a.handle.udp_bind().await.unwrap();
+        a_udp.send_to(&[1u8; 1228 + 37], dst).await.unwrap();
+        a_udp.send_to(&[2u8; 1252], dst).await.unwrap();
+        let (data, _) = tokio::time::timeout(Duration::from_secs(10), b_udp.recv_from())
+            .await
+            .expect("the datagram that fits arrives")
+            .unwrap();
+        assert_eq!(data, vec![2u8; 1252], "the oversize one never arrives");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
