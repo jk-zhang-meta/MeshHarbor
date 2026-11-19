@@ -1725,7 +1725,7 @@ pub async fn cmd_open_files_dir() -> Result<(), String> {
 /// close-to-hide behavior; a window with THIS label is destroyed on
 /// close (see `main.rs`) so it never lingers as a hidden WebView2
 /// process holding memory. Windows-only, like [`open_web_window`] — the
-/// other platforms open the default browser instead.
+/// other platforms open an app window of an installed browser instead.
 #[cfg(windows)]
 pub const WEB_WINDOW_LABEL: &str = "meshharbor-web";
 #[cfg(windows)]
@@ -1806,49 +1806,20 @@ fn open_web_window_for_server<R: tauri::Runtime>(
     Ok(())
 }
 
-/// The Chromium-family browsers that can open a page as an app window
-/// (`--app=<url>`: no tab strip, no address bar), best first, for macOS and
-/// Linux. Each is a path to check or a name to find on `PATH`.
-#[cfg(not(windows))]
-const APP_MODE_BROWSERS: &[&str] = if cfg!(target_os = "macos") {
-    &[
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    ]
-} else {
-    &[
-        "google-chrome-stable",
-        "google-chrome",
-        "microsoft-edge-stable",
-        "microsoft-edge",
-        "chromium",
-        "chromium-browser",
-        "brave-browser",
-    ]
-};
-
-/// The first of [`APP_MODE_BROWSERS`] this machine has: an absolute path that
-/// is a file (also looked up under the user's own `~/Applications` on macOS),
-/// or a name on `PATH`.
-#[cfg(not(windows))]
-fn pick_app_mode_browser(
-    exists: impl Fn(&std::path::Path) -> bool,
-    path_dirs: &[std::path::PathBuf],
-    home: Option<&std::path::Path>,
-) -> Option<std::path::PathBuf> {
-    APP_MODE_BROWSERS.iter().find_map(|cand| {
-        let p = std::path::Path::new(cand);
-        if p.is_absolute() {
-            let user = home.and_then(|h| p.strip_prefix("/").ok().map(|r| h.join(r)));
-            std::iter::once(p.to_path_buf())
-                .chain(user)
-                .find(|c| exists(c))
-        } else {
-            path_dirs.iter().map(|d| d.join(cand)).find(|c| exists(c))
-        }
-    })
+/// Where a signed-in web page was shown. The Devices page reads it to say
+/// why a remote screen landed in a browser tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+// Each platform builds only its own answers.
+#[allow(dead_code)]
+pub enum WebSurface {
+    /// The companion's own window (Windows).
+    Window,
+    /// An app window of an installed Chromium-family browser (macOS, Linux).
+    AppWindow,
+    /// A tab of the default browser: no Chromium-family browser is installed,
+    /// or the one found did not start.
+    BrowserTab,
 }
 
 /// Non-Windows viewers open in an APP WINDOW of a Chromium-family browser
@@ -1856,36 +1827,24 @@ fn pick_app_mode_browser(
 /// viewer belongs in a window of its own, not a browser tab), and in the
 /// default browser otherwise, after the authenticated one-use handoff has
 /// been created. A Chromium engine keeps what the viewer needs (WebCodecs,
-/// the loopback probe of the local agent). Account data uses its dedicated
+/// the loopback probe of the local agent). Which browser and which command
+/// line: `meshharbor_node_core::app_window`. Account data uses its dedicated
 /// WebView.
+///
+/// Blocking (macOS waits for `open`): runs on the blocking pool.
 #[cfg(not(windows))]
 fn open_web_or_browser<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
-) -> Result<(), String> {
-    let path_dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect())
-        .unwrap_or_default();
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    if let Some(bin) = pick_app_mode_browser(|p| p.is_file(), &path_dirs, home.as_deref()) {
-        match std::process::Command::new(&bin)
-            .arg(format!("--app={url}"))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                // A running browser takes the window and this process exits
-                // at once; reap it either way.
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(browser = %bin.display(), %e, "app-window browser did not start; using the default browser");
-            }
+) -> Result<WebSurface, String> {
+    // Never log `url`: it is the one-use launch route.
+    match meshharbor_node_core::app_window::open(url) {
+        Ok(browser) => {
+            tracing::info!(browser = %browser.display(), "the web page opened in an app window");
+            return Ok(WebSurface::AppWindow);
+        }
+        Err(why) => {
+            tracing::warn!(%why, "no app window for the web page; using a tab of the default browser");
         }
     }
     // shell::open is deprecated in favour of tauri-plugin-opener, but the
@@ -1896,6 +1855,7 @@ fn open_web_or_browser<R: tauri::Runtime>(
         use tauri_plugin_shell::ShellExt;
         app.shell()
             .open(url, None)
+            .map(|()| WebSurface::BrowserTab)
             .map_err(|e| format!("opening browser: {e}"))
     }
 }
@@ -1904,23 +1864,30 @@ pub(crate) async fn open_authenticated_web<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     server: &str,
     target: meshharbor_node_core::user_session::WebTarget,
-) -> Result<(), String> {
+) -> Result<WebSurface, String> {
     let launch = crate::user_account::prepare(server, target).await?;
     let app2 = app.clone();
-    let server = server.to_owned();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        #[cfg(windows)]
-        let result = open_web_window_for_server(&app2, &launch, &server);
-        #[cfg(not(windows))]
-        let result = {
-            let _ = server;
-            open_web_or_browser(&app2, &launch)
-        };
-        let _ = tx.send(result);
-    })
-    .map_err(|_| "Cannot schedule the account window")?;
-    rx.await.map_err(|_| "Account window task ended")?
+    // Windows creates a window, which is main-thread-only there.
+    #[cfg(windows)]
+    {
+        let server = server.to_owned();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let result =
+                open_web_window_for_server(&app2, &launch, &server).map(|()| WebSurface::Window);
+            let _ = tx.send(result);
+        })
+        .map_err(|_| "Cannot schedule the account window")?;
+        rx.await.map_err(|_| "Account window task ended")?
+    }
+    // The others start a browser and, on macOS, wait for `open` to answer:
+    // never on the UI thread.
+    #[cfg(not(windows))]
+    {
+        tokio::task::spawn_blocking(move || open_web_or_browser(&app2, &launch))
+            .await
+            .map_err(|_| "Account window task ended")?
+    }
 }
 
 pub(crate) async fn open_account_viewer_link<R: tauri::Runtime>(
@@ -1946,27 +1913,25 @@ pub(crate) async fn open_account_viewer_link<R: tauri::Runtime>(
         .ok_or("Account viewer outside deployment prefix")?;
     let parts: Vec<_> = path.split('/').collect();
     match parts.as_slice() {
-        ["tenant", tenant, "agent", agent, "remote"] => {
-            open_authenticated_web(
-                app,
-                server,
-                meshharbor_node_core::user_session::WebTarget::Remote {
-                    tenant_id: (*tenant).into(),
-                    agent_id: (*agent).into(),
-                },
-            )
-            .await
-        }
-        ["device-shares", share_id, "remote"] => {
-            open_authenticated_web(
-                app,
-                server,
-                meshharbor_node_core::user_session::WebTarget::DeviceShareRemote {
-                    share_id: (*share_id).into(),
-                },
-            )
-            .await
-        }
+        ["tenant", tenant, "agent", agent, "remote"] => open_authenticated_web(
+            app,
+            server,
+            meshharbor_node_core::user_session::WebTarget::Remote {
+                tenant_id: (*tenant).into(),
+                agent_id: (*agent).into(),
+            },
+        )
+        .await
+        .map(|_| ()),
+        ["device-shares", share_id, "remote"] => open_authenticated_web(
+            app,
+            server,
+            meshharbor_node_core::user_session::WebTarget::DeviceShareRemote {
+                share_id: (*share_id).into(),
+            },
+        )
+        .await
+        .map(|_| ()),
         _ => Err("This account viewer requires a supported authenticated handoff".into()),
     }
 }
@@ -1999,6 +1964,7 @@ pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
         meshharbor_node_core::user_session::WebTarget::Dashboard,
     )
     .await
+    .map(|_| ())
 }
 
 /// Personal directory and sharing are account-authenticated, never agent-token lists.
@@ -2034,7 +2000,9 @@ pub async fn cmd_open_account(
 
 /// S2/S7 — open the remote-control viewer for one of the agent-backed
 /// devices this one can see (`{server}/tenant/{tid}/agent/{aid}/remote`) —
-/// in-app on Windows, default browser elsewhere. The URL is constructed
+/// in the companion's own window on Windows, in an app window of a
+/// Chromium-family browser elsewhere ([`WebSurface`] says which it was, for
+/// the page to explain a browser tab). The URL is constructed
 /// ONLY from this device's own configured server origin + hex-validated
 /// ids — never from peer-supplied strings — so a hostile device name
 /// can't steer the view to a foreign site.
@@ -2049,7 +2017,7 @@ pub async fn cmd_open_remote(
     app: tauri::AppHandle,
     agent_id: String,
     org: Option<String>,
-) -> Result<(), String> {
+) -> Result<WebSurface, String> {
     let aid = agent_id.trim().to_ascii_lowercase();
     if aid.len() != 24 || !aid.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("invalid agent id".to_string());
@@ -4773,25 +4741,13 @@ mod tests {
         }
     }
 
-    /// The viewer's app window: the first Chromium-family browser found,
-    /// by path (or under the user's own Applications on macOS) or on PATH;
-    /// none found is the default browser.
-    #[cfg(not(windows))]
+    /// The page matches on these spellings.
     #[test]
-    fn the_viewer_opens_in_the_first_app_mode_browser_found() {
-        let home = std::path::PathBuf::from("/Users/someone");
-        let path = vec![std::path::PathBuf::from("/usr/bin")];
-        let want = if cfg!(target_os = "macos") {
-            home.join("Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
-        } else {
-            std::path::PathBuf::from("/usr/bin/chromium")
-        };
-        let w = want.clone();
-        assert_eq!(
-            pick_app_mode_browser(move |p| p == w, &path, Some(&home)),
-            Some(want)
-        );
-        assert_eq!(pick_app_mode_browser(|_| false, &path, Some(&home)), None);
+    fn the_web_surface_is_spelled_the_way_the_devices_page_reads_it() {
+        let spelled = |s: WebSurface| serde_json::to_value(s).unwrap();
+        assert_eq!(spelled(WebSurface::Window), "window");
+        assert_eq!(spelled(WebSurface::AppWindow), "app_window");
+        assert_eq!(spelled(WebSurface::BrowserTab), "browser_tab");
     }
 
     #[test]

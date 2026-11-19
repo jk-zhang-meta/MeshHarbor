@@ -683,6 +683,7 @@ fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
                 meshharbor_node_core::user_session::WebTarget::Dashboard,
             )
             .await
+            .map(|_| ())
         }
         .await;
         if let Err(error) = result {

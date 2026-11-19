@@ -78,7 +78,20 @@
     nextAt: 0,
     timer: null,
     rdpActionError: null,
+    viewerNote: null, // why the last Connect landed in a browser tab, if it did
   };
+
+  /**
+   * What `cmd_open_remote` answered. The remote screen opens in a window of
+   * its own; on macOS and Linux that window is an installed Chrome, Edge,
+   * Chromium or Brave, and a machine with none of them gets a browser tab.
+   */
+  function viewerNoteFor(where) {
+    return where === 'browser_tab'
+      ? 'The remote screen opened in a tab of your default browser. Install Chrome, Edge, ' +
+          'Chromium or Brave and it opens in a window of its own.'
+      : null;
+  }
   const mesh = {
     view: null,
     error: null,
@@ -408,11 +421,19 @@
           st.rdpActionError = null;
           btn.disabled = true;
           try {
-            await invoke('cmd_open_remote', { agentId: s.agentId, org: orgArg() });
+            const where = await invoke('cmd_open_remote', { agentId: s.agentId, org: orgArg() });
             btn.classList.remove('is-error');
+            st.viewerNote = viewerNoteFor(where);
+            // Say it now; the next paint keeps it (paintNotes).
+            const noteEl = $('dv-grid-status');
+            if (st.viewerNote && noteEl) {
+              setText(noteEl, st.viewerNote);
+              noteEl.hidden = false;
+            }
           } catch (err) {
             btn.title = String(err);
             btn.classList.add('is-error');
+            st.viewerNote = null;
           } finally {
             btn.disabled = false;
           }
@@ -1189,6 +1210,7 @@
         ? st.rdpActionError + ' · ' + warn
         : st.rdpActionError
       : warn;
+    if (st.viewerNote) note = note ? st.viewerNote + ' ' + note : st.viewerNote;
     setText(status, note || '');
     status.hidden = !note;
     setText(error, combinedWarn || '');
@@ -1483,5 +1505,6 @@
     dedupeLocationParts,
     formatDeviceLocation,
     formatDeviceZone,
+    viewerNoteFor,
   };
 })();
