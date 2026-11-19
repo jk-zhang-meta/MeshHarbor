@@ -169,15 +169,19 @@ type NsHandle = Option<std::convert::Infallible>;
 
 #[cfg(feature = "overlay-netstack")]
 type NsRx = watch::Receiver<NsHandle>;
+/// Without the feature there is nothing to watch (a named type, not `()`,
+/// so the binding that holds it is not a unit `let`).
 #[cfg(not(feature = "overlay-netstack"))]
-type NsRx = ();
+struct NsRx;
 
 #[cfg(feature = "overlay-netstack")]
 fn ns_rx(tenant_id: &str) -> NsRx {
     crate::overlay::netstack_handle_rx(tenant_id)
 }
 #[cfg(not(feature = "overlay-netstack"))]
-fn ns_rx(_tenant_id: &str) -> NsRx {}
+fn ns_rx(_tenant_id: &str) -> NsRx {
+    NsRx
+}
 
 #[cfg(feature = "overlay-netstack")]
 fn ns_now(rx: &NsRx) -> NsHandle {
