@@ -114,7 +114,7 @@ pub fn host_ips_to_skip() -> HashSet<IpAddr> {
 /// AND not one of `skip`. `None` when neither applies, so no filter is
 /// installed, exactly as before.
 pub fn local_ip_filter(rc_overlay: &RcOverlay, skip: HashSet<IpAddr>) -> Option<IpFilterFn> {
-    if rc_overlay.allow && skip.is_empty() {
+    if rc_overlay.allow && skip.is_empty() && !rc_overlay.zone_strict {
         return None;
     }
     let keep = rc_overlay.clone();
@@ -214,6 +214,7 @@ mod tests {
         let allow = RcOverlay {
             allow: true,
             v4_nets: Vec::new(),
+            ..Default::default()
         };
         assert!(local_ip_filter(&allow, HashSet::new()).is_none());
     }
@@ -223,6 +224,7 @@ mod tests {
         let allow = RcOverlay {
             allow: true,
             v4_nets: Vec::new(),
+            ..Default::default()
         };
         let ts: IpAddr = "100.101.102.103".parse().unwrap();
         let f = local_ip_filter(&allow, HashSet::from([ts])).expect("filter");
@@ -239,6 +241,7 @@ mod tests {
         let off = RcOverlay {
             allow: false,
             v4_nets: vec![(Ipv4Addr::new(100, 64, 0, 0), 24)],
+            ..Default::default()
         };
         let ts: IpAddr = "100.101.102.103".parse().unwrap();
         let f = local_ip_filter(&off, HashSet::from([ts])).expect("filter");

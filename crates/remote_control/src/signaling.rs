@@ -2053,6 +2053,12 @@ pub enum ClientMsg {
         /// the device verbatim.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_auth: Option<PeerAuthOffer>,
+        /// FR-121 — the local agent's loopback-TURN descriptor, when the
+        /// browser found it only after its `rc:session.request` went out (the
+        /// request never waits for the probe). The Hub settles the session's
+        /// zone route with it before the offer reaches the device.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        local_relay: Option<LocalRelayDescriptor>,
     },
 
     /// Request a server-chosen download child ID for this parent. Recognition
@@ -3822,6 +3828,17 @@ pub enum ServerMsg {
         /// so the default costs nothing on the wire.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         rc_overlay: bool,
+        /// FR-121 — the session's route under the logical network zones
+        /// (`ZoneRoute::wire`): `direct` — the server has already dropped
+        /// every controller candidate whose public address may not meet this
+        /// device directly, and the agent admits no other public address
+        /// (an inbound check from one it was never given included);
+        /// `direct_mesh` — the same, plus a relay inside the mesh through the
+        /// agent's own loopback TURN; `mesh` — that relay only. Absent (an
+        /// older server, or a tenant without zones) is the behaviour from
+        /// before the field. An unknown word reads as `mesh`, the strictest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone_route: Option<String>,
         /// FR-101 P2 — the org's session policy for clipboard, files and
         /// audio. The hub has already taken out of `permissions` (and
         /// `audio_enabled`) what the policy refuses here; an agent that
@@ -3884,6 +3901,11 @@ pub enum ServerMsg {
         /// `extauth_mac`: the nonce the device signs its answer against.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_auth: Option<PeerAuthOffer>,
+        /// FR-121 — the session's zone route as settled at the offer (the
+        /// controller may name its mesh node only now); it supersedes the one
+        /// `rc:request` carried. Absent: keep that one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone_route: Option<String>,
     },
 
     /// A server-owned reservation, not proof admission or a created transport.
@@ -4003,6 +4025,12 @@ pub enum ServerMsg {
         #[serde(with = "oid_hex")]
         session_id: ObjectId,
         ice_servers: Vec<IceServer>,
+        /// FR-121 — the session's zone route, as on `rc:request`: the viewer
+        /// relays through its local agent only (`mesh`), adds that relay to
+        /// its servers (`direct_mesh`), or knows a direct path is the only one
+        /// the zones allow it (`direct`). Absent for a tenant without zones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone_route: Option<String>,
     },
 
     /// Either peer is gone, or admin terminated, or consent denied.
@@ -5732,7 +5760,7 @@ pub enum ServerMsg {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct IceServer {
     pub urls: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6259,6 +6287,12 @@ pub struct FileNote {
 pub struct LocalRelayDescriptor {
     /// UDP port the local agent's TURN server listens on (loopback + overlay).
     pub turn_port: u16,
+    /// FR-121 — the local agent's own id, so the Hub knows which mesh node
+    /// (and so which zone) the controller sits on. Unverified on purpose: a
+    /// false claim buys nothing — mesh relay candidates must be the node's own
+    /// overlay address, and every public candidate is zone-checked anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// The local agent's assigned overlay IP (100.64.x.y) — the relay-candidate
     /// address the remote agent routes to over the meshharbor adapter. The Hub
     /// validates this is inside the overlay range before trusting it.
@@ -9516,6 +9550,7 @@ mod tests {
                 key: None,
                 sig: None,
             }),
+            local_relay: None,
         };
         let v = serde_json::to_value(&offer).unwrap();
         assert_eq!(v["peer_auth"]["nonce"], nonce_0_to_15());
@@ -9837,6 +9872,7 @@ mod tests {
             override_reason: None,
             local_relay: Some(LocalRelayDescriptor {
                 turn_port: 47989,
+                agent_id: None,
                 overlay_ip: "100.64.0.7".into(),
                 username: "1700000600:507f1f77bcf86cd799439012".into(),
                 credential: "deadbeef".into(),
@@ -9884,6 +9920,7 @@ mod tests {
             input_mode: None,
             tenant_name: None,
             rc_overlay,
+            zone_route: None,
             session_policy: None,
             idle_secs: None,
             lock_on_end: None,
@@ -9933,6 +9970,7 @@ mod tests {
             input_mode: None,
             tenant_name: None,
             rc_overlay: false,
+            zone_route: None,
             session_policy,
             idle_secs: None,
             lock_on_end: None,
@@ -10028,6 +10066,7 @@ mod tests {
             input_mode: None,
             tenant_name: None,
             rc_overlay: false,
+            zone_route: None,
             session_policy: None,
             idle_secs,
             lock_on_end: None,
@@ -10111,6 +10150,7 @@ mod tests {
             input_mode: None,
             tenant_name: None,
             rc_overlay: false,
+            zone_route: None,
             session_policy: None,
             idle_secs: None,
             lock_on_end,
@@ -10203,6 +10243,7 @@ mod tests {
             input_mode: None,
             tenant_name: None,
             rc_overlay: false,
+            zone_route: None,
             session_policy: None,
             idle_secs: None,
             lock_on_end: None,

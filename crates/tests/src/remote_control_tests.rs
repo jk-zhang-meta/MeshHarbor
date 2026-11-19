@@ -1488,6 +1488,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 sdp: "v=0\r\n".into(),
                 extauth_mac: None,
                 peer_auth: None,
+                local_relay: None,
             })
             .unwrap()
             .into(),
@@ -1570,6 +1571,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 sdp: "v=0\r\n".into(),
                 extauth_mac: None,
                 peer_auth: None,
+                local_relay: None,
             })
             .unwrap()
             .into(),

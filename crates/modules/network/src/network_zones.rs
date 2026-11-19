@@ -402,16 +402,21 @@ impl TenantZoneSnapshot {
     }
 
     pub fn ice_policy_for(&self, res: DeviceZoneResolution<'_>) -> AgentZoneIcePolicy {
+        let zones = self.zone_route_infos();
         match res {
             DeviceZoneResolution::Unconfigured => AgentZoneIcePolicy {
                 policy_revision: self.revision,
                 strict: false,
                 allowed_countries: HashSet::new(),
+                zone: None,
+                zones: Arc::new(Vec::new()),
             },
             DeviceZoneResolution::UnresolvedStrict => AgentZoneIcePolicy {
                 policy_revision: self.revision,
                 strict: true,
                 allowed_countries: HashSet::new(),
+                zone: None,
+                zones,
             },
             DeviceZoneResolution::Resolved(z) => AgentZoneIcePolicy {
                 policy_revision: self.revision,
@@ -421,8 +426,15 @@ impl TenantZoneSnapshot {
                     .get(&z.id)
                     .cloned()
                     .unwrap_or_default(),
+                zone: Some(z.id.clone()),
+                zones,
             },
         }
+    }
+
+    /// FR-121 — the tenant's zones as the hub routes a remote-desktop session.
+    pub fn zone_route_infos(&self) -> Arc<Vec<meshharbor_mod_fleet::hub::ZoneRouteInfo>> {
+        meshharbor_mod_fleet::hub::zone_route_infos(&self.zones)
     }
 
     /// Filter overlay `stun_urls` for `node` and return `(filtered_urls, strict_stun)`.
@@ -479,6 +491,8 @@ impl TenantZoneSnapshot {
                 "policy_revision": policy.policy_revision,
                 "strict": policy.strict,
                 "allowed_countries": countries_vec,
+                "zone": policy.zone_json().0,
+                "zones": policy.zone_json().1,
             }),
         )
         .await;

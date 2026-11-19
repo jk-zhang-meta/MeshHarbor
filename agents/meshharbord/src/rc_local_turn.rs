@@ -125,12 +125,79 @@ pub fn bridge_enabled() -> bool {
 pub fn spawn(
     overlay_view: watch::Receiver<OverlayView>,
     agent_id: String,
+    tenant_id: String,
     shutdown: watch::Receiver<bool>,
 ) {
     if !enabled() && !bridge_enabled() {
         return;
     }
-    tokio::spawn(serve(overlay_view, agent_id, shutdown));
+    tokio::spawn(serve(overlay_view, agent_id, tenant_id, shutdown));
+}
+
+/// FR-121 — this daemon's running loopback TURN (`port`, `secret`), for a
+/// session that relays through its OWN host into the mesh.
+static SELF_TURN: std::sync::Mutex<Option<(u16, Vec<u8>)>> = std::sync::Mutex::new(None);
+
+/// FR-121 — the ICE server of this daemon's own loopback TURN, with fresh
+/// credentials for `user` (10 minutes), or `None` while none runs. Its relay
+/// addresses are this node's overlay address, so what it relays is mesh
+/// traffic: in-zone direct or relayed, cross-zone gateway to gateway.
+pub fn self_ice_server(user: &str) -> Option<meshharbor_remote_control::signaling::IceServer> {
+    let (port, secret) = SELF_TURN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()?;
+    let (username, credential) =
+        LocalTurnHost::mint_with_secret(&secret, user, Duration::from_secs(600));
+    Some(meshharbor_remote_control::signaling::IceServer {
+        urls: vec![format!("turn:127.0.0.1:{port}?transport=udp")],
+        username: Some(username),
+        credential: Some(credential),
+    })
+}
+
+fn set_self_turn(v: Option<(u16, Vec<u8>)>) {
+    *SELF_TURN.lock().unwrap_or_else(|e| e.into_inner()) = v;
+}
+
+/// FR-121 — the primary org's userspace netstack, when its overlay runs on
+/// one: the TURN host's relay sockets must then live inside it.
+#[cfg(feature = "overlay-netstack")]
+type NsHandle = Option<tunnel_core::overlay::netstack::NetstackHandle>;
+#[cfg(not(feature = "overlay-netstack"))]
+type NsHandle = Option<std::convert::Infallible>;
+
+#[cfg(feature = "overlay-netstack")]
+type NsRx = watch::Receiver<NsHandle>;
+#[cfg(not(feature = "overlay-netstack"))]
+type NsRx = ();
+
+#[cfg(feature = "overlay-netstack")]
+fn ns_rx(tenant_id: &str) -> NsRx {
+    crate::overlay::netstack_handle_rx(tenant_id)
+}
+#[cfg(not(feature = "overlay-netstack"))]
+fn ns_rx(_tenant_id: &str) -> NsRx {}
+
+#[cfg(feature = "overlay-netstack")]
+fn ns_now(rx: &NsRx) -> NsHandle {
+    rx.borrow().clone()
+}
+#[cfg(not(feature = "overlay-netstack"))]
+fn ns_now(_rx: &NsRx) -> NsHandle {
+    None
+}
+
+/// Resolves when the netstack is rebuilt (never, without the feature).
+#[cfg(feature = "overlay-netstack")]
+async fn ns_changed(rx: &mut NsRx) {
+    if rx.changed().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+#[cfg(not(feature = "overlay-netstack"))]
+async fn ns_changed(_rx: &mut NsRx) {
+    std::future::pending::<()>().await;
 }
 
 /// The overlay's currently-assigned self-IP, parsed. `None` until the node has
@@ -146,25 +213,58 @@ fn overlay_self_ip(view: &watch::Receiver<OverlayView>) -> Option<IpAddr> {
 /// a new IP tears down the old host and starts a fresh one bound to `0.0.0.0:0`
 /// (so it receives on BOTH loopback and the overlay adapter) with the overlay
 /// IP as its relay-candidate address; `None` tears the host down.
+#[cfg(test)]
 async fn reconcile_host(host: &mut Option<LocalTurnHost>, want_ip: Option<IpAddr>, secret: &[u8]) {
+    reconcile_host_on(host, want_ip, secret, None, false).await
+}
+
+/// [`reconcile_host`] with the netstack the relay sockets must live in
+/// (`ns`), and `rebuild` to restart an unchanged IP's host on a new one.
+async fn reconcile_host_on(
+    host: &mut Option<LocalTurnHost>,
+    want_ip: Option<IpAddr>,
+    secret: &[u8],
+    ns: NsHandle,
+    rebuild: bool,
+) {
     let have = host.as_ref().map(|h| h.relay_ip());
-    if want_ip == have {
+    if want_ip == have && !rebuild {
         return;
     }
     if let Some(old) = host.take() {
+        set_self_turn(None);
         let _ = old.stop().await;
     }
     let Some(ip) = want_ip else {
         info!("loopback-TURN: overlay IP cleared; local TURN host stopped");
         return;
     };
-    match LocalTurnHost::start((Ipv4Addr::UNSPECIFIED, 0).into(), ip, secret.to_vec()).await {
+    let netstack = ns.is_some();
+    #[cfg(feature = "overlay-netstack")]
+    let started = match ns {
+        Some(handle) => {
+            LocalTurnHost::start_netstack(
+                (Ipv4Addr::UNSPECIFIED, 0).into(),
+                ip,
+                secret.to_vec(),
+                handle,
+            )
+            .await
+        }
+        None => LocalTurnHost::start((Ipv4Addr::UNSPECIFIED, 0).into(), ip, secret.to_vec()).await,
+    };
+    #[cfg(not(feature = "overlay-netstack"))]
+    let started =
+        LocalTurnHost::start((Ipv4Addr::UNSPECIFIED, 0).into(), ip, secret.to_vec()).await;
+    match started {
         Ok(h) => {
             info!(
                 port = h.local_addr().port(),
                 relay = %ip,
+                netstack,
                 "loopback-TURN: local TURN host up on overlay IP"
             );
+            set_self_turn(Some((h.local_addr().port(), secret.to_vec())));
             *host = Some(h);
         }
         Err(e) => warn!(error = %e, "loopback-TURN: failed to start local TURN host"),
@@ -176,6 +276,7 @@ async fn reconcile_host(host: &mut Option<LocalTurnHost>, want_ip: Option<IpAddr
 async fn serve(
     overlay_view: watch::Receiver<OverlayView>,
     agent_id: String,
+    tenant_id: String,
     mut shutdown: watch::Receiver<bool>,
 ) {
     // Bind the FIRST FREE port in the candidate range (rc.232), not a
@@ -240,8 +341,16 @@ async fn serve(
     let turn_on = enabled();
     let mut overlay_view = overlay_view;
     let mut host: Option<LocalTurnHost> = None;
+    let mut ns = ns_rx(&tenant_id);
     if turn_on {
-        reconcile_host(&mut host, overlay_self_ip(&overlay_view), &secret).await;
+        reconcile_host_on(
+            &mut host,
+            overlay_self_ip(&overlay_view),
+            &secret,
+            ns_now(&ns),
+            false,
+        )
+        .await;
     }
 
     loop {
@@ -256,7 +365,13 @@ async fn serve(
                     break; // sender dropped — agent is going away
                 }
                 if turn_on {
-                    reconcile_host(&mut host, overlay_self_ip(&overlay_view), &secret).await;
+                    reconcile_host_on(&mut host, overlay_self_ip(&overlay_view), &secret, ns_now(&ns), false).await;
+                }
+            }
+            // FR-121 — a rebuilt netstack invalidates every relay socket.
+            _ = ns_changed(&mut ns) => {
+                if turn_on {
+                    reconcile_host_on(&mut host, overlay_self_ip(&overlay_view), &secret, ns_now(&ns), true).await;
                 }
             }
             accept = listener.accept() => {
@@ -268,6 +383,7 @@ async fn serve(
                     let (username, credential) = h.mint_credentials_now(&agent_id, CRED_TTL);
                     LocalRelayDescriptor {
                         turn_port: h.local_addr().port(),
+                        agent_id: Some(agent_id.clone()),
                         overlay_ip: h.relay_ip().to_string(),
                         username,
                         credential,
@@ -621,6 +737,7 @@ mod tests {
     fn desc() -> LocalRelayDescriptor {
         LocalRelayDescriptor {
             turn_port: 47989,
+            agent_id: None,
             overlay_ip: "100.64.0.7".into(),
             username: "1700000600:507f1f77bcf86cd799439012".into(),
             credential: "abcd1234".into(),

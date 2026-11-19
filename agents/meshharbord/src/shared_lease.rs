@@ -431,6 +431,7 @@ mod tests {
             ice_servers: vec![],
             extauth_mac: None,
             peer_auth: None,
+            zone_route: None,
         };
         let (tx, mut rx) = mpsc::channel(8);
         assert!(!r.offer(sid, &offer, &tx));
@@ -490,6 +491,7 @@ mod shared_lease_scope_regressions {
             ice_servers: vec![],
             extauth_mac: None,
             peer_auth: None,
+            zone_route: None,
         }
     }
     fn stop_flag() -> (Arc<AtomicBool>, Stop) {

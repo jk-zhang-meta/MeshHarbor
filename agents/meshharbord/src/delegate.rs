@@ -1813,6 +1813,7 @@ mod routing_tests {
             ice_servers: Vec::new(),
             extauth_mac: None,
             peer_auth: None,
+            zone_route: None,
         }));
         assert!(delegable_inbound(&ServerMsg::Ice {
             session_id: oid(),
@@ -2080,6 +2081,7 @@ mod params_tests {
         p.rc_overlay = Some(crate::rc_overlay::RcOverlay {
             allow: false,
             v4_nets: vec![(std::net::Ipv4Addr::new(100, 65, 4, 0), 22)],
+            ..Default::default()
         });
         let wire = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(p.clone())))
             .expect("serialises");
@@ -2492,6 +2494,7 @@ mod shared_lease_params_scope_regressions {
                 ice_servers: vec![],
                 extauth_mac: None,
                 peer_auth: None,
+                zone_route: None,
             };
             assert!(!r.offer(sid, &offer, &tx));
             let flag = Arc::new(AtomicBool::new(false));

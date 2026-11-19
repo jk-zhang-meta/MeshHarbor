@@ -3846,6 +3846,7 @@ async fn handle_server_msg(
             input_mode,
             tenant_name,
             rc_overlay,
+            zone_route,
             // FR-101 P2b — the org's policy; applied below with the device's
             // own floor, once the consent mode is resolved.
             session_policy,
@@ -3873,7 +3874,12 @@ async fn handle_server_msg(
             // #1882 — the device's overlay decision, resolved HERE, by the
             // daemon: it is the process whose overlay knows the blocks, and a
             // delegated session's worker gets this same value.
-            let rc_overlay = crate::rc_overlay::RcOverlay::resolve(rc_overlay);
+            // FR-121 — and the zone rule with it, so a delegated session's
+            // worker filters the same addresses.
+            let rc_overlay = crate::rc_overlay::RcOverlay::resolve(rc_overlay)
+                .with_zone(zone_route.as_deref(), || {
+                    crate::rc_local_turn::self_ice_server(&session_id.to_hex())
+                });
             // FR-52 P4 — a controller from OUTSIDE the organization. Admitted
             // by THIS device or not at all: bound to a login it verified, under
             // its own ceiling and its own consent mode, never the server's. A
@@ -4488,6 +4494,7 @@ async fn handle_server_msg(
             extauth_mac: _,
             // FR-100 P1b — already noted there too, for the answer's signature.
             peer_auth: _,
+            zone_route,
         } => {
             info!(%session_id, sdp_len = sdp.len(), "rc:sdp.offer — creating peer");
 
@@ -4571,6 +4578,14 @@ async fn handle_server_msg(
                     None,
                 )
             });
+            // FR-121 — the route the hub settled at the offer supersedes the
+            // request's (the controller may have named its mesh node only now).
+            let rc_overlay = match zone_route.as_deref() {
+                Some(route) => rc_overlay.rezone(route, || {
+                    crate::rc_local_turn::self_ice_server(&session_id.to_hex())
+                }),
+                None => rc_overlay,
+            };
             // FR-27 follow-up — capture what the "Being viewed by" banner needs
             // BEFORE `controller_name` is moved into `AgentPeer::new` below.
             // The banner is raised once the peer is established (after

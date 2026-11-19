@@ -5621,6 +5621,7 @@ async fn run_cmd(
     meshharbord::rc_local_turn::spawn(
         overlay_view_tx.subscribe(),
         cfg.agent_id.clone(),
+        cfg.tenant_id.clone(),
         shutdown_rx.clone(),
     );
 

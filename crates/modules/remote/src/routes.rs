@@ -384,6 +384,15 @@ pub async fn turn_credentials(
         None => auth.user_id.to_hex(),
     };
     let mut ice_servers = ice_servers_for(&user, state.turn_map.cfg_for(None));
+    // FR-121 — a viewer of a strict-zone device gets only that zone's servers,
+    // so its relay candidate never sits outside the zone. Read only when the
+    // checks that charge the org passed, as for the gate below.
+    if let Some(aid) = org
+        .and(q.agent_id.as_deref())
+        .and_then(|a| ObjectId::parse_str(a).ok())
+    {
+        ice_servers = state.fleet.rc_hub.viewer_zone_ice(aid, ice_servers);
+    }
     // MeshHarbor #21 relay locality. The viewer builds its peer connection
     // from these servers, so they are kept to the TARGET device's business
     // zone, the same list the hub hands that device. The zone is read only

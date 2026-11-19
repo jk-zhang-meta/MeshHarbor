@@ -16,6 +16,40 @@ use crate::models::{ConsentMode, EndReason, SessionPhase, SessionStats};
 use crate::permissions::Permissions;
 use crate::signaling::{FileChildDirection, LocalRelayDescriptor, ServerMsg};
 
+/// FR-121 — a remote-desktop session's route under the logical network
+/// zones, the same rule the mesh obeys (`pair_requires_backbone_only`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ZoneRoute {
+    /// The tenant has no zones: nothing is filtered.
+    #[default]
+    Open,
+    /// The pair may meet directly. Every public controller address is checked
+    /// against the host's zone one by one; with `mesh_fallback` (the
+    /// controller sits on a mesh node) both ends also offer a relay inside the
+    /// mesh, which ICE takes when no direct pair works.
+    Direct { mesh_fallback: bool },
+    /// The pair's zones meet only through gateways: both ends relay through
+    /// their own loopback TURN inside the mesh, and only those relay
+    /// candidates are passed on; the mesh carries the media gateway to gateway.
+    Mesh,
+}
+
+impl ZoneRoute {
+    /// The word `rc:ready` / `rc:request` carry, `None` for [`Self::Open`].
+    pub fn wire(self) -> Option<&'static str> {
+        match self {
+            ZoneRoute::Open => None,
+            ZoneRoute::Direct {
+                mesh_fallback: false,
+            } => Some("direct"),
+            ZoneRoute::Direct {
+                mesh_fallback: true,
+            } => Some("direct_mesh"),
+            ZoneRoute::Mesh => Some("mesh"),
+        }
+    }
+}
+
 /// Channel used to push messages to a connected client (agent or controller).
 /// The WS layer owns the receiving half and forwards to the socket.
 pub type ClientTx = mpsc::Sender<ServerMsg>;
@@ -162,6 +196,10 @@ pub struct LiveSession {
     /// only when this is `true`: with the overlay off, an overlay relay is a
     /// candidate the agent would only discard.
     pub rc_overlay: bool,
+
+    /// FR-121 — how the session's media may travel under the tenant's logical
+    /// network zones, decided at session create. See [`ZoneRoute`].
+    pub zone_route: ZoneRoute,
 
     /// Multi-region relay: the region FROZEN at session create (load-aware
     /// pick over the agent's home + RTT-ordered prefs). Frozen so all three
@@ -339,6 +377,7 @@ impl LiveSession {
             controller_tx: Some(controller_tx),
             local_relay: None,
             rc_overlay: false,
+            zone_route: ZoneRoute::Open,
             relay_region: None,
             offer_seen: false,
             pending_request: None,

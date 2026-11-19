@@ -96,6 +96,45 @@ impl LocalTurnHost {
     /// agent can route to allocated relays over the overlay. `secret` is this
     /// host's per-instance TURN secret (generate ~32 random bytes per run).
     pub async fn start(bind: SocketAddr, relay_ip: IpAddr, secret: Vec<u8>) -> Result<Self> {
+        Self::start_with(
+            bind,
+            relay_ip,
+            secret,
+            Box::new(RelayAddressGeneratorStatic {
+                relay_address: relay_ip,
+                address: relay_ip.to_string(),
+                net: Arc::new(Net::new(None)),
+            }),
+        )
+        .await
+    }
+
+    /// FR-121 — the same host on a node whose overlay is the userspace
+    /// netstack (no TUN, so no OS socket can bind the overlay IP): each
+    /// allocation's relay socket is a netstack UDP socket on `relay_ip`, so
+    /// relayed traffic is mesh traffic and goes wherever the mesh routes it.
+    #[cfg(feature = "overlay-netstack")]
+    pub async fn start_netstack(
+        bind: SocketAddr,
+        relay_ip: IpAddr,
+        secret: Vec<u8>,
+        netstack: crate::overlay::netstack::NetstackHandle,
+    ) -> Result<Self> {
+        Self::start_with(
+            bind,
+            relay_ip,
+            secret,
+            Box::new(netstack_relay::NetstackRelayGenerator { netstack, relay_ip }),
+        )
+        .await
+    }
+
+    async fn start_with(
+        bind: SocketAddr,
+        relay_ip: IpAddr,
+        secret: Vec<u8>,
+        relay_addr_generator: Box<dyn turn::relay::RelayAddressGenerator + Send + Sync>,
+    ) -> Result<Self> {
         let conn = Arc::new(
             tokio::net::UdpSocket::bind(bind)
                 .await
@@ -105,11 +144,7 @@ impl LocalTurnHost {
         let server = Server::new(ServerConfig {
             conn_configs: vec![ConnConfig {
                 conn,
-                relay_addr_generator: Box::new(RelayAddressGeneratorStatic {
-                    relay_address: relay_ip,
-                    address: relay_ip.to_string(),
-                    net: Arc::new(Net::new(None)),
-                }),
+                relay_addr_generator,
             }],
             realm: Self::REALM.to_owned(),
             auth_handler: Arc::new(RestAuth {
@@ -157,6 +192,18 @@ impl LocalTurnHost {
     }
 
     /// [`Self::mint_credentials`] using the system clock.
+    /// FR-121 — [`Self::mint_credentials_now`] for a holder of the host's
+    /// secret but not the host (the session code mints for its own peer).
+    pub fn mint_with_secret(secret: &[u8], user_id: &str, ttl: Duration) -> (String, String) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let username = format!("{}:{user_id}", now.saturating_add(ttl.as_secs()));
+        let password = mint_password(secret, &username);
+        (username, password)
+    }
+
     pub fn mint_credentials_now(&self, user_id: &str, ttl: Duration) -> (String, String) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -171,6 +218,129 @@ impl LocalTurnHost {
     }
 }
 
+/// FR-121 — TURN relay sockets inside the userspace netstack.
+#[cfg(feature = "overlay-netstack")]
+mod netstack_relay {
+    use std::net::{IpAddr, SocketAddr};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use webrtc_util::Conn;
+
+    use crate::overlay::netstack::{NetstackHandle, NsUdpSender, NsUdpSocket};
+
+    /// Allocates each TURN relay address as a netstack UDP socket on the
+    /// node's overlay address. A requested port is not honoured (the netstack
+    /// picks an ephemeral one), which RFC 8656 allows for a plain allocation.
+    pub(super) struct NetstackRelayGenerator {
+        pub(super) netstack: NetstackHandle,
+        pub(super) relay_ip: IpAddr,
+    }
+
+    #[async_trait]
+    impl turn::relay::RelayAddressGenerator for NetstackRelayGenerator {
+        fn validate(&self) -> Result<(), turn::Error> {
+            Ok(())
+        }
+
+        async fn allocate_conn(
+            &self,
+            use_ipv4: bool,
+            _requested_port: u16,
+        ) -> Result<(Arc<dyn Conn + Send + Sync>, SocketAddr), turn::Error> {
+            if use_ipv4 != self.relay_ip.is_ipv4() {
+                return Err(turn::Error::ErrNoAvailableConns);
+            }
+            let socket = self
+                .netstack
+                .udp_bind()
+                .await
+                .map_err(|e| turn::Error::Other(format!("netstack udp_bind: {e}")))?;
+            let local = SocketAddr::new(self.relay_ip, socket.local_port());
+            let (closed, _) = tokio::sync::watch::channel(false);
+            let conn = NsRelayConn {
+                tx: socket.sender(),
+                rx: tokio::sync::Mutex::new(Some(socket)),
+                local,
+                closed,
+            };
+            Ok((Arc::new(conn), local))
+        }
+    }
+
+    /// One allocation's relay socket. Receiving needs the socket mutably, so
+    /// it sits behind a lock; `close` wakes a pending receive and drops the
+    /// socket, which frees its netstack port.
+    struct NsRelayConn {
+        tx: NsUdpSender,
+        rx: tokio::sync::Mutex<Option<NsUdpSocket>>,
+        local: SocketAddr,
+        closed: tokio::sync::watch::Sender<bool>,
+    }
+
+    fn io_err(e: std::io::Error) -> webrtc_util::Error {
+        webrtc_util::Error::from(e)
+    }
+
+    #[async_trait]
+    impl Conn for NsRelayConn {
+        async fn connect(&self, _addr: SocketAddr) -> webrtc_util::Result<()> {
+            Err(webrtc_util::Error::Other("connect is not supported".into()))
+        }
+
+        async fn recv(&self, buf: &mut [u8]) -> webrtc_util::Result<usize> {
+            self.recv_from(buf).await.map(|(n, _)| n)
+        }
+
+        async fn recv_from(&self, buf: &mut [u8]) -> webrtc_util::Result<(usize, SocketAddr)> {
+            let mut closed = self.closed.subscribe();
+            let mut guard = self.rx.lock().await;
+            let Some(socket) = guard.as_mut() else {
+                return Err(webrtc_util::Error::ErrUseClosedNetworkConn);
+            };
+            tokio::select! {
+                r = socket.recv_from() => {
+                    let (data, from) = r.map_err(io_err)?;
+                    let n = data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    Ok((n, from))
+                }
+                _ = closed.wait_for(|c| *c) => Err(webrtc_util::Error::ErrUseClosedNetworkConn),
+            }
+        }
+
+        async fn send(&self, _buf: &[u8]) -> webrtc_util::Result<usize> {
+            Err(webrtc_util::Error::Other("send needs a destination".into()))
+        }
+
+        async fn send_to(&self, buf: &[u8], target: SocketAddr) -> webrtc_util::Result<usize> {
+            if *self.closed.borrow() {
+                return Err(webrtc_util::Error::ErrUseClosedNetworkConn);
+            }
+            self.tx.send_to(buf, target).await.map_err(io_err)?;
+            Ok(buf.len())
+        }
+
+        fn local_addr(&self) -> webrtc_util::Result<SocketAddr> {
+            Ok(self.local)
+        }
+
+        fn remote_addr(&self) -> Option<SocketAddr> {
+            None
+        }
+
+        async fn close(&self) -> webrtc_util::Result<()> {
+            self.closed.send_replace(true);
+            self.rx.lock().await.take();
+            Ok(())
+        }
+
+        fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+            self
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +352,107 @@ mod tests {
     /// relay candidates on the configured relay IP. Proves the module + auth
     /// end-to-end via a real `turn` client allocation (lighter than two full
     /// webrtc peers, which the Phase-0 spike already covered).
+    /// FR-121 — on a netstack node the TURN relay lives inside the mesh: a
+    /// client on loopback allocates, its relay address is the node's overlay
+    /// address, and datagrams it relays reach — and come back from — another
+    /// node's netstack over WireGuard, with no TUN and no OS overlay socket.
+    #[cfg(feature = "overlay-netstack")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_netstack_turn_relays_into_the_mesh() {
+        use crate::overlay::WgKeypair;
+        use crate::overlay::bridge::run_bridge;
+        use crate::overlay::netstack::Netstack;
+        use crate::overlay::tun::TunIo;
+        use crate::overlay::wg::{Carrier, WgDevice};
+        use tokio::net::UdpSocket;
+
+        let a_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let b_ip = Ipv4Addr::new(100, 64, 0, 2);
+        let ka = WgKeypair::generate();
+        let kb = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, rx_a) = WgDevice::new(ka.secret.clone());
+        let (mut dev_b, rx_b) = WgDevice::new(kb.secret.clone());
+        dev_a.add_peer(
+            kb.public.to_bytes(),
+            b_ip,
+            Carrier::direct(sock_a.clone(), addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            ka.public.to_bytes(),
+            a_ip,
+            Carrier::direct(sock_b.clone(), addr_a),
+            false,
+        );
+        let a = Netstack::start(a_ip, 10, 1280);
+        let b = Netstack::start(b_ip, 10, 1280);
+        tokio::spawn(run_bridge(
+            a.tun.clone() as Arc<dyn TunIo>,
+            Arc::new(dev_a),
+            rx_a,
+        ));
+        tokio::spawn(run_bridge(
+            b.tun.clone() as Arc<dyn TunIo>,
+            Arc::new(dev_b),
+            rx_b,
+        ));
+
+        let host = LocalTurnHost::start_netstack(
+            (Ipv4Addr::LOCALHOST, 0).into(),
+            IpAddr::V4(a_ip),
+            b"fr121-netstack-relay-test-secret".to_vec(),
+            a.handle.clone(),
+        )
+        .await
+        .expect("start netstack TURN host");
+        let (user, pass) = host.mint_credentials_now("viewer", Duration::from_secs(600));
+        let relay = crate::transport::relay::allocate_turn_relay(
+            host.local_addr(),
+            user,
+            pass,
+            LocalTurnHost::REALM.to_owned(),
+        )
+        .await
+        .expect("allocate on the netstack TURN host");
+        let relay_addr = relay.local_addr().unwrap();
+        assert_eq!(
+            relay_addr.ip(),
+            IpAddr::V4(a_ip),
+            "the relay address is the overlay address"
+        );
+
+        let mut peer = b.handle.udp_bind().await.unwrap();
+        let peer_addr = SocketAddr::new(IpAddr::V4(b_ip), peer.local_port());
+        // The first datagram also installs the TURN permission for the peer.
+        let got = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                relay.send_to(b"over-the-mesh", peer_addr).await.unwrap();
+                if let Ok(Ok(r)) =
+                    tokio::time::timeout(Duration::from_millis(500), peer.recv_from()).await
+                {
+                    break r;
+                }
+            }
+        })
+        .await
+        .expect("the relayed datagram reaches the other netstack");
+        assert_eq!(got.0, b"over-the-mesh");
+        assert_eq!(got.1, relay_addr, "it arrives from the relay address");
+
+        peer.send_to(b"and-back", relay_addr).await.unwrap();
+        let mut buf = [0u8; 64];
+        let (n, from) = tokio::time::timeout(Duration::from_secs(10), relay.recv_from(&mut buf))
+            .await
+            .expect("the reply comes back through the relay")
+            .unwrap();
+        assert_eq!(&buf[..n], b"and-back");
+        assert_eq!(from, peer_addr);
+        host.stop().await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn accepts_minted_creds_rejects_bogus() {
         let secret = b"phase1-per-instance-secret-not-real".to_vec();

@@ -612,6 +612,10 @@ impl AgentPeer {
             overlay_blocks = rc_overlay.v4_nets.len(),
             srtp_replay_window = transport.replay_window,
             dtls_gcm_only = transport.gcm_only,
+            zone_strict = rc_overlay.zone_strict,
+            zone_mesh_fallback = rc_overlay.zone_mesh_fallback,
+            zone_mesh_only = rc_overlay.zone_mesh_only,
+            zone_turn = rc_overlay.zone_turn.is_some(),
             "rc ICE: overlay {}",
             rc_overlay.describe()
         );
@@ -643,7 +647,8 @@ impl AgentPeer {
             },
             ..Default::default()
         };
-        if relay_tcp {
+        // FR-121 — a session the zones route through the mesh relays only.
+        if relay_tcp || rc_overlay.relay_only() {
             config.ice_transport_policy = RTCIceTransportPolicy::Relay;
         }
 
@@ -2395,7 +2400,8 @@ impl AgentPeer {
             },
             ..Default::default()
         };
-        if relay_tcp {
+        // FR-121 — a session the zones route through the mesh relays only.
+        if relay_tcp || self.rc_overlay.relay_only() {
             config.ice_transport_policy = RTCIceTransportPolicy::Relay;
         }
 

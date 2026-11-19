@@ -606,6 +606,8 @@ pub async fn handle_agent_socket(
                             "policy_revision": ice_policy.policy_revision,
                             "strict": ice_policy.strict,
                             "allowed_countries": countries_vec,
+                            "zone": ice_policy.zone_json().0,
+                            "zones": ice_policy.zone_json().1,
                         }),
                     )
                     .await;
@@ -617,7 +619,7 @@ pub async fn handle_agent_socket(
                     crate::hub::AgentZoneIcePolicy {
                         policy_revision: 0,
                         strict: true,
-                        allowed_countries: std::collections::HashSet::new(),
+                        ..Default::default()
                     },
                 );
                 None
@@ -629,7 +631,7 @@ pub async fn handle_agent_socket(
                 crate::hub::AgentZoneIcePolicy {
                     policy_revision: 0,
                     strict: true,
-                    allowed_countries: std::collections::HashSet::new(),
+                    ..Default::default()
                 },
             );
             None
@@ -1757,27 +1759,30 @@ fn compute_ice_policy_from_snapshot(
         return crate::hub::AgentZoneIcePolicy {
             policy_revision: 0,
             strict: false,
-            allowed_countries: std::collections::HashSet::new(),
+            ..Default::default()
         };
     };
     if net.zones.is_empty() {
         return crate::hub::AgentZoneIcePolicy {
             policy_revision: net.zone_revision,
             strict: false,
-            allowed_countries: std::collections::HashSet::new(),
+            ..Default::default()
         };
     }
+    // FR-121 — every policy carries the tenant's zones, for the session route.
+    let zones = crate::hub::zone_route_infos(&net.zones);
     let cc = agent_effective_country(state, agent);
     match resolve_device_zone(&net.zones, agent.pinned_zone_id.as_deref(), cc.as_deref()) {
         DeviceZoneResolution::Unconfigured => crate::hub::AgentZoneIcePolicy {
             policy_revision: net.zone_revision,
             strict: false,
-            allowed_countries: std::collections::HashSet::new(),
+            ..Default::default()
         },
         DeviceZoneResolution::UnresolvedStrict => crate::hub::AgentZoneIcePolicy {
             policy_revision: net.zone_revision,
             strict: true,
-            allowed_countries: std::collections::HashSet::new(),
+            zones,
+            ..Default::default()
         },
         DeviceZoneResolution::Resolved(zone) => {
             let strict = zone.cross_zone_mode == CrossZoneMode::RouterOnly;
@@ -1798,6 +1803,8 @@ fn compute_ice_policy_from_snapshot(
                 policy_revision: net.zone_revision,
                 strict,
                 allowed_countries,
+                zone: Some(zone.id.clone()),
+                zones,
             }
         }
     }

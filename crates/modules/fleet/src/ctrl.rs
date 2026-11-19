@@ -171,12 +171,15 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                         .collect::<std::collections::HashSet<_>>()
                 })
                 .unwrap_or_default();
+            let (zone, zones) = crate::hub::AgentZoneIcePolicy::zone_from_json(&ctrl);
             if hub.set_agent_zone_ice_policy(
                 aid,
                 crate::hub::AgentZoneIcePolicy {
                     policy_revision,
                     strict,
                     allowed_countries,
+                    zone,
+                    zones,
                 },
             ) && let Some(tid) = ctrl
                 .get("tenant_id")

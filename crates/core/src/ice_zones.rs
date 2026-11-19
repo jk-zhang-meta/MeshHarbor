@@ -291,6 +291,45 @@ pub struct Filtered {
     pub reason: &'static str,
 }
 
+/// FR-121 — the connection address of an ICE candidate line, when it is an
+/// IP literal: the fifth token of both a trickled `candidate:<foundation>
+/// <component> <transport> <priority> <addr> …` and an SDP `a=candidate:…`
+/// line. `None` for an mDNS `.local` name or a malformed line.
+pub fn candidate_ip(candidate: &str) -> Option<IpAddr> {
+    candidate.split_whitespace().nth(4)?.parse().ok()
+}
+
+/// FR-121 — is `ip` publicly routable, i.e. could it sit in another country?
+/// Private (RFC 1918), loopback, link-local, CGNAT (100.64/10, which is also
+/// the mesh), unique-local (fc00::/7), multicast and the unspecified address
+/// are not. Documentation ranges count as public: they never carry real
+/// traffic, so they are placed in no zone, which is strict.
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || (o[0] == 100 && (o[1] & 0xc0) == 64))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
 /// Keep only the ICE URLs whose server is in `zone`, dropping an
 /// [`IceServer`] whose URL list empties. `zone == None` (the device's own zone
 /// is unknown) keeps nothing.
@@ -336,6 +375,52 @@ pub fn keep_in_zone(
 mod tests {
     use super::*;
     use BusinessZone::{Mainland, NonMainland};
+
+    /// FR-121 — only a publicly routable address can sit in another
+    /// country: LAN, CGNAT/mesh, link-local, ULA and documentation ranges
+    /// never count as one.
+    #[test]
+    fn only_routable_addresses_are_public() {
+        for ip in [
+            "192.168.1.2",
+            "10.0.0.1",
+            "172.16.5.4",
+            "100.64.7.14",
+            "127.0.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "fd72:6f6f:6d6c::1",
+            "fe80::1",
+            "::1",
+            "::ffff:192.168.1.2",
+        ] {
+            assert!(!is_public_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "198.51.100.7",
+            "100.128.0.1",
+            "203.0.113.9",
+            "2001:db8::5",
+            "::ffff:192.0.2.7",
+        ] {
+            assert!(is_public_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    /// FR-121 — the address token of both candidate shapes; a name is none.
+    #[test]
+    fn candidate_ip_reads_both_shapes_and_skips_names() {
+        let trickled =
+            "candidate:4 1 udp 1686052607 198.51.100.9 54323 typ srflx raddr 10.0.0.2 rport 1";
+        let sdp = "a=candidate:1 1 udp 2122260223 2001:db8::9 54321 typ host";
+        let mdns = "candidate:5 1 udp 2122260223 4a5b6c7d-0000-1111-2222-333344445555.local 54324 typ host";
+        assert_eq!(
+            candidate_ip(trickled),
+            Some("198.51.100.9".parse().unwrap())
+        );
+        assert_eq!(candidate_ip(sdp), Some("2001:db8::9".parse().unwrap()));
+        assert_eq!(candidate_ip(mdns), None);
+    }
 
     #[test]
     fn host_of_reads_every_ice_url_shape() {

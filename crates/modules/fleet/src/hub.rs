@@ -35,7 +35,9 @@ use meshharbor_remote_control::models::{
     RecordCap, RpcCap, SessionPhase, SessionPolicy,
 };
 use meshharbor_remote_control::permissions::Permissions;
-use meshharbor_remote_control::session::{ClientTx, FileChildControllerScope, LiveSession};
+use meshharbor_remote_control::session::{
+    ClientTx, FileChildControllerScope, LiveSession, ZoneRoute,
+};
 use meshharbor_remote_control::signaling::{
     AgentCloseReason, ClientMsg, IceServer, LIMIT_NO_COMMON_CODEC, LocalRelayDescriptor, Role,
     ServerMsg,
@@ -77,6 +79,17 @@ pub const FILE_CHILD_REVOKE_ACK_TIMEOUT: std::time::Duration = std::time::Durati
 /// range — so a malicious controller can't coerce the agent's TURN client into
 /// probing an arbitrary host. (Media is DTLS-E2E regardless, but keeping the
 /// agent pointed only at overlay IPs bounds the blast radius to its own mesh.)
+/// FR-121 — the candidate line inside a trickled ICE candidate: the browser
+/// sends `{ candidate, sdpMid, … }`, an agent may send the bare string.
+/// `None` for an end-of-candidates marker or an unknown shape.
+fn candidate_text(candidate: &serde_json::Value) -> Option<&str> {
+    match candidate {
+        serde_json::Value::String(s) => Some(s.as_str()),
+        other => other.get("candidate")?.as_str(),
+    }
+    .filter(|s| !s.is_empty())
+}
+
 fn is_overlay_relay_ip(ip: &str) -> bool {
     match ip.parse::<std::net::IpAddr>() {
         // 100.64.0.0/10 == 100.64.0.0 – 100.127.255.255
@@ -781,11 +794,143 @@ pub struct HubInner {
 }
 
 /// Per-device Logical Network Zone ICE/STUN policy cached on the Hub.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentZoneIcePolicy {
     pub policy_revision: u64,
     pub strict: bool,
     pub allowed_countries: std::collections::HashSet<String>,
+    /// FR-121 — the zone the device resolved to (`None`: unresolved, which
+    /// is strict, or a tenant without zones when `zones` is empty).
+    pub zone: Option<String>,
+    /// FR-121 — the tenant's zones, as a session route needs them: to place
+    /// an address that belongs to no device (a controller's candidate).
+    pub zones: Arc<Vec<ZoneRouteInfo>>,
+}
+
+/// FR-121 — one logical network zone, as the hub routes a session by it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ZoneRouteInfo {
+    pub id: String,
+    pub auto_countries: Vec<String>,
+    pub is_default: bool,
+    /// `cross_zone_mode == RouterOnly`: this zone meets others only through
+    /// its gateways.
+    pub router_only: bool,
+}
+
+/// FR-121 — a tenant's zones as the hub routes a remote-desktop session.
+pub fn zone_route_infos(
+    zones: &[meshharbor_remote_control::models::NetworkZone],
+) -> Arc<Vec<ZoneRouteInfo>> {
+    Arc::new(
+        zones
+            .iter()
+            .map(|z| ZoneRouteInfo {
+                id: z.id.clone(),
+                auto_countries: z
+                    .auto_countries
+                    .iter()
+                    .map(|c| c.to_ascii_uppercase())
+                    .collect(),
+                is_default: z.is_default,
+                router_only: z.cross_zone_mode
+                    == meshharbor_remote_control::models::CrossZoneMode::RouterOnly,
+            })
+            .collect(),
+    )
+}
+
+impl AgentZoneIcePolicy {
+    /// FR-121 — the zone fields for the cross-pod `zone_policy` ctrl event.
+    pub fn zone_json(&self) -> (serde_json::Value, serde_json::Value) {
+        (
+            serde_json::json!(self.zone),
+            serde_json::to_value(self.zones.as_ref()).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// FR-121 — read them back; absent (an older pod) is no zones.
+    pub fn zone_from_json(ctrl: &serde_json::Value) -> (Option<String>, Arc<Vec<ZoneRouteInfo>>) {
+        (
+            ctrl.get("zone").and_then(|v| v.as_str()).map(str::to_owned),
+            Arc::new(
+                ctrl.get("zones")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
+            ),
+        )
+    }
+}
+
+/// FR-121 — where a device or an address sits among a tenant's zones, the
+/// hub's mirror of `DeviceZoneResolution`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoneRes<'a> {
+    Unconfigured,
+    Unresolved,
+    Resolved(&'a ZoneRouteInfo),
+}
+
+impl<'a> ZoneRes<'a> {
+    fn of_policy(p: &'a AgentZoneIcePolicy) -> Self {
+        if p.zones.is_empty() {
+            // A strict policy with no zone table is the fail-closed reading
+            // of a zone snapshot that could not be read: unresolved, never
+            // "no zones".
+            return if p.strict {
+                ZoneRes::Unresolved
+            } else {
+                ZoneRes::Unconfigured
+            };
+        }
+        match p
+            .zone
+            .as_deref()
+            .and_then(|id| p.zones.iter().find(|z| z.id == id))
+        {
+            Some(z) => ZoneRes::Resolved(z),
+            None => ZoneRes::Unresolved,
+        }
+    }
+
+    /// An address that is no device's: its country's zone, else the default
+    /// zone — `resolve_device_zone` without a pin.
+    fn of_country(zones: &'a [ZoneRouteInfo], country: Option<&str>) -> Self {
+        if zones.is_empty() {
+            return ZoneRes::Unconfigured;
+        }
+        if let Some(cc) = country.map(str::trim).filter(|c| !c.is_empty())
+            && let Some(z) = zones
+                .iter()
+                .find(|z| z.auto_countries.iter().any(|a| a.eq_ignore_ascii_case(cc)))
+        {
+            return ZoneRes::Resolved(z);
+        }
+        match zones.iter().find(|z| z.is_default) {
+            Some(z) => ZoneRes::Resolved(z),
+            None => ZoneRes::Unresolved,
+        }
+    }
+}
+
+/// FR-121 — the mesh's own pair rule (`network_zones::pair_requires_backbone_only`):
+/// may these two meet only through the zone gateways?
+fn zones_need_gateways(a: ZoneRes<'_>, b: ZoneRes<'_>) -> bool {
+    match (a, b) {
+        (ZoneRes::Unconfigured, ZoneRes::Unconfigured) => false,
+        (ZoneRes::Unresolved, _) | (_, ZoneRes::Unresolved) => true,
+        (ZoneRes::Resolved(za), ZoneRes::Resolved(zb)) => {
+            za.id != zb.id && (za.router_only || zb.router_only)
+        }
+        _ => true,
+    }
+}
+
+/// FR-121 — the `typ` of an ICE candidate line (`host`, `srflx`, `relay`, …).
+fn candidate_type(candidate: &str) -> Option<&str> {
+    let mut it = candidate.split_whitespace();
+    it.by_ref().find(|t| *t == "typ")?;
+    it.next()
 }
 
 /// MeshHarbor #21 — the hub's relay-locality gate (`app.rc_ice_zone_mode`):
@@ -1017,10 +1162,24 @@ impl Hub {
                             .cloned()
                             .collect(),
                     };
+                    // FR-121 — two readings of one revision disagree on the
+                    // zone: unresolved (strict) until a newer one settles it.
+                    let zone = if cur.zone == policy.zone {
+                        cur.zone.clone()
+                    } else {
+                        None
+                    };
+                    let zones = if policy.zones.is_empty() {
+                        cur.zones.clone()
+                    } else {
+                        policy.zones.clone()
+                    };
                     let combined = AgentZoneIcePolicy {
                         policy_revision: policy.policy_revision,
                         strict,
                         allowed_countries,
+                        zone,
+                        zones,
                     };
                     let changed = &combined != cur;
                     e.insert(combined);
@@ -1071,6 +1230,232 @@ impl Hub {
             return zones.url_matches_countries(geoip, url, allowed);
         }
         false
+    }
+
+    /// FR-121 — does `agent_id` sit in a STRICT logical network zone (its
+    /// zone's links are gateway-only)?
+    pub fn agent_zone_strict(&self, agent_id: ObjectId) -> bool {
+        self.agent_zone_ice_policy(agent_id)
+            .is_some_and(|p| p.strict)
+    }
+
+    /// FR-121 — the zone route of a session from a controller to `agent_id`.
+    /// The controller is placed by its local agent (`ctrl_agent`, from the
+    /// loopback-TURN descriptor) when that agent is a device of the same org
+    /// connected here; otherwise it sits on no mesh node and each of its
+    /// public addresses is placed on its own as it arrives.
+    pub fn zone_route_for(&self, agent_id: ObjectId, ctrl_agent: Option<ObjectId>) -> ZoneRoute {
+        let Some(target) = self.agent_zone_ice_policy(agent_id) else {
+            return ZoneRoute::Open;
+        };
+        let target_res = ZoneRes::of_policy(&target);
+        if target_res == ZoneRes::Unconfigured {
+            return ZoneRoute::Open;
+        }
+        let org = self.agent_org(agent_id);
+        let ctrl = ctrl_agent
+            .filter(|c| *c != agent_id && org.is_some() && self.agent_org(*c) == org)
+            .and_then(|c| self.agent_zone_ice_policy(c));
+        match ctrl {
+            Some(c) if zones_need_gateways(ZoneRes::of_policy(&c), target_res) => ZoneRoute::Mesh,
+            Some(_) => ZoneRoute::Direct {
+                mesh_fallback: true,
+            },
+            None => ZoneRoute::Direct {
+                mesh_fallback: false,
+            },
+        }
+    }
+
+    /// FR-121 — may this candidate from the controller reach `agent_id`
+    /// under `route`? `mesh_ip` is the controller's own overlay address (its
+    /// loopback-TURN relay). On `Mesh` only that relay passes. On `Direct` a
+    /// name (mDNS `.local`) or a non-public address passes — it cannot sit in
+    /// another zone by itself — as does the mesh relay with `mesh_fallback`;
+    /// a public address passes only when its zone may meet the device
+    /// directly by the mesh's own pair rule. No GeoIP places it nowhere,
+    /// which is strict.
+    pub fn zone_admits_candidate(
+        &self,
+        agent_id: ObjectId,
+        route: ZoneRoute,
+        mesh_ip: Option<std::net::IpAddr>,
+        candidate: &str,
+    ) -> bool {
+        let ip = meshharbor_core::ice_zones::candidate_ip(candidate);
+        match route {
+            ZoneRoute::Open => true,
+            ZoneRoute::Mesh => {
+                candidate_type(candidate) == Some("relay") && ip.is_some() && ip == mesh_ip
+            }
+            ZoneRoute::Direct { mesh_fallback } => {
+                let Some(ip) = ip else { return true };
+                if mesh_fallback && Some(ip) == mesh_ip {
+                    return true;
+                }
+                if !meshharbor_core::ice_zones::is_public_ip(ip) {
+                    return true;
+                }
+                let Some(target) = self.agent_zone_ice_policy(agent_id) else {
+                    return false;
+                };
+                let country = self
+                    .inner
+                    .geoip
+                    .get()
+                    .and_then(|g| g.security_lookup(ip).country_code)
+                    .map(|c| c.to_ascii_uppercase());
+                let addr = match country {
+                    Some(cc) => ZoneRes::of_country(&target.zones, Some(&cc)),
+                    None => ZoneRes::Unresolved,
+                };
+                !zones_need_gateways(addr, ZoneRes::of_policy(&target))
+            }
+        }
+    }
+
+    /// FR-121 — may this candidate from the DEVICE reach the controller?
+    /// Only on `Mesh` is anything withheld: the device's own relay inside the
+    /// mesh (a non-public relay address) is the one path that route allows.
+    fn zone_admits_agent_candidate(route: ZoneRoute, candidate: &str) -> bool {
+        match route {
+            ZoneRoute::Mesh => {
+                candidate_type(candidate) == Some("relay")
+                    && meshharbor_core::ice_zones::candidate_ip(candidate)
+                        .is_some_and(|ip| !meshharbor_core::ice_zones::is_public_ip(ip))
+            }
+            _ => true,
+        }
+    }
+
+    /// FR-121 — may a trickled candidate from `role` reach the other side?
+    fn zone_admits_trickle(
+        &self,
+        agent_id: ObjectId,
+        session_id: ObjectId,
+        role: Role,
+        candidate: &serde_json::Value,
+    ) -> bool {
+        let Some(c) = candidate_text(candidate) else {
+            return true; // end-of-candidates
+        };
+        let (route, mesh_ip) = self.session_zone(session_id);
+        let ok = match role {
+            Role::Controller => self.zone_admits_candidate(agent_id, route, mesh_ip, c),
+            Role::Agent => Self::zone_admits_agent_candidate(route, c),
+        };
+        if !ok {
+            info!(
+                session = %session_id.to_hex(),
+                agent = %agent_id.to_hex(),
+                ?route,
+                from = ?role,
+                "rc zone route: a candidate the zones do not allow dropped"
+            );
+        }
+        ok
+    }
+
+    /// FR-121 — a session's route and the controller's mesh relay address.
+    fn session_zone(&self, session_id: ObjectId) -> (ZoneRoute, Option<std::net::IpAddr>) {
+        self.inner
+            .sessions
+            .get(&session_id)
+            .map(|arc| {
+                let s = arc.value().lock();
+                // Only an overlay address counts as the relay: a descriptor
+                // naming a public one would let a relay candidate out of the
+                // mesh.
+                (
+                    s.zone_route,
+                    s.local_relay
+                        .as_ref()
+                        .filter(|lr| is_overlay_relay_ip(&lr.overlay_ip))
+                        .and_then(|lr| lr.overlay_ip.parse().ok()),
+                )
+            })
+            .unwrap_or((ZoneRoute::Open, None))
+    }
+
+    /// FR-121 — the browser named its local agent only with its offer (the
+    /// request never waits for the probe): adopt that descriptor and settle
+    /// the zone route with it, before the offer goes on to the device.
+    pub fn settle_zone_route(
+        &self,
+        session_id: ObjectId,
+        local_relay: Option<LocalRelayDescriptor>,
+    ) {
+        let Some(lr) = local_relay else { return };
+        let Some(arc) = self.inner.sessions.get(&session_id).map(|e| e.value().clone()) else {
+            return;
+        };
+        let agent_id = {
+            let mut s = arc.lock();
+            if s.local_relay.is_some() || s.zone_route == ZoneRoute::Open {
+                return;
+            }
+            s.local_relay = Some(lr.clone());
+            s.agent_id
+        };
+        let ctrl = lr.agent_id.as_deref().and_then(|a| ObjectId::parse_str(a).ok());
+        let route = self.zone_route_for(agent_id, ctrl);
+        arc.lock().zone_route = route;
+        info!(
+            session = %session_id.to_hex(),
+            ?route,
+            "rc zone route: settled with the controller's local agent"
+        );
+    }
+
+    /// FR-121 — `sdp` without the `a=candidate:` lines `route` does not let
+    /// reach the other side (`from_controller`: the offer's, else the answer's).
+    fn zone_filter_sdp(
+        &self,
+        agent_id: ObjectId,
+        session_id: ObjectId,
+        from_controller: bool,
+        sdp: String,
+    ) -> String {
+        let (route, mesh_ip) = self.session_zone(session_id);
+        if route == ZoneRoute::Open {
+            return sdp;
+        }
+        let mut dropped = 0usize;
+        let kept: String = sdp
+            .split_inclusive('\n')
+            .filter(|line| {
+                let l = line.trim_start();
+                let keep = !l.starts_with("a=candidate:")
+                    || if from_controller {
+                        self.zone_admits_candidate(agent_id, route, mesh_ip, l)
+                    } else {
+                        Self::zone_admits_agent_candidate(route, l)
+                    };
+                dropped += usize::from(!keep);
+                keep
+            })
+            .collect();
+        if dropped > 0 {
+            info!(
+                session = %session_id.to_hex(),
+                agent = %agent_id.to_hex(),
+                ?route,
+                dropped,
+                "rc zone route: SDP candidates the zones do not allow dropped"
+            );
+        }
+        kept
+    }
+
+    /// FR-121 — the ICE servers a viewer of `agent_id` may use: the device's
+    /// own strict-zone list when it has one, else `ice` unchanged. The viewer
+    /// builds its peer connection from `/api/turn/credentials`, so without
+    /// this its relay candidate would sit on a server outside the zone.
+    pub fn viewer_zone_ice(&self, agent_id: ObjectId, ice: Vec<IceServer>) -> Vec<IceServer> {
+        if !self.agent_zone_strict(agent_id) {
+            return ice;
+        }
+        self.zone_local_ice(agent_id, ObjectId::new(), ice)
     }
 
     /// #21 relay locality + Logical Network Zone strict country gate: the ICE
@@ -2289,6 +2674,14 @@ impl Hub {
         // Loopback-TURN corp-relay (Phase 2): remember the controller's local
         // agent TURN descriptor so `forward_offer` can hand the REMOTE agent a
         // relay it reaches over the overlay. Validated at use, not here.
+        // FR-121 — the zone route, from the controller's local agent when its
+        // descriptor names one.
+        let ctrl_agent = local_relay
+            .as_ref()
+            .and_then(|lr| lr.agent_id.as_deref())
+            .and_then(|a| ObjectId::parse_str(a).ok());
+        live.zone_route = self.zone_route_for(agent_id, ctrl_agent);
+        let zone_route = live.zone_route;
         live.local_relay = local_relay;
         live.rc_overlay = rc_overlay;
         // FR-27 — `deliver_consent` needs the mode to know whether a host-side
@@ -2414,6 +2807,8 @@ impl Hub {
             tenant_name,
             // #1882 — may this session's ICE use the overlay (default off).
             rc_overlay,
+            // FR-121 — how the zones let this session's media travel.
+            zone_route: zone_route.wire().map(str::to_owned),
             // FR-101 P2 — the org's policy, for an agent that names `ask`
             // features on its prompt and enforces the rest. Left off the
             // frame when it restricts nothing, as before the field.
@@ -2548,9 +2943,11 @@ impl Hub {
                             self.inner.turn.cfg_for(region.as_deref()),
                         ),
                     );
+                    let zone_route = self.session_zone(session_id).0.wire().map(str::to_owned);
                     let _ = tx.try_send(ServerMsg::Ready {
                         session_id,
                         ice_servers: ice,
+                        zone_route,
                     });
                 }
                 // Negotiating reaper: consent granted + `Ready` pushed, but the
@@ -2739,6 +3136,10 @@ impl Hub {
         // The relay IS an overlay path (the agent reaches it over the mesh), so
         // with the device's `rc_overlay` off it would be a candidate the agent
         // only discards; withholding it here also covers agents too old to.
+        // FR-121 — under zones the device relays through its OWN loopback TURN
+        // (a netstack node could not reach the controller's over an OS socket).
+        let local_relay =
+            local_relay.filter(|_| self.session_zone(session_id).0 == ZoneRoute::Open);
         if let Some(lr) = local_relay {
             if !rc_overlay {
                 info!(
@@ -2766,6 +3167,9 @@ impl Hub {
                 );
             }
         }
+        // FR-121 — a candidate the browser gathered before its offer rides in
+        // the SDP, not a trickle; it gets the same zone check.
+        let sdp = self.zone_filter_sdp(agent_id, session_id, true, sdp);
         let agent_tx = self.agent_tx(agent_id)?;
         agent_tx
             .try_send(ServerMsg::SdpOffer {
@@ -2775,6 +3179,7 @@ impl Hub {
                 ice_servers: ice,
                 extauth_mac,
                 peer_auth,
+                zone_route: self.session_zone(session_id).0.wire().map(str::to_owned),
             })
             .map_err(|_| Error::SendFailed)
     }
@@ -2812,6 +3217,7 @@ impl Hub {
             )
         };
         let tx = controller_tx.ok_or(Error::SendFailed)?;
+        let sdp = self.zone_filter_sdp(agent_id, session_id, false, sdp);
         let ice = self.zone_local_ice(
             agent_id,
             session_id,
@@ -2884,6 +3290,11 @@ impl Hub {
             let s = arc.value().lock();
             (s.agent_id, s.controller_tx.clone())
         };
+        // FR-121 — neither side hears of a candidate the zones do not let
+        // meet the other, so neither ICE agent ever sends there.
+        if !self.zone_admits_trickle(agent_id, session_id, role, &candidate) {
+            return Ok(());
+        }
         let dest_tx = match role {
             Role::Controller => self.agent_tx(agent_id)?, // controller → agent
             Role::Agent => controller_tx.ok_or(Error::SendFailed)?,
@@ -5168,6 +5579,11 @@ impl Hub {
                     }
                     Ok((s.agent_id, s.controller_tx.clone()))
                 })?;
+                // FR-121 — a file child is a peer connection of the same
+                // session: the same zone rule, both ways.
+                if !self.zone_admits_trickle(agent_id, session_id, role, &candidate) {
+                    return Ok(());
+                }
                 let dest_tx = match role {
                     Role::Controller => self.agent_tx(agent_id)?,
                     Role::Agent => controller_tx.ok_or(Error::SendFailed)?,
@@ -5245,9 +5661,11 @@ impl Hub {
                     sdp,
                     extauth_mac,
                     peer_auth,
+                    local_relay,
                 },
             ) => {
                 self.check_session_party(ctx, session_id)?;
+                self.settle_zone_route(session_id, local_relay);
                 self.forward_offer(session_id, sdp, extauth_mac, peer_auth)
             }
             (
@@ -6242,6 +6660,7 @@ mod tests {
             sdp: "v=0".into(),
             extauth_mac: None,
             peer_auth: None,
+            local_relay: None,
         };
         let offers_at_agent = |rx: &mut mpsc::Receiver<ServerMsg>| {
             let mut n = 0;
@@ -6364,6 +6783,7 @@ mod tests {
                 sdp: "v=0".into(),
                 extauth_mac: None,
                 peer_auth: None,
+                local_relay: None,
             },
         )
         .unwrap();
@@ -6472,6 +6892,7 @@ mod tests {
                     sdp: "v=0".into(),
                     extauth_mac: None,
                     peer_auth: None,
+                    local_relay: None,
                 },
             )
             .unwrap();
@@ -7023,6 +7444,7 @@ mod tests {
                 sdp: "v=0".into(),
                 extauth_mac: None,
                 peer_auth: None,
+                local_relay: None,
             },
         )
         .unwrap();
@@ -7695,6 +8117,7 @@ mod tests {
                 sdp: "v=0".into(),
                 extauth_mac: None,
                 peer_auth: None,
+                local_relay: None,
             },
             ClientMsg::Ice {
                 session_id: sid,
@@ -9346,6 +9769,7 @@ mod tests {
                 None,
                 Some(LocalRelayDescriptor {
                     turn_port: 47989,
+                    agent_id: None,
                     overlay_ip: overlay_ip.into(),
                     username: "1700000600:uid".into(),
                     credential: "abcd1234".into(),
@@ -10734,6 +11158,178 @@ mod ice_zone_gate_tests {
         );
     }
 
+    /// FR-121 — a session follows the zones the way the mesh does: no zones,
+    /// nothing changes; a controller on a mesh node in the same zone meets the
+    /// device directly with a mesh fallback, one in another gateway-only zone
+    /// only over the mesh; a controller on no mesh node is checked address by
+    /// address, and with no GeoIP a public address is nowhere, so refused.
+    #[tokio::test]
+    async fn a_session_follows_the_zone_routes() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let tenant = ObjectId::new();
+        let (host, same, other, bare) = (
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+        );
+        for a in [host, same, other] {
+            let _ = hub.register_agent(a, tenant, ObjectId::new(), OsKind::Linux, 3, false, false);
+        }
+        let zones = Arc::new(vec![
+            ZoneRouteInfo {
+                id: "cn".into(),
+                auto_countries: vec!["CN".into()],
+                is_default: false,
+                router_only: true,
+            },
+            ZoneRouteInfo {
+                id: "rest".into(),
+                auto_countries: vec![],
+                is_default: true,
+                router_only: true,
+            },
+        ]);
+        let pol = |zone: &str| AgentZoneIcePolicy {
+            policy_revision: 1,
+            strict: true,
+            allowed_countries: ["CN".to_string()].into_iter().collect(),
+            zone: Some(zone.into()),
+            zones: zones.clone(),
+        };
+        assert!(hub.set_agent_zone_ice_policy(host, pol("cn")));
+        assert!(hub.set_agent_zone_ice_policy(same, pol("cn")));
+        assert!(hub.set_agent_zone_ice_policy(other, pol("rest")));
+
+        assert_eq!(
+            hub.zone_route_for(bare, None),
+            ZoneRoute::Open,
+            "no policy, no zones"
+        );
+        // A snapshot the server could not read is strict with no zone table:
+        // unresolved, so nothing meets it directly by an address.
+        let unread = ObjectId::new();
+        let _ = hub.register_agent(unread, tenant, ObjectId::new(), OsKind::Linux, 3, false, false);
+        assert!(hub.set_agent_zone_ice_policy(
+            unread,
+            AgentZoneIcePolicy {
+                policy_revision: 0,
+                strict: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            hub.zone_route_for(unread, None),
+            ZoneRoute::Direct { mesh_fallback: false }
+        );
+        assert_eq!(
+            hub.zone_route_for(host, Some(same)),
+            ZoneRoute::Direct {
+                mesh_fallback: true
+            }
+        );
+        assert_eq!(hub.zone_route_for(host, Some(other)), ZoneRoute::Mesh);
+        assert_eq!(
+            hub.zone_route_for(host, None),
+            ZoneRoute::Direct {
+                mesh_fallback: false
+            }
+        );
+        assert_eq!(
+            hub.zone_route_for(host, Some(ObjectId::new())),
+            ZoneRoute::Direct {
+                mesh_fallback: false
+            },
+            "a local agent this hub does not know places nobody"
+        );
+
+        let mesh_ip: Option<std::net::IpAddr> = Some("100.64.7.20".parse().unwrap());
+        let relay =
+            "candidate:7 1 udp 16777215 100.64.7.20 40001 typ relay raddr 127.0.0.1 rport 1";
+        let stray_relay =
+            "candidate:8 1 udp 16777215 100.64.7.99 40002 typ relay raddr 127.0.0.1 rport 1";
+        let public =
+            "candidate:4 1 udp 1686052607 198.51.100.7 54323 typ srflx raddr 10.0.0.2 rport 1";
+        let lan = "candidate:3 1 udp 2122260223 192.168.1.30 54322 typ host";
+        let mdns = "candidate:5 1 udp 2122260223 4a5b6c7d-0000-1111-2222-333344445555.local 54324 typ host";
+        let open = ZoneRoute::Open;
+        let direct = ZoneRoute::Direct {
+            mesh_fallback: true,
+        };
+        let bare_direct = ZoneRoute::Direct {
+            mesh_fallback: false,
+        };
+        assert!(hub.zone_admits_candidate(host, open, None, public));
+        // Mesh: the controller's own mesh relay and nothing else.
+        assert!(hub.zone_admits_candidate(host, ZoneRoute::Mesh, mesh_ip, relay));
+        for c in [stray_relay, public, lan, mdns] {
+            assert!(
+                !hub.zone_admits_candidate(host, ZoneRoute::Mesh, mesh_ip, c),
+                "{c}"
+            );
+        }
+        // Direct: LAN, names and (with the fallback) the mesh relay pass; a
+        // public address with no GeoIP is in no zone.
+        for c in [lan, mdns, relay] {
+            assert!(hub.zone_admits_candidate(host, direct, mesh_ip, c), "{c}");
+        }
+        assert!(hub.zone_admits_candidate(host, bare_direct, None, lan));
+        assert!(!hub.zone_admits_candidate(host, direct, mesh_ip, public));
+        // The device's side on Mesh: its relay inside the mesh only.
+        let agent_relay =
+            "candidate:9 1 udp 16777215 100.64.7.14 40003 typ relay raddr 127.0.0.1 rport 1";
+        assert!(Hub::zone_admits_agent_candidate(
+            ZoneRoute::Mesh,
+            agent_relay
+        ));
+        assert!(!Hub::zone_admits_agent_candidate(ZoneRoute::Mesh, public));
+        assert!(!Hub::zone_admits_agent_candidate(ZoneRoute::Mesh, lan));
+        assert!(Hub::zone_admits_agent_candidate(direct, public));
+
+        assert_eq!(candidate_type(public), Some("srflx"));
+        assert_eq!(
+            candidate_text(&serde_json::json!({ "candidate": public, "sdpMid": "0" })),
+            Some(public)
+        );
+        assert_eq!(
+            candidate_text(&serde_json::json!({ "candidate": "" })),
+            None
+        );
+    }
+
+    /// FR-121 — the zones a device is placed in by address: a country's zone,
+    /// else the default; and the mesh's pair rule over them.
+    #[test]
+    fn addresses_are_placed_and_paired_like_devices() {
+        let zones = vec![
+            ZoneRouteInfo {
+                id: "cn".into(),
+                auto_countries: vec!["CN".into()],
+                is_default: false,
+                router_only: true,
+            },
+            ZoneRouteInfo {
+                id: "rest".into(),
+                is_default: true,
+                ..Default::default()
+            },
+        ];
+        let cn = ZoneRes::of_country(&zones, Some("cn"));
+        let de = ZoneRes::of_country(&zones, Some("DE"));
+        assert!(matches!(cn, ZoneRes::Resolved(z) if z.id == "cn"));
+        assert!(matches!(de, ZoneRes::Resolved(z) if z.id == "rest"));
+        assert!(!zones_need_gateways(cn, cn), "same zone meets directly");
+        assert!(zones_need_gateways(cn, de), "either side gateway-only");
+        assert!(!zones_need_gateways(de, de));
+        assert!(zones_need_gateways(ZoneRes::Unresolved, de));
+        assert_eq!(ZoneRes::of_country(&[], Some("CN")), ZoneRes::Unconfigured);
+        assert!(!zones_need_gateways(
+            ZoneRes::Unconfigured,
+            ZoneRes::Unconfigured
+        ));
+    }
+
     #[tokio::test]
     async fn zone_ice_policy_rejects_stale_and_combines_equal_revisions_conservatively() {
         let (audit, _ev) = AuditSink::channel_for_tests();
@@ -10750,6 +11346,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: false,
                 allowed_countries: set(&["US", "HK"]),
+                ..Default::default()
             },
         ));
         assert!(hub.set_agent_zone_ice_policy(
@@ -10758,6 +11355,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: true,
                 allowed_countries: set(&["CN", "HK"]),
+                ..Default::default()
             },
         ));
         assert_eq!(
@@ -10766,6 +11364,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: true,
                 allowed_countries: set(&["CN", "HK"]),
+                ..Default::default()
             })
         );
 
@@ -10776,6 +11375,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: false,
                 allowed_countries: set(&[]),
+                ..Default::default()
             },
         ));
         assert_eq!(
@@ -10791,6 +11391,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: true,
                 allowed_countries: set(&["CN", "JP"]),
+                ..Default::default()
             },
         ));
         assert_eq!(
@@ -10799,6 +11400,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 3,
                 strict: true,
                 allowed_countries: set(&["CN"]),
+                ..Default::default()
             })
         );
 
@@ -10809,6 +11411,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 2,
                 strict: false,
                 allowed_countries: set(&["US"]),
+                ..Default::default()
             },
         ));
         assert!(hub.set_agent_zone_ice_policy(
@@ -10817,6 +11420,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 4,
                 strict: false,
                 allowed_countries: set(&["US"]),
+                ..Default::default()
             },
         ));
         assert_eq!(
@@ -10825,6 +11429,7 @@ mod ice_zone_gate_tests {
                 policy_revision: 4,
                 strict: false,
                 allowed_countries: set(&["US"]),
+                ..Default::default()
             })
         );
     }

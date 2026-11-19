@@ -3885,6 +3885,9 @@ export interface LocalRelayDescriptor {
   overlay_ip: string
   username: string
   credential: string
+  /** FR-121 — the local agent's id: which mesh node (and zone) this
+   *  browser sits on. Absent from an older agent. */
+  agent_id?: string
 }
 
 /** Primary loopback port the agent serves its descriptor + clipboard
@@ -3923,8 +3926,43 @@ export function parseLocalRelayDescriptor(raw: unknown): LocalRelayDescriptor | 
   ) {
     return null
   }
-  return { turn_port, overlay_ip, username, credential }
+  const agentId = typeof o.agent_id === 'string' && o.agent_id.length > 0 ? o.agent_id : undefined
+  return agentId
+    ? { turn_port, overlay_ip, username, credential, agent_id: agentId }
+    : { turn_port, overlay_ip, username, credential }
 }
+
+/** FR-121 — one probe per minute at most: every connect asks, and the zone
+ *  route needs the answer before the request, so a page with no local agent
+ *  pays the probe's wait once, not on every reconnect. */
+let localRelayProbeCache: { at: number; desc: Promise<LocalRelayDescriptor | null> } | null = null
+export function probeLocalRelayCached(now = Date.now()): Promise<LocalRelayDescriptor | null> {
+  if (!localRelayProbeCache || now - localRelayProbeCache.at > 60_000) {
+    localRelayProbeCache = { at: now, desc: probeLocalRelay() }
+  }
+  return localRelayProbeCache.desc
+}
+
+/** FR-121 — what the viewer does with `rc:ready`'s `zone_route`. Under
+ *  zones the hub settles the route only at the offer and passes on just the
+ *  candidates it allows (on `mesh`, the two ends' relays inside the mesh), so
+ *  the viewer needs one thing: its local agent's relay among its servers,
+ *  whenever it has one. Without a local agent nothing can be added, and a
+ *  cross-zone session can then only fail (`ZONE_REQUIRES_MESH_CONTROLLER`).
+ *  Pure + exported for tests. */
+export function zoneRoutePlan(
+  zoneRoute: unknown,
+  desc: LocalRelayDescriptor | null,
+): 'none' | 'add_local_relay' | 'no_local_agent' {
+  if (zoneRoute === undefined || zoneRoute === null) return 'none'
+  return desc ? 'add_local_relay' : 'no_local_agent'
+}
+
+/** FR-121 — the one sentence for a session the zones route through the mesh
+ *  when this browser is on no mesh node. */
+export const ZONE_REQUIRES_MESH_CONTROLLER =
+  '这台设备和你不在同一个网络分区时，只能经网格连接：请从已登录 MeshHarbor 的设备上发起远控。'
+
 
 /** Discover any enrolled local agent's loopback TURN endpoint. */
 export async function probeLocalRelay(): Promise<LocalRelayDescriptor | null> {
@@ -4827,6 +4865,13 @@ export function useRemoteControl(
   }
   const fileChildRevoked = ref(false)
   let lastIceServers: IceServer[] = []
+  /** FR-121 — the local agent's descriptor this session's request carried,
+   *  for `rc:ready`'s zone route. */
+  let sessionLocalRelay: LocalRelayDescriptor | null = null
+  let sessionLocalRelayProbe: Promise<LocalRelayDescriptor | null> | null = null
+  let requestCarriedLocalRelay = false
+  /** FR-121 — the zone route the last `rc:ready` named, for the failure hint. */
+  let sessionZoneRoute: string | null = null
   let fileChildKeyPair: { pair: CryptoKeyPair; publicKeyB64: string } | null = null
   let fileChildRegistered = false
   let fileChildRegistrationPromise: Promise<{ pair: CryptoKeyPair; publicKeyB64: string }> | null =
@@ -8814,6 +8859,34 @@ export function useRemoteControl(
       }
       const livePc = pc
       if (!livePc) return // unreachable: 'proceed' implies pc exists (TS narrowing only)
+      // FR-121 — under zones, the local agent's relay joins the servers
+      // before the offer; a probe still running gets a short wait here (never
+      // before the request), and what it finds rides the offer.
+      sessionZoneRoute = typeof msg.zone_route === 'string' ? msg.zone_route : null
+      if (sessionZoneRoute && !sessionLocalRelay && sessionLocalRelayProbe) {
+        const found = await Promise.race([
+          sessionLocalRelayProbe,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 600)),
+        ])
+        if (found && !sessionLocalRelay) sessionLocalRelay = found
+        if (!pc || pc !== livePc) return
+      }
+      if (zoneRoutePlan(sessionZoneRoute, sessionLocalRelay) === 'add_local_relay' && sessionLocalRelay) {
+        const local = localRelayIceServer(sessionLocalRelay)
+        if (!lastIceServers.some((s) => JSON.stringify(s.urls) === JSON.stringify(local.urls))) {
+          const servers = [local, ...lastIceServers]
+          try {
+            livePc.setConfiguration?.({
+              iceServers: servers as RTCIceServer[],
+              bundlePolicy: 'max-bundle',
+            })
+            lastIceServers = servers
+          } catch (e) {
+            console.warn('[rc] zone route: could not add the local relay', e)
+          }
+        }
+        console.info('[rc] zone route', sessionZoneRoute, 'via local agent', sessionLocalRelay.overlay_ip)
+      }
       markConnect('ready')
       phase.value = 'negotiating'
       armSignalingTimeout()
@@ -8825,6 +8898,10 @@ export function useRemoteControl(
           t: 'rc:sdp.offer',
           session_id: msg.session_id,
           sdp: offer.sdp,
+        }
+        // FR-121 — a descriptor found after the request rides the offer.
+        if (sessionLocalRelay && !requestCarriedLocalRelay && !externalMode && !sharedMode) {
+          offerFrame.local_relay = sessionLocalRelay
         }
         // FR-52 P4e — an external session's offer is SEALED: a MAC over this
         // browser's DTLS certificate, under the key only this page and the
@@ -9295,6 +9372,11 @@ export function useRemoteControl(
     // session id is still known. A recorder that already painted is a
     // drop, reported at first paint; logConnectTiming just releases it.
     if (connectTiming) logConnectTiming('retried')
+    // FR-121 — a zoned session from a browser on no mesh node that did not
+    // connect: the likely reason, said once, while the ladder keeps trying.
+    if (zoneRoutePlan(sessionZoneRoute, sessionLocalRelay) === 'no_local_agent') {
+      notice.value = ZONE_REQUIRES_MESH_CONTROLLER
+    }
     // Free the agent's session slot BEFORE retrying: the default
     // max_simultaneous_sessions is 1, and the agent only notices a
     // dead peer on its own timeout — without this hangup the fresh
@@ -9621,10 +9703,18 @@ export function useRemoteControl(
       appliedToPc: false,
     }
     let attemptPc: RTCPeerConnection | null = null
-    if (localRelayEnabled.value && !externalMode && !sharedMode) {
-      void probeLocalRelay().then((desc) => {
+    // FR-121 — always asked (cached): the hub routes the session by the
+    // zone of the mesh node this browser sits on, which only the local agent
+    // can name. Applied to the peer here only when the operator opted in;
+    // otherwise the hub's `rc:ready` decides (`zoneRoutePlan`).
+    const localRelayProbe: Promise<LocalRelayDescriptor | null> | null =
+      !externalMode && !sharedMode ? probeLocalRelayCached() : null
+    if (localRelayProbe) {
+      void localRelayProbe.then((desc) => {
         if (!desc || gen !== connectGen) return
         localRelayState.desc = desc
+        sessionLocalRelay = desc
+        if (!localRelayEnabled.value) return
         if (attemptPc && pc === attemptPc && !localRelayState.appliedToPc) {
           localRelayState.appliedToPc = true
           iceServers = [localRelayIceServer(desc), ...iceServers]
@@ -9767,7 +9857,7 @@ export function useRemoteControl(
     // resolved by now, prepend it immediately; if it is still pending,
     // do not block rc:session.request — the completion callback above
     // updates the live PC via setConfiguration for trickle ICE.
-    const earlyLocalRelay = localRelayState.desc
+    const earlyLocalRelay = localRelayEnabled.value ? localRelayState.desc : null
     if (earlyLocalRelay && !localRelayState.appliedToPc) {
       localRelayState.appliedToPc = true
       iceServers = [localRelayIceServer(earlyLocalRelay), ...iceServers]
@@ -11268,6 +11358,12 @@ export function useRemoteControl(
     // Hub adds `turn:{overlay_ip}:{turn_port}` to the REMOTE agent's ICE servers
     // — it reaches that TURN over the overlay (WFP-permitted). Absent → the Hub
     // pushes nothing extra, so old servers/agents are unaffected.
+    // FR-121 — never waited for: the request goes when the socket and the
+    // TURN credentials are ready, and a descriptor found later rides the
+    // offer instead (the hub settles the zone route there).
+    sessionLocalRelay = localRelayState.desc
+    sessionLocalRelayProbe = localRelayProbe
+    requestCarriedLocalRelay = !!localRelayState.desc
     if (localRelayState.desc) {
       requestPayload.local_relay = localRelayState.desc
     }
