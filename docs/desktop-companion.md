@@ -7,9 +7,11 @@ records each result).
 `meshharbor-desktop` is the tray + window app a person uses on an enrolled machine. It is a
 **thin client of the local daemon**: every number it shows and every change it makes goes
 through the LocalAPI to `meshharbord`, which runs as SYSTEM / root (or as the user, for a
-per-user install). The companion never holds a user credential and never talks to the
-server on its own — when it needs server data (the devices this machine can see), the
-daemon fetches it with the device's agent token and hands it over.
+per-user install). The companion never holds a device credential and never fetches device
+data from the server on its own — when it needs server data (the devices this machine can see),
+the daemon fetches it with the device's agent token and hands it over. The one thing it does
+hold is the signed-in person's own account session, in the OS vault, which is what opens a
+remote screen already signed in (§14).
 
 It is also one of the consent **prompt surfaces** (FR-27): when the daemon cannot draw a
 native panel, the companion shows the "someone wants to view your screen" prompt.
@@ -812,3 +814,109 @@ flowchart TD
   (`forget_installed_version`, `companion.rs:322`).
 - **Kill switch:** `MESHHARBORD_COMPANION_SYNC=0` turns off FR-117's two additions, the Linux sync and
   the Windows retry. Windows' refresh at start is older and stays.
+
+## 14. Where a remote screen opens
+
+**Connect** on the Devices page (`cmd_open_remote`, `commands.rs:2016`), the tray's **Open
+MeshHarbor** and a viewer link followed inside the account window all end in one function,
+`open_authenticated_web` (`commands.rs:1863`). On every OS the page gets a window of its own,
+already signed in. Which window is the only thing that differs:
+
+| OS | The window | Engine | How it starts | With no Chromium-family browser |
+|---|---|---|---|---|
+| Windows | the companion's own (`meshharbor-web`, 1280×800; one window, a second Connect navigates it) | WebView2 | `open_web_window_for_server` (`commands.rs:1745`), on the main thread | does not arise: WebView2 is part of the system |
+| macOS | an **app window** of Chrome, Edge, Chromium or Brave: no tabs, no address bar, the page's title in the title bar | that browser's | `/usr/bin/open -n -a <bundle> --args --app=<url>` | a tab of the default browser |
+| Linux | the same, of `google-chrome`, `microsoft-edge`, `chromium` or `brave-browser` | that browser's | `<launcher> --app=<url>` | a tab of the default browser |
+
+Which browser and which command line is `meshharbor_node_core::app_window`
+(`crates/agent-core/src/app_window.rs`): `find_browser` (`:81`) and `launch_command` (`:135`)
+are pure and take the platform as an argument, so both platforms' rules are tested on any host;
+`open` (`:191`) runs the result. It lives in node-core because the companion crate links the
+system webview and builds only where that is installed.
+
+- **Which browser.** The first of Chrome, Edge, Chromium, Brave that is installed. The order is
+  between browsers, not between folders: on macOS a Chrome in `~/Applications` wins over an Edge
+  in `/Applications`. On Linux a launcher counts when it is on `PATH` or is one of Flatpak's
+  exported launchers (`/var/lib/flatpak/exports/bin`, `~/.local/share/flatpak/exports/bin`:
+  neither is on `PATH`). A relative `PATH` entry never names the browser.
+- **Why not the system webview.** The viewer decodes video with WebCodecs (`VideoDecoder`,
+  `EncodedVideoChunk`, `RTCRtpScriptTransform`, VP9 4:4:4 and HEVC: `ui/src/workers/rc-*-worker.ts`)
+  over WebRTC, and has only ever been proven on Chromium. WebKitGTK keeps WebRTC off unless the
+  embedder turns on a setting it marks experimental (`enable-webrtc`), so Linux has no system
+  webview to rely on for it. WKWebView has the APIs, but nobody has run the viewer's VP9 4:4:4
+  and HEVC paths there, and one engine on all three platforms is worth more than owning the
+  window. The account window (`account_window.rs`), which shows lists
+  and no video, is the system webview on every OS.
+- **The fallback says so.** `cmd_open_remote` answers a `WebSurface` (`commands.rs:1815`):
+  `window`, `app_window` or `browser_tab`. On `browser_tab` the Devices page shows "The remote
+  screen opened in a tab of your default browser. Install Chrome, Edge, Chromium or Brave and it
+  opens in a window of its own." (`viewerNoteFor`, `front/devices.js:89`), and `desktop.log`
+  carries the reason: no such browser, or the one found did not start.
+
+⚠️ **macOS starts the browser through LaunchServices, never the bundle's executable.** A process
+started as a child inherits its starter as the *responsible process*, and macOS asks and records
+that process's privacy decisions (Local Network, camera, screen recording) under the responsible
+one's name. When the browser was not running, the instance the companion starts is the person's
+browser from then on. Measured on macOS 27 with `responsibility_get_pid_responsible_for_pid`:
+started directly, Chrome's responsible process was the process tree that started it; started
+through `open`, it was Chrome itself. `-n` is required: without it `open` only activates a
+running browser and drops the arguments; with it the second instance hands its command line to
+the running one and exits, and the window opens there.
+
+⚠️ **No `--window-size`.** A browser that was not running reads it for every window it opens
+until it quits, the person's ordinary ones included. The browser picks the size.
+
+⚠️ **It is the person's own browser profile.** Every Connect opens a new window (Windows reuses
+its one), the session cookie lands in that profile exactly as it did in the default-browser tab,
+and the window is listed under the browser in the Dock or task bar. The RDP bridge
+(`window.__MESHHARBOR_DESKTOP_BRIDGE__`) exists only in the Windows window; elsewhere the page
+offers RDP the way it does in any browser.
+
+### Signed in already
+
+The window never shows a login page, and no credential is ever in a URL or on a command line.
+The mechanism is the same on all three OSes:
+
+```mermaid
+sequenceDiagram
+    participant C as companion
+    participant V as OS vault
+    participant S as server
+    participant W as the window (WebView2 / app window / tab)
+    C->>V: this account's refresh token (the tray's Sign in… put it there)
+    C->>S: POST /api/auth/refresh
+    S-->>C: access token
+    C->>C: bind 127.0.0.1:<port>, route /open/<nonce>
+    C->>S: POST /api/native/handoff {target, form_origin: http://127.0.0.1:<port>}
+    S-->>C: one-use ticket (60 s at most), post_url
+    C->>W: open http://127.0.0.1:<port>/open/<nonce>
+    W->>C: GET /open/<nonce>
+    C-->>W: a page that posts the ticket to post_url
+    W->>S: POST /api/native/handoff/consume (Origin: the loopback origin)
+    S-->>W: session cookies + 303 /native-session-complete
+    W->>S: POST /api/native/handoff/complete
+    S-->>W: the target: /tenant/<tid>/agent/<aid>/remote
+```
+
+- `user_account::prepare` (`user_account.rs:148`) does the companion's half; the listener is
+  `BrowserHandoff` (`crates/agent-core/src/user_session.rs:298`), bound **before** the server
+  authorizes that exact origin. The server's half is `handoff_issue` / `handoff_consume` /
+  `handoff_complete` (`crates/api/src/routes/native_session.rs:577`, `:627`, `:711`).
+- The launch URL carries no ticket and no session, so it is harmless in a process list. The
+  ticket is single-use and bound to the loopback origin that asked for it.
+- Nobody signed in from the tray: Connect answers "Sign in to your account once from the tray
+  before opening a web session", and nothing opens. Device enrollment is not a user login.
+
+### A machine whose config the companion cannot read
+
+The viewer link needs this device's server and tenant. A per-user install reads them from its
+config. A **system install on macOS or Linux** keeps the config for root alone (it holds the
+device's tokens) while the companion runs as the person at the screen, so `enrollment_target`
+(`commands.rs:2052`) falls back to the device service's own `Status`, whose `orgs` rows carry
+each enrollment's server and tenant and are served on the person socket (§6). Before that
+fallback, Connect on such a machine ended at "Loading config: …" and opened nothing. A config
+that loads is the answer, right or wrong; the service is asked only when the file cannot be read.
+
+**Testing it.** `cargo test -p meshharbor-node-core --lib app_window` (the browser choice and the
+command line, both platforms, on any host); `node agents/meshharbor-desktop/tests/devices-viewer-note.cjs`
+(what the page says).
