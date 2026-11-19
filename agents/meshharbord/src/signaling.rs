@@ -3963,8 +3963,6 @@ async fn handle_server_msg(
             // read it back when building the peer: that's where the
             // track codec + encoder backend are actually bound.
             let our_caps = crate::encode::caps::detect();
-            let chosen = crate::encode::caps::pick_best_codec(&browser_caps, &our_caps.codecs);
-            pending_codecs.insert(session_id, chosen.clone());
 
             // Phase Y.3: figure out which video transport this
             // session will use. Honour `preferred_transport` only if
@@ -3979,6 +3977,18 @@ async fn handle_server_msg(
                     None
                 }
             });
+            // On the WebRTC track, only a codec the track can encode on this
+            // build (`rtp_track_codecs`): a Linux host advertises `av1` for
+            // its DataChannel pump, and a track pinned to it ships nothing.
+            let chosen = if negotiated_transport.is_none() {
+                crate::encode::caps::pick_best_codec(
+                    &browser_caps,
+                    &crate::encode::caps::rtp_track_codecs(&our_caps.codecs),
+                )
+            } else {
+                crate::encode::caps::pick_best_codec(&browser_caps, &our_caps.codecs)
+            };
+            pending_codecs.insert(session_id, chosen.clone());
             // Stash for the upcoming SdpOffer handler — that's where
             // AgentPeer::new is called and the media pump is built.
             // Without this stash the negotiation result was logged but

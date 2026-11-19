@@ -2714,6 +2714,27 @@ fn allow_sw_heavy_override() -> bool {
         .unwrap_or(false)
 }
 
+/// The advertised codecs the WebRTC video TRACK can carry on this build.
+///
+/// `codecs` says what an encoder on this host opens, and on Linux that
+/// includes `av1` wherever FFmpeg opens `av1_nvenc` (a WSL distro on an
+/// NVIDIA GPU does). But the track's AV1 opener
+/// (`encode::open_for_codec_av1`) has only the Windows MF backend, so a
+/// track pinned to AV1 there gets a `NoopEncoder` and ships no frame.
+/// Field (2026-11-19): every WSL distro on the RTX host connected with a
+/// black picture over the WebRTC transport. AV1 on such a host is the
+/// `data-channel-av1` transport's, which has its own FFmpeg pump.
+pub fn rtp_track_codecs(codecs: &[String]) -> Vec<String> {
+    codecs
+        .iter()
+        .filter(|c| {
+            !c.eq_ignore_ascii_case("av1")
+                || cfg!(all(target_os = "windows", feature = "mf-encoder"))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Intersection + priority for codec negotiation (Phase 2 2B.2).
 /// Takes the browser-advertised codec list + the agent's supported
 /// codec list, returns the best codec both sides support.
@@ -2743,6 +2764,26 @@ pub fn pick_best_codec(browser_caps: &[String], agent_caps: &[String]) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Linux host that opens `av1_nvenc` advertises `av1`, but its WebRTC
+    /// track has no AV1 encoder: the track's pick must skip it.
+    #[test]
+    fn the_track_picks_only_a_codec_it_can_encode() {
+        let agent: Vec<String> = ["h264", "h265", "av1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let browser: Vec<String> = ["vp8", "vp9", "h264", "av1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let picked = pick_best_codec(&browser, &rtp_track_codecs(&agent));
+        if cfg!(all(target_os = "windows", feature = "mf-encoder")) {
+            assert_eq!(picked, "av1");
+        } else {
+            assert_eq!(picked, "h264");
+        }
+    }
 
     /// FR-119 P1 — `fps-high` is off unless `MESHHARBORD_FPS_HIGH=1`: until P2
     /// builds the grant, a viewer must not be offered a picker the agent can
