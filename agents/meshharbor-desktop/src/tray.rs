@@ -42,10 +42,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let account_status =
         MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
     let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
+    // Unlike `tailscale logout`, this ends only the account session (shares,
+    // permissions, the web hand-off): the device keeps its own credential, so
+    // it stays on the network and its Devices list stays. Said in the label,
+    // because the operator read the list staying as sign-out not working.
     let sign_out = MenuItem::with_id(
         app,
         "user_sign_out",
-        "Sign out of account…",
+        "Sign out of account (device stays on the network)…",
         false,
         None::<&str>,
     )?;
