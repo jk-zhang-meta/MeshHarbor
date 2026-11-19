@@ -118,10 +118,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "user_sign_out" => {
             tauri::async_runtime::spawn(async {
                 let result = async {
-                    let server =
-                        tokio::task::spawn_blocking(crate::commands::server_origin_blocking)
-                            .await
-                            .map_err(|_| "Cannot resolve account server".to_string())??;
+                    let server = crate::commands::server_origin().await?;
                     crate::user_account::sign_out(&server).await
                 }
                 .await;
@@ -674,9 +671,7 @@ fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = async {
-            let server = tokio::task::spawn_blocking(crate::commands::server_origin_blocking)
-                .await
-                .map_err(|_| "Cannot resolve account server".to_string())??;
+            let server = crate::commands::server_origin().await?;
             crate::commands::open_authenticated_web(
                 &app,
                 &server,

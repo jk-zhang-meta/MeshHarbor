@@ -548,11 +548,9 @@ pub async fn cmd_join_preview(code: String) -> Result<JoinPreview, String> {
     let code = device_invite::normalize_code(&code)
         .ok_or_else(|| "An invite code is 8 digits, like 1234-5678.".to_string())?;
     // The server this machine already talks to, or the default one.
-    let server = tokio::task::spawn_blocking(server_origin_blocking)
+    let server = server_origin()
         .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_else(|| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
+        .unwrap_or_else(|_| meshharbor_node_core::device_login::DEFAULT_SERVER.to_string());
     let p = device_invite::preview(&server, &code)
         .await
         .map_err(|e| e.to_string())?;
@@ -1037,9 +1035,9 @@ pub async fn cmd_system_grant_state() -> SystemGrantState {
     if !can {
         return SystemGrantState::default();
     }
-    let signed_in = match tokio::task::spawn_blocking(server_origin_blocking).await {
-        Ok(Ok(server)) => crate::user_account::has_saved_session(&server).await,
-        _ => false,
+    let signed_in = match server_origin().await {
+        Ok(server) => crate::user_account::has_saved_session(&server).await,
+        Err(_) => false,
     };
     SystemGrantState {
         offered: true,
@@ -1068,9 +1066,7 @@ pub async fn cmd_grant_system() -> Result<StatusReport, String> {
     if !can {
         return Err("This operating-system account has no administrator rights.".into());
     }
-    let server = tokio::task::spawn_blocking(server_origin_blocking)
-        .await
-        .map_err(|e| format!("task join: {e}"))??;
+    let server = server_origin().await?;
     let token = crate::user_account::mint_promotion_token(&server, &tenant).await?;
     promote_personal_device_to_system(server, token, name).await?;
     Ok(cmd_status().await)
@@ -1936,15 +1932,80 @@ pub(crate) async fn open_account_viewer_link<R: tauri::Runtime>(
     }
 }
 
-/// The configured server origin (normalised, validated) — the target for
-/// the S7 "Open MeshHarbor" entry points. Blocking (config load + service
-/// probe): call from the blocking pool.
-pub fn server_origin_blocking() -> Result<String, String> {
-    let is_scm = probe_service_state().0 == "scmService";
-    let path = active_config_path(is_scm)?;
-    let cfg = config::load(&path)
-        .map_err(|_| "This device isn't enrolled yet — no server to open.".to_string())?;
-    let server = cfg.server_url.trim().trim_end_matches('/').to_string();
+/// What the companion can learn about this device's enrollments: the config
+/// file when it can read it, and otherwise what the device service reports.
+struct EnrollmentSources {
+    /// The config, when the companion can read it.
+    cfg: Option<AgentConfig>,
+    /// Whether a config file is there at all (readable or not).
+    file_exists: bool,
+    /// The device service's own enrollments (`NodeStatus::orgs`). Asked for
+    /// only when the file did not answer; empty when the service did not
+    /// either, or predates multi-org.
+    orgs: Vec<localapi::OrgStatus>,
+}
+
+/// Read [`EnrollmentSources`].
+///
+/// A system install on macOS or Linux keeps its config for root alone (it
+/// holds the device's tokens), and the companion runs as the person at the
+/// screen: there the file never answers. Before the service was asked,
+/// Connect, the tray's Open MeshHarbor and Sign out all ended at an error on
+/// such a machine (field, a promoted MacBook, 2026-11-19). The service
+/// already tells the person socket which servers and tenants it is enrolled
+/// in, and that is all these need.
+///
+/// The file is read as a probe (`config::read_if_present`): the companion
+/// does not run on this config, so a file it cannot read is not the "host
+/// must be re-enrolled" emergency `config::load` reports.
+async fn enrollment_sources() -> EnrollmentSources {
+    let (cfg, file_exists) = tokio::task::spawn_blocking(|| {
+        let is_scm = probe_service_state().0 == "scmService";
+        match active_config_path(is_scm) {
+            Ok(path) => (config::read_if_present(&path), path.exists()),
+            Err(_) => (None, false),
+        }
+    })
+    .await
+    .unwrap_or((None, false));
+    let orgs = if cfg.is_some() {
+        Vec::new()
+    } else {
+        match localapi::connect().await {
+            Ok(mut client) => client.status().await.map(|s| s.orgs).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    };
+    EnrollmentSources {
+        cfg,
+        file_exists,
+        orgs,
+    }
+}
+
+/// The server origin of this device's primary enrollment (normalised,
+/// validated): the target of "Open MeshHarbor", and the account server Sign
+/// out speaks to.
+pub async fn server_origin() -> Result<String, String> {
+    let src = enrollment_sources().await;
+    primary_server_from(src.cfg.as_ref(), &src.orgs)
+}
+
+/// [`server_origin`]'s decision. A config that loaded is the answer, right
+/// or wrong; the service's report counts only when there is none.
+fn primary_server_from(
+    cfg: Option<&AgentConfig>,
+    orgs: &[localapi::OrgStatus],
+) -> Result<String, String> {
+    let server = match cfg {
+        Some(cfg) => cfg.server_url.as_str(),
+        None => orgs
+            .iter()
+            .find(|o| o.primary)
+            .map(|o| o.server_url.as_str())
+            .ok_or_else(|| "This device isn't enrolled yet — no server to open.".to_string())?,
+    };
+    let server = server.trim().trim_end_matches('/').to_string();
     if !server.starts_with("https://") && !server.starts_with("http://") {
         return Err("this device's config has no valid server URL".to_string());
     }
@@ -1955,9 +2016,7 @@ pub fn server_origin_blocking() -> Result<String, String> {
 /// the embedded window / browser.
 #[tauri::command]
 pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
-    let url = tokio::task::spawn_blocking(server_origin_blocking)
-        .await
-        .map_err(|e| format!("task join: {e}"))??;
+    let url = server_origin().await?;
     open_authenticated_web(
         &app,
         &url,
@@ -1977,17 +2036,8 @@ pub async fn cmd_open_account(
     if window.label() != "main" {
         return Err("Only the local desktop window may open the account centre".into());
     }
-    let server = tokio::task::spawn_blocking(|| {
-        let path = active_config_path(probe_service_state().0 == "scmService")?;
-        if !path.exists() {
-            return Ok(crate::account_window::DEFAULT_CENTER.to_owned());
-        }
-        let cfg = config::load(&path)
-            .map_err(|_| "Cannot load this device's account server configuration".to_owned())?;
-        Ok::<String, String>(cfg.server_url)
-    })
-    .await
-    .map_err(|_| "Cannot resolve the account centre")??;
+    let src = enrollment_sources().await;
+    let server = account_centre_from(src.cfg.as_ref(), src.file_exists, &src.orgs)?;
     let target = match section.as_str() {
         "devices" => meshharbor_node_core::user_session::WebTarget::MyDevices,
         "sent" => meshharbor_node_core::user_session::WebTarget::DeviceSharesSent,
@@ -2034,45 +2084,52 @@ pub async fn cmd_open_remote(
     .await
 }
 
-/// The `(server origin, tenant id)` of the enrollment `org` names: from the
-/// config file when the companion can read it, from the device service's own
-/// `Status` when it cannot.
-///
-/// A system install on macOS or Linux keeps its config for root alone (it
-/// holds the device's tokens), and the companion runs as the person at the
-/// screen: there the file never answers, and before this fallback Connect on
-/// such a machine ended at "Loading config: …" without opening anything
-/// (field, a promoted MacBook, 2026-11-19). The service already tells the
-/// person socket which servers and tenants it is enrolled in
-/// (`NodeStatus::orgs`), and that is all a viewer link needs.
-///
-/// A config that loads is the answer, right or wrong: the service is asked
-/// only when the file cannot be read at all. Either way the origin is this
-/// device's own enrollment, never the page's or a peer's.
+/// The `(server origin, tenant id)` of the enrollment `org` names, from
+/// [`enrollment_sources`]. Either way the origin is this device's own
+/// enrollment, never the page's or a peer's.
 async fn enrollment_target(org: Option<String>) -> Result<(String, String), String> {
-    let wanted = org.clone();
-    let from_file = tokio::task::spawn_blocking(move || {
-        let is_scm = probe_service_state().0 == "scmService";
-        let path = active_config_path(is_scm)?;
-        let cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
-        Ok::<_, String>(remote_target(&cfg, wanted.as_deref()))
-    })
-    .await
-    .map_err(|e| format!("task join: {e}"))?;
-    let unreadable = match from_file {
-        Ok(target) => return target,
-        Err(e) => e,
-    };
-    let Ok(mut client) = localapi::connect().await else {
-        return Err(unreadable);
-    };
-    match client.status().await {
+    let src = enrollment_sources().await;
+    remote_target_from(src.cfg.as_ref(), &src.orgs, org.as_deref())
+}
+
+/// [`enrollment_target`]'s decision. A config that loaded is the answer,
+/// right or wrong; the service's report counts only when there is none.
+fn remote_target_from(
+    cfg: Option<&AgentConfig>,
+    orgs: &[localapi::OrgStatus],
+    org: Option<&str>,
+) -> Result<(String, String), String> {
+    match cfg {
+        Some(cfg) => remote_target(cfg, org),
         // A service from before multi-org reports no enrollments.
-        Ok(status) if !status.orgs.is_empty() => {
-            remote_target_from_status(&status.orgs, org.as_deref())
-        }
-        _ => Err(unreadable),
+        None if orgs.is_empty() => Err(
+            "This device's configuration cannot be read here, and its service reported no \
+             enrollment. Is the MeshHarbor service running?"
+                .to_string(),
+        ),
+        None => remote_target_from_status(orgs, org),
     }
+}
+
+/// The account centre's server: this device's primary enrollment, and the
+/// default centre for a machine that is not enrolled at all. A config file
+/// that is there but tells nothing, with no service to ask, is an error
+/// rather than a guess.
+fn account_centre_from(
+    cfg: Option<&AgentConfig>,
+    file_exists: bool,
+    orgs: &[localapi::OrgStatus],
+) -> Result<String, String> {
+    if let Some(cfg) = cfg {
+        return Ok(cfg.server_url.clone());
+    }
+    if let Some(primary) = orgs.iter().find(|o| o.primary) {
+        return Ok(primary.server_url.trim().trim_end_matches('/').to_string());
+    }
+    if file_exists {
+        return Err("Cannot load this device's account server configuration".to_owned());
+    }
+    Ok(crate::account_window::DEFAULT_CENTER.to_owned())
 }
 
 /// The `(server origin, tenant id)` a "View screen" for a device in `org`
@@ -3781,7 +3838,10 @@ fn refresh_ok(surface: &'static str) {
 pub(crate) fn active_account_probe() -> (bool, Option<Invitations>, String) {
     let is_scm = probe_service_state().0 == "scmService";
     let path = active_config_path(is_scm).ok();
-    let cfg = path.as_ref().and_then(|p| config::load(p).ok());
+    // A probe, every few seconds: on a machine whose config the companion
+    // cannot read, `config::load` logged "the host must be re-enrolled" each
+    // time (field: fifteen lines a minute).
+    let cfg = path.as_ref().and_then(config::read_if_present);
     let enrolled = cfg.is_some();
     let invites = path.as_ref().and_then(invitations_at);
     let server = cfg
@@ -4682,6 +4742,114 @@ mod tests {
         assert!(remote_target_from_status(&orgs, Some("broken")).is_err());
         // No primary row at all (a secondary-only report) is refused too.
         assert!(remote_target_from_status(&orgs[1..], None).is_err());
+    }
+
+    fn status_orgs() -> Vec<localapi::OrgStatus> {
+        serde_json::from_value(serde_json::json!([
+            {"label": "primary", "server_url": "https://service.example/base/",
+             "tenant_id": "cccccccccccccccccccccccc", "primary": true,
+             "enabled": true, "connected": true},
+            {"label": "acme", "server_url": "https://acme-service.example",
+             "tenant_id": "dddddddddddddddddddddddd", "primary": false,
+             "enabled": true, "connected": true}
+        ]))
+        .expect("a minimal status parses")
+    }
+
+    /// Open MeshHarbor and Sign out: the config's server when the companion
+    /// can read the config, the device service's primary enrollment when it
+    /// cannot (a system install on macOS or Linux), and "not enrolled" only
+    /// when neither answers.
+    #[test]
+    fn the_primary_server_comes_from_the_file_then_from_the_service() {
+        let cfg = two_org_config();
+        let orgs = status_orgs();
+        // The file wins whenever it loaded, even against a different report.
+        assert_eq!(
+            primary_server_from(Some(&cfg), &orgs).unwrap(),
+            "https://meshharbor.itachi.fans"
+        );
+        assert_eq!(
+            primary_server_from(Some(&cfg), &[]).unwrap(),
+            "https://meshharbor.itachi.fans"
+        );
+        // No readable file: the service's primary enrollment, unslashed.
+        assert_eq!(
+            primary_server_from(None, &orgs).unwrap(),
+            "https://service.example/base"
+        );
+        // Neither: not enrolled. A secondary-only report is not a primary.
+        let none = primary_server_from(None, &[]).unwrap_err();
+        assert!(none.contains("isn't enrolled"), "{none}");
+        assert!(primary_server_from(None, &orgs[1..]).is_err());
+        // A file that loaded with a server that is no web origin is refused,
+        // and the service is not asked to paper over it.
+        let mut broken = two_org_config();
+        broken.server_url = "ftp://nope".into();
+        assert!(primary_server_from(Some(&broken), &orgs).is_err());
+        // The same check on the service's report.
+        let mut odd = status_orgs();
+        odd[0].server_url = "file:///etc".into();
+        assert!(primary_server_from(None, &odd).is_err());
+    }
+
+    /// Connect, by the same rule.
+    #[test]
+    fn the_remote_target_comes_from_the_file_then_from_the_service() {
+        let cfg = two_org_config();
+        let orgs = status_orgs();
+        let t = |s: &str, tid: &str| (s.to_string(), tid.to_string());
+        assert_eq!(
+            remote_target_from(Some(&cfg), &orgs, None).unwrap(),
+            t("https://meshharbor.itachi.fans", "aaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            remote_target_from(Some(&cfg), &orgs, Some("acme")).unwrap(),
+            t("https://acme.example", "bbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        // The file loaded and has no such org: refused, although the service
+        // reports one of that name.
+        let mut one_org = two_org_config();
+        one_org.orgs.clear();
+        assert!(remote_target_from(Some(&one_org), &orgs, Some("acme")).is_err());
+        // No readable file: the service's rows.
+        assert_eq!(
+            remote_target_from(None, &orgs, None).unwrap(),
+            t("https://service.example/base", "cccccccccccccccccccccccc")
+        );
+        assert_eq!(
+            remote_target_from(None, &orgs, Some("acme")).unwrap(),
+            t("https://acme-service.example", "dddddddddddddddddddddddd")
+        );
+        // Neither answers: an error that says where to look.
+        let none = remote_target_from(None, &[], None).unwrap_err();
+        assert!(none.contains("service"), "{none}");
+    }
+
+    /// The account centre: the device's own server, the default centre for a
+    /// machine that is not enrolled, and never a guess over an unreadable
+    /// file with no service to ask.
+    #[test]
+    fn the_account_centre_comes_from_the_file_then_from_the_service() {
+        let cfg = two_org_config();
+        let orgs = status_orgs();
+        assert_eq!(
+            account_centre_from(Some(&cfg), true, &orgs).unwrap(),
+            cfg.server_url
+        );
+        assert_eq!(
+            account_centre_from(None, false, &orgs).unwrap(),
+            "https://service.example/base"
+        );
+        assert_eq!(
+            account_centre_from(None, true, &orgs).unwrap(),
+            "https://service.example/base"
+        );
+        assert_eq!(
+            account_centre_from(None, false, &[]).unwrap(),
+            crate::account_window::DEFAULT_CENTER
+        );
+        assert!(account_centre_from(None, true, &[]).is_err());
     }
 
     /// FR-84 D5c — a rejected `cmd_devices` is `{code, message, status?}`,
