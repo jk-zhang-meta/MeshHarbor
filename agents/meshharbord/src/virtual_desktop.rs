@@ -123,7 +123,9 @@ pub struct HostFacts {
     /// The daemon itself was started with `DISPLAY` or `WAYLAND_DISPLAY`.
     pub display_env: bool,
     /// An X server answers on `/tmp/.X11-unix` (a stale socket does not count,
-    /// nor does the X server of a remote seatless session).
+    /// nor does an X server that is nobody's screen: a remote seatless
+    /// session's, an application's private `Xvfb`, WSLg's; see
+    /// [`unscreened_displays`]).
     pub live_x_server: bool,
 }
 
@@ -157,11 +159,12 @@ pub fn auto_decision(f: &HostFacts) -> Result<(), &'static str> {
 pub fn host_facts() -> HostFacts {
     let env_set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
     let sessions = graphical_sessions();
-    let remote_displays: Vec<u32> = sessions
+    let mut not_a_screen: Vec<u32> = sessions
         .iter()
         .filter(|g| g.remote_seatless)
         .filter_map(|g| g.display)
         .collect();
+    not_a_screen.extend(unscreened_displays());
     HostFacts {
         explicit: explicit_setting(),
         display_manager: ["/etc/systemd/system/display-manager.service"]
@@ -169,8 +172,62 @@ pub fn host_facts() -> HostFacts {
             .any(|p| Path::new(p).exists()),
         graphical_session: sessions.iter().any(|g| !g.remote_seatless),
         display_env: env_set("DISPLAY") || env_set("WAYLAND_DISPLAY"),
-        live_x_server: live_x_server(Path::new(X11_UNIX_DIR), &remote_displays),
+        live_x_server: live_x_server(Path::new(X11_UNIX_DIR), &not_a_screen),
     }
+}
+
+/// WSLg's X sockets (its rootless Xwayland, whose windows land on the Windows
+/// desktop). `/tmp/.X11-unix` on WSL is WSLg's directory.
+#[cfg(target_os = "linux")]
+const WSLG_X11_DIR: &str = "/mnt/wslg/.X11-unix";
+
+/// FR-120 — displays whose X server is nobody's screen, so they do not stop a
+/// host from getting its own desktop: an application's private `Xvfb`
+/// (`xvfb-run`, a headless browser's), which nobody can see, and WSLg's
+/// display, which cannot be captured (see the module note). Before this, one
+/// service under `xvfb-run` on a server, or WSLg on every WSL distro, read as
+/// "an X server is already running": no desktop, and Connect showed
+/// `no_display`. The daemon's own desktop then takes the next free display.
+#[cfg(target_os = "linux")]
+fn unscreened_displays() -> Vec<u32> {
+    let mut out: Vec<u32> = std::fs::read_dir(WSLG_X11_DIR)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| x_socket_display(&e.file_name().to_string_lossy()))
+        .collect();
+    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let dir = e.path();
+        let Ok(comm) = std::fs::read_to_string(dir.join("comm")) else {
+            continue;
+        };
+        if let Ok(cmdline) = std::fs::read(dir.join("cmdline"))
+            && let Some(n) = xvfb_display(comm.trim(), &cmdline)
+        {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// `X99` → 99.
+#[cfg(any(unix, test))]
+fn x_socket_display(name: &str) -> Option<u32> {
+    name.strip_prefix('X')?.parse().ok()
+}
+
+/// The display an `Xvfb` process serves, from its `comm` and NUL-separated
+/// `cmdline`; `None` for any other X server (Xorg, Xvnc, Xwayland: those may
+/// be someone's screen).
+#[cfg(any(target_os = "linux", test))]
+fn xvfb_display(comm: &str, cmdline: &[u8]) -> Option<u32> {
+    if comm != "Xvfb" {
+        return None;
+    }
+    cmdline
+        .split(|b| *b == 0)
+        .skip(1)
+        .find_map(|a| std::str::from_utf8(a).ok()?.strip_prefix(':')?.parse().ok())
 }
 
 /// FR-120 — one active graphical logind session, as the automatic decision
@@ -236,10 +293,10 @@ fn live_x_server(dir: &Path, ignore: &[u32]) -> bool {
     };
     entries.filter_map(|e| e.ok()).any(|e| {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(n) = name.strip_prefix('X') else {
+        if !name.starts_with('X') {
             return false;
-        };
-        !n.parse::<u32>().is_ok_and(|n| ignore.contains(&n))
+        }
+        !x_socket_display(&name).is_some_and(|n| ignore.contains(&n))
             && std::os::unix::net::UnixStream::connect(e.path()).is_ok()
     })
 }
@@ -2660,6 +2717,22 @@ mod tests {
             "nor a remote seatless session's own server (xrdp's)"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FR-120 — an application's private Xvfb is nobody's screen; every other
+    /// X server may be someone's.
+    #[test]
+    fn only_an_xvfb_is_nobodys_screen() {
+        let xvfb_run = b"Xvfb\0:99\0-screen\x000\x001280x900x24\0-nolisten\0tcp\0-auth\0/tmp/xvfb-run.X/Xauthority\0";
+        assert_eq!(xvfb_display("Xvfb", xvfb_run), Some(99));
+        assert_eq!(xvfb_display("Xvfb", b"/usr/bin/Xvfb\0-ac\0:7\0"), Some(7));
+        assert_eq!(xvfb_display("Xvfb", b"Xvfb\0"), None, "no display argument");
+        for other in ["Xorg", "Xvnc", "Xtigervnc", "Xwayland"] {
+            assert_eq!(xvfb_display(other, b"X\0:0\0"), None, "{other}");
+        }
+        assert_eq!(x_socket_display("X0"), Some(0));
+        assert_eq!(x_socket_display("X99"), Some(99));
+        assert_eq!(x_socket_display("Xfoo"), None);
     }
 
     /// FR-108 P2 — the config starts at the configured size exactly, declares

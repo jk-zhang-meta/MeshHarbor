@@ -4168,7 +4168,7 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
 fn maybe_start_automatic_virtual_desktop() -> Option<virtual_desktop::VirtualDesktop> {
     let facts = virtual_desktop::host_facts();
     if let Err(why) = virtual_desktop::auto_decision(&facts) {
-        tracing::debug!(why, "virtual-desktop: no automatic desktop (FR-120)");
+        tracing::info!(why, "virtual-desktop: no automatic desktop (FR-120)");
         return None;
     }
     let bundle = virtual_desktop::Bundle::find();

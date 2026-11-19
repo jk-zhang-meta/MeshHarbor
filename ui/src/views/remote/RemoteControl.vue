@@ -930,9 +930,12 @@
            reach the whole desktop. An injector that reaches nothing does not
            fail, so before this a GNOME Wayland session looked interactive and
            did nothing. Only for a session that HAS input: a view-only grant
-           is already its own state. -->
+           is already its own state. Not when the device cannot capture its
+           screen at all: that overlay is the one sentence (FR-120), and "your
+           input does not reach it" adds nothing to a session with no picture. -->
       <v-alert
         v-if="rc.inputReach.value && rc.inputGranted.value && rc.phase.value === 'connected'
+          && !rc.mediaUnavailable.value
           && rc.inputReach.value !== dismissedInputReach"
         type="warning"
         variant="tonal"
