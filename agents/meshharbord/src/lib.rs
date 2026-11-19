@@ -45,6 +45,8 @@ pub mod delegate_worker;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 pub mod derp;
 pub mod desktop_brief;
+#[cfg(target_os = "linux")]
+pub mod desktop_install;
 pub mod display_match;
 pub mod displays;
 #[cfg(target_os = "windows")]

@@ -4119,6 +4119,7 @@ fn maybe_start_virtual_desktop() -> Result<Option<virtual_desktop::VirtualDeskto
         wm: node_env("VIRTUAL_DESKTOP_WM").unwrap_or_else(|| "openbox".to_string()),
         startup,
         cookie_auth: false,
+        session: None,
     };
     let vd = virtual_desktop::start(&cfg).context("starting virtual desktop")?;
     // Point capture at the virtual display + (by default) pin media to TURNS/TCP.
@@ -4182,10 +4183,16 @@ fn maybe_start_automatic_virtual_desktop() -> Option<virtual_desktop::VirtualDes
                 }
             }
             virtual_desktop::mark_auto_started();
+            // FR-120 P4 — a host with no desktop installed gets one, in the
+            // background, when the daemon is root and the host has room.
+            if cfg.session.is_none() {
+                meshharbord::desktop_install::spawn_if_needed();
+            }
             tracing::info!(
                 display = vd.display(),
                 bundled = bundle.is_some(),
                 wm = %cfg.wm,
+                session = ?cfg.session,
                 "virtual-desktop: this host has no screen, so it got one by itself — capturing it (FR-120)"
             );
             Some(vd)

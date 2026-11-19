@@ -67,7 +67,8 @@ flowchart TD
 | P1 | Viewer auto-switch; no chooser when an automatic path exists | viewer `localStorage` `meshharbor:rdp-auto-fallback:v1:<device>` = `0` | ✅ shipped `8123cc10d`, deployed 2026-11-18 (server UI) |
 | P2 | Automatic virtual desktop on a screenless host (per-user daemons) | `MESHHARBORD_VIRTUAL_DESKTOP=0` | ✅ released in 0.4.173 (2026-11-18); browser session not yet field-verified |
 | P3 | Bundled X server + WM + terminal in the Linux packages | a package without the archive keeps `no_display` | ✅ released in 0.4.173: tar.gz + daemon .deb, amd64 + arm64 |
-| P4 | Connect / SSH option audit | — | planned |
+| P4 | A full desktop: the best installed session (Xfce first), and on a root host with none an automatic Xfce install | `MESHHARBORD_VIRTUAL_DESKTOP_INSTALL=0` | 🔨 0.4.175 |
+| P4b | Connect / SSH option audit | — | planned |
 | P5 | Docs: `docs/remote-control.md` §5.1f, `docs/README.md` row | — | ✅ with P2/P3 |
 
 ## Acceptance criteria
@@ -86,6 +87,7 @@ flowchart TD
   persists for the daemon's lifetime, so apps survive a reconnect. Cost: one idle Xvfb + twm +
   xterm (tens of MB) on each qualifying host.
 - ~~Root daemons are excluded~~ — reversed 2026-11-19 by the operator ("我要求拥有root权限的 headless机器 自动安装rdp 使得我们的远控可以使用"): root daemons get the automatic desktop too (0.4.174). A remote-control grant on such a host is a root desktop. The bundled desktop is used instead of installing xrdp: an xrdp install would open 3389 on every server (public relays included) and log in with system passwords, while the bundle needs no package, no port and no password.
+- 2026-11-19, operator: "那就让我们的软件自动下载桌面环境吧 要做好的 SOTA的 我不要只看到一个终端，没有root权限的我们不管" — a root host with no desktop installs Xfce itself (P4); per-user hosts keep the bundle.
 - **twm + xterm** are bundled (small, few libraries); openbox stays the configured mode's default
   and is preferred where the host has it.
 

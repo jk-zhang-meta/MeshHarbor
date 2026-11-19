@@ -96,6 +96,9 @@ pub struct Config {
     /// mode keeps `-ac`, because its desktop may be owned by another user who
     /// has no copy of the cookie.
     pub cookie_auth: bool,
+    /// FR-120 P4 — a full desktop session to run instead of `wm` + `startup`
+    /// (`startxfce4`, `mate-session`, …), when the host has one installed.
+    pub session: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -361,14 +364,274 @@ pub fn auto_config(bundle: Option<&Bundle>) -> Config {
             })
     };
     let wm = pick(&["openbox", "twm"], "twm").unwrap_or_else(|| "openbox".to_string());
-    let terminal = pick(&["x-terminal-emulator", "xterm"], "xterm");
+    let session = installed_session();
+    // A full desktop brings its own terminal; the bare one is the fallback.
+    let terminal = session
+        .is_none()
+        .then(|| pick(&["x-terminal-emulator", "xterm"], "xterm"))
+        .flatten();
     Config {
         resolution: tunnel_core::env::node_env("VIRTUAL_DESKTOP_RESOLUTION")
             .unwrap_or_else(|| "1920x1080".to_string()),
         wm,
         startup: terminal.into_iter().collect(),
         cookie_auth: true,
+        session,
     }
+}
+
+// ---------------------------------------------------------------------------
+// FR-120 P4 — a full desktop, not a terminal
+// ---------------------------------------------------------------------------
+
+/// The full desktop sessions the automatic desktop runs, best first, as
+/// (launcher, the binary that proves the desktop is installed). Xfce leads:
+/// it is the desktop built to run on a plain X server with no GPU, which is
+/// what a virtual display is. GNOME is absent on purpose: gnome-shell needs
+/// GL and a seat.
+pub const SESSIONS: &[(&str, &str)] = &[
+    ("startxfce4", "xfce4-session"),
+    ("mate-session", "mate-session"),
+    ("startlxqt", "lxqt-session"),
+    ("startlxde", "lxsession"),
+    ("startplasma-x11", "startplasma-x11"),
+];
+
+/// The best full desktop session installed on this host, if any.
+pub fn installed_session() -> Option<String> {
+    pick_session(|b| binary_on_path(b).is_some())
+}
+
+fn pick_session(installed: impl Fn(&str) -> bool) -> Option<String> {
+    SESSIONS
+        .iter()
+        .find(|(launcher, proof)| installed(launcher) && installed(proof))
+        .map(|(launcher, _)| launcher.to_string())
+}
+
+/// What a program needs to join the desktop, kept so a session can be
+/// started after [`start`] too (once the desktop got installed).
+#[derive(Debug, Clone)]
+struct DesktopEnv {
+    display: String,
+    auth: Option<std::path::PathBuf>,
+    path: Option<std::ffi::OsString>,
+    home: Option<std::path::PathBuf>,
+    locale_dir: Option<std::path::PathBuf>,
+    fonts_conf: Option<std::path::PathBuf>,
+    resources: Option<std::path::PathBuf>,
+    pgid: Option<i32>,
+}
+
+impl DesktopEnv {
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = Command::new(program);
+        cmd.env("DISPLAY", &self.display)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(a) = &self.auth {
+            cmd.env("XAUTHORITY", a);
+        }
+        if let Some(p) = &self.path {
+            cmd.env("PATH", p);
+        }
+        if let Some(h) = &self.home {
+            cmd.env("HOME", h).current_dir(h);
+        }
+        if let Some(l) = &self.locale_dir {
+            cmd.env("XLOCALEDIR", l);
+        }
+        if let Some(f) = &self.fonts_conf {
+            cmd.env("FONTCONFIG_FILE", f);
+        }
+        if let Some(r) = &self.resources {
+            cmd.env("XENVIRONMENT", r);
+        }
+        with_wslg_pulse(&mut cmd);
+        join_group(&mut cmd, self.pgid);
+        cmd
+    }
+}
+
+static DESKTOP_ENV: std::sync::Mutex<Option<DesktopEnv>> = std::sync::Mutex::new(None);
+
+/// Bumped by every [`teardown`] and every session start, so a session's
+/// supervisor knows when it is no longer the desktop's.
+static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The home of the daemon's account: `HOME`, else the password database (a
+/// root systemd service has no `HOME`).
+fn account_home() -> Option<std::path::PathBuf> {
+    if let Some(h) = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir()) {
+        return Some(h.into());
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: getpwuid returns a pointer into static storage or null; the
+        // directory string is copied out before any other passwd call.
+        unsafe {
+            let pw = libc::getpwuid(libc::geteuid());
+            if !pw.is_null() && !(*pw).pw_dir.is_null() {
+                let dir = std::ffi::CStr::from_ptr((*pw).pw_dir)
+                    .to_string_lossy()
+                    .into_owned();
+                if Path::new(&dir).is_dir() {
+                    return Some(dir.into());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// FR-120 P4 — Xfce's first start, decided ahead: the default panel (its
+/// first start otherwise asks the person to choose one, over a remote
+/// session), and no compositing (shadows and fades cost every frame a
+/// remote viewer is sent). Only files that do not exist yet are written, so
+/// a person's own settings always win.
+fn preseed_xfce(home: &Path) {
+    let dir = home.join(".config/xfce4/xfconf/xfce-perchannel-xml");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let panel = dir.join("xfce4-panel.xml");
+    if !panel.exists() {
+        for src in [
+            "/etc/xdg/xfce4/panel/default.xml",
+            "/etc/xdg/xdg-xfce/xfce4/panel/default.xml",
+        ] {
+            if std::fs::copy(src, &panel).is_ok() {
+                break;
+            }
+        }
+    }
+    let xfwm = dir.join("xfwm4.xml");
+    if !xfwm.exists() {
+        let _ = std::fs::write(&xfwm, XFWM4_XML);
+    }
+}
+
+const XFWM4_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+"#;
+
+/// The command line that starts `session` on its own session bus.
+fn session_argv(session: &str, dbus_launch: bool) -> Vec<String> {
+    if dbus_launch {
+        vec![
+            "dbus-launch".into(),
+            "--exit-with-session".into(),
+            session.into(),
+        ]
+    } else {
+        vec![session.into()]
+    }
+}
+
+/// Run `session` on the desktop and keep it running: a person who logs out
+/// of it, or a session that crashes, gets a fresh one (at most 5 within ten
+/// minutes, so a session that cannot start does not spin). Returns the first
+/// session's pid.
+fn spawn_session(env: &DesktopEnv, session: &str) -> Result<i32> {
+    if session.contains("xfce")
+        && let Some(h) = &env.home
+    {
+        preseed_xfce(h);
+    }
+    let gen_ = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let argv = session_argv(session, binary_on_path("dbus-launch").is_some());
+    let launch = move |env: &DesktopEnv| -> std::io::Result<Child> {
+        let mut cmd = env.command(&argv[0]);
+        cmd.args(&argv[1..]).env("XDG_SESSION_TYPE", "x11");
+        if let Some(rt) = env
+            .auth
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|d| d.join("runtime"))
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                let _ = std::fs::DirBuilder::new().mode(0o700).create(&rt);
+            }
+            if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+                cmd.env("XDG_RUNTIME_DIR", &rt);
+            }
+        }
+        cmd.spawn()
+    };
+    let mut child = launch(env).with_context(|| format!("starting {session}"))?;
+    let first = child.id() as i32;
+    let env = env.clone();
+    let session = session.to_string();
+    std::thread::Builder::new()
+        .name("vd-session".into())
+        .spawn(move || {
+            let mut restarts: Vec<Instant> = Vec::new();
+            loop {
+                let status = child.wait();
+                if SESSION_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen_ {
+                    return; // torn down, or replaced by another session
+                }
+                restarts.retain(|t| t.elapsed() < Duration::from_secs(600));
+                if restarts.len() >= 5 {
+                    warn!(%session, ?status, "virtual-desktop: the desktop session keeps ending — not restarting it again");
+                    return;
+                }
+                restarts.push(Instant::now());
+                info!(%session, ?status, "virtual-desktop: the desktop session ended — starting a fresh one");
+                std::thread::sleep(Duration::from_secs(2));
+                match launch(&env) {
+                    Ok(c) => {
+                        #[cfg(target_os = "linux")]
+                        if let Some(t) = VD_TREE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                            t.roots.push(c.id() as i32);
+                        }
+                        child = c;
+                    }
+                    Err(e) => {
+                        warn!(%session, %e, "virtual-desktop: could not start the desktop session again");
+                        return;
+                    }
+                }
+            }
+        })
+        .context("spawning the session supervisor")?;
+    Ok(first)
+}
+
+/// FR-120 P4 — replace the running desktop's window manager and terminal
+/// with `session` (a full desktop that was just installed), on the same X
+/// server, so `DISPLAY` and `XAUTHORITY` stay valid for every client.
+#[cfg(target_os = "linux")]
+pub fn switch_to_session(session: &str) -> Result<()> {
+    let env = DESKTOP_ENV
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .context("no virtual desktop is running")?;
+    {
+        let mut tree = VD_TREE.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tree.as_mut().context("no virtual desktop is running")?;
+        // roots[0] is the X server; the rest are the old WM and its apps.
+        for pid in t.roots.drain(1..) {
+            // SAFETY: plain signal + non-blocking reap of our own children.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let pid = spawn_session(&env, session)?;
+    if let Some(t) = VD_TREE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        t.roots.push(pid);
+    }
+    info!(%session, display = %env.display, "virtual-desktop: switched to the full desktop");
+    Ok(())
 }
 
 /// A private `Xauthority` holding one MIT-MAGIC-COOKIE-1 for `display`, in a
@@ -828,6 +1091,8 @@ pub fn teardown() {
             guard.take()
         };
         let Some(handle) = handle else { return };
+        SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *DESKTOP_ENV.lock().unwrap_or_else(|e| e.into_inner()) = None;
         kill_tree(&handle.roots, handle.pgid, TEARDOWN_GRACE);
         // FR-120 P2 — and its cookie with it.
         if let Some(dir) = XAUTHORITY
@@ -1075,7 +1340,7 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
         dirs.push(b.root.join("bin"));
         std::env::join_paths(dirs).unwrap_or_default()
     });
-    let home = std::env::var_os("HOME").filter(|h| Path::new(h).is_dir());
+    let home = account_home();
     // libX11's locale database, which a host with no X packages lacks; twm
     // cannot make a font set without one.
     let locale_dir = bundle
@@ -1100,74 +1365,67 @@ pub fn start(cfg: &Config) -> Result<VirtualDesktop> {
                 .ok()
                 .map(|()| p)
         });
-    let desktop_env = |cmd: &mut Command| {
-        cmd.env("DISPLAY", &dpy)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(a) = &auth {
-            cmd.env("XAUTHORITY", a);
-        }
-        if let Some(p) = &path_env {
-            cmd.env("PATH", p);
-        }
-        if let Some(h) = &home {
-            cmd.current_dir(h);
-        }
-        if let Some(l) = &locale_dir {
-            cmd.env("XLOCALEDIR", l);
-        }
-        if let Some(f) = &fonts_conf {
-            cmd.env("FONTCONFIG_FILE", f);
-        }
-        if let Some(r) = &resources {
-            cmd.env("XENVIRONMENT", r);
-        }
-        with_wslg_pulse(cmd);
-    };
     // The desktop's group id is the X server's pid (a group leader's pgid ==
     // its pid).
     let pgid = group_of(&x);
+    let env = DesktopEnv {
+        display: dpy.clone(),
+        auth: auth.clone(),
+        path: path_env,
+        home,
+        locale_dir,
+        fonts_conf,
+        resources,
+        pgid,
+    };
+    *DESKTOP_ENV.lock().unwrap_or_else(|e| e.into_inner()) = Some(env.clone());
     children.push(x);
     *SERVER.lock().unwrap_or_else(|e| e.into_inner()) = Some((dpy.clone(), server));
     info!(display = dpy.as_str(), resolution = %cfg.resolution, ?server, "virtual-desktop: X server up");
 
-    let wm = resolve_binary(&cfg.wm, bundle.as_ref());
-    let mut wm_cmd = Command::new(&wm);
-    desktop_env(&mut wm_cmd);
-    // FR-120 P2 — twm with no config of its own asks the person to place
-    // every new window by hand, the terminal included; give it one.
-    if Path::new(&wm).file_name().is_some_and(|n| n == "twm")
-        && let Some(rc) = auth
-            .as_deref()
-            .and_then(Path::parent)
-            .and_then(|d| write_twmrc(d).ok())
-    {
-        wm_cmd.arg("-f").arg(rc);
-    }
-    join_group(&mut wm_cmd, pgid);
-    match wm_cmd.spawn() {
-        Ok(c) => children.push(c),
-        Err(e) => {
-            warn!(wm = %cfg.wm, %e, "virtual-desktop: window manager failed to start (continuing bare)")
+    let mut session_pid = None;
+    if let Some(session) = &cfg.session {
+        match spawn_session(&env, session) {
+            Ok(pid) => session_pid = Some(pid),
+            Err(e) => {
+                warn!(%session, error = %format!("{e:#}"), "virtual-desktop: the full desktop did not start — using the window manager")
+            }
         }
     }
-
-    for app in &cfg.startup {
-        let mut app_cmd = Command::new(app);
-        desktop_env(&mut app_cmd);
-        join_group(&mut app_cmd, pgid);
-        match app_cmd.spawn() {
+    if session_pid.is_none() {
+        let wm = resolve_binary(&cfg.wm, bundle.as_ref());
+        let mut wm_cmd = env.command(&wm);
+        // FR-120 P2 — twm with no config of its own asks the person to place
+        // every new window by hand, the terminal included; give it one.
+        if Path::new(&wm).file_name().is_some_and(|n| n == "twm")
+            && let Some(rc) = auth
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(|d| write_twmrc(d).ok())
+        {
+            wm_cmd.arg("-f").arg(rc);
+        }
+        match wm_cmd.spawn() {
             Ok(c) => children.push(c),
-            Err(e) => warn!(%app, %e, "virtual-desktop: startup app failed to launch"),
+            Err(e) => {
+                warn!(wm = %cfg.wm, %e, "virtual-desktop: window manager failed to start (continuing bare)")
+            }
+        }
+        for app in &cfg.startup {
+            match env.command(app).spawn() {
+                Ok(c) => children.push(c),
+                Err(e) => warn!(%app, %e, "virtual-desktop: startup app failed to launch"),
+            }
         }
     }
-    info!(display = dpy.as_str(), wm = %cfg.wm, apps = cfg.startup.len(), ?pgid, "virtual-desktop ready");
+    info!(display = dpy.as_str(), wm = %cfg.wm, session = ?cfg.session, apps = cfg.startup.len(), ?pgid, "virtual-desktop ready");
     // Record the tree so `teardown` can reach it without the handle, on the
     // graceful exit paths that run as free functions. One desktop per daemon,
     // so a plain overwrite is right.
     #[cfg(target_os = "linux")]
     {
-        let roots: Vec<i32> = children.iter().map(|c| c.id() as i32).collect();
+        let mut roots: Vec<i32> = children.iter().map(|c| c.id() as i32).collect();
+        roots.extend(session_pid);
         *VD_TREE.lock().unwrap_or_else(|e| e.into_inner()) = Some(TreeHandle { pgid, roots });
     }
     Ok(VirtualDesktop {
@@ -1641,6 +1899,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// FR-120 P4 — Xfce first, and a launcher without its desktop is no desktop.
+    #[test]
+    fn the_best_installed_desktop_is_chosen() {
+        let has = |set: &'static [&'static str]| move |b: &str| set.contains(&b);
+        assert_eq!(pick_session(has(&[])), None);
+        assert_eq!(
+            pick_session(has(&["mate-session", "startxfce4", "xfce4-session"])),
+            Some("startxfce4".into())
+        );
+        assert_eq!(
+            pick_session(has(&["startxfce4", "mate-session"])),
+            Some("mate-session".into()),
+            "startxfce4 without xfce4-session is no Xfce"
+        );
+        assert_eq!(
+            session_argv("startxfce4", true),
+            vec!["dbus-launch", "--exit-with-session", "startxfce4"]
+        );
+        assert_eq!(session_argv("startxfce4", false), vec!["startxfce4"]);
+    }
+
+    /// FR-120 P4 — Xfce's first start is decided ahead, and a person's own
+    /// settings are never overwritten.
+    #[test]
+    fn xfce_preseed_writes_only_what_is_missing() {
+        let home = std::env::temp_dir().join(format!("mh-xfce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".config/xfce4/xfconf/xfce-perchannel-xml");
+        preseed_xfce(&home);
+        assert!(
+            std::fs::read_to_string(dir.join("xfwm4.xml"))
+                .unwrap()
+                .contains("use_compositing")
+        );
+        std::fs::write(dir.join("xfwm4.xml"), "mine").unwrap();
+        preseed_xfce(&home);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("xfwm4.xml")).unwrap(),
+            "mine"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// FR-120 — xrdp's session (Remote, no seat) is no screen; a person's
     /// session on seat0 is one, and a tty session is no graphical session.
     #[test]
@@ -1814,6 +2115,7 @@ mod tests {
             wm: "definitely-not-a-real-wm-binary-xyz".into(),
             startup: vec![],
             cookie_auth: false,
+            session: None,
         };
         let err = preflight(&cfg, None).unwrap_err().to_string();
         assert!(err.contains("apt install"), "err: {err}");

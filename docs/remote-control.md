@@ -726,6 +726,28 @@ the desktop's terminal. The one rewrite inside a binary is Xvfb's compiled
 `xkbcomp` directory (`/usr/bin` → `.`), and the daemon starts Xvfb with
 `bin/` as its working directory, so it runs the bundle's own `xkbcomp`.
 
+**A full desktop, not a terminal (FR-120 P4).** The automatic desktop runs
+the best full desktop session the host has installed — Xfce, then MATE,
+LXQt, LXDE, KDE on X11 (`virtual_desktop::SESSIONS`; GNOME is left out on
+purpose, gnome-shell needs GL and a seat) — on its own D-Bus session bus, and
+starts it again if the person logs out of it or it crashes (at most five
+times in ten minutes). Only a host with none gets the window manager and the
+terminal.
+
+A **root** daemon on a screenless host with no desktop installs one itself,
+once, in the background (`desktop_install.rs`):
+
+| What | Detail |
+|---|---|
+| Packages | `apt-get` (Debian/Ubuntu) or `dnf` (Fedora/RHEL): Xfce with its terminal, file manager, editor, image viewer, task manager and whisker menu; Noto CJK + DejaVu fonts; an icon theme; Xorg with the dummy driver + `xrandr`, so from the next daemon start the resolution follows the viewer (FR-108); Mesa software GL. Lists are filtered to what the host's archive carries |
+| Never | a display manager (`--no-install-recommends`; one would take the machine's screen and switch the automatic desktop off at the next start) |
+| Gates | root; ≥ 3 GiB free on `/`; ≥ 1.5 GiB RAM; no failure in the last 24 h (`/var/lib/meshharbor/desktop-install.json`); kill switch `MESHHARBORD_VIRTUAL_DESKTOP_INSTALL=0` |
+| After | the running desktop switches to Xfce on the same X server (`switch_to_session`), so `DISPLAY` and `XAUTHORITY` stay valid; the log is `/var/log/meshharbor-desktop-install.log` |
+| Xfce's first start | decided ahead: the default panel (no "choose a panel" dialog over a remote session) and no compositing (shadows cost every frame sent); a person's own settings are never overwritten |
+
+A per-user daemon cannot install anything, and keeps the bundled window
+manager and terminal unless its host already has a desktop.
+
 The desktop lives as long as the daemon. twm runs with a generated config
 (windows place themselves; a click on the background opens a terminal), and
 the daemon's own X clients — capture, input, clipboard — reach it through the
