@@ -21,6 +21,9 @@
 //!   since this split).
 
 pub mod acl;
+/// The companion's viewer window on macOS and Linux: which installed
+/// Chromium-family browser opens it as an app window, and with what command.
+pub mod app_window;
 pub mod appdirs;
 pub mod apps_config;
 /// FR-84 D6 — the companion's login-start registration (Run value, XDG
