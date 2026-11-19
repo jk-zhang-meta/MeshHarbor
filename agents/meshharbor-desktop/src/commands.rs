@@ -2022,24 +2022,57 @@ pub async fn cmd_open_remote(
     if aid.len() != 24 || !aid.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("invalid agent id".to_string());
     }
-    let url = tokio::task::spawn_blocking(move || {
-        let is_scm = probe_service_state().0 == "scmService";
-        let path = active_config_path(is_scm)?;
-        let cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
-        let (server, tid) = remote_target(&cfg, org.as_deref())?;
-        Ok::<_, String>((server, tid, aid))
-    })
-    .await
-    .map_err(|e| format!("task join: {e}"))??;
+    let (server, tenant_id) = enrollment_target(org).await?;
     open_authenticated_web(
         &app,
-        &url.0,
+        &server,
         meshharbor_node_core::user_session::WebTarget::Remote {
-            tenant_id: url.1,
-            agent_id: url.2,
+            tenant_id,
+            agent_id: aid,
         },
     )
     .await
+}
+
+/// The `(server origin, tenant id)` of the enrollment `org` names: from the
+/// config file when the companion can read it, from the device service's own
+/// `Status` when it cannot.
+///
+/// A system install on macOS or Linux keeps its config for root alone (it
+/// holds the device's tokens), and the companion runs as the person at the
+/// screen: there the file never answers, and before this fallback Connect on
+/// such a machine ended at "Loading config: …" without opening anything
+/// (field, a promoted MacBook, 2026-11-19). The service already tells the
+/// person socket which servers and tenants it is enrolled in
+/// (`NodeStatus::orgs`), and that is all a viewer link needs.
+///
+/// A config that loads is the answer, right or wrong: the service is asked
+/// only when the file cannot be read at all. Either way the origin is this
+/// device's own enrollment, never the page's or a peer's.
+async fn enrollment_target(org: Option<String>) -> Result<(String, String), String> {
+    let wanted = org.clone();
+    let from_file = tokio::task::spawn_blocking(move || {
+        let is_scm = probe_service_state().0 == "scmService";
+        let path = active_config_path(is_scm)?;
+        let cfg = config::load(&path).map_err(|e| format!("Loading config: {e}"))?;
+        Ok::<_, String>(remote_target(&cfg, wanted.as_deref()))
+    })
+    .await
+    .map_err(|e| format!("task join: {e}"))?;
+    let unreadable = match from_file {
+        Ok(target) => return target,
+        Err(e) => e,
+    };
+    let Ok(mut client) = localapi::connect().await else {
+        return Err(unreadable);
+    };
+    match client.status().await {
+        // A service from before multi-org reports no enrollments.
+        Ok(status) if !status.orgs.is_empty() => {
+            remote_target_from_status(&status.orgs, org.as_deref())
+        }
+        _ => Err(unreadable),
+    }
 }
 
 /// The `(server origin, tenant id)` a "View screen" for a device in `org`
@@ -2061,6 +2094,33 @@ fn remote_target(cfg: &AgentConfig, org: Option<&str>) -> Result<(String, String
             (entry.server_url.as_str(), entry.tenant_id.as_str())
         }
     };
+    validated_target(server, tid)
+}
+
+/// [`remote_target`] over what the device service reports about its own
+/// enrollments, for a machine whose config the companion cannot read.
+fn remote_target_from_status(
+    orgs: &[localapi::OrgStatus],
+    org: Option<&str>,
+) -> Result<(String, String), String> {
+    let label = org
+        .map(str::trim)
+        .filter(|o| !o.is_empty() && *o != config::PRIMARY_ORG_LABEL);
+    let entry = match label {
+        None => orgs
+            .iter()
+            .find(|o| o.primary)
+            .ok_or_else(|| "this device has no primary enrollment".to_string())?,
+        Some(label) => orgs
+            .iter()
+            .find(|o| !o.primary && o.label == label)
+            .ok_or_else(|| format!("this device has no enrollment labelled {label:?}"))?,
+    };
+    validated_target(&entry.server_url, entry.tenant_id.as_deref().unwrap_or(""))
+}
+
+/// An http(s) origin without its trailing slash, and a 24-hex tenant id.
+fn validated_target(server: &str, tid: &str) -> Result<(String, String), String> {
     let tid = tid.trim().to_ascii_lowercase();
     if tid.len() != 24 || !tid.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("this device's config has no valid tenant id for that organization".into());
@@ -4579,6 +4639,49 @@ mod tests {
         assert!(unknown.contains("no enrollment labelled"), "{unknown}");
         // A malformed entry is refused, never opened.
         assert!(remote_target(&cfg, Some("broken")).is_err());
+    }
+
+    /// A machine whose config the companion cannot read (a system install on
+    /// macOS or Linux) takes the same answer from the device service's own
+    /// Status, under the same checks.
+    #[test]
+    fn remote_target_from_status_follows_the_devices_org() {
+        let orgs: Vec<localapi::OrgStatus> = serde_json::from_value(serde_json::json!([
+            {"label": "primary", "server_url": "https://meshharbor.example/base/",
+             "tenant_id": "AAAAAAAAAAAAAAAAAAAAAAAA", "primary": true,
+             "enabled": true, "connected": true},
+            {"label": "acme", "server_url": "https://acme.example",
+             "tenant_id": "bbbbbbbbbbbbbbbbbbbbbbbb", "primary": false,
+             "enabled": true, "connected": false},
+            {"label": "pending", "server_url": "https://pending.example",
+             "primary": false, "enabled": true, "connected": false},
+            {"label": "broken", "server_url": "ftp://nope",
+             "tenant_id": "cccccccccccccccccccccccc", "primary": false,
+             "enabled": true, "connected": false}
+        ]))
+        .expect("a minimal status parses");
+        let primary = (
+            "https://meshharbor.example/base".to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        for org in [None, Some(""), Some("primary"), Some(" primary ")] {
+            assert_eq!(remote_target_from_status(&orgs, org).unwrap(), primary);
+        }
+        assert_eq!(
+            remote_target_from_status(&orgs, Some("acme")).unwrap(),
+            (
+                "https://acme.example".to_string(),
+                "bbbbbbbbbbbbbbbbbbbbbbbb".to_string()
+            )
+        );
+        let unknown = remote_target_from_status(&orgs, Some("ghost")).unwrap_err();
+        assert!(unknown.contains("no enrollment labelled"), "{unknown}");
+        // An enrollment with no tenant yet, or a server that is not a web
+        // origin, is refused, never opened.
+        assert!(remote_target_from_status(&orgs, Some("pending")).is_err());
+        assert!(remote_target_from_status(&orgs, Some("broken")).is_err());
+        // No primary row at all (a secondary-only report) is refused too.
+        assert!(remote_target_from_status(&orgs[1..], None).is_err());
     }
 
     /// FR-84 D5c — a rejected `cmd_devices` is `{code, message, status?}`,
