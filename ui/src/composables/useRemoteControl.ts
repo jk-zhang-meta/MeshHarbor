@@ -12670,6 +12670,11 @@ export function useRemoteControl(
           hostIsMac.value && ctrlAsCmd.value,
           ctrlSubState,
         )
+        // MeshHarbor — never a release the host never saw pressed: a key whose
+        // press went to a field of this page (Tab moving focus OUT of the file
+        // browser's path box releases on the next control) reached the host as
+        // a lone key-up (field, 2026-11-20).
+        if (!action.down && !heldInputs.hasKey(code)) return
         sendInput({ t: 'key', code, down: action.down, mods: action.mods })
         heldInputs.key(code, action.down)
       }
