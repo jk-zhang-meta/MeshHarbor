@@ -82,10 +82,13 @@ flowchart LR
   that way, but MeshHarbor SSH answers, because it terminates inside the daemon
   (`agents/meshharbord/src/overlay.rs:334-340`).
 - A Mac needs both halves for both planes: a root process has no WindowServer, and the person
-  cannot create a `utun`. Each half is its own enrollment, so such a Mac is two device rows
-  until FR-43 P3 (`docs/installation.md`, macOS). With `macos_supervise_gui_worker` on (default
-  off), the root half starts a worker in the person's session itself, and stands down while the
-  LaunchAgent runs one (`agents/meshharbord/src/macos_supervisor.rs:3-36`).
+  cannot create a `utun`. With `macos_supervise_gui_worker` on (default off), the root half
+  starts a worker in the person's session itself, and stands down while the LaunchAgent runs
+  one (`agents/meshharbord/src/macos_supervisor.rs:3-36`). A Mac whose personal enrollment was
+  promoted (`meshharbord enroll-personal-system`) is ONE device row: its worker holds no
+  enrollment and serves the root half's sessions only (FR-43 P3a,
+  `agents/meshharbord/src/delegate.rs:379`). A Mac installed with both halves enrolled is still
+  two rows until FR-43 P3c (`docs/installation.md`, macOS).
 - On Windows, an attended install's commands and SSH sessions run as the signed-in person until
   an administrator anchors the device to its service (FR-94, `docs/fleet-rpc.md`).
 
@@ -122,7 +125,7 @@ flow, and the consent chain's fallbacks.
 
 | Feature | Windows | Linux | macOS | Why, and where |
 |---|---|---|---|---|
-| In the mesh on an OS adapter | ✅ perMachine | ✅ system unit | ✅ root half, a second device row (FR-43 P3) | §2 |
+| In the mesh on an OS adapter | ✅ perMachine | ✅ system unit | ✅ root half: one device row once promoted (FR-43 P3a), else a second row (P3c) | §2 |
 | One adapter per organization (multi-org) | ✅ | ✅ | ✅ | `agents/meshharbord/src/overlay.rs:318-324`; `docs/multi-org.md` |
 | Exit node, as a client | ✅ | ✅ | ✅ when the uplink has v6, else v6 fail-closed | `docs/overlay-exit-nodes.md`, Platform support |
 | Exit node and subnet router, serving IPv4 | 🟡 WinNAT, which needs the Hyper-V feature: without it (always on Home) the offer is withheld, with the reason | ✅ iptables | ✅ pf, in our own anchor; root half only | each OS's probe (`crates/tunnel-core/src/overlay/nat.rs:211`, `:228`, `:257`) |

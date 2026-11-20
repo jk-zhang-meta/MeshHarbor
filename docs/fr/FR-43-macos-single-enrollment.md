@@ -1,6 +1,6 @@
 # FR-43: One macOS device row — a supervising daemon and an unenrolled GUI worker
 
-**Status:** P0 + P1 + **P2 complete and field-verified** (0.4.33 → 0.4.43) — the daemon's row streams real pixels; P2c/P3 next. Tracking issue: `FR-43`.
+**Status:** P0 + P1 + **P2 complete and field-verified** (0.4.33 → 0.4.43) — the daemon's row streams real pixels; P2c/P2d field-verified (0.4.100); **P3a/P3b built 2026-11-20** (the worker of a single-enrollment Mac needs no enrollment; the person's desktop app sees and ends its sessions through the daemon) — field verification on 0.4.189 pending; P3c (migrating two-row Macs) open. Tracking issue: `FR-43`.
 
 ⚠️ Anchors RE-VERIFIED against master `9700e9ff` on 2026-09-06, when this record was
 landed 27 releases after the field run. `remote_control`'s hub moved to
@@ -71,7 +71,9 @@ boot); the GUI-session process becomes an **unenrolled worker** it spawns and dr
 | P2 | Session delegation: the daemon's WS accepts an rc session and drives the worker over LocalAPI. | per-session fallback — delegation failure re-serves from the worker's own enrollment |
 | P2c | The daemon's row advertises the WORKER's `permissions`, so the dashboard stops calling a working capture target "not a capture target". | caps are only ever sent when they CHANGE; absent field = today's behaviour |
 | P2d | The installer stops reverting P2 on every update: with the daemon supervising, the `.pkg` no longer re-bootstraps the per-user LaunchAgent. | the guard needs BOTH the daemon opt-in and `macos_supervise_gui_worker = true`; either absent = today's behaviour byte-for-byte |
-| P3 | Collapse the enrollment: installer mints ONE token; existing two-row Macs migrate. | `--daemon-token` keeps working (two-row install stays reachable for a release) |
+| P3a | The GUI worker needs no enrollment of its own: `run --supervised` with no token serves the daemon's delegated sessions only (no server, no config write, no updater, no LocalAPI socket). | none needed — the replaced behaviour is a worker that exited `no config found` on every spawn; `macos_supervise_gui_worker = false` returns the Mac to the per-user LaunchAgent |
+| P3b | The person's desktop app, which on a single-enrollment Mac reaches only the daemon (its person socket), lists the worker's sessions and ends them. | an older daemon or worker skips the two new frames: the list is then the daemon's own, as before |
+| P3c | Collapse the enrollment for two-row Macs: installer mints ONE token; existing two-row Macs migrate. `meshharbord enroll-personal-system` already promotes a personal enrollment into the system config. | `--daemon-token` keeps working (two-row install stays reachable for a release) |
 
 ## P2 design — session delegation over LocalAPI
 
@@ -374,6 +376,56 @@ scripts — *"`#!/bin/sh\r` … fails to configure on EVERY host"* — had no ma
 counterpart despite the identical failure mode under PackageKit. Pinned
 `text eol=lf` alongside this change.
 
+## P3 design — a worker with no enrollment (P3a) and its sessions in the person's app (P3b)
+
+`meshharbord enroll-personal-system` promotes the personal account into
+`/etc/meshharbor/config.toml`, retires the per-user enrollment and sets
+`macos_supervise_gui_worker = true` (`agents/meshharbord/src/personal_system_exec.rs:161`).
+That is the one-row Mac this FR is for — and until P3a its GUI worker could not start: it
+loaded the console user's config, found none, exited `no config found`, and after
+`MAX_FAST_EXITS` the supervisor gave up. The device answered every session from the root
+daemon, which has no WindowServer: a connected peer, working file transfer (into
+`/var/root/Downloads`), and no picture.
+
+```mermaid
+flowchart LR
+  subgraph S["server"]
+    H["hub: the device's ONE row"]
+  end
+  subgraph R["root daemon (/etc/meshharbor/config.toml)"]
+    WS["control WS"] --> D{"delegable?"}
+    D -->|"rc session"| DH["DelegateHost"]
+    PS["person socket<br/>(the console user)"]
+    PS -->|"RcSessions = own + worker's<br/>RcDisconnect → Disconnect"| DH
+  end
+  subgraph W["GUI worker (console user, NO enrollment)"]
+    DW["delegate_worker"] --> SIG["signaling loop<br/>over a loopback sink"]
+    SIG --> P["peer: capture, input, files"]
+    DW -->|"WorkerSessions"| DH
+  end
+  H <--> WS
+  DH <-->|"delegation socket"| DW
+  APP["desktop app (the person)"] --> PS
+```
+
+| Piece | Where | Rule |
+|---|---|---|
+| Who is unenrolled | `agents/meshharbord/src/delegate.rs:379` (`is_unenrolled_worker`) | `--supervised` AND no agent token. A worker WITH a token (a two-row Mac) keeps its enrollment exactly as before; an unsupervised `run` never becomes one and still fails `no config found` |
+| Its config | `crates/agent-core/src/config.rs:3551` (`unenrolled`); `agents/meshharbord/src/main.rs:4421`, `:4483` | empty identity, every other field the serde default. Nothing is written back: no crash counter, no migration save, no clean-run promotion, no shutdown write — a file on disk would claim an enrollment that is not there |
+| What it does not run | `main.rs` (`unenrolled_worker` gates) | preflight, crash-loop rollback, the updater (the daemon updates the bundle), crash and log uploads, RDP over the mesh, the LocalAPI socket |
+| Its control connection | `agents/meshharbord/src/signaling.rs:7542` (`local_control_sink`), `:683` (`OrgCtx::unenrolled`) | a real `Ws` over loopback TCP whose far end only reads (and so answers pings): the SAME select loop serves the delegated sessions, with no hello, no token renewal, no overlay, no names sync, no inventory |
+| Why no LocalAPI socket | `main.rs` (the `localapi_task`) | the person's `mh` and desktop app try the per-user socket FIRST; a worker that bound it would answer for the device with a view holding no enrollment. Unbound, they reach the root daemon's person socket, which IS the device |
+| The person's banner | `delegate.rs:173` (`WorkerSessions`), `:179` (`Disconnect`), `:792`, `:805`; `agents/meshharbord/src/delegate_worker.rs:514` (`sessions_update`); `agents/meshharbord/src/localapi_state.rs:1018`, `:1035`, `:2338` | the worker lists its live sessions to the daemon on attach and on every change (polled each second, sent only on change); `RcSessions` answers the daemon's own plus the worker's; `RcDisconnect` on a worker's session is relayed as `Disconnect`; a detached worker's list is cleared |
+
+⚠️ **The loopback sink is a sink, not a server.** Its far end accepts only the connection
+whose address is the client socket's own, never writes a message, and is dropped with the
+listener immediately after: a local process that raced the accept cannot become the end
+that answers, and could not inject a `ServerMsg` either way.
+
+⚠️ **Still the daemon's:** keep busy ON from the desktop app (the daemon refuses it on a
+supervised Mac, as before — P2's rule that nothing reaching only the root daemon may start
+synthetic input), and the banner's recording Stop. Both are unchanged by P3.
+
 ## Acceptance criteria
 
 - [ ] A fresh install with **one** token produces **one** device row, and that row serves
@@ -422,6 +474,16 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 - [ ] An existing two-row Mac migrates to one row keeping its overlay address, and the
       retired row is tombstoned per `release_overlay_node`'s ordering (never re-issued).
 - [ ] With the kill switch off, behaviour is byte-for-byte today's.
+- [ ] P3a: on a single-enrollment Mac (no per-user config), a session on the device's one
+      row shows a real picture — shown FAILING on 0.4.188 first.
+- [ ] P3a: the unenrolled worker writes no per-user config, binds no LocalAPI socket and
+      dials no server.
+- [ ] P3a: a file uploaded through the viewer lands in the person's `~/Downloads`, not
+      `/var/root/Downloads`.
+- [ ] P3b: the desktop app on a single-enrollment Mac lists a delegated session, and its
+      Disconnect ends it.
+- [ ] P3: `docs/platform-support.md` and `docs/desktop-companion.md` describe the one-row
+      Mac (mermaid, tables, anchors), and `docs/README.md` indexes this FR.
 
 ## Dead hypotheses — do not re-run these
 
@@ -463,8 +525,9 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 - Spawn mechanism: `launchctl asuser` from the daemon vs a daemon-managed LaunchAgent
   (the postinstall already bootstraps into `gui/<uid>` — `packaging/macos/postinstall:108`).
 - Migration: delete or tombstone the retired per-user row, and who initiates it.
-- Whether the worker keeps a *dormant* enrollment as the P2 fallback, or is fully
-  unenrolled from the start.
+- ~~Whether the worker keeps a *dormant* enrollment as the P2 fallback, or is fully
+  unenrolled from the start.~~ Both (P3a, 2026-11-20): a worker that holds a token keeps
+  serving it; one with none serves the daemon's delegated sessions only.
 
 ## Out of scope
 
@@ -706,3 +769,30 @@ whether it can. The no-worker criterion asks for a **wire** measurement, and the
 of a log line on another device is inference from behaviour, which it rules out. And
 `has_input_permission: true` in the caps is only AC4's reporting half — that criterion
 also needs real input accepted with no TCC re-prompt.
+
+### 2026-11-20 — P3a/P3b: a promoted Mac had no picture; the worker now needs no enrollment
+
+The macOS laptop had been promoted to one row on 2026-11-19 (`enroll-personal-system`:
+`/etc/meshharbor/config.toml` holds the enrollment, `macos_supervise_gui_worker = true`, the
+per-user `config.toml` retired). On agent 0.4.188:
+
+| Check | Result |
+|---|---|
+| the daemon's stdout (`/var/log/meshharbor/daemon.log`) | the supervisor's worker exiting `no config found at …/live.meshharbor.meshharbor/config.toml` on every spawn |
+| processes | the root daemon and the desktop app; **no** `meshharbord run --supervised` |
+| the bundle's grants, as the console user (`launchctl asuser <uid> sudo -u '#<uid>' meshharbord caps`) | `permissions: ["screen-capture", "input"]`, `has_input_permission: true` — TCC was never the problem |
+| a headless viewer session on the device's row, 25 s (no image kept, no input sent) | **FAILED as expected:** peer `connected`; `video` channel **0** messages; the canvas never left its default 300×150; luma variance **0.0**. File transfer worked, into `/var/root/Downloads` |
+
+Built (P3a + P3b, the design section above), with a test for each rule — the decision
+(three cases), the sink (frames swallowed, a ping answered, nothing else arriving), the
+config, the session list's change detection, and the relay end to end through a real
+`DelegateHost` (falsified: without the merge the listed session is missing).
+`meshharbord --lib` 2099 passed (one earlier run hit a port-reuse flake in
+`ssh_shared_stream`'s "no listener left" assertion, green in isolation and in two full reruns).
+
+Local smoke, a debug build as an unprivileged user with an empty home on a Linux host:
+`run --supervised` with no config logged the unenrolled-worker line and the loopback sink,
+ran 95 s (past the 80 s `WS_RX_DEADLINE`) on ONE sink connection with no reconnect, dialled
+nothing, bound no socket, and left only its lock file and log on disk. Two misleading
+`config unreadable … must be re-enrolled` ERROR lines it found (RDP-over-mesh's opt-in
+poll, the name journal's first read) were gated out before the release.

@@ -706,6 +706,31 @@ On a supervised Mac the session lives in the GUI worker (FR-43), and so does the
 Disconnect: the worker's `host_disconnect` rides the delegation link to the daemon's
 WS, the way the session's answer did.
 
+**A one-row Mac (FR-43 P3b).** When the personal enrollment was promoted, the worker holds
+no enrollment and binds no LocalAPI socket, so the app reaches the root daemon's person
+socket, and the daemon's own registry never sees a delegated session. The worker therefore
+lists its sessions to the daemon, and the daemon answers for both:
+
+```mermaid
+sequenceDiagram
+    participant A as desktop app (the person)
+    participant R as root daemon (person socket)
+    participant W as GUI worker (no enrollment)
+    W->>R: WorkerSessions [the live list, on attach and on each change]
+    A->>R: RcSessions
+    R-->>A: its own sessions + the worker's
+    A->>R: RcDisconnect <id>
+    R->>W: Disconnect <id> (only an id the worker listed)
+    W->>W: registry.disconnect → the session ends, host_disconnect upstream
+    W->>R: WorkerSessions [without it]
+```
+
+| Rule | Anchor |
+|---|---|
+| sent only when the list changes (polled each second), and once on every attach so a restarted daemon is told | `agents/meshharbord/src/delegate_worker.rs:514` |
+| the daemon's own entry wins for one id; a detached worker's list is cleared | `agents/meshharbord/src/localapi_state.rs:2338`; `agents/meshharbord/src/delegate.rs` (the frame loop's end) |
+| a Disconnect is relayed only for a session the worker listed, never for an arbitrary id | `agents/meshharbord/src/delegate.rs:805` |
+
 ### 12.2 Pinned to the top on Wayland (#2286)
 
 `position_top_centre` (`panels.rs:432`) asks for the top centre of the primary monitor.
