@@ -48,6 +48,7 @@ import {
   hashClipboardHtml,
   createClipboardEchoGate,
   createHeldInputTracker,
+  isLocalTextField,
   createLocalIceOutbox,
   buildClipboardImageFrames,
   grantAllowsClipboard,
@@ -4927,6 +4928,47 @@ describe('createHeldInputTracker (stuck-Alt release, 2026-08-04)', () => {
     t.key(0x04, true)
     t.key(0x04, true)
     expect(t.releaseAll().keys).toEqual([0x04])
+  })
+})
+
+describe('isLocalTextField — keys typed into the viewer page stay there (2026-11-20)', () => {
+  it('a text input, textarea, select or contenteditable is the page\'s own', () => {
+    for (const make of [
+      () => document.createElement('input'),
+      () => Object.assign(document.createElement('input'), { type: 'search' }),
+      () => document.createElement('textarea'),
+      () => document.createElement('select'),
+    ]) {
+      expect(isLocalTextField(make())).toBe(true)
+    }
+    const div = document.createElement('div')
+    div.contentEditable = 'true'
+    document.body.appendChild(div)
+    // jsdom does not compute isContentEditable; the browser does.
+    Object.defineProperty(div, 'isContentEditable', { value: true })
+    expect(isLocalTextField(div)).toBe(true)
+    div.remove()
+  })
+
+  it('the remote keyboard capture, the video surface and non-text inputs are not', () => {
+    const capture = document.createElement('textarea')
+    capture.className = 'mobile-keyboard-capture'
+    expect(isLocalTextField(capture)).toBe(false)
+    expect(isLocalTextField(document.createElement('video'))).toBe(false)
+    expect(isLocalTextField(document.body)).toBe(false)
+    expect(isLocalTextField(window)).toBe(false)
+    expect(isLocalTextField(null)).toBe(false)
+    for (const type of ['checkbox', 'radio', 'button', 'range', 'file']) {
+      expect(isLocalTextField(Object.assign(document.createElement('input'), { type }))).toBe(false)
+    }
+  })
+
+  it('the held-key tracker answers whether the host still holds a key', () => {
+    const t = createHeldInputTracker()
+    t.key(0x28, true)
+    expect(t.hasKey(0x28)).toBe(true)
+    t.key(0x28, false)
+    expect(t.hasKey(0x28)).toBe(false)
   })
 })
 

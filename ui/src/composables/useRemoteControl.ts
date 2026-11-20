@@ -4401,6 +4401,8 @@ export interface HeldInputTracker {
    *  Leaving Pointer Lock lets go of the mouse, not of a chord. */
   releaseButtons(): string[]
   size(): number
+  /** Whether the host was sent this key's press and not yet its release. */
+  hasKey(code: number): boolean
 }
 
 export interface LocalIceOutbox {
@@ -4491,8 +4493,46 @@ export function createHeldInputTracker(): HeldInputTracker {
     size() {
       return keys.size + buttons.size
     },
+    hasKey(code: number) {
+      return keys.has(code)
+    },
   }
 }
+
+/** MeshHarbor — a text field of the viewer's OWN page: the remote-file
+ *  browser's path box, a dialog's input, a select. What is typed there is
+ *  the operator's, for that field, and must never also reach the host — the
+ *  window-level capture handler used to forward every key wherever focus was,
+ *  so a path typed into the file browser was typed into the host's focused
+ *  window too (field, 2026-11-20: an Enter reached Explorer on a Windows host),
+ *  and Tab/Backspace were swallowed by the field's own preventDefault. The
+ *  mobile keyboard's capture textarea is the one editable element whose keys
+ *  ARE meant for the host. */
+export function isLocalTextField(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || typeof el.tagName !== 'string') return false
+  if (el.classList?.contains('mobile-keyboard-capture')) return false
+  const tag = el.tagName.toUpperCase()
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (tag === 'INPUT') {
+    const type = ((el as HTMLInputElement).type || 'text').toLowerCase()
+    return !NON_TEXT_INPUT_TYPES.has(type)
+  }
+  return el.isContentEditable === true
+}
+
+/** `<input>` types with no text to type into: a key there is not typing. */
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'file',
+  'image',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+])
 
 /** Build the wire frames for one browser → agent image transfer:
  *  a `clipboard:img-begin` JSON header, ≤16 KiB binary PNG frames,
@@ -12532,6 +12572,14 @@ export function useRemoteControl(
       // FR-111 P4b-2 — a dialog is taking the typing: leave the event to it,
       // untouched (no preventDefault, no stopPropagation).
       if (keyboardPaused.value) return
+      // MeshHarbor — the same for any text field of this page (the file
+      // browser's path box): its keys are for the field, never the host. A
+      // release still goes out when the host holds that key (pressed while
+      // the viewer had focus), so moving focus mid-press strands nothing.
+      if (isLocalTextField(ev.target)) {
+        const code = down ? null : kbdCodeToHid(ev.code)
+        if (code === null || !heldInputs.hasKey(code)) return
+      }
       // Ctrl+Alt+End (RDP convention) / literal Ctrl+Alt+Del →
       // canonical SAS sequence via sendCtrlAltDel(). Swallow BOTH key
       // directions so no stray End/Delete HID events reach the host;
