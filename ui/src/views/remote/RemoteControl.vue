@@ -2276,11 +2276,11 @@
         >
           <v-icon>mdi-monitor</v-icon>
         </v-btn>
-        <!-- FR-116 P5b — a touch screen has nothing to drop onto the drawer:
-             this uploads INTO the folder on screen, by the same path as a
-             drop or a paste. -->
+        <!-- FR-116 P5b — uploads INTO the folder on screen, by the same path
+             as a drop or a paste. MeshHarbor (FR-122): on every device, not
+             only a touch screen — with a mouse, a drop onto the drawer was the
+             only way in, and nothing on screen said so. -->
         <v-btn
-          v-if="filesTouchOnly"
           icon
           variant="text"
           size="small"
