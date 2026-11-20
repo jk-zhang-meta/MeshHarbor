@@ -616,7 +616,13 @@ pub struct DeviceNames {
 
 impl DeviceNames {
     pub fn new(path: PathBuf, lock: config::WriteLock) -> Self {
-        let live = config::load(&path).ok().map(|c| view(&c));
+        // FR-43 P3 — an unenrolled GUI worker runs with no file at all; reading
+        // one anyway would log "the host must be re-enrolled" at every start.
+        let live = path
+            .exists()
+            .then(|| config::load(&path).ok())
+            .flatten()
+            .map(|c| view(&c));
         Self {
             path,
             lock,

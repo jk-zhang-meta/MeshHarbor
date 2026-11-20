@@ -51,11 +51,17 @@
 //!
 //! ## Failure is quiet and non-fatal, deliberately
 //!
-//! P2a's worker is still fully enrolled and still serves its own rc sessions.
-//! A failed attach therefore costs nothing today, and must not take the worker
-//! down: the supervisor would respawn it, fail again, and after
-//! `MAX_FAST_EXITS` give up on a machine whose remote-desktop half was working
-//! perfectly well. It retries on a ladder and says so, once per transition.
+//! A two-row Mac's worker is still fully enrolled and still serves its own rc
+//! sessions, so a failed attach costs it nothing, and must not take it down:
+//! the supervisor would respawn it, fail again, and after `MAX_FAST_EXITS` give
+//! up on a machine whose remote-desktop half was working perfectly well. It
+//! retries on a ladder and says so, once per transition.
+//!
+//! FR-43 P3 — an UNENROLLED worker (a single-enrollment Mac, where the daemon's
+//! row is the device's only one; `delegate::is_unenrolled_worker`) serves
+//! nothing but this channel, so for it the ladder is the whole job: the common
+//! cause of a lost channel is the daemon restarting, and it comes back in
+//! seconds. Exiting instead would trade that for the supervisor's backoff.
 
 use std::time::Duration;
 
@@ -80,6 +86,11 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 /// a minute of a feature not working.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// FR-43 P3 — how often the worker compares its live sessions with what it
+/// last told the daemon. The registry has no change signal; a lock and a short
+/// list once a second is nothing, and a banner a second late is still right.
+const SESSIONS_POLL: Duration = Duration::from_secs(1);
 
 /// What this worker tells the daemon it can do: the capture grants it holds
 /// (FR-43 P2c) and, FR-85 P1e-mac, its `record` caps — the DEVICE's row
@@ -142,6 +153,10 @@ pub async fn run(
         tokio::sync::mpsc::Receiver<ClientMsg>,
     )>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    // FR-43 P3 — this process's live-session registry: listed to the daemon,
+    // which answers the person's desktop app, and the target of the daemon's
+    // `Disconnect`.
+    sessions: crate::rc_sessions::RcSessionRegistry,
 ) {
     if !supervised {
         tracing::debug!("delegation: not a supervised worker; not attaching");
@@ -165,7 +180,15 @@ pub async fn run(
     let mut backoff = BACKOFF_MIN;
     let mut last_error: Option<String> = None;
     loop {
-        match attach_once(&secret, &to_signaling, &mut from_signaling, &mut shutdown).await {
+        match attach_once(
+            &secret,
+            &to_signaling,
+            &mut from_signaling,
+            &mut shutdown,
+            &sessions,
+        )
+        .await
+        {
             Ok(()) => {
                 tracing::info!("delegation: channel closed by the daemon");
                 backoff = BACKOFF_MIN;
@@ -204,6 +227,7 @@ async fn attach_once(
     to_signaling: &tokio::sync::mpsc::Sender<WorkerInbound>,
     from_signaling: &mut tokio::sync::mpsc::Receiver<ClientMsg>,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    sessions: &crate::rc_sessions::RcSessionRegistry,
 ) -> std::io::Result<()> {
     // Dial the daemon's DEDICATED delegation socket, not the LocalAPI control
     // socket. The control socket is `0600 root` in a `0700 root` directory —
@@ -293,8 +317,20 @@ async fn attach_once(
         .await?;
     }
 
+    // FR-43 P3 — what the daemon last heard about our sessions. `None` on a
+    // fresh attach, so the first tick tells a (possibly restarted) daemon the
+    // current list, empty or not.
+    let mut sessions_told: Option<Vec<tunnel_core::localapi::RcSessionInfo>> = None;
+    let mut sessions_tick = tokio::time::interval(SESSIONS_POLL);
+    sessions_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
+            _ = sessions_tick.tick() => {
+                if let Some(frame) = sessions_update(sessions.list(), &mut sessions_told) {
+                    write_frame(&mut wr, &frame).await?;
+                }
+            }
             line = lines.next_line() => {
                 match line? {
                     None => return Ok(()),
@@ -368,10 +404,23 @@ async fn attach_once(
                             )
                             .await?;
                         }
+                        // FR-43 P3 — the person pressed Disconnect in a desktop
+                        // app that reached the daemon. Our registry ends it the
+                        // way our own banner would; the next list drops it.
+                        Ok(DelegateFrame::Disconnect { session_id }) => {
+                            let ended = bson::oid::ObjectId::parse_str(&session_id)
+                                .is_ok_and(|oid| sessions.disconnect(&oid));
+                            tracing::info!(
+                                %session_id,
+                                ended,
+                                "delegation: the daemon relayed the person's Disconnect"
+                            );
+                        }
                         Ok(
                             DelegateFrame::FromWorker { .. }
                             | DelegateFrame::WorkerCaps { .. }
-                            | DelegateFrame::KeepBusyTold { .. },
+                            | DelegateFrame::KeepBusyTold { .. }
+                            | DelegateFrame::WorkerSessions { .. },
                         ) => {
                             // Worker → daemon only. A daemon sending one is
                             // confused about which end it is.
@@ -456,5 +505,59 @@ async fn read_secret_from_stdin() -> Option<String> {
             tracing::warn!("delegation: timed out waiting for the secret on stdin");
             None
         }
+    }
+}
+
+/// FR-43 P3 — the `WorkerSessions` frame to send, when the list differs from
+/// what the daemon last heard (`told`), which it then becomes. `None` when
+/// nothing changed.
+fn sessions_update(
+    now: Vec<tunnel_core::localapi::RcSessionInfo>,
+    told: &mut Option<Vec<tunnel_core::localapi::RcSessionInfo>>,
+) -> Option<DelegateFrame> {
+    if told.as_ref() == Some(&now) {
+        return None;
+    }
+    *told = Some(now.clone());
+    Some(DelegateFrame::WorkerSessions { sessions: now })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tunnel_core::localapi::RcSessionInfo;
+
+    fn session(id: &str) -> RcSessionInfo {
+        RcSessionInfo {
+            session_id: id.into(),
+            controller_name: "someone".into(),
+            ..Default::default()
+        }
+    }
+
+    /// A fresh attach always tells the daemon the list, even an empty one: a
+    /// daemon that restarted holds nothing, and silence would leave it so.
+    #[test]
+    fn a_fresh_attach_tells_the_daemon_even_an_empty_list() {
+        let mut told = None;
+        assert!(matches!(
+            sessions_update(vec![], &mut told),
+            Some(DelegateFrame::WorkerSessions { sessions }) if sessions.is_empty()
+        ));
+        assert!(sessions_update(vec![], &mut told).is_none());
+    }
+
+    /// A session starting and ending each reach the daemon once; an unchanged
+    /// list sends nothing, so the poll costs no traffic.
+    #[test]
+    fn each_change_is_told_once() {
+        let mut told = Some(vec![]);
+        let one = vec![session("000000000000000000000001")];
+        assert!(sessions_update(one.clone(), &mut told).is_some());
+        assert!(sessions_update(one, &mut told).is_none());
+        assert!(matches!(
+            sessions_update(vec![], &mut told),
+            Some(DelegateFrame::WorkerSessions { sessions }) if sessions.is_empty()
+        ));
     }
 }

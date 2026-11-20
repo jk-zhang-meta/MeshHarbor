@@ -161,6 +161,22 @@ pub enum DelegateFrame {
         id: u64,
         info: Box<tunnel_core::localapi::KeepBusyInfo>,
     },
+    /// FR-43 P3 — worker → daemon: the remote-control sessions the worker
+    /// holds, as its registry lists them, sent on attach and whenever the list
+    /// changes.
+    ///
+    /// A delegated session lives in the worker (its peer, its banner entry),
+    /// so the daemon's own registry never sees it. On a single-enrollment Mac
+    /// the person's desktop app reaches only the DAEMON (the person socket):
+    /// without this list, "Being viewed by …" stayed empty while someone was.
+    /// An older daemon skips the frame.
+    WorkerSessions {
+        sessions: Vec<tunnel_core::localapi::RcSessionInfo>,
+    },
+    /// FR-43 P3 — daemon → worker: the person pressed Disconnect on one of the
+    /// worker's sessions. The worker ends it through its own registry, exactly
+    /// as its own banner would. An older worker skips the frame.
+    Disconnect { session_id: String },
 }
 
 /// FR-92 — how long the daemon waits for the worker's answer to a
@@ -345,6 +361,25 @@ impl Delegation {
     }
 }
 
+/// FR-43 P3 — is this process a GUI worker with no enrollment of its own?
+///
+/// True for `run --supervised` with no agent token: the per-user file is absent
+/// (the personal account was promoted into the system config, so the root
+/// daemon's enrollment is the device's only one) or holds the person's own
+/// settings without a token. Such a worker serves the daemon's delegated
+/// sessions and nothing else — it dials no server (`signaling` gives it a
+/// loopback sink for a control connection), persists no config and runs no
+/// updater or uploader.
+///
+/// ⚠️ A worker that DOES hold a token keeps serving its own enrollment as
+/// before (the two-row Macs of P2): this only adds the case that used to die
+/// `no config found` on every spawn. And an unsupervised `run` is never
+/// unenrolled, whatever its file says — it keeps failing loudly, because an
+/// agent nobody spawned has no daemon to serve.
+pub fn is_unenrolled_worker(supervised: bool, cfg: &crate::config::AgentConfig) -> bool {
+    supervised && cfg.agent_token.trim().is_empty()
+}
+
 /// May this server message be handed to the GUI worker?
 ///
 /// A **whitelist**: five variants in, everything else stays with the daemon.
@@ -481,6 +516,8 @@ struct Inner {
         >,
     >,
     next_keep_busy_ask: std::sync::atomic::AtomicU64,
+    /// FR-43 P3 — the attached worker's live sessions, as it last listed them.
+    worker_sessions: Mutex<Vec<tunnel_core::localapi::RcSessionInfo>>,
 }
 
 /// `chown` a path to `uid`, keeping its existing group.
@@ -749,6 +786,45 @@ impl DelegateHost {
             }
             None => tracing::debug!(id, "delegation: a keep-busy answer nobody is waiting for"),
         }
+    }
+
+    /// FR-43 P3 — the attached worker's live sessions (empty with no worker).
+    pub fn worker_sessions(&self) -> Vec<tunnel_core::localapi::RcSessionInfo> {
+        self.inner
+            .worker_sessions
+            .lock()
+            .expect("worker sessions mutex")
+            .clone()
+    }
+
+    /// FR-43 P3 — ask the attached worker to end one of ITS sessions. `false`
+    /// when the worker does not hold that session (or none is attached, or the
+    /// queue is full) — the same answer the registry gives for a session that
+    /// is already gone. It does not remove the entry: the worker's next list
+    /// does, once the session has actually ended.
+    pub fn disconnect_worker_session(&self, session_id: &str) -> bool {
+        let held = self
+            .inner
+            .worker_sessions
+            .lock()
+            .expect("worker sessions mutex")
+            .iter()
+            .any(|s| s.session_id == session_id && !s.reconnecting);
+        if !held {
+            return false;
+        }
+        let tx = self
+            .inner
+            .to_worker
+            .lock()
+            .expect("to_worker mutex")
+            .clone();
+        tx.is_some_and(|tx| {
+            tx.try_send(DelegateFrame::Disconnect {
+                session_id: session_id.to_string(),
+            })
+            .is_ok()
+        })
     }
 
     /// The keep-busy frame an attaching worker needs, once any org has said
@@ -1036,6 +1112,19 @@ impl DelegateHost {
                 // of this daemon. Data for that caller only; nothing here
                 // reaches the control WS.
                 Ok(DelegateFrame::KeepBusyTold { id, info }) => self.keep_busy_told(id, *info),
+                // FR-43 P3 — what the person's banner lists, from the process
+                // that holds the sessions. Data for the LocalAPI only.
+                Ok(DelegateFrame::WorkerSessions { sessions }) => {
+                    tracing::debug!(
+                        count = sessions.len(),
+                        "delegation: the worker's live sessions"
+                    );
+                    *self
+                        .inner
+                        .worker_sessions
+                        .lock()
+                        .expect("worker sessions mutex") = sessions;
+                }
                 Ok(DelegateFrame::WorkerCaps { caps }) => {
                     tracing::info!(
                         permissions = ?caps.permissions,
@@ -1048,7 +1137,8 @@ impl DelegateHost {
                     DelegateFrame::ToWorker { .. }
                     | DelegateFrame::SessionParams { .. }
                     | DelegateFrame::OverlayFootprint { .. }
-                    | DelegateFrame::KeepBusyAsk { .. },
+                    | DelegateFrame::KeepBusyAsk { .. }
+                    | DelegateFrame::Disconnect { .. },
                 ) => {
                     // Daemon → worker only. A worker sending one is confused
                     // about which end it is.
@@ -1079,6 +1169,14 @@ impl DelegateHost {
             .keep_busy_asks
             .lock()
             .expect("keep_busy_asks mutex")
+            .clear();
+        // FR-43 P3 — a gone worker holds no sessions: its peers went with it,
+        // and a banner still listing them would offer a Disconnect that does
+        // nothing.
+        self.inner
+            .worker_sessions
+            .lock()
+            .expect("worker sessions mutex")
             .clear();
         Ok(())
     }
@@ -1179,6 +1277,39 @@ fn secret_eq(expected: &str, offered: &str) -> bool {
     let a = expected.as_bytes();
     let b = offered.as_bytes();
     a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
+#[cfg(test)]
+mod unenrolled_worker_tests {
+    use super::*;
+
+    fn with_token(token: &str) -> crate::config::AgentConfig {
+        let mut cfg = crate::config::unenrolled().expect("parses");
+        cfg.agent_token = token.into();
+        cfg
+    }
+
+    /// The case that used to die `no config found`: a worker the daemon
+    /// spawned, holding no token.
+    #[test]
+    fn a_supervised_worker_with_no_token_serves_the_daemon_only() {
+        assert!(is_unenrolled_worker(true, &with_token("")));
+        assert!(is_unenrolled_worker(true, &with_token("  ")));
+    }
+
+    /// A two-row Mac's worker keeps its own enrollment, exactly as before.
+    #[test]
+    fn a_supervised_worker_with_a_token_keeps_its_enrollment() {
+        assert!(!is_unenrolled_worker(true, &with_token("tok")));
+    }
+
+    /// Nobody spawned an unsupervised `run`: it never becomes a daemon-less
+    /// worker, whatever its file says.
+    #[test]
+    fn an_unsupervised_run_is_never_an_unenrolled_worker() {
+        assert!(!is_unenrolled_worker(false, &with_token("")));
+        assert!(!is_unenrolled_worker(false, &with_token("tok")));
+    }
 }
 
 #[cfg(test)]

@@ -4414,7 +4414,12 @@ async fn run_cmd(
 ) -> Result<Option<i32>> {
     // FR-84 D3 — this process's own clock, for the restart verb's uptime rule.
     let process_started = std::time::Instant::now();
-    if !config_path.exists() {
+    // FR-43 P3 — a GUI worker the root daemon spawned (`run --supervised`) may
+    // hold no enrollment: on a single-enrollment Mac the daemon's is the only
+    // one. Before this it bailed here on every spawn, the supervisor gave up
+    // after five, and the device had no picture.
+    let config_on_disk = config_path.exists();
+    if !config_on_disk && !supervised {
         bail!(
             "no config found at {}. Run `meshharbord enroll` first.",
             config_path.display()
@@ -4466,14 +4471,33 @@ async fn run_cmd(
     // with the session (`PartOf=`), and a user manager that outlives a logout
     // never reaches `default.target` twice. Per-user only, on its own thread.
     meshharbord::service::repair_session_wants_at_start();
-    let mut cfg = config::load(config_path).context("loading config")?;
+    let mut cfg = if config_on_disk {
+        config::load(config_path).context("loading config")?
+    } else {
+        config::unenrolled()?
+    };
+    // FR-43 P3 — no token means no identity of its own: this process serves the
+    // daemon's delegated sessions over the delegation channel, and talks to no
+    // server, persists nothing and runs no updater (the daemon owns all of it).
+    // A per-user file without a token (the person's own settings) counts too.
+    let unenrolled_worker = meshharbord::delegate::is_unenrolled_worker(supervised, &cfg);
+    if unenrolled_worker {
+        tracing::info!(
+            path = %config_path.display(),
+            on_disk = config_on_disk,
+            "GUI worker with no enrollment of its own: serving the root daemon's \
+             delegated sessions only (FR-43 P3)"
+        );
+    }
     // FR-90 P2k-4 (F4) — an archive replica enrolled before its posture
     // joined the mesh joins it at its first start in a newer image, before
     // anything reads the overlay keys (the WG key is minted below from them).
-    if meshharbord::archive_replica::reconcile_at_start(
-        &mut cfg,
-        std::env::var(meshharbord::archive_replica::IMAGE_ENV).is_ok_and(|v| v == "1"),
-    ) {
+    if !unenrolled_worker
+        && meshharbord::archive_replica::reconcile_at_start(
+            &mut cfg,
+            std::env::var(meshharbord::archive_replica::IMAGE_ENV).is_ok_and(|v| v == "1"),
+        )
+    {
         match config::save(config_path, &cfg) {
             Ok(()) => tracing::info!(
                 "archive replica: joined the mesh, in the userspace stack (FR-90 P2k-4)"
@@ -4574,7 +4598,9 @@ async fn run_cmd(
     // contents. `migrate` stamps `config_schema_version`, trims the
     // server_url, resets cross-branch crash counters, and signals the
     // caller (us, here) to persist if anything actually changed.
-    if config::migrate(&mut cfg) {
+    // FR-43 P3 — an unenrolled worker migrates in memory only: it writes no
+    // per-user file, so nothing on disk claims an enrollment that is not there.
+    if config::migrate(&mut cfg) && !unenrolled_worker {
         if let Err(e) = config::save(config_path, &cfg) {
             tracing::warn!(error = %e, "config migration succeeded but persist failed; in-memory config still up-to-date");
         } else {
@@ -4775,8 +4801,11 @@ async fn run_cmd(
     // but logs an actionable hint up front so the operator doesn't
     // chase the wrong rabbit hole when the WS reconnect ladder kicks
     // in. 15 s overall budget, 5 s per probe in parallel.
-    let preflight_report = preflight::run_checks(&cfg.server_url).await;
-    preflight_report.log();
+    // FR-43 P3 — an unenrolled worker dials no server, so there is none to probe.
+    if !unenrolled_worker {
+        let preflight_report = preflight::run_checks(&cfg.server_url).await;
+        preflight_report.log();
+    }
 
     // Crash-loop bookkeeping: if the previous run was marked
     // `last_run_unhealthy=true` (started, never reached the clean
@@ -4787,16 +4816,21 @@ async fn run_cmd(
     // durable on disk if we then crash again.
     let now_unix = unix_now();
     let current_pkg = env!("CARGO_PKG_VERSION");
-    if cfg.last_run_unhealthy {
+    // FR-43 P3 — crash-loop bookkeeping and rollback belong to the root
+    // daemon, which owns the bundle (and the updater) on a supervised Mac; the
+    // unenrolled worker keeps no counter of its own and writes no file.
+    if cfg.last_run_unhealthy && !unenrolled_worker {
         config::record_crash_at(&mut cfg, now_unix);
         tracing::warn!(
             crash_count = cfg.crash_count,
             "previous run did not reach clean-run threshold — counting as crash"
         );
     }
-    config::mark_run_starting(&mut cfg);
-    if let Err(e) = config::save(config_path, &cfg) {
-        tracing::warn!(error = %e, "could not persist crash-tracking state");
+    if !unenrolled_worker {
+        config::mark_run_starting(&mut cfg);
+        if let Err(e) = config::save(config_path, &cfg) {
+            tracing::warn!(error = %e, "could not persist crash-tracking state");
+        }
     }
 
     // If the crash counter has tripped the rollback threshold AND we
@@ -4807,7 +4841,8 @@ async fn run_cmd(
     // manifest work. The operator can downgrade manually via
     // `meshharbord self-update --pin <version>` (also 0.1.52) or
     // by reinstalling the previous MSI by hand.
-    if config::should_rollback(&cfg, current_pkg, now_unix)
+    if !unenrolled_worker
+        && config::should_rollback(&cfg, current_pkg, now_unix)
         && let Some(target) = cfg.last_known_good_version.clone()
     {
         let target_tag = format!("agent-v{target}");
@@ -4892,9 +4927,12 @@ async fn run_cmd(
     // task moves cfg out of scope. (Moving cfg lets signaling::run own
     // it for the lifetime of the loop without us having to clone the
     // tokens + URLs that the signaling code rewrites in place.)
-    let auto_update_enabled = node_env("AUTO_UPDATE")
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off"))
-        .unwrap_or(true);
+    // FR-43 P3 — never in an unenrolled worker: the root daemon updates the
+    // bundle both halves run from.
+    let auto_update_enabled = !unenrolled_worker
+        && node_env("AUTO_UPDATE")
+            .map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true);
     let update_interval = updater::resolve_check_interval(&cfg);
     // S1a — forced-update trigger channel (rc:agent.update → run_periodic),
     // installed only when the updater runs: with it off a push reports
@@ -5090,6 +5128,10 @@ async fn run_cmd(
         let token = primary_token.clone();
         let mut shutdown = shutdown_rx.clone();
         async move {
+            // FR-43 P3 — no token to upload with, and no row to file it under.
+            if unenrolled_worker {
+                return;
+            }
             // Initial drain (formerly the only call site).
             crash_uploader::drain_and_upload(&cfg, &token).await;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -5122,7 +5164,12 @@ async fn run_cmd(
     // `MESHHARBORD_LOGS_UPLOAD_DISABLED=1` per the rc.58 plan.
     let logs_upload_disabled =
         meshharbord::logs_upload::parse_disable_flag(node_env("LOGS_UPLOAD_DISABLED").as_deref());
-    if !logs_upload_disabled && let Some(rx) = logging::take_log_upload_receiver() {
+    // FR-43 P3 — an unenrolled worker has no token to upload with; its lines
+    // stay in the per-user log file.
+    if !logs_upload_disabled
+        && !unenrolled_worker
+        && let Some(rx) = logging::take_log_upload_receiver()
+    {
         let host_hash = meshharbord::logs_upload::hash_hostname(
             &meshharbord::machine::hostname().unwrap_or_else(|_| "unknown".to_string()),
         );
@@ -5190,8 +5237,11 @@ async fn run_cmd(
     let netstack_pinger: Option<std::sync::Arc<dyn localapi_state::NetstackPinger>> = None;
     // RDP over the mesh: report `rdp_mesh_reachable`, and on a netstack node
     // forward the owner-opted-in RDP port (`rdp_over_mesh`, default off) to
-    // loopback only.
-    meshharbord::rdp_mesh::start(&cfg, config_path);
+    // loopback only. FR-43 P3 — not in an unenrolled worker: the mesh, and so
+    // any RDP through it, is the root daemon's, and the opt-in lives in ITS file.
+    if !unenrolled_worker {
+        meshharbord::rdp_mesh::start(&cfg, config_path);
+    }
     // S1b — ONE pinger for BOTH the interactive `Ping` verb and the RTT
     // prober: netstack when the userspace stack runs, OS ICMP fallback
     // otherwise. The verb previously got the raw Option (no fallback)
@@ -5268,7 +5318,9 @@ async fn run_cmd(
     // registry `NodeStatus.orgs` reads. Secondary handles (connected flag /
     // terminal-error slot / OrgCtx) are minted here so the registry rows and
     // the spawned supervisors share the SAME instances.
-    let primary_ctx = signaling::OrgCtx::primary(primary_token.clone()).with_renewal(token_renewal);
+    let primary_ctx = signaling::OrgCtx::primary(primary_token.clone())
+        .with_renewal(token_renewal)
+        .unenrolled(unenrolled_worker);
     let mut org_spawns: Vec<OrgSpawn> = Vec::new();
     // Multi-org — every secondary org.s live overlay view, so `peers` can
     // report all orgs (the receivers used to be dropped on the floor).
@@ -5587,6 +5639,7 @@ async fn run_cmd(
         supervised,
         worker_channels,
         shutdown_rx.clone(),
+        rc_sessions.clone(),
     ));
     #[cfg(not(unix))]
     let _ = supervised;
@@ -5609,6 +5662,16 @@ async fn run_cmd(
     let localapi_task = tokio::spawn({
         let shutdown = shutdown_rx.clone();
         async move {
+            // FR-43 P3 — an unenrolled worker binds no LocalAPI socket. The
+            // person's `mh` and the desktop app try the per-user socket FIRST,
+            // so a worker that bound it would answer for the device with a view
+            // that holds no enrollment; left unbound, they reach the root
+            // daemon's person socket, which is the device.
+            if unenrolled_worker {
+                drop(localapi_state);
+                tracing::info!("localapi: not served by an unenrolled GUI worker (FR-43 P3)");
+                return;
+            }
             if let Err(e) =
                 tunnel_core::localapi::serve_with_pool(localapi_state, shutdown, localapi_pipe_pool)
                     .await
@@ -5957,6 +6020,11 @@ async fn run_cmd(
         let pkg = current_pkg.to_string();
         let write_lock = cfg_write_lock.clone();
         async move {
+            // FR-43 P3 — the promotion is a config write; an unenrolled worker
+            // has no file to promote.
+            if unenrolled_worker {
+                return;
+            }
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(
                     config::CLEAN_RUN_THRESHOLD_SECS,
@@ -6144,7 +6212,8 @@ async fn run_cmd(
     // avoid clobbering any concurrent writes (clean_run_task may
     // have just promoted the version, in which case the unhealthy
     // flag is already false — load+save is a no-op).
-    if graceful_shutdown {
+    // FR-43 P3 — an unenrolled worker kept no crash flag, so there is none to clear.
+    if graceful_shutdown && !unenrolled_worker {
         // P6: same daemon-wide write lock as the other runtime writers.
         // The LocalAPI task is already aborted at this point, but the
         // clean-run promotion task may still be mid-save.

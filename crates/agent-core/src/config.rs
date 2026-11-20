@@ -3536,6 +3536,24 @@ pub fn machine_global_config_path() -> PathBuf {
     crate::appdirs::machine_global_dir().join("config.toml")
 }
 
+/// FR-43 P3 — the configuration of a GUI worker that holds no enrollment.
+///
+/// A single-enrollment Mac (the personal account promoted into the system
+/// config by `meshharbord enroll-personal-system`, which also turns on
+/// `macos_supervise_gui_worker`) has ONE identity: the root daemon's. The
+/// worker that daemon spawns into the console user's session serves the
+/// daemon's delegated remote-control sessions and nothing else, so there is
+/// no server, token or agent id for it to hold — and before this it died
+/// `no config found` on every spawn, leaving the device with no picture.
+///
+/// The identity fields are empty; every other field takes the serde default,
+/// the same defaults [`load`] fills into a file that omits them.
+pub fn unenrolled() -> Result<AgentConfig> {
+    const IDENTITY_ONLY: &str = "server_url = \"\"\nagent_token = \"\"\nagent_id = \"\"\n\
+        tenant_id = \"\"\nmachine_id = \"\"\nmachine_name = \"\"\n";
+    toml::from_str(IDENTITY_ONLY).context("building the unenrolled worker's config")
+}
+
 /// Sibling copy of the last config that both saved AND parsed, kept so an
 /// unreadable live file can be recovered without re-enrolling the host.
 fn prev_path(path: &std::path::Path) -> PathBuf {
@@ -3805,6 +3823,25 @@ fn derive_ws_url(http_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-43 P3 — the unenrolled worker's config has no identity at all and
+    /// switches on nothing the root daemon owns: no overlay, SSH, exec or vault
+    /// of its own, and it never supervises anything.
+    #[test]
+    fn the_unenrolled_worker_config_holds_no_identity_and_owns_nothing() {
+        let cfg = unenrolled().expect("the constant parses");
+        assert!(cfg.server_url.is_empty());
+        assert!(cfg.agent_token.is_empty());
+        assert!(cfg.agent_id.is_empty());
+        assert!(cfg.tenant_id.is_empty());
+        assert!(cfg.orgs.is_empty());
+        assert!(!cfg.overlay_enabled);
+        assert!(!cfg.ssh_enabled);
+        assert!(!cfg.exec_enabled);
+        assert!(!cfg.vault_enabled);
+        assert!(!cfg.macos_supervise_gui_worker);
+        assert!(!cfg.ephemeral);
+    }
 
     /// FR-93 P1 — the ONE fallback map, which the daemon and both smoke
     /// commands publish: every kind of bridged value reaches it, an unset key

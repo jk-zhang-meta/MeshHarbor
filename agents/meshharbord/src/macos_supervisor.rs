@@ -81,7 +81,7 @@ pub struct Inputs {
     /// owns a worker for this session.
     pub launch_agent_loaded: bool,
     /// Consecutive workers that exited faster than [`HEALTHY_RUN`]. A worker
-    /// that can never start (no per-user enrollment on this Mac, say) would
+    /// that can never start (one that cannot load in the session, say) would
     /// otherwise respawn forever; past [`MAX_FAST_EXITS`] the supervisor
     /// stops and says why.
     pub consecutive_fast_exits: u32,
@@ -623,9 +623,11 @@ mod imp {
                         fast_exits,
                         max = MAX_FAST_EXITS,
                         "macOS supervisor: the GUI worker died on arrival too many times — \
-                         NOT retrying. Almost always this Mac has no per-user enrollment: \
-                         the worker runs AS the console user and loads THAT user's config. \
-                         Check with: launchctl asuser <uid> sudo -u '#<uid>' meshharbord caps"
+                         NOT retrying. The worker runs AS the console user (and since FR-43 P3 \
+                         needs no enrollment of its own), so read ITS log in that user's \
+                         Library/Application Support/live.meshharbor.meshharbor/logs, and \
+                         check its grants with: launchctl asuser <uid> sudo -u '#<uid>' \
+                         meshharbord caps"
                     );
                 } else {
                     tracing::info!(?action, console_uid = ?uid_now, "macOS supervisor state");

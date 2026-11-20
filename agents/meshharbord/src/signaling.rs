@@ -675,6 +675,12 @@ pub struct OrgCtx {
     /// FR-103 — rung once the server has ACCEPTED the token on a connect:
     /// the renewal task looks after every connect.
     renewal_connected: Arc<tokio::sync::Notify>,
+    /// FR-43 P3 — this loop belongs to a GUI worker with no enrollment of its
+    /// own ([`crate::delegate::is_unenrolled_worker`]). It dials no server: its
+    /// control connection is a loopback sink ([`local_control_sink`]) and the
+    /// root daemon's delegated messages are all it serves. No hello, no token
+    /// renewal, nothing reported upstream except through the delegation channel.
+    pub unenrolled: bool,
 }
 
 impl OrgCtx {
@@ -688,6 +694,7 @@ impl OrgCtx {
             token,
             renewal: Default::default(),
             renewal_connected: Arc::new(tokio::sync::Notify::new()),
+            unenrolled: false,
         }
     }
 
@@ -703,6 +710,7 @@ impl OrgCtx {
             token,
             renewal: Default::default(),
             renewal_connected: Arc::new(tokio::sync::Notify::new()),
+            unenrolled: false,
         }
     }
 
@@ -710,6 +718,13 @@ impl OrgCtx {
     /// environment's; a test passes its own).
     pub fn with_renewal(mut self, renewal: crate::token_renewal::Settings) -> Self {
         self.renewal = renewal;
+        self
+    }
+
+    /// FR-43 P3 — mark the PRIMARY loop as an unenrolled GUI worker's (see the
+    /// field). A secondary org is an enrollment by definition, so it never is.
+    pub fn unenrolled(mut self, unenrolled: bool) -> Self {
+        self.unenrolled = unenrolled && self.is_primary;
         self
     }
 
@@ -1059,23 +1074,29 @@ pub async fn run(
         agent_id: cfg.agent_id.clone(),
         token: ctx.token.clone(),
     };
-    let _renewal_task = AbortOnDrop(tokio::spawn(crate::token_renewal::run(
-        renewal.clone(),
-        remote_cfg.clone(),
-        ctx.renewal,
-        ctx.renewal_connected.clone(),
-    )));
+    // FR-43 P3 — an unenrolled worker holds no token to renew, and no
+    // invitation to watch: neither task exists for it.
+    let _renewal_task = (!ctx.unenrolled).then(|| {
+        AbortOnDrop(tokio::spawn(crate::token_renewal::run(
+            renewal.clone(),
+            remote_cfg.clone(),
+            ctx.renewal,
+            ctx.renewal_connected.clone(),
+        )))
+    });
     // Temporary devices — the server's word on this enrollment's invitations
     // (a renewal moves a deadline), kept in `temporary.json` beside the
     // config so the goodbye at the end is told apart from a fault. Every
     // enrollment: a machine may hold invitations in several organizations.
-    let _temporary_task = AbortOnDrop(tokio::spawn(temporary_watch(
-        cfg.server_url.clone(),
-        ctx.token.clone(),
-        remote_cfg.config_path().to_path_buf(),
-        cfg.agent_id.clone(),
-        ctx.is_primary,
-    )));
+    let _temporary_task = (!ctx.unenrolled).then(|| {
+        AbortOnDrop(tokio::spawn(temporary_watch(
+            cfg.server_url.clone(),
+            ctx.token.clone(),
+            remote_cfg.config_path().to_path_buf(),
+            cfg.agent_id.clone(),
+            ctx.is_primary,
+        )))
+    });
     // FR-103 — the previous attempt was a recovery's prompt retry (see the
     // `AuthRejected` arm): a second refusal in a row waits out the ladder.
     let mut recovered_last = false;
@@ -1681,7 +1702,11 @@ async fn connect_once(
     // might paste into a chat / issue (field 2026-07-25 — a controller shared a
     // log with the full token in it). The token itself never adds diagnostic
     // value here; `{server}/ws (role=agent)` is enough to see WHERE we dial.
-    info!(server = %cfg.ws_url(), "connecting to signaling server (role=agent)");
+    if ctx.unenrolled {
+        info!("unenrolled GUI worker: control connection is a loopback sink (FR-43 P3)");
+    } else {
+        info!(server = %cfg.ws_url(), "connecting to signaling server (role=agent)");
+    }
 
     // rc.58: wrap `connect_async` in a hard timeout. A hung TLS
     // handshake (rustls refusing renegotiation against an LB that
@@ -1692,12 +1717,15 @@ async fn connect_once(
     // #2187 — the server's address comes from `ctl_dns`: a name resolved
     // before never waits on a resolver that has stopped answering (an exit
     // whose DNS died kept a dropped control WS from ever reconnecting).
-    let (mut ws, response) =
-        match tokio::time::timeout(WS_CONNECT_TIMEOUT, crate::ws_connect::connect(&url)).await {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(e)) => {
-                if let tokio_tungstenite::tungstenite::Error::Http(ref resp) = e
-                    && resp.status().as_u16() == 401
+    let mut ws =
+        if ctx.unenrolled {
+            local_control_sink()
+                .await
+                .map_err(|e| ConnectError::Transient(e.context("loopback control sink")))?
+        } else {
+            let (ws, response) =
+                match tokio::time::timeout(WS_CONNECT_TIMEOUT, crate::ws_connect::connect(&url))
+                    .await
                 {
                     // #2512 — the server refuses this token: say so on the
                     // slot, so the DERP dialer and the log uploader stop
@@ -1723,7 +1751,6 @@ async fn connect_once(
                 )));
             }
         };
-    debug!(status = ?response.status(), "ws upgrade complete");
 
     // rc.58: now that the WS handshake is done, flip the watchdog's
     // `signaling` pump on for the lifetime of this connection. The
@@ -1744,15 +1771,18 @@ async fn connect_once(
     // Fleet RPC — teach the redactor THIS org's agent token before any exec
     // can run. Registered per-org (the registry is process-wide) so a command
     // asked for by org A can never leak org B's token in its output.
-    crate::exec::register_secret(&token);
-    // FR-103 — the server accepted this token: the renewal task looks now.
-    ctx.renewal_connected.notify_one();
-    // #2512 — and the loops that held their requests on its refusal resume.
-    if ctx.token.mark_accepted(&token) {
-        info!(
-            org = %ctx.label,
-            "agent token accepted again; DERP dials and log uploads resume"
-        );
+    // FR-43 P3 — an unenrolled worker has no token, and no server accepted one.
+    if !ctx.unenrolled {
+        crate::exec::register_secret(&token);
+        // FR-103 — the server accepted this token: the renewal task looks now.
+        ctx.renewal_connected.notify_one();
+        // #2512 — and the loops that held their requests on its refusal resume.
+        if ctx.token.mark_accepted(&token) {
+            info!(
+                org = %ctx.label,
+                "agent token accepted again; DERP dials and log uploads resume"
+            );
+        }
     }
 
     // Say hello.
@@ -1820,59 +1850,70 @@ async fn connect_once(
         .iter()
         .find(|c| c.codec == "vp9" && c.backend == "libvpx")
         .and_then(|c| c.sustain_fps);
-    let (arch, arch_emulated) = crate::arch::native();
-    let hello = ClientMsg::AgentHello {
-        machine_name: if ctx.is_primary {
-            remote_cfg.names.snapshot().map(|s| s.0).unwrap_or_else(|| cfg.machine_name.clone())
-        } else { cfg.machine_name.clone() },
-        os: detect_os(),
-        // FR-97 P0d — the hardware's architecture, not this build's.
-        arch,
-        arch_emulated,
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
-        displays: stub_displays(),
-        caps: Box::new(hello_caps),
-        // Tunnel mesh subnet-router: advertise the CIDRs this host offers to
-        // route — explicit `advertise_routes` config unioned with auto-detected
-        // local subnets. Admin-gated server-side (untrusted until an admin
-        // approves them into this agent's `routes`).
-        advertised_routes: crate::subnet_detect::local_advertised_routes(cfg),
-        // Multi-region relay PoPs: advertise the probe capability so the
-        // server may push `rc:relay.regions` (it never sends the variant to
-        // an agent that didn't flag it — our deserializer would error).
-        supports_relay_regions: crate::relay_probe::probing_enabled(),
-        // P6 — publish the host key's PUBLIC half so a caller can verify what
-        // it dialled. Empty here is meaningful ("this device cannot prove
-        // itself"), never "trust anything".
-        ssh_host_pubkey: ssh_host_pubkey_for(cfg),
-        // FR-90 P3-3a — the vault key's public half, made on this first ask
-        // and held in memory for the life of the process: the primary
-        // enrollment's connection only, and only while the owner's
-        // `vault_enabled` is on.
-        vault_key: crate::vault::hello_key(cfg.vault_enabled, ctx.is_primary),
-        // FR-100 P1a — THIS enrollment's device key, on every org's
-        // connection (one key per org, never shared): made on the first
-        // hello, kept beside the config, and offered only once it is on disk.
-        peer_auth_key: crate::peer_auth::hello_key(remote_cfg.config_path(), &cfg.tenant_id),
-    };
-    send_msg(&mut ws, &hello).await.context("sending hello")?;
-    // rc.58: explicit tick on hello — the 25 s keepalive timer hasn't
-    // fired yet, and a slow first server response (no inbound frame
-    // for 30+ s) would otherwise leave the pump's `last_tick` at the
-    // gate-activation instant. Belt-and-suspenders: the gate already
-    // reset the timer, so this only matters when the server stalls
-    // immediately after upgrade.
-    watchdog::tick(ctx.pump);
-    info!("rc:agent.hello sent");
-    // A5 — if this connect ended a ≥1 h outage, the fleet may have shipped a
-    // fix (or a forced update push) we never saw; check now, not in ≤4 h.
-    ctx.note_ws_up_and_maybe_recheck_update();
+    // FR-43 P3 — an unenrolled worker introduces itself to nobody: there is no
+    // device row for it, and building the hello would mint keys (the peer-auth
+    // device key, the SSH host key) for an identity that does not exist.
+    if !ctx.unenrolled {
+        let (arch, arch_emulated) = crate::arch::native();
+        let hello = ClientMsg::AgentHello {
+            machine_name: if ctx.is_primary {
+                remote_cfg
+                    .names
+                    .snapshot()
+                    .map(|s| s.0)
+                    .unwrap_or_else(|| cfg.machine_name.clone())
+            } else {
+                cfg.machine_name.clone()
+            },
+            os: detect_os(),
+            // FR-97 P0d — the hardware's architecture, not this build's.
+            arch,
+            arch_emulated,
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
+            displays: stub_displays(),
+            caps: Box::new(hello_caps),
+            // Tunnel mesh subnet-router: advertise the CIDRs this host offers to
+            // route — explicit `advertise_routes` config unioned with auto-detected
+            // local subnets. Admin-gated server-side (untrusted until an admin
+            // approves them into this agent's `routes`).
+            advertised_routes: crate::subnet_detect::local_advertised_routes(cfg),
+            // Multi-region relay PoPs: advertise the probe capability so the
+            // server may push `rc:relay.regions` (it never sends the variant to
+            // an agent that didn't flag it — our deserializer would error).
+            supports_relay_regions: crate::relay_probe::probing_enabled(),
+            // P6 — publish the host key's PUBLIC half so a caller can verify what
+            // it dialled. Empty here is meaningful ("this device cannot prove
+            // itself"), never "trust anything".
+            ssh_host_pubkey: ssh_host_pubkey_for(cfg),
+            // FR-90 P3-3a — the vault key's public half, made on this first ask
+            // and held in memory for the life of the process: the primary
+            // enrollment's connection only, and only while the owner's
+            // `vault_enabled` is on.
+            vault_key: crate::vault::hello_key(cfg.vault_enabled, ctx.is_primary),
+            // FR-100 P1a — THIS enrollment's device key, on every org's
+            // connection (one key per org, never shared): made on the first
+            // hello, kept beside the config, and offered only once it is on disk.
+            peer_auth_key: crate::peer_auth::hello_key(remote_cfg.config_path(), &cfg.tenant_id),
+        };
+        send_msg(&mut ws, &hello).await.context("sending hello")?;
+        // rc.58: explicit tick on hello — the 25 s keepalive timer hasn't
+        // fired yet, and a slow first server response (no inbound frame
+        // for 30+ s) would otherwise leave the pump's `last_tick` at the
+        // gate-activation instant. Belt-and-suspenders: the gate already
+        // reset the timer, so this only matters when the server stalls
+        // immediately after upgrade.
+        watchdog::tick(ctx.pump);
+        info!("rc:agent.hello sent");
+        // A5 — if this connect ended a ≥1 h outage, the fleet may have shipped a
+        // fix (or a forced update push) we never saw; check now, not in ≤4 h.
+        ctx.note_ws_up_and_maybe_recheck_update();
+    }
 
     // Outbound channel shared by all per-session peers. Peers push their
     // locally-gathered ICE candidates and state-change terminates here;
     // the main loop flushes them to the WS.
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientMsg>(PEER_OUTBOUND_CAP);
-    if ctx.is_primary {
+    if ctx.is_primary && !ctx.unenrolled {
         remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
     }
     // Multi-region relay probing: the server's last region push (per
@@ -1901,7 +1942,7 @@ async fn connect_once(
     );
     let _ = crate::net_inventory::spawn_reporter(
         outbound_tx.clone(),
-        ctx.is_primary,
+        ctx.is_primary && !ctx.unenrolled,
         cfg.orgs.iter().filter(|o| o.enabled).count(),
     );
     // P3b-2 PR-C: publish this connection's egress so tunnel-client flow
@@ -1932,7 +1973,7 @@ async fn connect_once(
     // which also replays the latest state of every session a dropped
     // connection may have lost.
     #[cfg(hive_host)]
-    if ctx.is_primary {
+    if ctx.is_primary && !ctx.unenrolled {
         crate::hive::on_connected(outbound_tx.clone());
     }
     let _sink_guard = tunnel_hub.publish_sink(outbound_tx.clone());
@@ -1975,8 +2016,12 @@ async fn connect_once(
     // event channel, unbounded.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     watchdog::stage(ctx.pump, "setup.overlay");
+    // FR-43 P3 — never in an unenrolled worker: the mesh is the root daemon's.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-    let mut overlay_evt_tx = crate::overlay::maybe_start(
+    let mut overlay_evt_tx = if ctx.unenrolled {
+        None
+    } else {
+        crate::overlay::maybe_start(
         cfg,
         ctx.token.clone(),
         outbound_tx.clone(),
@@ -1988,10 +2033,9 @@ async fn connect_once(
                 broker: consent_broker.clone(),
                 indicator: indicator.clone(),
             },
-            activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
-        },
-    )
-    .await;
+        )
+        .await
+    };
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     watchdog::stage(ctx.pump, "setup");
     // B1 — install THIS connection's RTT-sample sink: a hook wrapping a
@@ -7473,6 +7517,65 @@ async fn park_survived_quic_peers(tunnel_quic_peers: &mut TunnelQuicPeers, tenan
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// How long [`local_control_sink`] waits for its own loopback connection to
+/// arrive at its own listener. Generous: it is one SYN on 127.0.0.1.
+const LOCAL_SINK_ACCEPT: Duration = Duration::from_secs(5);
+
+/// FR-43 P3 — the control connection of an unenrolled GUI worker: a WebSocket
+/// over loopback TCP whose far end, in this process, only reads.
+///
+/// The worker serves the daemon's delegated sessions with the SAME select loop
+/// every enrollment runs ([`connect_once`]), and that loop, with its helpers, is
+/// written against one concrete stream type. An unenrolled worker has no server
+/// to dial, so it gets a real [`Ws`] whose far end swallows what the loop sends
+/// (heartbeats, telemetry for a row that does not exist) and answers its
+/// keepalive pings — tungstenite replies to a ping while it reads — so the
+/// receive-liveness deadline holds. Nothing is ever sent TO the worker on it,
+/// so the only messages the loop serves are the delegated ones.
+///
+/// ⚠️ The far end takes exactly OUR connection: an accepted peer whose address
+/// is not our client socket's own is dropped. Without the check, a local
+/// process that raced the accept would become the end that answers our pings;
+/// it could still inject nothing (the far end never writes a message, and our
+/// client's real peer stays in a backlog only this listener can drain), but a
+/// sink that serves a stranger is not a sink.
+async fn local_control_sink() -> anyhow::Result<Ws> {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .context("binding the loopback listener")?;
+    let addr = listener.local_addr()?;
+    let client = tokio::net::TcpStream::connect(addr)
+        .await
+        .context("connecting to the loopback listener")?;
+    let ours = client.local_addr()?;
+    let far = tokio::time::timeout(LOCAL_SINK_ACCEPT, async {
+        loop {
+            let (sock, peer) = listener.accept().await?;
+            if peer == ours {
+                return std::io::Result::Ok(sock);
+            }
+            warn!(%peer, "loopback control sink: dropped a connection that was not ours");
+        }
+    })
+    .await
+    .context("our own loopback connection never arrived")??;
+    drop(listener);
+    tokio::spawn(async move {
+        let mut far =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(far, Role::Server, None).await;
+        // Reading is what flushes the pong for each ping; the frames themselves
+        // are for a server this worker does not have.
+        while let Some(Ok(_)) = far.next().await {}
+    });
+    Ok(tokio_tungstenite::WebSocketStream::from_raw_socket(
+        tokio_tungstenite::MaybeTlsStream::Plain(client),
+        Role::Client,
+        None,
+    )
+    .await)
+}
+
 /// Single choke point for every frame written to the control WS, bounded
 /// by `WS_SEND_TIMEOUT` (see its doc for the field failure this exists
 /// for). A timeout is reported as an ordinary send error so every caller
@@ -7992,6 +8095,33 @@ async fn temporary_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-43 P3 — the unenrolled worker's control connection takes everything
+    /// the loop writes and answers its keepalive, so the receive-liveness
+    /// deadline (`WS_RX_DEADLINE`) never cycles a healthy worker. It sends
+    /// nothing else: the loop's `ws.next()` arm sees only the pong.
+    #[tokio::test]
+    async fn the_loopback_control_sink_swallows_frames_and_answers_pings() {
+        let mut ws = local_control_sink().await.expect("sink");
+        send_msg(&mut ws, &ClientMsg::Ping { id: 1 })
+            .await
+            .expect("a frame is accepted");
+        send_frame(&mut ws, Message::Ping(b"rtt".to_vec().into()))
+            .await
+            .expect("ping sent");
+        let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("the far end answers within the deadline")
+            .expect("stream open")
+            .expect("no error");
+        assert_eq!(reply, Message::Pong(b"rtt".to_vec().into()));
+        // And nothing else ever arrives.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), ws.next())
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn auto_grant_consent_completion_records_parent_without_reviving_closed_or_denied() {

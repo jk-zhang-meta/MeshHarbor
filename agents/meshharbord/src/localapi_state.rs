@@ -217,8 +217,10 @@ pub struct DaemonState {
     started_at_ms: u64,
     /// FR-92 — on a supervised Mac the GUI WORKER runs keep busy, not this
     /// root daemon, so the keep-busy verbs ask it over the delegation channel.
-    /// `None` everywhere else, and in the worker itself: there this process's
-    /// own engine is the one that runs.
+    /// FR-43 P3 — and it holds the delegated sessions, so `RcSessions` lists
+    /// them from here and `RcDisconnect` is relayed to it. `None` everywhere
+    /// else, and in the worker itself: there this process's own engine and
+    /// registry are the ones that run.
     keep_busy_worker: Option<crate::delegate::DelegateHost>,
 }
 
@@ -1014,10 +1016,20 @@ impl LocalApiState for DaemonState {
     }
 
     fn rc_sessions(&self) -> Vec<tunnel_core::localapi::RcSessionInfo> {
-        self.rc_sessions
+        let own = self
+            .rc_sessions
             .as_ref()
             .map(|r| r.list())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // FR-43 P3 — a supervised Mac's delegated sessions live in its GUI
+        // worker, and on a single-enrollment Mac this daemon (its person
+        // socket) is all the person's desktop app can reach.
+        let worker = self
+            .keep_busy_worker
+            .as_ref()
+            .map(|h| h.worker_sessions())
+            .unwrap_or_default();
+        merge_sessions(own, worker)
     }
 
     fn rc_disconnect(&self, session_id: &str) -> bool {
@@ -1035,10 +1047,17 @@ impl LocalApiState for DaemonState {
         let Ok(oid) = bson::oid::ObjectId::parse_str(session_id) else {
             return false;
         };
-        match &self.rc_sessions {
-            Some(reg) => reg.disconnect(&oid),
-            None => false,
+        if self
+            .rc_sessions
+            .as_ref()
+            .is_some_and(|reg| reg.disconnect(&oid))
+        {
+            return true;
         }
+        // FR-43 P3 — not ours: perhaps the attached GUI worker's.
+        self.keep_busy_worker
+            .as_ref()
+            .is_some_and(|h| h.disconnect_worker_session(session_id))
     }
 
     async fn ping(&self, target: &str, timeout_ms: u64, prefer_v6: bool) -> Response {
@@ -2313,6 +2332,21 @@ fn external_password_state(cfg: &crate::config::AgentConfig) -> ExternalPassword
     }
 }
 
+/// FR-43 P3 — this daemon's own live sessions, then the GUI worker's, oldest
+/// first within each. A session id the daemon already lists is not repeated:
+/// the daemon's entry is the one whose Disconnect it can serve itself.
+fn merge_sessions(
+    mut own: Vec<tunnel_core::localapi::RcSessionInfo>,
+    worker: Vec<tunnel_core::localapi::RcSessionInfo>,
+) -> Vec<tunnel_core::localapi::RcSessionInfo> {
+    for s in worker {
+        if !own.iter().any(|o| o.session_id == s.session_id) {
+            own.push(s);
+        }
+    }
+    own
+}
+
 fn is_hex_object_id(s: &str) -> bool {
     s.len() == 24 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -3364,6 +3398,130 @@ mod tests {
             .await
             .expect("the daemon loop ends with its channel")
             .unwrap();
+    }
+
+    /// FR-43 P3 — a single-enrollment Mac's desktop app reaches only the
+    /// daemon, while the delegated session lives in the worker: `RcSessions`
+    /// lists the worker's sessions too, `RcDisconnect` on one of them reaches
+    /// the worker as a `Disconnect`, and a worker that detaches takes its
+    /// sessions off the list. Falsified: without the relay the list is empty
+    /// and the Disconnect answers `false`.
+    #[tokio::test]
+    async fn a_supervised_macs_daemon_lists_and_ends_its_workers_sessions() {
+        use crate::delegate::{DelegateFrame, DelegateHost, write_frame};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let host = DelegateHost::new();
+        let secret = host.mint();
+        let (client, server) = tokio::io::duplex(4096);
+        let (rd, wr) = tokio::io::split(server);
+        let h = host.clone();
+        let serving =
+            tokio::spawn(async move { h.serve(&secret, Box::new(rd), Box::new(wr)).await });
+        let (crd, mut cwr) = tokio::io::split(client);
+        let mut lines = BufReader::new(crd).lines();
+        assert!(
+            lines
+                .next_line()
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("\"attached\"")
+        );
+
+        let sid = "000000000000000000000007";
+        let held = tunnel_core::localapi::RcSessionInfo {
+            session_id: sid.into(),
+            controller_name: "Alice".into(),
+            permissions: "VIEW".into(),
+            ..Default::default()
+        };
+        write_frame(
+            &mut cwr,
+            &DelegateFrame::WorkerSessions {
+                sessions: vec![held.clone()],
+            },
+        )
+        .await
+        .unwrap();
+        // A ping round trip orders us after the daemon handled that frame.
+        cwr.write_all(b"{\"t\":\"ping\"}\n").await.unwrap();
+        assert!(
+            lines
+                .next_line()
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("\"pong\"")
+        );
+
+        let (_tx, rx) = watch::channel(view());
+        let st = DaemonState::new(
+            "aid".into(),
+            "host".into(),
+            DaemonMode::Service,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            rx,
+            consent_broker("workersessions"),
+            None,
+            crate::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            empty_rtt_cache(),
+        )
+        .with_keep_busy_worker(host.clone());
+
+        assert_eq!(
+            st.rc_sessions(),
+            vec![held],
+            "the worker's session is listed"
+        );
+        assert!(st.rc_disconnect(sid), "a Disconnect on it is relayed");
+        let relayed = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("the worker hears it")
+            .unwrap()
+            .unwrap();
+        match serde_json::from_str::<DelegateFrame>(&relayed) {
+            Ok(DelegateFrame::Disconnect { session_id }) => assert_eq!(session_id, sid),
+            other => panic!("expected a Disconnect, got {other:?}"),
+        }
+        assert!(
+            !st.rc_disconnect("000000000000000000000008"),
+            "a session nobody holds is not ended"
+        );
+
+        drop(cwr);
+        drop(lines);
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .expect("the daemon loop ends with its channel")
+            .unwrap();
+        assert!(
+            st.rc_sessions().is_empty(),
+            "a detached worker holds no sessions"
+        );
+    }
+
+    /// FR-43 P3 — the daemon's own entry wins over a worker's for one session id.
+    #[test]
+    fn the_daemons_own_session_is_listed_once() {
+        let mine = tunnel_core::localapi::RcSessionInfo {
+            session_id: "000000000000000000000009".into(),
+            controller_name: "daemon".into(),
+            ..Default::default()
+        };
+        let theirs = tunnel_core::localapi::RcSessionInfo {
+            controller_name: "worker".into(),
+            ..mine.clone()
+        };
+        let other = tunnel_core::localapi::RcSessionInfo {
+            session_id: "00000000000000000000000a".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_sessions(vec![mine.clone()], vec![theirs, other.clone()]),
+            vec![mine, other]
+        );
     }
 
     /// FR-52 P2c — set → persist → reload → clear, against a real config file,
