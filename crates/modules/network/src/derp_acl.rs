@@ -100,12 +100,20 @@ pub struct DerpAllowTable {
     >,
     /// Monotonic `OverlayNetwork.zone_revision` captured for this table (`None` for unit-test fixtures).
     zone_revision: Option<u64>,
+    /// FR-124 — nodes in a strict zone whose countries do not hold this
+    /// relay (or unresolved under zones): they relay to nobody and nobody to
+    /// them, and they may not register at all ([`Self::refuses_registration`]).
+    /// The netmap, which offers such a pair no DERP tier, is the first line.
+    central_relay_denied: HashSet<DerpPubKey>,
 }
 
 impl DerpAllowTable {
     /// May `src` relay a frame to `dst`? Always `true` when neither the ACL
     /// nor the isolation is enforced.
     pub fn permits(&self, src: &DerpPubKey, dst: &DerpPubKey) -> bool {
+        if self.central_relay_denied.contains(src) || self.central_relay_denied.contains(dst) {
+            return false;
+        }
         if let Some(nz) = &self.network_zones {
             use meshharbor_remote_control::models::CrossZoneMode;
             match (nz.get(src), nz.get(dst)) {
@@ -135,6 +143,22 @@ impl DerpAllowTable {
     /// `true` when a denial should actually drop the frame (vs. only be logged).
     pub fn enforcing(&self) -> bool {
         self.enforcing
+    }
+
+    /// FR-124 — `pk`'s zone keeps it off this relay: the registration is
+    /// refused (and a live one closed), so the node holds no `/derp` socket to
+    /// a relay outside its zone, not merely one whose frames are dropped.
+    pub fn refuses_registration(&self, pk: &DerpPubKey) -> bool {
+        self.central_relay_denied.contains(pk)
+    }
+
+    /// Test builder for the FR-124 zone-locality gate (see [`Self::for_test`]).
+    #[doc(hidden)]
+    pub fn for_test_central_relay_denied(denied: &[DerpPubKey]) -> Self {
+        Self {
+            central_relay_denied: denied.iter().copied().collect(),
+            ..Self::default()
+        }
     }
 
     /// Test builder so the DERP relay's tests can exercise the gate without
@@ -484,13 +508,16 @@ async fn rebuild_locked(state: &NetworkState, tenant_id: ObjectId, network_id: O
         }
     }
 
+    let mut central_relay_denied = HashSet::new();
     let network_zones = if has_network_zones {
         let mut nz = HashMap::new();
         for n in &nodes {
             let Some(pk) = pubkey_of(n) else { continue };
-            if let meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) =
-                snap.resolve_node_sync(n)
-            {
+            let res = snap.resolve_node_sync(n);
+            if !snap.central_relay_allowed(res) {
+                central_relay_denied.insert(pk);
+            }
+            if let meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) = res {
                 nz.insert(pk, (z.id.clone(), z.cross_zone_mode));
             }
         }
@@ -509,6 +536,7 @@ async fn rebuild_locked(state: &NetworkState, tenant_id: ObjectId, network_id: O
         approved_roles,
         network_zones,
         zone_revision: Some(snap_rev),
+        central_relay_denied,
     });
     if !warn_unknown.is_empty() {
         let mut unknown_with_peers = Vec::new();
@@ -564,6 +592,22 @@ mod tests {
 
     fn table(enforcing: bool, pairs: &[(DerpPubKey, DerpPubKey)]) -> DerpAllowTable {
         DerpAllowTable::for_test(enforcing, pairs)
+    }
+
+    /// FR-124 — a node whose zone keeps it off this relay relays to nobody,
+    /// nobody relays to it, and it may not register; everyone else is as before.
+    #[test]
+    fn a_node_its_zone_keeps_off_this_relay_relays_to_nobody_and_may_not_register() {
+        let (confined, a, b) = (pk(0x61), pk(0x62), pk(0x63));
+        let t = DerpAllowTable::for_test_central_relay_denied(&[confined]);
+        assert!(!t.permits(&confined, &a));
+        assert!(!t.permits(&a, &confined));
+        assert!(
+            t.permits(&a, &b),
+            "an open table stays open for everyone else"
+        );
+        assert!(t.refuses_registration(&confined));
+        assert!(!t.refuses_registration(&a));
     }
 
     #[test]

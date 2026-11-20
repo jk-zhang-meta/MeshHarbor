@@ -6760,6 +6760,13 @@ pub struct OverlayNetworkInfo {
     /// `OVERLAY_STUN_URLS` override and query only [`Self::stun_urls`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_stun: bool,
+    /// FR-124 — the recipient's zone keeps it off the centre's `/derp` (a
+    /// strict zone whose countries do not hold the centre): the client opens
+    /// no `/derp` socket at all, neither the floor nor a lazy one. Its peer
+    /// rows carry no DERP tier either, and the relay refuses its registration.
+    /// Absent (an older server) means `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub central_relay_denied: bool,
     /// MeshHarbor #5 — the org relays this node may bind to, for it to measure
     /// its RTT to each before any session exists (the relay's unauthenticated
     /// probe echo). The center ranks a pair's relays by the sum of both
@@ -11585,6 +11592,7 @@ mod tests {
             self_name_revision: None,
             stun_urls: vec![],
             strict_stun: false,
+            central_relay_denied: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 1,
@@ -11670,6 +11678,7 @@ mod tests {
                 self_name_revision: None,
                 stun_urls: vec![],
                 strict_stun: false,
+                central_relay_denied: false,
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,
@@ -12510,6 +12519,7 @@ mod tests {
                 self_name_revision: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
                 strict_stun: false,
+                central_relay_denied: false,
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,

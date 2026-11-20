@@ -362,25 +362,51 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
     assert_eq!(admin_view["zones"][0]["gateway_relay_ids"], json!([relay_id]));
 
     // 6. Zone assignment permissions + deletion protection:
-    //    - Ordinary member CAN pin their own device (`member_dev_id`), CANNOT pin `admin_dev_id` (`403`).
-    let member_assign_path = tenant_url(&seeded, &format!("/agent/{member_dev_id}/zone-assignment"));
+    //    - FR-124: an ordinary member may NOT pin a device, not even their own
+    //      (`403`). A zone is the admin's boundary; an owner who could move
+    //      their device out of a strict zone would walk around it.
+    //    - `MANAGE_AGENTS` pins any device.
+    let member_assign_path =
+        tenant_url(&seeded, &format!("/agent/{member_dev_id}/zone-assignment"));
     let admin_assign_path = tenant_url(&seeded, &format!("/agent/{admin_dev_id}/zone-assignment"));
     assert_eq!(
-        put(&app, &admin_assign_path, member, json!({ "pinned_zone_id": "siat" }))
-            .await
-            .0,
+        put(
+            &app,
+            &admin_assign_path,
+            member,
+            json!({ "pinned_zone_id": "siat" })
+        )
+        .await
+        .0,
         403
     );
     assert_eq!(
-        put(&app, &member_assign_path, member, json!({ "pinned_zone_id": "missing-zone" }))
-            .await
-            .0,
+        put(
+            &app,
+            &member_assign_path,
+            member,
+            json!({ "pinned_zone_id": "SIAT" })
+        )
+        .await
+        .0,
+        403,
+        "the owner of a device may not change its zone"
+    );
+    assert_eq!(
+        put(
+            &app,
+            &member_assign_path,
+            admin,
+            json!({ "pinned_zone_id": "missing-zone" })
+        )
+        .await
+        .0,
         400
     );
     let (s, assigned) = put(
         &app,
         &member_assign_path,
-        member,
+        admin,
         json!({ "pinned_zone_id": "SIAT" }),
     )
     .await;
@@ -421,7 +447,7 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
     let (s, cleared) = put(
         &app,
         &member_assign_path,
-        member,
+        admin,
         json!({ "pinned_zone_id": null }),
     )
     .await;
@@ -657,7 +683,18 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
         .id
         .unwrap();
     let table = app.state.network().derp_acl.get(&net_id).unwrap();
-    assert!(table.permits(&[11_u8; 32], &[12_u8; 32]), "same-zone cn <-> cn DERP allowed");
+    // FR-124: the centre (this test's origin is `localhost`, no country) is
+    // outside the strict `cn` zone, so even a same-zone pair may not relay
+    // through it (until 0.4.189 this pair was allowed).
+    assert!(
+        !table.permits(&[11_u8; 32], &[12_u8; 32]),
+        "same-zone cn <-> cn: the centre is outside the strict zone"
+    );
+    assert!(table.refuses_registration(&[11_u8; 32]));
+    assert!(
+        !table.refuses_registration(&[14_u8; 32]),
+        "DirectPreferred hk keeps the centre"
+    );
     assert!(table.permits(&[14_u8; 32], &[15_u8; 32]), "DirectPreferred hk <-> us DERP allowed");
     assert!(!table.permits(&[11_u8; 32], &[14_u8; 32]), "cn -> hk DERP denied");
     assert!(!table.permits(&[14_u8; 32], &[11_u8; 32]), "hk -> cn DERP denied");
@@ -2382,4 +2419,167 @@ async fn zone_and_auth_revision(app: &TestApp, tid: ObjectId) -> (u64, u64) {
         .unwrap()
         .unwrap();
     (n.zone_revision, n.auth_revision)
+}
+
+/// FR-124 — a zone is a boundary. A strict (`router_only`) zone whose
+/// countries do not hold the centre rides no relay outside it: its rows toward
+/// its OWN zone's peers carry no DERP tier, its nodes are told to open no
+/// `/derp`, and the relay refuses their registration. A zone that is not
+/// strict keeps the floor, and so does a strict zone whose countries DO hold
+/// the centre (the same config with the centre's origin in CN).
+#[tokio::test]
+async fn a_strict_zone_rides_no_relay_outside_it_not_even_the_centres_derp() {
+    for centre_in_cn in [false, true] {
+        let geo = tempfile::tempdir().unwrap();
+        let mmdb = geo.path().join("dbip-city-lite.mmdb");
+        std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
+        let mmdb = mmdb.to_str().unwrap().to_owned();
+        let app = TestApp::spawn_with_settings(move |s| {
+            s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+            s.app.rate_limit_trusted_hops = 0;
+            s.app.business_isolation = "off".into();
+            s.stats.geoip_mmdb = Some(mmdb);
+            if centre_in_cn {
+                // An IP literal geolocates without DNS (the fixture puts
+                // 139.199.0.0/16 in CN).
+                s.app.frontend_url = "http://139.199.9.9".into();
+            }
+        })
+        .await;
+        let seeded = app.seed_tenant("fr124-zone-boundary").await;
+        let admin = &seeded.admin.access_token;
+        let wait = Duration::from_secs(5);
+        let (cn_a_id, cn_a_tok) = enroll(&app, &seeded, "fr124-cn-a").await;
+        let (_cn_b_id, cn_b_tok) = enroll(&app, &seeded, "fr124-cn-b").await;
+        let (_us_a_id, us_a_tok) = enroll(&app, &seeded, "fr124-us-a").await;
+        let (_us_b_id, us_b_tok) = enroll(&app, &seeded, "fr124-us-b").await;
+        let mut cn_a = connect_from(&app, &cn_a_tok, &[], Some("139.199.1.10")).await;
+        let mut cn_b = connect_from(&app, &cn_b_tok, &[], Some("139.199.1.11")).await;
+        let mut us_a = connect_from(&app, &us_a_tok, &[], Some("8.8.8.8")).await;
+        let mut us_b = connect_from(&app, &us_b_tok, &[], Some("8.8.4.4")).await;
+        let derp = json!({
+            "supports_derp": true,
+            "supports_derp_floor": true,
+            "supports_forced_derp": true,
+        });
+        join_node(&mut cn_a, 41, "139.199.1.10:41641", derp.clone()).await;
+        join_node(&mut cn_b, 42, "139.199.1.11:41641", derp.clone()).await;
+        join_node(&mut us_a, 43, "8.8.8.8:41641", derp.clone()).await;
+        join_node(&mut us_b, 44, "8.8.4.4:41641", derp.clone()).await;
+        let cn_b_node = node_id(&app, &seeded, "fr124-cn-b").await;
+        let us_b_node = node_id(&app, &seeded, "fr124-us-b").await;
+
+        // No zones yet: the floor is offered (the control for what follows).
+        let before = join_node(&mut cn_a, 41, "139.199.1.10:41641", derp.clone()).await;
+        assert_eq!(
+            find_peer(&before, &cn_b_node)["supports_derp"],
+            json!(true),
+            "{before}"
+        );
+        assert!(
+            before["network"].get("central_relay_denied").is_none(),
+            "{}",
+            before["network"]
+        );
+
+        let (s, body) = put(
+            &app,
+            &tenant_url(&seeded, "/network-zones"),
+            admin,
+            json!({ "zones": [
+                { "id": "cn", "name": "Mainland China", "auto_countries": ["CN"],
+                  "is_default": false, "gateway_relay_ids": [], "cross_zone_mode": "router_only" },
+                { "id": "non-cn", "name": "Elsewhere", "auto_countries": [],
+                  "is_default": true, "gateway_relay_ids": [], "cross_zone_mode": "direct_preferred" }
+            ]}),
+        )
+        .await;
+        assert_eq!(s, 200, "{body}");
+        for ws in [&mut cn_a, &mut cn_b, &mut us_a, &mut us_b] {
+            let _ = recv_t(ws, "rc:overlay.netmap", wait).await;
+        }
+
+        let cn_nm = join_node(&mut cn_a, 41, "139.199.1.10:41641", derp.clone()).await;
+        let us_nm = join_node(&mut us_a, 43, "8.8.8.8:41641", derp.clone()).await;
+        let cn_row = find_peer(&cn_nm, &cn_b_node);
+        // The non-strict zone keeps its floor in both runs.
+        assert_eq!(
+            find_peer(&us_nm, &us_b_node)["supports_derp"],
+            json!(true),
+            "{us_nm}"
+        );
+        assert!(
+            us_nm["network"].get("central_relay_denied").is_none(),
+            "{}",
+            us_nm["network"]
+        );
+
+        // The relay itself: a registration from the strict zone never enters
+        // the registry when the centre is outside it, and does when inside.
+        let pk_a = [41u8; 32];
+        let _sock = {
+            use tokio_tungstenite::connect_async;
+            let (mut ws, _) = connect_async(&format!("ws://{}/derp?token={}", app.addr, cn_a_tok))
+                .await
+                .expect("derp WS");
+            ws.send(Message::Binary(pk_a.to_vec().into()))
+                .await
+                .unwrap();
+            ws
+        };
+        let mut registered = false;
+        for _ in 0..30 {
+            if app
+                .state
+                .network()
+                .derp_registry
+                .iter()
+                .any(|e| e.key().1 == pk_a)
+            {
+                registered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        if centre_in_cn {
+            assert_eq!(
+                cn_row["supports_derp"],
+                json!(true),
+                "centre inside the zone: {cn_nm}"
+            );
+            assert!(
+                cn_nm["network"].get("central_relay_denied").is_none(),
+                "{}",
+                cn_nm["network"]
+            );
+            assert!(
+                registered,
+                "the centre is inside the zone: the registration stands"
+            );
+        } else {
+            for key in [
+                "supports_derp",
+                "supports_derp_floor",
+                "supports_forced_derp",
+            ] {
+                assert!(
+                    cn_row.get(key).is_none_or(|v| v == &json!(false)),
+                    "{key} offered inside a strict zone the centre is outside of: {cn_row}"
+                );
+            }
+            assert_ne!(cn_row["relay_strategy"], json!("derp"), "{cn_row}");
+            assert_eq!(
+                cn_nm["network"]["central_relay_denied"],
+                json!(true),
+                "{}",
+                cn_nm["network"]
+            );
+            assert!(
+                !registered,
+                "a strict zone's node is not registered at a centre outside it"
+            );
+        }
+        let _ = cn_a_id;
+    }
 }

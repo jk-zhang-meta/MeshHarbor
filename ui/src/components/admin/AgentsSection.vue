@@ -1741,10 +1741,10 @@ function nodeFor(row: DeviceRow): OverlayNode | undefined {
   return row.kind === 'agent' ? nodeForAgent(row.id) : nodeForTunnelClient(row.id)
 }
 
-function mayAssignZoneFor(row: DeviceRow): boolean {
-  if (mayManageAgents.value) return true
-  const a = agentFor(row)
-  return Boolean(auth.user?.id) && (a?.owner_user_id === auth.user?.id || row.owner_user_id === auth.user?.id)
+// FR-124 — only MANAGE_AGENTS changes a device's zone, never its owner: a
+// zone is the admin's boundary (the server refuses an owner with 403 too).
+function mayAssignZoneFor(_row: DeviceRow): boolean {
+  return mayManageAgents.value
 }
 
 /** The one place a menu pick becomes a dialog or a request — the grid and the

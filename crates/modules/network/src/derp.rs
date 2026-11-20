@@ -99,6 +99,9 @@ static FULL_LOG_AT: LazyLock<DashMap<DerpKey, Instant>> = LazyLock::new(DashMap:
 /// (#18/#21 load-before-serve). Nonzero after boot means a registration path
 /// skipped `derp_acl::ensure_built`, or a table was removed under live nodes.
 static DERP_NO_TABLE_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// FR-124 — how long a zone-refused registration is held open before the
+/// close (see `handle_derp_socket`).
+const ZONE_REFUSAL_HOLD: Duration = Duration::from_secs(60);
 static NO_TABLE_LOG_AT: LazyLock<DashMap<DerpKey, Instant>> = LazyLock::new(DashMap::new);
 /// R4 — tunnel-leg shaping. The `quic-derp-v1` tunnel flavor multiplexes
 /// QUIC over this relay, and unlike the WG floor traffic the plane was
@@ -550,10 +553,38 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
         );
         return;
     }
+    // FR-124 — a zone is a boundary: a device whose strict zone does not hold
+    // this relay holds no socket to it (its netmap offers no DERP tier, so an
+    // honest client never dials; this is for one that does).
+    let zone_refused = || {
+        state
+            .derp_acl
+            .get(&network_id)
+            .is_some_and(|t| t.refuses_registration(&self_pubkey))
+    };
+    if zone_refused() {
+        info!(
+            %agent_id, %network_id, node = %node_hex, pk = %pk8(&self_pubkey),
+            "derp: registration REFUSED — this device's zone keeps it on relays inside the zone"
+        );
+        // Held before the close: a client that predates FR-124 resets its
+        // backoff on every successful connect, so an immediate close would have
+        // it redial once a second. Unregistered, nothing is forwarded to or
+        // from it meanwhile.
+        tokio::time::sleep(ZONE_REFUSAL_HOLD).await;
+        return;
+    }
     let key_epoch = node.key_epoch;
     let admission_watchdog = async {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
+            if zone_refused() {
+                info!(
+                    %agent_id, %network_id, node = %node_hex,
+                    "derp: closing — a zone change keeps this device on relays inside its zone"
+                );
+                return;
+            }
             let key_ok = tokio::time::timeout(
                 Duration::from_secs(3),
                 state

@@ -1254,6 +1254,7 @@ async fn handle_overlay_join(
                 self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
+                central_relay_denied: central_relay_denied_for(&self_node, &lines),
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision,
@@ -1601,6 +1602,7 @@ async fn try_complete_join_netmap(
                 self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
+                central_relay_denied: central_relay_denied_for(&self_node, &lines),
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision,
@@ -2212,10 +2214,18 @@ async fn handle_overlay_relay_request(
         && self_node.supports_derp
         && peer.supports_forced_derp
         && peer.supports_derp;
+    // FR-124 — a pair a zone keeps off DERP never escalates to it, and its
+    // churn is not even counted: a standing forced pin would also refuse the
+    // pair its TURN grant for the pin's TTL.
+    let derp_url = pair_supports_forced_derp
+        .then(|| pair_derp_url(state, &self_node, &peer, &pair_key))
+        .flatten();
+    let zones_allow = !pair_supports_forced_derp
+        || zones_allow_derp(state, &self_node, &peer, derp_url.as_deref()).await;
     if pair_supports_forced_derp
+        && zones_allow
         && note_relay_request(state, &pair_key, evidence.current_kind.as_deref())
     {
-        let derp_url = pair_derp_url(state, &self_node, &peer, &pair_key);
         tracing::info!(
             %pair_key, requester = %self_id, peer = %peer_node_id,
             replacing = evidence.current_kind.as_deref().unwrap_or("-"),
@@ -2490,6 +2500,14 @@ async fn repush_forced_pairs_on_join(state: &NetworkState, node: &OverlayNode) {
         return;
     }
     let Some(self_id) = node.id else { return };
+    // FR-124 — a pin made before the zone changed is not re-pushed into it.
+    let snap = crate::network_zones::TenantZoneSnapshot::load(state, node.tenant_id).await;
+    if snap.has_zones() || snap.read_failed {
+        let res = snap.resolve_node_sync(node);
+        if !snap.central_relay_allowed(res) {
+            return;
+        }
+    }
     let self_hex = self_id.to_hex();
     let now = Instant::now();
     let peers: Vec<(ObjectId, u64, Option<String>)> = state
@@ -2528,6 +2546,26 @@ async fn repush_forced_pairs_on_join(state: &NetworkState, node: &OverlayNode) {
         )
         .await;
     }
+}
+
+/// FR-124 — may this pair ride the DERP at `derp_url` (`None` = the centre)?
+/// A zone is a boundary: each end in a strict zone may use only a relay whose
+/// host sits in its zone's countries. No zones: yes. Unreadable zones: no
+/// (a pin is an optimisation; refusing it costs nothing a TURN grant cannot
+/// cover).
+async fn zones_allow_derp(
+    state: &NetworkState,
+    a: &OverlayNode,
+    b: &OverlayNode,
+    derp_url: Option<&str>,
+) -> bool {
+    let snap = crate::network_zones::TenantZoneSnapshot::load(state, a.tenant_id).await;
+    if !snap.has_zones() && !snap.read_failed {
+        return true;
+    }
+    [a, b]
+        .into_iter()
+        .all(|n| snap.derp_url_allowed(state, snap.resolve_node_sync(n), derp_url))
 }
 
 /// Multi-region DERP: the pair's regional relay, from the same sticky region
@@ -2771,6 +2809,14 @@ async fn handle_org_relay_loss(
             "overlay relay: ORG carrier lossy, kept: no other relay, and an end cannot ride DERP");
         return;
     }
+    // FR-124 — a zone that keeps the pair off DERP keeps its lossy org
+    // carrier rather than moving it outside the zone.
+    let derp_url = pair_derp_url(state, &reporter, &peer, &pk);
+    if !zones_allow_derp(state, &reporter, &peer, derp_url.as_deref()).await {
+        tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "overlay relay: ORG carrier lossy, kept: no other relay, and a zone keeps the pair off DERP");
+        return;
+    }
     // Pin first, so each member moves straight to DERP on the pin; the
     // revoke that follows then finds its session already gone, and frees
     // the relay's.
@@ -2782,7 +2828,6 @@ async fn handle_org_relay_loss(
             .value_mut(),
         Instant::now(),
     );
-    let derp_url = pair_derp_url(state, &reporter, &peer, &pk);
     tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
         relay = derp_url.as_deref().unwrap_or("central"),
         "overlay relay: ORG carrier lossy, pinning the pair to DERP for {}s",
@@ -5408,7 +5453,11 @@ fn shape_peer(
     reachable: bool,
     zones: Zones,
 ) -> Option<NetmapPeer> {
+    let central_relay_denied = zones.central_relay_denied;
     let mut p = shape_peer_unprofiled(acl, recipient, src, peer, peer_src, reachable, zones)?;
+    if central_relay_denied {
+        p = without_central_relay(p);
+    }
     // Keep reply paths and explicitly authorized outbound connections usable.
     // The personal target rejects new inbound flows from every other owner.
     if recipient.personal_access_owner_id.is_some_and(|owner| {
@@ -5499,9 +5548,26 @@ fn routes_outside_their_zone_for(
 /// D0 re-stamp told a member DERP toward its line peer; `/derp` dropped the
 /// frames, but the member wasted its first carrier on it).
 fn stamp_verdict(p: &mut NetmapPeer, verdict: Option<RelayStrategyWire>) {
-    if !p.backbone_only {
-        p.relay_strategy = verdict;
+    if p.backbone_only {
+        return;
     }
+    // FR-124 — a row with no DERP tier is never told to use one.
+    p.relay_strategy = verdict.filter(|v| *v != RelayStrategyWire::Derp || p.supports_derp);
+}
+
+/// FR-124 — a pair one of whose ends may not relay through the centre (a
+/// strict zone whose countries do not hold it): the row offers no DERP tier,
+/// so neither end builds a floor, an early standby or a forced pin toward the
+/// other over `/derp`. The `/derp` ACL refuses the same pairs as the second
+/// line (`derp_acl`), for a client that ignores the row.
+fn without_central_relay(mut p: NetmapPeer) -> NetmapPeer {
+    p.supports_derp = false;
+    p.supports_forced_derp = false;
+    p.supports_derp_floor = false;
+    if p.relay_strategy == Some(RelayStrategyWire::Derp) {
+        p.relay_strategy = None;
+    }
+    p
 }
 
 /// Stamp everything the server decides per edge `recipient → peer` onto a
@@ -6068,6 +6134,31 @@ fn stun_urls_from_turn(state: &NetworkState) -> Vec<String> {
     stun_urls_from_turn_urls(&urls)
 }
 
+/// FR-124 — STUN/TURN for a session between two parties (each in its own
+/// tenant): an end in a strict zone keeps only servers inside its zone's
+/// countries, the same filter the overlay's relay grant applies. An unreadable
+/// zone table keeps nothing (host candidates still connect a direct path).
+pub(crate) async fn zone_filtered_ice(
+    state: &NetworkState,
+    parties: [(ObjectId, &meshharbor_remote_control::models::NodeRef); 2],
+    mut servers: Vec<IceServer>,
+) -> Vec<IceServer> {
+    for (tenant_id, node_ref) in parties {
+        let snap = crate::network_zones::TenantZoneSnapshot::load(state, tenant_id).await;
+        if snap.read_failed {
+            return Vec::new();
+        }
+        if !snap.has_zones() {
+            continue;
+        }
+        let policy = snap.ice_policy_for(snap.resolve_ref(state, tenant_id, node_ref).await);
+        if policy.strict {
+            servers = filter_ice_for_allowed_countries(state, servers, &policy.allowed_countries);
+        }
+    }
+    servers
+}
+
 fn filter_ice_for_allowed_countries(
     state: &NetworkState,
     servers: Vec<IceServer>,
@@ -6126,6 +6217,17 @@ fn prepend_unique(mut first: Vec<String>, rest: Vec<String>) -> Vec<String> {
         }
     }
     first
+}
+
+/// FR-124 — the recipient's own `/derp` posture for its netmap: a node in a
+/// strict zone that does not hold the centre opens no `/derp` socket. An
+/// unreadable zone table changes nothing here (the rows and the relay's ACL
+/// already fail closed; withdrawing the floor fleet-wide on a read blip would
+/// not).
+fn central_relay_denied_for(node: &OverlayNode, lines: &business_isolation::Lines) -> bool {
+    !lines.restricted_read_failed
+        && lines.has_network_zones()
+        && !lines.network_zones.node_central_relay_allowed_sync(node)
 }
 
 fn stun_policy_for_node(
@@ -6270,6 +6372,7 @@ async fn repush_node_full_netmap(
                     .map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
+                central_relay_denied: central_relay_denied_for(&self_node, &lines),
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision: network.auth_revision.max(1),
@@ -6731,6 +6834,36 @@ mod tests {
         stamp_prefer_relay(&mut line, Some(42_000));
         withdraw_prefer_relay(&mut line, Some(true));
         assert_eq!(line.prefer_relay_ms, None);
+    }
+
+    /// FR-124 — a row without the centre's relay offers no DERP tier, and no
+    /// DERP verdict is ever stamped onto a row that offers none.
+    #[test]
+    fn a_row_without_the_centres_relay_offers_no_derp_and_is_never_told_to_use_it() {
+        let mut n = node("fr124-peer", "100.64.0.77");
+        n.supports_derp = true;
+        n.supports_derp_floor = true;
+        n.supports_forced_derp = true;
+        let mut row = to_netmap_peer(&n, true);
+        row.relay_strategy = Some(RelayStrategyWire::Derp);
+        let mut row = without_central_relay(row);
+        assert!(!row.supports_derp && !row.supports_derp_floor && !row.supports_forced_derp);
+        assert_eq!(row.relay_strategy, None);
+        stamp_verdict(&mut row, Some(RelayStrategyWire::Derp));
+        assert_eq!(
+            row.relay_strategy, None,
+            "a DERP verdict on a row with no DERP tier"
+        );
+        stamp_verdict(&mut row, Some(RelayStrategyWire::BothAllocate));
+        assert_eq!(row.relay_strategy, Some(RelayStrategyWire::BothAllocate));
+
+        let mut open = to_netmap_peer(&n, true);
+        stamp_verdict(&mut open, Some(RelayStrategyWire::Derp));
+        assert_eq!(
+            open.relay_strategy,
+            Some(RelayStrategyWire::Derp),
+            "unchanged with a DERP tier"
+        );
     }
 
     #[test]

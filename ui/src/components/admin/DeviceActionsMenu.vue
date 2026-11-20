@@ -218,7 +218,7 @@ const props = withDefaults(
     networkMounted?: boolean
     /** Caller holds MANAGE_AGENTS (AgentsSection passes `mayManageAgents`). */
     canManageAgents?: boolean
-    /** Caller may assign a zone to this specific device (`MANAGE_AGENTS` or device owner). */
+    /** Caller may assign a zone to this specific device (`MANAGE_AGENTS`; FR-124: not the owner). */
     canAssignZone?: boolean
     /** Caller holds ADMINISTRATOR / org owner (fail-closed: only admins see Relay policy). */
     isAdmin?: boolean

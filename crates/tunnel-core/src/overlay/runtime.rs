@@ -4119,6 +4119,16 @@ impl OverlayRuntime {
         // handler invokes the factory at-most-once THEN — see the ForceDerp
         // arm.
         let mut derp_factory = self.derp_mux_factory.take();
+        // FR-124 — this node's zone keeps it off the centre's relay (a strict
+        // zone whose countries do not hold the centre): no `/derp` socket at
+        // all, not even the floor. Its rows carry no DERP tier, and the relay
+        // would refuse the registration anyway; a flip of the flag rebuilds
+        // the runtime (the re-join check below).
+        if network.central_relay_denied && derp_factory.take().is_some() {
+            info!(
+                "overlay: this device's zone keeps it on relays inside the zone — not opening /derp"
+            );
+        }
         // Multi-region DERP — reusable per-URL opener for regional relays.
         let regional_derp_factory = self.regional_derp_factory.take();
         let derp_mux = if matches!(self.mode, CarrierMode::Relay)
@@ -5984,6 +5994,11 @@ impl OverlayRuntime {
                         // runtime deliberately avoids — exit; the agent-side
                         // slot spawns a fresh runtime on the next session
                         // (its Reattach send fails).
+                        if new_network.central_relay_denied != network.central_relay_denied {
+                            info!(denied = new_network.central_relay_denied,
+                                "overlay: this device's zone changed what it may relay through — exiting for a clean rebuild");
+                            break;
+                        }
                         if new_self_ip != self_ip
                             || new_network.cidr != network.cidr
                             || new_network.magic_domain != network.magic_domain
@@ -11490,6 +11505,7 @@ mod tests {
             self_name_revision: None,
             stun_urls: vec![],
             strict_stun: false,
+            central_relay_denied: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 0,
@@ -15680,6 +15696,7 @@ mod org_upgrade_tests {
             self_name_revision: None,
             stun_urls,
             strict_stun: false,
+            central_relay_denied: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             org_relay_fallback_v1: true,
@@ -15909,6 +15926,7 @@ mod org_upgrade_tests {
             self_name_revision: None,
             stun_urls: vec![],
             strict_stun: false,
+            central_relay_denied: false,
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             org_relay_fallback_v1: true,

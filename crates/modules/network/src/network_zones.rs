@@ -65,6 +65,11 @@ pub struct TenantZoneSnapshot {
     zone_gateways: HashMap<String, HashSet<ObjectId>>,
     /// Uppercase ISO-3166-1 alpha-2 STUN/TURN countries permitted for `zone.id`.
     zone_infra_countries: HashMap<String, HashSet<String>>,
+    /// FR-124 — per `zone.id`: may its devices relay through THIS server's
+    /// `/derp` (the centre)? `true` for a zone that is not `RouterOnly`;
+    /// for a strict zone, only when the centre's public host sits in the
+    /// zone's countries. A missing entry is `false` (fail closed).
+    zone_central_relay_ok: HashMap<String, bool>,
     geoip: Option<Arc<GeoIp>>,
 }
 
@@ -138,13 +143,16 @@ impl TenantZoneSnapshot {
                 zone_gateways_ordered: HashMap::new(),
                 zone_gateways: HashMap::new(),
                 zone_infra_countries: HashMap::new(),
+                zone_central_relay_ok: HashMap::new(),
                 geoip: Some(state.core.geoip.clone()),
             };
         }
+        let central = central_relay_url(state);
 
         let mut zone_gateways_ordered = HashMap::with_capacity(zones.len());
         let mut zone_gateways = HashMap::with_capacity(zones.len());
         let mut zone_infra_countries = HashMap::with_capacity(zones.len());
+        let mut zone_central_relay_ok = HashMap::with_capacity(zones.len());
         for z in &zones {
             let mut ordered = Vec::new();
             let mut set = HashSet::new();
@@ -163,13 +171,16 @@ impl TenantZoneSnapshot {
             }
             zone_gateways_ordered.insert(z.id.clone(), ordered);
             zone_gateways.insert(z.id.clone(), set);
-            zone_infra_countries.insert(
-                z.id.clone(),
-                meshharbor_mod_fleet::hub::zone_infra_countries(
-                    &z.auto_countries,
-                    gateway_countries,
-                ),
+            let infra = meshharbor_mod_fleet::hub::zone_infra_countries(
+                &z.auto_countries,
+                gateway_countries,
             );
+            zone_central_relay_ok.insert(
+                z.id.clone(),
+                z.cross_zone_mode != CrossZoneMode::RouterOnly
+                    || url_matches_countries(state, &central, &infra),
+            );
+            zone_infra_countries.insert(z.id.clone(), infra);
         }
 
         Self {
@@ -182,6 +193,7 @@ impl TenantZoneSnapshot {
             zone_gateways_ordered,
             zone_gateways,
             zone_infra_countries,
+            zone_central_relay_ok,
             geoip: Some(state.core.geoip.clone()),
         }
     }
@@ -351,6 +363,48 @@ impl TenantZoneSnapshot {
                 }
             }
             _ => true,
+        }
+    }
+
+    /// FR-124 — may a device of this resolution relay through the centre's
+    /// `/derp`? A zone is a boundary: a strict zone's device uses only relays
+    /// inside its countries, and the centre is one relay among them. No zones:
+    /// yes; unresolved (or unreadable) under zones: no.
+    pub fn central_relay_allowed(&self, res: DeviceZoneResolution<'_>) -> bool {
+        match res {
+            DeviceZoneResolution::Unconfigured => true,
+            DeviceZoneResolution::UnresolvedStrict => false,
+            DeviceZoneResolution::Resolved(z) => self
+                .zone_central_relay_ok
+                .get(&z.id)
+                .copied()
+                .unwrap_or(false),
+        }
+    }
+
+    pub fn node_central_relay_allowed_sync(&self, node: &OverlayNode) -> bool {
+        self.central_relay_allowed(self.resolve_node_sync(node))
+    }
+
+    /// FR-124 — may a device of this resolution relay through the DERP at
+    /// `url` (`None` = the centre's)? A regional relay is judged by its own
+    /// host's country, as STUN and TURN are.
+    pub fn derp_url_allowed(
+        &self,
+        state: &NetworkState,
+        res: DeviceZoneResolution<'_>,
+        url: Option<&str>,
+    ) -> bool {
+        let Some(url) = url else {
+            return self.central_relay_allowed(res);
+        };
+        match res {
+            DeviceZoneResolution::Unconfigured => true,
+            DeviceZoneResolution::UnresolvedStrict => false,
+            DeviceZoneResolution::Resolved(_) => {
+                let policy = self.ice_policy_for(res);
+                !policy.strict || url_matches_countries(state, url, &policy.allowed_countries)
+            }
         }
     }
 
@@ -843,6 +897,13 @@ impl TenantZoneSnapshot {
                 .await;
         }
     }
+}
+
+/// FR-124 — the URL the centre's `/derp` is reached at: the deployment's
+/// public origin, whose host the ICE-zone refresh resolves and geolocates
+/// (`meshharbor_core::ice_zones::spawn_refresh`, fleet's boot).
+pub fn central_relay_url(state: &NetworkState) -> String {
+    state.core.settings.app.frontend_url.clone()
 }
 
 pub fn url_matches_countries(

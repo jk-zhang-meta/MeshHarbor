@@ -1305,6 +1305,17 @@ async fn handle_tunnel_open(
         // relay_home is threaded through (probe reports, PR3).
         state.turn_map.cfg_for(None),
     );
+    // FR-124 — a zone is a boundary for a tunnel too: an end in a strict zone
+    // is handed only STUN/TURN inside its zone's countries.
+    let quic_ice_servers = crate::overlay::zone_filtered_ice(
+        state,
+        [
+            (orig.tenant_id, &origin_ref),
+            (agent.tenant_id, &NodeRef::Agent { agent_id }),
+        ],
+        quic_ice_servers,
+    )
+    .await;
 
     // 5. Enqueue `TunnelOpened` to the originator FIRST (while
     // `tunnel_clients_by_session` is already registered) BEFORE standing up

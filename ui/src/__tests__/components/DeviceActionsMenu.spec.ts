@@ -139,7 +139,7 @@ describe('DeviceActionsMenu', () => {
     ])
   })
 
-  it('offers Relay node policy only to Administrators (isAdmin: true) and gates Zone assignment on MANAGE_AGENTS or device ownership (canAssignZone)', async () => {
+  it('offers Relay node policy only to Administrators (isAdmin: true) and gates Zone assignment on canAssignZone (MANAGE_AGENTS; FR-124: never mere ownership)', async () => {
     const adminItems = await openMenu({
       row: row(),
       agent: { id: 'a' } as Agent,
@@ -153,7 +153,7 @@ describe('DeviceActionsMenu', () => {
     adminItems.find((i) => i.textContent?.includes('Relay node policy'))!.click()
     expect(wrapper!.emitted('action')).toEqual([['zone-assignment'], ['peer-relay-policy']])
 
-    // Ordinary member who owns this device (`canManageAgents: false, canAssignZone: true`)
+    // A caller the page grants `canAssignZone` without `canManageAgents`
     // sees Zone assignment, never Relay node policy!
     wrapper!.unmount()
     document.body.innerHTML = ''
@@ -171,7 +171,7 @@ describe('DeviceActionsMenu', () => {
     ownerItems.find((i) => i.textContent?.includes('Zone assignment'))!.click()
     expect(wrapper!.emitted('action')).toEqual([['zone-assignment']])
 
-    // Ordinary member viewing someone else's device (`canManageAgents: false, canAssignZone: false`)
+    // An ordinary member (`canManageAgents: false, canAssignZone: false`), owner or not,
     // sees neither Zone assignment nor Relay node policy!
     wrapper!.unmount()
     document.body.innerHTML = ''

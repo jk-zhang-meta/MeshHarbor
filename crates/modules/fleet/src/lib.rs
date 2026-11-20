@@ -227,11 +227,12 @@ impl Module for FleetState {
                 .unwrap_or_default(),
         );
         let ice_zones = Arc::new(meshharbor_core::ice_zones::IceServerZones::default());
-        meshharbor_core::ice_zones::spawn_refresh(
-            core.clone(),
-            ice_zones.clone(),
-            meshharbor_core::ice_zones::all_urls(&core.turn_map),
-        );
+        // FR-124 — the deployment's own public origin too: its host is where
+        // the centre's `/derp` is reached, which a strict zone may use only
+        // when that host sits inside the zone's countries.
+        let mut ice_urls = meshharbor_core::ice_zones::all_urls(&core.turn_map);
+        ice_urls.push(settings.app.frontend_url.clone());
+        meshharbor_core::ice_zones::spawn_refresh(core.clone(), ice_zones.clone(), ice_urls);
         rc_hub.set_ice_zones(ice_zones.clone());
         if let Some(mode) = meshharbor_core::ice_zones::gate_mode(&settings.app.rc_ice_zone_mode) {
             tracing::info!(?mode, "rc ice zone: relay-locality gate installed");

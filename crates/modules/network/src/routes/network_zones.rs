@@ -183,12 +183,16 @@ pub async fn set_zone_assignment(
         .tenants
         .get_member_permissions(tid, auth.user_id)
         .await?;
-    let agent = state.fleet.agents.find_live_in_tenant(tid, aid).await?;
-    if !permissions::has(perms, permissions::MANAGE_AGENTS) && agent.owner_user_id != auth.user_id {
+    // FR-124 — `MANAGE_AGENTS` only, never the device's owner: a zone is the
+    // admin's boundary, and an owner who could move their own device out of a
+    // strict zone would walk around it. Checked before the device is looked
+    // up, so a refusal says nothing about which ids exist.
+    if !permissions::has(perms, permissions::MANAGE_AGENTS) {
         return Err(ApiError::Forbidden(
             "Missing MANAGE_AGENTS permission".to_string(),
         ));
     }
+    let agent = state.fleet.agents.find_live_in_tenant(tid, aid).await?;
 
     let normalized_pin = match body.pinned_zone_id {
         None => None,

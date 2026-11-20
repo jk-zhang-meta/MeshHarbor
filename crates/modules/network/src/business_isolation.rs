@@ -197,6 +197,10 @@ pub struct Zones {
     /// True when reading Logical Network Zones from storage failed: new
     /// admissions fail closed rather than treating devices as unrestricted.
     pub restricted_read_failed: bool,
+    /// FR-124 — one end of the pair is in a strict zone whose countries do not
+    /// hold the centre: the pair may not relay through the centre's `/derp`,
+    /// so its row offers no DERP tier at all.
+    pub central_relay_denied: bool,
 }
 
 impl Zones {
@@ -210,6 +214,7 @@ impl Zones {
         role_known: true,
         restricted_cross_border: false,
         restricted_read_failed: false,
+        central_relay_denied: false,
     };
 
     /// The pair may meet: two linked servers, or both zones known and equal.
@@ -389,6 +394,11 @@ impl Lines {
             role_known: !fail_closed_read && self.pair_roles_known(recipient, peer),
             restricted_cross_border,
             restricted_read_failed: self.restricted_read_failed,
+            central_relay_denied: !self.restricted_read_failed
+                && (!self
+                    .network_zones
+                    .node_central_relay_allowed_sync(recipient)
+                    || !self.network_zones.node_central_relay_allowed_sync(peer)),
         }
     }
 
@@ -848,6 +858,7 @@ mod tests {
             role_known: true,
             restricted_cross_border: false,
             restricted_read_failed: false,
+            central_relay_denied: false,
         }
     }
 
