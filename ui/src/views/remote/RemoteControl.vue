@@ -267,6 +267,24 @@
              whether an fps ceiling is paint-, decode-, or main-thread-bound. -->
         <span v-if="showDiagHud && diagLabel" class="stats-pill">{{ diagLabel }}</span>
       </div>
+      <!-- MeshHarbor (FR-122) — file transfer, one click from the toolbar.
+           It used to live only three levels down (Settings → Session →
+           Upload / Browse) and as an undiscoverable drop target, so it
+           read as "not implemented". Opens the file panel, which both
+           uploads ("Upload here") and downloads; an agent too old to list
+           its files gets the upload picker instead. -->
+      <v-btn
+        v-if="rc.phase.value === 'connected'"
+        icon="mdi-folder-swap-outline"
+        variant="text"
+        size="small"
+        class="mr-1"
+        aria-label="Transfer files"
+        :title="filesRefusal ?? 'Files — upload to and download from this device'"
+        :disabled="!!filesRefusal"
+        data-testid="rc-files-toolbar"
+        @click="agentSupportsBrowse ? (filesDrawer = true) : fileInput?.click()"
+      />
       <!-- rc.199 — Settings gear (all viewports): opens the unified
            Settings panel (Video / Display / Session). Replaces the old
            mobile-only bottom-sheet trigger + the desktop inline Row 2. -->
