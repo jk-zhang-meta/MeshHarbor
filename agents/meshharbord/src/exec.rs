@@ -849,13 +849,22 @@ pub(crate) fn apply_run_as(cmd: &mut tokio::process::Command, who: &RunAs) -> Re
 }
 
 /// FR-97 P5b — [`apply_run_as`] for an SSH session, which sshd starts in the
-/// account's home: a person (`named`, `console_user`) starts there, the
-/// daemon where it is, as before. The `chdir` runs in the child after the
-/// drop, as the person, so their own rights decide (a root-squashed NFS home
-/// refuses root), and a home they cannot enter leaves the child where it
-/// was, `/`, which is sshd's fallback too. Off with
-/// `MESHHARBORD_SSH_START_IN_HOME=0`. Windows' `console_user` starts in the
-/// profile through its own spawn (`win_console`, `pty::windows`).
+/// account's home: a person (`named`, `console_user`) starts there. The
+/// `chdir` runs in the child after the drop, as the person, so their own
+/// rights decide (a root-squashed NFS home refuses root), and a home they
+/// cannot enter leaves the child where it was, `/`, which is sshd's fallback
+/// too. Off with `MESHHARBORD_SSH_START_IN_HOME=0`. Windows' `console_user`
+/// starts in the profile through its own spawn (`win_console`,
+/// `pty::windows`).
+///
+/// MeshHarbor (FR-122) — the daemon's own account (`daemon`, the default
+/// mode) starts in ITS home too, as sshd starts a root login: `/root` or
+/// `/var/root`, and on Windows the account's profile (SYSTEM's is
+/// `systemprofile`). Before, it started in the service's directory — `/`
+/// under systemd and launchd, `System32` for a Windows service — so
+/// `mh scp f box:x` (and `box:~/x`) wrote into the system's root on Linux,
+/// failed on macOS's read-only one, and landed in `C:\Windows\System32`
+/// (field, 2026-11-20).
 pub(crate) fn apply_run_as_at_home(
     cmd: &mut tokio::process::Command,
     who: &RunAs,
@@ -863,12 +872,33 @@ pub(crate) fn apply_run_as_at_home(
     #[cfg(unix)]
     if ssh_starts_in_home() {
         return match who {
-            RunAs::Daemon => Ok(()),
+            RunAs::Daemon => {
+                unix_priv::start_daemon_in_home(cmd);
+                Ok(())
+            }
             RunAs::Named(account) => unix_priv::drop_to_in(cmd, account, true),
             RunAs::ConsoleUser => unix_priv::drop_to_console(cmd, &console_account()?, true),
         };
     }
+    #[cfg(windows)]
+    if ssh_starts_in_home() && matches!(who, RunAs::Daemon) {
+        start_daemon_in_profile(cmd);
+    }
     apply_run_as(cmd, who)
+}
+
+/// MeshHarbor — a Windows `daemon` SSH session starts in the account's own
+/// profile (`USERPROFILE`; SYSTEM's is `config\systemprofile`), where
+/// OpenSSH for Windows starts that account, not in the service's
+/// `System32`. Missing or not a directory: where it was, as before.
+#[cfg(windows)]
+fn start_daemon_in_profile(cmd: &mut tokio::process::Command) {
+    if let Some(profile) = std::env::var_os("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+    {
+        cmd.current_dir(profile);
+    }
 }
 
 /// FR-97 P5b — does a person's SSH session start in their home? Default on;
@@ -1432,6 +1462,60 @@ mod unix_priv {
     /// child where it was, the daemon's directory, which is sshd's fallback
     /// too; the parent says so in the log when the home is plainly missing.
     /// Async-signal-safe: one syscall over memory the closure owns.
+    /// MeshHarbor (FR-122) — a `daemon` SSH session starts in the daemon
+    /// account's own home (`getpwuid_r` of the effective uid: `/root`,
+    /// `/var/root`, or a per-user install's home), with `HOME` set when the
+    /// service gave the daemon none (launchd gives a root daemon none), so
+    /// `~` means the same place. No drop happens: the daemon IS this account.
+    /// A home that cannot be entered leaves the child where it was.
+    pub(super) fn start_daemon_in_home(cmd: &mut tokio::process::Command) {
+        // SAFETY: `geteuid` cannot fail.
+        let Some(home) = home_of_uid(unsafe { libc::geteuid() }) else {
+            return;
+        };
+        if std::env::var_os("HOME").is_none_or(|h| h.is_empty()) {
+            cmd.env("HOME", &home);
+        }
+        let Ok(dir) = CString::new(home.as_str()) else {
+            return;
+        };
+        // SAFETY: `chdir` over a string the closure owns; its result is
+        // deliberately ignored (the fallback above).
+        unsafe {
+            cmd.pre_exec(move || {
+                let _ = libc::chdir(dir.as_ptr());
+                Ok(())
+            })
+        };
+    }
+
+    /// The home directory of the account with `uid` (`getpwuid_r`, the
+    /// buffer grown as [`resolve`] grows its own); `None` when there is no
+    /// such account or it names no home.
+    fn home_of_uid(uid: libc::uid_t) -> Option<String> {
+        let mut buf = vec![0 as libc::c_char; 1024];
+        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        loop {
+            // SAFETY: every pointer is to memory this frame owns, sized as
+            // passed; the answer points into `buf`, read before it moves.
+            let rc = unsafe {
+                libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result)
+            };
+            if rc == libc::ERANGE && buf.len() < 64 * 1024 {
+                buf.resize(buf.len() * 2, 0);
+                continue;
+            }
+            if rc != 0 || result.is_null() {
+                return None;
+            }
+            break;
+        }
+        // SAFETY: `pw_dir` points into `buf`, which is still alive.
+        let home = unsafe { cstr_to_string(pwd.pw_dir) };
+        (!home.is_empty()).then_some(home)
+    }
+
     fn start_in_home(cmd: &mut tokio::process::Command, acct: &Account) {
         if acct.home.is_empty() {
             return;
@@ -1499,6 +1583,29 @@ mod unix_priv {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// MeshHarbor (FR-122) — a `daemon` session starts in the daemon
+        /// account's own home, not the service's `/`: a relative `scp` target
+        /// on a root daemon landed in the system's root. The real `chdir`.
+        #[tokio::test]
+        async fn a_daemon_session_starts_in_the_daemons_own_home() {
+            let home = home_of_uid(unsafe { libc::geteuid() }).expect("this account has a home");
+            let mut cmd = tokio::process::Command::new("/bin/sh");
+            cmd.args(["-c", "pwd -P; printf '%s' \"$HOME\""])
+                .current_dir("/")
+                .stdout(std::process::Stdio::piped());
+            // The entry point every SSH session's spawn takes.
+            super::super::apply_run_as_at_home(&mut cmd, &super::super::RunAs::Daemon).unwrap();
+            let out = cmd.output().await.unwrap();
+            let text = String::from_utf8(out.stdout).unwrap();
+            let mut lines = text.lines();
+            let expect = std::fs::canonicalize(&home).unwrap();
+            assert_eq!(lines.next().map(std::path::PathBuf::from), Some(expect));
+            assert!(
+                !lines.next().unwrap_or("").is_empty(),
+                "HOME is set for the child"
+            );
+        }
 
         /// FR-97 P5b — a session's child starts in its account's home, and a
         /// home it cannot enter leaves it where it was rather than failing the

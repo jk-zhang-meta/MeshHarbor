@@ -406,7 +406,7 @@ could not write to.
 
 | Session as | Linux and macOS | Windows |
 |---|---|---|
-| `daemon` | the daemon's directory, as before | the worker's directory, as before |
+| `daemon` | the daemon account's own home — `/root`, `/var/root`, a per-user install's home — with `HOME` set when the service gave none (FR-122) | the account's profile, `USERPROFILE` (SYSTEM's is `config\systemprofile`) (FR-122) |
 | `named` | the account's home | refused, as before |
 | `console_user` | the person's home | the person's profile (P4b did it for `sftp`) |
 
@@ -416,6 +416,13 @@ could not write to.
   person cannot enter leaves the child where it was, which is sshd's fallback too,
   and the daemon logs a missing home.
 - Fleet RPC is unchanged: a command starts in its `cwd`, or where it always has.
+- ⚠️ Until FR-122 (0.4.188) a `daemon` session stayed in the service's directory —
+  `/` under systemd and launchd, `System32` under a Windows service. With
+  `mh scp` that turned a relative target into a write into the system's root on
+  Linux, a `Failure` on macOS's read-only root, and a file in
+  `C:\Windows\System32` (all three measured 2026-11-20). `daemon` is the default
+  mode, so this was the common case, not an edge (`unix_priv::start_daemon_in_home`,
+  `start_daemon_in_profile`; the same kill switch).
 - Kill switch: `MESHHARBORD_SSH_START_IN_HOME=0` puts the old start back. On a
   SystemContext Windows device, set it in the service's environment
   (`meshharbord set-service-env-var`), as for `MESHHARBORD_SFTP_AS_USER`.
