@@ -1360,8 +1360,9 @@ pub fn release_org(org_key: &str) {
 
 /// F1 — build the overlay `TunFactory` for `cfg`, automatically falling back to
 /// userspace `netstack` (with an ephemeral loopback SOCKS5 port on `127.0.0.1`)
-/// on Windows when OS TUN creation lacks administrator privilege, and tracking
-/// bounded-interval failure backoff for non-privilege overlay errors.
+/// when OS TUN creation lacks administrator / root privilege (Windows; Linux and
+/// macOS since FR-123 P1), and tracking bounded-interval failure backoff for
+/// non-privilege overlay errors.
 fn build_tun_factory_with_fallback(
     cfg: &AgentConfig,
     view_rx: watch::Receiver<OverlayView>,
@@ -1400,14 +1401,15 @@ fn build_tun_factory_with_fallback(
         return Some((wrapped, Some(port)));
     }
 
-    // 2. F1 Windows fallback: when on Windows and OS TUN is not permitted
-    // (non-elevated Medium IL process) or a prior attempt in this process
-    // latched netstack fallback for this org, build the runtime in netstack
-    // mode up front (`effective_socks_port = Some(port)`) so `OverlayRuntime`
+    // 2. F1 fallback (Windows; Linux and macOS since FR-123 P1): when OS TUN
+    // is not permitted (a non-elevated Medium IL process on Windows; on Linux
+    // an account without CAP_NET_ADMIN or a host without /dev/net/tun; on
+    // macOS anything but root) or a prior attempt in this process latched
+    // netstack fallback for this org, build the runtime in netstack mode up
+    // front (`effective_socks_port = Some(port)`) so `OverlayRuntime`
     // withdraws route offers and disables host-wide DNS steering (FR-97 P0c-3).
-    if is_windows
-        && (!os_tun_permitted
-            || crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id))
+    if !os_tun_permitted
+        || crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id)
     {
         #[cfg(feature = "overlay-netstack")]
         {
@@ -1416,17 +1418,17 @@ fn build_tun_factory_with_fallback(
             info!(
                 org = %cfg.tenant_id,
                 socks_port = port,
-                "overlay: OS TUN unavailable without administrator privilege; automatically using userspace netstack (127.0.0.1 SOCKS5)"
+                "overlay: this account cannot create a TUN device (no administrator / root privilege); automatically using the userspace network stack (127.0.0.1 SOCKS5) — the mesh works, without host-wide routes"
             );
             return Some((f, Some(port)));
         }
         #[cfg(not(feature = "overlay-netstack"))]
         {
-            let _ = &view_rx;
+            let _ = (&view_rx, is_windows);
             crate::overlay_supervision::record_overlay_failure(
                 &cfg.tenant_id,
                 &shape_key,
-                "OS TUN requires administrator privileges and overlay-netstack is not compiled in"
+                "OS TUN requires administrator / root privileges and overlay-netstack is not compiled in"
                     .to_string(),
                 (now_fn)(),
             );
@@ -1434,11 +1436,12 @@ fn build_tun_factory_with_fallback(
         }
     }
 
-    // 3. OS TUN mode is permitted: wrap `base_os_tun` so a reactive Windows
-    // privilege failure (e.g. `WintunCreateAdapter failed`) latches netstack
-    // fallback and returns `Err` so `OverlayRuntime` exits and immediately
-    // rebuilds via Branch 2 with `netstack_socks = Some(port)`. Non-Windows or
-    // non-privilege failures record bounded-interval backoff.
+    // 3. OS TUN mode is permitted: wrap `base_os_tun` so a reactive privilege
+    // failure (Windows: `Access is denied`; Linux/macOS since FR-123 P1: EPERM,
+    // EACCES, or no TUN device) latches netstack fallback and returns `Err` so
+    // `OverlayRuntime` exits and immediately rebuilds via Branch 2 with
+    // `netstack_socks = Some(port)`. Other failures record bounded-interval
+    // backoff.
     let os_tun = base_os_tun?;
     let org = cfg.tenant_id.clone();
     let shape = shape_key.clone();
@@ -1455,7 +1458,7 @@ fn build_tun_factory_with_fallback(
                 warn!(
                     org = %org,
                     error = %e,
-                    "overlay: OS TUN creation failed due to insufficient privilege on Windows; latching userspace netstack fallback for immediate runtime rebuild"
+                    "overlay: OS TUN creation failed (no privilege, or no TUN device); latching the userspace netstack fallback for an immediate runtime rebuild"
                 );
                 return Err(e);
             }
@@ -2922,23 +2925,30 @@ mod overlay_fallback_tests {
         release_org(&cfg.tenant_id);
     }
 
+    /// FR-123 P1 — the field case: an ordinary Linux account whose TUN
+    /// create fails EPERM latches the userspace stack, and the rebuilt runtime
+    /// starts as netstack. Before FR-123 this returned `Err`, backed off, and
+    /// the device stayed online with `(no peers)`.
     #[tokio::test]
-    async fn non_windows_tun_permission_error_does_not_fall_back_to_netstack_in_factory() {
-        let cfg = sample_cfg("tenant-non-win-no-fallback");
+    async fn non_windows_tun_permission_error_latches_netstack_and_rebuilds() {
+        let cfg = sample_cfg("tenant-non-win-fallback");
         let (_view_tx, view_rx) = watch::channel(OverlayView::default());
-        let os_tun: TunFactory = Box::new(|_, _, _| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Operation not permitted (utun/tun)",
-            ))
-        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let make_os_tun = |calls: Arc<AtomicUsize>| -> TunFactory {
+            Box::new(move |_, _, _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::other(
+                    "Operation not permitted (os error 1)",
+                ))
+            })
+        };
 
         let (factory, initial_port) = build_tun_factory_for_test(
             &cfg,
-            view_rx,
+            view_rx.clone(),
             false, // non-Windows (Linux / macOS)
-            true,
-            os_tun,
+            true,  // e.g. CAP_NET_ADMIN held, yet the create still fails EPERM
+            make_os_tun(calls.clone()),
             Arc::new(Instant::now),
         )
         .expect("factory built");
@@ -2949,17 +2959,72 @@ mod overlay_fallback_tests {
             Ipv4Addr::new(255, 192, 0, 0),
             OVERLAY_MTU,
         );
+        assert!(res.is_err(), "the TUN runtime exits so it can be rebuilt");
         assert!(
-            res.is_err(),
-            "non-Windows permission error must return Err and not fall back to netstack"
+            crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
+            "an EPERM TUN create latches the userspace fallback"
         );
         assert!(
-            !crate::overlay_supervision::has_latched_netstack_fallback(&cfg.tenant_id),
-            "non-Windows must not latch netstack fallback"
+            crate::overlay_supervision::can_attempt_start(
+                &cfg.tenant_id,
+                &crate::overlay_supervision::shape_key_for_config(&cfg),
+                Instant::now()
+            ),
+            "the latch is not a failure: the rebuild starts at once, no backoff"
         );
-        assert_eq!(effective_socks5_port(&cfg.tenant_id), None);
-        assert!(effective_overlay_mode(&cfg.tenant_id, "tun").starts_with("error ("));
 
+        let (factory2, port2) = build_tun_factory_for_test(
+            &cfg,
+            view_rx,
+            false,
+            true,
+            make_os_tun(calls.clone()),
+            Arc::new(Instant::now),
+        )
+        .expect("rebuilt factory");
+        let port = port2.expect("the rebuild is a netstack runtime with a loopback SOCKS5 port");
+        let tun = factory2(
+            Ipv4Addr::new(100, 64, 0, 5),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU,
+        )
+        .expect("netstack starts cleanly");
+        assert_eq!(tun.os_name(), None);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the OS TUN is not tried again"
+        );
+        assert_eq!(effective_overlay_mode(&cfg.tenant_id, "tun"), "netstack");
+        assert_eq!(effective_socks5_port(&cfg.tenant_id), Some(port));
+
+        release_org(&cfg.tenant_id);
+    }
+
+    /// FR-123 P1 — an account known up front to lack the privilege (Linux
+    /// without CAP_NET_ADMIN, macOS without root) never tries the OS TUN.
+    #[tokio::test]
+    async fn unprivileged_unix_proactively_selects_netstack_without_calling_the_os_tun() {
+        let cfg = sample_cfg("tenant-unix-fallback-proactive");
+        let (_view_tx, view_rx) = watch::channel(OverlayView::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let os_tun: TunFactory = Box::new(move |_, _, _| {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("the OS TUN must not be tried"))
+        });
+        let (factory, initial_port) =
+            build_tun_factory_for_test(&cfg, view_rx, false, false, os_tun, Arc::new(Instant::now))
+                .expect("factory built");
+        let port = initial_port.expect("a loopback SOCKS5 port up front");
+        factory(
+            Ipv4Addr::new(100, 64, 0, 6),
+            Ipv4Addr::new(255, 192, 0, 0),
+            OVERLAY_MTU,
+        )
+        .expect("netstack starts cleanly");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(effective_socks5_port(&cfg.tenant_id), Some(port));
         release_org(&cfg.tenant_id);
     }
 

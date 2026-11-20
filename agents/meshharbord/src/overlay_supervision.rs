@@ -79,15 +79,28 @@ pub fn is_windows_platform() -> bool {
     cfg!(target_os = "windows")
 }
 
+/// FR-123 P1 — whether the userspace fallback also covers Linux and macOS.
+/// `MESHHARBORD_OVERLAY_UNIX_NETSTACK_FALLBACK=0` restores the pre-FR-123
+/// behaviour there: always attempt the OS TUN, and back off on a failure.
+/// Windows is unaffected by this switch (its F1 fallback predates it).
+pub fn unix_netstack_fallback_enabled() -> bool {
+    tunnel_core::env::flag("OVERLAY_UNIX_NETSTACK_FALLBACK", true)
+}
+
 /// Does this process have sufficient OS privilege to create/configure a real
-/// OS TUN adapter (`SystemTun`) on Windows?
+/// OS TUN adapter (`SystemTun`)? `false` makes the overlay start in userspace
+/// `netstack` mode up front, with no failed attempt first.
 ///
-/// - On Windows: requires an elevated token (`TokenIsElevated != 0` or
-///   `LocalSystem`); a Medium IL interactive process returns `false` and
-///   proactively selects userspace `netstack`.
-/// - On non-Windows platforms: returns `true` (F1 automatic netstack fallback
-///   is scoped to Windows only; Unix platforms always attempt their configured
-///   mode directly).
+/// - Windows: an elevated token (`TokenIsElevated != 0` or `LocalSystem`); a
+///   Medium IL interactive process returns `false`.
+/// - Linux (FR-123 P1): `/dev/net/tun` exists and the effective capability set
+///   holds `CAP_NET_ADMIN` (root normally does; an ordinary account, or a
+///   container without the capability, does not). A shared server where the
+///   person has no root is the case this exists for: before it, the daemon
+///   signed in, showed online, and reached no peer at all.
+/// - macOS: root (creating a utun needs it).
+/// - With [`unix_netstack_fallback_enabled`] off, every non-Windows platform
+///   answers `true`, the pre-FR-123 behaviour.
 pub fn process_can_create_os_tun() -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -95,18 +108,58 @@ pub fn process_can_create_os_tun() -> bool {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        true
+        !unix_netstack_fallback_enabled() || unix_can_create_os_tun()
     }
 }
 
-/// True when `err` indicates an explicit privilege denial while creating or
-/// configuring an OS TUN adapter on Windows (`PermissionDenied`, OS error 5
-/// `ERROR_ACCESS_DENIED` or 1314 `ERROR_PRIVILEGE_NOT_HELD`, or an explicit
-/// access/elevation denial message). Always returns `false` when `is_windows`
-/// is `false`.
+#[cfg(target_os = "linux")]
+fn unix_can_create_os_tun() -> bool {
+    if !std::path::Path::new("/dev/net/tun").exists() {
+        return false;
+    }
+    let is_root = || unsafe { libc::geteuid() == 0 };
+    match std::fs::read_to_string("/proc/self/status") {
+        Ok(status) => cap_eff_has_net_admin(&status).unwrap_or_else(is_root),
+        Err(_) => is_root(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn unix_can_create_os_tun() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn unix_can_create_os_tun() -> bool {
+    true
+}
+
+/// `CAP_NET_ADMIN` (capability 12) in the `CapEff:` line of a
+/// `/proc/<pid>/status` text. `None` when the line is missing or unparseable.
+pub fn cap_eff_has_net_admin(status: &str) -> Option<bool> {
+    const CAP_NET_ADMIN: u32 = 12;
+    let hex = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))?
+        .trim();
+    let bits = u64::from_str_radix(hex, 16).ok()?;
+    Some(bits & (1u64 << CAP_NET_ADMIN) != 0)
+}
+
+/// True when `err` says this account may not create or configure an OS TUN
+/// adapter, so the userspace `netstack` is the mode that works.
+///
+/// - Windows: `PermissionDenied`, OS error 5 `ERROR_ACCESS_DENIED` or 1314
+///   `ERROR_PRIVILEGE_NOT_HELD`, or an explicit access/elevation denial message.
+/// - Linux / macOS (FR-123 P1, unless [`unix_netstack_fallback_enabled`] is
+///   off): EPERM, EACCES, or no TUN device at all (ENOENT / ENODEV / ENXIO,
+///   e.g. a container without `/dev/net/tun`). `SystemTun::up` flattens the
+///   `tun` crate's error into `io::Error::other(text)`, so the OS error survives
+///   only as text ("Operation not permitted (os error 1)"): the message is
+///   matched as well as the kind and the raw code.
 pub fn is_tun_privilege_error_on(err: &std::io::Error, is_windows: bool) -> bool {
     if !is_windows {
-        return false;
+        return unix_netstack_fallback_enabled() && is_unix_tun_unavailable_error(err);
     }
     if err.kind() == std::io::ErrorKind::PermissionDenied {
         return true;
@@ -121,6 +174,37 @@ pub fn is_tun_privilege_error_on(err: &std::io::Error, is_windows: bool) -> bool
         || msg.contains("requires elevation")
         || msg.contains("requires administrator")
         || msg.contains("privilege is not held")
+}
+
+/// The Linux/macOS half of [`is_tun_privilege_error_on`], without the switch.
+pub fn is_unix_tun_unavailable_error(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if matches!(
+        err.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::NotFound
+    ) {
+        return true;
+    }
+    // 1 = EPERM, 2 = ENOENT, 6 = ENXIO, 13 = EACCES, 19 = ENODEV (Linux and
+    // macOS agree on all five).
+    if matches!(err.raw_os_error(), Some(1 | 2 | 6 | 13 | 19)) {
+        return true;
+    }
+    let msg = err.to_string().to_ascii_lowercase();
+    [
+        "operation not permitted",
+        "permission denied",
+        "no such device",
+        "device not configured",
+        "no such file or directory",
+        "(os error 1)",
+        "(os error 2)",
+        "(os error 6)",
+        "(os error 13)",
+        "(os error 19)",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
 }
 
 /// True when `err` is a generic `WintunCreateAdapter failed` error on Windows
@@ -428,20 +512,34 @@ mod overlay_fallback_supervision_tests {
         );
     }
 
+    /// FR-123 P1 — an account that may not create a TUN gets the userspace
+    /// stack on Linux and macOS too. The field case (0.4.189, an
+    /// ordinary account on a shared GPU server): `SystemTun::up` returned
+    /// `io::Error::other("Operation not permitted (os error 1)")`, the overlay
+    /// backed off forever, and the device stayed online with no peers.
     #[test]
-    fn non_windows_tun_permission_error_does_not_fall_back_to_netstack() {
+    fn non_windows_tun_unavailable_errors_fall_back_to_netstack() {
         let perm = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "Operation not permitted",
         );
         let eperm = std::io::Error::from_raw_os_error(1);
         let eacces = std::io::Error::from_raw_os_error(13);
-        assert!(
-            !is_tun_privilege_error_on(&perm, false),
-            "non-Windows PermissionDenied must not trigger Windows netstack fallback"
-        );
-        assert!(!is_tun_privilege_error_on(&eperm, false));
-        assert!(!is_tun_privilege_error_on(&eacces, false));
+        let field = std::io::Error::other("Operation not permitted (os error 1)");
+        let no_dev = std::io::Error::other("No such file or directory (os error 2)");
+        let enodev = std::io::Error::other("No such device (os error 19)");
+        for e in [&perm, &eperm, &eacces, &field, &no_dev, &enodev] {
+            assert!(is_unix_tun_unavailable_error(e), "{e}");
+        }
+
+        // Not a privilege or a missing device: keep the bounded backoff.
+        let busy = std::io::Error::other("Device or resource busy (os error 16)");
+        let in_use = std::io::Error::other("Address already in use (os error 98)");
+        let ebusy_raw = std::io::Error::from_raw_os_error(16);
+        let os_err_10 = std::io::Error::other("No child processes (os error 10)");
+        for e in [&busy, &in_use, &ebusy_raw, &os_err_10] {
+            assert!(!is_unix_tun_unavailable_error(e), "{e}");
+        }
 
         let wintun = std::io::Error::other(
             "Failed to create adapter: WintunCreateAdapter failed: \"No inner logs\"",
@@ -465,6 +563,24 @@ mod overlay_fallback_supervision_tests {
         assert!(is_tun_privilege_error_on(&err5, true));
         assert!(is_tun_privilege_error_on(&err1314, true));
         assert!(is_tun_privilege_error_on(&access_denied, true));
+    }
+
+    #[test]
+    fn cap_eff_reads_cap_net_admin_from_proc_status() {
+        // An ordinary account: no effective capabilities.
+        let user = "Name:\tmeshharbord\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n";
+        assert_eq!(cap_eff_has_net_admin(user), Some(false));
+        // Root: every capability.
+        let root = "CapEff:\t000001ffffffffff\n";
+        assert_eq!(cap_eff_has_net_admin(root), Some(true));
+        // Only CAP_NET_ADMIN (an ambient grant or file capability).
+        let net_admin = "CapEff:\t0000000000001000\n";
+        assert_eq!(cap_eff_has_net_admin(net_admin), Some(true));
+        // Everything except CAP_NET_ADMIN (a container that dropped it).
+        let dropped = "CapEff:\t000001ffffffefff\n";
+        assert_eq!(cap_eff_has_net_admin(dropped), Some(false));
+        assert_eq!(cap_eff_has_net_admin("Name:\tx\n"), None);
+        assert_eq!(cap_eff_has_net_admin("CapEff:\tzz\n"), None);
     }
 
     #[test]

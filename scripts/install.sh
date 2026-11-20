@@ -28,6 +28,16 @@
 #                     root update helper (meshharbor-update.timer + .path, FR-96)
 #                     that installs them for it.
 #
+#   --user            (daemon role, Linux only) install for THIS account only,
+#                     with no sudo at any step: the release tarball unpacked
+#                     into ~/.local, a user unit, and the mesh in the userspace
+#                     network stack (no TUN without root, FR-123). Chosen
+#                     automatically when this account cannot use sudo.
+#
+#   No --token: the daemon signs in with a link instead (`meshharbord login`):
+#   open it, approve the device, and it joins your organization. A token is the
+#   admin path for scripted installs.
+#
 #   --download-only   resolve + download + verify, print what WOULD run, touch
 #                     nothing else (safe on any box).
 #   --no-enroll       install without enrolling (no token needed); prints the
@@ -82,6 +92,9 @@ LOCAL_STARTUP_STATE=not-started
 LOCAL_MARKER_STATE=not-required
 LOCAL_MARKER_TAG=""
 SYSTEM=0
+# FR-123 P2 — install into ~/.local for this account only, no sudo anywhere.
+HOME_MODE=0
+SIGN_IN_WITH_LINK=0
 # Machine-global config for the --system (root) flow. The system unit starts
 # at boot before any login, so a $HOME-derived path would be unreachable —
 # and as root $HOME is /root, where the agent's appdirs resolver would look
@@ -109,7 +122,7 @@ KEEP_CONFIG=0
 usage() {
     sed -n '2,32p' "$0" 2>/dev/null || true
     echo "usage: install.sh --role daemon|tunnel [--server URL] [--token JWT] [--name NAME]"
-    echo "                  [--daemon-token JWT] [--system] [--download-only] [--no-enroll]"
+    echo "                  [--daemon-token JWT] [--system|--user] [--download-only] [--no-enroll]"
     echo "                  [--relay-server] (daemon only)"
     echo "                  [--desktop|--no-desktop]"
     echo "                  [--local-package PATH --local-package-sha256 HEX"
@@ -149,6 +162,7 @@ while [ $# -gt 0 ]; do
         --name) NAME="$2"; shift 2 ;;
         --daemon-token) DAEMON_TOKEN="$2"; shift 2 ;;
         --system) SYSTEM=1; shift ;;
+        --user) HOME_MODE=1; shift ;;
         --download-only) DOWNLOAD_ONLY=1; shift ;;
         --local-package) LOCAL_PACKAGE="$2"; shift 2 ;;
         --local-package-sha256) LOCAL_PACKAGE_SHA="$2"; shift 2 ;;
@@ -217,6 +231,21 @@ if [ "$RELAY_SERVER" = 1 ] && [ "$OS" != Linux ]; then
     exit 1
 fi
 
+if [ "$HOME_MODE" = 1 ]; then
+    if [ "$ROLE" != daemon ] || [ "$OS" != Linux ]; then
+        echo "error: --user applies to '--role daemon' on Linux only" >&2
+        exit 1
+    fi
+    if [ "$SYSTEM" = 1 ] || [ "$RELAY_SERVER" = 1 ]; then
+        echo "error: --user installs for this account only; it cannot be combined with --system or --relay-server" >&2
+        exit 1
+    fi
+    if [ "$(id -u)" = 0 ]; then
+        echo "error: --user is for an account without administrator rights; as root, use --system" >&2
+        exit 1
+    fi
+fi
+
 if [ "$SYSTEM" = 1 ] && { [ "$ROLE" != daemon ] || [ "$OS" != Linux ]; }; then
     echo "error: --system applies to '--role daemon' on Linux only (on macOS use --daemon-token for the privileged half; the tunnel role installs a CLI, not a service)" >&2
     exit 1
@@ -248,6 +277,7 @@ if [ -n "$LOCAL_PACKAGE$LOCAL_PACKAGE_SHA$LOCAL_CLI$LOCAL_CLI_SHA" ]; then
         [ "${#local_sha}" = 64 ] || { echo "error: local SHA256 must be 64 lowercase hex characters" >&2; exit 1; }
         case "$local_sha" in *[!0-9a-f]*) echo "error: local SHA256 must be 64 lowercase hex characters" >&2; exit 1 ;; esac
     done
+    [ "$HOME_MODE" != 1 ] || { echo "error: local daemon mode installs a package and cannot be combined with --user" >&2; exit 1; }
     LOCAL_MODE=1
 fi
 
@@ -474,11 +504,11 @@ helper_on() {
 # The same version with the same helper needs nothing, and a binary that does
 # not answer `--version` is never restarted onto (P2b's own rule).
 restart_old_user_daemon() {
-    pid="$1"; helper_changed="$2"
+    pid="$1"; helper_changed="$2"; new_bin="${3:-/usr/bin/meshharbord}"
     case "$pid" in ''|0) return 0 ;; esac
-    installed="$(/usr/bin/meshharbord --version 2>/dev/null || true)"
+    installed="$("$new_bin" --version 2>/dev/null || true)"
     if [ -z "$installed" ]; then
-        warn "/usr/bin/meshharbord --version did not answer; leaving the running daemon (pid $pid) as it is"
+        warn "$new_bin --version did not answer; leaving the running daemon (pid $pid) as it is"
         return 0
     fi
     running="$("/proc/$pid/exe" --version 2>/dev/null || true)"
@@ -616,6 +646,11 @@ install_daemon_linux() {
         say "enabling the systemd user unit (autostart, this login session's user)"
         old_pid="$(systemctl --user show -p MainPID --value meshharbor.service 2>/dev/null || true)"
         systemctl --user daemon-reload || true
+        # FR-123 P2 — no token: sign in with a link now, AFTER the helper (the
+        # daemon decides at its start who installs its updates). A fresh
+        # sign-in enables and starts the unit itself; the enable below is then
+        # a no-op, and it starts the unit of a machine already signed in.
+        [ "$SIGN_IN_WITH_LINK" != 1 ] || sign_in_with_link /usr/bin/meshharbord
         systemctl --user enable --now meshharbor.service
         restart_old_user_daemon "$old_pid" "$helper_changed"
         say "daemon status: $(systemctl --user is-active meshharbor.service || true)"
@@ -624,6 +659,117 @@ install_daemon_linux() {
         # worked (found by the FR-97 P6d cells).
         say "NOTE: on a headless host, run 'sudo loginctl enable-linger $(id -un)' so the user unit runs without an open session."
     fi
+}
+
+# FR-123 P2 — sign in with a link, the way the desktop installers do: the
+# daemon prints a link and a code, whoever opens it approves the device into
+# their organization, and on a fresh machine the daemon then enables and starts
+# its own user unit. `--user`: never promote to a system install from here.
+sign_in_with_link() {
+    bin="$1"
+    say "signing this machine in as '$NAME' — open the link below and approve the device"
+    # </dev/null: under `curl | sh` the script text is this shell's stdin, and
+    # nothing a child reads may come from it.
+    env MESHHARBOR_INSTALL_METHOD=script-sh MESHHARBOR_INSTALL_SCOPE=per-user \
+        "$bin" login --user --server "$SERVER" --name "$NAME" </dev/null
+}
+
+# FR-123 P2 — whether this account can use sudo. Without a password, at once;
+# with one, ask once where a terminal can answer (sudo's own prompt and tries).
+# No sudo, no terminal, or a refused password: install for this account only.
+sudo_usable() {
+    command -v sudo >/dev/null 2>&1 || return 1
+    sudo -n true 2>/dev/null && return 0
+    ( exec </dev/tty ) 2>/dev/null || return 1
+    say "Installing for every account on this computer needs administrator rights (sudo)."
+    say "Type your password. Without administrator rights, press Enter at each prompt: MeshHarbor then installs for this account only."
+    sudo -v </dev/tty
+}
+
+# FR-123 P2 — a headless account's user manager stops at logout unless the
+# account lingers. Most systems let an account turn that on for itself.
+enable_linger_home() {
+    command -v loginctl >/dev/null 2>&1 || return 0
+    me="$(id -un)"
+    [ "$(loginctl show-user "$me" -p Linger --value 2>/dev/null || true)" != yes ] || return 0
+    if loginctl --no-ask-password enable-linger "$me" </dev/null >/dev/null 2>&1; then
+        say "MeshHarbor keeps running after you log out (lingering enabled for $me)"
+    else
+        say "NOTE: MeshHarbor stops when you log out. To keep it running, an administrator can run: sudo loginctl enable-linger $me"
+    fi
+}
+
+# FR-123 P2 — an account without administrator rights. The release tarball,
+# unpacked into ~/.local: the layout the same-user updater updates in place
+# (`updater_linux_user.rs`, `linux-inplace-upgrade.py`), whose binary finds its
+# libraries through its RUNPATH `$ORIGIN/../lib/meshharbor`. The daemon writes
+# its own user unit at sign-in (`service install`), and the mesh runs in the
+# userspace network stack, since an account without root has no TUN (FR-123 P1).
+# No sudo anywhere, and no desktop companion (its package needs root).
+install_daemon_linux_home() {
+    case "$(uname -m)" in
+        x86_64|amd64)   arch=x86_64 ;;
+        aarch64|arm64)  arch=aarch64 ;;
+        *) echo "error: unsupported Linux architecture $(uname -m)" >&2; exit 1 ;;
+    esac
+    bin_dir="$HOME/.local/bin"
+    lib_dir="$HOME/.local/lib/meshharbor"
+    releases="$STAGE/releases.json"
+    say "resolving latest agent release via $SERVER/api/agent/latest-release"
+    curl -fsSL -o "$releases" "$SERVER/api/agent/latest-release"
+    pattern="${arch}-unknown-linux-gnu\\.tar\\.gz"
+    url="$(asset_field_for "$releases" "$pattern" browser_download_url)"
+    digest="$(asset_field_for "$releases" "$pattern" digest)"
+    [ -n "$url" ] || { echo "error: no linux/${arch} tarball in the latest agent release" >&2; exit 1; }
+    if [ "$DOWNLOAD_ONLY" = 1 ]; then
+        say "download-only: would unpack $(basename "$url") into $bin_dir and $lib_dir (this account only, no sudo)"
+        if [ -n "$TOKEN" ]; then
+            say "download-only: would run: $bin_dir/meshharbord enroll --server $SERVER --token <token> --name $NAME, then $bin_dir/meshharbord service install"
+        else
+            say "download-only: would run: $bin_dir/meshharbord login --user --server $SERVER --name $NAME"
+        fi
+        return 0
+    fi
+    tarball="$STAGE/meshharbord.tar.gz"
+    download "$url" "$tarball"
+    verify_sha256 "$tarball" "$digest"
+    payload="$STAGE/payload"
+    mkdir -p "$payload"
+    tar --no-same-owner -xzf "$tarball" --strip-components=1 -C "$payload"
+    [ -x "$payload/usr/bin/meshharbord" ] || { echo "error: the tarball has no usr/bin/meshharbord" >&2; exit 1; }
+    mkdir -p "$bin_dir" "$lib_dir"
+    # Every file lands by rename, so a daemon already running keeps its old
+    # image until it restarts onto the new one.
+    for f in "$payload"/usr/lib/meshharbor/*; do
+        [ -f "$f" ] || continue
+        n="$(basename "$f")"
+        cp "$f" "$lib_dir/.$n.new" && chmod 644 "$lib_dir/.$n.new" && mv -f "$lib_dir/.$n.new" "$lib_dir/$n"
+    done
+    for n in meshharbord mh; do
+        [ -f "$payload/usr/bin/$n" ] || continue
+        cp "$payload/usr/bin/$n" "$bin_dir/.$n.new" && chmod 755 "$bin_dir/.$n.new" && mv -f "$bin_dir/.$n.new" "$bin_dir/$n"
+    done
+    version="$("$bin_dir/meshharbord" --version 2>/dev/null)" ||
+        { echo "error: $bin_dir/meshharbord does not run on this host" >&2; exit 1; }
+    say "installed ${version} for $(id -un) only, in ~/.local (no administrator rights needed)"
+    enable_linger_home
+    old_pid="$(systemctl --user show -p MainPID --value meshharbor.service 2>/dev/null || true)"
+    if [ "$NO_ENROLL" = 1 ]; then
+        say "sign in later with: $bin_dir/meshharbord login --user --server $SERVER --name \"$NAME\""
+    elif [ -n "$TOKEN" ]; then
+        say "enrolling this machine as '$NAME' against $SERVER (token is single-use, never echoed)"
+        env MESHHARBOR_INSTALL_METHOD=script-sh MESHHARBOR_INSTALL_SCOPE=per-user \
+            "$bin_dir/meshharbord" enroll --server "$SERVER" --token "$TOKEN" --name "$NAME" </dev/null
+        "$bin_dir/meshharbord" service install </dev/null
+    else
+        sign_in_with_link "$bin_dir/meshharbord"
+    fi
+    restart_old_user_daemon "$old_pid" 0 "$bin_dir/meshharbord"
+    say "daemon status: $(systemctl --user is-active meshharbor.service 2>/dev/null || true)"
+    case ":$PATH:" in
+        *":$bin_dir:"*) ;;
+        *) say "NOTE: 'mh' is in ~/.local/bin; most systems add it to your PATH at your next login" ;;
+    esac
 }
 
 install_daemon_macos() {
@@ -808,9 +954,19 @@ enroll_daemon() {
         enroll_bin="$daemon_bin"
         enroll_trace="$(install_trace per-user)"
     fi
+    if [ "$NO_ENROLL" != 1 ] && [ -z "$TOKEN" ] && [ "$OS" = Linux ] && [ "$SYSTEM" != 1 ]; then
+        # FR-123 P2 — signed in with a link once the unit is ready
+        # (install_daemon_linux calls sign_in_with_link).
+        SIGN_IN_WITH_LINK=1
+        return 0
+    fi
     if [ "$NO_ENROLL" = 1 ] || [ -z "$TOKEN" ]; then
         [ "$NO_ENROLL" = 1 ] || warn "no --token given — skipping enrollment"
-        say "enroll later with: $enroll_sudo $enroll_bin enroll --server $SERVER --token <agent-enrollment-jwt> --name \"$NAME\" $RELAY_ARG"
+        if [ "$OS" = Linux ] && [ "$SYSTEM" != 1 ]; then
+            say "sign in later with: $enroll_bin login --user --server $SERVER --name \"$NAME\""
+        else
+            say "enroll later with: $enroll_sudo $enroll_bin enroll --server $SERVER --token <agent-enrollment-jwt> --name \"$NAME\" $RELAY_ARG"
+        fi
         return 0
     fi
     say "enrolling this machine as '$NAME' against $SERVER (token is single-use, never echoed)"
@@ -1710,6 +1866,16 @@ install_local_cli() {
 
 [ "$LOCAL_MODE" != 1 ] || prepare_local_artifacts
 
+# FR-123 P2 — an account without administrator rights installs for itself.
+if [ "$ROLE/$OS" = daemon/Linux ] && [ "$SYSTEM" != 1 ] && [ "$HOME_MODE" != 1 ] &&
+    [ "$LOCAL_MODE" != 1 ] && [ "$DOWNLOAD_ONLY" != 1 ] && [ "$RELAY_SERVER" != 1 ] &&
+    [ "$(id -u)" != 0 ]; then
+    if ! sudo_usable; then
+        HOME_MODE=1
+        say "no administrator rights on this account — installing MeshHarbor for this account only (in ~/.local, no sudo)"
+    fi
+fi
+
 say "meshharbor install.sh — role=$ROLE os=$OS server=$SERVER"
 
 case "$ROLE/$OS" in
@@ -1717,9 +1883,13 @@ case "$ROLE/$OS" in
     # .deb literally Depends on it), and it reuses the release listing the
     # daemon step already fetched.
     daemon/Linux)
-        [ "$LOCAL_MODE" != 1 ] || install_local_cli
-        install_daemon_linux
-        [ "$LOCAL_MODE" = 1 ] || install_desktop_linux ;;
+        if [ "$HOME_MODE" = 1 ]; then
+            install_daemon_linux_home
+        else
+            [ "$LOCAL_MODE" != 1 ] || install_local_cli
+            install_daemon_linux
+            [ "$LOCAL_MODE" = 1 ] || install_desktop_linux
+        fi ;;
     daemon/Darwin)
         [ "$LOCAL_MODE" != 1 ] || install_local_cli
         install_daemon_macos ;;

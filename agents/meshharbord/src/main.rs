@@ -1426,6 +1426,7 @@ async fn login_cmd(
             archive_replica: false,
             install_method: None,
             install_scope: None,
+            starts_service_itself: true,
         },
     )
     .await?;
@@ -1455,8 +1456,25 @@ async fn login_cmd(
         link_history(config_path).await;
         restart_service(config_path).await;
     } else if before.is_none() {
-        if meshharbord::service::install().is_ok() || meshharbord::service::start().is_ok() {
-            println!("The MeshHarbor user service is active.");
+        // FR-123 P3 — say what happened. Until 0.4.189 a failed install AND a
+        // failed start printed nothing at all and the command returned success:
+        // signed in, never running, and nothing on screen said so.
+        let started = meshharbord::service::install()
+            .or_else(|install_err| meshharbord::service::start().map_err(|_| install_err));
+        match started {
+            Ok(()) => {
+                println!("Signed in. MeshHarbor is running, and starts by itself from now on.")
+            }
+            Err(e) => {
+                let exe = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "meshharbord".to_string());
+                bail!(
+                    "signed in, but MeshHarbor could not start its background service: {e:#}\n\
+                     Until that is fixed, run it by hand: {exe} --config {} run",
+                    config_path.display()
+                );
+            }
         }
     } else {
         link_history(config_path).await;
@@ -1693,6 +1711,7 @@ async fn join_cmd(
                 archive_replica: false,
                 install_method: None,
                 install_scope: None,
+                starts_service_itself: false,
             },
         )
         .await?;
@@ -2563,6 +2582,7 @@ async fn daemon_main() -> Result<()> {
                     archive_replica,
                     install_method: install_method.as_deref(),
                     install_scope: install_scope.as_deref(),
+                    starts_service_itself: false,
                 },
             )
             .await
@@ -3490,6 +3510,9 @@ struct EnrollOptions<'a> {
     /// env, then to `manual` / `unknown` (`enrollment::resolve_install`).
     install_method: Option<&'a str>,
     install_scope: Option<&'a str>,
+    /// FR-123 P3 — the caller starts the service itself (`login`), so the
+    /// "Start the daemon: …" hint would contradict the line it prints next.
+    starts_service_itself: bool,
 }
 
 async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
@@ -3507,6 +3530,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         archive_replica,
         install_method,
         install_scope,
+        starts_service_itself,
     } = opts;
     // FR-102 P3 — resolved FIRST: a typo in the flag or the env must be
     // seen before the single-use token is spent, not after.
@@ -3760,10 +3784,12 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         outcome,
         EnrollOutcome::RefreshedOrg { .. } | EnrollOutcome::AppendedOrg { .. }
     );
-    println!(
-        "{}",
-        service::Install::detect(&target_path).after_enroll(secondary)
-    );
+    if !starts_service_itself {
+        println!(
+            "{}",
+            service::Install::detect(&target_path).after_enroll(secondary)
+        );
+    }
 
     // rc.53 Phase 7: WINHOST-B's recurring pain — operator runs
     // `enroll --machine-global` from a user PowerShell, the config
