@@ -236,9 +236,48 @@ Details worth knowing:
 ## Linux
 
 ```bash
-curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
-  --role daemon --token <enrollment-jwt> [--server https://meshharbor.itachi.fans] [--name lab-1]
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --role daemon
 ```
+
+That is the whole install, on any account (FR-123). It prints a link and a code; open the link,
+check the code, approve the device, and it joins your organization. `--token <enrollment-jwt>`
+is the admin's scripted path; `--name` names the device (default: the hostname).
+
+```mermaid
+flowchart TD
+  A["install.sh --role daemon"] --> B{"root, or sudo usable?"}
+  B -->|"yes"| C["the .deb / tarball under /usr<br/>+ the root update helper (FR-96)"]
+  B -->|"no sudo, no terminal to ask,<br/>or the password refused"| D["for this account only:<br/>~/.local/bin + ~/.local/lib/meshharbor"]
+  C --> E{"--token?"}
+  D --> E
+  E -->|"no"| F["sign in with a link<br/>(meshharbord login --user)"]
+  E -->|"yes"| G["enroll --token"]
+  F --> H["the user unit is written and started"]
+  G --> H
+```
+
+### Without administrator rights (FR-123)
+
+A shared server where you have an ordinary account installs the same way. `install.sh` checks
+`sudo -n`; where sudo needs a password it asks once (sudo's own prompt), and with no sudo, no
+terminal, or a refused password it installs **for this account only**. `--user` asks for that
+directly.
+
+| | Account install | Machine install |
+|---|---|---|
+| Files | `~/.local/bin/{meshharbord,mh}`, `~/.local/lib/meshharbor/` (the binary's RUNPATH is `$ORIGIN/../lib/meshharbor`) | `/usr/bin`, `/usr/lib/meshharbor` |
+| Service | the user unit the daemon writes at sign-in (`~/.config/systemd/user/meshharbor.service`) | the packaged user unit, or `meshharbord.service` with `--system` |
+| Running after logout | lingering, which `install.sh` turns on when the system lets an account do it for itself (`loginctl --no-ask-password enable-linger`); otherwise it says what an administrator runs | the same, or the root unit |
+| Mesh | the userspace network stack: peers are reachable from this account through its loopback SOCKS5 port, with no host-wide routes or DNS steering ([overlay-communication.md](overlay-communication.md)) | a TUN device |
+| Updates | the same-user updater, in place (`updater_linux_user.rs`, `scripts/linux-inplace-upgrade.py`) | the root update helper (FR-96) or the root daemon |
+| Desktop companion | not installed (its package needs root) | installed with a graphical session |
+
+- Files land by rename, so re-running the script over a running daemon leaves it on its old image
+  until it restarts onto the new one.
+- A first sign-in whose service neither installs nor starts says so, with the command that runs
+  the daemon by hand, and exits non-zero (`login_cmd`).
+- The fixture test `scripts/test-install-home.sh` drives these functions with no sudo, no
+  systemd and no network.
 
 - Installs the `.deb` (x86_64 **and** arm64) or tarball, verifies SHA-256,
   enrolls, and enables a **systemd user unit** (`meshharbor.service` →

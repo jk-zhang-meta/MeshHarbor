@@ -1076,11 +1076,67 @@ prefix is still honoured.
 | `…_ROUTE_TICK_SECS` | 30 | route-guard heartbeat seconds while the subscription is live (2–300; `2` = pre-demotion cadence). Ignored — always 2 s — without a live subscription |
 | `…_ROUTE_EVICT_WINNERS_ONLY` | **on** | Windows: evict a competing VPN route only when it wins the FIB lookup (#1405); off = evict every competing row every wave |
 | `…_NETSTACK_SOCKS` | unset | userspace netstack + SOCKS5 instead of an OS TUN |
+| `…_UNIX_NETSTACK_FALLBACK` | **on** (FR-123) | Linux/macOS: an account that cannot create a TUN runs the userspace netstack by itself (below); off = always try the TUN and back off |
 | `…_SOCKBUF` | **on** (FR-110) | every direct carrier socket asks for 7 MiB receive and send buffers (§2); off = the OS default |
 
 Joining the mesh at all additionally requires `overlay_enabled = true` in the
 node config and a build carrying the `overlay-l3` (or `overlay-netstack`)
 feature.
+
+### No administrator rights: the userspace fallback (FR-123)
+
+A process that may not create a TUN device still joins the mesh: the overlay runs in the
+userspace netstack with an ephemeral loopback SOCKS5 front, as `…_NETSTACK_SOCKS` would, and
+withdraws its route offers and DNS steering (FR-97 P0c-3). `mh status` shows
+`overlay  netstack (127.0.0.1:<port> SOCKS5)`.
+
+```mermaid
+flowchart LR
+  A["overlay start"] --> B{"process_can_create_os_tun()"}
+  B -->|"no"| N["netstack, up front<br/>(no TUN attempt)"]
+  B -->|"yes"| T["OS TUN"]
+  T -->|"create fails: privilege<br/>or no TUN device"| L["latch netstack<br/>(no backoff) → rebuild"]
+  L --> N
+  T -->|"other failure"| K["bounded backoff, retry TUN"]
+```
+
+| Platform | Up front (`process_can_create_os_tun`) | Reactive (`is_tun_privilege_error_on`) |
+|---|---|---|
+| Windows | an elevated token (`TokenIsElevated`, `LocalSystem`) | `Access is denied`, OS error 5 / 1314; three `WintunCreateAdapter failed` in a row |
+| Linux | `/dev/net/tun` exists and `CapEff` holds `CAP_NET_ADMIN` | EPERM, EACCES, ENOENT, ENODEV, ENXIO — by kind, raw code, or the text `SystemTun::up` flattens them into |
+| macOS | root | the same as Linux |
+
+Anchors: [`overlay_supervision.rs`](../agents/meshharbord/src/overlay_supervision.rs)
+(`process_can_create_os_tun`, `cap_eff_has_net_admin`, `is_unix_tun_unavailable_error`),
+[`overlay.rs`](../agents/meshharbord/src/overlay.rs) (`build_tun_factory_with_fallback`, branch 2).
+⚠️ Before FR-123 the fallback was Windows-only: an ordinary Linux account signed in, showed
+online, and reached no peer — the TUN create failed EPERM and backed off forever.
+
+### A strict zone rides no relay outside its countries (FR-124)
+
+Logical Network Zones (`OverlayNetwork.zones`; a device's zone is pin → GeoIP → the default zone
+→ unresolved-strict) decide every carrier. A `router_only` zone's devices use only relays whose
+host sits in the zone's declared countries — the centre's own `/derp` is one relay among them.
+
+```mermaid
+flowchart LR
+  R["a relay (centre /derp, regional DERP,<br/>STUN/TURN) for a device"] --> Q{"device's zone strict?"}
+  Q -->|"no / no zones"| A["allowed"]
+  Q -->|"yes"| C{"relay host's country<br/>in the zone's countries?"}
+  C -->|"yes"| A
+  C -->|"no, or unknown"| W["withheld"]
+```
+
+| Carrier | Where it is withheld |
+|---|---|
+| The centre's `/derp` | rows lose `supports_derp*` and a DERP verdict (`overlay.rs` `without_central_relay`, `stamp_verdict`); the netmap says `central_relay_denied`, and the runtime opens no `/derp`; the relay refuses the registration and closes a live one (`derp_acl.rs` `refuses_registration`, `derp.rs`) |
+| Forced-DERP pins | `zones_allow_derp` at the TURN-churn escalation, the lossy-org-carrier pin and the re-push on join; a regional DERP is judged by its own host |
+| STUN / TURN | `filter_stun_urls_for_node`, the relay grant's `filter_ice_for_allowed_countries`, a tunnel's ICE (`zone_filtered_ice`) |
+| Cross-zone pairs | `backbone_only` (`line_only`): the zone's gateway relays only |
+
+The centre's country is its public origin (`app.frontend_url`) geolocated by the ICE-zone refresh
+(`fleet` boot); an origin that does not resolve to one known country is outside every strict zone.
+Only `MANAGE_AGENTS` moves a device between zones — never the device's owner.
 
 ---
 
