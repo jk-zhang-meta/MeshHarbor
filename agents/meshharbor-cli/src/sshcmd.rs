@@ -40,127 +40,391 @@ use crate::localclient;
 const SSH_USER: &str = "meshharbor";
 
 pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32> {
-    let (node, socks_port) = localclient::ssh_target(device).await?;
-    // 1. A fresh identity per session. Never reused, never written anywhere
-    //    but the private temp dir below, and the daemon never sees the
-    //    private half.
-    let key = mint_session_key().context("minting a session key")?;
-    let public_openssh = key
-        .public_key()
-        .to_openssh()
-        .context("encoding the session public key")?;
-
-    // 2. Ask the daemon, which relays to the server over its authenticated WS.
-    //    A dashboard display name is turned into the hex agent id first
-    //    (`docs/device-naming.md`); anything the server resolves itself —
-    //    a fleet name, an id — goes exactly as typed.
-    let grant = localclient::ssh_session(&node, &public_openssh, session_secs).await?;
-
-    if let Some(err) = grant.error {
-        bail!("{err}");
-    }
-    let (address, port) = match (grant.address, grant.port) {
-        (Some(a), Some(p)) => (a, p),
-        // The server answers either a place to dial or a reason; neither is a
-        // protocol violation we should paper over with a guess.
-        _ => bail!("the server did not say where to dial and gave no reason"),
-    };
-    let Some(host_pubkey) = grant.host_pubkey else {
-        bail!(
-            "{device} has not published an SSH host key, so this connection cannot be \
-             verified.\nRefusing rather than trusting it on first use. The device needs \
-             an agent that has had SSH enabled at least once (rc.444+)."
-        );
-    };
-
-    // The netstack installs no OS route. Own one loopback connection for this
-    // SSH process and bridge it through the primary's existing SOCKS front.
-    let front = if socks_port.is_some() {
-        Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
-    } else {
-        None
-    };
-    let (ssh_address, ssh_port) = match &front {
-        Some(listener) => ("127.0.0.1".to_string(), listener.local_addr()?.port()),
-        None => (address.clone(), port),
-    };
-
-    // 3. Everything `ssh` needs, in a directory only this user can read.
-    let dir = PrivateDir::new().context("creating a private directory for the session")?;
-    let key_path = dir.path().join("id");
-    write_private(
-        &key_path,
-        key.to_openssh(ssh_key::LineEnding::LF)?.as_bytes(),
-    )
-    .context("writing the session key")?;
-    let kh_path = dir.path().join("known_hosts");
-    // Bracketed host form — required whenever the port is not 22, which for
-    // meshharbor SSH is the normal case (default 2222).
-    write_private(
-        &kh_path,
-        format!("[{ssh_address}]:{ssh_port} {host_pubkey}\n").as_bytes(),
-    )
-    .context("writing known_hosts")?;
-
-    // 4. Hand off.
-    let child = tokio::process::Command::new("ssh")
-        // The grant supplies this session's settings. Ignore ambient config,
-        // including system Includes that the current user cannot read.
-        .args(["-F", "none"])
-        .arg("-i")
-        .arg(&key_path)
-        .arg("-o")
-        .arg(format!("UserKnownHostsFile={}", kh_path.display()))
-        // Verify, never prompt: we just wrote the expected key.
-        .arg("-o")
-        .arg("StrictHostKeyChecking=yes")
-        // Offer ONLY our session key. Without this, ssh also tries every key
-        // in the agent and ~/.ssh, and a device with an authorized_keys entry
-        // could authenticate a session the grant never covered.
-        .arg("-o")
-        .arg("IdentitiesOnly=yes")
-        .arg("-o")
-        .arg("IdentityAgent=none")
+    let grant = Grant::obtain(device, session_secs).await?;
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.args(grant.client_options())
         .arg("-p")
-        .arg(ssh_port.to_string())
-        .arg(format!("{SSH_USER}@{ssh_address}"))
-        .args(args)
-        .kill_on_drop(true)
-        .spawn();
+        .arg(grant.ssh_port.to_string())
+        .arg(format!("{SSH_USER}@{}", grant.ssh_address))
+        .args(args);
+    grant.launch("ssh", cmd).await
+}
 
-    let mut child = match child {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+/// `mh scp [options] <source>… <target>` — the system `scp` under a grant
+/// (MeshHarbor). Exactly one device takes part, written `<device>:<path>`;
+/// everything else is a local path. No password and no key to set up, for the
+/// same reason `mh ssh` needs none: the identity is minted for this one
+/// connection and the host key comes with the grant.
+pub async fn run_scp(session_secs: u64, args: &[String]) -> Result<i32> {
+    let plan = ScpPlan::parse(args)?;
+    let grant = Grant::obtain(&plan.device, session_secs).await?;
+    let host = grant.scp_host();
+    let mut cmd = tokio::process::Command::new("scp");
+    cmd.args(grant.client_options())
+        .arg("-P")
+        .arg(grant.ssh_port.to_string())
+        .args(&plan.options)
+        .arg("--")
+        .args(plan.operands(&host));
+    grant.launch("scp", cmd).await
+}
+
+/// `mh sftp <device> [-- options]` — the system `sftp` under a grant.
+pub async fn run_sftp(device: &str, session_secs: u64, args: &[String]) -> Result<i32> {
+    let options = screen_options("sftp", args, SFTP_FLAGS, SFTP_VALUED_OK)?;
+    if let Some(stray) = options.operands.first() {
+        bail!(
+            "`mh sftp` takes the device and options only; {stray:?} is neither. \
+             Write `mh sftp {device} -- -b <batchfile>` for a batch."
+        );
+    }
+    let grant = Grant::obtain(device, session_secs).await?;
+    let mut cmd = tokio::process::Command::new("sftp");
+    cmd.args(grant.client_options())
+        .arg("-P")
+        .arg(grant.ssh_port.to_string())
+        .args(&options.options)
+        .arg(grant.scp_host());
+    grant.launch("sftp", cmd).await
+}
+
+/// One connection's worth of grant: a single-use identity, the place to dial,
+/// and the host key that must answer, written where only this user can read
+/// them. Dropping it removes the key.
+struct Grant {
+    dir: PrivateDir,
+    ssh_address: String,
+    ssh_port: u16,
+    /// A netstack-only node: the loopback listener this client dials, bridged
+    /// through the daemon's SOCKS front to `address:port`.
+    front: Option<tokio::net::TcpListener>,
+    socks_port: Option<u16>,
+    address: String,
+    port: u16,
+}
+
+impl Grant {
+    async fn obtain(device: &str, session_secs: u64) -> Result<Self> {
+        let (node, socks_port) = localclient::ssh_target(device).await?;
+        // 1. A fresh identity per session. Never reused, never written anywhere
+        //    but the private temp dir below, and the daemon never sees the
+        //    private half.
+        let key = mint_session_key().context("minting a session key")?;
+        let public_openssh = key
+            .public_key()
+            .to_openssh()
+            .context("encoding the session public key")?;
+
+        // 2. Ask the daemon, which relays to the server over its authenticated WS.
+        //    A dashboard display name is turned into the hex agent id first
+        //    (`docs/device-naming.md`); anything the server resolves itself —
+        //    a fleet name, an id — goes exactly as typed.
+        let grant = localclient::ssh_session(&node, &public_openssh, session_secs).await?;
+
+        if let Some(err) = grant.error {
+            bail!("{err}");
+        }
+        let (address, port) = match (grant.address, grant.port) {
+            (Some(a), Some(p)) => (a, p),
+            // The server answers either a place to dial or a reason; neither is a
+            // protocol violation we should paper over with a guess.
+            _ => bail!("the server did not say where to dial and gave no reason"),
+        };
+        let Some(host_pubkey) = grant.host_pubkey else {
             bail!(
-                "no `ssh` client found on this machine. MeshHarbor uses the system OpenSSH \
-                 client for the session itself.\nInstall it (Windows: \
-                 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`; \
-                 Linux/macOS: your distribution's openssh-client)."
+                "{device} has not published an SSH host key, so this connection cannot be \
+                 verified.\nRefusing rather than trusting it on first use. The device needs \
+                 an agent that has had SSH enabled at least once (rc.444+)."
+            );
+        };
+
+        // The netstack installs no OS route. Own one loopback connection for this
+        // client process and bridge it through the primary's existing SOCKS front.
+        let front = if socks_port.is_some() {
+            Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
+        } else {
+            None
+        };
+        let (ssh_address, ssh_port) = match &front {
+            Some(listener) => ("127.0.0.1".to_string(), listener.local_addr()?.port()),
+            None => (address.clone(), port),
+        };
+
+        // 3. Everything the client needs, in a directory only this user can read.
+        let dir = PrivateDir::new().context("creating a private directory for the session")?;
+        write_private(
+            &dir.path().join("id"),
+            key.to_openssh(ssh_key::LineEnding::LF)?.as_bytes(),
+        )
+        .context("writing the session key")?;
+        // Bracketed host form — required whenever the port is not 22, which for
+        // meshharbor SSH is the normal case (default 2222).
+        write_private(
+            &dir.path().join("known_hosts"),
+            format!("[{ssh_address}]:{ssh_port} {host_pubkey}\n").as_bytes(),
+        )
+        .context("writing known_hosts")?;
+
+        Ok(Self {
+            dir,
+            ssh_address,
+            ssh_port,
+            front,
+            socks_port,
+            address,
+            port,
+        })
+    }
+
+    /// The options every OpenSSH client (`ssh`, `scp`, `sftp`) takes for a
+    /// grant. The port flag is NOT here: `ssh` spells it `-p`, the others `-P`.
+    fn client_options(&self) -> Vec<std::ffi::OsString> {
+        let kh = self.dir.path().join("known_hosts");
+        vec![
+            // The grant supplies this session's settings. Ignore ambient config,
+            // including system Includes that the current user cannot read.
+            "-F".into(),
+            "none".into(),
+            "-i".into(),
+            self.dir.path().join("id").into_os_string(),
+            "-o".into(),
+            format!("UserKnownHostsFile={}", kh.display()).into(),
+            // Verify, never prompt: we just wrote the expected key.
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
+            // Offer ONLY our session key. Without this, ssh also tries every key
+            // in the agent and ~/.ssh, and a device with an authorized_keys entry
+            // could authenticate a session the grant never covered.
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-o".into(),
+            "IdentityAgent=none".into(),
+            // A grant authenticates exactly one key; a password prompt could only
+            // ever be a wrong turn, so there is never one.
+            "-o".into(),
+            "PasswordAuthentication=no".into(),
+            "-o".into(),
+            "KbdInteractiveAuthentication=no".into(),
+        ]
+    }
+
+    /// `user@host` as `scp` and `sftp` read it: an IPv6 address in brackets.
+    fn scp_host(&self) -> String {
+        if self.ssh_address.contains(':') {
+            format!("{SSH_USER}@[{}]", self.ssh_address)
+        } else {
+            format!("{SSH_USER}@{}", self.ssh_address)
+        }
+    }
+
+    /// Run `cmd` and the bridge it may need; answer the client's exit code.
+    async fn launch(self, program: &str, mut cmd: tokio::process::Command) -> Result<i32> {
+        let child = cmd.kill_on_drop(true).spawn();
+        let mut child = match child {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                bail!(
+                    "no `{program}` client found on this machine. MeshHarbor uses the system \
+                     OpenSSH client for the session itself.\nInstall it (Windows: \
+                     `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`; \
+                     Linux/macOS: your distribution's openssh-client)."
+                );
+            }
+            Err(e) => return Err(anyhow!("could not start {program}: {e}")),
+        };
+        let Self {
+            dir,
+            front,
+            socks_port,
+            address,
+            port,
+            ..
+        } = self;
+        let bridge = async {
+            match (front, socks_port) {
+                (Some(front), Some(socks)) => socks_bridge(front, socks, &address, port).await,
+                _ => std::future::pending::<Result<()>>().await,
+            }
+        };
+        let status = tokio::select! {
+            status = child.wait() => status.with_context(|| format!("waiting for {program}"))?,
+            result = bridge => {
+                if let Err(error) = result {
+                    let _ = child.kill().await;
+                    return Err(error);
+                }
+                child.wait().await.with_context(|| format!("waiting for {program} after bridge closed"))?
+            }
+        };
+
+        // `dir` drops here, taking the key with it.
+        drop(dir);
+        Ok(status
+            .code()
+            .unwrap_or(if status.success() { 0 } else { 1 }))
+    }
+}
+
+/// `scp` flags that take no value (OpenSSH 9/10).
+const SCP_FLAGS: &str = "346ABCOpqRrsTv";
+/// `scp` options with a value that are safe beside a grant: cipher, limit,
+/// sftp option.
+const SCP_VALUED_OK: &str = "clX";
+/// `sftp` flags that take no value.
+const SFTP_FLAGS: &str = "46AaCfNpqrv";
+/// `sftp` options with a value that are safe beside a grant: buffer, batch
+/// file, cipher, limit, requests.
+const SFTP_VALUED_OK: &str = "BbclR";
+
+/// Options and operands, split. Options the grant itself sets, and ones that
+/// would route around it, are refused with a reason.
+struct Screened {
+    options: Vec<String>,
+    operands: Vec<String>,
+}
+
+fn screen_options(tool: &str, args: &[String], flags: &str, valued_ok: &str) -> Result<Screened> {
+    let mut options = Vec::new();
+    let mut operands = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--" {
+            operands.extend(it.by_ref().cloned());
+            break;
+        }
+        let Some(cluster) = arg.strip_prefix('-').filter(|c| !c.is_empty()) else {
+            operands.push(arg.clone());
+            continue;
+        };
+        if arg.starts_with("--") {
+            bail!("`mh {tool}` does not take {arg:?}");
+        }
+        // `-rp`, `-l100`, `-rl 100`: flags cluster; a valued option ends the
+        // cluster and takes the rest of the word, or else the next one.
+        let mut took_value = false;
+        for (i, c) in cluster.char_indices() {
+            if flags.contains(c) {
+                continue;
+            }
+            if valued_ok.contains(c) {
+                options.push(arg.clone());
+                if cluster[i + c.len_utf8()..].is_empty() {
+                    let Some(value) = it.next() else {
+                        bail!("`mh {tool}`: `-{c}` needs a value");
+                    };
+                    options.push(value.clone());
+                }
+                took_value = true;
+                break;
+            }
+            let why = match c {
+                'F' | 'i' | 'P' | 'o' => "is set by meshharbor for this session's grant",
+                'J' | 'S' | 'D' | 's' => "would route the connection around meshharbor",
+                _ => "is not an option this tool knows",
+            };
+            bail!("`mh {tool}`: `-{c}` {why}");
+        }
+        if !took_value {
+            options.push(arg.clone());
+        }
+    }
+    Ok(Screened { options, operands })
+}
+
+/// What `mh scp` will run: the options it passes on and the operands, with
+/// the one device's operands still in `<device>:<path>` form.
+#[derive(Debug, PartialEq)]
+struct ScpPlan {
+    device: String,
+    options: Vec<String>,
+    /// Each operand: `Some(path)` on the device, `None` for a local one
+    /// (kept as written in `local`).
+    operands: Vec<(Option<String>, String)>,
+}
+
+impl ScpPlan {
+    fn parse(args: &[String]) -> Result<Self> {
+        let screened = screen_options("scp", args, SCP_FLAGS, SCP_VALUED_OK)?;
+        if screened.operands.len() < 2 {
+            bail!(
+                "`mh scp` needs a source and a target, one of them on a device: \
+                 `mh scp report.pdf build-box:/tmp/` or `mh scp build-box:~/log.txt .`"
             );
         }
-        Err(e) => return Err(anyhow!("could not start ssh: {e}")),
-    };
-    let bridge = async {
-        match (front, socks_port) {
-            (Some(front), Some(socks)) => socks_bridge(front, socks, &address, port).await,
-            _ => std::future::pending::<Result<()>>().await,
-        }
-    };
-    let status = tokio::select! {
-        status = child.wait() => status.context("waiting for SSH client")?,
-        result = bridge => {
-            if let Err(error) = result {
-                let _ = child.kill().await;
-                return Err(error);
+        let mut device: Option<String> = None;
+        let mut operands = Vec::new();
+        for raw in screened.operands {
+            match remote_part(&raw) {
+                None => operands.push((None, raw)),
+                Some((dev, path)) => {
+                    if dev.contains('@') {
+                        bail!(
+                            "{raw:?}: write `<device>:<path>` without a user — the account \
+                             comes from the device's own SSH policy, not from the command line"
+                        );
+                    }
+                    match &device {
+                        Some(d) if d != dev => bail!(
+                            "`mh scp` copies between this machine and ONE device; {d:?} and \
+                             {dev:?} are two. Copy through this machine in two steps."
+                        ),
+                        _ => device = Some(dev.to_string()),
+                    }
+                    operands.push((Some(home_relative(path)), raw.clone()));
+                }
             }
-            child.wait().await.context("waiting for SSH after bridge closed")?
         }
-    };
+        let Some(device) = device else {
+            bail!(
+                "no operand names a device. Write the remote one as `<device>:<path>`, \
+                 e.g. `mh scp report.pdf build-box:/tmp/`"
+            );
+        };
+        Ok(Self {
+            device,
+            options: screened.options,
+            operands,
+        })
+    }
 
-    // `dir` drops here, taking the key with it.
-    Ok(status
-        .code()
-        .unwrap_or(if status.success() { 0 } else { 1 }))
+    fn operands(&self, host: &str) -> Vec<String> {
+        self.operands
+            .iter()
+            .map(|(remote, local)| match remote {
+                Some(path) => format!("{host}:{path}"),
+                None => local.clone(),
+            })
+            .collect()
+    }
+}
+
+/// `device:path` → `Some(("device", "path"))`, by OpenSSH's own rule: a colon
+/// before any slash. A leading colon, or a Windows drive (`C:\x`, `C:/x`), is
+/// local. `[addr]:path` names a device by its overlay IPv6 address.
+fn remote_part(arg: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = arg.strip_prefix('[') {
+        let (inside, after) = rest.split_once(']')?;
+        return after.strip_prefix(':').map(|path| (inside, path));
+    }
+    let colon = arg.find(':')?;
+    let before = &arg[..colon];
+    if before.is_empty() || before.contains('/') || before.contains('\\') {
+        return None;
+    }
+    if cfg!(windows) && before.len() == 1 && before.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    Some((before, &arg[colon + 1..]))
+}
+
+/// `~/x` → `x`, `~` → `` (the home directory). The device's SFTP server
+/// starts in the account's home, so a relative path IS home-relative there,
+/// and this works against a server with no `expand-path` extension too.
+fn home_relative(path: &str) -> String {
+    if path == "~" {
+        return String::new();
+    }
+    path.strip_prefix("~/").unwrap_or(path).to_string()
 }
 
 /// One session, one accepted connection; dropping this future closes both
@@ -812,5 +1076,101 @@ mod tests {
         // create_new: a pre-existing path is an error, never a silent
         // overwrite of something we did not create.
         assert!(write_private(&p, b"again").is_err());
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// MeshHarbor — `mh scp` rewrites only the device's operands, keeps every
+    /// local one as written, and passes the safe options through.
+    #[test]
+    fn scp_rewrites_the_device_side_and_nothing_else() {
+        let plan = ScpPlan::parse(&args(&[
+            "-r",
+            "-l",
+            "800",
+            "./site",
+            "a.txt",
+            "build-box:www",
+        ]))
+        .unwrap();
+        assert_eq!(plan.device, "build-box");
+        assert_eq!(plan.options, args(&["-r", "-l", "800"]));
+        assert_eq!(
+            plan.operands("meshharbor@100.64.0.9"),
+            args(&["./site", "a.txt", "meshharbor@100.64.0.9:www"])
+        );
+
+        let down = ScpPlan::parse(&args(&["-rp", "build-box:~/logs/today.txt", "."])).unwrap();
+        assert_eq!(down.options, args(&["-rp"]));
+        // `~/` is home-relative, which is where the device's server starts.
+        assert_eq!(
+            down.operands("meshharbor@[2001:db8::9]"),
+            args(&["meshharbor@[2001:db8::9]:logs/today.txt", "."])
+        );
+        let home = ScpPlan::parse(&args(&["f", "box:~"])).unwrap();
+        assert_eq!(home.operands("h"), args(&["f", "h:"]));
+    }
+
+    #[test]
+    fn scp_reads_operands_by_openssh_rules() {
+        assert_eq!(remote_part("box:/tmp/x"), Some(("box", "/tmp/x")));
+        assert_eq!(remote_part("box:"), Some(("box", "")));
+        assert_eq!(remote_part("./a:b"), None, "a colon after a slash is local");
+        assert_eq!(remote_part(":x"), None);
+        assert_eq!(remote_part("plain.txt"), None);
+        assert_eq!(remote_part("[2001:db8::5]:/x"), Some(("2001:db8::5", "/x")));
+        #[cfg(windows)]
+        assert_eq!(remote_part(r"C:\Users\me\a.txt"), None, "a drive is local");
+    }
+
+    #[test]
+    fn scp_refuses_what_would_bypass_or_confuse_the_grant() {
+        for bad in [
+            &["-i", "k", "a", "box:"][..],
+            &["-P", "22", "a", "box:"],
+            &["-o", "ProxyCommand=x", "a", "box:"],
+            &["-F", "cfg", "a", "box:"],
+            &["-J", "jump", "a", "box:"],
+            &["-S", "prog", "a", "box:"],
+            &["-ri", "k", "a", "box:"],
+        ] {
+            let err = ScpPlan::parse(&args(bad)).unwrap_err().to_string();
+            assert!(err.contains("meshharbor"), "{bad:?}: {err}");
+        }
+        // Two devices, a user part, no device at all, one operand.
+        assert!(ScpPlan::parse(&args(&["a:x", "b:y"])).is_err());
+        assert!(
+            ScpPlan::parse(&args(&["f", "root@box:/x"]))
+                .unwrap_err()
+                .to_string()
+                .contains("without a user")
+        );
+        assert!(ScpPlan::parse(&args(&["a", "b"])).is_err());
+        assert!(ScpPlan::parse(&args(&["box:x"])).is_err());
+        // The same device twice is still one device.
+        assert!(ScpPlan::parse(&args(&["box:a", "box:b", "."])).is_ok());
+    }
+
+    #[test]
+    fn options_after_a_double_dash_are_operands() {
+        let plan = ScpPlan::parse(&args(&["-q", "--", "-odd-name", "box:/tmp/"])).unwrap();
+        assert_eq!(plan.options, args(&["-q"]));
+        assert_eq!(plan.operands("h"), args(&["-odd-name", "h:/tmp/"]));
+    }
+
+    #[test]
+    fn sftp_takes_options_and_no_operands() {
+        let s = screen_options(
+            "sftp",
+            &args(&["-b", "batch.txt", "-r"]),
+            SFTP_FLAGS,
+            SFTP_VALUED_OK,
+        )
+        .unwrap();
+        assert_eq!(s.options, args(&["-b", "batch.txt", "-r"]));
+        assert!(s.operands.is_empty());
+        assert!(screen_options("sftp", &args(&["-s", "x"]), SFTP_FLAGS, SFTP_VALUED_OK).is_err());
     }
 }

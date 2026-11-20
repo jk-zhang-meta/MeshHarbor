@@ -537,6 +537,49 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Copy files to or from another device in this org with your system
+    /// `scp`, over the overlay. No password and no key to set up.
+    ///
+    /// Exactly like `mh ssh`: meshharbor mints a single-use identity for this
+    /// one connection, asks the server for a grant, and verifies the device's
+    /// host key — then your `scp` does the copy. Write the device's side as
+    /// `<device>:<path>`; a path without a leading `/` (or `~/`) is in the
+    /// account's home there.
+    ///
+    ///   mh scp report.pdf build-box:/tmp/
+    ///   mh scp build-box:~/logs/today.txt .
+    ///   mh scp -r ./site build-box:www
+    ///
+    /// One device per copy. `-F`, `-i`, `-P` and `-o` are set by meshharbor;
+    /// `-r`, `-p`, `-q`, `-v`, `-C`, `-l <kbit/s>` and the rest pass through.
+    Scp {
+        /// Session lifetime in seconds. 0 = the server's ceiling.
+        #[arg(long, default_value_t = 0)]
+        session_secs: u64,
+        /// `scp` options, then the source(s) and the target.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            required = true,
+            value_name = "ARGS"
+        )]
+        args: Vec<String>,
+    },
+    /// An interactive `sftp` session on another device in this org, over the
+    /// overlay. No password and no key to set up (see `mh scp`).
+    ///
+    ///   mh sftp build-box
+    ///   mh sftp build-box -- -b batch.txt
+    Sftp {
+        /// Target device, as for `mh ssh`.
+        device: String,
+        /// Session lifetime in seconds. 0 = the server's ceiling.
+        #[arg(long, default_value_t = 0)]
+        session_secs: u64,
+        /// `sftp` options after `--`: `-b <batchfile>`, `-r`, `-l <kbit/s>`…
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Open an RDP session to another device in this org over an authorized
     /// local loopback tunnel (`127.0.0.1:<ephemeral>`).
     ///
@@ -1381,6 +1424,20 @@ where
                 code => std::process::exit(code),
             }
         }
+        Command::Scp { session_secs, args } => {
+            match crate::sshcmd::run_scp(session_secs, &args).await? {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
+        Command::Sftp {
+            device,
+            session_secs,
+            args,
+        } => match crate::sshcmd::run_sftp(&device, session_secs, &args).await? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Rdp {
             device,
             user,
@@ -2143,18 +2200,61 @@ mod tests {
                 "not-accepted",
             ],
             vec!["--browser-approve", "--access-token-file", "file"],
-            vec!["--browser-approve", "--login", "--email", "alice@example.com"],
+            vec![
+                "--browser-approve",
+                "--login",
+                "--email",
+                "alice@example.com",
+            ],
             vec!["--browser-approve", "--email", "alice@example.com"],
         ] {
             assert!(Cli::try_parse_from(base.into_iter().chain(tail)).is_err());
         }
         assert!(
-            Cli::try_parse_from(base.into_iter().chain(["--login", "--email", "alice@example.com"])).is_ok()
+            Cli::try_parse_from(base.into_iter().chain([
+                "--login",
+                "--email",
+                "alice@example.com"
+            ]))
+            .is_ok()
         );
         assert!(
             Cli::try_parse_from(base.into_iter().chain(["--access-token-file", "file"])).is_ok()
         );
         assert!(Cli::try_parse_from(base.into_iter().chain(["--browser-approve"])).is_ok());
+    }
+
+    /// MeshHarbor — scp's own flags reach `mh scp` untouched: clap must not
+    /// read `-r` or `-l` as meshharbor options, and `--session-secs` is ours.
+    #[test]
+    fn scp_and_sftp_take_their_tools_flags_verbatim() {
+        let cli = Cli::try_parse_from([
+            "mh",
+            "scp",
+            "--session-secs",
+            "60",
+            "-r",
+            "-l",
+            "800",
+            "./site",
+            "box:www",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Scp { session_secs, args } => {
+                assert_eq!(session_secs, 60);
+                assert_eq!(args, ["-r", "-l", "800", "./site", "box:www"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let cli = Cli::try_parse_from(["mh", "sftp", "box", "--", "-b", "batch.txt"]).unwrap();
+        match cli.command {
+            Command::Sftp { device, args, .. } => {
+                assert_eq!(device, "box");
+                assert_eq!(args, ["-b", "batch.txt"]);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

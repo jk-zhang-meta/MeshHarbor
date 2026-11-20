@@ -2130,6 +2130,9 @@ where
 /// clean shutdown is a `process::exit` after its drain.
 #[cfg(all(target_os = "macos", feature = "viewer-indicator-macos"))]
 fn main() -> Result<()> {
+    // Before AppKit and before any runtime: see the other `main`.
+    #[cfg(feature = "ssh-server")]
+    meshharbord::sftp_builtin::exit_if_requested();
     exit_for_cli_help_or_version();
     if meshharbord::tcc_recovery::probe_if_requested()? {
         return Ok(());
@@ -2194,6 +2197,13 @@ fn main() -> Result<()> {
     if let Some(result) = msi_task_transaction::run_if_requested() {
         return result.map_err(Into::into);
     }
+
+    // MeshHarbor — `meshharbord sftp-server`: the SFTP server the SSH server
+    // starts as the session's account when the OS has none. Its stdout is the
+    // protocol, so it runs before anything that could print, parse or log,
+    // and it exits rather than returns.
+    #[cfg(feature = "ssh-server")]
+    meshharbord::sftp_builtin::exit_if_requested();
 
     exit_for_cli_help_or_version();
     #[cfg(target_os = "macos")]

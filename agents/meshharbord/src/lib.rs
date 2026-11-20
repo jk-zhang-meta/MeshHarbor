@@ -208,6 +208,11 @@ pub mod session_idle;
 /// device's half: the owner's floor, and the masking every grant goes through.
 pub mod session_policy;
 pub mod session_telemetry;
+/// MeshHarbor — the SFTP server a device runs when its OS has none
+/// (`meshharbord sftp-server`, started by the SSH server as the session's
+/// account). With the SSH server, which is its only caller.
+#[cfg(feature = "ssh-server")]
+pub mod sftp_builtin;
 /// MeshHarbor — who a shared session's file operations run as (never
 /// root/SYSTEM).
 pub mod share_files;

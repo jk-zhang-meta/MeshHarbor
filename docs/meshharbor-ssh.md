@@ -929,7 +929,7 @@ on that spawn, and each one matters:
 
 | What | Why |
 |---|---|
-| The command line is the **quoted path alone**: no shell, no argument | nothing a client sends can become an argument |
+| The command line is the **quoted path alone**: no shell, no argument (the built-in server adds its one constant word, `sftp-server`) | nothing a client sends can become an argument |
 | The output is **raw, never redacted** | redaction rewrites text that looks like a secret, and inside a binary SFTP stream that is corruption |
 | It starts in the person's **profile** (`GetUserProfileDirectoryW`, on the token the child runs under) | OpenSSH starts it there, and a client resolves every relative path against where it started. A service starts in System32, so `scp f <node>:` would aim at a folder the person cannot write |
 
@@ -939,11 +939,11 @@ console-user spawn it needs a caller that may read the console user's token
 (SYSTEM: the SystemContext worker or the service), and elsewhere it refuses
 with the reason, as `exec` does. A `named` account still refuses on Windows,
 because becoming an arbitrary user there needs that user's credentials.
-Running the transfer as SYSTEM is never the fallback. The device still needs
-OpenSSH's `sftp-server.exe`, which Windows installs with the optional OpenSSH
-Server feature: two of the three corporate laptops measured on 2026-10-18 have
-it, and the third has only the client. Without it the subsystem refuses as
-below.
+Running the transfer as SYSTEM is never the fallback. OpenSSH's
+`sftp-server.exe` comes with Windows' optional OpenSSH Server feature: two of
+the three corporate laptops measured on 2026-10-18 have it, and the third has
+only the client. Where it is missing, the daemon's built-in server takes the
+same spawn (below).
 
 Kill switch: `MESHHARBORD_SFTP_AS_USER=0` puts the pre-P4b refusal back. On a
 Windows service install, set it with
@@ -961,10 +961,43 @@ decision 3), so the `console_user` corporate laptops had no `scp`. There,
 `ssh <node> 'cat f' > f` and `ssh <node> 'cat > f' < f` stream a file whole as
 the signed-in user, and still work.
 
-⚠️ **No `sftp-server` binary ⇒ refuse**, naming what to install. The probe
-covers Debian/RHEL/Arch/macOS/Windows layouts; `MESHHARBOR_SFTP_SERVER` overrides
-for an unusual host. `sftp-server`'s stderr goes to the daemon log, never the
-channel — SFTP is binary and injected text corrupts a transfer.
+#### No `sftp-server` on the device: the built-in one (MeshHarbor)
+
+A minimal Debian, Ubuntu or Fedora image ships no `sftp-server`, and neither
+does a Windows machine without the optional OpenSSH Server feature. Until
+0.4.187 the subsystem refused there, and the client saw only a bare
+`Connection closed` (field, 2026-11-20: three of the fleet's four WSL distros).
+Now the daemon falls back to **its own binary** as the server:
+
+```mermaid
+flowchart TD
+  R["subsystem sftp<br/>gates passed, consent settled"] --> O{"OS sftp-server?<br/>(probe list, MESHHARBOR_SFTP_SERVER)"}
+  O -->|"found"| S["OpenSSH's sftp-server"]
+  O -->|"none"| K{"MESHHARBORD_SFTP_BUILTIN=0?"}
+  K -->|"no (default)"| B["meshharbord sftp-server<br/>this binary, SFTP v3 on stdio"]
+  K -->|"yes"| X["refused, naming what to install"]
+  S --> A["a CHILD under the session's account,<br/>in its home: apply_run_as_at_home /<br/>the console user's token on Windows"]
+  B --> A
+```
+
+| What | Where | Why |
+|---|---|---|
+| The server | `agents/meshharbord/src/sftp_builtin.rs` (`russh-sftp` 2.1's protocol, a filesystem handler of our own) | SFTP v3 plus OpenSSH's `expand-path@openssh.com`, which modern `scp` needs for `host:~/x` |
+| How it starts | `meshharbord sftp-server`, read off argv before anything else in `main` (`exit_if_requested`) | its stdout IS the protocol: no logger, no config, nothing that could print |
+| Who it runs as | the same spawn as OpenSSH's, below (`ssh.rs`, `sftp_program`) | **the same privilege story**: the kernel checks every open as the session's account; serving SFTP inside the daemon would have made the daemon's identity the writer |
+| Windows | the console-user command line is the quoted path plus the one constant `sftp-server` (`build_program_cmdline`'s `fixed_arg`, a `&'static str`) | still nothing a client sends can become an argument |
+| Paths on Windows | `/C:/dir/file` (OpenSSH for Windows' form, and what `realpath` answers), `C:/dir/file`, or home-relative; `/` lists the drives | a client written for OpenSSH for Windows works unchanged |
+| Order | the OS's `sftp-server` first, wherever it exists | it is the reference implementation, and what every device used before |
+
+`MESHHARBOR_SFTP_SERVER` still overrides the probe for an unusual host, and
+`MESHHARBORD_SFTP_BUILTIN=0` restores the refusal. Whichever server runs, its
+stderr goes to the daemon log, never the channel — SFTP is binary and injected
+text corrupts a transfer. The daemon logs `serving SFTP with the built-in one`
+when it falls back, so which server took a session is never a guess.
+
+⚠️ An update replaces the daemon's binary under the running daemon, and Linux
+then names the old inode `<path> (deleted)`. `own_executable` takes the file now
+at `<path>` — the newer build, which serves the subcommand too.
 
 Field-proven 2026-08-22, buildhost → fleet-host-1: an `sftp put` landed
 `-rw-r--r-- root root` (matching `ssh_account_mode = daemon`), and `scp`
@@ -986,6 +1019,47 @@ service's, FR-105). On a device that runs its own `sshd`, port 22 over the mesh
 reaches that server, which offers passwords too. A "Permission denied
 (publickey,password,keyboard-interactive)" is that `sshd` answering, not
 meshharbor. The first P4b run dialled 22 and met exactly that.
+
+### `mh scp` and `mh sftp` — no password, no key setup (MeshHarbor)
+
+```
+mh scp report.pdf build-box:/tmp/
+mh scp build-box:~/logs/today.txt .
+mh scp -r ./site build-box:www
+mh sftp build-box
+mh sftp build-box -- -b batch.txt
+```
+
+The same grant as `mh ssh`, handed to the system `scp` or `sftp` instead of
+`ssh` (`agents/meshharbor-cli/src/sshcmd.rs`, `Grant`): a single-use key minted
+in the CLI process, the server's grant, the device's host key pinned in a
+`0700` directory, and `-F none`, `IdentitiesOnly=yes`, `IdentityAgent=none`,
+`PasswordAuthentication=no`, `KbdInteractiveAuthentication=no`. Nothing to type
+and nothing to set up, on any device the caller may SSH to. `mh proxy` (below)
+stays the path for keys **you** manage.
+
+```mermaid
+sequenceDiagram
+    participant U as mh scp
+    participant D as local daemon
+    participant S as server
+    participant T as device (meshharbor SSH)
+    U->>U: mint ed25519 key, parse operands (one device)
+    U->>D: SshSession(device, public key)
+    D->>S: ClientMsg::SshRequest (its authenticated WS)
+    S-->>D: grant: address, port, host key
+    D-->>U: grant
+    U->>T: scp -F none -i key -P port … meshharbor@addr:path
+    T->>T: subsystem sftp → OS sftp-server, else meshharbord sftp-server
+```
+
+| Rule | Why |
+|---|---|
+| The device's side is `<device>:<path>`, by OpenSSH's own test: a colon before any slash; a Windows drive (`C:\x`) is local; `[addr]:path` names an overlay IPv6 | an operand means what it would mean to `scp` |
+| **One** device per copy; `user@device:` is refused | the account comes from the device's SSH policy (`ssh_account_mode`), never the command line, and a grant is one connection |
+| `~/x` is sent as `x` | both servers start in the account's home, so a relative path is home-relative — and it works against a server without `expand-path` |
+| `-F`, `-i`, `-P`, `-o` are refused (the grant sets them); `-J`, `-S`, `-D`, sftp's `-s` are refused (they route around the grant) | an option that replaced the key, the host key check or the transport would make the session something the grant did not cover |
+| `-r -p -q -v -C -3 -4 -6 -O -T`, `-l <kbit/s>`, `-c`, `-X` (and sftp's `-b -B -R -l -c -r`) pass through | they change the copy, not who or where |
 
 ### Bulk throughput: the channel window
 

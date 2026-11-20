@@ -198,6 +198,15 @@ enigo = { workspace = true, optional = true }
 # an RSA host or user key is not something we need to accept.
 russh = { version = "0.62", default-features = false, features = ["ring"], optional = true }
 
+# MeshHarbor — the SFTP server a device falls back to when the OS has none
+# (`sftp_builtin`): a minimal Debian, Ubuntu or Fedora image ships no
+# `sftp-server`, and modern `scp` speaks SFTP, so without it every `scp` there
+# failed with a bare "Connection closed". It runs as a CHILD under the session's
+# account, exactly where OpenSSH's own `sftp-server` would. Pinned to the 2.1
+# line: its floors sit inside this workspace's lock, where 3.x would move
+# `bytes`, `serde`, `thiserror` and `tokio-util` under every crate in the tree.
+russh-sftp = { version = "=2.1.1", optional = true }
+
 # FR-52 gate 4 (`external-access` feature) — the OPAQUE aPAKE that lets a
 # device verify a password held ONLY here, against a proof relayed by a server
 # that must not be able to learn or replay it. facebook/opaque-ke is the
@@ -847,7 +856,7 @@ overlay-netstack = ["meshharbor-tunnel-core/overlay-netstack", "meshharbor-node-
 # p256 0.14 vs 0.13, sha2 0.11 vs 0.10), so the binary really does carry a
 # second, parallel primitive stack and ~99 extra crates. That is the honest
 # price of the feature and the reason it is opt-in per build.
-ssh-server = ["dep:russh", "overlay-netstack"]
+ssh-server = ["dep:russh", "dep:russh-sftp", "overlay-netstack"]
 
 # FR-52 — cross-org remote access: the device half of gate 4. +7 crates (see
 # the opaque-ke dep comment).

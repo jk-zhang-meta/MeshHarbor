@@ -936,12 +936,14 @@ pub(crate) fn apply_session_run_as(
 #[cfg(all(windows, feature = "ssh-server"))]
 pub(crate) async fn run_console_user_program(
     program: &str,
+    fixed_arg: Option<&'static str>,
     stdin: StdinFeed,
     raw: ChunkSink,
     abort: tokio_util::sync::CancellationToken,
 ) -> ExecOutcome {
     win_console::run_program(
         program,
+        fixed_arg,
         Output::Streamed { raw },
         async move { abort.cancelled().await },
         Some(stdin),
@@ -3778,9 +3780,29 @@ mod win_console {
     /// argument follows, so nothing a caller sends can become an argument. A
     /// path that holds a `"` (Windows allows none) is refused rather than
     /// escaped.
+    ///
+    /// The one exception is `fixed_arg`, and it is a `&'static str`: a
+    /// constant of this binary (the built-in SFTP server's subcommand), so a
+    /// caller still cannot put anything after the program. It must be a bare
+    /// word, which needs no quoting.
     #[cfg(feature = "ssh-server")]
-    pub(super) fn build_program_cmdline(program: &str) -> Option<String> {
-        (!program.contains('"')).then(|| format!("\"{program}\""))
+    pub(super) fn build_program_cmdline(
+        program: &str,
+        fixed_arg: Option<&'static str>,
+    ) -> Option<String> {
+        if program.contains('"') {
+            return None;
+        }
+        match fixed_arg {
+            None => Some(format!("\"{program}\"")),
+            Some(arg)
+                if !arg.is_empty()
+                    && arg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+            {
+                Some(format!("\"{program}\" {arg}"))
+            }
+            Some(_) => None,
+        }
     }
 
     /// Where the child starts.
@@ -3801,11 +3823,12 @@ mod win_console {
     #[cfg(feature = "ssh-server")]
     pub(super) async fn run_program(
         program: &str,
+        fixed_arg: Option<&'static str>,
         output: Output,
         cancel: impl std::future::Future<Output = ()>,
         stdin: Option<super::StdinFeed>,
     ) -> ExecOutcome {
-        let Some(cmdline) = build_program_cmdline(program) else {
+        let Some(cmdline) = build_program_cmdline(program, fixed_arg) else {
             return ExecOutcome::failed(format!("not a program path: {program}"));
         };
         run_cmdline(cmdline, StartIn::Profile, None, output, cancel, stdin).await
@@ -4113,10 +4136,22 @@ mod win_console {
         #[test]
         fn a_program_runs_itself_with_nothing_after_it() {
             assert_eq!(
-                build_program_cmdline(r"C:\Windows\System32\OpenSSH\sftp-server.exe").as_deref(),
+                build_program_cmdline(r"C:\Windows\System32\OpenSSH\sftp-server.exe", None)
+                    .as_deref(),
                 Some(r#""C:\Windows\System32\OpenSSH\sftp-server.exe""#)
             );
-            assert_eq!(build_program_cmdline(r#"C:\a" -x "b.exe"#), None);
+            assert_eq!(build_program_cmdline(r#"C:\a" -x "b.exe"#, None), None);
+            // The built-in server: the binary's own constant, and only a bare word.
+            assert_eq!(
+                build_program_cmdline(
+                    r"C:\Program Files\MeshHarbor\meshharbord.exe",
+                    Some("sftp-server")
+                )
+                .as_deref(),
+                Some(r#""C:\Program Files\MeshHarbor\meshharbord.exe" sftp-server"#)
+            );
+            assert_eq!(build_program_cmdline(r"C:\m.exe", Some("a b")), None);
+            assert_eq!(build_program_cmdline(r"C:\m.exe", Some("")), None);
         }
     }
 }

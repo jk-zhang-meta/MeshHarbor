@@ -1381,21 +1381,30 @@ pub(crate) mod sshd {
                 );
             }
 
-            let program = match sftp_server_path() {
-                Some(p) => p,
+            // The OS's own `sftp-server` first; this binary's built-in one
+            // where the OS has none (`sftp_builtin`). Either way a CHILD under
+            // the session's account, below.
+            let (program, builtin) = match sftp_program() {
+                Some(SftpProgram::Os(p)) => (p, false),
+                Some(SftpProgram::Builtin(p)) => (p, true),
                 None => {
                     return refuse(
                         session,
                         channel,
                         self.peer,
                         "sftp",
-                        "no `sftp-server` binary on this device. meshharbor serves SFTP by \
-                         handing the channel to OpenSSH's own server so transfers run as \
-                         the session's account; install the OpenSSH server package to \
-                         enable scp/sftp.",
+                        "no `sftp-server` binary on this device and the built-in one is \
+                         switched off (MESHHARBORD_SFTP_BUILTIN=0). meshharbor serves SFTP \
+                         by handing the channel to an SFTP server running as the session's \
+                         account; install the OpenSSH server package, or unset \
+                         MESHHARBORD_SFTP_BUILTIN, to enable scp/sftp.",
                     );
                 }
             };
+            if builtin {
+                info!(peer = %self.peer, server = %program.display(),
+                    "ssh: no sftp-server on this device; serving SFTP with the built-in one");
+            }
 
             session.channel_success(channel)?;
             let handle = session.handle();
@@ -1428,11 +1437,14 @@ pub(crate) mod sshd {
             // signed in at the console, through `CreateProcessAsUserW`.
             #[cfg(windows)]
             if matches!(run_as, crate::exec::RunAs::ConsoleUser) {
-                self.sftp_as_console_user(program, handle, channel, caller);
+                self.sftp_as_console_user(program, builtin, handle, channel, caller);
                 return Ok(());
             }
 
             let mut cmd = tokio::process::Command::new(&program);
+            if builtin {
+                cmd.arg(crate::sftp_builtin::SUBCOMMAND);
+            }
             cmd.stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
@@ -1617,6 +1629,7 @@ pub(crate) mod sshd {
         fn sftp_as_console_user(
             &mut self,
             program: std::path::PathBuf,
+            builtin: bool,
             handle: russh::server::Handle,
             channel: ChannelId,
             caller: String,
@@ -1661,8 +1674,12 @@ pub(crate) mod sshd {
                 observed: false,
             };
             self.tasks.spawn(async move {
+                // The built-in server's one argument is this constant, never
+                // anything a client sent.
+                let fixed_arg = builtin.then_some(crate::sftp_builtin::SUBCOMMAND);
                 let outcome =
-                    crate::exec::run_console_user_program(&program, rx, raw_tx, abort).await;
+                    crate::exec::run_console_user_program(&program, fixed_arg, rx, raw_tx, abort)
+                        .await;
                 // Every byte reaches the client before its verdict does.
                 if let Err(error) = pump.await {
                     errors
@@ -2480,6 +2497,39 @@ pub(crate) mod sshd {
                 "{host}:{port} is not in this device's `forward_acl.allowlist`."
             )),
         }
+    }
+
+    /// What serves a session's SFTP.
+    enum SftpProgram {
+        /// OpenSSH's `sftp-server`, where the OS has one.
+        Os(std::path::PathBuf),
+        /// This binary, as `meshharbord sftp-server` (`sftp_builtin`).
+        Builtin(std::path::PathBuf),
+    }
+
+    /// The OS's `sftp-server`, else this binary's built-in one unless
+    /// `MESHHARBORD_SFTP_BUILTIN=0`, else nothing (a refusal that says why).
+    fn sftp_program() -> Option<SftpProgram> {
+        if let Some(p) = sftp_server_path() {
+            return Some(SftpProgram::Os(p));
+        }
+        if std::env::var("MESHHARBORD_SFTP_BUILTIN").is_ok_and(|v| v.trim() == "0") {
+            return None;
+        }
+        own_executable().map(SftpProgram::Builtin)
+    }
+
+    /// This daemon's binary on disk. An update replaces it under a running
+    /// daemon, and Linux then names the old inode `<path> (deleted)`; the file
+    /// now at `<path>` is the newer build, which serves the subcommand too.
+    fn own_executable() -> Option<std::path::PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        if exe.is_file() {
+            return Some(exe);
+        }
+        let s = exe.to_str()?;
+        let installed = std::path::PathBuf::from(s.strip_suffix(" (deleted)")?);
+        installed.is_file().then_some(installed)
     }
 
     /// Where OpenSSH keeps `sftp-server` on this platform.
