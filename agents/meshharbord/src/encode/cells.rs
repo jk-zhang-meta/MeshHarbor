@@ -97,6 +97,51 @@ pub(crate) fn denied_cells() -> Vec<String> {
     }
 }
 
+/// FR-123 P5 — the `ENCODER_CELLS_DENY` fallback for a host with no screen of
+/// its own: every hardware cell (each FFmpeg cascade name — all of them are
+/// hardware — in both chroma forms), so neither the probe child nor a session
+/// opens an encoder on GPUs that serve other people's jobs. Its only picture is
+/// the virtual desktop, which software encodes. `None` when the operator chose
+/// (`encoder_cells_deny` in config, or the env var, which wins over any
+/// fallback anyway), when the host has a screen, when
+/// `MESHHARBORD_HW_ENCODERS_HEADLESS=1` asks for hardware, or in a build with
+/// no FFmpeg encoder.
+pub fn screenless_hardware_deny(
+    configured: bool,
+    screenless: bool,
+    hardware_asked: bool,
+) -> Option<String> {
+    if configured || !screenless || hardware_asked {
+        return None;
+    }
+    every_hardware_cell()
+}
+
+#[cfg(feature = "ffmpeg-encoder")]
+fn every_hardware_cell() -> Option<String> {
+    use meshharbor_remote_control::models::VideoCodec;
+    let mut cells: Vec<String> = Vec::new();
+    for codec in [
+        VideoCodec::H264,
+        VideoCodec::Hevc,
+        VideoCodec::Av1,
+        VideoCodec::Vp9,
+    ] {
+        for name in crate::encode::ffmpeg::FfmpegEncoder::cascade_names(codec) {
+            for chroma in [ChromaFormat::Yuv420, ChromaFormat::Yuv444] {
+                cells.push(format!("{name}:{}", chroma.wire()));
+            }
+        }
+    }
+    cells.dedup();
+    Some(cells.join(","))
+}
+
+#[cfg(not(feature = "ffmpeg-encoder"))]
+fn every_hardware_cell() -> Option<String> {
+    None
+}
+
 pub(crate) fn cell_denied(deny: &[String], name: &str, chroma: ChromaFormat) -> bool {
     let key = format!("{name}:{}", chroma.wire());
     deny.iter().any(|d| d == &key)
@@ -152,6 +197,43 @@ pub(crate) fn names_420(codec: meshharbor_remote_control::models::VideoCodec) ->
 mod tests {
     use super::*;
     use meshharbor_remote_control::models::{VideoBackend, VideoCodec};
+
+    /// FR-123 P5 — a host with no screen opens no hardware encoder, unless
+    /// the operator chose a denylist or asked for hardware; a host with a
+    /// screen is untouched.
+    #[test]
+    fn a_screenless_host_denies_every_hardware_cell_unless_someone_chose() {
+        assert_eq!(
+            screenless_hardware_deny(true, true, false),
+            None,
+            "configured"
+        );
+        assert_eq!(
+            screenless_hardware_deny(false, false, false),
+            None,
+            "has a screen"
+        );
+        assert_eq!(
+            screenless_hardware_deny(false, true, true),
+            None,
+            "hardware asked"
+        );
+        #[cfg(feature = "ffmpeg-encoder")]
+        {
+            let deny = parse_denylist(&screenless_hardware_deny(false, true, false).unwrap());
+            for codec in [
+                VideoCodec::H264,
+                VideoCodec::Hevc,
+                VideoCodec::Av1,
+                VideoCodec::Vp9,
+            ] {
+                for name in crate::encode::ffmpeg::FfmpegEncoder::cascade_names(codec) {
+                    assert!(cell_denied(&deny, name, ChromaFormat::Yuv420), "{name}");
+                    assert!(cell_denied(&deny, name, ChromaFormat::Yuv444), "{name}");
+                }
+            }
+        }
+    }
 
     /// The 4:4:4 attempt list names only encoders the FFmpeg n9.0 sources can
     /// actually open in 4:4:4: nothing AV1 (`av1_nvenc` hard-errors "AV1 High

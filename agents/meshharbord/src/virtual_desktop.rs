@@ -154,6 +154,16 @@ pub fn auto_decision(f: &HostFacts) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// FR-123 P5 — a host with no screen of its own at all, whatever the
+/// operator set `VIRTUAL_DESKTOP` to: the same facts [`auto_decision`] reads.
+pub fn is_screenless(f: &HostFacts) -> bool {
+    auto_decision(&HostFacts {
+        explicit: None,
+        ..*f
+    })
+    .is_ok()
+}
+
 /// FR-120 P2 — [`HostFacts`] read from this host.
 #[cfg(target_os = "linux")]
 pub fn host_facts() -> HostFacts {
@@ -2332,6 +2342,38 @@ fn wait_display_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-123 P5 — screenless means the host's own facts, whatever the
+    /// operator set `VIRTUAL_DESKTOP` to.
+    #[test]
+    fn screenless_reads_the_host_not_the_virtual_desktop_switch() {
+        let none = HostFacts::default();
+        assert!(is_screenless(&none));
+        assert!(is_screenless(&HostFacts {
+            explicit: Some(true),
+            ..none
+        }));
+        assert!(is_screenless(&HostFacts {
+            explicit: Some(false),
+            ..none
+        }));
+        assert!(!is_screenless(&HostFacts {
+            display_manager: true,
+            ..none
+        }));
+        assert!(!is_screenless(&HostFacts {
+            graphical_session: true,
+            ..none
+        }));
+        assert!(!is_screenless(&HostFacts {
+            display_env: true,
+            ..none
+        }));
+        assert!(!is_screenless(&HostFacts {
+            live_x_server: true,
+            ..none
+        }));
+    }
 
     /// The screen-saver disable is the whole point of this argv and is
     /// invisible at runtime until it has already blanked someone's session,

@@ -4563,7 +4563,24 @@ async fn run_cmd(
     {
         // FR-93 P1 — built by `config::env_fallbacks`, the one place, so the
         // smoke commands publish exactly the map the daemon runs on.
-        let fallbacks = config::env_fallbacks(&cfg);
+        #[allow(unused_mut)]
+        let mut fallbacks = config::env_fallbacks(&cfg);
+        // FR-123 P5 — decided here, before any virtual desktop is up (it sets
+        // DISPLAY for this process, and the probe child would then read the
+        // host as one with a screen), and carried to the probe child as a
+        // fallback like any config knob.
+        #[cfg(target_os = "linux")]
+        if let Some(deny) = meshharbord::encode::cells::screenless_hardware_deny(
+            fallbacks.contains_key("ENCODER_CELLS_DENY")
+                || tunnel_core::env::node_env("ENCODER_CELLS_DENY").is_some(),
+            virtual_desktop::is_screenless(&virtual_desktop::host_facts()),
+            tunnel_core::env::flag("HW_ENCODERS_HEADLESS", false),
+        ) {
+            tracing::info!(
+                "encoders: this host has no screen of its own, so no hardware encoder is probed or opened (MESHHARBORD_HW_ENCODERS_HEADLESS=1 allows them)"
+            );
+            fallbacks.insert("ENCODER_CELLS_DENY".to_string(), deny);
+        }
         if !fallbacks.is_empty() {
             tracing::info!(keys = ?fallbacks.keys().collect::<Vec<_>>(),
                 "config-backed env fallbacks registered");

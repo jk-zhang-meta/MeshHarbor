@@ -1,6 +1,6 @@
 # FR-123: Join from any account — one command, no root, no token, a working mesh
 
-> **Status:** in progress — claimed 2026-11-20. P1–P3 built. Tracking issue: none (GitHub Issues are
+> **Status:** in progress — claimed 2026-11-20. P1–P3 and P5 built; P2b (the download page's installer) prepared. Tracking issue: none (GitHub Issues are
 > disabled on `jk-zhang-meta/MeshHarbor`); this spec and its registry row are the record.
 
 ## Goal
@@ -72,9 +72,10 @@ flowchart TD
 |---|---|---|---|
 | P1 | Linux/macOS userspace fallback: proactive (no `CAP_NET_ADMIN`, no `/dev/net/tun`, macOS non-root) and reactive (EPERM/EACCES/no device latches) | `MESHHARBORD_OVERLAY_UNIX_NETSTACK_FALLBACK=0` (pre-FR-123: always try the TUN, back off) | built 2026-11-20 |
 | P2 | `install.sh`: home install (`--user`, automatic when sudo is unusable) and link sign-in when there is no token | `--system` / a token keep the old paths; `--user` is never chosen where sudo works | built 2026-11-20 |
+| P2b | The download page's own Linux installer (the PersonalWeb catalog's `MeshHarbor-<ver>-Linux-install.sh`, piped to `sudo sh` until now): the same account install when sudo is unusable, sudo asked by the script itself, the page's command `… \| sh` | the machine install is unchanged when root or sudo works | prepared 2026-11-20; ships with the next catalog upload |
 | P3 | `login` reports a service that did not start; no "Start the daemon" hint before "running" | — (messages) | built 2026-11-20 |
 | P4 | The download page and the install docs lead with Download + Sign in; tokens become the admin's scripted path | — (UI/docs) | — |
-| P5 | A screenless Linux host opens no hardware encoder until a session needs one | env + config switch (designed in P5) | — |
+| P5 | A screenless Linux host (no display manager, no graphical session on its own seat, no X server, no display in the daemon's environment — read before its own virtual desktop starts) opens no hardware encoder: every hardware cell goes on the `ENCODER_CELLS_DENY` fallback, which the probe child and every session read (`encode/cells.rs` `screenless_hardware_deny`, `main.rs`). Its only picture is the virtual desktop, which software encodes | `MESHHARBORD_HW_ENCODERS_HEADLESS=1`; an operator's own `encoder_cells_deny` / env var wins | built 2026-11-20 |
 | P6 | A device whose updates cannot install shows it on its row (who owns its updates, the last outcome) | — | — |
 | P7 | Noise: SSH startup warnings that read as "all refused" on a working grant host; the netmap-drop WARN storm after a TUN abort | — | — |
 | P8 | Release, field verification on a no-root account, docs | — | — |
@@ -97,8 +98,8 @@ flowchart TD
 
 ## Open decisions
 
-- P5's switch and default (software-only on a screenless host, or a probe deferred to the first
-  session).
+- None. P5 takes software-only on a screenless host rather than a probe deferred to the first
+  session: the hello is sent before any session, and its only picture is a virtual desktop.
 
 ## Out of scope
 
@@ -113,3 +114,4 @@ flowchart TD
 | 2026-11-20 | 0.4.189 | FAILED as expected (E1–E5): no install path without sudo; after a hand install, online with no peers until `netstack_socks_port` was set by hand |
 | 2026-11-20 | P1 unit tests | `non_windows_tun_permission_error_latches_netstack_and_rebuilds` and `unprivileged_unix_proactively_selects_netstack_without_calling_the_os_tun` fail on the pre-FR-123 branch condition (shown red), pass with P1; the first also fails with the kill switch set |
 | 2026-11-20 | P2 fixture test | `scripts/test-install-home.sh`: a home install signs in with a link and calls no sudo; a mutant that prints the token command instead fails it |
+| 2026-11-20 | P2b fixture test | the catalog installer piped to `sh` as `nobody` with stub curl/sudo/systemctl/loginctl and a fake `.deb`: with sudo refused it unpacks into `~/.local`, asks for lingering, signs in with `login --user`, never calls `sudo sh`; with sudo usable it fetches itself once more and runs that copy under `sudo`, installing nothing in the account. The 0.4.189 installer FAILS the first case (it dies "pipe it to 'sudo sh'") |
