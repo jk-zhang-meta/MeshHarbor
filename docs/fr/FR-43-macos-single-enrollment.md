@@ -1,6 +1,6 @@
 # FR-43: One macOS device row — a supervising daemon and an unenrolled GUI worker
 
-**Status:** P0 + P1 + **P2 complete and field-verified** (0.4.33 → 0.4.43) — the daemon's row streams real pixels; P2c/P2d field-verified (0.4.100); **P3a/P3b built 2026-11-20** (the worker of a single-enrollment Mac needs no enrollment; the person's desktop app sees and ends its sessions through the daemon) — field verification on 0.4.189 pending; P3c (migrating two-row Macs) open. Tracking issue: `FR-43`.
+**Status:** P0 + P1 + **P2 complete and field-verified** (0.4.33 → 0.4.43) — the daemon's row streams real pixels; P2c/P2d field-verified (0.4.100); **P3a/P3b field-verified on 0.4.189** (2026-11-20: a promoted one-row Mac shows a real picture — it showed none on 0.4.188 — and the person socket lists and ends the worker's sessions); P3c (migrating two-row Macs) open; input on the one-row Mac not driven by the agent (AC4). Tracking issue: `FR-43`.
 
 ⚠️ Anchors RE-VERIFIED against master `9700e9ff` on 2026-09-06, when this record was
 landed 27 releases after the field run. `remote_control`'s hub moved to
@@ -474,15 +474,23 @@ synthetic input), and the banner's recording Stop. Both are unchanged by P3.
 - [ ] An existing two-row Mac migrates to one row keeping its overlay address, and the
       retired row is tombstoned per `release_overlay_node`'s ordering (never re-issued).
 - [ ] With the kill switch off, behaviour is byte-for-byte today's.
-- [ ] P3a: on a single-enrollment Mac (no per-user config), a session on the device's one
-      row shows a real picture — shown FAILING on 0.4.188 first.
-- [ ] P3a: the unenrolled worker writes no per-user config, binds no LocalAPI socket and
-      dials no server.
-- [ ] P3a: a file uploaded through the viewer lands in the person's `~/Downloads`, not
-      `/var/root/Downloads`.
-- [ ] P3b: the desktop app on a single-enrollment Mac lists a delegated session, and its
-      Disconnect ends it.
-- [ ] P3: `docs/platform-support.md` and `docs/desktop-companion.md` describe the one-row
+- [x] P3a: on a single-enrollment Mac (no per-user config), a session on the device's one
+      row shows a real picture — shown FAILING on 0.4.188 first. — 0.4.188: video channel 0
+      messages, luma variance 0.0; 0.4.189: first frame 805 ms, 1066×688, 824 video messages in
+      25 s, luma variance 5279.7.
+- [x] P3a: the unenrolled worker writes no per-user config, binds no LocalAPI socket and
+      dials no server. — on the Mac, ~10 min and three sessions after the start: no
+      `config.toml` in the per-user directory, `localapi: not served`, 0 `connecting to
+      signaling server`, ONE loopback sink, 0 ERROR lines.
+- [x] P3a: a file uploaded through the viewer lands in the person's `~/Downloads`, not
+      `/var/root/Downloads`. — 1 MiB into `/Users/<person>/Downloads`, owned by the person,
+      downloaded back SHA-256 equal.
+- [x] P3b: the desktop app on a single-enrollment Mac lists a delegated session, and its
+      Disconnect ends it. — through the person socket, as the console user, the same two verbs
+      the app sends: `rc_sessions` listed the live session (controller, permissions);
+      `rc_disconnect` answered `ok: true`, the viewer's video stopped and its picture went away,
+      and the list read empty. The app's own window was not driven.
+- [x] P3: `docs/platform-support.md` and `docs/desktop-companion.md` describe the one-row
       Mac (mermaid, tables, anchors), and `docs/README.md` indexes this FR.
 
 ## Dead hypotheses — do not re-run these
@@ -805,3 +813,26 @@ ran 95 s (past the 80 s `WS_RX_DEADLINE`) on ONE sink connection with no reconne
 nothing, bound no socket, and left only its lock file and log on disk. Two misleading
 `config unreadable … must be re-enrolled` ERROR lines it found (RDP-over-mesh's opt-in
 poll, the name journal's first read) were gated out before the release.
+
+### 2026-11-20 — 0.4.189 rolled: the one-row Mac has its picture
+
+All 20 online devices on 0.4.189 (two long-offline hosts stay on 0.4.160). On the macOS laptop,
+straight after its self-update: the root daemon, `sudo -u #<uid> … run --supervised`, and the
+worker as the person; the worker's log `GUI worker with no enrollment of its own`, `localapi: not
+served`, `loopback sink`, `delegation: attached to the daemon version=0.4.189`, and its grants
+announced (`screen-capture`, `input`).
+
+| Check (headless viewer, no image kept, no input sent) | 0.4.188 | 0.4.189 |
+|---|---|---|
+| video channel, first 25 s | 0 messages | 824 messages, 2.96 MB; first frame 805 ms |
+| decoded frame | canvas default 300×150 | 1066×688 |
+| luma variance of a 64×40 downsample (black ≈ 0) | 0.0 | 5279.7 |
+| upload lands in | `/var/root/Downloads` | `/Users/<person>/Downloads`, owned by the person; round trip SHA-256 equal |
+| person socket `rc_sessions` during a session | — | the delegated session, with its controller and permissions |
+| person socket `rc_disconnect` | — | `ok: true`; video stopped at 802 messages (a full 60 s run: 2636); list empty after |
+
+The worker over ~10 minutes and three sessions: 25 delegated messages served, 0 server dials,
+one sink connection, 0 ERROR lines. Not measured: input (sending keys or pointer moves to the
+person's own screen is not something this verification does), and the desktop app's banner
+drawn on screen — the same two LocalAPI verbs were driven instead.
+
