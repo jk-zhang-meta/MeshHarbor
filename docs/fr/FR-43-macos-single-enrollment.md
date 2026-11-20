@@ -787,8 +787,17 @@ Built (P3a + P3b, the design section above), with a test for each rule — the d
 (three cases), the sink (frames swallowed, a ping answered, nothing else arriving), the
 config, the session list's change detection, and the relay end to end through a real
 `DelegateHost` (falsified: without the merge the listed session is missing).
-`meshharbord --lib` 2099 passed (one earlier run hit a port-reuse flake in
+`meshharbord --lib` 2103 passed (one earlier run hit a port-reuse flake in
 `ssh_shared_stream`'s "no listener left" assertion, green in isolation and in two full reruns).
+
+⚠️ **Wrong turn, recorded.** The first P3 commit (`56bb1a921`) reached master NOT compiling: a
+helper that applied rustfmt only to the changed hunks (to keep pre-existing format drift out of
+the diff) spliced a partial hunk and dropped lines from the dial and the overlay start in
+`connect_once`. The tests had run on the tree BEFORE that pass, and the clippy run after it did
+report the parse error — but it was read only for findings on changed lines, and the error sat
+on a line that had not changed. The 0.4.189 build caught it. The fix commit restores the code by
+re-applying the edits to the baseline file and reverting the unrelated drift by exact text, then
+compiles, lints (exit status read, every finding listed) and tests that tree.
 
 Local smoke, a debug build as an unprivileged user with an empty home on a Linux host:
 `run --supervised` with no config logged the unenrolled-worker line and the loopback sink,

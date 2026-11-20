@@ -1727,29 +1727,37 @@ async fn connect_once(
                 match tokio::time::timeout(WS_CONNECT_TIMEOUT, crate::ws_connect::connect(&url))
                     .await
                 {
-                    // #2512 — the server refuses this token: say so on the
-                    // slot, so the DERP dialer and the log uploader stop
-                    // spending requests it will only 401, until a new token
-                    // or the next accepted upgrade.
-                    if ctx.token.mark_refused(&token) {
-                        info!(
-                            org = %ctx.label,
-                            "agent token refused; DERP dials and log uploads for this \
-                             enrollment wait until it is accepted again or replaced"
-                        );
+                    Ok(Ok(pair)) => pair,
+                    Ok(Err(e)) => {
+                        if let tokio_tungstenite::tungstenite::Error::Http(ref resp) = e
+                            && resp.status().as_u16() == 401
+                        {
+                            // #2512 — the server refuses this token: say so on the
+                            // slot, so the DERP dialer and the log uploader stop
+                            // spending requests it will only 401, until a new token
+                            // or the next accepted upgrade.
+                            if ctx.token.mark_refused(&token) {
+                                info!(
+                                    org = %ctx.label,
+                                    "agent token refused; DERP dials and log uploads for this \
+                                     enrollment wait until it is accepted again or replaced"
+                                );
+                            }
+                            return Err(ConnectError::AuthRejected);
+                        }
+                        return Err(ConnectError::Transient(
+                            anyhow::Error::new(e).context("ws connect"),
+                        ));
                     }
-                    return Err(ConnectError::AuthRejected);
-                }
-                return Err(ConnectError::Transient(
-                    anyhow::Error::new(e).context("ws connect"),
-                ));
-            }
-            Err(_elapsed) => {
-                return Err(ConnectError::Transient(anyhow::anyhow!(
-                    "ws connect timed out after {}s",
-                    WS_CONNECT_TIMEOUT.as_secs()
-                )));
-            }
+                    Err(_elapsed) => {
+                        return Err(ConnectError::Transient(anyhow::anyhow!(
+                            "ws connect timed out after {}s",
+                            WS_CONNECT_TIMEOUT.as_secs()
+                        )));
+                    }
+                };
+            debug!(status = ?response.status(), "ws upgrade complete");
+            ws
         };
 
     // rc.58: now that the WS handshake is done, flip the watchdog's
@@ -1914,7 +1922,9 @@ async fn connect_once(
     // the main loop flushes them to the WS.
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ClientMsg>(PEER_OUTBOUND_CAP);
     if ctx.is_primary && !ctx.unenrolled {
-        remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
+        remote_cfg
+            .names
+            .reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
     }
     // Multi-region relay probing: the server's last region push (per
     // connection) + the periodic re-prober (exits with the connection —
@@ -2022,16 +2032,18 @@ async fn connect_once(
         None
     } else {
         crate::overlay::maybe_start(
-        cfg,
-        ctx.token.clone(),
-        outbound_tx.clone(),
-        overlay_view_tx.clone(),
-        derp_ticket_slot.clone(),
-        crate::ssh::SessionServices {
-            power_activity: Some(crate::power::shared_activity().clone()),
-            asker: crate::ssh::Asker::Here {
-                broker: consent_broker.clone(),
-                indicator: indicator.clone(),
+            cfg,
+            ctx.token.clone(),
+            outbound_tx.clone(),
+            overlay_view_tx.clone(),
+            derp_ticket_slot.clone(),
+            crate::ssh::SessionServices {
+                power_activity: Some(crate::power::shared_activity().clone()),
+                asker: crate::ssh::Asker::Here {
+                    broker: consent_broker.clone(),
+                    indicator: indicator.clone(),
+                },
+                activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
             },
         )
         .await
