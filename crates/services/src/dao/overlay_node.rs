@@ -900,22 +900,28 @@ impl OverlayNodeDao {
             .await
     }
 
-    /// Replace the node's trickled connectivity candidates.
+    /// Replace the node's trickled connectivity candidates. Returns the row as
+    /// it was BEFORE this write (`None`: no such row), taken atomically with
+    /// the write, so a caller can tell a change from a re-advert without a
+    /// read of its own that a concurrent write could make stale.
     pub async fn update_endpoints(
         &self,
         node_id: ObjectId,
         endpoints: &[String],
-    ) -> DaoResult<bool> {
-        self.base
-            .update_by_id(
-                node_id,
+    ) -> DaoResult<Option<OverlayNode>> {
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(
+                doc! { "_id": node_id },
                 doc! { "$set": {
                     "endpoints": endpoints,
                     "last_seen_at": DateTime::now(),
                     "updated_at": DateTime::now(),
                 } },
             )
-            .await
+            .return_document(ReturnDocument::Before)
+            .await?)
     }
 
     /// Phase B/C — replace the node's server-reflexive (srflx) candidates and
@@ -1039,10 +1045,13 @@ impl OverlayNodeDao {
         srflx_endpoints: &[String],
         nat: Option<&str>,
         udp_dialer_ok: Option<bool>,
-    ) -> DaoResult<bool> {
-        self.base
-            .update_by_id(
-                node_id,
+    ) -> DaoResult<Option<OverlayNode>> {
+        // The row as it was before this write, as `update_endpoints` returns.
+        Ok(self
+            .base
+            .collection()
+            .find_one_and_update(
+                doc! { "_id": node_id },
                 doc! { "$set": {
                     "srflx_endpoints": srflx_endpoints,
                     "srflx_nat": nat.map(|s| s.to_string()),
@@ -1054,7 +1063,8 @@ impl OverlayNodeDao {
                     "updated_at": DateTime::now(),
                 } },
             )
-            .await
+            .return_document(ReturnDocument::Before)
+            .await?)
     }
 
     /// Phase B (overlay v3) — store a freshly-measured capability vector

@@ -1737,6 +1737,30 @@ async fn a_gateway_pair_takes_the_line_over_a_slower_direct_crossing() {
         l_ws.send(m).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
+    // Field 2026-11-22: every relay link a node brings up re-advertises its
+    // addresses (a new local port, the same address). Each one reset the
+    // node's measurement cutoff, so a link into it counted only if measured
+    // in the last few seconds and the line was never chosen. Re-adverts that
+    // keep a node's addresses keep its measurements.
+    for port in [41700, 41701] {
+        b_ws.send(Message::Text(
+            json!({ "t": "rc:overlay.endpoints",
+                    "candidates": [format!("202.181.7.6:{port}")] })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        b_ws.send(Message::Text(
+            json!({ "t": "rc:overlay.srflx",
+                    "candidates": [format!("202.181.7.6:{port}")] })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     a_ws.send(Message::Text(
         json!({ "t": "rc:overlay.relay_request", "peer_node_id": b_node,

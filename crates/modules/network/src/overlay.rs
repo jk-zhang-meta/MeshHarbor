@@ -1692,18 +1692,20 @@ async fn handle_overlay_endpoints(
         return;
     };
     let Some(self_id) = self_node.id else { return };
-    if let Err(e) = state
+    let previous = match state
         .overlay_nodes
         .update_endpoints(self_id, &candidates)
         .await
     {
-        warn!(%self_id, %e, "overlay.endpoints: update failed");
-        return;
-    }
-
-    // Every successful write advances provenance, including repeated values:
-    // concurrent A→B→A writes may have read the same old A.
-    state.org_relay.note_probe_endpoint_change(self_id);
+        Ok(previous) => previous,
+        Err(e) => {
+            warn!(%self_id, %e, "overlay.endpoints: update failed");
+            return;
+        }
+    };
+    note_probe_addresses(state, self_id, previous, |n| {
+        n.endpoints = candidates.clone()
+    });
     let before = self_node.clone();
     let mut updated = self_node;
     updated.endpoints = candidates;
@@ -1722,6 +1724,49 @@ async fn handle_overlay_endpoints(
 /// Field, 2026-11-17: once strict zones regained STUN, seven relays'
 /// 20 s re-adverts made 21 bumps a minute, and a join that spanned one was
 /// refused "authority changed before join netmap".
+/// Measurement provenance after an address write: a measurement of or by this
+/// node stays current while the addresses its relay endpoints are built from
+/// ([`crate::org_relay::relay_endpoints`]) stay the same. `previous` is the
+/// row as the write found it (atomic with the write, so concurrent writes
+/// cannot each compare against the same stale read); `apply` is the write.
+///
+/// Field, 2026-11-22: nodes re-advertise their addresses on a timer and on
+/// every relay link they bring up (a new local port, the same address). When
+/// each re-advert advanced the cutoff, a link into a node counted only if it
+/// was measured in the seconds since — the 25 ms line was never current, and
+/// a pair whose end re-advertised had no measured crossing at all.
+/// `MESHHARBOR__OVERLAY__PROBE_CUTOFF_ON_CHANGE=0` restores "every write
+/// advances it".
+fn note_probe_addresses(
+    state: &NetworkState,
+    node_id: ObjectId,
+    previous: Option<OverlayNode>,
+    apply: impl FnOnce(&mut OverlayNode),
+) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__OVERLAY__PROBE_CUTOFF_ON_CHANGE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    });
+    let moved = match previous {
+        Some(before) if on => {
+            let mut after = before.clone();
+            apply(&mut after);
+            let addresses = |n: &OverlayNode| {
+                crate::org_relay::relay_endpoints(n, 0, &[])
+                    .map(|v| v.into_iter().collect::<std::collections::BTreeSet<_>>())
+            };
+            addresses(&before) != addresses(&after)
+        }
+        _ => true,
+    };
+    if moved {
+        state.org_relay.note_probe_endpoint_change(node_id);
+    }
+}
+
 fn relay_addresses_moved(before: &OverlayNode, after: &OverlayNode) -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*ON.get_or_init(|| {
@@ -1764,18 +1809,20 @@ async fn handle_overlay_srflx(
             "overlay.srflx: node declared NOT dialer-capable (raw dials to relay-band ports don't land) — its pairs anchor from here"
         );
     }
-    if let Err(e) = state
+    let previous = match state
         .overlay_nodes
         .update_srflx_endpoints(self_id, &candidates, nat.as_deref(), udp_dialer_ok)
         .await
     {
-        warn!(%self_id, %e, "overlay.srflx: update failed");
-        return;
-    }
-
-    // Every successful write advances provenance, including repeated values:
-    // concurrent A→B→A writes may have read the same old A.
-    state.org_relay.note_probe_endpoint_change(self_id);
+        Ok(previous) => previous,
+        Err(e) => {
+            warn!(%self_id, %e, "overlay.srflx: update failed");
+            return;
+        }
+    };
+    note_probe_addresses(state, self_id, previous, |n| {
+        n.srflx_endpoints = candidates.clone()
+    });
     let before = self_node.clone();
     let mut updated = self_node;
     updated.srflx_endpoints = candidates;
