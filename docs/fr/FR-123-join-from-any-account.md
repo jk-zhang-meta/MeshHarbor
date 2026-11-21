@@ -85,14 +85,14 @@ flowchart TD
 - [ ] On an ordinary Linux account with no usable sudo, the download page's command installs,
       signs in with a link, and the device reaches its peers — shown FAILING on 0.4.189 first
       (E1, E4), with no config edit and no unit written by hand.
-- [ ] The same account's device updates itself to the next release (the same-user updater).
-- [ ] A Linux account without `CAP_NET_ADMIN` starts in netstack mode with no failed TUN attempt
+- [x] The same account's device updates itself to the next release (the same-user updater).
+- [x] A Linux account without `CAP_NET_ADMIN` starts in netstack mode with no failed TUN attempt
       logged; a create that fails EPERM latches netstack without a backoff (unit tests that fail
       without the fix, shown red).
 - [ ] With sudo usable, `install.sh` behaves exactly as before (`.deb`, update helper, companion).
 - [ ] A sign-in whose service cannot start says so and exits non-zero.
 - [ ] The download page offers no token step on the ordinary path (P4).
-- [ ] A headless GPU host opens no hardware encoder at start (P5).
+- [x] A headless GPU host opens no hardware encoder at start (P5).
 - [ ] `docs/installation.md` and `docs/overlay-communication.md` describe the home install and the
       Linux/macOS fallback (mermaid, tables, anchors), and `docs/README.md` indexes this FR.
 
@@ -115,3 +115,5 @@ flowchart TD
 | 2026-11-20 | P1 unit tests | `non_windows_tun_permission_error_latches_netstack_and_rebuilds` and `unprivileged_unix_proactively_selects_netstack_without_calling_the_os_tun` fail on the pre-FR-123 branch condition (shown red), pass with P1; the first also fails with the kill switch set |
 | 2026-11-20 | P2 fixture test | `scripts/test-install-home.sh`: a home install signs in with a link and calls no sudo; a mutant that prints the token command instead fails it |
 | 2026-11-20 | P2b fixture test | the catalog installer piped to `sh` as `nobody` with stub curl/sudo/systemctl/loginctl and a fake `.deb`: with sudo refused it unpacks into `~/.local`, asks for lingering, signs in with `login --user`, never calls `sudo sh`; with sudo usable it fetches itself once more and runs that copy under `sudo`, installing nothing in the account. The 0.4.189 installer FAILS the first case (it dies "pipe it to 'sudo sh'") |
+| 2026-11-21 | 0.4.190 | PASSED on the no-sudo GPU server (two RTX A6000, no screen): it updated itself 0.4.189 → 0.4.190 through the same-user updater before any manual roll; with the hand-set `netstack_socks_port` and the unit's `ENCODER_CELLS_DENY` removed it logs `this account cannot create a TUN device … automatically using the userspace network stack` with no failed TUN attempt, and `this host has no screen of its own, so no hardware encoder is probed or opened` |
+| 2026-11-21 | 0.4.190 | Open: a fresh install from the download page on a no-sudo account (criterion 1) is not yet run; Windows stays on 0.4.189 this release |

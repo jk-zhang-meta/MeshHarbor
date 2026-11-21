@@ -74,9 +74,9 @@ flowchart TD
 
 ## Acceptance criteria
 
-- [ ] A device in a strict zone whose countries do not hold the centre, with a default config,
+- [x] A device in a strict zone whose countries do not hold the centre, with a default config,
       holds no `/derp` socket and copies nothing onto `/derp` — shown FAILING on 0.4.189 first (E1).
-- [ ] Its rows toward its own zone's peers carry no DERP tier, its network says
+- [x] Its rows toward its own zone's peers carry no DERP tier, its network says
       `central_relay_denied`, and the relay refuses its registration (integration test that fails
       without the fix); a non-strict zone and a strict zone that holds the centre keep the floor.
 - [ ] No forced-DERP pin is pushed to such a pair.
@@ -104,3 +104,5 @@ flowchart TD
 | When | Build | Result |
 |---|---|---|
 | 2026-11-20 | 0.4.189 | FAILED as expected (E1): a `cn` device copied business traffic onto the centre's `/derp` until `overlay_derp = false` was set by hand |
+| 2026-11-21 | 0.4.190 (server and agent) | PASSED on the same `cn` GPU server, with `overlay_derp`, `overlay_derp_floor` and `netstack_socks_port` removed from its config: after a restart the daemon holds exactly one TCP connection, to the centre on 443, logs `this device's zone keeps it on relays inside the zone — not opening /derp`, reaches its own zone's peers `direct` and the rest `relay:org/udp` through the in-zone gateway. The integration test `a_strict_zone_rides_no_relay_outside_it_not_even_the_centres_derp` fails with `central_relay_allowed` forced true (shown red) |
+| 2026-11-21 | 0.4.190 | Open: one institution device still runs 0.4.189 (its disk is full), so its hand-set switches stay; the tunnel-ICE and forced-pin criteria have tests but no field run yet |
