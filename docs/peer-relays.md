@@ -560,11 +560,23 @@ the bridge) and the session over it carries both ways.
 | Link | source → target on the fastest endpoint the source measured reachable since both last joined; a crossing exists only so measured and only on a public address; a same-zone link exists as before (on its first endpoint when nothing measured works, and its verdict ranks it) | [`path_candidate.rs:389`](../crates/modules/network/src/org_relay/path_candidate.rs#L389), `measured_backbone_endpoint` [`org_relay.rs:1928`](../crates/modules/network/src/org_relay.rs#L1928), `probe_cutoff` [`:1965`](../crates/modules/network/src/org_relay.rs#L1965) |
 | Reuse | a repeat request re-checks an installed crossing by the same zone rule, never by which endpoint is fastest now, so a working session is kept | [`session_zone.rs:110`](../crates/modules/network/src/org_relay/session_zone.rs#L110), `link_joins_zones` [`network_zones.rs:587`](../crates/modules/network/src/network_zones.rs#L587) |
 | Keep alive | the bridge re-binds its remote leg in band after 10 s of silence and ends after 3 unanswered rounds; only its side sends first, which is all a one-way line allows | `Keeper` [`backbone.rs:87`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L87), `forward_remote` [`:602`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L602) |
-| Link health | a remote leg whose bind times out or whose keeper gives up publishes its endpoint; the runtime re-measures that relay at once, so the link reads down for the next mint in seconds, not at the next 240 s round | `link_failures` [`backbone.rs:74`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L74), [`runtime.rs:4792`](../crates/tunnel-core/src/overlay/runtime.rs#L4792), `link_failed` [`:2434`](../crates/tunnel-core/src/overlay/runtime.rs#L2434) |
+| Link health | a remote leg whose bind times out or whose keeper gives up publishes its endpoint; the runtime re-measures that relay at once. The server revokes the sessions riding a hop the moment its source reports it down, so their members ask again and the next mint takes another link | `link_failures` [`backbone.rs:74`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L74), [`runtime.rs:4792`](../crates/tunnel-core/src/overlay/runtime.rs#L4792), `link_failed` [`:2434`](../crates/tunnel-core/src/overlay/runtime.rs#L2434), `handle_relay_probe` and `backbone_link_down` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) |
 
 > [!NOTE]
 > A line whose entry admits anyone needs no first relay: members of its zone measure it
 > directly and reach it the same way. Nothing in the code names either case.
+
+> [!TIP]
+> **A line that drops the relay port.** The first such line in the field dropped destination
+> UDP 3478 at its exit. That is configuration, not code: give the target relay a second port
+> (a host redirect such as `udp dport 3479 redirect to :3478` in its own nft table) and add
+> that `ip:port` to its static endpoints. Every source measures both addresses and links on
+> the one that answers; members keep using 3478.
+
+> [!WARNING]
+> A bound pair moves to a newly measured line only at its next mint (one-hour session
+> lifetime, or churn). Make-before-break upgrades need path trials, which are off by default
+> (`MESHHARBORD_PATH_TRIAL`).
 
 > [!IMPORTANT]
 > Every consumer — the planner, the offers, both allow-lists, the reuse check — reads one
