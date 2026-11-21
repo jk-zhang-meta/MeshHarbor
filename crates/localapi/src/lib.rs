@@ -3174,7 +3174,18 @@ pub fn person_may(req: &Request) -> bool {
         // (online, direct or relayed, round trip), which the Devices page's
         // Connection column and Overview's count read. Read-only, and served
         // without the endpoints and probe detail (`person_view`).
-        | Request::Peers => true,
+        | Request::Peers
+        // `mh ssh` / `mh scp` / `mh sftp` from the person at the screen of a
+        // system install (a Mac's root half, a Linux root daemon). Before this
+        // they had to type `sudo`, which also ran the user's whole `ssh` as
+        // root. The daemon only relays the caller's one-session PUBLIC key to
+        // the server and hands back the dial details and the target's host
+        // key; the server's own SSH gates decide, exactly as for `sudo mh ssh`,
+        // and the target's policy picks the account. Nothing local changes.
+        // The cost, accepted by the operator (2026-11-21): whoever sits at the
+        // screen reaches the devices the machine's owner may reach by SSH —
+        // the same seat this socket already trusts with consent answers.
+        | Request::SshSession { .. } => true,
         Request::Flows
         | Request::Ping { .. }
         | Request::CreateForward { .. }
@@ -3197,7 +3208,6 @@ pub fn person_may(req: &Request) -> bool {
         | Request::ExternalPasswordStatus
         | Request::TailLog { .. }
         | Request::ExecRemote { .. }
-        | Request::SshSession { .. }
         | Request::RecordStart { .. }
         | Request::RecordStop
         | Request::RecordingsList
@@ -3243,8 +3253,9 @@ fn not_on_the_person_socket() -> Response {
     Response::Error {
         message: "this is the person-at-the-device socket of a system install: it shows who is \
                   viewing this screen, ends it, answers consent prompts, and lists the devices \
-                  this machine's private network reaches and its links to them. Everything else \
-                  goes to the daemon's own socket — run `sudo meshharbor …`"
+                  this machine's private network reaches and its links to them, and opens \
+                  `mh ssh` / `mh scp` / `mh sftp`. Everything else goes to the daemon's own \
+                  socket — run `sudo mh …`"
             .into(),
     }
 }
@@ -7721,6 +7732,8 @@ mod tests {
             r#"{"t":"mesh","d":{"org":"primary"}}"#,
             // FR-97 P2h — and its live links, without the endpoints.
             r#"{"t":"peers"}"#,
+            // `mh ssh` / `scp` / `sftp` without sudo: the server's SSH gates decide.
+            r#"{"t":"ssh_session","d":{"node":"winhost-a","public_key":"ssh-ed25519 AAAA x"}}"#,
         ];
         for j in allowed {
             let req: Request = serde_json::from_str(j).unwrap();
@@ -7803,11 +7816,19 @@ mod tests {
         let r = ask_scoped(Scope::Person, r#"{"t":"config_get"}"#).await;
         assert!(is_person_refusal(&r), "{r:?}");
         assert!(
-            matches!(&r, Response::Error { message } if message.contains("sudo meshharbor")),
+            matches!(&r, Response::Error { message } if message.contains("sudo mh")),
             "the refusal says where to go instead: {r:?}"
         );
         let r = ask_scoped(Scope::Person, r#"{"t":"flows"}"#).await;
         assert!(is_person_refusal(&r), "{r:?}");
+        // `mh ssh` without sudo: the grant request reaches the state (whose
+        // answer the server decides), instead of being refused at the door.
+        let r = ask_scoped(
+            Scope::Person,
+            r#"{"t":"ssh_session","d":{"node":"winhost-a","public_key":"ssh-ed25519 AAAA x"}}"#,
+        )
+        .await;
+        assert!(!is_person_refusal(&r), "{r:?}");
         // The banner's Disconnect and the consent answer reach the state.
         for j in [
             r#"{"t":"rc_disconnect","d":{"session_id":"6ac95ff543d358ac1a427048"}}"#,

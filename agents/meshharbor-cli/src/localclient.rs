@@ -69,7 +69,7 @@ async fn print_other_daemon_hint() {
             other.display()
         );
         eprintln!("      This is the per-user half; the overlay runs in the privileged one.");
-        eprintln!("      Use `sudo meshharbor …` to ask that one instead.");
+        eprintln!("      Use `sudo mh …` to ask that one instead.");
     }
 }
 

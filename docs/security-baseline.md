@@ -366,6 +366,18 @@ new verb cannot reach it by default. Widening it is a security change and needs
 review like one. The root socket itself is unchanged. Kill switch:
 `MESHHARBORD_PERSON_SOCKET=0`.
 
+**`mh ssh` / `mh scp` / `mh sftp` need no `sudo` there (2026-11-21).** `SshSession` is on
+the allowlist. The daemon only relays the caller's one-session **public** key to the
+server and returns the dial details and the target's host key; the server's SSH gates
+decide exactly as they do for `sudo mh ssh`, and the target's policy picks the account.
+Before this the person had to type `sudo`, which also ran their whole `ssh` client as
+root.
+
+> ⚠️ The accepted cost: whoever holds the seat reaches, by SSH, what the machine's
+> owner may reach — the same seat this socket already trusts with consent answers.
+> `Connect` stays off the list (FR-90 P3-9-2b): it lends the owner's vault secrets,
+> which an SSH grant does not.
+
 **A remote-desktop session's media transport is hardened past webrtc-rs' defaults**
 (FR-101 P1, `agents/meshharbord/src/rc_transport.rs`, applied in `AgentPeer::new`):
 
