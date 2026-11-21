@@ -1918,69 +1918,102 @@ impl OrgRelayState {
         sla_verdict_of(&self.backbone_probes, ingress, exit, now)
     }
 
-    /// FR-125 — which of `candidates` relay `src` should dial relay `dst` on,
-    /// by `src`'s own fresh measurements: the reachable endpoint with the
-    /// lowest round trip. A machine may hold addresses that differ in what
-    /// they let in (an entry that admits some sources, an egress-only NAT),
-    /// so the target's first endpoint is not a guess worth making; only what
-    /// this source measured is.
-    pub(crate) fn backbone_endpoint_choice(
+    /// FR-125 — the endpoint of `candidates` relay `src` measured reachable
+    /// at relay `dst` with the lowest round trip, counting only measurements
+    /// taken after `not_before` ([`Self::probe_cutoff`]) and within the probe
+    /// TTL. A machine may hold addresses that differ in what they let in (an
+    /// entry that admits some sources, an egress-only NAT), so the target's
+    /// first endpoint is not a guess worth making; only what this source
+    /// measured is. `None`: nothing current says any candidate works.
+    pub(crate) fn measured_backbone_endpoint(
         &self,
         src: ObjectId,
         dst: ObjectId,
         candidates: &[String],
+        not_before: Option<Instant>,
         now: Instant,
-    ) -> EndpointChoice {
+    ) -> Option<String> {
+        let not_before = not_before?;
         let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
-        let records = self.backbone_probes.get(&(src, dst));
-        let last_of = |ep: &str| {
-            records.as_ref().and_then(|v| {
-                v.iter()
-                    .rev()
-                    .find(|p| p.endpoint == ep && now.duration_since(p.at) < ttl)
-                    .cloned()
-            })
-        };
+        let records = self.backbone_probes.get(&(src, dst))?;
         let mut best: Option<(u32, &String)> = None;
-        let mut unmeasured: Option<&String> = None;
         for ep in candidates {
-            match last_of(ep) {
-                Some(p) if p.reachable => {
-                    let rtt = p.rtt_ms.unwrap_or(u32::MAX);
-                    if best.is_none_or(|(b, _)| rtt < b) {
-                        best = Some((rtt, ep));
-                    }
-                }
-                Some(_) => {}
-                None => {
-                    if unmeasured.is_none() {
-                        unmeasured = Some(ep);
-                    }
+            // The latest current measurement of this endpoint decides it.
+            let Some(last) = records.iter().rev().find(|p| {
+                p.endpoint == *ep
+                    && p.at >= not_before
+                    && now
+                        .checked_duration_since(p.at)
+                        .is_some_and(|age| age < ttl)
+            }) else {
+                continue;
+            };
+            if last.reachable {
+                let rtt = last.rtt_ms.unwrap_or(u32::MAX);
+                if best.is_none_or(|(b, _)| rtt < b) {
+                    best = Some((rtt, ep));
                 }
             }
         }
-        match (best, unmeasured) {
-            (Some((_, ep)), _) => EndpointChoice::Reachable(ep.clone()),
-            (None, Some(ep)) => EndpointChoice::Unmeasured(ep.clone()),
-            (None, None) => EndpointChoice::Down,
+        best.map(|(_, ep)| ep.clone())
+    }
+
+    /// The earliest instant a probe of `target` by `reporter` still counts:
+    /// both have joined on their current connections, and neither has moved
+    /// its endpoints or taken a new relay policy since. `None` = nothing
+    /// either measured can be trusted yet.
+    pub(crate) fn probe_cutoff(
+        &self,
+        reporter: ObjectId,
+        reporter_identity: ObjectId,
+        target: ObjectId,
+        target_identity: ObjectId,
+    ) -> Option<Instant> {
+        let r_join = self.probe_join_at.get(&reporter).map(|at| *at)?;
+        let t_join = self.probe_join_at.get(&target).map(|at| *at)?;
+        let r_bind = self
+            .live_conns
+            .get(&reporter_identity)
+            .map(|c| c.bound_at)?;
+        let t_bind = self.live_conns.get(&target_identity).map(|c| c.bound_at)?;
+        if r_join < r_bind || t_join < t_bind {
+            return None;
         }
+        let r_endpoint = self
+            .probe_endpoint_at
+            .get(&reporter)
+            .map(|at| *at)
+            .unwrap_or(r_join);
+        let t_endpoint = self
+            .probe_endpoint_at
+            .get(&target)
+            .map(|at| *at)
+            .unwrap_or(t_join);
+        let r_policy = self
+            .probe_policy_at
+            .get(&reporter_identity)
+            .map(|at| *at)
+            .unwrap_or(r_bind);
+        let t_policy = self
+            .probe_policy_at
+            .get(&target_identity)
+            .map(|at| *at)
+            .unwrap_or(t_bind);
+        Some(
+            r_join
+                .max(t_join)
+                .max(r_endpoint)
+                .max(t_endpoint)
+                .max(r_policy)
+                .max(t_policy),
+        )
     }
 }
 
-/// FR-125 — [`OrgRelayState::backbone_endpoint_choice`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum EndpointChoice {
-    /// The source measured this endpoint reachable (the fastest such).
-    Reachable(String),
-    /// Nothing reachable yet; this endpoint has no fresh measurement.
-    Unmeasured(String),
-    /// Every candidate was measured unreachable from this source.
-    Down,
-}
-
-/// FR-125 — relays link freely by measurement (`app.relay_auto_links`).
+/// FR-125 — relays link freely by measurement
+/// ([`meshharbor_config::settings::AppSettings::relay_auto_links_effective`]).
 pub(crate) fn relay_auto_links(state: &NetworkState) -> bool {
-    state.core.settings.app.relay_auto_links
+    state.core.settings.app.relay_auto_links_effective()
 }
 
 fn sla_verdict_of(
@@ -2860,10 +2893,19 @@ async fn backbone_probe_targets_inner(
             .filter_map(|e| ObjectId::parse_str(&e.relay_agent_id).ok())
             .collect();
         let auto_links = relay_auto_links(state);
+        // FR-125: offer exactly what the relay may dial (its allow-list, the
+        // same computation its `peer_relay_serve` carries), so no offer is one
+        // the device's prober would silently skip.
+        let allowed = if auto_links {
+            topo.network_zones
+                .effective_backbone_endpoints_for_relay(state, relay.tenant_id, own)
+                .await
+        } else {
+            Vec::new()
+        };
+        // Same-zone relays first, so FR-125's extra offers never crowd one out.
+        let mut ordered: Vec<(bool, &meshharbor_remote_control::models::Agent)> = Vec::new();
         for exit in &relays {
-            if out.len() >= MAX_PROBE_TARGETS {
-                break;
-            }
             let Some(exit_aid) = exit.id else { continue };
             if exit_aid == own_aid || explicit_targets.contains(&exit_aid) {
                 continue;
@@ -2875,8 +2917,16 @@ async fn backbone_probe_targets_inner(
             };
             // FR-125: with auto links every relay measures every other one,
             // in any zone; a path's zone rule is applied where it is built.
-            if exit_zone.id != own_zone.id && !auto_links {
+            let same_zone = exit_zone.id == own_zone.id;
+            if !same_zone && !auto_links {
                 continue;
+            }
+            ordered.push((same_zone, exit));
+        }
+        ordered.sort_by_key(|(same_zone, _)| !*same_zone);
+        for (_, exit) in ordered {
+            if out.len() >= MAX_PROBE_TARGETS {
+                break;
             }
             let Ok(Some(exit_node)) = state
                 .overlay_nodes
@@ -2912,9 +2962,11 @@ async fn backbone_probe_targets_inner(
                             &network.cidr,
                         )
                 })
-                // FR-125: EVERY endpoint, so the source learns which of the
-                // target's addresses actually let it in (an entry that admits
-                // some sources only, an egress-only NAT that admits none).
+                // FR-125: EVERY endpoint it may dial, so the source learns
+                // which of the target's addresses actually let it in (an entry
+                // that admits some sources only, an egress-only NAT that
+                // admits none).
+                .filter(|ep| !auto_links || allowed.contains(ep))
                 .take(if auto_links { MAX_PROBE_ENDPOINTS } else { 1 })
                 .collect();
             if !valid.is_empty() {

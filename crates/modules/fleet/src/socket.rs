@@ -1886,10 +1886,10 @@ fn compute_connect_backbone_endpoints(
     ) else {
         return out;
     };
+    let auto_links = state.core.settings.app.relay_auto_links_effective();
+    // Each other relay's valid endpoints, and whether it shares our zone.
+    let mut per_relay: Vec<(bool, Vec<String>)> = Vec::new();
     for peer in approved_relays {
-        if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
-            break;
-        }
         let Some(peer_aid) = peer.id else { continue };
         if peer_aid == own_id || explicit_targets.contains(&peer_aid) {
             continue;
@@ -1902,7 +1902,12 @@ fn compute_connect_backbone_endpoints(
         ) else {
             continue;
         };
-        if peer_zone.id != own_zone.id {
+        let same_zone = peer_zone.id == own_zone.id;
+        // FR-125: with auto links a relay may dial any other relay, in any
+        // zone. Mirrors `effective_backbone_endpoints_from_consistent_parts`
+        // in the network module: a reconnect must be told exactly what a live
+        // push would tell it, or the daemon keeps it (same revision).
+        if !same_zone && !auto_links {
             continue;
         }
         let mut candidate_eps: Vec<String> = Vec::new();
@@ -1942,12 +1947,39 @@ fn compute_connect_backbone_endpoints(
         {
             candidate_eps.push(SocketAddr::new(pub_ip, limits::DEFAULT_RELAY_PORT).to_string());
         }
-        if let Some(ep) = candidate_eps
+        let valid: Vec<String> = candidate_eps
             .into_iter()
-            .find(|ep| valid_connect_backbone_endpoint(ep, overlay_cidr))
-            && !out.contains(&ep)
-        {
-            out.push(ep);
+            .filter(|ep| valid_connect_backbone_endpoint(ep, overlay_cidr))
+            .collect();
+        per_relay.push((same_zone, valid));
+    }
+    let push = |out: &mut Vec<String>, ep: &String| {
+        if out.len() < MAX_PEER_RELAY_BACKBONE_EDGES && !out.contains(ep) {
+            out.push(ep.clone());
+        }
+    };
+    // The pre-FR-125 entries first — each same-zone relay's first endpoint.
+    for (same_zone, valid) in &per_relay {
+        if *same_zone && let Some(ep) = valid.first() {
+            push(&mut out, ep);
+        }
+    }
+    // FR-125: then up to four endpoints per relay; a crossing only ever
+    // dials a public address.
+    if auto_links {
+        for (same_zone, valid) in &per_relay {
+            for ep in valid
+                .iter()
+                .filter(|ep| {
+                    *same_zone
+                        || ep
+                            .parse::<SocketAddr>()
+                            .is_ok_and(|sa| meshharbor_core::net::is_global_unicast(&sa.ip()))
+                })
+                .take(4)
+            {
+                push(&mut out, ep);
+            }
         }
     }
     out

@@ -383,8 +383,8 @@ pub(super) async fn prepare_reusing(
     // the pair's two zones and nothing else; the path's ends stay on the
     // zones' gateways (`matches_requester_end` / `matches_peer_end`). A
     // same-zone link exists as it did before FR-125, on the fastest endpoint
-    // the source measured, else an unmeasured one, else the first; a crossing
-    // link exists only where it was measured to work. Without auto links, cross-zone
+    // the source measured reachable, else the first; a crossing link exists
+    // only where it was measured to work. Without auto links, cross-zone
     // router forwarding is restricted to admin-configured edges.
     let auto_links = crate::org_relay::relay_auto_links(state) && !enforce_zone;
     if network_zones_active {
@@ -454,20 +454,26 @@ pub(super) async fn prepare_reusing(
                     continue;
                 };
                 let endpoint = if auto_links {
-                    use crate::org_relay::EndpointChoice;
-                    match state.org_relay.backbone_endpoint_choice(
+                    let cutoff = state.org_relay.probe_cutoff(
+                        src.node_id,
+                        src.agent_id,
+                        *dst_node,
+                        *dst_agent,
+                    );
+                    match state.org_relay.measured_backbone_endpoint(
                         src.node_id,
                         *dst_node,
                         &candidates,
+                        cutoff,
                         std::time::Instant::now(),
                     ) {
-                        EndpointChoice::Reachable(ep) => ep,
-                        // Same zone: the link exists as before FR-125 (its
-                        // measured verdict ranks it); only the endpoint is
-                        // chosen by what the source measured.
-                        EndpointChoice::Unmeasured(ep) if same_zone => ep,
-                        EndpointChoice::Down if same_zone => first.clone(),
-                        EndpointChoice::Unmeasured(_) | EndpointChoice::Down => continue,
+                        // A crossing is never a guess: only a public address
+                        // this source measured working since both last joined.
+                        Some(ep) if same_zone || crate::org_relay::valid_static_endpoint(&ep) => ep,
+                        // Same zone: the link exists as before FR-125, on the
+                        // first endpoint, and its measured verdict ranks it.
+                        _ if same_zone => first.clone(),
+                        _ => continue,
                     }
                 } else {
                     first.clone()

@@ -498,9 +498,13 @@ async fn bind_and_start_with(
         pin_interface(&socket2::SockRef::from(right.as_ref()), interface)?;
     }
     tokio::try_join!(bind_leg(&left, &grant.local), async {
-        bind_leg(&right, &grant.remote)
-            .await
-            .inspect_err(|_| report_link_failure(grant.remote.relay))
+        bind_leg(&right, &grant.remote).await.inspect_err(|e| {
+            // Only "nobody answered" is news about the link; a local socket
+            // error is about this host.
+            if e.kind() == io::ErrorKind::TimedOut {
+                report_link_failure(grant.remote.relay);
+            }
+        })
     })?;
     let local_addrs = [left.local_addr()?, right.local_addr()?];
     let (cancel, mut cancelled) = watch::channel(false);

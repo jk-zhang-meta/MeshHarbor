@@ -1152,10 +1152,13 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
 /// A mainland-zone relay `L` has two addresses: its first (what its own
 /// connection shows) is an egress-only NAT abroad that admits nobody, its
 /// second an entry that admits ONE source, gateway `A`. Nothing is approved
-/// or declared per link. The pair `cn_dev ↔ hk_dev` must ride
-/// `A ==(L's entry)==> L ==> B` — the measured fastest — from either side,
-/// with `A` always the one that dials `L`: the link exists only in the
-/// direction it was measured to work.
+/// or declared per link. Two pairs `cn ↔ hk`, one asked for from each side,
+/// must each ride `A ==(L's entry)==> L ==> B` — the measured fastest — with
+/// `A` always the one that dials `L`: the link exists only in the direction
+/// it was measured to work. Asked for again from the other side, a pair
+/// keeps its session (the installed crossing stays authorized on reuse), and
+/// a relay that reconnects is told the same dial allow-list a live push
+/// gave it (the daemon ignores a same-revision update).
 async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_links: bool) -> bool {
     let geo = tempfile::tempdir().unwrap();
     let mmdb = geo.path().join("dbip-city-lite.mmdb");
@@ -1172,64 +1175,38 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
     let seeded = app.seed_tenant("nz-one-way-line").await;
     let admin = &seeded.admin.access_token;
     let wait = Duration::from_secs(5);
+    let relay_caps = ["relay-server", "relay-control"];
 
-    let (_cn_id, cn_tok) = enroll(&app, &seeded, "ow-cn-dev").await;
-    let (_hk_id, hk_tok) = enroll(&app, &seeded, "ow-hk-dev").await;
+    let (_, cn1_tok) = enroll(&app, &seeded, "ow-cn-dev1").await;
+    let (_, hk1_tok) = enroll(&app, &seeded, "ow-hk-dev1").await;
+    let (_, cn2_tok) = enroll(&app, &seeded, "ow-cn-dev2").await;
+    let (_, hk2_tok) = enroll(&app, &seeded, "ow-hk-dev2").await;
     let (a_id, a_tok) = enroll(&app, &seeded, "ow-gw-a").await;
     let (l_id, l_tok) = enroll(&app, &seeded, "ow-line-l").await;
     let (b_id, b_tok) = enroll(&app, &seeded, "ow-gw-b").await;
-    let mut cn_ws = connect_from(&app, &cn_tok, &[], Some("139.199.1.45")).await;
-    let mut hk_ws = connect_from(&app, &hk_tok, &[], Some("202.181.7.20")).await;
-    let mut a_ws = connect_from(
-        &app,
-        &a_tok,
-        &["relay-server", "relay-control"],
-        Some("139.199.6.6"),
-    )
-    .await;
-    let mut l_ws = connect_from(
-        &app,
-        &l_tok,
-        &["relay-server", "relay-control"],
-        Some("139.199.9.1"),
-    )
-    .await;
-    let mut b_ws = connect_from(
-        &app,
-        &b_tok,
-        &["relay-server", "relay-control"],
-        Some("202.181.7.6"),
-    )
-    .await;
+    let mut cn1_ws = connect_from(&app, &cn1_tok, &[], Some("139.199.1.45")).await;
+    let mut hk1_ws = connect_from(&app, &hk1_tok, &[], Some("202.181.7.20")).await;
+    let mut cn2_ws = connect_from(&app, &cn2_tok, &[], Some("139.199.1.46")).await;
+    let mut hk2_ws = connect_from(&app, &hk2_tok, &[], Some("202.181.7.21")).await;
+    let mut a_ws = connect_from(&app, &a_tok, &relay_caps, Some("139.199.6.6")).await;
+    let mut l_ws = connect_from(&app, &l_tok, &relay_caps, Some("139.199.9.1")).await;
+    let mut b_ws = connect_from(&app, &b_tok, &relay_caps, Some("202.181.7.6")).await;
     for ws in [&mut a_ws, &mut l_ws, &mut b_ws] {
         let _ = recv_t(ws, "rc:overlay.peer_relay_serve", wait).await;
     }
-    join_node(&mut cn_ws, 41, "139.199.1.45:41641", json!({})).await;
-    join_node(&mut hk_ws, 42, "202.181.7.20:41641", json!({})).await;
-    join_node(
-        &mut a_ws,
-        43,
-        "139.199.6.6:41641",
-        json!({ "relay_backbone_ready": true }),
-    )
-    .await;
+    let ready = json!({ "relay_backbone_ready": true });
+    join_node(&mut cn1_ws, 41, "139.199.1.45:41641", json!({})).await;
+    join_node(&mut hk1_ws, 42, "202.181.7.20:41641", json!({})).await;
+    join_node(&mut cn2_ws, 46, "139.199.1.46:41641", json!({})).await;
+    join_node(&mut hk2_ws, 47, "202.181.7.21:41641", json!({})).await;
+    join_node(&mut a_ws, 43, "139.199.6.6:41641", ready.clone()).await;
     // L's own connection shows its egress-only NAT abroad.
-    join_node(
-        &mut l_ws,
-        44,
-        "202.181.7.50:41641",
-        json!({ "relay_backbone_ready": true }),
-    )
-    .await;
-    join_node(
-        &mut b_ws,
-        45,
-        "202.181.7.6:41641",
-        json!({ "relay_backbone_ready": true }),
-    )
-    .await;
-    let cn_node = node_id(&app, &seeded, "ow-cn-dev").await;
-    let hk_node = node_id(&app, &seeded, "ow-hk-dev").await;
+    join_node(&mut l_ws, 44, "202.181.7.50:41641", ready.clone()).await;
+    join_node(&mut b_ws, 45, "202.181.7.6:41641", ready).await;
+    let cn1_node = node_id(&app, &seeded, "ow-cn-dev1").await;
+    let hk1_node = node_id(&app, &seeded, "ow-hk-dev1").await;
+    let cn2_node = node_id(&app, &seeded, "ow-cn-dev2").await;
+    let hk2_node = node_id(&app, &seeded, "ow-hk-dev2").await;
     let a_node = node_id(&app, &seeded, "ow-gw-a").await;
     let l_node = node_id(&app, &seeded, "ow-line-l").await;
     let b_node = node_id(&app, &seeded, "ow-gw-b").await;
@@ -1266,27 +1243,35 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
     )
     .await;
     assert_eq!(s, 200, "{body}");
+    // A's last live directive: the allow-list a reconnect must repeat.
+    let mut a_live = None;
+    while let Some(m) = recv_t(
+        &mut a_ws,
+        "rc:overlay.peer_relay_serve",
+        Duration::from_millis(1500),
+    )
+    .await
+    {
+        a_live = Some(m);
+    }
+    let a_live = a_live.expect("A is told its relay policy");
 
     use meshharbor_mod_network::org_relay::candidate_test_support as support;
     let net = app.state.network();
     let oid = |s: &str| ObjectId::parse_str(s).unwrap();
-    let (cn, hk, a, l, b) = (
-        oid(&cn_node),
-        oid(&hk_node),
-        oid(&a_node),
-        oid(&l_node),
-        oid(&b_node),
-    );
-    assert!(support::record_member_probe_fixture(
-        net,
-        cn,
-        &[(a, "139.199.6.6:3478".into(), true, Some(5))]
-    ));
-    assert!(support::record_member_probe_fixture(
-        net,
-        hk,
-        &[(b, "202.181.7.6:3478".into(), true, Some(5))]
-    ));
+    let (a, l, b) = (oid(&a_node), oid(&l_node), oid(&b_node));
+    for (dev, gw, ep) in [
+        (&cn1_node, a, "139.199.6.6:3478"),
+        (&cn2_node, a, "139.199.6.6:3478"),
+        (&hk1_node, b, "202.181.7.6:3478"),
+        (&hk2_node, b, "202.181.7.6:3478"),
+    ] {
+        assert!(support::record_member_probe_fixture(
+            net,
+            oid(dev),
+            &[(gw, ep.into(), true, Some(5))]
+        ));
+    }
     // A reaches L at its entry only, and B over the public path (slower).
     assert!(support::record_backbone_probe_fixture(
         net,
@@ -1312,22 +1297,28 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
         ],
     ));
 
+    let request = |peer: &str, id: u64| {
+        Message::Text(
+            json!({ "t": "rc:overlay.relay_request", "peer_node_id": peer,
+                    "reason": "direct_timeout", "request_id": id })
+            .to_string()
+            .into(),
+        )
+    };
     let mut carried = true;
+    let mut pair1_vni = None;
+    // Pair 1 asked for from the mainland side, pair 2 from abroad.
     for (from_cn, id) in [(true, 7u64), (false, 8u64)] {
-        let (req_ws, peer) = if from_cn {
-            (&mut cn_ws, &hk_node)
+        let (cn_ws, hk_ws) = if from_cn {
+            (&mut cn1_ws, &mut hk1_ws)
         } else {
-            (&mut hk_ws, &cn_node)
+            (&mut cn2_ws, &mut hk2_ws)
         };
-        req_ws
-            .send(Message::Text(
-                json!({ "t": "rc:overlay.relay_request", "peer_node_id": peer,
-                        "reason": "direct_timeout", "request_id": id })
-                .to_string()
-                .into(),
-            ))
-            .await
-            .unwrap();
+        if from_cn {
+            cn_ws.send(request(&hk1_node, id)).await.unwrap();
+        } else {
+            hk_ws.send(request(&cn2_node, id)).await.unwrap();
+        }
         let Some(_) = recv_t(&mut a_ws, "rc:overlay.relay_serve", wait).await else {
             carried = false;
             break;
@@ -1353,14 +1344,17 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
         let _ = recv_t(&mut b_ws, "rc:overlay.relay_serve", wait)
             .await
             .expect("B serves");
-        let cn_sess = recv_t(&mut cn_ws, "rc:overlay.relay_session", wait)
+        let cn_sess = recv_t(cn_ws, "rc:overlay.relay_session", wait)
             .await
             .expect("cn session");
-        let hk_sess = recv_t(&mut hk_ws, "rc:overlay.relay_session", wait)
+        let hk_sess = recv_t(hk_ws, "rc:overlay.relay_session", wait)
             .await
             .expect("hk session");
         assert_eq!(cn_sess["relay_node_id"], json!(a_node));
         assert_eq!(hk_sess["relay_node_id"], json!(b_node));
+        if from_cn {
+            pair1_vni = Some(hk_sess["vni"].clone());
+        }
         assert!(
             recv_t(
                 &mut b_ws,
@@ -1372,6 +1366,54 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
             "B is never asked to dial L: nothing reaches L from abroad"
         );
     }
+    if carried {
+        // Pair 1 again, now from abroad: the same session comes back and no
+        // relay hears anything — the crossing is still authorized.
+        hk1_ws.send(request(&cn1_node, 9)).await.unwrap();
+        let again = recv_t(&mut hk1_ws, "rc:overlay.relay_session", wait)
+            .await
+            .expect("re-push to the asker");
+        assert_eq!(Some(again["vni"].clone()), pair1_vni, "{again}");
+        for ws in [&mut a_ws, &mut l_ws, &mut b_ws] {
+            assert!(
+                recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(500))
+                    .await
+                    .is_none(),
+                "a repeat request must not re-mint the line"
+            );
+        }
+    }
+
+    // A reconnects: told exactly what the live push told it.
+    drop(a_ws);
+    let mut a_ws = connect_from(&app, &a_tok, &relay_caps, Some("139.199.6.6")).await;
+    let reconnect = recv_t(&mut a_ws, "rc:overlay.peer_relay_serve", wait)
+        .await
+        .expect("A's policy on connect");
+    assert_eq!(
+        reconnect["revision"], a_live["revision"],
+        "{reconnect} vs {a_live}"
+    );
+    assert_eq!(
+        reconnect["backbone_endpoints"], a_live["backbone_endpoints"],
+        "connect-time and live allow-lists must agree"
+    );
+    // Every address of the same-zone relay and the other zone's gateway; the
+    // pre-FR-125 entry (L's first address) always comes first.
+    let mut got: Vec<&str> = a_live["backbone_endpoints"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(got.first(), Some(&"202.181.7.50:3478"), "{a_live}");
+    got.sort_unstable();
+    let want: &[&str] = if auto_links {
+        &["139.199.9.9:3478", "202.181.7.50:3478", "202.181.7.6:3478"]
+    } else {
+        &["202.181.7.50:3478"]
+    };
+    assert_eq!(got, want, "{a_live}");
     carried
 }
 
@@ -1383,6 +1425,68 @@ async fn a_one_way_line_between_zones_carries_the_pair_from_either_side() {
 #[tokio::test]
 async fn without_auto_links_the_same_line_carries_nothing() {
     assert!(!a_one_way_line_between_zones_is_found_from_measurements_alone(false).await);
+}
+
+/// FR-125 — does relay `A` get the other zone's relay in its dial
+/// allow-list under business isolation `isolation`? The same predicate as
+/// the planner: legacy `enforce` keeps its own edge rules.
+async fn an_other_zone_relay_is_dialable(isolation: &'static str) -> bool {
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
+    let mmdb = mmdb.to_str().unwrap().to_owned();
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = isolation.into();
+        s.stats.geoip_mmdb = Some(mmdb);
+    })
+    .await;
+    let seeded = app.seed_tenant("nz-auto-links-iso").await;
+    let admin = &seeded.admin.access_token;
+    let wait = Duration::from_secs(5);
+    let caps = ["relay-server", "relay-control"];
+    let (a_id, a_tok) = enroll(&app, &seeded, "al-gw-hk").await;
+    let (b_id, b_tok) = enroll(&app, &seeded, "al-gw-cn").await;
+    let mut a_ws = connect_from(&app, &a_tok, &caps, Some("202.181.7.6")).await;
+    let mut b_ws = connect_from(&app, &b_tok, &caps, Some("139.199.6.6")).await;
+    let _ = recv_t(&mut a_ws, "rc:overlay.peer_relay_serve", wait).await;
+    let _ = recv_t(&mut b_ws, "rc:overlay.peer_relay_serve", wait).await;
+    assert_eq!(approve(&app, &seeded, &a_id, true).await, 200);
+    assert_eq!(approve(&app, &seeded, &b_id, true).await, 200);
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({ "zones": [
+            { "id": "cn", "name": "CN", "auto_countries": ["CN"], "is_default": false,
+              "gateway_relay_ids": [b_id], "cross_zone_mode": "router_only" },
+            { "id": "global", "name": "Global", "auto_countries": ["HK", "US"], "is_default": true,
+              "gateway_relay_ids": [a_id], "cross_zone_mode": "direct_preferred" }
+        ]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{body}");
+    let mut last = None;
+    while let Some(m) = recv_t(
+        &mut a_ws,
+        "rc:overlay.peer_relay_serve",
+        Duration::from_millis(1500),
+    )
+    .await
+    {
+        last = Some(m);
+    }
+    let last = last.expect("A is told its relay policy");
+    last["backbone_endpoints"]
+        .as_array()
+        .is_some_and(|eps| eps.contains(&json!("139.199.6.6:3478")))
+}
+
+#[tokio::test]
+async fn legacy_enforce_keeps_relays_to_their_own_zone_and_off_links_across() {
+    assert!(an_other_zone_relay_is_dialable("off").await);
+    assert!(!an_other_zone_relay_is_dialable("enforce").await);
 }
 
 #[tokio::test]

@@ -580,6 +580,28 @@ impl TenantZoneSnapshot {
         )
     }
 
+    /// FR-125 — does a link between relays `agent_a` and `agent_b` join
+    /// exactly the zones `zone_x` and `zone_y`, in either direction? The one
+    /// rule an automatic crossing obeys, checked when it is built
+    /// (`path_candidate`) and again whenever the installed session is reused.
+    pub fn link_joins_zones(
+        &self,
+        agent_a: ObjectId,
+        agent_b: ObjectId,
+        zone_x: &str,
+        zone_y: &str,
+    ) -> bool {
+        if !self.has_zones() || self.read_failed || self.superseded {
+            return false;
+        }
+        let (DeviceZoneResolution::Resolved(za), DeviceZoneResolution::Resolved(zb)) =
+            (self.resolve_agent(agent_a), self.resolve_agent(agent_b))
+        else {
+            return false;
+        };
+        (za.id == zone_x && zb.id == zone_y) || (za.id == zone_y && zb.id == zone_x)
+    }
+
     /// Compute effective `backbone_endpoints` for serving relay `agent` (explicit
     /// `approved_backbone_edges` plus synthesized same-zone router endpoints when
     /// `OverlayNetwork.zones` is non-empty).
@@ -671,10 +693,9 @@ impl TenantZoneSnapshot {
             return out;
         };
         let auto_links = crate::org_relay::relay_auto_links(state);
+        // Each other relay's valid endpoints, and whether it shares our zone.
+        let mut per_relay: Vec<(bool, Vec<String>)> = Vec::new();
         for peer in relays {
-            if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
-                break;
-            }
             let Some(peer_aid) = peer.id else { continue };
             if peer_aid == own_id || explicit_targets.contains(&peer_aid) {
                 continue;
@@ -682,9 +703,10 @@ impl TenantZoneSnapshot {
             let DeviceZoneResolution::Resolved(peer_zone) = self.resolve_agent(peer_aid) else {
                 continue;
             };
+            let same_zone = peer_zone.id == own_zone.id;
             // FR-125: with auto links a relay may dial any other relay, in
             // any zone; the zone rule is applied where a pair's path is built.
-            if peer_zone.id != own_zone.id && !auto_links {
+            if !same_zone && !auto_links {
                 continue;
             }
             let mut candidate_eps: Vec<String> = Vec::new();
@@ -714,21 +736,41 @@ impl TenantZoneSnapshot {
                     std::net::SocketAddr::new(pub_ip, limits::DEFAULT_RELAY_PORT).to_string(),
                 );
             }
-            let valid = candidate_eps.into_iter().filter(|ep| {
-                crate::routes::peer_relay::valid_backbone_endpoint(ep)
-                    && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
-                        ep,
-                        overlay_cidr,
-                    )
-            });
-            // FR-125: every endpoint the relay may be told to measure or dial,
-            // not only the first (which may be an address that admits nobody).
-            for ep in valid.take(if auto_links { 4 } else { 1 }) {
-                if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
-                    break;
-                }
-                if !out.contains(&ep) {
-                    out.push(ep);
+            let valid: Vec<String> = candidate_eps
+                .into_iter()
+                .filter(|ep| {
+                    crate::routes::peer_relay::valid_backbone_endpoint(ep)
+                        && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                            ep,
+                            overlay_cidr,
+                        )
+                })
+                .collect();
+            per_relay.push((same_zone, valid));
+        }
+        let push = |out: &mut Vec<String>, ep: &String| {
+            if out.len() < MAX_PEER_RELAY_BACKBONE_EDGES && !out.contains(ep) {
+                out.push(ep.clone());
+            }
+        };
+        // The pre-FR-125 entries first — each same-zone relay's first
+        // endpoint — so nothing FR-125 adds can crowd one out.
+        for (same_zone, valid) in &per_relay {
+            if *same_zone && let Some(ep) = valid.first() {
+                push(&mut out, ep);
+            }
+        }
+        // FR-125: then every relay's further endpoints, up to four per relay
+        // (an address that admits nobody may come first); a crossing only
+        // ever dials a public address.
+        if auto_links {
+            for (same_zone, valid) in &per_relay {
+                for ep in valid
+                    .iter()
+                    .filter(|ep| *same_zone || crate::org_relay::valid_static_endpoint(ep))
+                    .take(4)
+                {
+                    push(&mut out, ep);
                 }
             }
         }

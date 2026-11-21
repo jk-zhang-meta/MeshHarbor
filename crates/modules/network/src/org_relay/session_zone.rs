@@ -40,6 +40,16 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             .network_zones
             .resolve_ref(state, session.tenant_id, &session.members[1].party.node_ref)
             .await;
+        // FR-125 — the pair's two zones: an automatic crossing installed
+        // between them stays valid on reuse, as it was when it was built.
+        let pair_zones = match (&m0, &m1) {
+            (
+                meshharbor_remote_control::models::DeviceZoneResolution::Resolved(a),
+                meshharbor_remote_control::models::DeviceZoneResolution::Resolved(b),
+            ) => Some((a.id.clone(), b.id.clone())),
+            _ => None,
+        };
+        let auto_links = crate::org_relay::relay_auto_links(state);
         let Some(gw0) = topo.network_zones.gateway_set_for(m0) else {
             return Decision::Invalid;
         };
@@ -91,8 +101,23 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
                 let has_edge = match explicit_for_target {
                     Some(e) => e.endpoint == hop.private_endpoint,
                     None => {
-                        topo.network_zones
-                            .same_resolved_zone(prev_agent, hop.relay_agent_id)
+                        let same_zone = topo
+                            .network_zones
+                            .same_resolved_zone(prev_agent, hop.relay_agent_id);
+                        // Authorization only: the zone rule and a public
+                        // address. Which endpoint measures fastest now is a
+                        // preference, never a reason to revoke a working hop.
+                        let auto_crossing = auto_links
+                            && pair_zones.as_ref().is_some_and(|(x, y)| {
+                                topo.network_zones.link_joins_zones(
+                                    prev_agent,
+                                    hop.relay_agent_id,
+                                    x,
+                                    y,
+                                )
+                            })
+                            && super::valid_static_endpoint(&hop.private_endpoint);
+                        (same_zone || auto_crossing)
                             && crate::routes::peer_relay::valid_backbone_endpoint(
                                 &hop.private_endpoint,
                             )

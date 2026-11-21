@@ -113,47 +113,7 @@ pub(super) fn select_from_prepared(
     // replacement connection invalidates earlier observations even before
     // its own overlay join; the final mint still must revalidate atomically.
     let cutoff = |reporter, reporter_identity, target, target_identity| {
-        let r_join = org_relay.probe_join_at.get(&reporter).map(|at| *at)?;
-        let t_join = org_relay.probe_join_at.get(&target).map(|at| *at)?;
-        let r_bind = org_relay
-            .live_conns
-            .get(&reporter_identity)
-            .map(|c| c.bound_at)?;
-        let t_bind = org_relay
-            .live_conns
-            .get(&target_identity)
-            .map(|c| c.bound_at)?;
-        if r_join < r_bind || t_join < t_bind {
-            return None;
-        }
-        let r_endpoint = org_relay
-            .probe_endpoint_at
-            .get(&reporter)
-            .map(|at| *at)
-            .unwrap_or(r_join);
-        let t_endpoint = org_relay
-            .probe_endpoint_at
-            .get(&target)
-            .map(|at| *at)
-            .unwrap_or(t_join);
-        let r_policy = org_relay
-            .probe_policy_at
-            .get(&reporter_identity)
-            .map(|at| *at)
-            .unwrap_or(r_bind);
-        let t_policy = org_relay
-            .probe_policy_at
-            .get(&target_identity)
-            .map(|at| *at)
-            .unwrap_or(t_bind);
-        Some(
-            r_join
-                .max(t_join)
-                .max(r_endpoint)
-                .max(t_endpoint)
-                .max(r_policy)
-                .max(t_policy),
-        )
+        org_relay.probe_cutoff(reporter, reporter_identity, target, target_identity)
     };
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());

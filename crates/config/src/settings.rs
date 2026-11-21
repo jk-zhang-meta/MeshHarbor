@@ -1297,10 +1297,11 @@ pub struct AppSettings {
     /// FR-125 — relays link to relays freely, by measurement: every approved
     /// relay is offered every other relay's endpoints to probe, and a pair's
     /// path may use a link wherever its source measured the target reachable,
-    /// across zones too. The logical zone is the only rule (the path stays in
-    /// the two members' zones, crosses once, ends on their gateways).
+    /// across zones too. The logical zone is the only rule (an automatic
+    /// crossing joins the pair's two zones; the path ends on their gateways).
     /// `false` restores the pre-FR-125 graph: same-zone auto links on the
-    /// target's first endpoint, cross-zone only over approved edges.
+    /// target's first endpoint, cross-zone only over approved edges. Read it
+    /// through [`AppSettings::relay_auto_links_effective`].
     #[serde(default = "default_true")]
     pub relay_auto_links: bool,
     /// MeshHarbor #21 relay locality for remote desktop: keep the STUN/TURN
@@ -1340,6 +1341,19 @@ impl AppSettings {
     /// Replenish interval, in milliseconds, for one auth-endpoint token.
     pub fn auth_rate_limit_period_ms(&self) -> u64 {
         (60_000 / u64::from(self.auth_rate_limit_per_min.max(1))).max(1)
+    }
+
+    /// FR-125 — are relay links built by measurement? `relay_auto_links`,
+    /// except under legacy business isolation `enforce` (#21), which keeps
+    /// its own edge rules. The ONE predicate every consumer reads — the path
+    /// planner, the probe offers, the relay's dial allow-list at connect and
+    /// on every push, the reuse check — so they can never disagree.
+    pub fn relay_auto_links_effective(&self) -> bool {
+        self.relay_auto_links
+            && matches!(
+                self.business_isolation.trim().to_ascii_lowercase().as_str(),
+                "off" | "warn"
+            )
     }
 }
 
@@ -1871,6 +1885,26 @@ mod rate_limit_tests {
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,
         }
+    }
+
+    /// FR-125 — legacy `enforce` (and anything that parses as it) keeps its
+    /// own edge rules; `off` and `warn` link by measurement unless switched off.
+    #[test]
+    fn relay_auto_links_hold_outside_enforce_only() {
+        let mut a = app(10, 10);
+        for (isolation, want) in [
+            ("off", true),
+            ("warn", true),
+            (" Warn ", true),
+            ("enforce", false),
+            ("bogus", false),
+        ] {
+            a.business_isolation = isolation.into();
+            assert_eq!(a.relay_auto_links_effective(), want, "{isolation}");
+        }
+        a.business_isolation = "off".into();
+        a.relay_auto_links = false;
+        assert!(!a.relay_auto_links_effective());
     }
 
     #[test]
