@@ -524,6 +524,62 @@ one-hop session and is never told the private endpoint.
   measured first, then partly measured, then any measured unreachable (last, never
   excluded); then summed RTT; then both relays' load. An older relay ignores the field.
 
+## Relays link by measurement; the zone is the only rule (FR-125)
+
+With Logical Network Zones configured, a relay links to any other relay of the org — no
+approved edge, no declared endpoint, no direction. The one rule is the zone: a link that
+crosses zones joins the requesting pair's two zones and no other, and the path still starts
+and ends on those zones' gateways. Spec: [FR-125](fr/FR-125-a-one-way-line-carries-a-zone-path.md).
+
+That has to hold for machines with several addresses, each with its own rules. The code
+names none of these kinds; it learns, per source, which address of which relay answers.
+
+| Address kind | Who can send to it | Example |
+|---|---|---|
+| ordinary public | anyone | a VPS |
+| restricted entry | the sources it admits | a private line's ingress that admits one relay |
+| egress-only | nobody | the exit NAT of that line, where every flow the machine opens leaves |
+| private / LAN | its subnet | a host's LAN NIC |
+
+```mermaid
+flowchart LR
+    M[mainland member] --> A[relay A<br/>mainland gateway]
+    A -->|A measured L's entry: 6 ms| L[relay L, mainland zone<br/>entry admits A only<br/>exit is egress-only]
+    L -->|L measured B through its exit| B[relay B<br/>abroad gateway]
+    B --> T[abroad member]
+    B -.->|B measured both of L's addresses: no answer| L
+```
+
+The pair rides `A → L → B` from whichever side asks: a link is directed (its source holds
+the bridge) and the session over it carries both ways.
+
+| Step | What happens | Where |
+|---|---|---|
+| Offer | every relay is offered every other relay of the org to measure, in any zone, up to 4 endpoints each (16 targets); the offers are a subset of its dial allow-list | `backbone_probe_targets_inner` [`org_relay.rs:2769`](../crates/modules/network/src/org_relay.rs#L2769) |
+| Allow-list | the relay's `peer_relay_serve.backbone_endpoints`: explicit edges, then each same-zone relay's first endpoint (the pre-FR-125 list, never crowded out), then up to 4 endpoints per relay; a crossing lists public addresses only; cap 32. The connect-time list is the same computation, because the daemon ignores a same-revision update | `effective_backbone_endpoints_from_consistent_parts` [`network_zones.rs:651`](../crates/modules/network/src/network_zones.rs#L651), `compute_connect_backbone_endpoints` [`fleet/socket.rs:1832`](../crates/modules/fleet/src/socket.rs#L1832) |
+| Link | source → target on the fastest endpoint the source measured reachable since both last joined; a crossing exists only so measured and only on a public address; a same-zone link exists as before (on its first endpoint when nothing measured works, and its verdict ranks it) | [`path_candidate.rs:389`](../crates/modules/network/src/org_relay/path_candidate.rs#L389), `measured_backbone_endpoint` [`org_relay.rs:1928`](../crates/modules/network/src/org_relay.rs#L1928), `probe_cutoff` [`:1965`](../crates/modules/network/src/org_relay.rs#L1965) |
+| Reuse | a repeat request re-checks an installed crossing by the same zone rule, never by which endpoint is fastest now, so a working session is kept | [`session_zone.rs:110`](../crates/modules/network/src/org_relay/session_zone.rs#L110), `link_joins_zones` [`network_zones.rs:587`](../crates/modules/network/src/network_zones.rs#L587) |
+| Keep alive | the bridge re-binds its remote leg in band after 10 s of silence and ends after 3 unanswered rounds; only its side sends first, which is all a one-way line allows | `Keeper` [`backbone.rs:87`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L87), `forward_remote` [`:602`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L602) |
+| Link health | a remote leg whose bind times out or whose keeper gives up publishes its endpoint; the runtime re-measures that relay at once, so the link reads down for the next mint in seconds, not at the next 240 s round | `link_failures` [`backbone.rs:74`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L74), [`runtime.rs:4792`](../crates/tunnel-core/src/overlay/runtime.rs#L4792), `link_failed` [`:2434`](../crates/tunnel-core/src/overlay/runtime.rs#L2434) |
+
+> [!NOTE]
+> A line whose entry admits anyone needs no first relay: members of its zone measure it
+> directly and reach it the same way. Nothing in the code names either case.
+
+> [!IMPORTANT]
+> Every consumer — the planner, the offers, both allow-lists, the reuse check — reads one
+> predicate, `AppSettings::relay_auto_links_effective`
+> ([`settings.rs:1351`](../crates/config/src/settings.rs#L1351)): `[app] relay_auto_links`
+> (default on) except under legacy business isolation `enforce`, which keeps its own edge
+> rules. Off, the graph is the pre-FR-125 one: same-zone links on the target's first
+> endpoint, crossings over approved edges only.
+
+| Kill switch | Turns off |
+|---|---|
+| `[app] relay_auto_links = false` (server) | offers to other zones, extra endpoints, measured links, auto crossings |
+| `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` (relay) | the bridge's keeper: bind once, as before |
+| `MESHHARBORD_RELAY_LINK_HEALTH=0` (relay) | the immediate re-measure after a failed leg |
+
 ## A slow direct path moves to a relay: path trials
 
 A pair that is direct but slow can move onto an org relay that is faster, and back once
@@ -703,6 +759,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | the cross-border line: plan, mint, push, audit | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — `LineLeg` `:147`, `plan_line` `:1116`, `maybe_mint_line` `:1198`, `mint_line` `:1238`, `push_member` `:2063` |
+| FR-125: measured relay links, the one predicate, the keeper, link health | [Relays link by measurement](#relays-link-by-measurement-the-zone-is-the-only-rule-fr-125) above |
 | the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/meshharbord/src/relay_server.rs#L338) `install_bridge_from_wire` |
 | pod-offload metric | `derp_bytes_relayed_total`, [`crates/api/src/cluster/metrics.rs:62`](../crates/api/src/cluster/metrics.rs#L62) |
 
@@ -712,7 +769,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
 - **MeshHarbor: latency-chosen multi-hop beyond lines.** A cross-border pair's line is
-  chosen by measured latency (above). A same-zone pair still rides one relay; a
+  chosen by measured latency (above), and since FR-125 so is any relay-to-relay link. A same-zone pair still rides one relay; a
   two-relay path for it only comes from a member's path trial, and chains of more than
   two relays need a wire change (one exit field, one bridge leg).
 - **A per-session bitrate cap** on the relay. The session count is capped; per-session

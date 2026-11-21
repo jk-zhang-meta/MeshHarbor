@@ -337,6 +337,38 @@ overlay SSH banner from the mainland member to Tokyo):
 | a member's control connection drops | — | `device_left` ends the line at once; it is minted again about 1 s after the member is back, with no DERP attempt |
 | the session's hourly end | 5.1 s (4 s to notice the expiry, 110 ms to mint and bind the next) | no outage on the probe (`b4aea968`): a member renews 60 s ahead, the old line is revoked and the next one is ready 98 ms later |
 
+## Under Logical Network Zones a measured crossing needs no approval (FR-125)
+
+Everything above is legacy business isolation (`app.business_isolation = enforce`), where the
+only way across is a line an administrator approved. Under Logical Network Zones with
+`enforce` off, relays link across zones by measurement instead
+([peer-relays.md](peer-relays.md#relays-link-by-measurement-the-zone-is-the-only-rule-fr-125)):
+
+| | Legacy `enforce` | Logical Network Zones (`off` / `warn`) |
+|---|---|---|
+| a cross-zone relay link | an approved `cross_border` edge only | any relay pair, where the source measured the target reachable, on a public address |
+| which zones it may join | the edge's two | the requesting pair's two, and no other |
+| path ends | the line's two relays | the two zones' gateways |
+| a strict (`router_only`) zone | unchanged | unchanged: its devices still cross only through its gateways, and FR-124's boundary holds |
+| who decides it is up | the administrator | the measurements, re-taken at once when a bridge's remote leg fails |
+
+```mermaid
+flowchart LR
+    subgraph cn[mainland zone]
+      GA[gateway] -->|measured| X[relay with a one-way line]
+    end
+    subgraph ab[abroad zone]
+      GB[gateway]
+    end
+    X -->|measured through its exit| GB
+    GB -.->|measured: no answer, so no link| X
+```
+
+> [!IMPORTANT]
+> `enforce` keeps its own rules exactly: the switch every consumer reads,
+> `AppSettings::relay_auto_links_effective`, is false under it, so no relay is even offered
+> another zone's relays to measure.
+
 ## Known limits
 
 - **A line outlives the center instance that minted it.** Like every org-relay

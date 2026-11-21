@@ -68,10 +68,10 @@ direction it was measured to work, and only there.
 | Phase | What | Kill switch |
 |---|---|---|
 | P1 | **Built.** The bridge keeps its remote leg alive: an in-band re-bind after 10 s of silence (fresh nonce, same VNI and secret), and the bridge ends when 3 rounds go unanswered. Only the bridge's side sends first. | `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` |
-| P2 | **Built.** **Every relay measures every other relay's every endpoint**, in any zone (bounded: the org's relays only, at most 4 endpoints per relay, within the existing probe-target and 32-endpoint allow-list caps), and reports per (source, target, endpoint) reachability and RTT. The relay's dial allow-list carries the same endpoints. | server `[app] relay_auto_links = false` (with P3) |
-| P3 | **Built.** **Links are synthesized for any two relays** from those measurements: a directed link source→target on the fastest endpoint the source measured reachable. A link that crosses zones exists only where it was measured to work, and only between the pair's two zones; a same-zone link exists as before (unmeasured or down, it keeps the pre-FR-125 first endpoint and its measured verdict ranks it), but takes the measured-best endpoint when there is one. The ends stay on the zones' gateways. Explicit edges stay valid (an override), but are no longer required. Legacy #21 `enforce` keeps its own edges. | server `[app] relay_auto_links = false` |
-| P4 | **Built.** **Link health**: a bridge whose remote leg fails (its bind is never answered, or the P1 keeper gives up) publishes that endpoint, and the daemon's overlay runtime re-measures the relay that offered it at once (the reactive prober, 5 s cooldown). The measurement goes to the center as any probe does, filed per (source, target, endpoint), so the link — not the relay — reads down for the next mint within seconds instead of at the next 240 s round. No new wire message: the server already trusts only measurements of what it offered. | `MESHHARBORD_RELAY_LINK_HEALTH=0` |
-| P5 | Docs: `docs/peer-relays.md` and `docs/business-isolation.md` (relay links, multi-address machines, mermaid), `docs/README.md` row. | — |
+| P2 | **Built.** **Every relay measures every other relay's every endpoint**, in any zone (bounded: the org's relays only, at most 4 endpoints per relay, within the existing 16-target and 32-endpoint caps), and reports per (source, target, endpoint) reachability and RTT. The relay's dial allow-list lists the pre-FR-125 entries first (each same-zone relay's first endpoint), so nothing added can crowd one out; a crossing only ever lists a public address. The probe offers are a subset of that allow-list, and the connect-time list (`fleet/socket.rs`) is the same computation as the live push (`network_zones.rs`) — the daemon ignores a same-revision update, so the two must agree. | server `[app] relay_auto_links = false` (with P3) |
+| P3 | **Built.** **Links are synthesized for any two relays** from those measurements: a directed link source→target on the fastest endpoint the source measured reachable since both last joined (the same cutoff path selection scores with). A link that crosses zones exists only where it was measured to work, only on a public address, and only between the pair's two zones; a same-zone link exists as before (not measured working, it keeps the pre-FR-125 first endpoint and its verdict ranks it), but takes the measured-best endpoint when there is one. The reuse check (`session_zone.rs`) accepts an installed crossing by the same zone rule, never by which endpoint measures fastest now, so a repeat request keeps a working session. The ends stay on the zones' gateways. Explicit edges stay valid (an override), but are no longer required. Legacy #21 `enforce` keeps its own edges: every consumer reads one predicate, `AppSettings::relay_auto_links_effective`. | server `[app] relay_auto_links = false` |
+| P4 | **Built.** **Link health**: a bridge whose remote leg fails (its bind times out unanswered, or the P1 keeper gives up) publishes that endpoint, and the daemon's overlay runtime re-measures the relay that offered it at once (the reactive prober, 5 s cooldown). The measurement goes to the center as any probe does, filed per (source, target, endpoint), so the link — not the relay — reads down for the next mint within seconds instead of at the next 240 s round. No new wire message: the server already trusts only measurements of what it offered. | `MESHHARBORD_RELAY_LINK_HEALTH=0` |
+| P5 | **Built.** Docs: [`peer-relays.md` § Relays link by measurement](../peer-relays.md#relays-link-by-measurement-the-zone-is-the-only-rule-fr-125) (address kinds, mermaid, step table with anchors, kill switches), [`business-isolation.md`](../business-isolation.md#under-logical-network-zones-a-measured-crossing-needs-no-approval-fr-125) (legacy `enforce` vs zones), `docs/README.md` row. | — |
 
 ```mermaid
 flowchart LR
@@ -104,6 +104,21 @@ by the same measurements. Nothing in the code names either case.
 
 - The line's machine is a relay of the mainland zone (its entry is there); its link abroad is
   the one zone crossing. Its zone is pinned by an admin, since its egress geolocates abroad.
+
+## Known limits (independent review, 2026-11-21)
+
+An independent static review (Codex, GPT-6.2, xhigh) of P1–P4 raised twelve findings. Fixed: the
+connect-time allow-list, the reuse check on an installed crossing, the `enforce` predicate, the
+list order and caps, the probe cutoff for crossings, and a local socket error counted as a dead
+link (each fix has a test that fails without it). Left as they are, and why:
+
+| Finding | Why it stays |
+|---|---|
+| A path may cross between the pair's two zones more than once | Every relay on it is in one of the two zones and both ends are gateways, which is the rule; the planner picks the lowest-latency path, so a longer zig-zag only wins when it is measured faster. A third zone is reachable only over an admin's explicit edge, as before. |
+| A relay session with no payload expires after its idle timeout | WireGuard sends a keepalive every 25 s through the session, which refreshes it. Only on-demand dormancy (default off) goes silent, and that holds for every relay session, not just a bridge. |
+| A lost Answer after a NAT remap costs one keeper round (~10 s) | Bounded, and the next round recovers it. |
+| A dead first address on a relay whose second still answers does not move a pair already on it | The pair moves when its own carrier fails and it asks again; the new mint takes the answering address. |
+| One relay's address change re-tells every relay its list | Relays are few and their addresses rarely move; an identical re-advert pushes nothing. |
 
 ## Out of scope
 
