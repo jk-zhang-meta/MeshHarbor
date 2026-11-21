@@ -162,6 +162,20 @@ pub(super) async fn prepare_reusing(
     } else {
         (None, None, false)
     };
+    // FR-125 — the two members' logical zones: a link that crosses zones may
+    // join exactly these two, and nothing else.
+    let pair_nz_zones: Option<(String, String)> = if network_zones_active {
+        use meshharbor_remote_control::models::DeviceZoneResolution::Resolved;
+        match (
+            nz_snap.resolve_node_sync(requester),
+            nz_snap.resolve_node_sync(peer),
+        ) {
+            (Resolved(a), Resolved(b)) => Some((a.id.clone(), b.id.clone())),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let enforce_pair_zone = enforce_zone;
     let unknown_role_mode = iso::unknown_role_mode(state);
     if enforce_zone || unknown_role_mode != Mode::Off {
@@ -359,8 +373,20 @@ pub(super) async fn prepare_reusing(
     // Same-zone routers auto-mesh: when Logical Network Zones are configured,
     // two approved routers in the SAME resolved NetworkZone may forward directly
     // to each other's primary reachable relay endpoint unless overridden by an
-    // explicit `approved_backbone_edges` entry; cross-zone router forwarding is
-    // strictly restricted to admin-configured `approved_backbone_edges`.
+    // explicit `approved_backbone_edges` entry.
+    //
+    // FR-125 (`app.relay_auto_links`, outside legacy #21 Enforce): relays link
+    // to relays freely, by measurement. A link source→target exists on the
+    // endpoint the SOURCE measured reachable (fastest first) — directed, since
+    // a machine's addresses may admit different sources or none — and across
+    // zones too, where the zone rule is the only filter: a crossing link joins
+    // the pair's two zones and nothing else; the path's ends stay on the
+    // zones' gateways (`matches_requester_end` / `matches_peer_end`). A
+    // same-zone link exists as it did before FR-125, on the fastest endpoint
+    // the source measured, else an unmeasured one, else the first; a crossing
+    // link exists only where it was measured to work. Without auto links, cross-zone
+    // router forwarding is restricted to admin-configured edges.
+    let auto_links = crate::org_relay::relay_auto_links(state) && !enforce_zone;
     if network_zones_active {
         let peer_snapshots: Vec<(ObjectId, ObjectId, Option<String>)> = inputs
             .iter()
@@ -388,8 +414,20 @@ pub(super) async fn prepare_reusing(
                 {
                     break;
                 }
-                if *dst_agent == src.agent_id || dst_zone.as_deref() != Some(src_zone) {
+                let Some(dst_zone) = dst_zone.as_deref() else {
                     continue;
+                };
+                if *dst_agent == src.agent_id {
+                    continue;
+                }
+                let same_zone = dst_zone == src_zone;
+                if !same_zone {
+                    let joins_pair = pair_nz_zones.as_ref().is_some_and(|(a, b)| {
+                        (src_zone == a && dst_zone == b) || (src_zone == b && dst_zone == a)
+                    });
+                    if !auto_links || !joins_pair {
+                        continue;
+                    }
                 }
                 let has_explicit = src.approved_edges.iter().any(|e| {
                     ObjectId::parse_str(&e.relay_agent_id).ok() == Some(*dst_agent)
@@ -397,23 +435,49 @@ pub(super) async fn prepare_reusing(
                 if has_explicit {
                     continue;
                 }
-                if let Some(dst_plan) = plans.get(dst_node)
-                    && let Some(ep) = dst_plan.endpoints.iter().find(|ep| {
+                let Some(dst_plan) = plans.get(dst_node) else {
+                    continue;
+                };
+                let candidates: Vec<String> = dst_plan
+                    .endpoints
+                    .iter()
+                    .filter(|ep| {
                         crate::routes::peer_relay::valid_backbone_endpoint(ep)
                             && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
                                 ep,
                                 &network.cidr,
                             )
                     })
-                {
-                    src.approved_edges.push(
-                        meshharbor_remote_control::models::PeerRelayBackboneEdge {
-                            relay_agent_id: dst_agent.to_hex(),
-                            endpoint: ep.clone(),
-                            cross_border: !enforce_zone,
-                        },
-                    );
-                }
+                    .cloned()
+                    .collect();
+                let Some(first) = candidates.first() else {
+                    continue;
+                };
+                let endpoint = if auto_links {
+                    use crate::org_relay::EndpointChoice;
+                    match state.org_relay.backbone_endpoint_choice(
+                        src.node_id,
+                        *dst_node,
+                        &candidates,
+                        std::time::Instant::now(),
+                    ) {
+                        EndpointChoice::Reachable(ep) => ep,
+                        // Same zone: the link exists as before FR-125 (its
+                        // measured verdict ranks it); only the endpoint is
+                        // chosen by what the source measured.
+                        EndpointChoice::Unmeasured(ep) if same_zone => ep,
+                        EndpointChoice::Down if same_zone => first.clone(),
+                        EndpointChoice::Unmeasured(_) | EndpointChoice::Down => continue,
+                    }
+                } else {
+                    first.clone()
+                };
+                src.approved_edges
+                    .push(meshharbor_remote_control::models::PeerRelayBackboneEdge {
+                        relay_agent_id: dst_agent.to_hex(),
+                        endpoint,
+                        cross_border: !enforce_zone || !same_zone,
+                    });
             }
         }
     }

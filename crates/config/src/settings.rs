@@ -1294,6 +1294,15 @@ pub struct AppSettings {
     /// business connectivity for `Unknown` `Agent` and `TunnelClient` devices).
     #[serde(default = "default_business_unknown_role")]
     pub business_unknown_role: String,
+    /// FR-125 — relays link to relays freely, by measurement: every approved
+    /// relay is offered every other relay's endpoints to probe, and a pair's
+    /// path may use a link wherever its source measured the target reachable,
+    /// across zones too. The logical zone is the only rule (the path stays in
+    /// the two members' zones, crosses once, ends on their gateways).
+    /// `false` restores the pre-FR-125 graph: same-zone auto links on the
+    /// target's first endpoint, cross-zone only over approved edges.
+    #[serde(default = "default_true")]
+    pub relay_auto_links: bool,
     /// MeshHarbor #21 relay locality for remote desktop: keep the STUN/TURN
     /// servers handed out for an RC session to the device's business zone.
     /// Deliberately INDEPENDENT of `business_isolation`: `enforce` withholds
@@ -1718,6 +1727,7 @@ impl Settings {
             .set_default("app.business_trusted_proxy_cidrs", Vec::<String>::new())?
             .set_default("app.business_isolation", "warn")?
             .set_default("app.business_unknown_role", "warn")?
+            .set_default("app.relay_auto_links", true)?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1856,6 +1866,7 @@ mod rate_limit_tests {
             business_isolation: super::default_business_isolation(),
             business_zone_pins: Default::default(),
             business_unknown_role: super::default_business_unknown_role(),
+            relay_auto_links: true,
             rc_ice_zone_mode: super::default_rc_ice_zone_mode(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,

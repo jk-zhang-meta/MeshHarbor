@@ -530,6 +530,7 @@ fn test_settings() -> Settings {
             business_zone_pins: Default::default(),
             business_isolation: "warn".to_string(),
             business_unknown_role: "warn".to_string(),
+            relay_auto_links: true,
             // Off by default here (production defaults to `warn`): the gate
             // resolves the public STUN hostnames over DNS at boot, which no
             // ordinary test needs. The relay-locality tests set it explicitly.

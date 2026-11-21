@@ -670,6 +670,7 @@ impl TenantZoneSnapshot {
         let DeviceZoneResolution::Resolved(own_zone) = self.resolve_agent(own_id) else {
             return out;
         };
+        let auto_links = crate::org_relay::relay_auto_links(state);
         for peer in relays {
             if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
                 break;
@@ -681,7 +682,9 @@ impl TenantZoneSnapshot {
             let DeviceZoneResolution::Resolved(peer_zone) = self.resolve_agent(peer_aid) else {
                 continue;
             };
-            if peer_zone.id != own_zone.id {
+            // FR-125: with auto links a relay may dial any other relay, in
+            // any zone; the zone rule is applied where a pair's path is built.
+            if peer_zone.id != own_zone.id && !auto_links {
                 continue;
             }
             let mut candidate_eps: Vec<String> = Vec::new();
@@ -711,12 +714,22 @@ impl TenantZoneSnapshot {
                     std::net::SocketAddr::new(pub_ip, limits::DEFAULT_RELAY_PORT).to_string(),
                 );
             }
-            if let Some(ep) = candidate_eps.into_iter().find(|ep| {
+            let valid = candidate_eps.into_iter().filter(|ep| {
                 crate::routes::peer_relay::valid_backbone_endpoint(ep)
-                    && crate::routes::peer_relay::backbone_endpoint_outside_overlay(ep, overlay_cidr)
-            }) && !out.contains(&ep)
-            {
-                out.push(ep);
+                    && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                        ep,
+                        overlay_cidr,
+                    )
+            });
+            // FR-125: every endpoint the relay may be told to measure or dial,
+            // not only the first (which may be an address that admits nobody).
+            for ep in valid.take(if auto_links { 4 } else { 1 }) {
+                if out.len() >= MAX_PEER_RELAY_BACKBONE_EDGES {
+                    break;
+                }
+                if !out.contains(&ep) {
+                    out.push(ep);
+                }
             }
         }
         out

@@ -1917,6 +1917,70 @@ impl OrgRelayState {
     ) -> path_search::SlaVerdict {
         sla_verdict_of(&self.backbone_probes, ingress, exit, now)
     }
+
+    /// FR-125 — which of `candidates` relay `src` should dial relay `dst` on,
+    /// by `src`'s own fresh measurements: the reachable endpoint with the
+    /// lowest round trip. A machine may hold addresses that differ in what
+    /// they let in (an entry that admits some sources, an egress-only NAT),
+    /// so the target's first endpoint is not a guess worth making; only what
+    /// this source measured is.
+    pub(crate) fn backbone_endpoint_choice(
+        &self,
+        src: ObjectId,
+        dst: ObjectId,
+        candidates: &[String],
+        now: Instant,
+    ) -> EndpointChoice {
+        let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
+        let records = self.backbone_probes.get(&(src, dst));
+        let last_of = |ep: &str| {
+            records.as_ref().and_then(|v| {
+                v.iter()
+                    .rev()
+                    .find(|p| p.endpoint == ep && now.duration_since(p.at) < ttl)
+                    .cloned()
+            })
+        };
+        let mut best: Option<(u32, &String)> = None;
+        let mut unmeasured: Option<&String> = None;
+        for ep in candidates {
+            match last_of(ep) {
+                Some(p) if p.reachable => {
+                    let rtt = p.rtt_ms.unwrap_or(u32::MAX);
+                    if best.is_none_or(|(b, _)| rtt < b) {
+                        best = Some((rtt, ep));
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    if unmeasured.is_none() {
+                        unmeasured = Some(ep);
+                    }
+                }
+            }
+        }
+        match (best, unmeasured) {
+            (Some((_, ep)), _) => EndpointChoice::Reachable(ep.clone()),
+            (None, Some(ep)) => EndpointChoice::Unmeasured(ep.clone()),
+            (None, None) => EndpointChoice::Down,
+        }
+    }
+}
+
+/// FR-125 — [`OrgRelayState::backbone_endpoint_choice`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointChoice {
+    /// The source measured this endpoint reachable (the fastest such).
+    Reachable(String),
+    /// Nothing reachable yet; this endpoint has no fresh measurement.
+    Unmeasured(String),
+    /// Every candidate was measured unreachable from this source.
+    Down,
+}
+
+/// FR-125 — relays link freely by measurement (`app.relay_auto_links`).
+pub(crate) fn relay_auto_links(state: &NetworkState) -> bool {
+    state.core.settings.app.relay_auto_links
 }
 
 fn sla_verdict_of(
@@ -2795,6 +2859,7 @@ async fn backbone_probe_targets_inner(
             .iter()
             .filter_map(|e| ObjectId::parse_str(&e.relay_agent_id).ok())
             .collect();
+        let auto_links = relay_auto_links(state);
         for exit in &relays {
             if out.len() >= MAX_PROBE_TARGETS {
                 break;
@@ -2808,7 +2873,9 @@ async fn backbone_probe_targets_inner(
             else {
                 continue;
             };
-            if exit_zone.id != own_zone.id {
+            // FR-125: with auto links every relay measures every other one,
+            // in any zone; a path's zone rule is applied where it is built.
+            if exit_zone.id != own_zone.id && !auto_links {
                 continue;
             }
             let Ok(Some(exit_node)) = state
@@ -2836,22 +2903,33 @@ async fn backbone_probe_targets_inner(
             else {
                 continue;
             };
-            if let Some(ep) = eps.into_iter().find(|ep| {
-                crate::routes::peer_relay::valid_backbone_endpoint(ep)
-                    && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
-                        ep,
-                        &network.cidr,
-                    )
-            }) {
+            let valid: Vec<String> = eps
+                .into_iter()
+                .filter(|ep| {
+                    crate::routes::peer_relay::valid_backbone_endpoint(ep)
+                        && crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                            ep,
+                            &network.cidr,
+                        )
+                })
+                // FR-125: EVERY endpoint, so the source learns which of the
+                // target's addresses actually let it in (an entry that admits
+                // some sources only, an egress-only NAT that admits none).
+                .take(if auto_links { MAX_PROBE_ENDPOINTS } else { 1 })
+                .collect();
+            if !valid.is_empty() {
                 out.push(RelayProbeTargetWire {
                     relay_node_id: exit_id,
-                    endpoints: vec![ep],
+                    endpoints: valid,
                 });
             }
         }
     }
     out
 }
+
+/// At most this many endpoints per probe target (the wire's stated bound).
+const MAX_PROBE_ENDPOINTS: usize = 4;
 
 /// Which zone a plan's relays must be in under #21 isolation / Logical Network Zones.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
