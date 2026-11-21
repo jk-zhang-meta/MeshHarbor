@@ -380,7 +380,9 @@ fn explain(
             )
         },
     );
-    tracing::info!(
+    // WARN, not INFO: production servers log at `warn`, and this line exists
+    // to be read there. Remove it with the field investigation it serves.
+    tracing::warn!(
         requester = %a,
         peer = %b,
         %chosen,
