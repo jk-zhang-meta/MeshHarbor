@@ -261,7 +261,133 @@ pub(super) fn select_from_prepared(
     if prepared.eligibility_epoch != org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
+    if require_ends {
+        explain(org_relay, &prepared, &forward, &edges, chosen.as_ref(), now);
+    }
     Ok(chosen.map(|path| SelectedPath { prepared, path }))
+}
+
+/// Field diagnostic (FR-125): for a pair whose two ends are relays, log at
+/// most once per pair per [`EXPLAIN_EVERY`] what the planner saw — each
+/// relay's ingress/exit and load, every link with its verdict (and, when it
+/// is not a measurement, the ages of the latest record and of the cutoff) —
+/// and what it chose. Read-only; changes no decision.
+fn explain(
+    org_relay: &OrgRelayState,
+    prepared: &PreparedGraph,
+    forward: &[SearchRelayWithSla],
+    edges: &[SearchEdgeWithSla],
+    chosen: Option<&OrientedSlaPath>,
+    now: Instant,
+) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    const EXPLAIN_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+    static LAST: OnceLock<Mutex<HashMap<(bson::oid::ObjectId, bson::oid::ObjectId), Instant>>> =
+        OnceLock::new();
+    let (a, b) = (prepared.requester_id, prepared.peer_id);
+    let relays = &prepared.graph.relays;
+    if !relays.iter().any(|r| r.node_id == a) || !relays.iter().any(|r| r.node_id == b) {
+        return;
+    }
+    let key = if a < b { (a, b) } else { (b, a) };
+    {
+        let Ok(mut last) = LAST.get_or_init(Default::default).lock() else {
+            return;
+        };
+        if last
+            .get(&key)
+            .is_some_and(|at| now.saturating_duration_since(*at) < EXPLAIN_EVERY)
+        {
+            return;
+        }
+        last.retain(|_, at| now.saturating_duration_since(*at) < EXPLAIN_EVERY);
+        last.insert(key, now);
+    }
+    let short = |i: usize| {
+        relays.get(i).map_or_else(
+            || "?".to_owned(),
+            |r| {
+                let h = r.node_id.to_hex();
+                h[h.len() - 6..].to_owned()
+            },
+        )
+    };
+    let verdict = |v: Option<path_search::SlaVerdict>| match v {
+        None => "-".to_owned(),
+        Some(path_search::SlaVerdict::Reachable {
+            rtt_ms,
+            jitter_ms,
+            loss_permille,
+        }) => format!("R{rtt_ms}/j{jitter_ms}/l{loss_permille}"),
+        Some(path_search::SlaVerdict::Unknown) => "U".to_owned(),
+        Some(path_search::SlaVerdict::Unreachable) => "X".to_owned(),
+    };
+    let relay_list: Vec<String> = forward
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            format!(
+                "{}:in={},ex={},load={}",
+                short(i),
+                verdict(r.ingress),
+                verdict(r.exit),
+                r.load
+            )
+        })
+        .collect();
+    let edge_list: Vec<String> = edges
+        .iter()
+        .zip(prepared.graph.edges.iter())
+        .map(|(e, g)| {
+            let mut s = format!(
+                "{}>{}@{}:{}",
+                short(e.from),
+                short(e.to),
+                g.endpoint,
+                verdict(Some(e.verdict))
+            );
+            if !matches!(e.verdict, path_search::SlaVerdict::Reachable { .. })
+                && let (Some(from), Some(to)) = (relays.get(e.from), relays.get(e.to))
+            {
+                let cutoff =
+                    org_relay.probe_cutoff(from.node_id, from.agent_id, to.node_id, to.agent_id);
+                s.push_str(&format!(
+                    "[{}]",
+                    org_relay.backbone_record_ages(
+                        from.node_id,
+                        to.node_id,
+                        &g.endpoint,
+                        cutoff,
+                        now
+                    )
+                ));
+            }
+            s
+        })
+        .collect();
+    let chosen = chosen.map_or_else(
+        || "none".to_owned(),
+        |p| {
+            let ids: Vec<String> = p.path.relays.iter().map(|&i| short(i)).collect();
+            format!(
+                "{} flipped={} class={} cost={}ms rtt={}ms",
+                ids.join(">"),
+                p.flipped,
+                p.path.class,
+                p.path.effective_cost_ms,
+                p.path.rtt
+            )
+        },
+    );
+    tracing::info!(
+        requester = %a,
+        peer = %b,
+        %chosen,
+        relays = %relay_list.join(" "),
+        links = %edge_list.join(" "),
+        "org-relay: path explain (field diagnostic)"
+    );
 }
 
 #[cfg(test)]

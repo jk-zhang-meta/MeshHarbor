@@ -1924,6 +1924,33 @@ impl OrgRelayState {
         sla_verdict_of(&self.backbone_probes, ingress, exit, now)
     }
 
+    /// Field diagnostic for the path explain log: how old the latest record
+    /// `src` filed for `dst` at `endpoint` is, and how old the cutoff is, so a
+    /// link that reads Unknown says why (nothing on file, past the TTL, or
+    /// older than the cutoff).
+    pub(crate) fn backbone_record_ages(
+        &self,
+        src: ObjectId,
+        dst: ObjectId,
+        endpoint: &str,
+        cutoff: Option<Instant>,
+        now: Instant,
+    ) -> String {
+        let last = self.backbone_probes.get(&(src, dst)).and_then(|records| {
+            records
+                .iter()
+                .rev()
+                .find(|r| r.endpoint == endpoint)
+                .map(|r| now.saturating_duration_since(r.at).as_secs())
+        });
+        let age = |s: Option<u64>| s.map_or_else(|| "none".to_owned(), |s| format!("{s}s"));
+        format!(
+            "last={} cut={}",
+            age(last),
+            age(cutoff.map(|c| now.saturating_duration_since(c).as_secs()))
+        )
+    }
+
     /// FR-125 — the endpoint of `candidates` relay `src` measured reachable
     /// at relay `dst` with the lowest round trip, counting only measurements
     /// taken after `not_before` ([`Self::probe_cutoff`]) and within the probe
