@@ -3,17 +3,31 @@
 //! Only an authorized control-plane caller may supply a grant; a second,
 //! device-local opt-in and CIDR policy must permit the remote backbone leg.
 //! WireGuard bytes stay opaque; each hop replaces only the Geneve VNI.
+//!
+//! FR-125 P1 — the REMOTE leg keeps itself alive. A backbone edge may be any
+//! UDP path the operator vouches for, including a one-way private line whose
+//! NAT or stateful forwarder drops a quiet flow; a dormant pair can be silent
+//! for minutes. So when nothing has come back on the remote leg for
+//! [`KEEPALIVE_IDLE`], the bridge re-binds in band (a fresh nonce, the same
+//! VNI and secret, exactly what a member carrier does, `client.rs`
+//! § Re-binding). The outbound Bind refreshes the path's mapping; the relay's
+//! Challenge proves the far relay still serves the session and re-learns a
+//! remapped source; and a far relay that leaves [`KEEPALIVE_DEAD_ROUNDS`]
+//! rounds unanswered ends the bridge, so the line is not a silent black hole.
+//! Only this side ever sends first, which is all a one-way line allows.
+//! Kill switch: `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` (the pre-FR-125
+//! bind-once bridge).
 use super::{
-    bind::BindSecret,
+    bind::{BindSecret, Nonce, tag1, tag2},
     client,
-    wire::{HEADER_LEN, build_data, parse_data, vni_is_mintable},
+    wire::{ControlFrame, HEADER_LEN, build_data, parse_data, vni_is_mintable},
 };
 use ipnet::IpNet;
 use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{net::UdpSocket, sync::watch, task::JoinHandle};
 
@@ -24,6 +38,39 @@ pub const MAX_CIPHERTEXT: usize =
 pub const MAX_BRIDGE_LIFETIME: Duration = Duration::from_secs(3600);
 const MAX_LOCAL_CIDRS: usize = meshharbor_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES;
 const BIND_BUDGET: Duration = Duration::from_secs(5);
+/// FR-125 P1 — silence on the remote leg after which the bridge re-binds in
+/// band. Well under the shortest UDP mapping timeout seen on NATs and Linux
+/// conntrack (30 s for an unreplied flow).
+pub const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
+/// An unanswered keepalive Bind is re-sent this often, [`KEEPALIVE_SENDS`]
+/// times per round.
+const KEEPALIVE_RETRY: Duration = Duration::from_secs(2);
+const KEEPALIVE_SENDS: u32 = 3;
+/// Whole rounds left unanswered before the far relay is declared gone and the
+/// bridge ends: about `KEEPALIVE_IDLE + 3 × 3 × 2 s` ≈ 28 s after it stopped.
+pub const KEEPALIVE_DEAD_ROUNDS: u32 = 3;
+
+/// The remote leg's keeper timings (FR-125 P1); tests shorten them.
+#[derive(Clone, Copy, Debug)]
+struct Keeper {
+    idle: Duration,
+    retry: Duration,
+    sends: u32,
+    dead_rounds: u32,
+    tick: Duration,
+}
+impl Keeper {
+    const PRODUCTION: Keeper = Keeper {
+        idle: KEEPALIVE_IDLE,
+        retry: KEEPALIVE_RETRY,
+        sends: KEEPALIVE_SENDS,
+        dead_rounds: KEEPALIVE_DEAD_ROUNDS,
+        tick: Duration::from_secs(1),
+    };
+    fn from_env() -> Option<Keeper> {
+        crate::env::flag("RELAY_BACKBONE_KEEPALIVE", true).then_some(Keeper::PRODUCTION)
+    }
+}
 
 /// A local refusal independent of the center's approval. Empty/default is off.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -384,6 +431,14 @@ async fn bind_and_start(
     grant: AuthorizedBridgeGrant,
     interface: Option<&str>,
 ) -> io::Result<BridgeHandle> {
+    bind_and_start_with(grant, interface, Keeper::from_env()).await
+}
+
+async fn bind_and_start_with(
+    grant: AuthorizedBridgeGrant,
+    interface: Option<&str>,
+    keeper: Option<Keeper>,
+) -> io::Result<BridgeHandle> {
     let started = std::time::Instant::now();
     let lifetime = grant.lifetime.min(MAX_BRIDGE_LIFETIME);
     if grant.lifetime.is_zero()
@@ -428,7 +483,7 @@ async fn bind_and_start(
         // send propagates backpressure instead of retaining unbounded packets.
         tokio::select! {
             r = forward(&left, &grant.local, &right, &grant.remote) => r,
-            r = forward(&right, &grant.remote, &left, &grant.local) => r,
+            r = forward_remote(&right, &grant.remote, &left, &grant.local, keeper) => r,
             _ = tokio::time::sleep(lifetime) => Ok(()),
             _ = cancelled.changed() => Ok(()),
         }
@@ -500,6 +555,109 @@ async fn forward(
             if dropped == 64 {
                 tokio::task::yield_now().await;
                 dropped = 0;
+            }
+        }
+    }
+}
+
+/// The remote leg's direction (far relay → local relay), plus its keeper
+/// (module docs, FR-125 P1). Without a keeper it is exactly [`forward`].
+async fn forward_remote(
+    input: &UdpSocket,
+    from: &BridgeLeg,
+    output: &UdpSocket,
+    to: &BridgeLeg,
+    keeper: Option<Keeper>,
+) -> io::Result<()> {
+    let Some(k) = keeper else {
+        return forward(input, from, output, to).await;
+    };
+    let bind_frame = |nonce: &Nonce| {
+        ControlFrame::Bind {
+            nonce: *nonce,
+            tag1: tag1(&from.secret, from.vni, from.generation, nonce),
+        }
+        .encode(from.vni)
+    };
+    let mut bytes = [0u8; HEADER_LEN + MAX_CIPHERTEXT + 1];
+    let mut dropped = 0u8;
+    // The bind that started the bridge was just answered.
+    let mut last_heard = Instant::now();
+    // The outstanding keepalive Bind: its nonce, when it last left, how often.
+    let mut pending: Option<(Nonce, Instant, u32)> = None;
+    let mut unanswered = 0u32;
+    let mut tick = tokio::time::interval(k.tick);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            r = input.recv_from(&mut bytes) => {
+                let (n, source) = r?;
+                if source == from.relay && n <= HEADER_LEN + MAX_CIPHERTEXT {
+                    if let Some((vni, payload)) = parse_data(&bytes[..n]) {
+                        if vni == from.vni {
+                            output.send_to(&build_data(to.vni, payload), to.relay).await?;
+                            last_heard = Instant::now();
+                            unanswered = 0;
+                            dropped = 0;
+                            continue;
+                        }
+                    } else if let Some((
+                        vni,
+                        ControlFrame::Challenge { nonce, cookie },
+                    )) = ControlFrame::decode(&bytes[..n])
+                    {
+                        // Only the Challenge echoing OUR outstanding Bind.
+                        if vni == from.vni && pending.is_some_and(|(p, _, _)| p == nonce) {
+                            let answer = ControlFrame::Answer {
+                                nonce,
+                                cookie,
+                                tag2: tag2(&from.secret, &cookie, &nonce),
+                            }
+                            .encode(from.vni);
+                            input.send_to(&answer, from.relay).await?;
+                            pending = None;
+                            last_heard = Instant::now();
+                            unanswered = 0;
+                            continue;
+                        }
+                    }
+                }
+                dropped += 1;
+                if dropped == 64 {
+                    tokio::task::yield_now().await;
+                    dropped = 0;
+                }
+            }
+            _ = tick.tick() => {
+                let now = Instant::now();
+                match pending {
+                    None if now.duration_since(last_heard) >= k.idle => {
+                        let nonce = client::fresh_nonce();
+                        input.send_to(&bind_frame(&nonce), from.relay).await?;
+                        pending = Some((nonce, now, 1));
+                    }
+                    Some((nonce, sent, n)) if now.duration_since(sent) >= k.retry => {
+                        if n < k.sends {
+                            input.send_to(&bind_frame(&nonce), from.relay).await?;
+                            pending = Some((nonce, now, n + 1));
+                        } else {
+                            pending = None;
+                            unanswered += 1;
+                            if unanswered >= k.dead_rounds {
+                                tracing::warn!(
+                                    relay = %from.relay,
+                                    rounds = unanswered,
+                                    "org-relay backbone: the far relay stopped answering on the remote leg — ending the bridge"
+                                );
+                                return Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "backbone remote leg unanswered",
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -678,6 +836,150 @@ mod tests {
             let rebound = UdpSocket::bind(addr).await.unwrap();
             assert_eq!(rebound.local_addr().unwrap(), addr);
         }
+    }
+    /// A UDP NAT as a line's stateful forwarder behaves (FR-125): packets from
+    /// the inside leave through an outside socket; once the flow has been idle
+    /// for `expire` the mapping is gone and the next packet leaves from a fresh
+    /// port. Replies return to the newest inside source only.
+    async fn line_nat(target: SocketAddr, expire: Duration) -> (SocketAddr, JoinHandle<()>) {
+        let inside = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let entry = inside.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let mut outside: Option<UdpSocket> = None;
+            let mut peer: Option<SocketAddr> = None;
+            let mut last = Instant::now();
+            let mut a = [0u8; 2048];
+            let mut b = [0u8; 2048];
+            loop {
+                if outside.is_some() && last.elapsed() >= expire {
+                    outside = None;
+                }
+                let out_recv = async {
+                    match &outside {
+                        Some(o) => o.recv_from(&mut b).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    r = inside.recv_from(&mut a) => {
+                        let Ok((n, from)) = r else { return };
+                        if outside.is_none() {
+                            outside = Some(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                        }
+                        peer = Some(from);
+                        last = Instant::now();
+                        let _ = outside.as_ref().unwrap().send_to(&a[..n], target).await;
+                    }
+                    r = out_recv => {
+                        let Ok((n, from)) = r else { return };
+                        if from == target && let Some(p) = peer {
+                            last = Instant::now();
+                            let _ = inside.send_to(&b[..n], p).await;
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        });
+        (entry, task)
+    }
+    fn fast_keeper() -> Keeper {
+        Keeper {
+            idle: Duration::from_millis(150),
+            retry: Duration::from_millis(100),
+            sends: 2,
+            dead_rounds: 2,
+            tick: Duration::from_millis(25),
+        }
+    }
+    fn grant_through(a: &TestRelay, remote: SocketAddr) -> AuthorizedBridgeGrant {
+        AuthorizedBridgeGrant {
+            source_relay_id: "left".into(),
+            target_relay_id: "right".into(),
+            local: BridgeLeg {
+                relay: a.addr,
+                vni: 41,
+                generation: 1,
+                secret: BindSecret::from_bytes([12; 32]),
+            },
+            remote: BridgeLeg {
+                relay: remote,
+                vni: 83,
+                generation: 1,
+                secret: BindSecret::from_bytes([21; 32]),
+            },
+            lifetime: Duration::from_secs(30),
+        }
+    }
+    async fn round_trip(
+        left: &UdpSocket,
+        a: &TestRelay,
+        right: &UdpSocket,
+        b: &TestRelay,
+        tag: u8,
+    ) -> bool {
+        let mut recv = [0u8; 2048];
+        left.send_to(&build_data(41, &[tag; 64]), a.addr)
+            .await
+            .unwrap();
+        let Ok(Ok((n, _))) =
+            tokio::time::timeout(Duration::from_secs(1), right.recv_from(&mut recv)).await
+        else {
+            return false;
+        };
+        if parse_data(&recv[..n]) != Some((83, &[tag; 64][..])) {
+            return false;
+        }
+        right
+            .send_to(&build_data(83, &[tag; 64]), b.addr)
+            .await
+            .unwrap();
+        matches!(
+            tokio::time::timeout(Duration::from_secs(1), left.recv_from(&mut recv)).await,
+            Ok(Ok((n, _))) if parse_data(&recv[..n]) == Some((41, &[tag; 64][..]))
+        )
+    }
+    /// FR-125 P1 — a backbone edge over a line whose NAT drops a quiet flow
+    /// (any stateful forwarder, one-way lines included) still carries the
+    /// pair after a silence longer than the mapping lives: the bridge's
+    /// keeper re-binds before it lapses. Without the keeper the next packet
+    /// leaves from a fresh port, the far relay drops it as unbound, and the
+    /// pair is a black hole.
+    #[tokio::test]
+    async fn a_quiet_bridge_over_an_expiring_nat_still_carries_the_pair() {
+        let a = relay(41, [[11; 32], [12; 32]]).await;
+        let b = relay(83, [[21; 32], [22; 32]]).await;
+        let (entry, nat) = line_nat(b.addr, Duration::from_millis(400)).await;
+        let left = end(&a, 41, [11; 32]).await;
+        let right = end(&b, 83, [22; 32]).await;
+        let h = bind_and_start_with(grant_through(&a, entry), None, Some(fast_keeper()))
+            .await
+            .unwrap();
+        assert!(round_trip(&left, &a, &right, &b, 1).await, "fresh bridge");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            round_trip(&left, &a, &right, &b, 2).await,
+            "after a silence longer than the line's NAT mapping"
+        );
+        h.shutdown().await.unwrap();
+        nat.abort();
+    }
+    /// FR-125 P1 — a far relay that stops answering ends the bridge instead
+    /// of leaving it a silent black hole.
+    #[tokio::test]
+    async fn a_bridge_whose_far_relay_stops_answering_ends() {
+        let a = relay(41, [[11; 32], [12; 32]]).await;
+        let b = relay(83, [[21; 32], [22; 32]]).await;
+        let _left = end(&a, 41, [11; 32]).await;
+        let _right = end(&b, 83, [22; 32]).await;
+        let mut h = bind_and_start_with(grant_through(&a, b.addr), None, Some(fast_keeper()))
+            .await
+            .unwrap();
+        drop(b);
+        let r = tokio::time::timeout(Duration::from_secs(3), h.wait())
+            .await
+            .expect("the bridge ends on its own");
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::TimedOut);
     }
     #[tokio::test]
     async fn unauthorized_bridge_refused_before_any_bind_or_task() {

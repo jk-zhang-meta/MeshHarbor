@@ -181,7 +181,7 @@ impl From<io::Error> for BindError {
     }
 }
 
-fn fresh_nonce() -> Nonce {
+pub(super) fn fresh_nonce() -> Nonce {
     let mut n = [0u8; super::bind::NONCE_LEN];
     rand::rng().fill_bytes(&mut n);
     n
