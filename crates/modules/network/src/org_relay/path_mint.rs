@@ -638,15 +638,27 @@ pub(super) async fn reauthorize(
     if !ends_ok {
         return Err(ReauthorizationError::Denied);
     }
+    // FR-125 — with measured links, every hop was already authorized by the
+    // zone rule in `session_zone::check` above (an explicit edge on its own
+    // endpoint, a same-zone link, or a crossing between the pair's zones on
+    // a public address). Requiring the hop to match today's synthesized
+    // graph would make probe freshness and the current fastest endpoint a
+    // reason to revoke a working session: a measurement ages out, a relay
+    // re-joins, another address measures faster — and the pair is torn down.
+    let measured_links = crate::org_relay::relay_auto_links(state);
     if prepared.network_zones_active && !prepared.restrict_ends {
-        for (i, hop) in session.hops.iter().enumerate() {
-            let (from_idx, _) = relays[i];
-            let (to_idx, _) = relays[i + 1];
-            let approved = prepared.graph.edges.iter().any(|edge| {
-                edge.from == from_idx && edge.to == to_idx && edge.endpoint == hop.private_endpoint
-            });
-            if !approved {
-                return Err(ReauthorizationError::Denied);
+        if !measured_links {
+            for (i, hop) in session.hops.iter().enumerate() {
+                let (from_idx, _) = relays[i];
+                let (to_idx, _) = relays[i + 1];
+                let approved = prepared.graph.edges.iter().any(|edge| {
+                    edge.from == from_idx
+                        && edge.to == to_idx
+                        && edge.endpoint == hop.private_endpoint
+                });
+                if !approved {
+                    return Err(ReauthorizationError::Denied);
+                }
             }
         }
     } else {

@@ -80,6 +80,8 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             let by_id: std::collections::HashMap<_, _> =
                 relays.iter().filter_map(|a| a.id.map(|id| (id, a))).collect();
             let mut prev_agent = session.relay_agent_id;
+            let mut prev_node = session.relay.node_id;
+            let now = std::time::Instant::now();
             if !by_id.contains_key(&prev_agent) {
                 return Decision::Invalid;
             }
@@ -104,9 +106,10 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
                         let same_zone = topo
                             .network_zones
                             .same_resolved_zone(prev_agent, hop.relay_agent_id);
-                        // Authorization only: the zone rule and a public
-                        // address. Which endpoint measures fastest now is a
-                        // preference, never a reason to revoke a working hop.
+                        // Authorization: the zone rule and a public address.
+                        // Which endpoint measures fastest now is a preference,
+                        // never a reason to revoke a working hop; a current
+                        // measurement that it is DOWN is (FR-125 P4).
                         let auto_crossing = auto_links
                             && pair_zones.as_ref().is_some_and(|(x, y)| {
                                 topo.network_zones.link_joins_zones(
@@ -117,7 +120,15 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
                                 )
                             })
                             && super::valid_static_endpoint(&hop.private_endpoint);
+                        let measured_down = auto_links
+                            && state.org_relay.backbone_link_down(
+                                (prev_node, prev_agent),
+                                (hop.relay.node_id, hop.relay_agent_id),
+                                &hop.private_endpoint,
+                                now,
+                            );
                         (same_zone || auto_crossing)
+                            && !measured_down
                             && crate::routes::peer_relay::valid_backbone_endpoint(
                                 &hop.private_endpoint,
                             )
@@ -127,6 +138,7 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
                     return Decision::Invalid;
                 }
                 prev_agent = hop.relay_agent_id;
+                prev_node = hop.relay.node_id;
             }
         }
         if mode == iso::Mode::Off {

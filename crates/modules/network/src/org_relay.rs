@@ -1958,6 +1958,46 @@ impl OrgRelayState {
         best.map(|(_, ep)| ep.clone())
     }
 
+    /// FR-125 P4 — does the latest current measurement say relay `src` cannot
+    /// reach relay `dst` at `endpoint`? Only measurements taken after
+    /// [`Self::probe_cutoff`] and within the probe TTL count; nothing on file
+    /// is not "down".
+    pub(crate) fn backbone_link_down(
+        &self,
+        (src, src_identity): (ObjectId, ObjectId),
+        (dst, dst_identity): (ObjectId, ObjectId),
+        endpoint: &str,
+        now: Instant,
+    ) -> bool {
+        let Some(not_before) = self.probe_cutoff(src, src_identity, dst, dst_identity) else {
+            return false;
+        };
+        let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
+        self.backbone_probes
+            .get(&(src, dst))
+            .is_some_and(|records| {
+                records
+                    .iter()
+                    .rev()
+                    .find(|p| {
+                        p.endpoint == endpoint
+                            && p.at >= not_before
+                            && now
+                                .checked_duration_since(p.at)
+                                .is_some_and(|age| age < ttl)
+                    })
+                    .is_some_and(|p| !p.reachable)
+            })
+    }
+
+    /// Was `relay`'s `endpoint` offered to `reporter` as a backbone line to
+    /// measure (so its report is that LINK's state)?
+    fn is_backbone_offer(&self, reporter: ObjectId, relay: ObjectId, endpoint: &str) -> bool {
+        self.backbone_offers
+            .get(&reporter)
+            .is_some_and(|o| o.iter().any(|(r, e)| *r == relay && e == endpoint))
+    }
+
     /// The earliest instant a probe of `target` by `reporter` still counts:
     /// both have joined on their current connections, and neither has moved
     /// its endpoints or taken a new relay policy since. `None` = nothing
@@ -6586,6 +6626,42 @@ pub async fn handle_relay_probe(
         "org-relay: reachability report"
     );
     if accepted {
+        // FR-125 P4 — a relay just measured one of its backbone links down
+        // (a probe round, or the re-measure after a bridge's remote leg
+        // failed): the sessions riding that hop are revoked now, so their
+        // members ask again and the next mint takes another link, instead of
+        // the pair waiting on a black hole until its carrier gives up.
+        if !reachable
+            && relay_auto_links(state)
+            && state
+                .org_relay
+                .is_backbone_offer(node_id, relay_node_id, &endpoint)
+        {
+            let tenant_id = node.tenant_id;
+            let revoked = revoke_where(state, "backbone_link_down", |s| {
+                if s.tenant_id != tenant_id {
+                    return false;
+                }
+                let mut prev = s.relay.node_id;
+                s.hops.iter().any(|hop| {
+                    let rides = prev == node_id
+                        && hop.relay.node_id == relay_node_id
+                        && hop.private_endpoint == endpoint;
+                    prev = hop.relay.node_id;
+                    rides
+                })
+            })
+            .await;
+            if revoked > 0 {
+                info!(
+                    reporter = %node_id,
+                    relay = %relay_node_id,
+                    %endpoint,
+                    revoked,
+                    "org-relay: a backbone link measured down; its sessions are revoked"
+                );
+            }
+        }
         rerank_young(state, &node).await;
         reoptimize_bound_sessions(state, &node).await;
     }

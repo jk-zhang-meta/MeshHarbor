@@ -1367,6 +1367,17 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
         );
     }
     if carried {
+        // Another of L's addresses now measures faster from A. That is a
+        // preference for the NEXT mint, never a reason to tear this one down.
+        // (The fixture replaces A's offers, so it names both of L's addresses.)
+        assert!(support::record_backbone_probe_fixture(
+            net,
+            a,
+            &[
+                (l, "139.199.9.9:3478".into(), true, Some(6)),
+                (l, "202.181.7.50:3478".into(), true, Some(3)),
+            ]
+        ));
         // Pair 1 again, now from abroad: the same session comes back and no
         // relay hears anything — the crossing is still authorized.
         hk1_ws.send(request(&cn1_node, 9)).await.unwrap();
@@ -1380,6 +1391,23 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
                     .await
                     .is_none(),
                 "a repeat request must not re-mint the line"
+            );
+        }
+        // P4: A measures L's entry down (a probe round, or the re-measure
+        // after a bridge's remote leg failed). Both pairs ride that hop, so
+        // both are revoked at once and their members ask again.
+        a_ws.send(Message::Text(
+            json!({ "t": "rc:overlay.relay_probe", "relay_node_id": l_node,
+                    "endpoint": "139.199.9.9:3478", "reachable": false })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        for ws in [&mut cn1_ws, &mut cn2_ws] {
+            assert!(
+                recv_t(ws, "rc:overlay.relay_revoke", wait).await.is_some(),
+                "a link measured down revokes the sessions that ride it"
             );
         }
     }
