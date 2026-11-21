@@ -763,8 +763,11 @@ pub(super) fn bound_upgrade_candidates(
         .filter(|s| !has_active_or_incumbent_trial(org_relay, &s.pair_key, now))
         .collect();
     // Least recently weighed first (never weighed before anything weighed),
-    // so every bound pair takes its turn under the per-pass limit.
-    eligible.sort_by_key(|s| {
+    // so every bound pair takes its turn under the per-pass limit. Each key is
+    // read ONCE: other relays' reports stamp this map while we sort, and a key
+    // re-read per comparison changes under the sort, which then panics (an
+    // order that is not total) and takes the reporting agent's socket with it.
+    eligible.sort_by_cached_key(|s| {
         org_relay
             .bound_upgrade_considered
             .get(&s.pair_key)
@@ -2329,6 +2332,76 @@ mod tests {
              sessions guard: lock-order inversion (deadlock in the field)"
         );
         assert_eq!(candidates, Ok(1), "the bound session is a candidate");
+    }
+
+    #[test]
+    fn bound_upgrade_candidates_survive_weigh_times_changing_while_they_sort() {
+        // Every relay's report weighs pairs on its own task and stamps each one it
+        // weighs, so the stamps change while another report sorts by them. Read
+        // per comparison, a changing key is an order that is not total, and the
+        // standard sort panics on that: in the field (0.4.194) each panic took
+        // down the reporting agent's socket.
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let state = Arc::new(OrgRelayState::new());
+        let tenant = ObjectId::new();
+        let mut keys = Vec::new();
+        for i in 0..256u32 {
+            let mut session = fixture_trial(
+                tenant,
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                i as u64,
+                i,
+                1,
+            )
+            .session;
+            session.bind_by = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
+            keys.push(session.pair_key.clone());
+            state.sessions.insert(session.pair_key.clone(), session);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (state, stop, keys) = (Arc::clone(&state), Arc::clone(&stop), keys.clone());
+            std::thread::spawn(move || {
+                let base = Instant::now();
+                let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+                while !stop.load(Ordering::Relaxed) {
+                    for k in &keys {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        state
+                            .bound_upgrade_considered
+                            .insert(k.clone(), base + Duration::from_micros(x % 1_000_000));
+                    }
+                }
+            })
+        };
+        let sorted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for _ in 0..400 {
+                let got = bound_upgrade_candidates(
+                    &state,
+                    tenant,
+                    ObjectId::new(),
+                    true,
+                    Instant::now(),
+                    16,
+                );
+                assert_eq!(got.len(), 16);
+            }
+        }));
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(
+            sorted.is_ok(),
+            "sorting by weigh times that change under the sort panicked"
+        );
     }
 
     #[test]
