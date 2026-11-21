@@ -17,6 +17,12 @@
 //! Only this side ever sends first, which is all a one-way line allows.
 //! Kill switch: `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` (the pre-FR-125
 //! bind-once bridge).
+//!
+//! FR-125 P4 — a remote leg that fails (its bind, or its keeper) is news
+//! about the LINK, not about this bridge: it goes out on [`link_failures`],
+//! and the overlay runtime re-measures that relay at once, so the center
+//! learns the link is down in seconds rather than at the next probe round.
+//! Kill switch: `MESHHARBORD_RELAY_LINK_HEALTH=0`.
 use super::{
     bind::{BindSecret, Nonce, tag1, tag2},
     client,
@@ -29,7 +35,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{net::UdpSocket, sync::watch, task::JoinHandle};
+use tokio::{
+    net::UdpSocket,
+    sync::{broadcast, watch},
+    task::JoinHandle,
+};
 
 /// Conservative experimental ceiling; callers must not select this path for
 /// a WG datagram MTU above it. No TUN, system-route, or existing MTU changes.
@@ -49,6 +59,28 @@ const KEEPALIVE_SENDS: u32 = 3;
 /// Whole rounds left unanswered before the far relay is declared gone and the
 /// bridge ends: about `KEEPALIVE_IDLE + 3 × 3 × 2 s` ≈ 28 s after it stopped.
 pub const KEEPALIVE_DEAD_ROUNDS: u32 = 3;
+
+/// FR-125 P4 — the remote `ip:port` of every bridge whose remote leg failed
+/// (bind or keeper). Process-wide: the bridge and the runtime that measures
+/// relays are different components of one daemon.
+static LINK_FAILURES: std::sync::OnceLock<broadcast::Sender<SocketAddr>> =
+    std::sync::OnceLock::new();
+
+fn link_failure_sender() -> &'static broadcast::Sender<SocketAddr> {
+    LINK_FAILURES.get_or_init(|| broadcast::channel(16).0)
+}
+
+/// FR-125 P4 — subscribe to remote endpoints whose backbone leg just failed.
+pub fn link_failures() -> broadcast::Receiver<SocketAddr> {
+    link_failure_sender().subscribe()
+}
+
+fn report_link_failure(remote: SocketAddr) {
+    if crate::env::flag("RELAY_LINK_HEALTH", true) {
+        // No subscriber (no runtime yet) is not an error: nothing to tell.
+        let _ = link_failure_sender().send(remote);
+    }
+}
 
 /// The remote leg's keeper timings (FR-125 P1); tests shorten them.
 #[derive(Clone, Copy, Debug)]
@@ -465,10 +497,11 @@ async fn bind_and_start_with(
     if let Some(interface) = interface {
         pin_interface(&socket2::SockRef::from(right.as_ref()), interface)?;
     }
-    tokio::try_join!(
-        bind_leg(&left, &grant.local),
+    tokio::try_join!(bind_leg(&left, &grant.local), async {
         bind_leg(&right, &grant.remote)
-    )?;
+            .await
+            .inspect_err(|_| report_link_failure(grant.remote.relay))
+    })?;
     let local_addrs = [left.local_addr()?, right.local_addr()?];
     let (cancel, mut cancelled) = watch::channel(false);
     let lifetime = lifetime.saturating_sub(started.elapsed());
@@ -649,6 +682,7 @@ async fn forward_remote(
                                     rounds = unanswered,
                                     "org-relay backbone: the far relay stopped answering on the remote leg — ending the bridge"
                                 );
+                                report_link_failure(from.relay);
                                 return Err(io::Error::new(
                                     io::ErrorKind::TimedOut,
                                     "backbone remote leg unanswered",
@@ -970,9 +1004,11 @@ mod tests {
     async fn a_bridge_whose_far_relay_stops_answering_ends() {
         let a = relay(41, [[11; 32], [12; 32]]).await;
         let b = relay(83, [[21; 32], [22; 32]]).await;
+        let far = b.addr;
         let _left = end(&a, 41, [11; 32]).await;
         let _right = end(&b, 83, [22; 32]).await;
-        let mut h = bind_and_start_with(grant_through(&a, b.addr), None, Some(fast_keeper()))
+        let mut failures = link_failures();
+        let mut h = bind_and_start_with(grant_through(&a, far), None, Some(fast_keeper()))
             .await
             .unwrap();
         drop(b);
@@ -980,6 +1016,46 @@ mod tests {
             .await
             .expect("the bridge ends on its own");
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        // FR-125 P4 — the dead leg is reported as the LINK to `far`.
+        assert!(reported(&mut failures, far).await);
+    }
+
+    /// Drain `rx` (other tests share the process-wide channel) for `ep`.
+    async fn reported(rx: &mut broadcast::Receiver<SocketAddr>, ep: SocketAddr) -> bool {
+        let until = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match tokio::time::timeout_at(until, rx.recv()).await {
+                Ok(Ok(got)) if got == ep => return true,
+                Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return false,
+            }
+        }
+    }
+
+    /// FR-125 P4 — a remote leg whose bind is never answered (a line that
+    /// lets nothing through) reports the link; a bridge that ends because it
+    /// was told to reports nothing.
+    #[tokio::test]
+    async fn a_remote_bind_nobody_answers_reports_the_link_and_a_shutdown_does_not() {
+        let a = relay(41, [[11; 32], [12; 32]]).await;
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dead = silent.local_addr().unwrap();
+        let mut failures = link_failures();
+        let _left = end(&a, 41, [11; 32]).await;
+        let err = bind_and_start_with(grant_through(&a, dead), None, Some(fast_keeper()))
+            .await
+            .err()
+            .expect("nothing answers the remote bind");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(reported(&mut failures, dead).await);
+
+        let b = relay(83, [[21; 32], [22; 32]]).await;
+        let _right = end(&b, 83, [22; 32]).await;
+        let h = bind_and_start_with(grant_through(&a, b.addr), None, Some(fast_keeper()))
+            .await
+            .unwrap();
+        h.shutdown().await.unwrap();
+        assert!(!reported(&mut failures, b.addr).await);
     }
     #[tokio::test]
     async fn unauthorized_bridge_refused_before_any_bind_or_task() {

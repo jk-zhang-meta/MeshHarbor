@@ -2427,6 +2427,19 @@ impl RelayProbeUpdates {
         self.next_hint(relay_node_id)
     }
 
+    /// FR-125 P4 — a backbone leg this daemon bridged to `endpoint` just
+    /// failed: a hint to re-measure the relay that offered it, if this
+    /// runtime measures one. The measurement, not the failure, is what the
+    /// center files.
+    pub fn link_failed(&mut self, endpoint: SocketAddr) -> Option<(ObjectId, u64)> {
+        let id = self
+            .targets
+            .iter()
+            .find(|t| t.endpoints.contains(&endpoint))?
+            .relay_node_id;
+        self.next_hint(id)
+    }
+
     /// Only a measured false -> true transition wakes recovery. An initial
     /// positive round supplies measurements without changing startup policy.
     pub fn reachable_results(&mut self, outcomes: &[super::orgrelay::prober::Outcome]) -> bool {
@@ -4245,6 +4258,8 @@ impl OverlayRuntime {
         );
         let (_relay_prober, reactive_probes) =
             super::orgrelay::prober::spawn_reactive(probe_targets_rx, probe_res_tx);
+        // FR-125 P4 — backbone legs this daemon bridges that just failed.
+        let mut link_failures = super::orgrelay::backbone::link_failures();
         let mut org_q = OrgBindQueue {
             in_flight: HashMap::new(),
             epoch: 0,
@@ -4769,6 +4784,15 @@ impl OverlayRuntime {
                             debug!(peer = %done.node_id, "overlay: dropping stale off-loop allocate (peer superseded mid-allocate)");
                         }
                         warn_if_slow("arm:relay_alloc_commit", t_arm);
+                    }
+                },
+                // FR-125 P4 — a backbone leg this daemon bridges failed:
+                // re-measure that relay now, so the center learns the link is
+                // down in seconds, not at the next probe round.
+                Ok(endpoint) = link_failures.recv() => {
+                    if let Some((id, serial)) = probe_updates.link_failed(endpoint) {
+                        info!(%endpoint, relay = %id, "overlay relay: a backbone leg failed — re-measuring that relay");
+                        reactive_probes.request(id, serial);
                     }
                 },
                 // MeshHarbor #5 — one prober round: a report per endpoint, the
@@ -13946,6 +13970,32 @@ mod org_fallback_tests {
         assert!(updates.delta(24, 2, &[peer.clone()], &[]).is_empty());
         assert_eq!(updates.accepted_session(peer.node_id, 9), None);
         assert!(updates.peers.is_empty() && updates.versions.is_empty());
+    }
+
+    /// FR-125 P4 — a failed backbone leg names an endpoint; the hint goes to
+    /// the offered relay that holds it, with a fresh serial each time, and to
+    /// nobody when no offered relay holds it.
+    #[test]
+    fn a_failed_backbone_leg_hints_the_relay_that_offered_its_endpoint() {
+        use super::super::orgrelay::prober::Target;
+        let peer = super::tests::peer(&WgKeypair::generate(), "100.64.0.3");
+        let entry: SocketAddr = "198.51.100.7:3478".parse().unwrap();
+        let target = Target {
+            relay_node_id: peer.node_id,
+            endpoints: vec!["203.0.113.5:3478".parse().unwrap(), entry],
+            via: None,
+        };
+        let mut updates = RelayProbeUpdates::default();
+        updates.reset_full(&[target], std::slice::from_ref(&peer), 1);
+        assert_eq!(updates.link_failed(entry), Some((peer.node_id, 1)));
+        assert_eq!(updates.link_failed(entry), Some((peer.node_id, 2)));
+        assert_eq!(updates.link_failed("192.0.2.1:3478".parse().unwrap()), None);
+        updates.reset_full(&[], std::slice::from_ref(&peer), 2);
+        assert_eq!(
+            updates.link_failed(entry),
+            None,
+            "a withdrawn offer is not re-measured"
+        );
     }
 
     #[test]
