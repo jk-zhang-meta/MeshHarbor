@@ -1369,6 +1369,12 @@ pub struct OrgRelayState {
     last_mint_audit: DashMap<String, ((Option<PeerRelayDenyReason>, bool), Instant)>,
     /// Per-pair cooldown for continuous bound single-relay `PathTrial` upgrades.
     bound_upgrade_cooldown: DashMap<String, Instant>,
+    /// FR-125 — when each pair was last weighed for a bound upgrade. One pass
+    /// weighs at most 16 sessions, least recently weighed first, so in a
+    /// tenant with more bound sessions than that every pair takes its turn
+    /// (before, the same first 16 in map order were weighed every time, and
+    /// a pair past them never moved to a newly measured, faster line).
+    bound_upgrade_considered: DashMap<String, Instant>,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
     /// Nodes whose control connection closed without a graceful leave, and
@@ -3662,6 +3668,18 @@ async fn reoptimize_bound_sessions(state: &NetworkState, reporter: &OverlayNode)
             .bound_upgrade_cooldown
             .retain(|_, until| *until > now);
     }
+    if state.org_relay.bound_upgrade_considered.len() > 4096 {
+        let live: std::collections::HashSet<String> = state
+            .org_relay
+            .sessions
+            .iter()
+            .map(|e| e.pair_key.clone())
+            .collect();
+        state
+            .org_relay
+            .bound_upgrade_considered
+            .retain(|pair, _| live.contains(pair));
+    }
     let is_backbone_relay = state.org_relay.join_extras(reporter_id).relay_backbone_ready;
     let mut bound = trial::bound_upgrade_candidates(
         &state.org_relay,
@@ -3694,6 +3712,10 @@ async fn reoptimize_bound_sessions(state: &NetworkState, reporter: &OverlayNode)
         {
             continue;
         }
+        state
+            .org_relay
+            .bound_upgrade_considered
+            .insert(session.pair_key.clone(), now);
         let m0_id = session.members[0].party.node_id;
         let m1_id = session.members[1].party.node_id;
         let (Ok(m0), Ok(m1)) = (

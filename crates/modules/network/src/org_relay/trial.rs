@@ -758,11 +758,20 @@ pub(super) fn bound_upgrade_candidates(
         })
         .map(|e| e.value().clone())
         .collect();
-    snapshot
+    let mut eligible: Vec<OrgRelaySession> = snapshot
         .into_iter()
         .filter(|s| !has_active_or_incumbent_trial(org_relay, &s.pair_key, now))
-        .take(limit)
-        .collect()
+        .collect();
+    // Least recently weighed first (never weighed before anything weighed),
+    // so every bound pair takes its turn under the per-pass limit.
+    eligible.sort_by_key(|s| {
+        org_relay
+            .bound_upgrade_considered
+            .get(&s.pair_key)
+            .map(|at| *at)
+    });
+    eligible.truncate(limit);
+    eligible
 }
 
 /// Finalized, non-returned trial sessions eligible for a subsequent make-before-break

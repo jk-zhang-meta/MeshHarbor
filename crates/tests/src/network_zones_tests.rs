@@ -1445,6 +1445,157 @@ async fn a_one_way_line_between_zones_is_found_from_measurements_alone(auto_link
     carried
 }
 
+/// FR-125 — a pair already riding a slower crossing moves to the line once
+/// the line is measured: relentless re-upgrade, not "first mint wins". `A`
+/// first reaches `B` directly (80 ms); `L` has not yet measured `B`. When
+/// `L` reports `B` at 25 ms, the bound session is weighed again and a
+/// make-before-break trial over `A ==> L ==> B` starts.
+#[tokio::test]
+async fn a_pair_on_a_slower_crossing_moves_to_the_line_once_it_is_measured() {
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb = geo.path().join("dbip-city-lite.mmdb");
+    std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
+    let mmdb = mmdb.to_str().unwrap().to_owned();
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.stats.geoip_mmdb = Some(mmdb);
+    })
+    .await;
+    let seeded = app.seed_tenant("nz-line-upgrade").await;
+    let admin = &seeded.admin.access_token;
+    let wait = Duration::from_secs(5);
+    let caps = ["relay-server", "relay-control"];
+    let (_, cn_tok) = enroll(&app, &seeded, "up-cn-dev").await;
+    let (_, hk_tok) = enroll(&app, &seeded, "up-hk-dev").await;
+    let (a_id, a_tok) = enroll(&app, &seeded, "up-gw-a").await;
+    let (l_id, l_tok) = enroll(&app, &seeded, "up-line-l").await;
+    let (b_id, b_tok) = enroll(&app, &seeded, "up-gw-b").await;
+    let mut cn_ws = connect_from(&app, &cn_tok, &[], Some("139.199.1.45")).await;
+    let mut hk_ws = connect_from(&app, &hk_tok, &[], Some("202.181.7.20")).await;
+    let mut a_ws = connect_from(&app, &a_tok, &caps, Some("139.199.6.6")).await;
+    let mut l_ws = connect_from(&app, &l_tok, &caps, Some("139.199.9.1")).await;
+    let mut b_ws = connect_from(&app, &b_tok, &caps, Some("202.181.7.6")).await;
+    for ws in [&mut a_ws, &mut l_ws, &mut b_ws] {
+        let _ = recv_t(ws, "rc:overlay.peer_relay_serve", wait).await;
+    }
+    let ready = json!({ "relay_backbone_ready": true });
+    join_node(&mut cn_ws, 51, "139.199.1.45:41641", json!({})).await;
+    join_node(&mut hk_ws, 52, "202.181.7.20:41641", json!({})).await;
+    join_node(&mut a_ws, 53, "139.199.6.6:41641", ready.clone()).await;
+    join_node(&mut l_ws, 54, "202.181.7.50:41641", ready.clone()).await;
+    join_node(&mut b_ws, 55, "202.181.7.6:41641", ready).await;
+    let cn_node = node_id(&app, &seeded, "up-cn-dev").await;
+    let hk_node = node_id(&app, &seeded, "up-hk-dev").await;
+    let a_node = node_id(&app, &seeded, "up-gw-a").await;
+    let l_node = node_id(&app, &seeded, "up-line-l").await;
+    let b_node = node_id(&app, &seeded, "up-gw-b").await;
+    set_mode(&app, &seeded, "on").await;
+    assert_eq!(approve(&app, &seeded, &a_id, true).await, 200);
+    assert_eq!(approve(&app, &seeded, &b_id, true).await, 200);
+    assert_eq!(
+        put(
+            &app,
+            &tenant_url(&seeded, &format!("/peer-relays/{l_id}")),
+            admin,
+            json!({ "serve": true, "static_endpoints": ["139.199.9.9:3478"] }),
+        )
+        .await
+        .0,
+        200
+    );
+    for n in [&a_node, &l_node, &b_node] {
+        grant_relay(&app, &seeded, n).await;
+    }
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({ "zones": [
+            { "id": "cn", "name": "CN", "auto_countries": ["CN"], "is_default": false,
+              "gateway_relay_ids": [a_id], "cross_zone_mode": "router_only" },
+            { "id": "non-cn", "name": "Non-CN", "auto_countries": ["HK", "US"], "is_default": true,
+              "gateway_relay_ids": [b_id], "cross_zone_mode": "direct_preferred" }
+        ]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{body}");
+
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
+    let net = app.state.network();
+    let oid = |s: &str| ObjectId::parse_str(s).unwrap();
+    let (cn, hk, a, l, b) = (
+        oid(&cn_node),
+        oid(&hk_node),
+        oid(&a_node),
+        oid(&l_node),
+        oid(&b_node),
+    );
+    assert!(support::record_member_probe_fixture(
+        net,
+        cn,
+        &[(a, "139.199.6.6:3478".into(), true, Some(5))]
+    ));
+    assert!(support::record_member_probe_fixture(
+        net,
+        hk,
+        &[(b, "202.181.7.6:3478".into(), true, Some(5))]
+    ));
+    assert!(support::record_backbone_probe_fixture(
+        net,
+        a,
+        &[
+            (l, "139.199.9.9:3478".into(), true, Some(6)),
+            (b, "202.181.7.6:3478".into(), true, Some(80)),
+        ],
+    ));
+    // L is offered B but has nothing current that says it works.
+    assert!(support::record_backbone_probe_fixture(
+        net,
+        l,
+        &[(b, "202.181.7.6:3478".into(), false, None)]
+    ));
+
+    cn_ws
+        .send(Message::Text(
+            json!({ "t": "rc:overlay.relay_request", "peer_node_id": hk_node,
+                    "reason": "direct_timeout", "request_id": 7 })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let a_bridge = recv_t(&mut a_ws, "rc:overlay.relay_bridge_serve", wait)
+        .await
+        .expect("the first mint rides the crossing A measured");
+    assert_eq!(
+        a_bridge["bridge"]["remote_endpoint"],
+        json!("202.181.7.6:3478"),
+        "{a_bridge}"
+    );
+    let _ = recv_t(&mut cn_ws, "rc:overlay.relay_session", wait).await;
+    let _ = recv_t(&mut hk_ws, "rc:overlay.relay_session", wait).await;
+    assert!(support::mark_session_bound_fixture(net, cn, hk));
+
+    // L now measures B, through its own exit, much faster.
+    l_ws.send(Message::Text(
+        json!({ "t": "rc:overlay.relay_probe", "relay_node_id": b_node,
+                "endpoint": "202.181.7.6:3478", "reachable": true, "rtt_ms": 25 })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let start = recv_t(&mut cn_ws, "rc:overlay.path_trial_start", wait)
+        .await
+        .expect("the bound pair is weighed again and moves to the line");
+    assert!(
+        start.to_string().contains(&l_node),
+        "the trial rides L: {start}"
+    );
+}
+
 #[tokio::test]
 async fn a_one_way_line_between_zones_carries_the_pair_from_either_side() {
     assert!(a_one_way_line_between_zones_is_found_from_measurements_alone(true).await);
