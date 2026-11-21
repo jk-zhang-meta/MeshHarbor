@@ -5,15 +5,23 @@
 
 ## Goal
 
-An operator who has a private line between two zones adds it as a backbone edge and nothing
-else: a strict zone's devices reach the other zone over it, from either side, and fall back to
-another line when it dies. This must hold when the line is **one-way**: only one machine may
-open it, its far end accepts nothing from outside, and replies come back only on the flows the
-near end opened.
+Relays connect to relays freely. The one rule is the logical zone: a pair's path stays inside
+the two members' zones, crosses once, and starts and ends on those zones' gateways. Nothing
+else is configured per link: no approved edge, no declared endpoint, no direction.
 
-The code knows no topology. It knows a directed dial capability (`PeerRelayBackboneEdge`: a
-source relay, a target relay, an exact UDP endpoint), and it must not assume the target can
-reach the source, that the endpoint is the target's own socket, or that an idle flow stays open.
+That must hold for the machines real networks have. A machine may have several addresses, and
+each has its own rules:
+
+| Address kind | Inbound | Outbound |
+|---|---|---|
+| ordinary public | anyone | yes |
+| restricted entry (a line's ingress that admits some sources only, or anyone) | the sources it admits | replies on the flows it accepted |
+| egress-only (a line's exit NAT) | nobody | every flow the machine opens leaves here |
+| private / LAN | its subnet | — |
+
+The code knows none of these kinds by name. It learns, by measurement, which relay can reach
+which address of which other relay, in which direction, and how fast; a link exists in the
+direction it was measured to work, and only there.
 
 ## Field evidence (2026-11-21, agent 0.4.191, server 0.4.190)
 
@@ -42,38 +50,39 @@ reach the source, that the endpoint is the target's own socket, or that an idle 
 ## What is missing
 
 1. **The bridge leg has no keepalive and no re-bind.** It binds once and then only forwards
-   (`backbone.rs:465`); member carriers have both (`client.rs`, `IDLE_REBIND`). A quiet pair lets
-   the line's NAT state expire; the next packet reaches the far relay from a new port and is
-   dropped as unbound, and its replies go to the dead mapping. The session is a black hole until
-   a member re-requests. Any NAT or stateful firewall on a line does this, one-way or not.
-2. **A dead line is found late.** It is ranked last only after a failed 240 s probe; members
-   cannot see a dead bridge themselves (their relay still answers), so the move to another line
-   waits for a WireGuard handshake timeout and a re-request.
+   (`backbone.rs`); member carriers have both. A quiet pair lets a stateful path's mapping expire
+   and the session becomes a black hole. **Done in P1.**
+2. **Cross-zone links exist only as admin-approved edges** with a declared endpoint and an
+   ADMINISTRATOR-only `cross_border` flag (`path_candidate.rs`, "cross-zone router forwarding is
+   strictly restricted to admin-configured `approved_backbone_edges`"); same-zone relays already
+   auto-mesh.
+3. **An auto link takes the target's FIRST valid endpoint**, unmeasured. On a machine whose first
+   endpoint is its egress-only NAT, or an entry that admits one source, that link never works,
+   and nothing notices.
+4. **Relays measure only some relays** (their own edges; same-zone relays over public endpoints).
+5. **A dead link is found late** and the relay, not the link, is penalised.
 
 ## Design
 
 | Phase | What | Kill switch |
 |---|---|---|
-| P1 | The bridge keeps its remote leg alive: a liveness round on silence (reusing the member carrier's `with_liveness`/`with_rebind`), and a re-bind when the far relay answers `UnboundSource` or the round goes unanswered. Interval below a short NAT timeout (well under 30 s of silence). | `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` |
-| P2 | A failed bridge bind or liveness round is reported, and the server marks **that edge** unusable for new mints for a cooldown (keyed by edge, not by relay); the pair's members are told to re-request, so the next mint takes another line within seconds. | server `[network] backbone_edge_health = false` |
-| P3 | Operator recipe, written for any line: the edge source, the exact entry endpoint, and the line machine's plain L4 UDP forward to the target relay's port (a systemd unit, like the line's existing TCP forwards). Nothing in MeshHarbor names the line. | — |
-| P4 | Docs: `docs/peer-relays.md` (one-way lines, mermaid) and `docs/business-isolation.md` (the cross-border line section), `docs/README.md` row. | — |
+| P1 | **Built.** The bridge keeps its remote leg alive: an in-band re-bind after 10 s of silence (fresh nonce, same VNI and secret), and the bridge ends when 3 rounds go unanswered. Only the bridge's side sends first. | `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` |
+| P2 | **Every relay measures every other relay's every endpoint** (bounded: the org's relays only, one small probe per endpoint per round) and reports per (source, target, endpoint) reachability and RTT. | `MESHHARBORD_RELAY_PROBE_ALL=0` |
+| P3 | **Links are synthesized for any two relays** from those measurements: a directed link source→target on the best endpoint the source reached; none where nothing answered. The zone rule is the only filter: a pair's path uses relays of the two members' zones only, changes zone at most once, and starts and ends on the zones' gateways. Explicit edges stay valid (an override), but are no longer required. | server `[network] relay_auto_links = false` |
+| P4 | **Link health**: a failed bridge bind or keeper round reports the link, which is marked down for new mints (keyed by link, not relay); the pair is told to re-request and moves within seconds. | server `[network] relay_link_health = false` |
+| P5 | Docs: `docs/peer-relays.md` and `docs/business-isolation.md` (relay links, multi-address machines, mermaid), `docs/README.md` row. | — |
 
 ```mermaid
-sequenceDiagram
-    participant M as mainland member
-    participant A as entry relay (mainland zone)
-    participant L as line machine (UDP forward)
-    participant B as exit relay (abroad)
-    participant T as abroad member
-    M->>A: bind (member leg)
-    A->>L: bind to the edge endpoint (only A may)
-    L->>B: forwarded, source = line exit NAT
-    B-->>L: challenge / data
-    L-->>A: back through the line
-    T->>B: bind (member leg)
-    Note over A,B: P1: A sends a liveness round whenever the leg is quiet,<br/>and re-binds on UnboundSource or silence
+flowchart LR
+    M[mainland member] --> A[relay, mainland zone gateway]
+    A -->|measured: A reaches the entry| L[relay with a restricted entry<br/>and an egress-only exit, mainland zone]
+    L -->|measured: L reaches it, via its egress| B[relay, abroad zone gateway]
+    B --> T[abroad member]
+    B -.->|measured: unreachable| L
 ```
+
+A line whose entry admits anyone needs no first relay: members of its zone reach it directly,
+by the same measurements. Nothing in the code names either case.
 
 ## Acceptance criteria
 
@@ -84,15 +93,16 @@ sequenceDiagram
 - [ ] With the line's forward stopped, the pair moves to the other line within 60 s and back when
       it returns; shown slower without P2.
 - [ ] A device whose business policy keeps it inside its zone gets no row over the line.
+- [ ] No link is approved or declared by hand: the path above is found from measurements alone,
+      and a relay that cannot reach an address never gets a link to it.
 - [ ] No code path names a host, a country pair or a line; the recipe works for any line.
 - [ ] `docs/peer-relays.md` and `docs/business-isolation.md` describe one-way lines (mermaid,
       tables, anchors), and `docs/README.md` indexes this FR.
 
 ## Open decisions
 
-- The exit relay: an existing abroad relay that takes inbound (the target of E1's forward), not
-  the line machine itself, which accepts nothing abroad.
-- Whether the line machine stays enrolled as an ordinary node (harmless; it is not on the path).
+- The line's machine is a relay of the mainland zone (its entry is there); its link abroad is
+  the one zone crossing. Its zone is pinned by an admin, since its egress geolocates abroad.
 
 ## Out of scope
 
