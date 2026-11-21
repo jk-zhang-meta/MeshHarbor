@@ -178,7 +178,7 @@ wintun-bindings = { path = "crates/vendored/wintun-bindings" }
 scrap = { path = "crates/vendored/scrap" }
 
 [workspace.package]
-version = "0.4.191"
+version = "0.4.192"
 edition = "2024"
 authors = ["Goran Jovanov <goran.jovanov@gmail.com>"]
 
