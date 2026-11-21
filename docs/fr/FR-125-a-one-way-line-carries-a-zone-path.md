@@ -5,9 +5,10 @@
 
 ## Goal
 
-Relays connect to relays freely. The one rule is the logical zone: a pair's path stays inside
-the two members' zones, crosses once, and starts and ends on those zones' gateways. Nothing
-else is configured per link: no approved edge, no declared endpoint, no direction.
+Relays connect to relays freely. The one rule is the logical zone: a pair's path uses relays
+of the two members' zones only, a link that crosses zones joins those two zones and no other,
+and the path starts and ends on those zones' gateways. Nothing else is configured per link: no
+approved edge, no declared endpoint, no direction.
 
 That must hold for the machines real networks have. A machine may have several addresses, and
 each has its own rules:
@@ -52,24 +53,24 @@ direction it was measured to work, and only there.
 1. **The bridge leg has no keepalive and no re-bind.** It binds once and then only forwards
    (`backbone.rs`); member carriers have both. A quiet pair lets a stateful path's mapping expire
    and the session becomes a black hole. **Done in P1.**
-2. **Cross-zone links exist only as admin-approved edges** with a declared endpoint and an
+2. (**Done in P3.**) **Cross-zone links exist only as admin-approved edges** with a declared endpoint and an
    ADMINISTRATOR-only `cross_border` flag (`path_candidate.rs`, "cross-zone router forwarding is
    strictly restricted to admin-configured `approved_backbone_edges`"); same-zone relays already
    auto-mesh.
-3. **An auto link takes the target's FIRST valid endpoint**, unmeasured. On a machine whose first
+3. **An auto link takes the target's FIRST valid endpoint**, unmeasured (**done in P3**). On a machine whose first
    endpoint is its egress-only NAT, or an entry that admits one source, that link never works,
    and nothing notices.
-4. **Relays measure only some relays** (their own edges; same-zone relays over public endpoints).
-5. **A dead link is found late** and the relay, not the link, is penalised.
+4. **Relays measure only some relays** (their own edges; same-zone relays over public endpoints). **Done in P2.**
+5. **A dead link is found late** and the relay, not the link, is penalised. **Done in P4.**
 
 ## Design
 
 | Phase | What | Kill switch |
 |---|---|---|
 | P1 | **Built.** The bridge keeps its remote leg alive: an in-band re-bind after 10 s of silence (fresh nonce, same VNI and secret), and the bridge ends when 3 rounds go unanswered. Only the bridge's side sends first. | `MESHHARBORD_RELAY_BACKBONE_KEEPALIVE=0` |
-| P2 | **Every relay measures every other relay's every endpoint** (bounded: the org's relays only, one small probe per endpoint per round) and reports per (source, target, endpoint) reachability and RTT. | `MESHHARBORD_RELAY_PROBE_ALL=0` |
-| P3 | **Links are synthesized for any two relays** from those measurements: a directed link source→target on the best endpoint the source reached; none where nothing answered. The zone rule is the only filter: a pair's path uses relays of the two members' zones only, changes zone at most once, and starts and ends on the zones' gateways. Explicit edges stay valid (an override), but are no longer required. | server `[network] relay_auto_links = false` |
-| P4 | **Link health**: a failed bridge bind or keeper round reports the link, which is marked down for new mints (keyed by link, not relay); the pair is told to re-request and moves within seconds. | server `[network] relay_link_health = false` |
+| P2 | **Built.** **Every relay measures every other relay's every endpoint**, in any zone (bounded: the org's relays only, at most 4 endpoints per relay, within the existing probe-target and 32-endpoint allow-list caps), and reports per (source, target, endpoint) reachability and RTT. The relay's dial allow-list carries the same endpoints. | server `[app] relay_auto_links = false` (with P3) |
+| P3 | **Built.** **Links are synthesized for any two relays** from those measurements: a directed link source→target on the fastest endpoint the source measured reachable. A link that crosses zones exists only where it was measured to work, and only between the pair's two zones; a same-zone link exists as before (unmeasured or down, it keeps the pre-FR-125 first endpoint and its measured verdict ranks it), but takes the measured-best endpoint when there is one. The ends stay on the zones' gateways. Explicit edges stay valid (an override), but are no longer required. Legacy #21 `enforce` keeps its own edges. | server `[app] relay_auto_links = false` |
+| P4 | **Built.** **Link health**: a bridge whose remote leg fails (its bind is never answered, or the P1 keeper gives up) publishes that endpoint, and the daemon's overlay runtime re-measures the relay that offered it at once (the reactive prober, 5 s cooldown). The measurement goes to the center as any probe does, filed per (source, target, endpoint), so the link — not the relay — reads down for the next mint within seconds instead of at the next 240 s round. No new wire message: the server already trusts only measurements of what it offered. | `MESHHARBORD_RELAY_LINK_HEALTH=0` |
 | P5 | Docs: `docs/peer-relays.md` and `docs/business-isolation.md` (relay links, multi-address machines, mermaid), `docs/README.md` row. | — |
 
 ```mermaid
