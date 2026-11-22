@@ -140,6 +140,16 @@ impl RoomManager {
         if let Some(ip) = &announced_ip {
             tracing::info!(announced_ip = %ip, pod_host_ip = ?pod_host_ip, "mediasoup announced IP resolved");
         }
+        // FR-126 — the one place this misconfiguration is visible. With a loopback or private
+        // announce, a meeting joins, shows its tiles and carries no audio or video, and nothing
+        // else in the log says why until 15 s into a call (`watch_dtls`).
+        if let Some(why) = unreachable_announce(announced_ip.as_deref(), listen_ip) {
+            warn!(
+                announced_ip = ?announced_ip,
+                %listen_ip,
+                "mediasoup announces {why}: browsers on other machines will join meetings and get no audio or video. Fine when every participant is on this machine; otherwise set MESHHARBOR__MEDIASOUP__ANNOUNCED_IP to this host's public address and publish the RTC port range"
+            );
+        }
 
         Self {
             rooms: DashMap::new(),
@@ -849,4 +859,80 @@ fn media_codecs() -> Vec<RtpCodecCapability> {
             ],
         },
     ]
+}
+
+/// FR-126 — why a browser on another machine cannot reach the address mediasoup puts in its
+/// ICE candidates, or `None` when it can (or when the announce is a host name, which only DNS
+/// can judge). No announce means mediasoup announces the listen address itself.
+fn unreachable_announce(announced: Option<&str>, listen: IpAddr) -> Option<&'static str> {
+    let ip = match announced {
+        Some(a) => match a.trim().parse::<IpAddr>() {
+            Ok(ip) => ip,
+            Err(_) => return None,
+        },
+        None if listen.is_unspecified() => return Some("no address (listen 0.0.0.0, no announce)"),
+        None => listen,
+    };
+    match ip {
+        IpAddr::V4(v4) if v4.is_loopback() => Some("a loopback address"),
+        IpAddr::V4(v4) if v4.is_unspecified() => Some("the unspecified address"),
+        IpAddr::V4(v4) if v4.is_private() || v4.is_link_local() => Some("a private address"),
+        // 100.64.0.0/10, shared address space (CGNAT; also the overlay's legacy range).
+        IpAddr::V4(v4) if v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64 => {
+            Some("a shared (CGNAT) address")
+        }
+        IpAddr::V6(v6) if v6.is_loopback() => Some("a loopback address"),
+        IpAddr::V6(v6) if v6.is_unspecified() => Some("the unspecified address"),
+        IpAddr::V6(v6) if (v6.segments()[0] & 0xfe00) == 0xfc00 => Some("a private address"),
+        IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80 => Some("a link-local address"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::unreachable_announce;
+    use std::net::IpAddr;
+
+    fn any() -> IpAddr {
+        "0.0.0.0".parse().unwrap()
+    }
+
+    /// The production misconfiguration FR-126 found: the built-in `127.0.0.1` default.
+    #[test]
+    fn loopback_and_private_announces_are_named() {
+        for a in [
+            "127.0.0.1",
+            "127.0.1.1",
+            "10.0.0.5",
+            "172.20.0.3",
+            "192.168.1.9",
+            "100.64.0.7",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(unreachable_announce(Some(a), any()).is_some(), "{a}");
+        }
+        assert!(unreachable_announce(None, any()).is_some());
+        assert!(unreachable_announce(None, "127.0.0.1".parse().unwrap()).is_some());
+    }
+
+    #[test]
+    fn public_addresses_and_host_names_pass() {
+        for a in [
+            "203.0.113.9",
+            " 198.51.100.4 ",
+            "2001:db8::1",
+            "media.example.com",
+        ] {
+            assert_eq!(unreachable_announce(Some(a), any()), None, "{a}");
+        }
+        assert_eq!(
+            unreachable_announce(None, "203.0.113.9".parse().unwrap()),
+            None
+        );
+        // 100.128.0.1 is just outside 100.64.0.0/10.
+        assert_eq!(unreachable_announce(Some("100.128.0.1"), any()), None);
+    }
 }

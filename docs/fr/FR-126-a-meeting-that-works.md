@@ -89,7 +89,7 @@ flowchart LR
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| P1 | Media path on the production host, plus the boot warning and the frames e2e | revert the compose file; `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP` | in progress |
+| P1 | Media path on the production host, plus the boot warning and the frames e2e | revert the compose file; `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP` | config applied 2026-11-22; boot warning on master, not yet released; the TURN relay leg is open (field log) |
 | P2 | Whiteboard (Excalidraw), synced and saved | `meetings.whiteboard = false` | — |
 | P3 | Browser-side meeting recording into the room's files | plan feature `recordings`; `meetings.recording = false` | — |
 | P4 | Docs: `docs/real-time.md` meeting section (mermaid, tables), a `docs/README.md` index row | — | — |
@@ -129,3 +129,7 @@ meetings.
 | When (UTC) | What | Result |
 |---|---|---|
 | 2026-11-22 | E1–E11 gathered on server 0.4.206 | the meeting has never carried media on this host |
+| 2026-11-22 14:40 | `conference-media.spec.ts` against a copy of production on the same host (same image, own Mongo/Redis/JWT, open registration, reached by SSH tunnel), media config as production: announce `127.x`, RTC range unpublished | **FAIL**: 0 frames and 0 audio bytes on both sides; the server logs `media transport has no DTLS 15s` for all 4 transports |
+| 2026-11-22 14:44 | same, P1 config: announce the public IPv4, RTC range published UDP+TCP | **PASS** direct: 48 / 53 frames decoded, audio both ways, `host/udp` pairs. **PASS** TCP-only (server UDP candidates dropped): 40 / 44 frames, `host/tcp` pairs |
+| 2026-11-22 14:47 | relay-only (`iceTransportPolicy: relay`) | **FAIL**, two causes. (1) The test network cannot reach TURN's TLS port 5349, while 443 works and another network reaches 5349 in 0.16 s, so a network that blocks 5349 has no relay. (2) Through a forward to 5349 the allocation works, but the relay cannot reach the SFU: the relay container sits on `docker0` and the app on its compose bridge, and Docker's `DOCKER-ISOLATION-STAGE-2 -o br-… -j DROP` drops the hairpin to the published port. Fixing it means changing the TURN container's networking, which also serves fleet remote control, so it is left for the operator. |
+| 2026-11-22 14:51 | P1 applied to production (override on the live compose file, app recreated in 20 s, previous file kept) | healthy; 64 RTC ports published; 0 panics or errors; 24 / 26 devices seen in 5 min. Production itself needs owner approval for new accounts, so the two-browser run there is pending a real meeting. |
