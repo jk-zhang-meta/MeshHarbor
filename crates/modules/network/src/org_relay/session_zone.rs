@@ -66,7 +66,33 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
                 .last()
                 .map(|h| h.relay_agent_id)
                 .unwrap_or(session.relay_agent_id);
-            if !gw0.contains(&session.relay_agent_id) || !gw1.contains(&last_agent) {
+            // An end may also be the member itself when it is a relay, with
+            // the hop beside it inside its own zone (`path_candidate`
+            // `member_relays_end_at_themselves`, the rule the mint applied).
+            let member_agent = |i: usize| match &session.members[i].party.node_ref {
+                meshharbor_remote_control::models::NodeRef::Agent { agent_id } => Some(*agent_id),
+                meshharbor_remote_control::models::NodeRef::TunnelClient { .. } => None,
+            };
+            let self_end = super::path_candidate::member_self_end_enabled();
+            let first_neighbour = session.hops[0].relay_agent_id;
+            let last_neighbour = session
+                .hops
+                .len()
+                .checked_sub(2)
+                .map_or(session.relay_agent_id, |i| session.hops[i].relay_agent_id);
+            let first_ok = gw0.contains(&session.relay_agent_id)
+                || (self_end
+                    && member_agent(0) == Some(session.relay_agent_id)
+                    && topo
+                        .network_zones
+                        .same_resolved_zone(session.relay_agent_id, first_neighbour));
+            let last_ok = gw1.contains(&last_agent)
+                || (self_end
+                    && member_agent(1) == Some(last_agent)
+                    && topo
+                        .network_zones
+                        .same_resolved_zone(last_agent, last_neighbour));
+            if !first_ok || !last_ok {
                 return Decision::Invalid;
             }
             let Ok(relays) = state

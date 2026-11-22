@@ -487,6 +487,12 @@ pub(super) async fn prepare_reusing(
             }
         }
     }
+    let (requester_gateways, peer_gateways) = member_relays_end_at_themselves(
+        &nz_snap,
+        &mut inputs,
+        (a, requester_gateways),
+        (b, peer_gateways),
+    );
     let graph = path_graph::build(inputs, &network.cidr, iso_mode)
         .map_err(|_| Deny::PolicyUnreadable)?;
     // This detects known policy/join changes during reads, not all races; a
@@ -516,6 +522,73 @@ pub(super) async fn prepare_reusing(
         peer_gateways,
         eligibility_epoch: epoch,
         warn_only: mode == PeerRelayMode::Warn,
+    })
+}
+
+/// A pair member that is itself an approved relay may end its own path at
+/// itself: the leg into it is dialed by the relay before it, to an address
+/// that relay measured, instead of the member dialing out to a gateway. A
+/// relay whose machine lets others in at one address but cannot dial out
+/// from another (an entry-only forward, an egress that drops the relay port)
+/// is otherwise unreachable as a device even though it carries other pairs.
+///
+/// The zone rule still holds. For this pair the member keeps no link that
+/// crosses zones out of it or into it, so it never becomes its zone's border
+/// unless it is one of the zone's gateways (and then nothing changes here).
+/// The gateway sets are per pair, so adding the member to its own side's set
+/// affects only this pair — its selection, mint, trial and discovery all read
+/// the same sets; `session_zone::check` applies the same rule on reuse.
+fn member_relays_end_at_themselves(
+    nz: &crate::network_zones::TenantZoneSnapshot,
+    inputs: &mut [path_graph::EligibleRelay],
+    (a, requester_gateways): (ObjectId, Option<HashSet<ObjectId>>),
+    (b, peer_gateways): (ObjectId, Option<HashSet<ObjectId>>),
+) -> (Option<HashSet<ObjectId>>, Option<HashSet<ObjectId>>) {
+    if !member_self_end_enabled() {
+        return (requester_gateways, peer_gateways);
+    }
+    let mut sets = [requester_gateways, peer_gateways];
+    for (member, gateways) in [a, b].into_iter().zip(sets.iter_mut()) {
+        let Some(gateways) = gateways.as_mut() else {
+            continue; // no logical zones: no gateway rule to relax
+        };
+        let Some(own) = inputs
+            .iter()
+            .find(|r| r.node_id == member && !r.implicit)
+            .map(|r| r.agent_id)
+        else {
+            continue; // not a relay: it attaches to a gateway as before
+        };
+        if gateways.contains(&own) || !nz.same_resolved_zone(own, own) {
+            continue; // already a gateway, or its own zone is unresolved
+        }
+        let own_hex = own.to_hex();
+        for src in inputs.iter_mut() {
+            if src.agent_id == own {
+                src.approved_edges.retain(|e| {
+                    ObjectId::parse_str(&e.relay_agent_id)
+                        .is_ok_and(|to| nz.same_resolved_zone(own, to))
+                });
+            } else if !nz.same_resolved_zone(own, src.agent_id) {
+                src.approved_edges.retain(|e| e.relay_agent_id != own_hex);
+            }
+        }
+        gateways.insert(own);
+    }
+    let [requester_gateways, peer_gateways] = sets;
+    (requester_gateways, peer_gateways)
+}
+
+/// Kill switch for `member_relays_end_at_themselves`, read once:
+/// `MESHHARBOR__ORG_RELAY__MEMBER_SELF_END=0` mints no new such path, and the
+/// reuse check stops accepting the ones already installed.
+pub(super) fn member_self_end_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__ORG_RELAY__MEMBER_SELF_END").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
     })
 }
 
