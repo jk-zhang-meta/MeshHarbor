@@ -2544,7 +2544,10 @@
       "fullscreen": "Fullscreen",
       "returnToCall": "Return to call",
       "upload": "Upload a file",
-      "closeFiles": "Close files"
+      "closeFiles": "Close files",
+      "whiteboard": "Whiteboard",
+      "whiteboardFailed": "The whiteboard could not be opened.",
+      "whiteboardRetry": "Try again"
     },
     "connect": {
       "title": "Connect to a device",

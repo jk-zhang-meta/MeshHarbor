@@ -5,6 +5,25 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vuetify from 'vite-plugin-vuetify'
 import { resolve } from 'path'
+import { cpSync } from 'fs'
+import type { Plugin } from 'vite'
+
+// FR-126 P2 — the whiteboard's fonts, served from this origin: the CSP allows fonts from
+// 'self' only (`files/security-headers.conf`), and Excalidraw would fetch them from a CDN.
+// `WhiteboardPanel.vue` points `window.EXCALIDRAW_ASSET_PATH` here in production builds.
+function excalidrawAssets(): Plugin {
+  return {
+    name: 'excalidraw-assets',
+    apply: 'build',
+    closeBundle() {
+      cpSync(
+        resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/fonts'),
+        resolve(__dirname, 'dist/excalidraw-assets/fonts'),
+        { recursive: true },
+      )
+    },
+  }
+}
 
 const apiTarget = process.env.VITE_API_URL || 'http://localhost:5001'
 
@@ -16,6 +35,7 @@ export default defineConfig({
   plugins: [
     vue(),
     vuetify({ autoImport: true }),
+    excalidrawAssets(),
   ],
   resolve: {
     alias: {

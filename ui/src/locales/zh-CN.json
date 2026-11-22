@@ -2544,7 +2544,10 @@
       "fullscreen": "全屏",
       "returnToCall": "返回通话",
       "upload": "上传文件",
-      "closeFiles": "关闭文件"
+      "closeFiles": "关闭文件",
+      "whiteboard": "白板",
+      "whiteboardFailed": "白板打不开。",
+      "whiteboardRetry": "重试"
     },
     "connect": {
       "title": "连接到设备",

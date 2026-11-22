@@ -25,6 +25,20 @@
             :color="showFiles ? 'primary' : undefined"
             @click="toggleFiles"
           />
+          <!-- FR-126 P2 — the meeting whiteboard; a dot when someone draws while it is closed. -->
+          <v-btn
+            v-if="joined && canWhiteboard"
+            icon
+            variant="text"
+            :color="showBoard ? 'primary' : undefined"
+            :aria-label="t('mh.conf.whiteboard')"
+            data-testid="call-whiteboard-toggle"
+            @click="toggleBoard"
+          >
+            <v-badge :model-value="boardDot" dot color="error">
+              <v-icon>mdi-draw</v-icon>
+            </v-badge>
+          </v-btn>
           <!-- Chat is room chat — usable before joining the call too
                (a refreshed /call page used to show no chat until re-join) -->
           <v-btn
@@ -94,13 +108,26 @@
 
             <!-- Active call: dynamic layout -->
             <component
-              v-else
+              v-else-if="!showBoard"
               :is="layoutComponent"
               v-bind="layoutProps"
               @toggle-pin="handleTogglePin"
               @request-pip="handlePiP"
               @spotlight="handleSpotlight"
             />
+            <!-- FR-126 P2 — the whiteboard takes the stage; the videos move to a strip. -->
+            <div v-else class="board-wrap">
+              <WhiteboardPanel ref="boardRef" :room-id="roomId" />
+              <div class="board-filmstrip">
+                <component
+                  :is="layoutComponent"
+                  v-bind="layoutProps"
+                  @toggle-pin="handleTogglePin"
+                  @request-pip="handlePiP"
+                  @spotlight="handleSpotlight"
+                />
+              </div>
+            </div>
 
           </div>
 
@@ -237,6 +264,8 @@ import { useConferenceLayout } from '@/composables/useConferenceLayout'
 import { usePictureInPicture } from '@/composables/usePictureInPicture'
 import LayoutSwitcher from '@/components/conference/LayoutSwitcher.vue'
 import ConferenceFilesPanel from '@/components/conference/ConferenceFilesPanel.vue'
+import WhiteboardPanel from '@/components/conference/WhiteboardPanel.vue'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageEditor from '@/components/chat/MessageEditor.vue'
 import type { MentionData } from '@/components/chat/MessageEditor.vue'
@@ -282,6 +311,32 @@ const joined = ref(false)
 const joining = ref(false)
 const showChat = ref(false)
 const showFiles = ref(false)
+// FR-126 P2 — the whiteboard: offered only when the server says so (a feature fails closed).
+const caps = useCapabilitiesStore()
+const canWhiteboard = computed(() => caps.feature('meeting_whiteboard'))
+const showBoard = ref(false)
+const boardDot = ref(false)
+const boardRef = ref<InstanceType<typeof WhiteboardPanel> | null>(null)
+function onBoardUpdate(data: { room_id?: string; elements?: unknown[] }) {
+  if (data.room_id !== roomId.value || !data.elements) return
+  if (showBoard.value && boardRef.value) boardRef.value.applyRemote(data.elements)
+  else boardDot.value = true
+}
+function toggleBoard() {
+  showBoard.value = !showBoard.value
+  if (showBoard.value) boardDot.value = false
+}
+// Every way into the call ends with `joined = true` (join, return from the mini view, rehome),
+// so the board's listener follows `joined` rather than each of them.
+watch(joined, (on) => {
+  if (on) {
+    wsStore.onMediaMessage('media:whiteboard_update', onBoardUpdate)
+  } else {
+    wsStore.offMediaMessage('media:whiteboard_update')
+    showBoard.value = false
+    boardDot.value = false
+  }
+})
 // FR-116 — below 960 px the chat and files panels overlay the video, so the
 // chat starts closed there (it opened on every join, covering the call) and
 // only one panel is open at a time.
@@ -696,12 +751,37 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  wsStore.offMediaMessage('media:whiteboard_update')
   window.removeEventListener('beforeunload', warnBeforeLeave)
   if (readAllTimer) clearTimeout(readAllTimer)
 })
 </script>
 
 <style scoped>
+.board-wrap {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.board-filmstrip {
+  flex: 0 0 240px;
+  width: 240px;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  background: #000;
+}
+@media (max-width: 959px) {
+  .board-wrap {
+    flex-direction: column;
+  }
+  .board-filmstrip {
+    flex: 0 0 120px;
+    width: 100%;
+    height: 120px;
+  }
+}
 .conference-root {
   display: flex;
   flex-direction: column;
