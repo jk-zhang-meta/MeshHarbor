@@ -1283,7 +1283,12 @@ fn accept_org_bind_session(
     {
         return false;
     }
-    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer)) || standby;
+    // A peer with no carrier at all binds the other end's session at once:
+    // the unresponsive-peer backoff defers only OUR re-request, and "their own
+    // request still pairs us" holds only if we bind what their request minted.
+    let carrierless = !installed.contains_key(&peer);
+    let needed =
+        org_bind_needed(relay.is_tracking(&peer), installed.get(&peer)) || standby || carrierless;
     if !relay.org_session_accept(peer, session) {
         return false;
     }
@@ -13701,6 +13706,67 @@ mod tests {
         assert_eq!(link.public_key, kp.public.to_bytes());
         assert!(conn.is_alive());
         assert!(org_bind_needed(true, None));
+    }
+
+    /// Field, 2026-11-22: both ends of a pair held a relay-death streak from
+    /// hours of failures, so each deferred its own re-request 300 s; with no
+    /// carrier left, a session the OTHER end asked for was stored and never
+    /// bound, and the two ends took turns binding only their own requests.
+    #[tokio::test]
+    async fn a_pushed_session_binds_a_peer_with_no_carrier_while_our_request_is_held() {
+        use super::super::orgrelay::{bind::BindSecret, member::OrgSession};
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let peers = HashMap::from([(
+            nid,
+            test_netmap_peer(nid, Ipv4Addr::new(100, 64, 0, 7), &kp),
+        )]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        for _ in 0..3 {
+            relay.note_refresh_context(nid, Some(RelayKind::Org), "one_way");
+        }
+        relay
+            .request(nid, peer_config_from_netmap(&peers[&nid]).unwrap())
+            .await;
+        assert!(!relay.is_tracking(&nid), "our own request is held");
+        let session = OrgSession {
+            vni: 9,
+            generation: 1,
+            relay_node_id: ObjectId::new(),
+            endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+            secret: BindSecret::from_bytes([9; 32]),
+            bind_budget: Duration::from_secs(3),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            conn: None,
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        let mut alloc = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        let mut q = OrgBindQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        assert!(accept_org_bind_session(
+            nid,
+            session,
+            &mut relay,
+            &mut q,
+            &mut alloc,
+            &peers,
+            &HashMap::new(),
+            false,
+        ));
+        assert_eq!(
+            relay.take_org_jobs().len(),
+            1,
+            "the other end's request pairs a carrier-less peer at once"
+        );
     }
 
     #[tokio::test]
