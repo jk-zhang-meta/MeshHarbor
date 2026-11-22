@@ -31,6 +31,7 @@ Operator, 2026-11-22. Asked whether MeshHarbor has meetings, then "它继承的�
 | E9 | There is no whiteboard: no whiteboard, canvas-drawing or collaboration code anywhere in `ui/src` or `crates/modules/conference`. | repo search |
 | E10 | Recording is a stub. `POST …/recordings` writes a row with `size: 0` and an empty URL and accepts no bytes. No UI calls it. | `crates/modules/conference/src/recording.rs:58-108` |
 | E11 | The existing two-party e2e passes without media. It counts tiles and swallows the failure ("the join flow itself completing without errors is the main assertion"). | `ui/e2e/conference-multi.spec.ts` |
+| E12 | `media:join` checked no room membership: a signed-in user of any org who knew a room id got transports and could consume the call; `media:play_audio` needed no join at all. Harmless while no meeting carried media, live the moment P1 made them carry it. Fixed and released first (0.4.207). | `crates/modules/conference/src/ws_media.rs` (before `fd40a7086`, `9c16c798a`) |
 
 ## Key design
 
@@ -70,7 +71,7 @@ flowchart LR
 - **Sync:** one board per meeting, synced over the existing `/ws` as element deltas. Excalidraw's own
   per-element `version` and `versionNonce` reconcile concurrent edits. The server relays only to
   members of the room and keeps the latest scene, so a late joiner gets the board as it is.
-- **Saving:** when the meeting ends the scene is saved to the room as a file (`.excalidraw` plus a PNG).
+- **Saving:** the board is kept with the room (`meeting_whiteboards`, written every 2 s while drawn), so the next meeting in the room opens it as it was. Excalidraw's own menu exports it as an image or a `.excalidraw` file.
 - **Kill switch:** `meetings.whiteboard = false` hides the button and refuses the ops.
 
 ### P3: recording
@@ -90,9 +91,9 @@ flowchart LR
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
 | P1 | Media path on the production host, plus the boot warning and the frames e2e | revert the compose file; `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP` | config applied 2026-11-22; boot warning on master, not yet released; the TURN relay leg is open (field log) |
-| P2 | Whiteboard (Excalidraw), synced and saved | `meetings.whiteboard = false` | — |
-| P3 | Browser-side meeting recording into the room's files | plan feature `recordings`; `meetings.recording = false` | — |
-| P4 | Docs: `docs/real-time.md` meeting section (mermaid, tables), a `docs/README.md` index row | — | — |
+| P2 | Whiteboard (Excalidraw), synced and kept with the room | `meetings.whiteboard = false` | built; e2e passes on the production copy |
+| P3 | Browser-side meeting recording into the room's files | plan feature `recordings`; `meetings.recording = false` | built |
+| P4 | Docs: `docs/real-time.md` meeting section (mermaid, tables), a `docs/README.md` index row | — | written |
 
 ## Acceptance criteria
 
@@ -102,8 +103,9 @@ flowchart LR
 - [ ] **AC2.** Screen share reaches the other side as frames.
 - [ ] **AC3.** A meeting on this private install runs past 60 minutes without being ended.
 - [ ] **AC4.** Two people draw on the whiteboard at the same time and each sees the other's strokes
-  in under a second. A third person who joins late sees the whole board. The board is in the room's
-  files after the meeting.
+  in under a second. A third person who joins late sees the whole board. The board is kept with the
+  room (the next meeting opens it) and exports from Excalidraw's menu. *(Changed from "in the room's
+  files" while building P2: a kept board is what a meeting product does; an export is one click.)*
 - [ ] **AC5.** A recording started in a meeting is in the room's files when it stops, plays back
   with every participant's video and audio, and every participant saw the indicator while it ran.
 - [ ] **AC6.** The SFU logs the loopback/private-announce warning at boot on a misconfigured
@@ -133,3 +135,5 @@ meetings.
 | 2026-11-22 14:44 | same, P1 config: announce the public IPv4, RTC range published UDP+TCP | **PASS** direct: 48 / 53 frames decoded, audio both ways, `host/udp` pairs. **PASS** TCP-only (server UDP candidates dropped): 40 / 44 frames, `host/tcp` pairs |
 | 2026-11-22 14:47 | relay-only (`iceTransportPolicy: relay`) | **FAIL**, two causes. (1) The test network cannot reach TURN's TLS port 5349, while 443 works and another network reaches 5349 in 0.16 s, so a network that blocks 5349 has no relay. (2) Through a forward to 5349 the allocation works, but the relay cannot reach the SFU: the relay container sits on `docker0` and the app on its compose bridge, and Docker's `DOCKER-ISOLATION-STAGE-2 -o br-… -j DROP` drops the hairpin to the published port. Fixing it means changing the TURN container's networking, which also serves fleet remote control, so it is left for the operator. |
 | 2026-11-22 14:51 | P1 applied to production (override on the live compose file, app recreated in 20 s, previous file kept) | healthy; 64 RTC ports published; 0 panics or errors; 24 / 26 devices seen in 5 min. Production itself needs owner approval for new accounts, so the two-browser run there is pending a real meeting. |
+| 2026-11-22 15:32 | server 0.4.207 (E12 fixes, boot warning) deployed | healthy; P1 config kept through the cutover; the boot warning absent on production |
+| 2026-11-23 | `conference-whiteboard.spec.ts` on the production copy running the P2 build | **PASS**: a rectangle appears on the other board 148 / 149 ms after the stroke begins (SFU and board in Hong Kong, browsers on another network); a late joiner opens the board with it |

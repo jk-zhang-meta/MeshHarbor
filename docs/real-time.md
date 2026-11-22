@@ -43,6 +43,8 @@ JSON messages, `{"type": "...", ...}`.
 | `media:connect_transport` | DTLS-connect a transport |
 | `media:producer_close` | Stop publishing |
 | `media:play_audio` / `media:stop_audio` | Bot/audio playback control |
+| `media:whiteboard_join` / `media:whiteboard_update` | FR-126 — open the meeting's whiteboard / send the elements this browser changed |
+| `media:recording_state` | FR-126 — tell the meeting this participant records (`recording: true`, repeated every 10 s) or stopped |
 | `presence:update` | Presence state |
 | `hive:view.open` / `offer` / `ice` / `renew` / `close` | FR-90 — read an agent session over a viewer peer (module `hive`) |
 | `hive:search.open` | FR-90 P2i-2 — search, over a peer of its own, the copies an archive replica holds of the sessions the asker may read; the peer then takes `hive:view.offer` / `ice` / `renew` / `close`, by its grant |
@@ -61,10 +63,72 @@ JSON messages, `{"type": "...", ...}`.
 | `task:update` | Background-task progress |
 | `hive:view.ready` / `refused` / `answer` / `ice` / `renewed` / `closed` | FR-90 — the viewer peer's handshake, addressed to the ONE connection that opened it |
 | `hive:search.ready` / `refused` | FR-90 P2i-2 — a search's grant confirmed by its archive replica (with how many sessions it names), or refused; the rest of its handshake is the view's above |
+| `media:whiteboard_scene` / `media:whiteboard_update` | FR-126 — the board as it is (answer to `whiteboard_join`) / the elements another participant changed that won the merge |
+| `media:recording_state` | FR-126 — who in the meeting records (`user_id`, `recording`) |
 
 The mediasoup signalling (`media:*`) carries router RTP capabilities, transport
 parameters, and producer/consumer ids — the SFU forwards RTP between participants
 without decoding it.
+
+### Meetings: media path, whiteboard, recording (FR-126)
+
+```mermaid
+flowchart LR
+  A[Browser A] -- "ICE host candidate: the host's public IP, RTC range UDP / TCP" --> SFU[mediasoup in the app]
+  B[Browser B] -- "same, or TURN relay" --> SFU
+  A <-- "/ws media:* — signalling, whiteboard elements, recording heartbeat" --> API[meshharbor-api]
+  B <-- "/ws" --> API
+  API -- "board, every 2 s while drawn" --> M[(meeting_whiteboards)]
+  A -- "recording parts (WebM, ≤ 85 MiB)" --> F[(room files)]
+```
+
+**What a host must give the SFU, or meetings join and carry nothing.** The browser
+receives the SFU's address in its ICE candidates; a loopback or private address joins
+the call, draws the tiles and moves no media, with nothing logged until 15 s into a
+call (`media transport has no DTLS`). Since FR-126 the SFU names it at boot
+(`unreachable_announce`, `crates/modules/conference/src/media/room_manager.rs:867`).
+
+| Setting | Value | Why |
+|---|---|---|
+| `MESHHARBOR__MEDIASOUP__ANNOUNCED_IP` | the host's public IPv4 (per node: `announced_ip_map`) | the built-in default is `127.0.0.1`, for local development |
+| RTC range (`rtc_min_port..rtc_max_port`) | published on that address for **UDP and TCP** | TCP is the second listen info, for networks that drop UDP |
+| TURN | reachable from browsers **and able to reach the SFU** | a relay on another Docker bridge cannot reach a published port: Docker's isolation chain drops the hairpin (FR-126 field log) |
+| `MESHHARBOR__MEETINGS__FREE_CAP` | `false` on an install that sells no plans | with `saas` mounted every org is `free`, and a free meeting ends at 60 minutes |
+
+**Who may take part.** `media:join` creates a connection's transports, so it carries
+the room gate itself: tenant membership, the room inside that tenant, its visibility
+(`crates/modules/conference/src/ws_media.rs:276`). Every other meeting command needs
+its connection to have joined that room (`ws_media.rs:177`). Before FR-126 neither
+held: anyone who knew a room id could join a call's media, or play one of the org's
+files into it.
+
+**Whiteboard** (Excalidraw, MIT). The server keeps each element's latest copy by id
+and merges by Excalidraw's rule — higher `version`, then lower `versionNonce`
+(`crates/modules/conference/src/whiteboard.rs:91`) — so browsers converge whatever
+the order; deletions stay as tombstones. It relays only what won, answers a late
+joiner the whole board, and keeps it with the room.
+
+| Limit | Value |
+|---|---|
+| one update | 512 KiB (`whiteboard.rs:35`) |
+| one board | 6 MiB, 20 000 elements |
+| images | not carried (their pixels are separate files) |
+| written | at most every 2 s while someone draws |
+| kill switch | `meetings.whiteboard` (the SPA reads the `meeting_whiteboard` feature) |
+
+The browser half: `ui/src/whiteboard/sync.ts:20` (send each element once per edit, never
+echo what arrived), a lazily loaded React island (`ui/src/whiteboard/mountExcalidraw.ts`),
+and Excalidraw's fonts served from this origin (`ui/vite.config.ts:14`), as the CSP
+allows fonts from `'self'` only.
+
+**Recording** happens in the recorder's browser: every tile composed onto one canvas (a
+screen share takes the stage), every voice mixed, written as WebM and uploaded into the
+room's files in parts, a new one every 8 minutes or before 85 MiB, as an upload is
+capped at 100 MiB (`ui/src/composables/useMeetingRecorder.ts:17`). The server relays
+only who records (`crates/modules/conference/src/recording.rs:149`), refused when
+`meetings.recording` is off or the org's plan has no recordings. A hidden tab records
+at about one frame per second and a closed tab loses its part in progress; recording
+on the server is not built.
 
 The meeting-length cap is a **sweep, not a timer** (FR-115 P5): every pod reads
 the calls in progress every 30 s and decides each against the org's plan, and the

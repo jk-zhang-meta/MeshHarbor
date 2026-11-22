@@ -141,7 +141,7 @@ same accounts and server.*
 
 | Doc | What it covers |
 |---|---|
-| [real-time.md](real-time.md) | The WebSocket surfaces: user events, presence, mediasoup signalling, the `rc:*` agent protocol, DERP |
+| [real-time.md](real-time.md) | The WebSocket surfaces: user events, presence, mediasoup signalling, meetings (media path, whiteboard, recording; FR-126), the `rc:*` agent protocol, DERP |
 | [ui.md](ui.md) | Frontend map: views, stores, composables, the remote-desktop viewer, observability components, and the devices list's "needs a person" chips (a credential not renewing, FR-103; a device not updating, FR-106). On phones and tablets (FR-116): what each breakpoint is for, full-screen dialogs, stacked tables, settings as gates, detail on demand, nothing hover-only, devices by their display name |
 
 ## 🐝 Agent sessions (Hive)
