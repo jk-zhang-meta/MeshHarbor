@@ -53,6 +53,18 @@
               <v-icon>{{ showChat ? 'mdi-message-text' : 'mdi-message-text-outline' }}</v-icon>
             </v-badge>
           </v-btn>
+          <!-- FR-126 P3 — everyone sees who records. -->
+          <v-chip
+            v-if="joined && recordingNames.length"
+            size="small"
+            color="error"
+            variant="flat"
+            class="mr-2"
+            prepend-icon="mdi-record-circle"
+            data-testid="call-recording-indicator"
+          >
+            {{ t('mh.conf.recordingBy', { names: recordingNames.join(', ') }) }}
+          </v-chip>
           <v-chip size="small" :color="statusColor">
             {{ ['in_progress', 'scheduled', 'ended'].includes(roomStore.current?.conference_status ?? '') ? t(`mh.conf.status.${roomStore.current?.conference_status}`) : roomStore.current?.conference_status }}
           </v-chip>
@@ -225,6 +237,15 @@
             :color="pip.isPiPActive.value ? 'primary' : undefined"
             @click="togglePiP"
           />
+          <v-btn
+            v-if="canRecord"
+            :icon="recorder.recording.value ? 'mdi-stop-circle' : 'mdi-record-circle-outline'"
+            :color="recorder.recording.value ? 'error' : undefined"
+            :loading="recorder.saving.value > 0 && !recorder.recording.value"
+            :aria-label="recorder.recording.value ? t('mh.conf.stopRecording') : t('mh.conf.record')"
+            data-testid="call-record-toggle"
+            @click="toggleRecording"
+          />
           <v-btn icon="mdi-phone-hangup" color="error" @click="handleLeave" />
           <v-spacer />
         </v-toolbar>
@@ -266,6 +287,7 @@ import LayoutSwitcher from '@/components/conference/LayoutSwitcher.vue'
 import ConferenceFilesPanel from '@/components/conference/ConferenceFilesPanel.vue'
 import WhiteboardPanel from '@/components/conference/WhiteboardPanel.vue'
 import { useCapabilitiesStore } from '@/stores/capabilities'
+import { useMeetingRecorder, pickMimeType, type VideoSource, type AudioSource } from '@/composables/useMeetingRecorder'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageEditor from '@/components/chat/MessageEditor.vue'
 import type { MentionData } from '@/components/chat/MessageEditor.vue'
@@ -331,10 +353,14 @@ function toggleBoard() {
 watch(joined, (on) => {
   if (on) {
     wsStore.onMediaMessage('media:whiteboard_update', onBoardUpdate)
+    wsStore.onMediaMessage('media:recording_state', onRecordingState)
   } else {
     wsStore.offMediaMessage('media:whiteboard_update')
+    wsStore.offMediaMessage('media:recording_state')
     showBoard.value = false
     boardDot.value = false
+    recordersSeen.value = new Map()
+    void recorder.stop()
   }
 })
 // FR-116 — below 960 px the chat and files panels overlay the video, so the
@@ -388,6 +414,80 @@ function getDisplayName(userId: string): string {
   const participant = roomStore.participants.find((p) => p.user_id === userId)
   return participant?.display_name || userId.slice(0, 8)
 }
+
+// FR-126 P3 — recording, in this browser, saved into the room's files in parts.
+const canRecord = computed(
+  () => caps.feature('meeting_recording') && typeof MediaRecorder !== 'undefined' && pickMimeType() !== null,
+)
+let recordingName = ''
+const recorder = useMeetingRecorder({
+  videos() {
+    const out: VideoSource[] = []
+    const local = localStream.value
+    if (local && local.getVideoTracks().length && conferenceStore.isVideoOn) {
+      out.push({ key: 'local', stream: local, label: localDisplayName.value, screen: false })
+    }
+    const screen = conferenceStore.producers.get('screen')?.track
+    if (screen) out.push({ key: 'local:screen', stream: new MediaStream([screen]), label: localDisplayName.value, screen: true })
+    for (const [key, r] of conferenceStore.remoteStreams) {
+      if (r.stream.getVideoTracks().length) {
+        out.push({ key, stream: r.stream, label: getDisplayName(r.userId), screen: r.source === 'screen' })
+      }
+    }
+    return out
+  },
+  audios() {
+    const out: AudioSource[] = []
+    if (localStream.value?.getAudioTracks().length) out.push({ key: 'local', stream: localStream.value })
+    for (const [key, r] of conferenceStore.remoteStreams) {
+      if (r.stream.getAudioTracks().length) out.push({ key, stream: r.stream })
+    }
+    return out
+  },
+  async savePart(blob, part) {
+    const file = new File([blob], `${recordingName} part ${part}.webm`, { type: 'video/webm' })
+    await roomStore.uploadRoomFile(tenantId.value, roomId.value, file)
+    snackbar.showSuccess(t('mh.conf.recordingSaved', { part }))
+  },
+  announce(on) {
+    wsStore.send('media:recording_state', { room_id: roomId.value, recording: on })
+  },
+})
+async function toggleRecording() {
+  if (recorder.recording.value) {
+    await recorder.stop()
+    if (recorder.error.value) snackbar.showError(t('mh.conf.recordingFailed', { error: recorder.error.value }))
+    return
+  }
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  recordingName = `${roomStore.current?.name || t('mh.conf.call')} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}-${pad(d.getMinutes())}`
+  try {
+    await recorder.start()
+  } catch (e) {
+    snackbar.showError(t('mh.conf.recordingFailed', { error: (e as Error).message }))
+  }
+}
+// Who else records: their heartbeat comes every 10 s; an indicator lapses 25 s after the last.
+const recordersSeen = ref(new Map<string, number>())
+const nowTick = ref(Date.now())
+const tickTimer = setInterval(() => (nowTick.value = Date.now()), 5000)
+function onRecordingState(data: { room_id?: string; user_id?: string; recording?: boolean }) {
+  if (data.room_id !== roomId.value || !data.user_id) return
+  const next = new Map(recordersSeen.value)
+  if (data.recording) next.set(data.user_id, Date.now())
+  else next.delete(data.user_id)
+  recordersSeen.value = next
+  nowTick.value = Date.now()
+}
+const recordingNames = computed(() => {
+  const names: string[] = []
+  if (recorder.recording.value) names.push(t('mh.conf.you'))
+  for (const [uid, at] of recordersSeen.value) {
+    if (nowTick.value - at < 25_000) names.push(getDisplayName(uid))
+  }
+  return names
+})
 
 const layoutCtrl = useConferenceLayout(
   localStream,
@@ -637,6 +737,8 @@ async function doJoin() {
 }
 
 async function handleLeave() {
+  // FR-126 P3 — the part in progress is saved before the call is torn down.
+  await recorder.stop()
   // Remove beforeunload warning
   window.removeEventListener('beforeunload', warnBeforeLeave)
 
@@ -751,6 +853,9 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearInterval(tickTimer)
+  void recorder.stop()
+  wsStore.offMediaMessage('media:recording_state')
   wsStore.offMediaMessage('media:whiteboard_update')
   window.removeEventListener('beforeunload', warnBeforeLeave)
   if (readAllTimer) clearTimeout(readAllTimer)

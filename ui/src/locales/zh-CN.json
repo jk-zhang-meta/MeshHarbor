@@ -2547,7 +2547,12 @@
       "closeFiles": "关闭文件",
       "whiteboard": "白板",
       "whiteboardFailed": "白板打不开。",
-      "whiteboardRetry": "重试"
+      "whiteboardRetry": "重试",
+      "record": "录制",
+      "stopRecording": "停止录制",
+      "recordingBy": "正在录制：{names}",
+      "recordingSaved": "录制第 {part} 段已保存到本房间的文件",
+      "recordingFailed": "录制失败：{error}"
     },
     "connect": {
       "title": "连接到设备",

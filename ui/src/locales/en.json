@@ -2547,7 +2547,12 @@
       "closeFiles": "Close files",
       "whiteboard": "Whiteboard",
       "whiteboardFailed": "The whiteboard could not be opened.",
-      "whiteboardRetry": "Try again"
+      "whiteboardRetry": "Try again",
+      "record": "Record",
+      "stopRecording": "Stop recording",
+      "recordingBy": "Recording: {names}",
+      "recordingSaved": "Recording part {part} saved to the room's files",
+      "recordingFailed": "Recording failed: {error}"
     },
     "connect": {
       "title": "Connect to a device",
