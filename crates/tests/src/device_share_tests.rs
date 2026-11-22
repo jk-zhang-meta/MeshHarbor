@@ -387,8 +387,20 @@ async fn device_share_creation_refuses_nonowner_pending_and_broad_scope() {
             b
         },
         {
+            // Neither a lifetime nor `permanent`: never read as a share without end.
             let mut b = create_body(&f);
-            b["expires_in_secs"] = json!(DeviceShareGrant::MAX_LIFETIME_SECS + 1);
+            b.as_object_mut().unwrap().remove("expires_in_secs");
+            b
+        },
+        {
+            let mut b = create_body(&f);
+            b["permanent"] = json!(true);
+            b
+        },
+        {
+            // Ends after 9999: that is the permanent share, asked for as such.
+            let mut b = create_body(&f);
+            b["expires_in_secs"] = json!(9_000u64 * 366 * 24 * 3600);
             b
         },
     ] {
@@ -413,6 +425,46 @@ async fn device_share_creation_refuses_nonowner_pending_and_broad_scope() {
             .unwrap(),
         0
     );
+}
+/// A share may last as long as its owner says (no 30-day cap), or be permanent; both are
+/// live and revocable like any other.
+#[tokio::test]
+async fn device_share_lifetimes_have_no_cap_and_a_permanent_share_never_expires() {
+    let f = fixture().await;
+    let ten_years = 10u64 * 366 * 24 * 3600;
+    for (field, value) in [
+        ("expires_in_secs", json!(ten_years)),
+        ("permanent", json!(true)),
+    ] {
+        let mut b = create_body(&f);
+        b.as_object_mut().unwrap().remove("expires_in_secs");
+        b[field] = value;
+        let before = DateTime::now().timestamp_millis();
+        let r = f
+            .app
+            .auth_post("/api/device-shares", &f.owner.token)
+            .json(&b)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{field}");
+        let v: serde_json::Value = r.json().await.unwrap();
+        let at = v["expires_at_ms"].as_i64().unwrap();
+        if field == "permanent" {
+            assert_eq!(at, DeviceShareGrant::PERMANENT_EXPIRES_AT_MS);
+        } else {
+            let want = before + ten_years as i64 * 1000;
+            assert!((want..want + 60_000).contains(&at), "{at} vs {want}");
+        }
+    }
+    let live = f
+        .app
+        .db
+        .collection::<DeviceShareGrant>(DeviceShareGrant::COLLECTION)
+        .count_documents(doc! {"revoked_at": null, "expires_at": {"$gt": DateTime::now()}})
+        .await
+        .unwrap();
+    assert_eq!(live, 2);
 }
 #[tokio::test]
 async fn device_share_revoke_cas_and_expiry_are_enforced_by_real_check_route() {

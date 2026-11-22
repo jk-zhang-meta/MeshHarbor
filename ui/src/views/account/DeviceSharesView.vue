@@ -8,7 +8,7 @@
     <v-btn class="my-3" :loading="loading" @click="load">{{ $t('common.refresh') }}</v-btn>
     <v-progress-linear v-if="loading" indeterminate />
     <v-table><thead><tr><th>{{ $t('mh.shares.col.device') }}</th><th>{{ $t('mh.shares.col.parties') }}</th><th>{{ $t('mh.shares.col.services') }}</th><th>{{ $t('mh.shares.col.created') }}</th><th>{{ $t('mh.shares.col.expires') }}</th><th>{{ $t('mh.shares.col.state') }}</th><th>{{ $t('mh.shares.col.revoked') }}</th><th>{{ $t('mh.shares.col.actions') }}</th></tr></thead><tbody>
-      <tr v-for="s in items" :key="s.id"><td>{{ s.device_name ?? s.device_id }}<br v-if="s.device_name" /><small v-if="s.device_name"><code>{{ s.device_id }}</code></small></td><td>{{ s.owner_username ?? s.owner_user_id }} → {{ s.recipient_username ?? s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? $t('mh.shares.notReported') : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ recordStateLabel(shareRecordState(s, now)) }}<br /><small>{{ $t('mh.shares.grantRevision', { id: s.id, revision: s.revision }) }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
+      <tr v-for="s in items" :key="s.id"><td>{{ s.device_name ?? s.device_id }}<br v-if="s.device_name" /><small v-if="s.device_name"><code>{{ s.device_id }}</code></small></td><td>{{ s.owner_username ?? s.owner_user_id }} → {{ s.recipient_username ?? s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? $t('mh.shares.notReported') : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ sharePermanent(s.expires_at_ms) ? $t('mh.shares.permanent') : new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ recordStateLabel(shareRecordState(s, now)) }}<br /><small>{{ $t('mh.shares.grantRevision', { id: s.id, revision: s.revision }) }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
         <v-btn v-if="direction === 'received'" size="small" :disabled="!shareLive(s, now) || !sharedRemotePermissions(s.permissions)" :to="nativeDesktop ? undefined : { name: 'shared-remote', params: { shareId: s.id } }" :href="nativeDesktop ? sharedRemoteUrl(s) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">{{ $t('mh.shares.openRemote') }}</v-btn>
         <v-btn v-if="direction === 'received' && s.permissions.ssh" size="small" class="ml-2" data-testid="shared-ssh-open" :data-share-id="s.id" :disabled="!shareLive(s, now)" @click="openSsh(s)">{{ $t('mh.shares.openSsh') }}</v-btn>
         <v-btn v-if="direction === 'sent' && s.revoked_at_ms === null" size="small" color="error" :disabled="saving" @click="pendingRevoke = s">{{ $t('mh.shares.revoke') }}</v-btn>
@@ -47,7 +47,10 @@
         </div>
         <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" :label="$t('mh.shares.permView')" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" :label="$t('mh.shares.permControl')" />
         <v-checkbox data-testid="share-files-permission" v-model="files" :label="$t('mh.shares.permFiles')" />
-        <v-text-field v-model.number="hours" :label="$t('mh.shares.hours')" type="number" min="1" max="720" />
+        <div class="d-flex flex-wrap ga-2">
+          <v-text-field v-if="unit !== 'permanent'" v-model.number="amount" data-testid="share-amount" :label="$t('mh.shares.duration')" type="number" min="1" style="max-width: 200px" />
+          <v-select v-model="unit" data-testid="share-unit" :items="unitItems" :label="$t('mh.shares.unit.label')" style="max-width: 200px" />
+        </div>
         <v-alert type="info" variant="tonal" class="mb-3">{{ $t('mh.shares.formNote') }}</v-alert>
         <v-btn data-testid="share-create" type="submit" color="primary" :loading="saving">{{ $t('mh.shares.create') }}</v-btn>
       </v-form>
@@ -83,17 +86,18 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { appOrigin } from '@/utils/deployment'
-import { sharedRemotePermissions, shareLive, shareRecordState, type DeviceShare } from '@/utils/deviceShare'
+import { sharedRemotePermissions, shareLive, shareRecordState, shareLifetime, sharePermanent, SHARE_UNITS, type DeviceShare, type ShareUnit } from '@/utils/deviceShare'
 const auth = useAuthStore(), route = useRoute(), { t } = useI18n()
 const nativeDesktop = computed(() => route.query.desktop === '1')
 const now = ref(Date.now()), recordClock = setInterval(() => { now.value = Date.now() }, 1000)
 function sharedRemoteUrl(share: DeviceShare) { return `${appOrigin(window.location.origin).replace(/\/$/, '')}/device-shares/${encodeURIComponent(share.id)}/remote` }
 const direction = ref<'received' | 'sent'>(route.query.direction === 'sent' ? 'sent' : 'received'), page = ref(1), total = ref(0)
 const items = ref<DeviceShare[]>([]), loading = ref(false), saving = ref(false), error = ref('')
-const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false), sshAccount = ref('')
+const deviceId = ref(''), recipientId = ref(''), amount = ref(1), unit = ref<ShareUnit>('days'), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false), sshAccount = ref('')
 // A recipient's file transfers never run as root/SYSTEM: on a Linux/macOS device they run as a
 // chosen account, exactly as SSH does; a Windows device runs them as its own (per-user) user.
 // An OS the listing did not report is treated as Linux/macOS — the server decides in the end.
+const unitItems = computed(() => SHARE_UNITS.map(u => ({ value: u, title: t(`mh.shares.unit.${u}`) })))
 const unixDevice = computed(() => owned.value.find(d => d.id === deviceId.value)?.os !== 'windows')
 const needsAccount = computed(() => ssh.value || (files.value && unixDevice.value))
 // The server's rule for a share account (a portable POSIX user name), checked here to answer early.
@@ -191,13 +195,14 @@ function recordStateLabel(state: keyof typeof RECORD_STATE_KEYS) { return t(RECO
 async function create() {
   if (saving.value) return
   const recipient = recipientId.value.trim()
-  if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
+  const lifetime = shareLifetime(amount.value, unit.value)
+  if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || lifetime === null || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
   const account = sshAccount.value.trim()
   const withAccount = needsAccount.value
   if (withAccount && account === 'root') { error.value = t('mh.shares.sshRootRefused'); return }
   if (withAccount && !SHARE_ACCOUNT.test(account)) { error.value = t(ssh.value ? 'mh.shares.sshAccountInvalid' : 'mh.shares.filesAccountInvalid'); return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
-  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600, ...(withAccount ? { ssh_account: account } : {}) })
+  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], ...lifetime, ...(withAccount ? { ssh_account: account } : {}) })
     if (!alive || attempt !== generation || identity !== identityGeneration || auth.user?.id !== user) return
     direction.value = 'sent'; page.value = 1; await load()
   } catch (e) { if (alive && identity === identityGeneration && attempt === generation && auth.user?.id === user) error.value = (e as Error).message }

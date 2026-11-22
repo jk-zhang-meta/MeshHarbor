@@ -61,7 +61,10 @@ pub fn valid_share_account(name: &str) -> bool {
 }
 impl DeviceShareGrant {
     pub const COLLECTION: &'static str = "device_share_grants";
-    pub const MAX_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
+    /// The expiry a permanent share carries, 9999-12-31T23:59:59Z: every check stays
+    /// `now < expires_at`, and the latest expiry any share may have. A share otherwise has no
+    /// maximum lifetime (operator, 2026-11-22); the owner ends it by revoking.
+    pub const PERMANENT_EXPIRES_AT_MS: i64 = 253_402_300_799_000;
     pub const MAX_TCP_PORTS: usize = 32;
     pub fn live_at(&self, now: DateTime) -> bool {
         self.revoked_at.is_none() && self.created_at <= now && now < self.expires_at

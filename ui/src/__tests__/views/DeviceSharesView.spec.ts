@@ -50,6 +50,14 @@ describe('single-device SSH share authorization and truthful native instructions
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient, permissions: { ...no, ssh: true }, tcp_ports: [], expires_in_secs: 86400, ssh_account: 'alice' })
   })
+  it('asks for a permanent share explicitly, never by leaving the lifetime out', async () => {
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await account('alice')
+    const unit = wrapper!.findAllComponents({ name: 'VSelect' }).find(c => c.attributes('data-testid') === 'share-unit')!
+    unit.vm.$emit('update:modelValue', 'permanent'); await flushPromises()
+    expect(wrapper!.find('[data-testid="share-amount"]').exists()).toBe(false)
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient, permissions: { ...no, ssh: true }, tcp_ports: [], permanent: true, ssh_account: 'alice' })
+  })
   it('asks for the device account only with SSH, and refuses a missing or malformed one without calling the server', async () => {
     await open(); await form()
     expect(wrapper!.find('[data-testid="share-ssh-account"]').exists()).toBe(false)

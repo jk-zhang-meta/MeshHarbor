@@ -749,10 +749,21 @@
       "permView": "View desktop",
       "permControl": "Control desktop",
       "permFiles": "Bidirectional file transfer (read AND write)",
-      "hours": "Expiry in hours (maximum 720)",
+      "duration": "Lasts",
+      "unit": {
+        "label": "Unit",
+        "minutes": "minutes",
+        "hours": "hours",
+        "days": "days",
+        "weeks": "weeks",
+        "months": "months",
+        "years": "years",
+        "permanent": "permanent (until revoked)"
+      },
+      "permanent": "Permanent",
       "formNote": "Device consent and service settings still apply. Read-only file transfer is not supported by the current native file protocol. SSH sharing does not enable the device’s SSH service or organization policy. The approved recipient signs in through the native client with a hidden password prompt; a manually provisioned token file is optional. It does not enable desktop access or TCP forwarding.",
       "create": "Create explicit share",
-      "invalid": "Choose a device, name the recipient by username or email, pick a supported capability, and an expiry of 1–720 hours.",
+      "invalid": "Choose a device, name the recipient by username or email, pick a supported capability, and how long the share lasts (a whole number of at least 1, or permanent).",
       "svc": {
         "desktop": "Desktop",
         "control": "Control",

@@ -34,7 +34,14 @@ pub struct CreateShare {
     pub permissions: DeviceSharePermissions,
     #[serde(default)]
     pub tcp_ports: Vec<u16>,
-    pub expires_in_secs: u64,
+    /// How long the share lasts, in seconds. Exactly one of this and [`Self::permanent`]: a
+    /// request with neither is refused, so a client that forgets the lifetime never gets a
+    /// share that lasts forever.
+    #[serde(default)]
+    pub expires_in_secs: Option<u64>,
+    /// A share with no end; the owner ends it by revoking.
+    #[serde(default)]
+    pub permanent: bool,
     /// The device account an SSH share runs as. Required with `permissions.ssh`, refused without.
     #[serde(default)]
     pub ssh_account: Option<String>,
@@ -166,11 +173,32 @@ async fn named_recipient(core: &Core, login: &str) -> Result<User, ApiError> {
 fn oid(id: &str) -> Result<ObjectId, ApiError> {
     ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid object ID".into()))
 }
+/// When a validated request's share ends. A lifetime may be as long as the owner likes, but
+/// it must end by [`DeviceShareGrant::PERMANENT_EXPIRES_AT_MS`]; a longer one is the
+/// permanent share, asked for as such.
+fn expires_at_ms(body: &CreateShare, now_ms: i64) -> Result<i64, ApiError> {
+    let Some(secs) = body.expires_in_secs else {
+        return Ok(DeviceShareGrant::PERMANENT_EXPIRES_AT_MS);
+    };
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| s.checked_mul(1000))
+        .and_then(|ms| now_ms.checked_add(ms))
+        .filter(|&at| at <= DeviceShareGrant::PERMANENT_EXPIRES_AT_MS)
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "A share lifetime that ends after 9999 is a permanent share; ask for one".into(),
+            )
+        })
+}
 fn validate(body: &mut CreateShare) -> Result<(), ApiError> {
-    if body.expires_in_secs == 0 || body.expires_in_secs > DeviceShareGrant::MAX_LIFETIME_SECS {
-        return Err(ApiError::BadRequest(
-            "Share lifetime must be 1 second to 30 days".into(),
-        ));
+    match (body.permanent, body.expires_in_secs) {
+        (true, None) | (false, Some(1..)) => {}
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Give a share lifetime of at least 1 second, or make it permanent".into(),
+            ));
+        }
     }
     if !body.permissions.valid() {
         return Err(ApiError::BadRequest(
@@ -334,6 +362,7 @@ pub async fn create(
         ));
     }
     let now = DateTime::now();
+    let expires_at = DateTime::from_millis(expires_at_ms(&body, now.timestamp_millis())?);
     let grant = DeviceShareGrant {
         id: None,
         device_id: device,
@@ -343,9 +372,7 @@ pub async fn create(
         permissions: body.permissions,
         tcp_ports: body.tcp_ports,
         created_at: now,
-        expires_at: DateTime::from_millis(
-            now.timestamp_millis() + body.expires_in_secs as i64 * 1000,
-        ),
+        expires_at,
         revoked_at: None,
         revision: 0,
         ssh_account: body.ssh_account,
@@ -499,7 +526,8 @@ mod tests {
                 ..Default::default()
             },
             tcp_ports: vec![22, 22],
-            expires_in_secs: 60,
+            expires_in_secs: Some(60),
+            permanent: false,
             ssh_account: Some("alice".into()),
         }
     }
@@ -510,9 +538,36 @@ mod tests {
         assert_eq!(b.tcp_ports, vec![22]);
         b.tcp_ports = vec![0];
         assert!(validate(&mut b).is_err());
+        // A lifetime, or permanent: exactly one.
+        for (permanent, secs) in [(false, None), (false, Some(0)), (true, Some(60))] {
+            b = body();
+            (b.permanent, b.expires_in_secs) = (permanent, secs);
+            assert!(validate(&mut b).is_err(), "{permanent} {secs:?}");
+        }
         b = body();
-        b.expires_in_secs = DeviceShareGrant::MAX_LIFETIME_SECS + 1;
-        assert!(validate(&mut b).is_err());
+        (b.permanent, b.expires_in_secs) = (true, None);
+        validate(&mut b).unwrap();
+        assert_eq!(
+            expires_at_ms(&b, 1_000).unwrap(),
+            DeviceShareGrant::PERMANENT_EXPIRES_AT_MS
+        );
+        // No maximum below the permanent expiry: ten years is a lifetime like any other.
+        let now = 1_795_000_000_000;
+        b = body();
+        b.expires_in_secs = Some(10 * 366 * 24 * 3600);
+        validate(&mut b).unwrap();
+        assert_eq!(
+            expires_at_ms(&b, now).unwrap(),
+            now + 10 * 366 * 24 * 3600 * 1000
+        );
+        // Past 9999, or past what an i64 holds: refused, never wrapped into the past.
+        for secs in [
+            ((DeviceShareGrant::PERMANENT_EXPIRES_AT_MS - now) / 1000 + 1) as u64,
+            u64::MAX,
+        ] {
+            b.expires_in_secs = Some(secs);
+            assert!(expires_at_ms(&b, now).is_err(), "{secs}");
+        }
         assert!(serde_json::from_value::<CreateShare>(serde_json::json!({"device_id":"x","recipient_user_id":"y","permissions":{"ssh":true},"expires_in_secs":60,"tenant_id":"injected"})).is_err());
     }
 
