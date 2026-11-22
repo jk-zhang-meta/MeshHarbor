@@ -40,6 +40,9 @@ pub async fn get(State(state): State<AppState>) -> Json<Value> {
         "features": {
             "session_feedback": state.settings.growth.feedback
                 && state.modules.mounted().contains(&"remote"),
+            // FR-126 P2 — the SPA offers the meeting whiteboard only on `true`.
+            "meeting_whiteboard": state.settings.meetings.whiteboard
+                && state.modules.mounted().contains(&"conference"),
         },
     }))
 }

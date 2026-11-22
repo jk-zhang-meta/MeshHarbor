@@ -219,13 +219,19 @@ pub async fn dispatch_media_local(
         "media:stop_audio" => {
             handle_stop_audio(state, user_id, connection_id, data).await;
         }
+        "media:whiteboard_join" => {
+            crate::whiteboard::handle_join(state, connection_id, data).await;
+        }
+        "media:whiteboard_update" => {
+            crate::whiteboard::handle_update(state, user_id, connection_id, data).await;
+        }
         _ => {
             debug!(?user_id, msg_type, "Unknown media message type");
         }
     }
 }
 
-async fn send_media_error(state: &ConferenceState, connection_id: &str, message: &str) {
+pub(crate) async fn send_media_error(state: &ConferenceState, connection_id: &str, message: &str) {
     let msg = serde_json::json!({
         "type": "media:error",
         "data": { "message": message }

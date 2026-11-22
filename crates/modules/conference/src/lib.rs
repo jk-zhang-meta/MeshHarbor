@@ -62,6 +62,7 @@ pub mod media_cluster;
 pub mod media_stats;
 pub mod meeting_cap;
 pub mod recording;
+pub mod whiteboard;
 pub mod ws_media;
 
 /// The module's state: the core plus what conference owns.
@@ -78,6 +79,8 @@ pub struct ConferenceState {
     /// (`connection_id → room_id`), so the socket close can tell the owner
     /// to drop the transports.
     pub remote_media_conns: Arc<DashMap<String, ObjectId>>,
+    /// FR-126 P2 — the meetings' whiteboards this pod serves (`whiteboard.rs`).
+    pub whiteboards: Arc<whiteboard::Whiteboards>,
 }
 
 impl std::ops::Deref for ConferenceState {
@@ -138,6 +141,7 @@ impl Module for ConferenceState {
             room_manager,
             media_claim_tokens: Arc::new(DashMap::new()),
             remote_media_conns: Arc::new(DashMap::new()),
+            whiteboards: Arc::new(whiteboard::Whiteboards::default()),
             core,
         };
         // C-4 — the owner-side bus handlers + the 10 s claim heartbeat.

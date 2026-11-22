@@ -314,6 +314,11 @@ pub struct MeetingsSettings {
     /// Env: `MESHHARBOR__MEETINGS__FREE_CAP`.
     #[serde(default = "meetings_default_on")]
     pub free_cap: bool,
+    /// FR-126 P2 — the meeting whiteboard. `false` hides it in the SPA (the
+    /// `meeting_whiteboard` feature) and refuses its messages. Default **on**.
+    /// Env: `MESHHARBOR__MEETINGS__WHITEBOARD`.
+    #[serde(default = "meetings_default_on")]
+    pub whiteboard: bool,
 }
 
 fn meetings_default_on() -> bool {
@@ -324,6 +329,7 @@ impl Default for MeetingsSettings {
     fn default() -> Self {
         Self {
             free_cap: meetings_default_on(),
+            whiteboard: meetings_default_on(),
         }
     }
 }

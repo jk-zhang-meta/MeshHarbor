@@ -2255,3 +2255,203 @@ async fn media_commands_need_the_connection_to_have_joined_that_meeting() {
     }
     ws.close(None).await.ok();
 }
+
+/// FR-126 P2 — the meeting whiteboard. One participant's stroke reaches the other; an older
+/// copy of the same element is not relayed; a late joiner gets the whole board; the board is
+/// kept with the room; and `meetings.whiteboard = false` refuses it.
+#[tokio::test]
+async fn the_meeting_whiteboard_is_shared_kept_and_switchable() {
+    use tokio_tungstenite::connect_async;
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn started_room(app: &TestApp, t: &crate::fixtures::seed::SeededTenant) -> String {
+        let room: Value = app
+            .auth_post(
+                &format!("/api/tenant/{}/room", t.tenant_id),
+                &t.admin.access_token,
+            )
+            .json(&serde_json::json!({ "name": "FR-126 board" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let room_id = room["id"].as_str().unwrap().to_string();
+        app.auth_post(
+            &format!("/api/tenant/{}/room/{}/call/start", t.tenant_id, room_id),
+            &t.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+        room_id
+    }
+    async fn joined(app: &TestApp, token: &str, room_id: &str) -> Ws {
+        let (mut ws, _) = connect_async(format!("ws://{}/ws?token={token}", app.addr))
+            .await
+            .expect("ws");
+        let _connected = ws.next().await.unwrap().unwrap();
+        send(
+            &mut ws,
+            "media:join",
+            serde_json::json!({ "room_id": room_id }),
+        )
+        .await;
+        assert_eq!(
+            next_media_msg(&mut ws).await["type"],
+            "media:router_capabilities"
+        );
+        assert_eq!(
+            next_media_msg(&mut ws).await["type"],
+            "media:transport_created"
+        );
+        ws
+    }
+    async fn send(ws: &mut Ws, t: &str, data: Value) {
+        ws.send(Message::Text(
+            serde_json::json!({ "type": t, "data": data })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    }
+    /// The next frame of `want`, skipping the meeting's own chatter.
+    async fn next_of(ws: &mut Ws, want: &str) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let m = next_media_msg(ws).await;
+                if m["type"] == want || m["type"] == "media:error" {
+                    return m;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {want} within 10 s"))
+    }
+    fn rect(version: u64, nonce: i64) -> Value {
+        serde_json::json!({ "id": "r1", "type": "rectangle", "version": version,
+            "versionNonce": nonce, "x": 10, "y": 20, "width": 30, "height": 40 })
+    }
+
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("fr126wb").await;
+    let room_id = started_room(&app, &t).await;
+    let mut a = joined(&app, &t.admin.access_token, &room_id).await;
+    let mut b = joined(&app, &t.member.access_token, &room_id).await;
+
+    send(
+        &mut a,
+        "media:whiteboard_join",
+        serde_json::json!({ "room_id": room_id }),
+    )
+    .await;
+    let scene = next_of(&mut a, "media:whiteboard_scene").await;
+    assert_eq!(scene["data"]["elements"], serde_json::json!([]), "{scene}");
+
+    send(
+        &mut a,
+        "media:whiteboard_update",
+        serde_json::json!({ "room_id": room_id, "elements": [rect(2, 5)] }),
+    )
+    .await;
+    let got = next_of(&mut b, "media:whiteboard_update").await;
+    assert_eq!(got["data"]["elements"][0]["id"], "r1", "{got}");
+    assert_eq!(got["data"]["user_id"], t.admin.id.as_str(), "{got}");
+
+    // An older copy is merged away and NOT relayed; the next newer one is.
+    send(
+        &mut b,
+        "media:whiteboard_update",
+        serde_json::json!({ "room_id": room_id, "elements": [rect(1, 1)] }),
+    )
+    .await;
+    send(
+        &mut b,
+        "media:whiteboard_update",
+        serde_json::json!({ "room_id": room_id, "elements": [rect(3, 9)] }),
+    )
+    .await;
+    let got = next_of(&mut a, "media:whiteboard_update").await;
+    assert_eq!(
+        got["data"]["elements"][0]["version"], 3,
+        "the older copy was relayed: {got}"
+    );
+
+    // A late joiner gets the board as it is.
+    let mut c = joined(&app, &t.admin.access_token, &room_id).await;
+    send(
+        &mut c,
+        "media:whiteboard_join",
+        serde_json::json!({ "room_id": room_id }),
+    )
+    .await;
+    let scene = next_of(&mut c, "media:whiteboard_scene").await;
+    assert_eq!(
+        scene["data"]["elements"].as_array().map(Vec::len),
+        Some(1),
+        "{scene}"
+    );
+    assert_eq!(scene["data"]["elements"][0]["version"], 3, "{scene}");
+
+    // Kept with the room (written within the flush delay).
+    let rid = bson::oid::ObjectId::parse_str(&room_id).unwrap();
+    let coll = app
+        .state
+        .db
+        .collection::<bson::Document>("meeting_whiteboards");
+    let mut kept = None;
+    for _ in 0..50 {
+        kept = coll.find_one(bson::doc! { "_id": rid }).await.unwrap();
+        if kept.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let kept = kept.expect("the board is written within 5 s");
+    assert_eq!(kept.get_array("elements").unwrap().len(), 1);
+    for ws in [&mut a, &mut b, &mut c] {
+        ws.close(None).await.ok();
+    }
+
+    // The kill switch.
+    let off = TestApp::spawn_with_settings(|s| s.meetings.whiteboard = false).await;
+    let t = off.seed_tenant("fr126wboff").await;
+    let room_id = started_room(&off, &t).await;
+    let mut a = joined(&off, &t.admin.access_token, &room_id).await;
+    send(
+        &mut a,
+        "media:whiteboard_join",
+        serde_json::json!({ "room_id": room_id }),
+    )
+    .await;
+    let refused = next_of(&mut a, "media:whiteboard_scene").await;
+    assert_eq!(refused["type"], "media:error", "{refused}");
+    assert_eq!(
+        refused["data"]["message"],
+        "The whiteboard is switched off on this server"
+    );
+    let caps: Value = off
+        .client
+        .get(format!("http://{}/api/capabilities", off.addr))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(caps["features"]["meeting_whiteboard"], false, "{caps}");
+    let caps: Value = app
+        .client
+        .get(format!("http://{}/api/capabilities", app.addr))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(caps["features"]["meeting_whiteboard"], true, "{caps}");
+}
