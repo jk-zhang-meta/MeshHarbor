@@ -7,6 +7,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, SystemTime},
 };
 const WHEEL: &str = "tomli-2.2.1-py3-none-any.whl";
 const WHEEL_SHA: &str = "cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc";
@@ -90,6 +91,7 @@ pub(super) fn launch(archive: &Path, version: &str, config: &Path) -> Result<()>
         bail!("not a same-user local installation");
     }
     let uid = unsafe { libc::geteuid() };
+    prune_stages(SystemTime::now());
     let binary = std::env::current_exe()?;
     owned_regular(&binary, uid)?;
     owned_regular(config, uid)?;
@@ -122,9 +124,13 @@ pub(super) fn launch(archive: &Path, version: &str, config: &Path) -> Result<()>
     }
     std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))?;
     let stage = tempfile::Builder::new()
-        .prefix("update-")
+        .prefix(STAGE_PREFIX)
         .tempdir_in(base)?
         .keep();
+    // Until `systemd-run` has run, nothing but this function knows the stage
+    // and the daemon is untouched, so a failure removes it. Without this a host
+    // whose disk is full kept a ~500 MB stage per attempt.
+    let mut unsubmitted = RemoveOnDrop(Some(stage.clone()));
     let saved_archive = stage.join("payload.tar.gz");
     std::fs::write(&saved_archive, &bytes)?;
     let unpacked = stage.join("payload");
@@ -205,6 +211,9 @@ pub(super) fn launch(archive: &Path, version: &str, config: &Path) -> Result<()>
         .arg("--library-source")
         .arg(&libs)
         .status()?;
+    // From here the transaction may own the stage, even when `systemd-run`
+    // reports a failure; `prune_stages` judges it later by what it wrote.
+    unsubmitted.0 = None;
     checked(status, "independent same-user update service submission")?;
     tracing::info!(transaction=%transaction.display(), unit, "same-user update submitted, not yet verified; inspect result.json for activated/rolled_back/recovery_required");
     // If preparation fails before stop, this original daemon is still alive.
@@ -225,6 +234,160 @@ pub(super) fn launch(archive: &Path, version: &str, config: &Path) -> Result<()>
         tracing::error!(result=%result_path.display(), "same-user update completion not observed; inspect transaction and run.log, submission is not success");
     });
     Ok(())
+}
+
+/// Name prefix of a stage under `~/.local/state/meshharbor/updates`.
+const STAGE_PREFIX: &str = "update-";
+
+/// A stage younger than this is never judged. [`launch`] hands each stage to
+/// its transaction at once, and the transaction writes `prepared` within
+/// seconds, before it stops anything; an hour is far past both.
+const STAGE_SETTLE: Duration = Duration::from_secs(3600);
+
+/// Removes the directory it holds when dropped, unless disarmed (`.0 = None`).
+struct RemoveOnDrop(Option<PathBuf>);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take()
+            && let Err(e) = std::fs::remove_dir_all(&dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %e, dir = %dir.display(), "update: could not remove an unsubmitted stage");
+        }
+    }
+}
+
+/// What a stage's transaction last recorded (`scripts/linux-inplace-upgrade.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageState {
+    /// No `result.json`. The transaction writes `prepared` before it stops the
+    /// daemon, so it never did, and nothing in the stage is needed to recover.
+    NeverPrepared,
+    /// `activated`: the stage's `ROLLBACK.sh` restores the binary it replaced.
+    Activated,
+    /// `rolled_back`, by the transaction itself or later by `ROLLBACK.sh`.
+    RolledBack,
+    /// `prepared`, `failed`, `recovery_required` or unreadable: stopped part
+    /// way, and the stage holds what a manual recovery needs. Never removed.
+    Unfinished,
+}
+
+fn stage_state(stage: &Path) -> StageState {
+    let transaction = stage.join("transaction");
+    if transaction.join("rollback-result.json").exists() {
+        return StageState::RolledBack;
+    }
+    let raw = match std::fs::read(transaction.join("result.json")) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return StageState::NeverPrepared,
+        Err(_) => return StageState::Unfinished,
+    };
+    let value = serde_json::from_slice::<serde_json::Value>(&raw).ok();
+    match value
+        .as_ref()
+        .and_then(|v| v.get("state"))
+        .and_then(|s| s.as_str())
+    {
+        Some("activated") => StageState::Activated,
+        Some("rolled_back") => StageState::RolledBack,
+        _ => StageState::Unfinished,
+    }
+}
+
+/// Remove the same-user update stages nothing needs any more. Each holds the
+/// signed payload and a backup of every file it replaced (~500 MB), and before
+/// this every update left one behind for good.
+///
+/// Kept: the newest `activated` stage (its `ROLLBACK.sh` is the way back from
+/// the running binary), every unfinished one, any younger than
+/// [`STAGE_SETTLE`], and any whose transaction lock is held (an apply or a
+/// `ROLLBACK.sh` running now). Removed: older `activated`, `rolled_back` and
+/// never-prepared stages. Best effort. Kill switch
+/// `MESHHARBORD_UPDATE_STAGE_SWEEP=0`.
+pub(super) fn prune_stages(now: SystemTime) {
+    if !tunnel_core::env::flag("UPDATE_STAGE_SWEEP", true) {
+        return;
+    }
+    let Some(base) = home().map(|h| h.join(".local/state/meshharbor/updates")) else {
+        return;
+    };
+    let removed = prune_stages_in(&base, unsafe { libc::geteuid() }, now);
+    if removed > 0 {
+        tracing::info!(removed, dir = %base.display(), "update: removed finished same-user update stages");
+    }
+}
+
+fn prune_stages_in(base: &Path, uid: u32, now: SystemTime) -> usize {
+    // The same trust check `launch` applies before it writes here.
+    match base.symlink_metadata() {
+        Ok(meta)
+            if meta.is_dir()
+                && meta.uid() == uid
+                && base.canonicalize().ok().as_deref() == Some(base) => {}
+        _ => return 0,
+    }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return 0;
+    };
+    let mut stages = Vec::new();
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(STAGE_PREFIX))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = path.symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_dir() || meta.uid() != uid {
+            continue;
+        }
+        let settled = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age >= STAGE_SETTLE);
+        let state = stage_state(&path);
+        let activated_at = (state == StageState::Activated)
+            .then(|| {
+                std::fs::metadata(path.join("transaction/result.json")).and_then(|m| m.modified())
+            })
+            .and_then(Result::ok);
+        stages.push((path, state, settled, activated_at));
+    }
+    let newest = stages
+        .iter()
+        .filter(|s| s.1 == StageState::Activated)
+        .max_by_key(|s| s.3)
+        .map(|s| s.0.clone());
+    let mut removed = 0;
+    for (path, state, settled, _) in stages {
+        let finished = match state {
+            StageState::Activated => Some(&path) != newest.as_ref(),
+            StageState::RolledBack | StageState::NeverPrepared => true,
+            StageState::Unfinished => false,
+        };
+        if !finished || !settled {
+            continue;
+        }
+        // Held through the removal, so neither an apply nor a ROLLBACK.sh can
+        // start on a half-removed stage.
+        let lock = std::fs::File::open(path.join("transaction/lock")).ok();
+        if lock.as_ref().is_some_and(|l| l.try_lock().is_err()) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, dir = %path.display(), "update: could not remove a finished stage")
+            }
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -306,5 +469,85 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
             std::fs::read(out.join("release/usr/bin/meshharbord")).unwrap(),
             b"good"
         );
+    }
+
+    fn stage(base: &Path, name: &str, state: Option<&str>) -> PathBuf {
+        let dir = base.join(name);
+        std::fs::create_dir_all(dir.join("payload")).unwrap();
+        std::fs::write(dir.join("payload.tar.gz"), b"payload").unwrap();
+        if let Some(state) = state {
+            std::fs::create_dir(dir.join("transaction")).unwrap();
+            std::fs::write(dir.join("transaction/lock"), b"").unwrap();
+            std::fs::write(
+                dir.join("transaction/result.json"),
+                format!(r#"{{"state": "{state}"}}"#),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn finished_update_stages_are_pruned_and_the_way_back_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let older = stage(&base, "update-older", Some("activated"));
+        set_mtime(&older.join("transaction/result.json"), 1_000);
+        let newer = stage(&base, "update-newer", Some("activated"));
+        set_mtime(&newer.join("transaction/result.json"), 2_000);
+        // Activated last, then undone by hand with its ROLLBACK.sh.
+        let undone = stage(&base, "update-undone", Some("activated"));
+        set_mtime(&undone.join("transaction/result.json"), 3_000);
+        std::fs::write(
+            undone.join("transaction/rollback-result.json"),
+            br#"{"state": "rolled_back"}"#,
+        )
+        .unwrap();
+        stage(&base, "update-rolled", Some("rolled_back"));
+        stage(&base, "update-never", None);
+        stage(&base, "update-recovery", Some("recovery_required"));
+        stage(&base, "update-prepared", Some("prepared"));
+        let busy = stage(&base, "update-busy", Some("rolled_back"));
+        let held = std::fs::File::open(busy.join("transaction/lock")).unwrap();
+        held.lock().unwrap();
+        std::fs::create_dir(base.join("unrelated")).unwrap();
+
+        assert_eq!(
+            prune_stages_in(&base, uid, SystemTime::now()),
+            0,
+            "young stages are not judged"
+        );
+        let later = SystemTime::now() + STAGE_SETTLE + Duration::from_secs(60);
+        assert_eq!(
+            prune_stages_in(&base, uid + 1, later),
+            0,
+            "a base owned by another account"
+        );
+        assert_eq!(prune_stages_in(&base, uid, later), 4);
+        let mut left: Vec<_> = std::fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "unrelated",
+                "update-busy",
+                "update-newer",
+                "update-prepared",
+                "update-recovery"
+            ]
+        );
+        drop(held);
+        assert_eq!(prune_stages_in(&base, uid, later), 1, "the lock released");
     }
 }

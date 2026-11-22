@@ -35,6 +35,22 @@ bytes are never blindly overwritten and leave explicit `recovery_required`.
 same user. Neither activation nor a version string substitutes for actual
 remote-function canary acceptance. Existing automatic-update policy is unchanged.
 
+**What an update leaves behind** (since 0.4.203). Before it, every same-user
+update kept its ~95 MB download in `/tmp` and its ~500 MB stage for good; one
+shared host had 7.8 GB of them when its disk filled.
+
+| Left behind | Removed |
+|---|---|
+| The download dir `/tmp/meshharbord-update.*` | As soon as `launch` returns (it copied the archive into its stage, or failed first); a failed write removes it at once (`download_asset`); the startup sweep removes this account's ones over a day old, on every Linux install |
+| A stage whose preparation failed before `systemd-run` | At once: nothing else knows it, and the daemon is untouched |
+| An older `activated` stage, a `rolled_back` one (also by `ROLLBACK.sh`), one with no `result.json` | By `prune_stages` once it is an hour old: at daemon start, 15 min later, and before each new update |
+| The newest `activated` stage, any `prepared` / `failed` / `recovery_required` one, any whose `transaction/lock` is held | Kept. The first is the way back from the running binary; the others hold what a manual recovery needs |
+
+`agents/meshharbord/src/updater_linux_user.rs` (`prune_stages`, `RemoveOnDrop`) and
+`updater.rs` (`sweep_stale_update_staging_at_start`). Kill switch
+`MESHHARBORD_UPDATE_STAGE_SWEEP=0` stops the sweep and the pruning; the removals
+on a failure are not switchable.
+
 Python 3.10 needs no global installation: packaging requires
 `MESHHARBOR_TOMLI_WHEEL` to name the official tomli 2.2.1 pure wheel, SHA256
 `cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc`.

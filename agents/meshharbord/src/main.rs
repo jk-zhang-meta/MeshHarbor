@@ -4489,8 +4489,10 @@ async fn run_cmd(
     // GHSA-r3xj-4wh9-xh2v — the Windows twin: a per-download staging dir a
     // prior update's watcher left behind. Swept once here, behind the same
     // lock, before any update task runs — see the function's doc comment for
-    // why it must NOT run on every download instead.
-    #[cfg(target_os = "windows")]
+    // why it must NOT run on every download instead. Linux sweeps its own
+    // leftovers here too: download dirs, and a same-user install's finished
+    // update stages.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     meshharbord::updater::sweep_stale_update_staging_at_start();
     // FR-93 P5 (#2144) — a per-user unit enabled before it was wanted by the
     // graphical session is enabled again, so the next login starts it: it stops

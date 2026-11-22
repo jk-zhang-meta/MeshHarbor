@@ -1462,6 +1462,93 @@ pub(crate) fn discard_staging(installer_path: &std::path::Path) {
     }
 }
 
+/// How old a Linux download dir must be before the startup sweep removes it.
+/// Every install path removes its own ([`discard_staging`]); this collects what
+/// a crash or an older build left. A day is far past any wait between a
+/// download and its install (agent turns hold it 30 min by default).
+#[cfg(target_os = "linux")]
+const STALE_DOWNLOAD_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// Linux: once at startup, before any update task runs, remove this account's
+/// download dirs that a previous process left in `temp_dir()`, and on a
+/// same-user install the update stages nothing needs any more
+/// (`updater_linux_user::prune_stages`). The stage pass runs again 15 minutes
+/// later: the transaction that started this process records `activated` only
+/// once it has seen this process answer, and only then is the stage before it
+/// no longer the way back. Before this, a same-user install kept ~600 MB per
+/// update for good. Kill switch `MESHHARBORD_UPDATE_STAGE_SWEEP=0`.
+#[cfg(target_os = "linux")]
+pub fn sweep_stale_update_staging_at_start() {
+    if !tunnel_core::env::flag("UPDATE_STAGE_SWEEP", true) {
+        return;
+    }
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let now = std::time::SystemTime::now();
+    let removed = sweep_stale_downloads_in(&std::env::temp_dir(), uid, now, STALE_DOWNLOAD_AGE);
+    if removed > 0 {
+        tracing::info!(
+            removed,
+            "update: removed download dirs a previous process left behind"
+        );
+    }
+    if linux_user::current() {
+        linux_user::prune_stages(now);
+        let _ = std::thread::Builder::new()
+            .name("update-stage-prune".into())
+            .spawn(|| {
+                std::thread::sleep(Duration::from_secs(15 * 60));
+                linux_user::prune_stages(std::time::SystemTime::now());
+            });
+    }
+}
+
+/// The download dirs in `base` that this sweep may remove: ours by name
+/// ([`STAGING_DIR_PREFIX`]), a real directory (never a symlink), owned by
+/// `uid` (a root daemon must not touch a same-user install's download), and
+/// at least `min_age` old.
+#[cfg(target_os = "linux")]
+fn sweep_stale_downloads_in(
+    base: &std::path::Path,
+    uid: u32,
+    now: std::time::SystemTime,
+    min_age: Duration,
+) -> usize {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with(STAGING_DIR_PREFIX))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = path.symlink_metadata() else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age >= min_age);
+        if !meta.is_dir() || meta.uid() != uid || !old {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, dir = %path.display(), "update: could not remove a stale download dir")
+            }
+        }
+    }
+    removed
+}
+
 /// How old an abandoned Windows staging directory must be before
 /// [`sweep_stale_update_staging_at_start`] will remove it. Generous relative
 /// to how long this daemon's own post-install watcher ever runs (a wedged
@@ -1748,7 +1835,11 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
     }
     let dir = stage_dir().context("creating the staging dir")?;
     let path = dir.join(&asset.name);
-    write_installer(&path, &bytes).context("writing installer to disk")?;
+    if let Err(e) = write_installer(&path, &bytes) {
+        // A full disk stops here with a partial file that nothing else removes.
+        discard_download(&path);
+        return Err(e).context("writing installer to disk");
+    }
 
     // Publisher check — the anchor the serving channel cannot forge. Whatever
     // is on disk here is about to run as SYSTEM/root, so it must be
@@ -1799,11 +1890,16 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         let verdict = match asc {
             Ok(asc) => {
                 let checked = crate::pgp_verify::verify_release_artifact(&bytes, &asc);
+                // A failure is a verdict like any other, so the download is
+                // discarded with it (it returned early and kept the dir).
                 #[cfg(target_os = "linux")]
-                if checked.is_ok() && linux_user::current() {
+                let checked = checked.and_then(|()| {
+                    if !linux_user::current() {
+                        return Ok(());
+                    }
                     std::fs::write(path.with_extension("gz.asc"), &asc)
-                        .context("retaining verified signature for same-user transaction")?;
-                }
+                        .context("retaining verified signature for same-user transaction")
+                });
                 checked
             },
             Err(e) => Err(e.context(format!("fetching {asc_url}"))),
@@ -2049,8 +2145,19 @@ pub fn spawn_installer_with_watch(
     record_update_attempt();
     #[cfg(target_os = "linux")]
     if linux_user::current() {
-        let config = UPDATE_CONFIG_PATH.get().context("same-user update needs resolved config path")?;
-        return linux_user::launch(installer_path, expected_version.context("same-user update requires expected version")?, config);
+        let launched = UPDATE_CONFIG_PATH
+            .get()
+            .context("same-user update needs resolved config path")
+            .and_then(|config| {
+                let version =
+                    expected_version.context("same-user update requires expected version")?;
+                linux_user::launch(installer_path, version, config)
+            });
+        // `launch` copies the archive into its own stage before it returns, or
+        // fails before then: either way the download dir has no reader left,
+        // and before this every same-user update left one in /tmp.
+        discard_staging(installer_path);
+        return launched;
     }
     #[cfg(target_os = "windows")]
     if let Some(tag) = expected_version {
@@ -5423,6 +5530,58 @@ mod tests {
 
         // A path whose parent is not a staging dir at all: a no-op, no panic.
         discard_staging(std::path::Path::new("/usr/bin/meshharbord"));
+    }
+
+    /// The startup sweep removes our own old download dirs and nothing else:
+    /// not a young one, not the pre-fix fixed name, not another prefix, not a
+    /// symlink to a dir, and not a dir another account owns.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_sweep_removes_only_our_own_old_download_dirs() {
+        use std::time::{Duration, SystemTime};
+        let base = tempfile::tempdir().expect("base");
+        let base = base.path();
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let old = base.join(format!("{STAGING_DIR_PREFIX}old"));
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(
+            old.join("meshharbor-0.4.0-aarch64-unknown-linux-gnu.tar.gz"),
+            b"x",
+        )
+        .unwrap();
+        std::fs::File::open(&old)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000))
+            .unwrap();
+        let young = base.join(format!("{STAGING_DIR_PREFIX}young"));
+        std::fs::create_dir(&young).unwrap();
+        for name in ["meshharbord-update", "not-ours.old"] {
+            std::fs::create_dir(base.join(name)).unwrap();
+        }
+        let target = base.join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, base.join(format!("{STAGING_DIR_PREFIX}link")))
+            .unwrap();
+
+        let now = SystemTime::now();
+        let day = Duration::from_secs(24 * 3600);
+        assert_eq!(
+            sweep_stale_downloads_in(base, uid + 1, now, day),
+            0,
+            "another account's"
+        );
+        assert_eq!(sweep_stale_downloads_in(base, uid, now, day), 1);
+        assert!(!old.exists(), "our own old download dir is removed");
+        assert!(young.exists(), "a young one may still be in use");
+        for name in ["meshharbord-update", "not-ours.old", "target"] {
+            assert!(base.join(name).exists(), "{name} is not ours to remove");
+        }
+        assert!(
+            base.join(format!("{STAGING_DIR_PREFIX}link"))
+                .symlink_metadata()
+                .is_ok()
+        );
     }
 
     // ── GHSA-r3xj-4wh9-xh2v: the Windows private staging dir ──────────
