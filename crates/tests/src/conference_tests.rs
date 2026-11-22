@@ -2455,3 +2455,118 @@ async fn the_meeting_whiteboard_is_shared_kept_and_switchable() {
         .unwrap();
     assert_eq!(caps["features"]["meeting_whiteboard"], true, "{caps}");
 }
+
+/// FR-126 P3 — the recording indicator: a participant's "I am recording" reaches everyone else
+/// in the meeting, and so does the stop; `meetings.recording = false` refuses it and the
+/// `meeting_recording` feature reads false.
+#[tokio::test]
+async fn the_recording_indicator_reaches_the_meeting_and_is_switchable() {
+    use tokio_tungstenite::connect_async;
+    type Ws = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    async fn joined(app: &TestApp, token: &str, room_id: &str) -> Ws {
+        let (mut ws, _) = connect_async(format!("ws://{}/ws?token={token}", app.addr))
+            .await
+            .expect("ws");
+        let _connected = ws.next().await.unwrap().unwrap();
+        ws.send(Message::Text(
+            serde_json::json!({ "type": "media:join", "data": { "room_id": room_id } })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            next_media_msg(&mut ws).await["type"],
+            "media:router_capabilities"
+        );
+        assert_eq!(
+            next_media_msg(&mut ws).await["type"],
+            "media:transport_created"
+        );
+        ws
+    }
+    async fn recording(ws: &mut Ws, room_id: &str, on: bool) {
+        ws.send(Message::Text(
+            serde_json::json!({ "type": "media:recording_state",
+                "data": { "room_id": room_id, "recording": on } })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    }
+    async fn next_of(ws: &mut Ws, want: &str) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let m = next_media_msg(ws).await;
+                if m["type"] == want || m["type"] == "media:error" {
+                    return m;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {want} within 10 s"))
+    }
+    async fn started_room(app: &TestApp, t: &crate::fixtures::seed::SeededTenant) -> String {
+        let room: Value = app
+            .auth_post(
+                &format!("/api/tenant/{}/room", t.tenant_id),
+                &t.admin.access_token,
+            )
+            .json(&serde_json::json!({ "name": "FR-126 rec" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let room_id = room["id"].as_str().unwrap().to_string();
+        app.auth_post(
+            &format!("/api/tenant/{}/room/{}/call/start", t.tenant_id, room_id),
+            &t.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+        room_id
+    }
+
+    let app = TestApp::spawn().await;
+    let t = app.seed_tenant("fr126rec").await;
+    let room_id = started_room(&app, &t).await;
+    let mut a = joined(&app, &t.admin.access_token, &room_id).await;
+    let mut b = joined(&app, &t.member.access_token, &room_id).await;
+    recording(&mut a, &room_id, true).await;
+    let got = next_of(&mut b, "media:recording_state").await;
+    assert_eq!(got["data"]["recording"], true, "{got}");
+    assert_eq!(got["data"]["user_id"], t.admin.id.as_str(), "{got}");
+    recording(&mut a, &room_id, false).await;
+    let got = next_of(&mut b, "media:recording_state").await;
+    assert_eq!(got["data"]["recording"], false, "{got}");
+    a.close(None).await.ok();
+    b.close(None).await.ok();
+
+    let off = TestApp::spawn_with_settings(|s| s.meetings.recording = false).await;
+    let t = off.seed_tenant("fr126recoff").await;
+    let room_id = started_room(&off, &t).await;
+    let mut a = joined(&off, &t.admin.access_token, &room_id).await;
+    recording(&mut a, &room_id, true).await;
+    let refused = next_of(&mut a, "media:recording_state").await;
+    assert_eq!(refused["type"], "media:error", "{refused}");
+    assert_eq!(
+        refused["data"]["message"],
+        "Recording is switched off on this server"
+    );
+    let caps: Value = off
+        .client
+        .get(format!("http://{}/api/capabilities", off.addr))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(caps["features"]["meeting_recording"], false, "{caps}");
+}

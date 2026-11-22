@@ -136,3 +136,75 @@ fn to_response(r: meshharbor_db::models::Recording) -> RecordingResponse {
         created_at: r.created_at.try_to_rfc3339_string().unwrap_or_default(),
     }
 }
+
+/// FR-126 P3 — `media:recording_state {room_id, recording}`: a participant tells the meeting
+/// it is recording (its browser records and saves into the room's files). The server only
+/// relays it, to everyone else in the meeting, so each of them shows the indicator; the
+/// recorder repeats it every few seconds while it records, which is how a late joiner learns
+/// of it and how an indicator expires when a recorder vanishes. It is a meeting command, so
+/// the connection must have joined the meeting (`dispatch_media_local`).
+///
+/// Refused when `meetings.recording` is off, or when the org's plan does not include
+/// recordings (in the org's enforcement mode, as `create` above).
+pub async fn handle_recording_state(
+    state: &ConferenceState,
+    user_id: &ObjectId,
+    connection_id: &str,
+    data: Option<&serde_json::Value>,
+) {
+    if !state.settings.meetings.recording {
+        crate::ws_media::send_media_error(
+            state,
+            connection_id,
+            "Recording is switched off on this server",
+        )
+        .await;
+        return;
+    }
+    let Some(rid) = data
+        .and_then(|d| d.get("room_id"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| ObjectId::parse_str(s).ok())
+    else {
+        crate::ws_media::send_media_error(state, connection_id, "Invalid room_id").await;
+        return;
+    };
+    let recording = data
+        .and_then(|d| d.get("recording"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if recording {
+        let allowed = match state.rooms.base.find_by_id(rid).await {
+            Ok(room) => match state.tenants.base.find_by_id(room.tenant_id).await {
+                Ok(tenant) => meshharbor_core::quota::require_feature(
+                    state,
+                    &tenant,
+                    quota::Limit::Recordings,
+                )
+                .map_err(|d| d.message()),
+                Err(_) => Err("The meeting's organization could not be read".to_string()),
+            },
+            Err(_) => Err("The meeting could not be read".to_string()),
+        };
+        if let Err(message) = allowed {
+            crate::ws_media::send_media_error(state, connection_id, &message).await;
+            return;
+        }
+    }
+    let msg = serde_json::json!({
+        "type": "media:recording_state",
+        "data": { "room_id": rid.to_hex(), "user_id": user_id.to_hex(), "recording": recording },
+    });
+    for cid in state
+        .room_manager
+        .get_other_connection_ids(&rid, connection_id)
+    {
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
+            &state.ws_storage,
+            &state.redis_pubsub,
+            &cid,
+            &msg,
+        )
+        .await;
+    }
+}

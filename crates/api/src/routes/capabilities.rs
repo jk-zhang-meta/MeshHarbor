@@ -43,6 +43,9 @@ pub async fn get(State(state): State<AppState>) -> Json<Value> {
             // FR-126 P2 — the SPA offers the meeting whiteboard only on `true`.
             "meeting_whiteboard": state.settings.meetings.whiteboard
                 && state.modules.mounted().contains(&"conference"),
+            // FR-126 P3 — and meeting recording only on `true`.
+            "meeting_recording": state.settings.meetings.recording
+                && state.modules.mounted().contains(&"conference"),
         },
     }))
 }

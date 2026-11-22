@@ -225,6 +225,9 @@ pub async fn dispatch_media_local(
         "media:whiteboard_update" => {
             crate::whiteboard::handle_update(state, user_id, connection_id, data).await;
         }
+        "media:recording_state" => {
+            crate::recording::handle_recording_state(state, user_id, connection_id, data).await;
+        }
         _ => {
             debug!(?user_id, msg_type, "Unknown media message type");
         }

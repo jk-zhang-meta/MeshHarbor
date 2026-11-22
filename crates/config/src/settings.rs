@@ -319,6 +319,11 @@ pub struct MeetingsSettings {
     /// Env: `MESHHARBOR__MEETINGS__WHITEBOARD`.
     #[serde(default = "meetings_default_on")]
     pub whiteboard: bool,
+    /// FR-126 P3 — meeting recording (in the recorder's browser, saved into the room's
+    /// files). `false` hides it in the SPA (the `meeting_recording` feature) and refuses its
+    /// indicator message. Default **on**. Env: `MESHHARBOR__MEETINGS__RECORDING`.
+    #[serde(default = "meetings_default_on")]
+    pub recording: bool,
 }
 
 fn meetings_default_on() -> bool {
@@ -330,6 +335,7 @@ impl Default for MeetingsSettings {
         Self {
             free_cap: meetings_default_on(),
             whiteboard: meetings_default_on(),
+            recording: meetings_default_on(),
         }
     }
 }
