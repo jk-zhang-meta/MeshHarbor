@@ -42,8 +42,10 @@ not a mechanism.
   The refusal sites are listed in the phase table with their `file:line`, and a test drives each.
 - **The refusal is attributable.** Each refused request answers or logs "refused: this device is
   protected", so the owner can tell it from a server-side denial.
-- **It reports.** `mh status` and the device's config report show `protected` and the planes still
-  open (SSH, if the owner kept it as the admin path, and any explicit `forward_acl` allowlist).
+- **It reports.** The daemon logs the posture at start with the planes still open (SSH, if the
+  owner kept it as the admin path, and any explicit `forward_acl` allowlist); `mh config get
+  protected` reads the switch. `mh status`, the device report and the console come in P2: adding
+  the field to the LocalAPI `NodeStatus` touches four crates, the desktop app among them.
 
 | Plane | Under `protected` |
 |---|---|
@@ -61,8 +63,8 @@ not a mechanism.
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| P1 | The key, the accessors, every refusal site, `mh status` posture; tests per plane | `protected = false` (the default) | in progress |
-| P2 | The posture in the device report and the web console (a badge, the open planes) | — | — |
+| P1 | The key, the accessors, every refusal site, the posture at start; tests | `protected = false` (the default) | built, not released |
+| P2 | The posture in `mh status`, the device report and the web console (a badge, the open planes) | — | — |
 | P3 | Sign-in and `install.sh --protected`, so a server is closed from its first minute (gap G11) | — | — |
 | P4 | Device-owned inbound allowlist for the overlay (G2), SSH and exec bound to an origin device (G3) | per-device | — |
 | P5 | Operator-signed SSH grants (G4) and node-key signing (G5): the server can relay, not mint | — | — |
@@ -78,7 +80,8 @@ not a mechanism.
   `exec_enabled = true` leaves exec refused.
 - [ ] **AC3.** Turning the switch off restores the owner's previous settings exactly (the stored
   config is unchanged by protection).
-- [ ] **AC4.** `mh status` names the posture and every plane left open.
+- [ ] **AC4.** The device names its posture and every plane left open: in its log at start (P1)
+  and in `mh status` and the console (P2).
 - [ ] **AC5.** Docs: `docs/protected-device.md` and a row in `docs/README.md`'s index, before close.
 
 ## Out of scope (other FRs or the host itself)

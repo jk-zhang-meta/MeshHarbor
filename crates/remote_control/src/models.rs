@@ -9867,6 +9867,9 @@ mod tests {
         // opted into remote config; until a change argues that here, none is.)
         for forbidden in [
             "remote_config_enabled",
+            // FR-127 — the protected switch: a server that could clear it would protect against
+            // nothing a server can be made to do.
+            "protected",
             // RDP over the mesh is the device owner's opt-in, like the rest.
             "rdp_over_mesh",
             "ssh_max_privilege",
@@ -9959,6 +9962,7 @@ mod tests {
             "remote_config_enabled": true,
             "rdp_over_mesh": true,
             "local_restart_enabled": true,
+            "protected": false,
         }))
         .expect("unknown keys are ignored, not fatal");
         assert_eq!(pushed.ssh_enabled, Some(true));

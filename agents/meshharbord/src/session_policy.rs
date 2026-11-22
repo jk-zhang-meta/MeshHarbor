@@ -44,10 +44,11 @@ pub fn device_policy() -> SessionPolicy {
 
 /// The floor from a config, the three keys as one value.
 pub fn from_config(cfg: &crate::config::AgentConfig) -> SessionPolicy {
+    // FR-127 — `Off` on a protected device, whatever the keys say.
     SessionPolicy {
-        clipboard: cfg.rc_clipboard,
-        files: cfg.rc_files,
-        audio: cfg.rc_audio,
+        clipboard: cfg.rc_feature(cfg.rc_clipboard),
+        files: cfg.rc_feature(cfg.rc_files),
+        audio: cfg.rc_feature(cfg.rc_audio),
     }
 }
 

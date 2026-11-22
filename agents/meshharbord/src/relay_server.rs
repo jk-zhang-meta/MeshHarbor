@@ -174,6 +174,14 @@ pub async fn set_serving(serve: bool) -> bool {
 }
 
 async fn set_serving_on_port(serve: bool, port: u16) -> bool {
+    // FR-127 — the one place a listener is bound: a protected device refuses here, whoever
+    // asked (startup config, env, or the control plane's serve push).
+    let serve = if serve && orgrelay::device_protected() {
+        tracing::warn!("org-relay: refused to serve as a relay: this device is protected");
+        false
+    } else {
+        serve
+    };
     let mut task_guard = controller_lock().lock().await;
     if serve {
         if listening_port().is_some() {
@@ -672,6 +680,24 @@ mod tests {
     fn global_state_test_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    /// FR-127 — a protected device binds no relay listener, even when the control plane
+    /// pushes `serve` and the runtime override says yes.
+    #[tokio::test]
+    async fn a_protected_device_never_serves_as_a_relay() {
+        let _guard = global_state_test_lock().lock().await;
+        orgrelay::set_device_protected(true);
+        orgrelay::set_runtime_relay_server_enabled(Some(true));
+        assert!(
+            !orgrelay::relay_server_enabled(),
+            "protected beats the serve push"
+        );
+        set_serving_on_port(true, 0).await;
+        assert_eq!(listening_port(), None, "no listener bound");
+        assert!(stats().is_none() && handle().is_none());
+        orgrelay::set_device_protected(false);
+        orgrelay::set_runtime_relay_server_enabled(None);
     }
 
     /// The default is off, and "off" must mean nothing was created — not a

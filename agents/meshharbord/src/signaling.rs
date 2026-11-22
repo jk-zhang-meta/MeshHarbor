@@ -1804,7 +1804,7 @@ async fn connect_once(
     // FR-90 P3-4a — `vault` exactly where the hello carries the key.
     crate::vault::apply_word(
         &mut hello_caps.rpc,
-        crate::vault::takes_leases(cfg.vault_enabled, ctx.is_primary),
+        crate::vault::takes_leases(cfg.vault_allowed(), ctx.is_primary),
     );
     // FR-94 — `exec-system` on exactly the connection of the device this
     // machine's SYSTEM service is anchored for, and the heartbeat re-announces
@@ -1897,7 +1897,7 @@ async fn connect_once(
             // and held in memory for the life of the process: the primary
             // enrollment's connection only, and only while the owner's
             // `vault_enabled` is on.
-            vault_key: crate::vault::hello_key(cfg.vault_enabled, ctx.is_primary),
+            vault_key: crate::vault::hello_key(cfg.vault_allowed(), ctx.is_primary),
             // FR-100 P1a — THIS enrollment's device key, on every org's
             // connection (one key per org, never shared): made on the first
             // hello, kept beside the config, and offered only once it is on disk.
@@ -1975,7 +1975,7 @@ async fn connect_once(
     if ctx.is_primary {
         crate::vault::on_connected(
             outbound_tx.clone(),
-            crate::vault::takes_leases(cfg.vault_enabled, ctx.is_primary),
+            crate::vault::takes_leases(cfg.vault_allowed(), ctx.is_primary),
             cfg.vault_activity_log,
         );
     }
@@ -2596,7 +2596,7 @@ async fn connect_once(
                     }
                     crate::vault::apply_word(
                         &mut c.rpc,
-                        crate::vault::takes_leases(cfg.vault_enabled, ctx.is_primary),
+                        crate::vault::takes_leases(cfg.vault_allowed(), ctx.is_primary),
                     );
                     crate::exec_service::apply_word(&mut c.rpc, exec_system_now);
                     crate::ssh_service::apply_word(&mut c.rpc, ssh_system_now);
@@ -3059,7 +3059,7 @@ async fn connect_once(
                     encoder_preference,
                     &indicator,
                     &consent_broker,
-                    &cfg.forward_acl,
+                    &cfg.effective_forward_acl(),
                     &relay_regions_slot,
                     &derp_ticket_slot,
                     cfg,
@@ -3175,7 +3175,7 @@ async fn connect_once(
                                 encoder_preference,
                                 &indicator,
                                 &consent_broker,
-                                &cfg.forward_acl,
+                                &cfg.effective_forward_acl(),
                                 &relay_regions_slot,
                                 &derp_ticket_slot,
                                 cfg,

@@ -36,6 +36,19 @@ pub const DEFAULT_RELAY_SERVER_PORT: u16 = 3478;
 static RUNTIME_RELAY_SERVER_OVERRIDE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(0);
 
+/// FR-127 — a protected device never serves as a relay, whatever its config, its env or the
+/// control plane's `rc:overlay.peer_relay_serve` says. Set once at startup from the config.
+static DEVICE_PROTECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_device_protected(on: bool) {
+    DEVICE_PROTECTED.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn device_protected() -> bool {
+    DEVICE_PROTECTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub fn set_runtime_relay_server_enabled(enabled: Option<bool>) {
     let val = match enabled {
         None => 0,
@@ -49,6 +62,9 @@ pub fn set_runtime_relay_server_enabled(enabled: Option<bool>) {
 ///
 /// **Opt-in**: only `1|true|yes|on` or a live admin push enables it.
 pub fn relay_server_enabled() -> bool {
+    if device_protected() {
+        return false;
+    }
     match RUNTIME_RELAY_SERVER_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
         1 => false,
         2 => true,

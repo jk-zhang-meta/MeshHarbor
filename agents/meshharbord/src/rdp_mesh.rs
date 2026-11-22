@@ -112,7 +112,7 @@ async fn opted_in_now(path: &Path) -> bool {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         crate::config::load(&path)
-            .map(|c| c.rdp_over_mesh)
+            .map(|c| c.rdp_over_mesh_allowed())
             .unwrap_or(false)
     })
     .await
@@ -125,7 +125,7 @@ pub fn start(cfg: &crate::config::AgentConfig, config_path: &Path) {
     if STATE
         .set(State {
             tenant_id: cfg.tenant_id.clone(),
-            opted_in: AtomicBool::new(cfg.rdp_over_mesh),
+            opted_in: AtomicBool::new(cfg.rdp_over_mesh_allowed()),
             listening: AtomicBool::new(false),
         })
         .is_err()

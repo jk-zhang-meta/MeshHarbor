@@ -237,6 +237,24 @@ pub struct AgentConfig {
     #[serde(default)]
     pub remote_config_enabled: bool,
 
+    /// FR-127 — a protected device: every way in that the device itself did not allow is
+    /// refused, whatever the server sends. Fleet exec, remote configuration, unattended
+    /// remote desktop, file browse and transfer, RDP over the mesh, tunnel exits and SSH
+    /// forwards without an explicit `forward_acl` allowlist, serving as a relay or exit,
+    /// cross-org access, agent sessions and the vault. MeshHarbor SSH stays as configured:
+    /// it is the owner's admin path.
+    ///
+    /// ⚠️ **Not server-settable, structurally** — like `remote_config_enabled`, absent from
+    /// `DesiredConfig`, so no push can clear it. A switch the server could turn off would
+    /// protect against nothing the server can be made to do.
+    ///
+    /// ⚠️ **An effective view, never a rewrite.** The gates read it through the accessors
+    /// below (`exec_allowed`, …); the stored keys keep the owner's own values, so turning
+    /// protection off restores exactly what they had. Forcing the stored values would have
+    /// lost them at the first config save.
+    #[serde(default)]
+    pub protected: bool,
+
     /// FR-84 D3 — whether a LOCAL client (the companion's "Apply now",
     /// `mh restart`) may ask the daemon to restart itself through its
     /// supervisor (`Request::RestartDaemon`).
@@ -2509,7 +2527,7 @@ impl AgentConfig {
     /// not already present (an operator may also list it explicitly).
     pub fn effective_overlay_advertised_routes(&self) -> Vec<String> {
         let mut routes = self.overlay_advertised_routes.clone();
-        if self.overlay_exit_node_enabled {
+        if self.exit_node_allowed() {
             let default_route = "0.0.0.0/0".to_string();
             if !routes.contains(&default_route) {
                 routes.push(default_route);
@@ -2627,6 +2645,112 @@ pub const CLEAN_RUN_THRESHOLD_SECS: u64 = 5 * 60;
 /// dies on cold start, gets relaunched in 60 s, and dies again
 /// within those ten minutes is recognised as a crash loop and
 /// triggers rollback after a few iterations.
+/// FR-127 — a protected device's effective view of the ways in. Every gate reads these, never
+/// the raw key, so `protected` closes the plane wherever the request came from, and the stored
+/// keys keep the owner's values (turning protection off restores them exactly).
+///
+/// MeshHarbor SSH is deliberately absent: under protection it is the owner's admin path, and
+/// it keeps its own gates (`ssh_enabled`, the key list, the account mode, the privilege
+/// ceiling) as configured.
+impl AgentConfig {
+    /// Fleet exec (`mh exec`) may run commands here.
+    pub fn exec_allowed(&self) -> bool {
+        self.exec_enabled && !self.protected
+    }
+    /// A pushed desired-config may change this device.
+    pub fn remote_config_allowed(&self) -> bool {
+        self.remote_config_enabled && !self.protected
+    }
+    /// A remote-desktop session may start without a person at the device approving it.
+    pub fn auto_grant_allowed(&self) -> bool {
+        self.auto_grant_session && !self.protected
+    }
+    /// A controller may browse this device's files.
+    pub fn remote_browse_allowed(&self) -> bool {
+        self.enable_remote_browse && !self.protected
+    }
+    /// RDP is reachable over the mesh.
+    pub fn rdp_over_mesh_allowed(&self) -> bool {
+        self.rdp_over_mesh && !self.protected
+    }
+    /// Users of other orgs may reach this device (external access).
+    pub fn external_access_allowed(&self) -> bool {
+        self.external_access_enabled && !self.protected
+    }
+    /// Agent sessions (hive) may run here.
+    pub fn hive_allowed(&self) -> bool {
+        self.hive_enabled && !self.protected
+    }
+    /// This device takes vault leases.
+    pub fn vault_allowed(&self) -> bool {
+        self.vault_enabled && !self.protected
+    }
+    /// This device serves as an org relay (`None` = not decided locally).
+    pub fn relay_server_allowed(&self) -> Option<bool> {
+        if self.protected {
+            Some(false)
+        } else {
+            self.relay_server_enabled
+        }
+    }
+    /// This device is an exit node for the mesh.
+    pub fn exit_node_allowed(&self) -> bool {
+        self.overlay_exit_node_enabled && !self.protected
+    }
+    /// This device advertises LAN subnets into the mesh.
+    pub fn subnet_routes_allowed(&self) -> bool {
+        !self.protected
+    }
+    /// A remote-desktop feature's policy here (clipboard, files, audio): `Off` when protected.
+    pub fn rc_feature(
+        &self,
+        policy: meshharbor_remote_control::models::FeaturePolicy,
+    ) -> meshharbor_remote_control::models::FeaturePolicy {
+        if self.protected {
+            meshharbor_remote_control::models::FeaturePolicy::Off
+        } else {
+            policy
+        }
+    }
+    /// The forward allowlist the tunnel exit and SSH forwards apply. Protected with no
+    /// allowlist: every forward is refused (unprotected, an empty list trusts the server).
+    pub fn effective_forward_acl(&self) -> crate::acl::AgentForwardAcl {
+        let mut acl = self.forward_acl.clone();
+        if self.protected && acl.allowlist.is_empty() {
+            acl.enabled = false;
+        }
+        acl
+    }
+    /// What a protected device still lets in, for `mh status` and the device report. Empty
+    /// when the device is not protected.
+    pub fn protected_open_planes(&self) -> Vec<String> {
+        if !self.protected {
+            return Vec::new();
+        }
+        let mut open = Vec::new();
+        if self.ssh_enabled {
+            open.push(format!(
+                "MeshHarbor SSH ({} key{} in the device's list)",
+                self.ssh_authorized_keys.len(),
+                if self.ssh_authorized_keys.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
+        let acl = self.effective_forward_acl();
+        if acl.enabled && !acl.allowlist.is_empty() {
+            open.push(format!(
+                "forwards to {} allowlisted destination{}",
+                acl.allowlist.len(),
+                if acl.allowlist.len() == 1 { "" } else { "s" }
+            ));
+        }
+        open
+    }
+}
+
 pub const CRASH_WINDOW_SECS: u64 = 10 * 60;
 
 /// How many crashes inside `CRASH_WINDOW_SECS` trip the rollback
@@ -2888,6 +3012,7 @@ pub fn test_fixture() -> AgentConfig {
         power_policy: String::new(),
         companion_autostart: true,
         remote_config_enabled: false,
+        protected: false,
         local_restart_enabled: true,
         external_access_enabled: false,
         rdp_over_mesh: false,
@@ -3823,6 +3948,109 @@ fn derive_ws_url(http_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR-127 — `protected` closes every way in through the accessors, keeps the stored keys,
+    /// and opening it again restores exactly what the owner had.
+    #[test]
+    fn a_protected_device_refuses_every_way_in_and_keeps_the_owners_settings() {
+        use meshharbor_remote_control::models::FeaturePolicy;
+        let mut cfg = test_fixture();
+        cfg.exec_enabled = true;
+        cfg.remote_config_enabled = true;
+        cfg.auto_grant_session = true;
+        cfg.enable_remote_browse = true;
+        cfg.rdp_over_mesh = true;
+        cfg.external_access_enabled = true;
+        cfg.hive_enabled = true;
+        cfg.vault_enabled = true;
+        cfg.relay_server_enabled = Some(true);
+        cfg.overlay_exit_node_enabled = true;
+        cfg.rc_files = FeaturePolicy::On;
+        let open = cfg.clone();
+
+        // Unprotected: the stored keys decide.
+        assert!(cfg.exec_allowed() && cfg.remote_config_allowed() && cfg.auto_grant_allowed());
+        assert!(cfg.remote_browse_allowed() && cfg.rdp_over_mesh_allowed());
+        assert!(cfg.external_access_allowed() && cfg.hive_allowed() && cfg.vault_allowed());
+        assert_eq!(cfg.relay_server_allowed(), Some(true));
+        assert!(cfg.exit_node_allowed() && cfg.subnet_routes_allowed());
+        assert_eq!(cfg.rc_feature(cfg.rc_files), FeaturePolicy::On);
+        assert!(
+            cfg.effective_overlay_advertised_routes()
+                .contains(&"0.0.0.0/0".to_string())
+        );
+        assert!(
+            cfg.effective_forward_acl().enabled,
+            "empty + unprotected trusts the server"
+        );
+        assert!(cfg.protected_open_planes().is_empty());
+
+        cfg.protected = true;
+        assert!(!cfg.exec_allowed() && !cfg.remote_config_allowed() && !cfg.auto_grant_allowed());
+        assert!(!cfg.remote_browse_allowed() && !cfg.rdp_over_mesh_allowed());
+        assert!(!cfg.external_access_allowed() && !cfg.hive_allowed() && !cfg.vault_allowed());
+        assert_eq!(cfg.relay_server_allowed(), Some(false));
+        assert!(!cfg.exit_node_allowed() && !cfg.subnet_routes_allowed());
+        assert_eq!(cfg.rc_feature(FeaturePolicy::On), FeaturePolicy::Off);
+        assert_eq!(cfg.rc_feature(FeaturePolicy::Ask), FeaturePolicy::Off);
+        assert!(
+            !cfg.effective_overlay_advertised_routes()
+                .contains(&"0.0.0.0/0".to_string())
+        );
+        assert!(
+            !cfg.effective_forward_acl().enabled,
+            "empty + protected refuses every forward"
+        );
+
+        // The stored keys are the owner's, untouched; opening restores them exactly.
+        let mut stored = cfg.clone();
+        stored.protected = false;
+        assert_eq!(
+            toml::to_string(&stored).unwrap(),
+            toml::to_string(&open).unwrap()
+        );
+    }
+
+    /// FR-127 — what a protected device still lets in is named: its admin SSH and an explicit
+    /// forward allowlist, which `protected` honours.
+    #[test]
+    fn a_protected_device_names_what_it_left_open() {
+        let mut cfg = test_fixture();
+        cfg.protected = true;
+        cfg.ssh_enabled = false;
+        assert!(cfg.protected_open_planes().is_empty());
+        cfg.ssh_enabled = true;
+        cfg.ssh_authorized_keys = vec!["ssh-ed25519 AAAA admin".into()];
+        use meshharbor_remote_control::models::{DestinationRule, HostPattern, PortRange};
+        cfg.forward_acl.allowlist = vec![DestinationRule {
+            host_pattern: HostPattern::Exact("127.0.0.1".into()),
+            port_range: PortRange {
+                low: 8001,
+                high: 8001,
+            },
+            proto: Default::default(),
+        }];
+        let acl = cfg.effective_forward_acl();
+        assert!(
+            acl.enabled,
+            "an explicit allowlist stays in force when protected"
+        );
+        let open = cfg.protected_open_planes();
+        assert_eq!(open.len(), 2, "{open:?}");
+        assert!(open[0].contains("1 key"), "{open:?}");
+        assert!(open[1].contains("1 allowlisted destination"), "{open:?}");
+    }
+
+    /// FR-127 — absent means off; the key parses.
+    #[test]
+    fn protected_defaults_off_and_parses() {
+        let off: AgentConfig = toml::from_str(&toml::to_string(&test_fixture()).unwrap()).unwrap();
+        assert!(!off.protected);
+        let mut on = test_fixture();
+        on.protected = true;
+        let back: AgentConfig = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
+        assert!(back.protected);
+    }
 
     /// FR-43 P3 — the unenrolled worker's config has no identity at all and
     /// switches on nothing the root daemon owns: no overlay, SSH, exec or vault

@@ -854,7 +854,8 @@ pub(crate) mod sshd {
                 key_list_run_as,
                 deny_daemon_grants,
                 services,
-                forward_acl: cfg.forward_acl.clone(),
+                // FR-127 — protected with no allowlist: no forward at all.
+                forward_acl: cfg.effective_forward_acl(),
                 forwards: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_FORWARDS)),
                 exec_streaming: cfg.ssh_exec_streaming,
                 service_ceiling: None,

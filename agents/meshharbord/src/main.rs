@@ -4588,6 +4588,17 @@ async fn run_cmd(
                 "config-backed env fallbacks registered");
             tunnel_core::env::register_config_fallbacks(fallbacks);
         }
+        // FR-127 — before anything serves: a protected device never binds a relay listener,
+        // whatever its config, its env or the control plane says.
+        tunnel_core::overlay::orgrelay::set_device_protected(cfg.protected);
+        if cfg.protected {
+            tracing::info!(
+                open = ?cfg.protected_open_planes(),
+                "this device is PROTECTED: fleet exec, remote config, unattended remote desktop, \
+                 file browse and transfer, RDP over the mesh, unlisted forwards, relay and exit \
+                 serving, cross-org access, agent sessions and the vault are refused"
+            );
+        }
         // R4 — record the PRIMARY enrollment's tenant so the tunnel plane
         // can resolve the right DERP mux for the quic-derp-v1 flavor
         // (declared routes are primary-org-scoped by the reconciler).
@@ -4777,7 +4788,7 @@ async fn run_cmd(
     // disabled it in config.toml); env var
     // `MESHHARBORD_DISABLE_BROWSE=1` is an escape hatch for
     // emergency in-field disable without a config reload.
-    let browse_enabled = cfg.enable_remote_browse
+    let browse_enabled = cfg.remote_browse_allowed()
         && !matches!(
             node_env("DISABLE_BROWSE").as_deref(),
             Some("1") | Some("true") | Some("yes")
@@ -5250,7 +5261,8 @@ async fn run_cmd(
     // signaling::run) so the LocalAPI's DaemonState shares the SAME instance the
     // signaling loop prompts on; its live `pending` set gates LocalAPI consent
     // decisions (a decision is honoured only for an actively-prompting session).
-    let consent_mode = meshharbord::consent::Mode::from_config(cfg.auto_grant_session);
+    // FR-127 — a protected device never auto-grants: a person at it approves every session.
+    let consent_mode = meshharbord::consent::Mode::from_config(cfg.auto_grant_allowed());
     let consent_dir =
         meshharbord::consent::ConsentBroker::default_sentinel_dir().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not resolve consent sentinel dir; using temp dir");
@@ -5323,8 +5335,9 @@ async fn run_cmd(
     let remote_cfg = meshharbord::remote_config::RemoteConfigServices::new(
         config_path.clone(),
         cfg_write_lock.clone(),
-        cfg.exec_enabled,
-        cfg.remote_config_enabled,
+        // FR-127 — the effective values (see `AgentConfig::exec_allowed`).
+        cfg.exec_allowed(),
+        cfg.remote_config_allowed(),
     );
     // FR-100 P1c — and every other live key it holds (`peer_auth`), from the
     // same config: a fresh `new` judges offers under `audit` until told.

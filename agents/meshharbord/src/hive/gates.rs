@@ -61,7 +61,8 @@ pub struct HiveConfig {
 impl HiveConfig {
     pub fn from_agent(cfg: &AgentConfig) -> Self {
         Self {
-            enabled: cfg.hive_enabled,
+            // FR-127 — no agent sessions on a protected device.
+            enabled: cfg.hive_allowed(),
             accounts: cfg.hive_accounts.clone(),
             roots: cfg.hive_roots.iter().map(PathBuf::from).collect(),
             max_sessions: cfg

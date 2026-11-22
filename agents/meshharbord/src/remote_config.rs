@@ -185,7 +185,7 @@ impl RemoteConfigServices {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let cfg = crate::config::load(&path).ok()?;
-            if !cfg.external_access_enabled {
+            if !cfg.external_access_allowed() {
                 return None;
             }
             Some(crate::external_access::Credential {
@@ -215,7 +215,7 @@ impl RemoteConfigServices {
             let cfg = crate::config::load(&path).ok()?;
             let password_set =
                 cfg.external_access_setup.is_some() && cfg.external_access_verifier.is_some();
-            (cfg.external_access_enabled && password_set).then_some(ExternalSessionConfig {
+            (cfg.external_access_allowed() && password_set).then_some(ExternalSessionConfig {
                 consent_mode: cfg.external_consent_mode,
                 max_permissions: cfg.external_max_permissions,
             })
@@ -245,9 +245,12 @@ impl RemoteConfigServices {
     /// The caller already holds the write lock, so this reads a config that
     /// cannot be mid-write.
     pub fn adopt_local(&self, cfg: &crate::config::AgentConfig) {
-        self.exec_enabled.store(cfg.exec_enabled, Ordering::Relaxed);
+        // FR-127 — the effective values: a protected device runs no fleet command and takes
+        // no pushed config, whatever the stored keys say.
+        self.exec_enabled
+            .store(cfg.exec_allowed(), Ordering::Relaxed);
         self.remote_config_enabled
-            .store(cfg.remote_config_enabled, Ordering::Relaxed);
+            .store(cfg.remote_config_allowed(), Ordering::Relaxed);
         // FR-100 P1c — the next offer is judged under the owner's new word.
         self.peer_auth_policy
             .store(policy_bits(cfg.peer_auth), Ordering::Relaxed);
@@ -341,7 +344,7 @@ impl RemoteConfigServices {
             // while the file says off would survive a crash as a device
             // running exec that its own config denies.
             if applied.live.contains(&"exec_enabled") {
-                exec_flag.store(cfg.exec_enabled, Ordering::Relaxed);
+                exec_flag.store(cfg.exec_allowed(), Ordering::Relaxed);
             }
             Ok(applied)
         })
@@ -543,6 +546,43 @@ mod tests {
             exec,
             opted_in,
         )
+    }
+
+    /// FR-127 — on a protected device a pushed `exec_enabled = true` changes the stored key
+    /// (the push is the owner's delegation, if they made one) and opens nothing: fleet exec
+    /// stays refused, and so does the next push.
+    #[tokio::test]
+    async fn a_push_cannot_reopen_a_protected_device() {
+        let dir = std::env::temp_dir().join(format!("fr127-push-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut cfg = crate::config::test_fixture();
+        cfg.protected = true;
+        cfg.remote_config_enabled = true;
+        crate::config::save(&path, &cfg).unwrap();
+        let svc = RemoteConfigServices::new(
+            path.clone(),
+            Arc::new(tokio::sync::Mutex::new(())),
+            cfg.exec_allowed(),
+            cfg.remote_config_allowed(),
+        );
+        assert!(
+            !svc.remote_config_enabled(),
+            "a protected device takes no pushed config"
+        );
+        let push = DesiredConfig {
+            exec_enabled: Some(true),
+            ..Default::default()
+        };
+        let applied = svc.apply(&push).await.unwrap();
+        assert_eq!(applied.live, vec!["exec_enabled"]);
+        assert!(!svc.exec_enabled(), "exec stays refused");
+        // A local edit adopted live keeps it refused too.
+        let on_disk = crate::config::load(&path).unwrap();
+        assert!(on_disk.exec_enabled && on_disk.protected);
+        svc.adopt_local(&on_disk);
+        assert!(!svc.exec_enabled() && !svc.remote_config_enabled());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// FR-119 P2b — a pushed frame-rate denylist is written and reported as

@@ -23,6 +23,10 @@ use crate::config::AgentConfig;
 /// `advertise_routes` config (validated + canonicalized) unioned with
 /// auto-detected local IPv4 subnets (unless `advertise_local_subnets` is off).
 pub fn local_advertised_routes(cfg: &AgentConfig) -> Vec<String> {
+    // FR-127 — a protected device bridges no LAN into the mesh.
+    if !cfg.subnet_routes_allowed() {
+        return Vec::new();
+    }
     advertised_routes(&cfg.advertise_routes, cfg.advertise_local_subnets)
 }
 

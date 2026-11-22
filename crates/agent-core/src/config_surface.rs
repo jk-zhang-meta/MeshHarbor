@@ -341,6 +341,17 @@ const KEYS: &[KeyMeta] = &[
         description: "Accept configuration pushed by the control plane. NEVER settable by the server — it is what keeps exec_enabled/ssh_enabled refusable by a compromised one. Turning it ON delegates that last refusal. Default: OFF.",
     },
     KeyMeta {
+        key: "protected",
+        group: Group::Access,
+        tier: Tier::Essential,
+        // Restart: the relay listener, consent, browse and the remote-desktop features are
+        // wired at startup. (Exec and remote config already follow it live, through
+        // `adopt_local`.)
+        live: false,
+        kind: "bool",
+        description: "FR-127 - a protected device. Refuses every way in this device did not allow itself: fleet exec, remote configuration, unattended remote desktop (a person here must approve), file browse/transfer/clipboard, RDP over the mesh, tunnel exits and SSH forwards without an explicit forward_acl allowlist, serving as a relay or exit node, subnet routes, cross-org access, agent sessions and the vault. MeshHarbor SSH stays as configured: your admin path. NEVER settable by the server. Turning it off restores your previous settings. Takes effect at the next service start. Default: OFF.",
+    },
+    KeyMeta {
         key: "rdp_over_mesh",
         group: Group::Access,
         tier: Tier::Standard,
@@ -2034,6 +2045,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         }),
         "companion_autostart" => Some(fmt_bool(cfg.companion_autostart)),
         "remote_config_enabled" => Some(fmt_bool(cfg.remote_config_enabled)),
+        "protected" => Some(fmt_bool(cfg.protected)),
         "local_restart_enabled" => Some(fmt_bool(cfg.local_restart_enabled)),
         "external_access_enabled" => Some(fmt_bool(cfg.external_access_enabled)),
         "rdp_over_mesh" => Some(fmt_bool(cfg.rdp_over_mesh)),
@@ -2325,6 +2337,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         // explicitly; if the server could set it, every other gate here would
         // be one push away from meaningless. See `docs/remote-config.md`.
         "remote_config_enabled" => cfg.remote_config_enabled = parse_bool_or(value, false)?,
+        "protected" => cfg.protected = parse_bool_or(value, false)?,
         // Same fail-safe direction and the same locality: settable here (CLI,
         // desktop companion), never from a server push.
         "rdp_over_mesh" => cfg.rdp_over_mesh = parse_bool_or(value, false)?,
@@ -3544,6 +3557,7 @@ mod tests {
             "auto_grant_session",
             "exec_enabled",
             "remote_config_enabled",
+            "protected",
             "ssh_enabled",
             "hive_enabled",
             "encoder_preference",
