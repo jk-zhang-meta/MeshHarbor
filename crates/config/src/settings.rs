@@ -1735,8 +1735,10 @@ impl Settings {
             // local-dev outage, not a cosmetic mismatch. Production overrides
             // it via `MESHHARBOR__APP__FRONTEND_URL` and is unaffected.
             .set_default("app.frontend_url", DEFAULT_FRONTEND_URL)?
-            .set_default("app.rate_limit_per_sec", 1)?
-            .set_default("app.rate_limit_burst", 60)?
+            // From the serde default fns, so the two can never disagree again: until 0.4.206
+            // this block still said 1/s and 60, and it is what `load` actually applies.
+            .set_default("app.rate_limit_per_sec", default_rate_limit_per_sec())?
+            .set_default("app.rate_limit_burst", default_rate_limit_burst())?
             .set_default("app.rate_limit_trusted_hops", 1)?
             .set_default("app.business_trusted_proxy_cidrs", Vec::<String>::new())?
             .set_default("app.business_isolation", "warn")?
@@ -1961,6 +1963,19 @@ mod rate_limit_tests {
     fn auth_period_matches_per_minute() {
         assert_eq!(app(1, 10).auth_rate_limit_period_ms(), 6_000);
         assert_eq!(app(1, 60).auth_rate_limit_period_ms(), 1_000);
+    }
+
+    /// The limits `load` applies with nothing configured are the documented ones. 0.4.205
+    /// raised only the serde defaults, and production still answered 429 at the 60th
+    /// anonymous request, because `load` set its own 1/s and 60 first.
+    #[test]
+    fn load_applies_the_documented_api_limits() {
+        if std::env::vars().any(|(k, _)| k.starts_with("MESHHARBOR__APP__RATE_LIMIT")) {
+            return;
+        }
+        let app = super::Settings::load().expect("load with no config").app;
+        assert_eq!(app.rate_limit_per_sec, 20);
+        assert_eq!(app.rate_limit_burst, 600);
     }
 }
 
