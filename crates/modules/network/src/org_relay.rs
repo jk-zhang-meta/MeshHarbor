@@ -5999,6 +5999,16 @@ fn device_left_grace_enabled() -> bool {
     })
 }
 
+fn revoke_on_restart_join_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__OVERLAY__REVOKE_ON_RESTART_JOIN").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
+}
+
 /// `node_id`'s control connection closed without a graceful leave. Its
 /// sessions are revoked as `device_left` only if it is not back, as the same
 /// process, within [`DEVICE_LEFT_GRACE`]: a restarted process lost them, and
@@ -6050,8 +6060,25 @@ pub async fn connection_lost(state: &NetworkState, node_id: ObjectId) {
 /// `node_id` joined again (called after its instance is recorded). The same
 /// process keeps what it held when its connection closed; a new one lost it,
 /// so that is revoked now rather than at the end of the grace.
-pub async fn node_rejoined(state: &NetworkState, node_id: ObjectId, instance: Option<&str>) {
+///
+/// `restarted`: this join is a different process from the last one recorded.
+/// When its connection replaced the old one before the old one's teardown
+/// ran, no leave was recorded (a displaced connection's close is not the
+/// node's leave), and what the old process held is revoked here instead.
+/// Kill switch: `MESHHARBOR__OVERLAY__REVOKE_ON_RESTART_JOIN=0`.
+pub async fn node_rejoined(
+    state: &NetworkState,
+    node_id: ObjectId,
+    instance: Option<&str>,
+    restarted: bool,
+) {
     let Some((_, leave)) = state.org_relay.pending_leaves.remove(&node_id) else {
+        if restarted && revoke_on_restart_join_enabled() {
+            let n = revoke_node(state, node_id, "device_left").await;
+            if n > 0 {
+                info!(%node_id, revoked = n, "org-relay: node joined as a new process before its old connection closed — the old process's sessions revoked");
+            }
+        }
         return;
     };
     if leave.instance.as_deref() == instance {

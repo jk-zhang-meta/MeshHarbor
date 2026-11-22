@@ -1098,8 +1098,8 @@ async fn handle_overlay_join(
     if let Some(id) = self_node.id {
         state.admission_nodes.insert(id, self_node.clone());
         // Before the netmap, so the node's first requests already count afresh.
-        forget_restarted_grants(state, id, instance.as_deref());
-        crate::org_relay::node_rejoined(state, id, instance.as_deref()).await;
+        let restarted = forget_restarted_grants(state, id, instance.as_deref());
+        crate::org_relay::node_rejoined(state, id, instance.as_deref(), restarted).await;
     }
 
     if lines.restricted_read_failed
@@ -2521,11 +2521,20 @@ fn note_grant_sent(state: &NetworkState, pair_key: &str) {
 /// to DERP for 30 min). Its pairs keep only a standing pin, which the rejoin
 /// re-push re-delivers. A reconnect (same instance), a first-seen instance
 /// and an older node (none) change nothing.
-fn forget_restarted_grants(state: &NetworkState, node_id: ObjectId, instance: Option<&str>) {
-    let Some(instance) = instance else { return };
+///
+/// Returns whether this join is a different process from the last one this
+/// server recorded for the node.
+fn forget_restarted_grants(
+    state: &NetworkState,
+    node_id: ObjectId,
+    instance: Option<&str>,
+) -> bool {
+    let Some(instance) = instance else {
+        return false;
+    };
     let previous = state.node_instances.insert(node_id, instance.to_owned());
     if previous.is_none_or(|p| p == instance) {
-        return;
+        return false;
     }
     let hex = node_id.to_hex();
     for mut e in state.relay_pair_churn.iter_mut() {
@@ -2536,6 +2545,7 @@ fn forget_restarted_grants(state: &NetworkState, node_id: ObjectId, instance: Op
             pc.window_start = None;
         }
     }
+    true
 }
 
 /// P7 — on (re)join, re-push any unexpired forced-DERP pins involving this

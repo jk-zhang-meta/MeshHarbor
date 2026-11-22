@@ -4228,3 +4228,41 @@ async fn a_relay_control_reconnect_keeps_its_sessions_and_a_restart_ends_them() 
         .collect();
     assert_eq!(reasons, vec!["device_left".to_string()], "{reasons:?}");
 }
+
+/// Field, 2026-11-22: a relay restarted by `systemctl restart` connected again
+/// before the server ran its old connection's teardown, so no leave was ever
+/// recorded (the displaced connection's close is not the node's leave) and the
+/// sessions the old process held were never revoked. Its members kept being
+/// re-pushed a session the relay no longer had, until its lifetime ran out.
+#[tokio::test]
+async fn a_relay_restarted_before_its_old_connection_closed_ends_its_sessions() {
+    let mut rig = Rig::up("mint-fast-restart", true, Some(true)).await;
+    relay_join_as(&mut rig.r, "proc-1").await;
+    rig.arm().await;
+    rig.request().await;
+    let (serve, _, _) = rig.expect_minted().await;
+    let vni = serve["vni"].clone();
+    let network = rig.app.state.network();
+    let relay = ObjectId::parse_str(&rig.r_node).unwrap();
+
+    // The new process joins while the old connection is still open.
+    let r_tok = rig.r_tok.clone();
+    let mut old = std::mem::replace(
+        &mut rig.r,
+        connect_from(&rig.app, &r_tok, &["relay-server"], None).await,
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    relay_join_as(&mut rig.r, "proc-2").await;
+    for (name, ws) in [("a", &mut rig.a), ("b", &mut rig.b)] {
+        let v = recv_t(ws, "rc:overlay.relay_revoke", Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("{name}: the restarted relay's session is revoked"));
+        assert_eq!(v["vni"], vni, "{name}: the revoke names the session");
+    }
+    assert_eq!(network.org_relay.sessions_on_relay(relay), 0);
+
+    // The old connection's late close is not a leave of the new process.
+    old.close(None).await.expect("close the old connection");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!network.org_relay.leave_pending(relay));
+}
