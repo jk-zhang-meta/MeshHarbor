@@ -2080,3 +2080,108 @@ async fn ws_disconnect_finalizes_http_only_call_session() {
     }
     assert!(cleaned, "HTTP-only session must be reaped on WS disconnect");
 }
+
+/// FR-126 — `media:join` is the message that creates a connection's transports, so it carries
+/// the room gate itself. Before it, a signed-in user of ANY org who knew a room id got
+/// transports and could consume the call. Refused: someone from another org, and a member of
+/// the org who is not in a secret room. Still allowed: the room's own member.
+#[tokio::test]
+async fn ws_media_join_is_refused_to_anyone_not_allowed_in_the_room() {
+    use tokio_tungstenite::connect_async;
+
+    let app = TestApp::spawn().await;
+    let tenant = app.seed_tenant("fr126gate").await;
+    let other = app.seed_tenant("fr126other").await;
+
+    let room: Value = app
+        .auth_post(
+            &format!("/api/tenant/{}/room", tenant.tenant_id),
+            &tenant.admin.access_token,
+        )
+        .json(&serde_json::json!({ "name": "FR-126 gate" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let room_id = room["id"].as_str().unwrap().to_string();
+    let resp = app
+        .auth_put(
+            &format!("/api/tenant/{}/room/{}", tenant.tenant_id, room_id),
+            &tenant.admin.access_token,
+        )
+        .json(&serde_json::json!({ "visibility": "secret" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "secret: {}", resp.status());
+    let resp = app
+        .auth_post(
+            &format!(
+                "/api/tenant/{}/room/{}/call/start",
+                tenant.tenant_id, room_id
+            ),
+            &tenant.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "call/start: {}", resp.status());
+
+    let join = |token: String| {
+        let addr = app.addr;
+        let room_id = room_id.clone();
+        async move {
+            let (mut ws, _) = connect_async(format!("ws://{addr}/ws?token={token}"))
+                .await
+                .expect("ws");
+            let first: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(first["type"], "connected");
+            ws.send(Message::Text(
+                serde_json::json!({ "type": "media:join", "data": { "room_id": room_id } })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+            let reply =
+                tokio::time::timeout(std::time::Duration::from_secs(10), next_media_msg(&mut ws))
+                    .await
+                    .expect("an answer to media:join");
+            ws.close(None).await.ok();
+            reply
+        }
+    };
+
+    for (who, token) in [
+        ("another org's user", other.admin.access_token.clone()),
+        (
+            "an org member outside the secret room",
+            tenant.member.access_token.clone(),
+        ),
+    ] {
+        let reply = join(token).await;
+        assert_eq!(reply["type"], "media:error", "{who}: {reply}");
+        assert_eq!(
+            reply["data"]["message"], "Not allowed in this meeting",
+            "{who}: {reply}"
+        );
+    }
+    let rid = bson::oid::ObjectId::parse_str(&room_id).unwrap();
+    assert!(
+        app.state
+            .modules
+            .conference
+            .as_ref()
+            .expect("the conference module is mounted in tests")
+            .room_manager
+            .get_participant_user_ids(&rid)
+            .is_empty(),
+        "a refused join must leave no participant behind"
+    );
+
+    let reply = join(tenant.admin.access_token.clone()).await;
+    assert_eq!(reply["type"], "media:router_capabilities", "{reply}");
+}

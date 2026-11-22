@@ -247,6 +247,29 @@ async fn handle_media_join(
         }
     };
 
+    // FR-126 — the meeting socket's own room gate, before anything is created for this
+    // connection. Until now a signed-in user of ANY org who knew a room id got transports
+    // here and could consume every producer in that room's call: the HTTP `call/join` checks
+    // the room, but the media itself is set up only by this message. It is the same gate as
+    // every room route (tenant membership, the room inside that tenant, its visibility), and a
+    // room that cannot be read is refused, never let through on a guess. The answer does not
+    // say whether the room exists.
+    let room = match state.rooms.base.find_by_id(rid).await {
+        Ok(room) => room,
+        Err(e) => {
+            debug!(?user_id, ?rid, %e, "media:join refused: room not readable");
+            send_media_error(state, connection_id, "Not allowed in this meeting").await;
+            return;
+        }
+    };
+    if let Err(e) =
+        crate::guards::require_room_in_tenant(state, room.tenant_id, rid, *user_id).await
+    {
+        warn!(?user_id, ?rid, %e, "media:join refused: not allowed in this room");
+        send_media_error(state, connection_id, "Not allowed in this meeting").await;
+        return;
+    }
+
     let mut room_exists = state.room_manager.has_room(&rid);
     debug!(?user_id, %connection_id, ?rid, room_exists, create_allowed, "media:join room check");
     if !room_exists && create_allowed {
@@ -277,13 +300,10 @@ async fn handle_media_join(
     //
     // A rejoining participant is already in the map, so `>=` would refuse them
     // their own seat — hence the membership test before the count.
-    let room = state.rooms.base.find_by_id(rid).await.ok();
     // FR-115 P4b — the org that pays for this meeting's TURN relay, named in
     // the TURN username below so coturn's statistics name it.
-    let room_org = room.as_ref().map(|r| r.tenant_id);
-    if let Some(room) = room.as_ref()
-        && let Ok(tenant) = state.tenants.base.find_by_id(room.tenant_id).await
-    {
+    let room_org = Some(room.tenant_id);
+    if let Ok(tenant) = state.tenants.base.find_by_id(room.tenant_id).await {
         let present = state.room_manager.get_participant_user_ids(&rid);
         // FR-102 P4 — through core, which also counts the collision per org.
         if !present.contains(user_id)

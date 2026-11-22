@@ -676,8 +676,19 @@ async fn media_join_routes_to_owner_pod_single_router() {
 
     // Exactly ONE router: app2 must NOT have materialized the room.
     assert!(!conf(&app2).room_manager.has_room(&rid));
+    // The owner sends the transports to the connection BEFORE it answers the bus, and app2
+    // records the remote membership only on that answer, so the transports can reach the
+    // client first. Wait for the record rather than racing it (this failed about half the
+    // time, with or without any change to the join).
+    let tracked = async {
+        while conf(&app2).remote_media_conns.len() != 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
     assert!(
-        conf(&app2).remote_media_conns.len() == 1,
+        tokio::time::timeout(std::time::Duration::from_secs(3), tracked)
+            .await
+            .is_ok(),
         "remote membership tracked for WS-close forwarding"
     );
 
