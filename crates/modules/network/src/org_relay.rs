@@ -5196,11 +5196,26 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
                         }
                     }
                 }
-                if let Some(i) = s.member_index(req_id) {
-                    push_member(state, &s, i).await;
-                    debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
+                // A member asks again only while it has no working org link,
+                // and past the bind window the relay drops this session's
+                // binds, so re-pushing it would strand the pair until its
+                // lifetime (field 2026-11-22: sessions minted on unmeasured
+                // legs right after a restart, 7 pairs for 12+ min). Revoke it
+                // and mint afresh, as the multi-hop and ORG-only paths do.
+                let bindable = Instant::now() + BIND_REUSE_MARGIN < s.bind_by;
+                if bindable || !remint_unbound_on_request_enabled() {
+                    if let Some(i) = s.member_index(req_id) {
+                        push_member(state, &s, i).await;
+                        debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
+                    }
+                    return;
                 }
-                return;
+                revoke_where(state, "relay_request_bind_window_passed", |current| {
+                    current.pair_key == pk
+                        && current.vni == s.vni
+                        && current.generation == s.generation
+                })
+                .await;
             }
         }
     }
@@ -5267,6 +5282,19 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
 /// Time a re-pushed session needs to bind before the relay's bind deadline:
 /// the member's bind sends and the push latency.
 const BIND_REUSE_MARGIN: Duration = Duration::from_secs(8);
+
+/// Kill switch for re-minting a one-relay session whose bind window passed
+/// when a member asks again through `rc:overlay.relay_request`:
+/// `MESHHARBOR__ORG_RELAY__REMINT_UNBOUND_ON_REQUEST=0` re-pushes it as before.
+fn remint_unbound_on_request_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("MESHHARBOR__ORG_RELAY__REMINT_UNBOUND_ON_REQUEST").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
+}
 
 /// A fallback query reauthorizes cached leases, and never allocates TURN.
 /// In particular a stale but unexpired relay lease cannot suppress reselection.

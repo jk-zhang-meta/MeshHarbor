@@ -3265,6 +3265,74 @@ async fn org_only_fallback_mints_without_turn_churn_and_repushes_remaining_ttl()
     assert_org_only_quiet(&mut rig.r).await;
 }
 
+/// Field, 2026-11-22: right after a server restart, one-relay sessions were
+/// minted on legs nobody had measured yet, through a relay one member could
+/// not reach. The other member asked again through `relay_request`, which
+/// re-pushed the same session on every request, although past its bind
+/// window the relay drops its binds: seven pairs stayed down for 12+ minutes.
+/// Within the window the session is re-pushed; past it, it is revoked and a
+/// fresh one is minted, as on the multi-hop and ORG-only paths.
+#[tokio::test]
+async fn a_relay_request_remints_a_one_relay_session_past_its_bind_window() {
+    let mut rig = Rig::up("relay-request-rebind", true, Some(true)).await;
+    rig.arm().await;
+    rig.request().await;
+    let (_, sa, _) = rig.expect_minted().await;
+    let a = ObjectId::parse_str(&rig.a_node).unwrap();
+    let b = ObjectId::parse_str(&rig.b_node).unwrap();
+    let pk = meshharbor_mod_network::overlay::pair_key(a, b);
+    let wait = Duration::from_secs(5);
+
+    rig.request().await;
+    let within = recv_t(&mut rig.a, "rc:overlay.relay_session", wait)
+        .await
+        .expect("inside the window the session is re-pushed");
+    assert_eq!(
+        within["generation"], sa["generation"],
+        "inside the window: the same session"
+    );
+
+    rig.app.state.network().org_relay.age_past_bind_window(&pk);
+    rig.request().await;
+    let fresh = recv_t(&mut rig.a, "rc:overlay.relay_session", wait)
+        .await
+        .expect("past the window a fresh session arrives");
+    assert_ne!(
+        fresh["generation"], sa["generation"],
+        "past the window: a fresh session"
+    );
+    assert_ne!(fresh["bind_secret"], sa["bind_secret"]);
+    let peer = loop {
+        let s = recv_t(&mut rig.b, "rc:overlay.relay_session", wait)
+            .await
+            .expect("the peer gets the fresh session");
+        if s["generation"] == fresh["generation"] {
+            break s;
+        }
+    };
+    assert_eq!(peer["vni"], fresh["vni"]);
+    let serve = loop {
+        let s = recv_t(&mut rig.r, "rc:overlay.relay_serve", wait)
+            .await
+            .expect("the relay installs the fresh session");
+        if s["generation"] == fresh["generation"] {
+            break s;
+        }
+    };
+    assert_eq!(serve["vni"], fresh["vni"]);
+    let reasons: Vec<String> = audit_rows(&rig.app, &rig.seeded)
+        .await
+        .iter()
+        .filter(|r| r["action"] == json!("revoke"))
+        .filter_map(|r| r["reason"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        reasons,
+        vec!["relay_request_bind_window_passed".to_string()],
+        "{reasons:?}"
+    );
+}
+
 /// Field, 2026-10-25: a session minted while the direct path was still up
 /// was never bound inside the relay's bind window, after which the relay
 /// drops every Bind for it; re-pushing that same session on each fallback
