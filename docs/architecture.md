@@ -239,7 +239,7 @@ root `mh status` used to report as a second daemon.
 
 ```
 Browser/CLI/daemon ──► nginx ──► Axum router
-                                   ├─ per-IP governor (all /api)
+                                   ├─ per-IP limit (/api, requests without a valid token)
                                    ├─ per-(IP, account) brute-force gate (login/register)
                                    ├─ JWT middleware (audience-checked)
                                    └─ handler ─► services (DAO) ─► MongoDB

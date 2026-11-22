@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Tests for the global per-IP `tower_governor` limiter.
+//! Tests for the per-IP `/api` limiter (`middleware::api_rate_limit`), which meters only
+//! requests that carry no credential this server signed.
 //!
 //! ⚠️ Both tests here used to hit `/health`, which the governor **deliberately
 //! does not cover**: `build_router` layers it onto `Router::new().nest("/api",
@@ -101,5 +102,69 @@ async fn rate_limit_recovers_after_wait() {
     assert_ne!(
         after, 429,
         "after refill a request must pass the limiter again"
+    );
+}
+
+/// Fire `n` concurrent `GET /api/auth/me` requests carrying only `header` as a credential.
+///
+/// ⚠️ A fresh client without a cookie store: `app.client` keeps the session cookie that
+/// registration set, which would sign in every request here, the forged ones too.
+async fn burst_signed(app: &TestApp, n: usize, header: (&'static str, String)) -> Vec<u16> {
+    let bare = reqwest::Client::new();
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let client = bare.clone();
+        let url = app.url("/api/auth/me");
+        let (name, value) = header.clone();
+        handles.push(tokio::spawn(async move {
+            client
+                .get(url)
+                .header(name, value)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+    let mut out = Vec::with_capacity(n);
+    for h in handles {
+        out.push(h.await.unwrap());
+    }
+    out
+}
+
+/// A signed-in caller is not metered: one address may carry a whole household's devices
+/// and a browser, or every user of a front that injects the session. A token that does
+/// not verify is still anonymous, and still limited.
+#[tokio::test]
+async fn a_signed_in_caller_is_not_rate_limited_and_a_forged_token_is() {
+    let app = TestApp::spawn().await;
+    let user = app
+        .register_user(
+            "rl@example.com",
+            "rl",
+            "RL",
+            "correct-horse-battery-1",
+            None,
+            None,
+        )
+        .await;
+    // Twice the burst of 60, at once, by header and by the session cookie.
+    for header in [
+        ("authorization", format!("Bearer {}", user.access_token)),
+        ("cookie", format!("access_token={}", user.access_token)),
+    ] {
+        let statuses = burst_signed(&app, 120, header.clone()).await;
+        assert!(
+            statuses.iter().all(|&s| s == 200),
+            "{}: every signed-in request reaches the handler (statuses: {statuses:?})",
+            header.0
+        );
+    }
+    let forged = burst_signed(&app, 65, ("authorization", "Bearer not.a.token".into())).await;
+    assert!(
+        forged.contains(&429),
+        "a token that does not verify is metered like no token (statuses: {forged:?})"
     );
 }

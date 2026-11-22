@@ -2332,8 +2332,8 @@ automation browser, 0 rAF frames per second, window 0×0). **Filter
 `keepalive` (so the `closed` record of a tab the operator shut still leaves),
 bypasses `api/client.ts` on purpose (its 401 handler would refresh-then-logout,
 its 429/5xx handlers raise a snackbar), never retries, and caps itself at
-`RC_CONNECT_UPLOAD_MAX_PER_MIN` = 12 per page under the API's 60 req/min per-IP
-governor — a flapping ladder drops records rather than throttling the API the
+`RC_CONNECT_UPLOAD_MAX_PER_MIN` = 12 per page (the API meters a signed-in page by no
+per-IP limit since 2026-11-22, so this cap is the only one) — a flapping ladder drops records rather than throttling the API the
 session shares. A diagnostic must never become the incident.
 
 ⚠️ **Timing metadata only, by shape.** Ids must be ObjectId hex or they are

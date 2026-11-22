@@ -557,7 +557,20 @@ warning. The restrictive branch enumerates methods/headers because
 
 ### Rate limiting
 
-`tower_governor`, 60 req/min per IP.
+`/api` is metered per client address only for a request that carries **no credential this
+server signed** (`crates/api/src/middleware/api_rate_limit.rs`): default 20 requests a second,
+bursts of 600 (`app.rate_limit_per_sec` / `app.rate_limit_burst`; 1 and 60 until 2026-11-22).
+
+| Request | Limit |
+|---|---|
+| A valid user access, agent or agent service token, in `Authorization: Bearer` or the `access_token` cookie (signature, issuer, audience, expiry) | none; the handler still authorizes it in full |
+| No token, or one that does not verify | the per-address bucket above |
+| The credential endpoints (`/login`, `/register`, …) | also the per-(address, account) brute-force gate |
+
+⚠️ One address serves a whole home or office network, and a front that injects the session
+(the operator's workspace portal) sends all its users the same way. Under the old
+per-address bucket for everyone, the browser and every device behind one NAT shared 1
+request a second, and the web UI answered 429 while nothing was wrong (2026-11-22).
 
 ### Security headers and CSP (`files/nginx-pod.conf`)
 

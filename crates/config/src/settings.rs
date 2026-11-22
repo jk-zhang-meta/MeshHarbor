@@ -1242,17 +1242,17 @@ pub struct AppSettings {
     /// Tests inject distinct values per in-process TestApp.
     #[serde(default)]
     pub pod_id: Option<String>,
-    /// Sustained per-client-IP rate for `/api`, in **requests per second**.
-    /// Default 1. The e2e overlay bumps this so a Playwright Job's single
-    /// pod IP doesn't trip 429s during the suite.
+    /// Sustained per-client-IP rate for `/api` requests that carry no credential
+    /// this server signed, in **requests per second**. Default 20 (1 until
+    /// 2026-11-22). A signed-in user or device is not metered by it at all
+    /// (`api_rate_limit`): one address serves a whole home or office network.
     ///
     /// Note this is a *rate*, not an interval — see [`Self::rate_limit_period_ms`]
     /// for why that distinction is a trap worth spelling out.
     #[serde(default = "default_rate_limit_per_sec")]
     pub rate_limit_per_sec: u64,
-    /// Per-IP burst cap for `/api`. Default 60. This is the real headroom
-    /// for a page load: a SPA fans out to many endpoints at once, and every
-    /// client behind one NAT shares the bucket.
+    /// Per-IP burst cap for those same requests. Default 600 (60 until
+    /// 2026-11-22): every anonymous client behind one NAT shares the bucket.
     #[serde(default = "default_rate_limit_burst")]
     pub rate_limit_burst: u32,
     /// How many reverse proxies *we* control append to `X-Forwarded-For`
@@ -1361,10 +1361,10 @@ fn default_environment() -> String {
     "development".to_string()
 }
 fn default_rate_limit_per_sec() -> u64 {
-    1
+    20
 }
 fn default_rate_limit_burst() -> u32 {
-    60
+    600
 }
 
 fn default_business_isolation() -> String {

@@ -853,8 +853,8 @@ curl -sS -X POST https://meshharbor.itachi.fans/api/admin/growth/ingest/snapshot
 ```
 
 **Push the post before its snapshots** — a snapshot for a post never pushed is refused
-(`unknown_post`). The routes sit inside the per-IP governor (1 request a second, bursts of
-60), which a daily push is far below.
+(`unknown_post`). The routes sit inside the `/api` limiter, which a signed-in push is not metered by
+(`api_rate_limit`; an anonymous one gets 20 requests a second, bursts of 600).
 
 | Field | Rule ([`validate_post` / `validate_snapshot`](../crates/modules/saas/src/growth_ingest.rs)) |
 |---|---|

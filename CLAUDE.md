@@ -883,6 +883,6 @@ the managed-role reconcile: `docs/permissions.md`. The rules that bind new code:
   **global**; use `scripts/gh-scoped-config.sh`. ⚠️ Neither leak is recoverable
   downstream.
 - **Prod refuses to boot on the default JWT secret**; session cookies carry `Secure`
-  in production; CORS defaults to the frontend's own origin only; `tower_governor`
-  caps 60 req/min per IP, and exec/SSH additionally have per-(caller, device)
+  in production; CORS defaults to the frontend's own origin only; `/api` meters
+  per IP only requests without a valid credential (`middleware::api_rate_limit`), and exec/SSH additionally have per-(caller, device)
   ceilings enforced **after** the identity gates so a refusal is attributable.

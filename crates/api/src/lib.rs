@@ -26,12 +26,11 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use middleware::{
+    api_rate_limit::{ApiRateLimitState, api_rate_limit},
     auth_rate_limit::{AuthRateLimitState, AuthRateLimiter},
-    client_ip::TrustedProxyIpKeyExtractor,
 };
 use state::AppState;
 use std::sync::Arc;
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
@@ -99,27 +98,17 @@ pub fn build_router(state: AppState) -> Router {
         &state.settings.app.frontend_url,
     );
 
-    // Capacity limiting for `/api`, keyed on the client address.
-    //
-    // `per_millisecond` (like `per_second`) takes the interval that
-    // replenishes ONE token, not a rate — so the req/s setting is converted
-    // by `rate_limit_period_ms` rather than passed straight through. Feeding
-    // a rate into `per_second` is what made prod 10x stricter instead of 10x
-    // looser on 2026-07-28.
-    //
-    // The key comes from `TrustedProxyIpKeyExtractor`, not `SmartIpKeyExtractor`:
-    // the latter believes a client-supplied `X-Forwarded-For`, which is a
-    // one-header bypass of the whole limiter.
-    let governor_conf = GovernorConfigBuilder::default()
-        .per_millisecond(state.settings.app.rate_limit_period_ms())
-        .burst_size(state.settings.app.rate_limit_burst)
-        .key_extractor(TrustedProxyIpKeyExtractor {
-            trusted_hops: state.settings.app.rate_limit_trusted_hops,
-        })
-        .finish()
-        .expect("rate limit period is clamped non-zero, so the config is valid");
-    let governor_layer = GovernorLayer {
-        config: governor_conf.into(),
+    // Capacity limiting for `/api`: per client address, for requests that carry no
+    // credential this server signed (`middleware::api_rate_limit` says why a signed-in
+    // caller is exempt). Keyed on the server's one address rule, never on a
+    // client-supplied `X-Forwarded-For` entry.
+    let api_rate_limit_state = ApiRateLimitState {
+        limiter: Arc::new(AuthRateLimiter::new(
+            state.settings.app.rate_limit_period_ms(),
+            state.settings.app.rate_limit_burst,
+        )),
+        trusted_hops: state.settings.app.rate_limit_trusted_hops,
+        auth: state.auth.clone(),
     };
 
     // Brute-force gate for the credential endpoints, keyed on
@@ -441,7 +430,13 @@ pub fn build_router(state: AppState) -> Router {
     let api = state.modules.mount(api);
 
     // Apply rate limiting only to API routes (not health/ws which need unrestricted access)
-    let rate_limited_api = Router::new().nest("/api", api).layer(governor_layer);
+    let rate_limited_api =
+        Router::new()
+            .nest("/api", api)
+            .layer(axum::middleware::from_fn_with_state(
+                api_rate_limit_state,
+                api_rate_limit,
+            ));
 
     // FR-69 — the module crates' ungoverned routes join at the root: the
     // Stripe webhook (S5) is signature-authed, and retry bursts from Stripe's
