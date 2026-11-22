@@ -174,6 +174,23 @@ pub async fn dispatch_media_local(
     data: Option<&serde_json::Value>,
     create_allowed: bool,
 ) {
+    // FR-126 — every command but `join` and `leave` acts inside a meeting, so its connection
+    // must have joined THAT room (`join` carries the room gate). Without this,
+    // `media:play_audio` let anyone who knew a room id play one of the org's files into the
+    // meeting and read back its name. The commands that touch transports already required
+    // the connection's own participant; this makes the rule one line, for every command.
+    if !matches!(msg_type, "media:join" | "media:leave") {
+        let wanted = data
+            .and_then(|d| d.get("room_id"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| ObjectId::parse_str(s).ok());
+        let joined = state.room_manager.get_connection_room(connection_id);
+        if joined.is_none() || (wanted.is_some() && wanted != joined) {
+            debug!(?user_id, %connection_id, msg_type, ?wanted, ?joined, "media command refused: not in this meeting");
+            send_media_error(state, connection_id, "Join the meeting first").await;
+            return;
+        }
+    }
     match msg_type {
         "media:join" => {
             handle_media_join(state, user_id, connection_id, data, create_allowed).await;

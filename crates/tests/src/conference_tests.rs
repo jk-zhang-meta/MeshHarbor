@@ -2185,3 +2185,73 @@ async fn ws_media_join_is_refused_to_anyone_not_allowed_in_the_room() {
     let reply = join(tenant.admin.access_token.clone()).await;
     assert_eq!(reply["type"], "media:router_capabilities", "{reply}");
 }
+
+/// FR-126 — a meeting command from a connection that has not joined that room's meeting is
+/// refused, whatever it is. `media:play_audio` used to play a file of the room's org into the
+/// meeting for anyone who knew the room id, and answer with the file's name.
+#[tokio::test]
+async fn media_commands_need_the_connection_to_have_joined_that_meeting() {
+    use tokio_tungstenite::connect_async;
+
+    let app = TestApp::spawn().await;
+    let tenant = app.seed_tenant("fr126cmd").await;
+    let other = app.seed_tenant("fr126cmdother").await;
+    let room: Value = app
+        .auth_post(
+            &format!("/api/tenant/{}/room", tenant.tenant_id),
+            &tenant.admin.access_token,
+        )
+        .json(&serde_json::json!({ "name": "FR-126 commands" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let room_id = room["id"].as_str().unwrap().to_string();
+    app.auth_post(
+        &format!(
+            "/api/tenant/{}/room/{}/call/start",
+            tenant.tenant_id, room_id
+        ),
+        &tenant.admin.access_token,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    let (mut ws, _) = connect_async(format!(
+        "ws://{}/ws?token={}",
+        app.addr, other.admin.access_token
+    ))
+    .await
+    .expect("ws");
+    let _connected = ws.next().await.unwrap().unwrap();
+    for msg_type in ["media:play_audio", "media:stop_audio", "media:consume"] {
+        ws.send(Message::Text(
+            serde_json::json!({
+                "type": msg_type,
+                "data": {
+                    "room_id": room_id,
+                    "file_id": bson::oid::ObjectId::new().to_hex(),
+                    "playback_id": "x",
+                    "producer_id": "x",
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        let reply =
+            tokio::time::timeout(std::time::Duration::from_secs(10), next_media_msg(&mut ws))
+                .await
+                .expect("an answer");
+        assert_eq!(reply["type"], "media:error", "{msg_type}: {reply}");
+        assert_eq!(
+            reply["data"]["message"], "Join the meeting first",
+            "{msg_type}: {reply}"
+        );
+    }
+    ws.close(None).await.ok();
+}
