@@ -1,7 +1,9 @@
 # FR-125: A one-way line carries a cross-zone path
 
-> **Status:** in progress — claimed 2026-11-21. Tracking issue: none (GitHub Issues are disabled on
-> `jk-zhang-meta/MeshHarbor`); this spec and its registry row are the record.
+> **Status:** closed 2026-11-22. Shipped in server 0.4.199–0.4.204 and agent 0.4.200, and field-verified
+> (log below). Two parts of the criteria were not shown in the field, and each says why. Tracking
+> issue: none (GitHub Issues are disabled on `jk-zhang-meta/MeshHarbor`); this spec and its registry row
+> are the record.
 
 ## Goal
 
@@ -90,15 +92,37 @@ by the same measurements. Nothing in the code names either case.
 
 - [x] A mainland-zone device and an abroad device ride the new line in both request directions,
       at a round trip near the line's (≤ 45 ms), shown at ~83 ms over the old line first.
-- [ ] The pair stays up through 10 minutes with no traffic and answers at once afterwards; shown
-      FAILING without P1 (unit test that fails without the fix, and the field run).
-- [ ] With the line's forward stopped, the pair moves to the other line within 60 s and back when
-      it returns; shown slower without P2.
-- [ ] A device whose business policy keeps it inside its zone gets no row over the line.
-- [ ] No link is approved or declared by hand: the path above is found from measurements alone,
-      and a relay that cannot reach an address never gets a link to it.
-- [ ] No code path names a host, a country pair or a line; the recipe works for any line.
-- [ ] `docs/peer-relays.md` and `docs/business-isolation.md` describe one-way lines (mermaid,
+- [x] The pair stays up through 10 minutes with no traffic and answers at once afterwards (field,
+      server 0.4.198: the first ping after 10 idle minutes answered at 30.6 ms, with no re-mint). The
+      unit tests `a_quiet_bridge_over_an_expiring_nat_still_carries_the_pair` and
+      `a_bridge_whose_far_relay_stops_answering_ends` fail with the keeper off (423a18078).
+- [ ] The same field run FAILING without P1 — not shown, and not reproducible on this fleet.
+      WireGuard sends a persistent keepalive every 25 s (`wg.rs` `KEEPALIVE_SECS`), and it crosses every
+      bridge, so a live pair is never quiet long enough for the line's NAT to forget it. The keeper
+      matters once a pair goes dormant, which only the unit tests construct.
+- [x] With the line's forward stopped, the pair moves to the other line within 60 s (20 s, server
+      0.4.198) and back when it returns (01:01 UTC, by itself, 31.5 ms). The link-health unit tests
+      fail with `MESHHARBORD_RELAY_LINK_HEALTH=0` (3808c1233).
+- [ ] The same failover shown slower without link health (P4) in the field — not shown. The run on
+      2026-11-22 started with the pair already on the old line: a relay restart re-mints its pairs on
+      unmeasured legs, and an established pair moves to the line only at its next mint (Known limits,
+      first row). The retry would have waited an hour for that mint, and the unit tests already cover
+      it, so it was dropped.
+- [x] A device whose business policy pins it to its zone enters only through a relay of that zone.
+      This replaces "gets no row over the line": the operator ruled on 2026-11-22 that a pinned device
+      may have relayed sessions with abroad devices while its entry relay is in its zone. Field,
+      agent 0.4.203: the four pinned devices reach their 12 abroad peers only over an org relay, each
+      entering at a mainland relay (`mh peers --json` `relay_server`: the Shanghai or Guangzhou relay),
+      and connect directly only to mainland devices.
+- [x] No link is approved or declared by hand: the path above is found from measurements alone,
+      and a relay that cannot reach an address never gets a link to it. Field: the line's three
+      relays carry no `approved_backbone_edges`. The tenant's only explicit edge is the old line's
+      pre-FR-125 pair. Every crossing into the line's machine comes from a relay that measured its
+      entry. Addresses (`static_endpoints`) stay per relay, not per link.
+- [x] No code path names a host, a country pair or a line; the recipe works for any line. Checked
+      over the FR's diff (`4d4b7cfb4..`): outside tests no host, zone, country or address literal
+      appears; zone ids and gateways come only from the tenant's configuration.
+- [x] `docs/peer-relays.md` and `docs/business-isolation.md` describe one-way lines (mermaid,
       tables, anchors), and `docs/README.md` indexes this FR.
 
 ## Open decisions
@@ -130,7 +154,7 @@ link (each fix has a test that fails without it). Left as they are, and why:
 | A relay whose cloud firewall blocks its relay port inbound | Its own line still works (it only dials out), but members of its zone cannot bind to it; open the port in the provider's security group. |
 | The line's machine, as a member, bound nothing (fixed, 0.4.199) | Its exit drops destination UDP 3478, so as an endpoint (dialing out to its zone's gateways on 3478) its own sessions never bound; each was re-requested, minted and revoked about once a minute per peer (~800 `nhop_reauthorization_failed` revokes an hour), and devices listed it as blocked. It carried other pairs as a relay regardless. Now its path may end at itself, the gateway before it dialing its entry (P6). |
 | A relay with several public addresses on several interfaces may answer from the wrong one (open) | The relay listener binds the wildcard address and does not choose a reply source, so on a multi-homed host a reply can leave from an address other than the one the packet arrived on. Such an address measures unreachable and is not used, which is safe; using it needs the agent to reply from the arrival address (`IP_PKTINFO` / `IPV6_RECVPKTINFO`). |
-| A path with two middle relays does not hold (re-check on agent 0.4.200) | Seen 2026-11-22: a mainland server and an abroad host over mainland gateway → line → abroad relay → abroad gateway were minted and revoked 44 times in two hours. The 0.4.199 field run found the same churn on paths with one middle relay too, and its cause in the agent (next row); this case is expected to be the same one. |
+| A path with two middle relays does not hold (resolved by agent 0.4.200) | Seen 2026-11-22: a mainland server and an abroad host over mainland gateway → line → abroad relay → abroad gateway were minted and revoked 44 times in two hours; the cause was the agent bind deadlock (next row). Re-checked on agent 0.4.203, 07:45–08:50 UTC: 154 pairs, none revoked more than twice. Most of those revokes came in one burst at 08:24–08:25, 78 sessions on three relays at once and each re-minted. That was one event, not churn, and its cause was not traced. |
 | A pair whose two ends both hold a relay-death streak never binds (fixed, agent 0.4.200) | After three relay deaths a member defers its own re-request (60 s doubling to 300 s), on the premise that the other end's request still pairs it at once. For an org session that held only while the member was tracking the peer or had a carrier installed: a carrier-less member stored the pushed session and never bound it. Both ends of a pair that failed for hours (the line's machine before 0.4.199) then took turns binding only their own requests, each 60 s bind window expiring with the other side absent (field log, 0.4.199). Now a carrier-less member binds the other end's session at once (`runtime.rs` `accept_org_bind_session`). |
 | A relay restarted faster than its old connection's teardown kept its dead sessions (fixed, server 0.4.201) | `systemctl restart` on a relay: the new process connected and joined before the server ran the old connection's teardown, and a displaced connection's close is deliberately not the node's leave, so no leave was recorded and the sessions the old process served were never revoked. A member whose carrier died with it asked again and was re-pushed the same session, which the new process did not have, until its one-hour lifetime. Now a join from a new process instance with no recorded leave revokes what the old process held (`org_relay.rs` `node_rejoined`). Kill switch `MESHHARBOR__OVERLAY__REVOKE_ON_RESTART_JOIN=0`. |
 | After a restart, a one-relay session minted on unmeasured legs was re-pushed until its lifetime (fixed, server 0.4.202) | Every measurement restarts with a node (or the whole server), and with the line's machine's own legs unmeasured the planner's conservative one-relay fallback (the machine dialing a gateway) ties the path that ends at the machine and wins; that session never binds. The ORG-only and multi-hop request paths already re-mint a session past its bind window, but `rc:overlay.relay_request` re-pushed a live one-relay session on every request, so after the 0.4.201 cutover seven of the machine's pairs stayed down 12+ min (sessions minted 10–18 s after the restart). Now that path, too, revokes a one-relay session past its bind window when a member asks again (`relay_request_bind_window_passed`) and mints from current measurements. Kill switch `MESHHARBOR__ORG_RELAY__REMINT_UNBOUND_ON_REQUEST=0`. The first mint after a restart can still be the dial-out one; the pair then moves at the member's next request, within its re-request hold (≤ 5 min). |
@@ -156,5 +180,4 @@ link (each fix has a test that fails without it). Left as they are, and why:
 | 2026-11-22 | server 0.4.198 → 0.4.199 | **Before:** the line's machine as a device was `blocked` from every node and `mh ssh` to it failed (`proxy CONNECT failed (REP=0x4)`); ~77 revokes per 5 min named it as a member. **After:** 13 of its 22 online peers on an org relay (the mainland devices at 28–70 ms, the Shanghai relay at 4 ms), every chosen path class 0 and ending at the machine itself once measurements refilled (~10 min after the restart, which resets every cutoff); `mh ssh` to it from a mainland Windows device printed its hostname; ~10 revokes per 5 min. The other 9 alternated: the server pushed each end's request to both ends, but the end that did not ask never bound (15 of 15 sessions bound when the machine asked, 1 of 13 when the peer asked; a peer's own 300 s re-request hold explained each one) — the agent cause above. One pair also sat stranded after the restart: the machine's request raced it ("off-loop allocate failed"), the session minted anyway, and neither end asked again. |
 | 2026-11-22 | agent 0.4.192 → 0.4.200 (Linux x86/ARM, macOS, Windows) | Rolled to every online Linux node at 03:59 UTC (the Windows build environment was restored first: the FFmpeg/libvpx/pkgconf/nasm/WiX inputs re-fetched and checked against recorded or published hashes; the MSI upgraded a 0.4.189 Windows test device in place). **After:** the line's machine had 22 of 23 online peers on an org relay at 04:11 (the 23rd was restarting into the new build), including all 9 that alternated before; `mh ssh` to it from a mainland WSL node that had been `blocked` printed its hostname (31 ms); revokes naming it fell from ~10 per 5 min to 0, and no revoke at all was written in the 10 minutes after the roll settled; 24 of 25 devices online, 0 server panics. Some first mints after the restart took slow paths (an abroad relay pair at 286 ms) because every node's measurements restart with it; they move at their next mint. |
 | 2026-11-22 | server 0.4.200 → 0.4.201 → 0.4.202 | **0.4.201 (05:17 UTC):** the server restart left seven of the line's machine's mainland pairs `blocked` for 12+ min: each was re-pushed a one-relay session minted 10–18 s after the restart, before the machine's legs were measured, and it never bound (Known limits, 0.4.202 row). **0.4.202 (06:05:58 UTC):** within two minutes the server wrote 10 `relay_request_bind_window_passed` revokes, each followed by a fresh mint, and at 06:09 all 21 online peers of the machine were on an org relay; `mh ssh` to it answered in ~0.9 s from this side and from a mainland WSL node; 22 of 25 devices online (the 3 offline went offline before the cutover); 0 server panics. **Relay restart (the 0.4.201 fix):** `systemctl restart` of a mainland relay at 06:11:10; the sessions it served were revoked (`device_left`) at 06:11:21 and re-minted, and at 06:12:34 all 21 online peers were again on an org relay. Which ordering of join and teardown occurred is not visible: the server logs at `warn` and the join-path message is `info`. |
-
-
+| 2026-11-22 | agent 0.4.203, server 0.4.204 | **Close.** The path explain diagnostic was removed (server 0.4.204, cut over 09:27 UTC). Afterwards: 24 of 26 devices online, 0 panics and no diagnostic line, and the line's machine reached all 23 online peers over an org relay; `mh ssh` to it answered. The debug drop-ins and the failover tool on the line's hosts were already gone. The field checks behind the criteria: the pinned devices' entry relays, the explicit edges, and the code scan. A link-health A/B (`MESHHARBORD_RELAY_LINK_HEALTH=0` on the line's machine, then a block of its exit to the far gateway) proved nothing, because the pair was already on the old line at 76.5 ms. The switch was then removed and the machine restarted at 09:25 UTC. The Known limits row on two middle relays was re-checked: 154 pairs between 07:45 and 08:50 UTC, none revoked more than twice. |
