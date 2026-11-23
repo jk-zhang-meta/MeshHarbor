@@ -1,6 +1,6 @@
 # FR-128: The centre is a zone of its own — a device reaches it through its zone's entry
 
-> **Status:** in progress — claimed 2026-11-23. Tracking issue: none (GitHub Issues are disabled on
+> **Status:** in progress — claimed 2026-11-23; P1 live on server 0.4.209 and one gateway (2026-11-23), field-verified on a throwaway device. Tracking issue: none (GitHub Issues are disabled on
 > `jk-zhang-meta/MeshHarbor`); this spec and its registry row are the record.
 
 ## Goal
@@ -165,15 +165,19 @@ must not lend its zone, so:
 
 ## Acceptance criteria
 
-- [ ] **AC1 (field).** A device whose direct path to the centre is blocked comes online through its
-  zone's entry, and its zone stays the one its own address gives. Shown failing first.
+- [x] **AC1 (field).** A device whose direct path to the centre is blocked comes online through its
+  zone's entry, and its zone stays the one its own address gives. Shown failing first. (2026-11-23,
+  field log: red with the device's switch off, green through the gateway; the centre recorded the
+  device's own address. The device's zone was pinned for the run, so the address, not a GeoIP
+  zone, is what was shown.)
 - [ ] **AC2 (field).** While an entry works, a device in a strict zone whose countries exclude the
   centre has no direct TCP connection to the centre.
-- [ ] **AC3.** None of these moves a zone (tests): a token from another tenant's entry, an expired
+- [x] **AC3.** None of these moves a zone (tests, `management_entry_tests.rs`, 8 pass): a token from another tenant's entry, an expired
   token, a forged token, a token presented from an address that is not the entry's. A current
   entry's address with no token gets no zone.
-- [ ] **AC4.** Each kill switch restores direct connection within one reconnect.
-- [ ] **AC5 (docs).** [Business isolation](../business-isolation.md) gains "Management through an
+- [x] **AC4.** Each kill switch restores direct connection within one reconnect. (The device's
+  switch in the field run; the centre's in `with_management_entries_off_…`.)
+- [x] **AC5 (docs).** [Business isolation](../business-isolation.md) gains "Management through an
   entry" (diagrams, anchors), and the docs index row in [docs/README.md](../README.md) names it.
 
 ## Open decisions
@@ -195,3 +199,6 @@ must not lend its zone, so:
 | 2026-11-23 ~01:04 | Red, before any change. Three lab servers on one subnet go silent on the control socket together; the centre reaps them at 01:05:41 (`receive-liveness deadline exceeded`, 104–108 s). From one of them: the centre's address answers no ICMP or TCP 80/443, while public sites, a mainland relay (TCP 22 open; other ports answer RST, so reachable) and a peer on the lab's other subnet all answer. That peer reaches the centre normally. The daemons keep running, with direct mesh paths to that peer. |
 | 2026-11-23 01:27–01:54 | The route came back by itself, one server at a time (01:27, 01:37, 01:54); one of them still had no route at 01:32 when tested. About 25–50 min off the fleet each, with the daemon running and the zone's gateway reachable the whole time. A later field run needs its own red: a host whose path to the centre's address is blocked on purpose (an outbound firewall rule, reverted after). |
 | 2026-11-23 | Released as 0.4.209 for the field run (server; the agent only on the hosts of the run, no fleet release). |
+| 2026-11-23 05:43 | Server 0.4.209 cut over (24/26 online before and after, no panic, meeting settings kept). The agent 0.4.209 installed by hand on one mainland gateway only (backup kept), `management_entry_port = 18443`: listening, attestation key received. ⚠️ The first try lost the key: written into the config while the OLD daemon ran, it was dropped when that daemon saved its config (an older build does not know the key). Set it through the NEW daemon (`mh config set`), then restart. |
+| 2026-11-23 05:46 | A throwaway device (a network namespace on a Singapore host, its own user and config, enrolled ephemeral, pinned to the strict mainland zone), direct path open: told `direct=false entries=1`, moved onto the entry, connected in 6 s. The centre recorded the device's own address, not the gateway's. But one direct connection to the centre stayed open: a client not yet routed (the startup preflight logged a direct attempt; the log uploader and the device view also build their clients once). **AC2 not met in P1.** |
+| 2026-11-23 05:47–05:50 | Centre address dropped inside the namespace (other sites reachable, as in the lab outage). Red: the device's switch `MESHHARBORD_MANAGEMENT_ENTRIES=0`: every connect `connect to <centre>:443 timed out`, device offline. Green: switch off: online through the entry, own address recorded, 0 direct connections, 1 through the entry. The first entry try hit the 15 s per-path bound; the next round took 3 s, so the bound may be tight on a cross-border line. Rig removed, device deleted; the gateway keeps its entry. |
