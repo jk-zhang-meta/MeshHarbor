@@ -111,7 +111,7 @@ frame to the device. Every new field is optional, so an older peer ignores it.
 
 ## Acceptance criteria
 
-- [ ] **AC1 (field).** On a test device: switch on from the admin page (QR + key, both apps' text);
+- [x] **AC1 (field).** On a test device: switch on from the admin page (QR + key, both apps' text);
   remote desktop, `mh ssh` and `mh exec` each refused without a code, refused with a wrong or reused
   code, accepted with a fresh one. Shown failing first (before switching on, they pass with no
   code).
@@ -121,7 +121,7 @@ frame to the device. Every new field is optional, so an older peer ignores it.
   `two_factor_tests`).
 - [ ] **AC3.** Share links, external access, remote configuration and hive are refused on a
   two-factor device; forwards follow the device's own allowlist (tests).
-- [ ] **AC4.** A device with it off behaves exactly as before (the existing suites pass; no code
+- [x] **AC4.** A device with it off behaves exactly as before (the existing suites pass; no code
   is asked anywhere).
 - [x] **AC5 (docs).** `docs/two-factor.md` (diagrams, anchors) and a row in
   [docs/README.md](../README.md).
@@ -144,3 +144,4 @@ frame to the device. Every new field is optional, so an older peer ignores it.
 | 2026-11-23 | P1 built (not released). Local: the device's checks (`two_factor` tests: RFC 6238 vectors, one use per code, lock doubling and restart persistence, the 100-code cap, recovery past a lock, no replace or switch-off without a code, `confirm` bound to its `begin`), fleet 275, wire 503, localapi 90, meshharbord 2027, integration (`two_factor_tests`, remote control, SSH, exec, external access, shares, composition) all pass; UI build passes. AC1 (field) waits for the release. |
 | 2026-11-23 10:30–10:56 | 0.4.212 released: the server (8e37621, with the admin page's dialog) cut over at 10:3x; the Linux agent (7835a92) published at 10:45, the gateway first, then every online Linux device. The release build was the first to compile the hive's SSH client (`ssh-server` only) and found the new field missing there: fixed in 7835a92 before anything shipped. With two-factor off, `mh exec` across the fleet on 0.4.212 runs with no code, as before. |
 | 2026-11-23 10:38–10:41 | AC1 on a throwaway device (a separate user in its own network namespace on a lab server, enrolled ephemeral; exec and SSH policy on). **Before** (two-factor off): exec ran with no code (exit 0); the SSH grant answered an address. Switched on through the route: `begin` answered the `otpauth://` URI and a 32-character key. The first `confirm` was refused: the test's own code was a step old (the device's clock runs about 4 s ahead, and the script picked the previous step at a boundary); the second passed, with 10 recovery codes, `two-factor.json` at 0600, and `begin` again refused (`already_on`). **After**, exec and SSH each: no code → `two_factor_required`; a wrong code → `two_factor_invalid`; a fresh code → accepted (exit 0 / an address); the same code again → `two_factor_invalid`. `disable` with no code → 422; with a wrong code → `two_factor_invalid`. Remote desktop not yet run: the organization's plan runs one remote session at a time, and a person's session held it. |
+| 2026-11-23 11:24–11:25 | AC1, remote desktop, on the same throwaway device once the organization's one session slot was free: no code → `rc:terminate {reason: two_factor_required}`; a wrong code → `two_factor_invalid`; a fresh code → the session was created and the device answered `rc:ready`; the same code again → `two_factor_invalid`. Then `disable` with a fresh code → off; with it off, remote desktop and exec ran with no code again (AC4 on the field side, with the fleet's own exec above). The device was then removed and its state deleted. **AC1 met.** The first remote-desktop try, before two-factor was on, had met the session cap (`org_session_limit`), so the remote-desktop "before" is the "after switching off" run. |
