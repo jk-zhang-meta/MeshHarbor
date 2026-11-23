@@ -2002,7 +2002,8 @@
       "orgSlugHint": "URL-friendly identifier, globally unique",
       "create": "Create",
       "createOrgFailed": "Failed to create organization",
-      "slugTaken": "That slug is already taken — pick another"
+      "slugTaken": "That slug is already taken — pick another",
+      "connecting": "Connecting…"
     },
     "chatView": {
       "files": "Files",
@@ -2586,7 +2587,8 @@
       "invitesHint": "Bring teammates into this org",
       "analytics": "Analytics",
       "analyticsHint": "Machines, calls, tunnel traffic over time",
-      "callName": "Call - {when}"
+      "callName": "Call - {when}",
+      "explore": "Explore"
     },
     "profile": {
       "edit": "Edit Profile",
@@ -2712,6 +2714,13 @@
     "video": {
       "fromYoutube": "Plays from YouTube when you press play.",
       "play": "Play the video \"{title}\" ({n} minutes, plays from YouTube)"
+    },
+    "authShell": {
+      "headline": "Every computer you have, one click away.",
+      "lede": "Remote desktop from any browser, a private WireGuard network between your machines, and the meetings and chat your team works in. The server coordinates; it never sees your screens, keystrokes or traffic.",
+      "factRemote": "Control a computer from the browser; nothing to install on your side",
+      "factMesh": "Machines connect directly when they can, and through a relay when they cannot",
+      "factTeam": "Meetings, chat and files live in the same organization as your devices"
     }
   },
   "tempDevices": {

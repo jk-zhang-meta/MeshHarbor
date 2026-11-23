@@ -13,10 +13,10 @@
     <v-row>
       <v-col v-if="caps.has('fleet')" cols="6" sm="4" md>
         <v-card :to="showFleet ? `/tenant/${tenantId}/devices` : undefined" :hover="showFleet">
-          <v-card-text class="text-center">
-            <v-icon size="48" color="warning">mdi-monitor-multiple</v-icon>
-            <div class="text-h4 mt-2">{{ devicesOnlineLabel }}</div>
-            <div class="text-subtitle-2">{{ t('mh.dash.devicesOnline') }}</div>
+          <v-card-text class="mh-stat">
+            <span class="mh-stat__icon"><v-icon size="20">mdi-monitor-multiple</v-icon></span>
+            <div class="mh-stat__value">{{ devicesOnlineLabel }}</div>
+            <div class="mh-stat__label">{{ t('mh.dash.devicesOnline') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -28,37 +28,37 @@
           :to="showFleet ? `/tenant/${tenantId}/devices?type=tunnel` : undefined"
           :hover="showFleet"
         >
-          <v-card-text class="text-center">
-            <v-icon size="48" color="info">mdi-lan-pending</v-icon>
-            <div class="text-h4 mt-2">{{ tunnelsLabel }}</div>
-            <div class="text-subtitle-2">{{ t('mh.dash.tunnels') }}</div>
+          <v-card-text class="mh-stat">
+            <span class="mh-stat__icon"><v-icon size="20">mdi-lan-pending</v-icon></span>
+            <div class="mh-stat__value">{{ tunnelsLabel }}</div>
+            <div class="mh-stat__label">{{ t('mh.dash.tunnels') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
       <v-col v-if="showChat" cols="6" sm="4" md>
         <v-card :to="`/tenant/${tenantId}/rooms`" hover>
-          <v-card-text class="text-center">
-            <v-icon size="48" color="primary">mdi-pound</v-icon>
-            <div class="text-h4 mt-2">{{ roomStore.rooms.length }}</div>
-            <div class="text-subtitle-2">{{ t('mh.dash.rooms') }}</div>
+          <v-card-text class="mh-stat">
+            <span class="mh-stat__icon"><v-icon size="20">mdi-pound</v-icon></span>
+            <div class="mh-stat__value">{{ roomStore.rooms.length }}</div>
+            <div class="mh-stat__label">{{ t('mh.dash.rooms') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
       <v-col v-if="showConference" cols="6" sm="4" md>
         <v-card>
-          <v-card-text class="text-center">
-            <v-icon size="48" color="secondary">mdi-video</v-icon>
-            <div class="text-h4 mt-2">{{ activeCallCount }}</div>
-            <div class="text-subtitle-2">{{ t('mh.dash.activeCalls') }}</div>
+          <v-card-text class="mh-stat">
+            <span class="mh-stat__icon"><v-icon size="20">mdi-video</v-icon></span>
+            <div class="mh-stat__value">{{ activeCallCount }}</div>
+            <div class="mh-stat__label">{{ t('mh.dash.activeCalls') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
       <v-col v-if="showChat" cols="6" sm="4" md>
         <v-card :to="`/tenant/${tenantId}/rooms`" hover>
-          <v-card-text class="text-center">
-            <v-icon size="48" color="accent">mdi-message-text</v-icon>
-            <div class="text-h4 mt-2">{{ totalMessageCount }}</div>
-            <div class="text-subtitle-2">{{ t('mh.dash.messages') }}</div>
+          <v-card-text class="mh-stat">
+            <span class="mh-stat__icon"><v-icon size="20">mdi-message-text</v-icon></span>
+            <div class="mh-stat__value">{{ totalMessageCount }}</div>
+            <div class="mh-stat__label">{{ t('mh.dash.messages') }}</div>
           </v-card-text>
         </v-card>
       </v-col>
@@ -142,18 +142,18 @@
         </v-btn>
       </v-col>
       <v-col v-if="showConference" cols="12" sm="6" md="3">
-        <v-btn block color="secondary" prepend-icon="mdi-video-plus" @click="startCall">
+        <v-btn block variant="tonal" color="primary" prepend-icon="mdi-video-plus" @click="startCall">
           {{ t('mh.dash.startCall') }}
         </v-btn>
       </v-col>
       <v-col cols="12" sm="6" md="3">
-        <v-btn block color="accent" prepend-icon="mdi-upload" :to="`/tenant/${tenantId}/files`">
+        <v-btn block variant="tonal" color="primary" prepend-icon="mdi-upload" :to="`/tenant/${tenantId}/files`">
           {{ t('mh.dash.uploadFile') }}
         </v-btn>
       </v-col>
       <v-col cols="12" sm="6" md="3">
-        <v-btn block prepend-icon="mdi-compass" :to="`/tenant/${tenantId}/explore`">
-          Explore
+        <v-btn block variant="outlined" prepend-icon="mdi-compass-outline" :to="`/tenant/${tenantId}/explore`">
+          {{ t('mh.dash.explore') }}
         </v-btn>
       </v-col>
     </v-row>
@@ -165,7 +165,7 @@
       <v-col v-if="showFleet" cols="12" sm="6" md="3">
         <v-card :to="`/tenant/${tenantId}/devices`" hover>
           <v-card-text>
-            <v-icon color="primary" class="mr-2">mdi-monitor-multiple</v-icon>
+            <span class="mh-tile-icon mr-3"><v-icon size="18">mdi-monitor-multiple</v-icon></span>
             <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.devices') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
               {{ t('mh.dash.devicesHint') }}
@@ -178,7 +178,7 @@
              redirect stub since the S4 fold-in. -->
         <v-card :to="`/tenant/${tenantId}/network`" hover>
           <v-card-text>
-            <v-icon color="primary" class="mr-2">mdi-lan</v-icon>
+            <span class="mh-tile-icon mr-3"><v-icon size="18">mdi-lan</v-icon></span>
             <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.network') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
               {{ t('mh.dash.networkHint') }}
@@ -189,7 +189,7 @@
       <v-col cols="12" sm="6" md="3">
         <v-card :to="`/tenant/${tenantId}/admin/members`" hover>
           <v-card-text>
-            <v-icon color="primary" class="mr-2">mdi-account-group</v-icon>
+            <span class="mh-tile-icon mr-3"><v-icon size="18">mdi-account-group</v-icon></span>
             <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.membersRoles') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
               {{ t('mh.dash.membersHint') }}
@@ -204,7 +204,7 @@
       <v-col v-if="canInvite" cols="12" sm="6" md="3">
         <v-card :to="`/tenant/${tenantId}/invites`" hover>
           <v-card-text>
-            <v-icon color="primary" class="mr-2">mdi-email-plus</v-icon>
+            <span class="mh-tile-icon mr-3"><v-icon size="18">mdi-email-plus</v-icon></span>
             <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.invites') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
               {{ t('mh.dash.invitesHint') }}
@@ -215,7 +215,7 @@
       <v-col v-if="showAnalytics" cols="12" sm="6" md="3">
         <v-card :to="`/tenant/${tenantId}/analytics`" hover>
           <v-card-text>
-            <v-icon color="primary" class="mr-2">mdi-chart-areaspline</v-icon>
+            <span class="mh-tile-icon mr-3"><v-icon size="18">mdi-chart-areaspline</v-icon></span>
             <span class="text-subtitle-1 font-weight-medium">{{ t('mh.dash.analytics') }}</span>
             <div class="text-body-2 text-medium-emphasis mt-1">
               {{ t('mh.dash.analyticsHint') }}

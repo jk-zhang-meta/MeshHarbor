@@ -27,31 +27,47 @@ describe('Vuetify theme configuration', () => {
     vi.resetModules()
   })
 
-  it('lightTheme has correct colors', async () => {
+  it('lightTheme is the flat palette: harbor teal on a cool paper ground', async () => {
     const { lightTheme } = await import('../vuetify')
     expect(lightTheme.dark).toBe(false)
-    expect(lightTheme.colors!.primary).toBe('#009688')
-    expect(lightTheme.colors!.secondary).toBe('#ef5350')
-    expect(lightTheme.colors!.accent).toBe('#424242')
-    expect(lightTheme.colors!.background).toBe('#EEEEEE')
-    expect(lightTheme.colors!.info).toBe('#4DB6AC')
-    expect(lightTheme.colors!.warning).toBe('#FFC107')
-    expect(lightTheme.colors!.error).toBe('#DD2C00')
-    expect(lightTheme.colors!.success).toBe('#69F0AE')
+    expect(lightTheme.colors!.primary).toBe('#0A8F86')
+    expect(lightTheme.colors!.secondary).toBe('#10212B')
+    expect(lightTheme.colors!.accent).toBe('#E07A2E')
+    expect(lightTheme.colors!.background).toBe('#F5F7F9')
+    expect(lightTheme.colors!.surface).toBe('#FFFFFF')
+    expect(lightTheme.colors!.info).toBe('#2F7BD8')
+    expect(lightTheme.colors!.warning).toBe('#B97E08')
+    expect(lightTheme.colors!.error).toBe('#D14343')
+    expect(lightTheme.colors!.success).toBe('#1F9D57')
   })
 
-  it('darkTheme has correct colors', async () => {
+  it('darkTheme is the flat palette on deep harbor blue, not grey', async () => {
     const { darkTheme } = await import('../vuetify')
     expect(darkTheme.dark).toBe(true)
-    expect(darkTheme.colors!.primary).toBe('#B2DFDB')
-    expect(darkTheme.colors!.secondary).toBe('#ef5350')
-    expect(darkTheme.colors!.accent).toBe('#424242')
-    expect(darkTheme.colors!.background).toBe('#555555')
-    expect(darkTheme.colors!.surface).toBe('#333333')
-    expect(darkTheme.colors!.info).toBe('#4DB6AC')
-    expect(darkTheme.colors!.warning).toBe('#FFC107')
-    expect(darkTheme.colors!.error).toBe('#DD2C00')
-    expect(darkTheme.colors!.success).toBe('#69F0AE')
+    expect(darkTheme.colors!.primary).toBe('#3CC7B9')
+    expect(darkTheme.colors!.background).toBe('#0E151A')
+    expect(darkTheme.colors!.surface).toBe('#141D23')
+    expect(darkTheme.colors!.info).toBe('#5C9EF0')
+    expect(darkTheme.colors!.warning).toBe('#E0A93B')
+    expect(darkTheme.colors!.error).toBe('#F06A6A')
+    expect(darkTheme.colors!.success).toBe('#3CCB7F')
+  })
+
+  it('getDefaultTheme follows a dark system setting when nothing is saved', async () => {
+    const mm = vi.fn((q: string) => ({
+      matches: q === '(prefers-color-scheme: dark)',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    Object.defineProperty(globalThis, 'matchMedia', { value: mm, configurable: true })
+    try {
+      const { getDefaultTheme } = await import('../vuetify')
+      expect(getDefaultTheme()).toBe('dark')
+      store['meshharbor-theme'] = 'light'
+      expect(getDefaultTheme()).toBe('light')
+    } finally {
+      delete (globalThis as { matchMedia?: unknown }).matchMedia
+    }
   })
 
   it('getDefaultTheme returns light when no localStorage', async () => {

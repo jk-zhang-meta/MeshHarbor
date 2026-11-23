@@ -96,18 +96,20 @@
         <!-- Kind filter. Default = devices WITHOUT tunnel clients — the
              remote-desktop fleet is what this page is about day-to-day;
              tunnels are one radio away. Server-side (`kind` param). -->
-        <v-radio-group
+        <v-btn-toggle
           v-model="gridKind"
-          inline
-          hide-details
+          mandatory
           density="compact"
+          variant="outlined"
+          divided
+          class="mh-segmented"
           :class="mobile ? 'flex-grow-0' : 'ml-4 flex-grow-0'"
           :aria-label="$t('mh.dev.kindAria')"
         >
-          <v-radio :label="$t('mh.dev.kindDevices')" value="agent" density="compact" />
-          <v-radio :label="$t('mh.dev.kindTunnels')" value="tunnel_client" density="compact" />
-          <v-radio :label="$t('mh.dev.kindBoth')" value="both" density="compact" />
-        </v-radio-group>
+          <v-btn value="agent" size="small">{{ $t('mh.dev.kindDevices') }}</v-btn>
+          <v-btn value="tunnel_client" size="small">{{ $t('mh.dev.kindTunnels') }}</v-btn>
+          <v-btn value="both" size="small">{{ $t('mh.dev.kindBoth') }}</v-btn>
+        </v-btn-toggle>
         <v-spacer />
         <span class="text-caption text-medium-emphasis mr-2">
           {{ gridKind === 'tunnel_client' ? $t('mh.dev.countTunnels', { n: deviceStore.total }, deviceStore.total) : $t('mh.dev.countDevices', { n: deviceStore.total }, deviceStore.total) }}
@@ -148,6 +150,7 @@
           density="compact"
           class="agents-table"
           item-value="id"
+          :row-props="presenceRowProps"
           @update:options="onGridOptions"
         >
           <template #item.actions="{ item }">
@@ -181,14 +184,12 @@
           </template>
           <template #item.name="{ item }">
             <div class="d-flex align-center">
-              <v-icon
-                :color="rowPresenceColor(item)"
-                size="small"
-                class="mr-2"
+              <span
+                class="mh-presence__dot mr-2"
+                :class="`mh-presence--${item.presence}`"
                 :title="rowPresenceTitle(item)"
-              >
-                {{ rowPresenceIcon(item) }}
-              </v-icon>
+                aria-hidden="true"
+              />
               <span class="font-weight-medium">{{ deviceLabel(item) }}</span>
               <DeviceNameSyncStatus v-if="item.kind === 'agent' && item.name_sync" :sync="item.name_sync" class="ml-2" />
               <!-- FR-51 — the vanishing must never be a surprise: this device
@@ -252,12 +253,12 @@
                    display name is set (column-picker checkbox; the remote
                    page reads the same preference). -->
               <span v-if="secondaryDeviceName(item, hideNameWhenDisplay)" class="mr-1">{{ item.name }} ·</span>
-              <span class="agent-id-preview" :title="$t('mh.dev.deviceIdTitle', { id: item.id })">
+              <span class="agent-id-preview mh-mono" :title="$t('mh.dev.deviceIdTitle', { id: item.id })">
                 id: {{ shortId(item.id) }}
               </span>
               <span class="mx-1">·</span>
-              <span :title="`machine_id: ${item.machine_id}`">{{ shortId(item.machine_id) }}</span>
-              <span v-if="item.version"> · v{{ item.version }}</span>
+              <span class="mh-mono" :title="`machine_id: ${item.machine_id}`">{{ shortId(item.machine_id) }}</span>
+              <span v-if="item.version" class="mh-mono"> · v{{ item.version }}</span>
               <!-- FR-27 — the companion's own version, and only when it
                    DISAGREES with the daemon's. Shown at all because the two
                    update by different mechanisms on every platform, so
@@ -285,19 +286,18 @@
             </div>
           </template>
           <template #item.kind="{ item }">
-            <v-chip size="x-small" variant="tonal" :color="item.kind === 'agent' ? 'primary' : 'secondary'">
+            <span class="text-body-2 text-medium-emphasis">
               {{ item.kind === 'agent' ? $t('mh.dev.kindDevice') : $t('mh.dev.kindTunnel') }}
-            </v-chip>
+            </span>
           </template>
           <template #item.status="{ item }">
-            <v-chip
-              size="small"
-              :color="rowStatusColor(item)"
-              variant="flat"
+            <span
+              class="mh-presence"
+              :class="`mh-presence--${item.presence}`"
               :title="rowPresenceTitle(item)"
             >
-              {{ rowStatusLabel(item) }}
-            </v-chip>
+              <span class="mh-presence__dot" aria-hidden="true" />{{ rowStatusLabel(item) }}
+            </span>
             <!-- FR-103 — only when the device's credential needs someone. -->
             <v-chip
               v-if="item.kind === 'agent' && agentFor(item) && credentialChip(agentFor(item)!.token_expires_at)"
@@ -349,9 +349,9 @@
             </v-chip>
           </template>
           <template #item.os="{ item }">
-            <v-chip size="x-small" :prepend-icon="osIcon(item.os as any)" variant="tonal">
-              {{ item.os }}
-            </v-chip>
+            <span class="d-inline-flex align-center ga-1 text-body-2 text-no-wrap">
+              <v-icon size="16" class="text-medium-emphasis">{{ osIcon(item.os as any) }}</v-icon>{{ osName(item.os) }}
+            </span>
           </template>
           <template #item.location="{ item }">
             <div v-if="rowLocation(item).hasAny" class="device-loc-cell" data-testid="device-location-cell">
@@ -600,38 +600,29 @@
             <v-card
               variant="outlined"
               class="device-card h-100 d-flex flex-column"
+              :class="`mh-row--${item.presence}`"
               :data-testid="`device-card-${item.id}`"
             >
               <!-- Who it is: the name a person knows it by, then what the
                    machine calls itself (unless hidden), OS, version, last seen. -->
               <div class="d-flex align-start ga-2 pa-3 pb-2">
-                <v-icon
-                  :color="rowPresenceColor(item)"
-                  size="small"
-                  class="mt-1 flex-shrink-0"
-                  :title="rowPresenceTitle(item)"
-                >
-                  {{ rowPresenceIcon(item) }}
-                </v-icon>
                 <div class="flex-grow-1 device-card__head">
                   <div class="font-weight-medium text-break">{{ deviceLabel(item) }}</div>
                   <DeviceNameSyncStatus v-if="item.kind === 'agent' && item.name_sync" :sync="item.name_sync" />
                   <div class="text-caption text-medium-emphasis text-break">
                     <span v-if="secondaryDeviceName(item, hideNameWhenDisplay)">{{ item.name }} · </span>
-                    <v-icon size="x-small" :icon="osIcon(item.os)" class="mr-1" />{{ item.os }}
-                    <span v-if="item.version"> · v{{ item.version }}</span>
+                    <v-icon size="x-small" :icon="osIcon(item.os)" class="mr-1" />{{ osName(item.os) }}
+                    <span v-if="item.version" class="mh-mono"> · v{{ item.version }}</span>
                     <span :title="fmtDate(item.last_seen_at)"> · {{ fmtRelative(item.last_seen_at) }}</span>
                   </div>
                 </div>
-                <v-chip
-                  size="small"
-                  :color="rowStatusColor(item)"
-                  variant="flat"
-                  class="flex-shrink-0"
+                <span
+                  class="mh-presence flex-shrink-0 mt-1"
+                  :class="`mh-presence--${item.presence}`"
                   :title="rowPresenceTitle(item)"
                 >
-                  {{ rowStatusLabel(item) }}
-                </v-chip>
+                  <span class="mh-presence__dot" aria-hidden="true" />{{ rowStatusLabel(item) }}
+                </span>
               </div>
               <!-- What needs a person, and the device's own labels: the chips
                    the grid shows (docs/ui.md "needs a person"), never a chip
@@ -1826,16 +1817,6 @@ const pageRangeText = computed(() => {
 })
 
 // Row-level presence rendering (DeviceRow carries presence directly).
-function rowPresenceColor(r: DeviceRow): string {
-  return r.presence === 'online' ? 'success' : r.presence === 'stale' ? 'warning' : 'grey'
-}
-function rowPresenceIcon(r: DeviceRow): string {
-  return r.presence === 'online'
-    ? 'mdi-circle'
-    : r.presence === 'stale'
-      ? 'mdi-circle-half-full'
-      : 'mdi-circle-outline'
-}
 function rowPresenceTitle(r: DeviceRow): string {
   if (r.kind === 'tunnel_client')
     return r.is_online ? tr('mh.dev.presence.onlineStored') : tr('mh.dev.presence.offlineStored')
@@ -1845,11 +1826,17 @@ function rowPresenceTitle(r: DeviceRow): string {
       ? tr('mh.dev.presence.staleTitle')
       : tr('mh.dev.presence.offline')
 }
-function rowStatusColor(r: DeviceRow): string {
-  return rowPresenceColor(r)
-}
 function rowStatusLabel(r: DeviceRow): string {
   return tr(`mh.dev.presence.${r.presence}`)
+}
+/** The row's left edge carries its presence (the flat theme's one signature). */
+function presenceRowProps({ item }: { item: DeviceRow }) {
+  return { class: `mh-row--${item.presence}` }
+}
+/** An OS as people write it, not as the wire spells it. */
+function osName(os: string): string {
+  const names: Record<string, string> = { linux: 'Linux', macos: 'macOS', windows: 'Windows', android: 'Android', ios: 'iOS' }
+  return names[os?.toLowerCase?.()] ?? os
 }
 
 // ── Edit name & tags ─────────────────────────────────────────────

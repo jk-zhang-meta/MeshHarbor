@@ -1,16 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
-  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6" fluid>
-    <v-row align="center" justify="center">
-      <v-col cols="12" sm="8" md="4">
-        <v-card class="pa-3 pa-md-4">
-          <v-card-title class="text-center text-h5 mb-4">
-            <img :src="brandMark" alt="" width="28" height="28" class="mr-2" style="vertical-align: middle" />
-            {{ $t('auth.register') }}
-          </v-card-title>
-
-          <div class="text-center text-subtitle-1 mb-4" data-testid="product-name">{{ PRODUCT_TITLE }}</div>
+  <auth-shell>
+        <div class="mh-auth-form">
+          <img :src="brandMark" alt="" width="32" height="32" class="mh-auth-form__mark" />
+          <h2 class="mh-auth-form__title">{{ $t('auth.register') }}</h2>
+          <div class="mh-auth-form__sub" data-testid="product-name">{{ PRODUCT_TITLE }}</div>
 
           <v-form ref="formRef" @submit.prevent="handleRegister">
             <v-text-field
@@ -72,9 +67,10 @@
             </v-btn>
           </v-form>
 
-          <v-divider class="my-4" />
-          <div class="text-center text-body-2 mb-2">{{ $t('auth.orRegisterWith') }}</div>
-          <div class="d-flex flex-wrap justify-center ga-2 mb-4">
+          <div class="mh-auth-form__or">
+            <span>{{ $t('auth.orRegisterWith') }}</span>
+          </div>
+          <div class="d-flex flex-wrap justify-center ga-2 pb-2">
             <v-btn
               v-for="p in oauthProviders"
               :key="p.name"
@@ -88,20 +84,19 @@
             </v-btn>
           </div>
 
-          <v-card-text class="text-center">
+          <div class="mh-auth-form__alt">
             {{ $t('auth.hasAccount') }}
             <router-link :to="{ path: '/login', query: onward }">{{ $t('auth.login') }}</router-link>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
-  </v-container>
+          </div>
+        </div>
+  </auth-shell>
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
+import AuthShell from '@/components/auth/AuthShell.vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useWsStore } from '@/stores/ws'

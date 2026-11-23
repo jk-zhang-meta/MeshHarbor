@@ -18,15 +18,17 @@ function isLocale(v: unknown): v is LocaleCode {
   return LOCALES.some((l) => l.code === v)
 }
 
-/** The remembered choice; storage can be absent or throw (private mode, previews). */
+/** The remembered choice; storage can be absent or throw (private mode, previews).
+ *  Without one, a browser set to Chinese starts in Chinese, and every other in English. */
 function initialLocale(): LocaleCode {
   try {
     const saved = globalThis.localStorage?.getItem(STORAGE_KEY)
     if (isLocale(saved)) return saved
   } catch {
-    /* fall through to the default */
+    /* fall through to the browser's language */
   }
-  return 'en'
+  const langs = globalThis.navigator?.languages ?? [globalThis.navigator?.language ?? '']
+  return langs.some((l) => typeof l === 'string' && l.toLowerCase().startsWith('zh')) ? 'zh-CN' : 'en'
 }
 
 const i18n = createI18n({

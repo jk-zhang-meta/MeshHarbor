@@ -194,12 +194,11 @@
             density="compact"
           >
             <template #prepend>
-              <v-icon
-                size="x-small"
-                :color="d.presence === 'online' ? 'success' : d.presence === 'stale' ? 'warning' : 'grey'"
-              >
-                mdi-circle
-              </v-icon>
+              <span
+                class="mh-presence__dot mr-3"
+                :class="`mh-presence--${d.presence === 'online' || d.presence === 'stale' ? d.presence : 'offline'}`"
+                aria-hidden="true"
+              />
             </template>
           </v-list-item>
           <v-list-item
@@ -672,28 +671,29 @@
       </template>
     </v-app-bar>
 
-    <v-alert
-      v-if="wsStore.status === 'connecting'"
-      type="warning"
-      density="compact"
-      variant="tonal"
-      closable
-      class="ws-status-banner"
-    >
-      Connecting...
-    </v-alert>
-    <v-alert
-      v-else-if="wsStore.status === 'disconnected'"
-      type="error"
-      density="compact"
-      variant="tonal"
-      closable
-      class="ws-status-banner"
-    >
-      {{ t('mh.layout.reconnecting') }}
-    </v-alert>
-
     <v-main ref="mainRef" class="app-main-no-scroll">
+      <!-- Inside <v-main>, under the bar: before it, the bar (absolute) covered the
+           banner and it only pushed the page down. -->
+      <v-alert
+        v-if="wsStore.status === 'connecting'"
+        type="warning"
+        density="compact"
+        variant="tonal"
+        closable
+        class="ws-status-banner"
+      >
+        {{ t('mh.layout.connecting') }}
+      </v-alert>
+      <v-alert
+        v-else-if="wsStore.status === 'disconnected'"
+        type="error"
+        density="compact"
+        variant="tonal"
+        closable
+        class="ws-status-banner"
+      >
+        {{ t('mh.layout.reconnecting') }}
+      </v-alert>
       <!-- #1631 — keyed by `meta.remountOn` so the remote viewer follows the
            device in the URL; every other route keeps the plain reuse. -->
       <keyed-router-view />

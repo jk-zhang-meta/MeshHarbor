@@ -1,0 +1,413 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright (C) 2026 G ROX EOOD */
+/*
+ * The flat theme's type, borders and quiet surfaces (2026-11-23).
+ *
+ * Colours are Vuetify theme colours (`plugins/vuetify.ts`); this file holds what the
+ * theme cannot: the type stack, hairline borders instead of shadows, sentence-case
+ * buttons, and the mono face for machine facts (addresses, versions, ids).
+ *
+ * Latin and digits set in IBM Plex, bundled with the app (no font CDN: one is not
+ * reachable from everywhere the app is used). Chinese falls through to the system's
+ * own face, which is better hinted than any web font at UI sizes.
+ */
+:root {
+  --mh-font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+  --mh-font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --mh-radius: 10px;
+  --mh-hairline: rgba(var(--v-border-color), var(--v-border-opacity));
+  --mh-overlay-shadow: 0 10px 30px -8px rgba(16, 33, 43, 0.18), 0 2px 6px rgba(16, 33, 43, 0.06);
+}
+.v-theme--dark {
+  --mh-overlay-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(230, 238, 242, 0.06);
+}
+
+html,
+body,
+.v-application {
+  font-family: var(--mh-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'kern';
+}
+
+/* Vuetify's type classes name Roboto themselves: send them to the same stack. */
+.v-application .text-h1,
+.v-application .text-h2,
+.v-application .text-h3,
+.v-application .text-h4,
+.v-application .text-h5,
+.v-application .text-h6,
+.v-application .text-subtitle-1,
+.v-application .text-subtitle-2,
+.v-application .text-body-1,
+.v-application .text-body-2,
+.v-application .text-button,
+.v-application .text-caption,
+.v-application .text-overline {
+  font-family: var(--mh-font-sans) !important;
+}
+.v-application .text-h3,
+.v-application .text-h4 {
+  font-weight: 600 !important;
+  letter-spacing: -0.015em !important;
+}
+.v-application .text-h5,
+.v-application .text-h6 {
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+}
+
+/* Sentence case everywhere: an all-caps label shouts, and Chinese has no case. */
+.v-btn,
+.v-tab,
+.v-application .text-button,
+.v-application .text-overline {
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+.v-btn {
+  font-weight: 500;
+}
+
+/* Machine facts: addresses, versions, ids, keys. */
+.mh-mono {
+  font-family: var(--mh-font-mono);
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+.mh-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Flat surfaces: a card or sheet stands apart by its hairline, not a shadow. */
+.v-card,
+.v-sheet,
+.v-expansion-panel,
+.v-btn--variant-elevated {
+  box-shadow: none !important;
+}
+.v-expansion-panels:not(.v-expansion-panels--variant-accordion) > .v-expansion-panel {
+  border: 1px solid var(--mh-hairline);
+}
+.v-expansion-panel__shadow {
+  display: none;
+}
+
+/* What floats above the page keeps one soft shadow, or it would melt into it. */
+.v-overlay__content > .v-card,
+.v-overlay__content > .v-sheet,
+.v-overlay__content > .v-list,
+.v-menu > .v-overlay__content > *,
+.v-autocomplete__content,
+.v-select__content,
+.v-combobox__content {
+  box-shadow: var(--mh-overlay-shadow) !important;
+  border-radius: var(--mh-radius) !important;
+}
+.v-menu > .v-overlay__content > .v-list {
+  border: 1px solid var(--mh-hairline);
+  padding: 4px;
+}
+.v-menu > .v-overlay__content > .v-list .v-list-item {
+  border-radius: 6px;
+  min-height: 36px;
+}
+
+/* Tables: a quiet header, hairline rows, a faint tint on hover. */
+.v-table {
+  background: transparent !important;
+}
+.v-table > .v-table__wrapper > table > thead > tr > th {
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity)) !important;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--mh-hairline) !important;
+}
+.v-table > .v-table__wrapper > table > tbody > tr:not(:last-child) > td {
+  border-bottom: 1px solid var(--mh-hairline) !important;
+}
+
+/* Inputs: the outline is a hairline until focused. */
+.v-field--variant-outlined .v-field__outline {
+  --v-field-border-opacity: 0.16;
+}
+
+/* Chips read as labels: lighter weight, no uppercase. */
+.v-chip {
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Dividers match the hairline. */
+.v-divider {
+  border-color: rgba(var(--v-border-color), 1) !important;
+  opacity: var(--v-border-opacity) !important;
+}
+
+/* Keyboard focus stays visible on everything we flattened. */
+.v-btn:focus-visible,
+.v-list-item:focus-visible,
+.v-chip:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Cards that lead somewhere: the border warms on hover instead of lifting. ── */
+.v-card--link {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.v-card--link:hover {
+  border-color: rgba(var(--v-theme-primary), 0.45) !important;
+}
+.v-card--link > .v-card__overlay {
+  display: none;
+}
+
+/* ── Stat tile: a tinted icon, the number, then what it counts. ── */
+.mh-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 16px 18px !important;
+}
+.mh-stat__icon,
+.mh-tile-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
+  vertical-align: middle;
+}
+.mh-stat__icon {
+  margin-bottom: 10px;
+}
+.mh-stat__value {
+  font-size: 1.75rem;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.mh-stat__label {
+  font-size: 0.8125rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* ── App shell: a quiet sidebar and a hairline top bar. ── */
+.app-nav.v-navigation-drawer {
+  background: rgb(var(--v-theme-surface));
+  border-inline-end: 1px solid var(--mh-hairline) !important;
+}
+.app-nav .v-list {
+  padding: 4px 8px;
+  background: transparent;
+}
+.app-nav .v-list-item {
+  min-height: 36px !important;
+  border-radius: 8px !important;
+  margin-block: 1px;
+  padding-inline: 10px !important;
+}
+.app-nav .v-list-item-title {
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  line-height: 1.25rem !important;
+}
+.app-nav .v-list-item__prepend > .v-icon {
+  font-size: 20px;
+  opacity: 0.62;
+}
+.app-nav .v-list-item__spacer {
+  width: 14px !important;
+}
+.app-nav .v-list-item--active {
+  color: rgb(var(--v-theme-primary)) !important;
+}
+.app-nav .v-list-item--active > .v-list-item__overlay {
+  background: rgb(var(--v-theme-primary));
+  opacity: 0.1 !important;
+}
+.app-nav .v-list-item--active .v-list-item__prepend > .v-icon {
+  opacity: 1;
+}
+.app-nav .v-list-group__items .v-list-item {
+  min-height: 32px !important;
+}
+.app-nav > .v-navigation-drawer__content > .v-divider {
+  margin: 4px 12px;
+}
+.app-layout-root .v-app-bar.v-toolbar {
+  background: rgb(var(--v-theme-surface)) !important;
+  border-bottom: 1px solid var(--mh-hairline);
+}
+.app-layout-root .v-app-bar .v-toolbar-title__placeholder,
+.app-layout-root .v-app-bar .v-app-bar-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+/* ── Page and section titles: confident, not loud. ── */
+.app-main-no-scroll .v-container h1.text-h4,
+.app-main-no-scroll .v-container h1.text-md-h4,
+.app-main-no-scroll .v-container h1.text-h5,
+.app-main-no-scroll .v-container > h1:first-child,
+.app-main-no-scroll .v-container .mh-page-title {
+  font-size: clamp(1.25rem, 1.05rem + 0.6vw, 1.625rem) !important;
+  line-height: 1.25 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.015em !important;
+}
+.app-main-no-scroll .v-container > h2.text-h6 {
+  font-size: 0.9375rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0 !important;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+.v-btn--variant-outlined {
+  border-color: rgba(var(--v-border-color), 0.2) !important;
+}
+
+/* ── Presence: a dot and a word; online breathes, offline is hollow. ──
+   The same three states colour a device row's left edge (the signature). */
+.mh-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mh-presence__dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.28);
+}
+.mh-presence--online .mh-presence__dot,
+.mh-presence__dot.mh-presence--online {
+  background: rgb(var(--v-theme-success));
+  box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.45);
+  animation: mh-breathe 2.4s ease-out infinite;
+}
+.mh-presence--online {
+  color: rgb(var(--v-theme-success));
+}
+.mh-presence--stale .mh-presence__dot,
+.mh-presence__dot.mh-presence--stale {
+  background: rgb(var(--v-theme-warning));
+}
+.mh-presence--stale {
+  color: rgb(var(--v-theme-warning));
+}
+.mh-presence--offline {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.mh-presence--offline .mh-presence__dot,
+.mh-presence__dot.mh-presence--offline {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(var(--v-theme-on-surface), 0.35);
+}
+@keyframes mh-breathe {
+  0% { box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(var(--v-theme-success), 0); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0); }
+}
+tr.mh-row--online > td:first-child,
+.v-card.mh-row--online {
+  box-shadow: inset 3px 0 0 rgb(var(--v-theme-success)) !important;
+}
+tr.mh-row--stale > td:first-child,
+.v-card.mh-row--stale {
+  box-shadow: inset 3px 0 0 rgb(var(--v-theme-warning)) !important;
+}
+
+/* ── Segmented control: one hairline group, the chosen part tinted. ── */
+.mh-segmented.v-btn-toggle {
+  height: 32px !important;
+  border-radius: 8px !important;
+  border: 1px solid rgba(var(--v-border-color), 0.2) !important;
+}
+.mh-segmented.v-btn-toggle > .v-btn {
+  border: 0 !important;
+  font-size: 0.8125rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.mh-segmented.v-btn-toggle > .v-btn.v-btn--active {
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
+}
+.mh-segmented.v-btn-toggle > .v-btn.v-btn--active > .v-btn__overlay {
+  opacity: 0;
+}
+
+/* ── Links read as the brand colour, underlined only under the pointer. ── */
+.v-application a:not(.v-btn):not(.v-list-item):not(.v-card):not(.v-chip):not(.v-tab) {
+  color: rgb(var(--v-theme-primary));
+  text-decoration: none;
+}
+.v-application a:not(.v-btn):not(.v-list-item):not(.v-card):not(.v-chip):not(.v-tab):hover {
+  text-decoration: underline;
+}
+
+/* ── The sign-in / sign-up form inside AuthShell. ── */
+.mh-auth-form__mark {
+  display: block;
+  margin-bottom: 20px;
+}
+.mh-auth-form__title {
+  font-size: 1.5rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin: 0 0 4px;
+}
+.mh-auth-form__sub {
+  font-size: 0.875rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  margin-bottom: 28px;
+}
+.mh-auth-form__or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0 14px;
+  font-size: 0.8125rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+.mh-auth-form__or::before,
+.mh-auth-form__or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--mh-hairline);
+}
+.mh-auth-form__alt {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 0.875rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* Outlined cards use the hairline too (Vuetify draws them in currentColor). */
+.v-card--variant-outlined {
+  border-color: var(--mh-hairline) !important;
+}

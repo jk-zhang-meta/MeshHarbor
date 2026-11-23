@@ -606,7 +606,8 @@
         "at_capacity": "归档副本当前的搜索已满负荷。",
         "hive_disabled": "归档副本不提供搜索。"
       }
-    }
+    },
+    "rowActions": "会话操作"
   },
   "keepBusy": {
     "defaultPattern": {
@@ -2001,7 +2002,8 @@
       "orgSlugHint": "用于网址的标识，全局唯一",
       "create": "创建",
       "createOrgFailed": "创建组织失败",
-      "slugTaken": "该标识已被占用，请换一个"
+      "slugTaken": "该标识已被占用，请换一个",
+      "connecting": "正在连接…"
     },
     "chatView": {
       "files": "文件",
@@ -2585,7 +2587,8 @@
       "invitesHint": "邀请队友加入此组织",
       "analytics": "分析",
       "analyticsHint": "机器、通话和隧道流量的趋势",
-      "callName": "通话 - {when}"
+      "callName": "通话 - {when}",
+      "explore": "发现"
     },
     "profile": {
       "edit": "编辑个人资料",
@@ -2711,6 +2714,13 @@
     "video": {
       "fromYoutube": "按下播放后从 YouTube 播放。",
       "play": "播放视频“{title}”（{n} 分钟，从 YouTube 播放）"
+    },
+    "authShell": {
+      "headline": "你的每一台电脑，随时就在手边。",
+      "lede": "浏览器里直接远程控制，设备之间组成 WireGuard 私有网络，团队的会议和聊天也在这里。服务器只负责协调，看不到你的画面、键盘输入和流量。",
+      "factRemote": "在浏览器里控制电脑，控制端什么都不用装",
+      "factMesh": "能直连就直连，连不上自动走中继",
+      "factTeam": "会议、聊天、文件和设备在同一个组织里"
     }
   },
   "tempDevices": {

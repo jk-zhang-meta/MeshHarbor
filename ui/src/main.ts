@@ -5,6 +5,14 @@ import i18n from '@/plugins/i18n'
 import vuetify from '@/plugins/vuetify'
 // After Vuetify's own styles: the phone-width utilities (FR-116).
 import '@/styles/responsive.css'
+// The flat theme: bundled faces (Latin subset only; Chinese uses the system face),
+// then the type, border and surface rules that the theme colours cannot express.
+import '@fontsource/ibm-plex-sans/latin-400.css'
+import '@fontsource/ibm-plex-sans/latin-500.css'
+import '@fontsource/ibm-plex-sans/latin-600.css'
+import '@fontsource/ibm-plex-mono/latin-400.css'
+import '@fontsource/ibm-plex-mono/latin-500.css'
+import '@/styles/theme.css'
 import pinia from '@/plugins/pinia'
 import router from '@/plugins/router'
 import App from '@/App.vue'
