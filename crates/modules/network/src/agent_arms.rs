@@ -143,11 +143,14 @@ pub async fn handle_agent_ssh_request(
     session_secs: u64,
     // FR-90 P3-8-1b — an agent session's ticket, when a session asks.
     ssh_ticket: Option<String>,
+    // FR-129 — the person's two-factor code for the target, relayed to it.
+    two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
     reply_tx: meshharbor_remote_control::session::ClientTx,
 ) {
     // A refusal carries no address, so it carries no host key either — the two
     // are only ever meaningful together.
     let fail = |msg: String| ServerMsg::SshResponse {
+        two_factor: None,
         request_id: request_id.clone(),
         address: None,
         port: None,
@@ -244,6 +247,7 @@ pub async fn handle_agent_ssh_request(
         &caller,
         &public_key,
         session_secs,
+        two_factor_code.as_ref(),
     )
     .await;
 
@@ -264,6 +268,7 @@ pub async fn handle_agent_ssh_request(
         expires_at_ms,
         error,
         ssh_ticket_id,
+        two_factor,
     } = res;
     let msg = ServerMsg::SshResponse {
         request_id: request_id.clone(),
@@ -274,6 +279,7 @@ pub async fn handle_agent_ssh_request(
         expires_at_ms,
         error,
         ssh_ticket_id,
+        two_factor,
     };
     if reply_tx.try_send(msg).is_err() {
         warn!(%origin_agent_id, %request_id, "rc:ssh.response undeliverable — origin WS gone");

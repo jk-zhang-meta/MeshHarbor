@@ -428,6 +428,11 @@ pub struct AgentCaps {
     /// to the devices of the zones this device is a gateway of. `None` = no entry here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management_entry_port: Option<u16>,
+    /// FR-129 — two-factor is on: every session a person opens into this device must carry a
+    /// code from the device's authenticator app, which the device checks itself. Reported by
+    /// the device (the centre holds no secret), read by the admin page and the viewers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_factor: bool,
     /// FR-85 P3 — what this agent can record for a REMOTE controller, as
     /// [`RecordCap`] wire words:
     ///
@@ -1320,6 +1325,9 @@ pub enum RpcCap {
     /// direct, or through its zone's gateways) and, when it runs a management entry
     /// ([`AgentCaps::management_entry_port`]), `rc:agent.management_entry`. Equality-matched.
     ManagementPath,
+    /// FR-129 — the agent parses `rc:agent.two_factor` (switch its two-factor on or off) and
+    /// reads `two_factor_code` on the sessions it admits. Equality-matched.
+    TwoFactor,
 }
 
 impl RpcCap {
@@ -1342,6 +1350,7 @@ impl RpcCap {
             Self::RelayServer => "relay-server",
             Self::RelayControl => "relay-control",
             Self::ManagementPath => "management-path",
+            Self::TwoFactor => "two-factor",
             Self::ManagedForward => "managed-forward",
             Self::ManagedForwardNft => "managed-forward-nft",
             Self::SharedFilesAsAccount => "shared-files-as-account",
@@ -1383,7 +1392,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 48] = [
+    pub const ALL: [RpcCap; 49] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1432,6 +1441,7 @@ impl RpcCap {
         Self::ManagedForwardNft,
         Self::SharedFilesAsAccount,
         Self::ManagementPath,
+        Self::TwoFactor,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -5023,9 +5033,26 @@ pub enum SshDenyReason {
     /// FR-90 P3-8-1b — the target does not advertise `ssh-one-command`, so it
     /// could not hold an agent session's grant to one command.
     TargetTooOld,
+    /// FR-129 — the device asks for a two-factor code and none came.
+    TwoFactorRequired,
+    /// FR-129 — the two-factor code was wrong, expired or already used.
+    TwoFactorInvalid,
+    /// FR-129 — too many wrong two-factor codes (or the device cannot read its state).
+    TwoFactorLocked,
 }
 
 impl SshDenyReason {
+    /// FR-129 — the two-factor wire spelling of a two-factor refusal, which a caller matches to
+    /// ask the person for a code. `None` for every other reason.
+    pub fn two_factor(self) -> Option<&'static str> {
+        match self {
+            Self::TwoFactorRequired => Some("two_factor_required"),
+            Self::TwoFactorInvalid => Some("two_factor_invalid"),
+            Self::TwoFactorLocked => Some("two_factor_locked"),
+            _ => None,
+        }
+    }
+
     /// One line an operator can act on. Deliberately names WHICH gate said no:
     /// "denied" without a reason turns a five-second config fix into a
     /// support ticket.
@@ -5080,6 +5107,9 @@ impl SshDenyReason {
                 "this device's agent cannot hold an agent session to one command (needs a \
                  build that advertises ssh-one-command)"
             }
+            Self::TwoFactorRequired => "this device asks for a two-factor code",
+            Self::TwoFactorInvalid => "the two-factor code is wrong, expired or already used",
+            Self::TwoFactorLocked => "too many wrong two-factor codes on this device; try later",
         }
     }
 }
@@ -5108,6 +5138,13 @@ pub enum SshGrantRefusal {
     Invalid,
     /// A reason this build does not know.
     Other,
+    /// FR-129 — the device asks for a two-factor code and the request carried none. An older
+    /// server decodes these three as `other` (`grant_refusal_lenient`).
+    TwoFactorRequired,
+    /// FR-129 — the code was wrong, expired or already used.
+    TwoFactorInvalid,
+    /// FR-129 — too many wrong codes, or the device cannot read its two-factor state.
+    TwoFactorLocked,
 }
 
 impl SshGrantRefusal {
@@ -5117,6 +5154,18 @@ impl SshGrantRefusal {
             Self::SshDisabled => SshDenyReason::AgentDisabled,
             Self::Expired => SshDenyReason::GrantExpiredOnArrival,
             Self::Invalid | Self::Other => SshDenyReason::GrantRefused,
+            Self::TwoFactorRequired => SshDenyReason::TwoFactorRequired,
+            Self::TwoFactorInvalid => SshDenyReason::TwoFactorInvalid,
+            Self::TwoFactorLocked => SshDenyReason::TwoFactorLocked,
+        }
+    }
+
+    /// FR-129 — the refusal for a device's two-factor wire spelling.
+    pub fn from_two_factor(wire: &str) -> Self {
+        match wire {
+            "two_factor_required" => Self::TwoFactorRequired,
+            "two_factor_invalid" => Self::TwoFactorInvalid,
+            _ => Self::TwoFactorLocked,
         }
     }
 }
@@ -5764,6 +5813,32 @@ pub enum EndReason {
     /// auto-reconnect. Only the device may claim it — the hub records a
     /// controller's claim as `ControllerHangup`.
     HostDisconnect,
+    /// FR-129 — the device asks for a two-factor code and none came. The viewer asks the person
+    /// for one and tries again. Only a device that has two-factor on sends it.
+    TwoFactorRequired,
+    /// FR-129 — the code was wrong, expired or already used.
+    TwoFactorInvalid,
+    /// FR-129 — too many wrong codes (or the device cannot read its two-factor state): typing
+    /// another now will not help.
+    TwoFactorLocked,
+}
+
+/// FR-129 — a two-factor code, secret or recovery code on the wire: serialised as the plain
+/// string, never printed by `Debug`, so a frame logged at debug level does not carry it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct Confidential(pub String);
+
+impl std::fmt::Debug for Confidential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Confidential(<redacted>)")
+    }
+}
+
+impl Confidential {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

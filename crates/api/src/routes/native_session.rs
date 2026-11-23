@@ -454,6 +454,7 @@ async fn verify_remote_target(
         return Err(ApiError::Forbidden("Organization is unavailable".into()));
     }
     let msg = ClientMsg::SessionRequest {
+        two_factor_code: None,
         agent_id,
         share_grant_id: None,
         permissions: Permissions::VIEW,
@@ -537,6 +538,7 @@ async fn verify_share_remote_target(
         return Err(ApiError::Forbidden("Organization is unavailable".into()));
     }
     let msg = ClientMsg::SessionRequest {
+        two_factor_code: None,
         agent_id,
         share_grant_id: Some(share_id),
         permissions: Permissions::VIEW,

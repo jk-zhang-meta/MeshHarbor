@@ -1271,6 +1271,7 @@ async fn file_child_local_controller_source_requires_http_authentication_and_act
     }
     fn request(agent_id: ObjectId) -> String {
         serde_json::to_string(&ClientMsg::SessionRequest {
+            two_factor_code: None,
             agent_id,
             share_grant_id: None,
             permissions: Permissions::VIEW | Permissions::FILES,
@@ -1457,6 +1458,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
     owner_socket
         .send(Message::Text(
             serde_json::to_string(&ClientMsg::SessionRequest {
+                two_factor_code: None,
                 agent_id: agent,
                 share_grant_id: None,
                 permissions: Permissions::VIEW | Permissions::FILES,
@@ -1540,6 +1542,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
     owner_socket
         .send(Message::Text(
             serde_json::to_string(&ClientMsg::SessionRequest {
+                two_factor_code: None,
                 agent_id: agent,
                 share_grant_id: None,
                 permissions: Permissions::VIEW | Permissions::FILES,

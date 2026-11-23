@@ -135,18 +135,92 @@ pub fn state_path() -> Option<PathBuf> {
         .map(|d| d.join(FILE))
 }
 
-/// The last pushed path, or the default when none was kept (or it does not parse).
-pub fn load(path: &Path) -> Pushed {
-    std::fs::read(path)
+/// The kept file: each centre's last pushed path, by the centre's host. A path is the centre's
+/// own: one kept for a different server (another enrollment, or an in-process test daemon on
+/// this host talking to a loopback server) must never steer this one.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Kept {
+    by_centre: std::collections::BTreeMap<String, Pushed>,
+}
+
+/// An older build (0.4.209–0.4.211) kept one path with no host: `{direct, entries}`.
+enum KeptFile {
+    Nothing,
+    Legacy(Pushed),
+    ByCentre(Kept),
+}
+
+fn read_kept(path: &Path) -> KeptFile {
+    let Some(v) = std::fs::read(path)
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return KeptFile::Nothing;
+    };
+    if v.get("by_centre").is_some() {
+        return serde_json::from_value(v).map_or(KeptFile::Nothing, KeptFile::ByCentre);
+    }
+    serde_json::from_value(v).map_or(KeptFile::Nothing, KeptFile::Legacy)
+}
+
+/// The host a centre is kept under: `server_url`'s, lower-cased (`""` when it does not parse).
+pub fn centre_host(server_url: &str) -> String {
+    reqwest::Url::parse(server_url)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_matches(['[', ']']).to_ascii_lowercase())
+        })
         .unwrap_or_default()
 }
 
-/// Keep a pushed path. Written beside, then renamed, so a crash never leaves half a file.
-pub fn store(path: &Path, pushed: &Pushed) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(pushed)?)?;
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The last path pushed by the centre at `centre` (a host), or the default when none was kept
+/// (or the file does not parse). An older build's host-less path applies to any centre that is
+/// not on loopback: a device updated from it still finds its entries at boot.
+pub fn load(path: &Path, centre: &str) -> Pushed {
+    match read_kept(path) {
+        KeptFile::ByCentre(k) => k
+            .by_centre
+            .get(&centre.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default(),
+        KeptFile::Legacy(p) if !is_loopback_host(centre) => p,
+        _ => Pushed::default(),
+    }
+}
+
+/// Every path kept, whichever centre pushed it.
+fn load_all(path: &Path) -> Vec<Pushed> {
+    match read_kept(path) {
+        KeptFile::ByCentre(k) => k.by_centre.into_values().collect(),
+        KeptFile::Legacy(p) => vec![p],
+        KeptFile::Nothing => Vec::new(),
+    }
+}
+
+/// Keep the path the centre at `centre` pushed, beside the others. Written beside (per
+/// process), then renamed, so a crash never leaves half a file.
+pub fn store(path: &Path, centre: &str, pushed: &Pushed) -> std::io::Result<()> {
+    let mut kept = match read_kept(path) {
+        KeptFile::ByCentre(k) => k,
+        // A loopback centre (an in-process test daemon) is not the one that pushed the
+        // host-less path: leave that path for the real centre to replace.
+        KeptFile::Legacy(_) if is_loopback_host(centre) => return Ok(()),
+        // The host-less path was this centre's (it is the one pushing again now).
+        KeptFile::Legacy(_) | KeptFile::Nothing => Kept::default(),
+    };
+    kept.by_centre
+        .insert(centre.to_ascii_lowercase(), pushed.clone());
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec(&kept)?)?;
     std::fs::rename(&tmp, path)
 }
 
@@ -156,14 +230,15 @@ pub fn entry_ips(local: &[String]) -> Vec<std::net::IpAddr> {
     if disabled() {
         return Vec::new();
     }
-    let pushed = state_path().map(|p| load(&p)).unwrap_or_default();
-    let (order, _) = plan(&pushed, local, None);
+    let kept = state_path().map(|p| load_all(&p)).unwrap_or_default();
     let mut out = Vec::new();
-    for c in order {
-        if let Candidate::Entry(a) = c
-            && !out.contains(&a.ip())
-        {
-            out.push(a.ip());
+    for pushed in kept.iter().chain(std::iter::once(&Pushed::default())) {
+        for c in plan(pushed, local, None).0 {
+            if let Candidate::Entry(a) = c
+                && !out.contains(&a.ip())
+            {
+                out.push(a.ip());
+            }
         }
     }
     out
@@ -241,11 +316,11 @@ pub fn current_route() -> Option<(String, SocketAddr)> {
 
 /// The kept path sends this device to its entries first (its zone may not reach the centre
 /// directly): a probe of the centre's address at boot would itself be a direct connection.
-pub fn entries_only(local: &[String]) -> bool {
+pub fn entries_only(local: &[String], centre: &str) -> bool {
     if disabled() {
         return false;
     }
-    let pushed = state_path().map(|p| load(&p)).unwrap_or_default();
+    let pushed = state_path().map(|p| load(&p, centre)).unwrap_or_default();
     plan(&pushed, local, None).1
 }
 
@@ -349,10 +424,55 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mh-fr128-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE);
-        assert_eq!(load(&path), Pushed::default());
+        assert_eq!(load(&path, "centre.example"), Pushed::default());
         let kept = p(false, &["198.51.100.1:18443"]);
-        store(&path, &kept).unwrap();
-        assert_eq!(load(&path), kept);
+        store(&path, "Centre.Example", &kept).unwrap();
+        assert_eq!(load(&path, "centre.example"), kept);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A path is its centre's: a daemon on this host talking to another server (a test
+    /// daemon against a loopback server, which is how this was found) neither reads nor
+    /// overwrites it, and an older build's host-less file still applies to the real centre.
+    #[test]
+    fn each_centre_keeps_its_own_path_and_a_legacy_one_serves_only_a_real_centre() {
+        let dir = std::env::temp_dir().join(format!("mh-fr128-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        let real = p(false, &["198.51.100.1:18443"]);
+        std::fs::write(&path, serde_json::to_vec(&real).unwrap()).unwrap();
+        assert_eq!(
+            load(&path, "centre.example"),
+            real,
+            "legacy file, real centre"
+        );
+        assert_eq!(
+            load(&path, "127.0.0.1"),
+            Pushed::default(),
+            "legacy file, loopback"
+        );
+        assert_eq!(load(&path, "localhost"), Pushed::default());
+        store(&path, "127.0.0.1", &Pushed::default()).unwrap();
+        assert_eq!(
+            load(&path, "centre.example"),
+            real,
+            "a loopback store leaves the legacy path to the real centre"
+        );
+
+        store(&path, "centre.example", &real).unwrap();
+        store(&path, "127.0.0.1", &Pushed::default()).unwrap();
+        assert_eq!(
+            load(&path, "centre.example"),
+            real,
+            "not overwritten by the other"
+        );
+        assert_eq!(load(&path, "127.0.0.1"), Pushed::default());
+        assert_eq!(load(&path, "other.example"), Pushed::default());
+        assert_eq!(
+            centre_host("https://Centre.Example/meshharbor"),
+            "centre.example"
+        );
+        assert_eq!(centre_host("wss://[::1]:8443/ws"), "::1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

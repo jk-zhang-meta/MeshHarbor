@@ -49,6 +49,14 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum TwoFactorCmd {
+    /// Whether two-factor is on, and how many recovery codes are left.
+    Status,
+    /// Switch two-factor off on this device (removes its secret).
+    Reset,
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Enroll this machine against a MeshHarbor server using an admin-issued
     /// enrollment token. Writes the resulting agent token to the config file.
@@ -242,6 +250,14 @@ enum Command {
         /// org (a different-tenant token belongs in `enroll`).
         #[arg(long)]
         org: Option<String>,
+    },
+    /// FR-129 — this device's two-factor, locally: `status`, or `reset` (switch it off
+    /// without a code: the break-glass for a lost phone with no recovery code). Run as the
+    /// user the daemon runs as (root for a system install). It is switched ON only from the
+    /// admin page.
+    TwoFactor {
+        #[command(subcommand)]
+        action: TwoFactorCmd,
     },
     /// FR-94 (Windows) — anchor this machine's device, so Fleet RPC runs as
     /// SYSTEM through the MeshHarbor service instead of as the signed-in user.
@@ -1166,6 +1182,43 @@ fn pick_config_path(
 /// the real environment — the worker-role probe, the candidate paths,
 /// and `Path::exists`. Logs the chosen path so a "wrong config" or
 /// "config not found" investigation lands on a clear line.
+/// FR-129 — `meshharbord two-factor status|reset`, on the state file beside the config. The
+/// running daemon reads that file at every check, so a reset takes effect at once.
+fn two_factor_cmd(config_path: &std::path::Path, action: TwoFactorCmd) -> Result<()> {
+    use meshharbor_node_core::two_factor as tf;
+    let path = tf::state_path(config_path);
+    let engine = tf::Engine::new(path.clone());
+    match action {
+        TwoFactorCmd::Status => {
+            if !engine.active() {
+                println!("two-factor: off");
+            } else {
+                match engine.recovery_left() {
+                    Some(n) => println!("two-factor: on ({n} recovery codes left)"),
+                    None => println!(
+                        "two-factor: on, but {} cannot be read: every code is refused \
+                         (`meshharbord two-factor reset` switches it off)",
+                        path.display()
+                    ),
+                }
+            }
+        }
+        TwoFactorCmd::Reset => match std::fs::remove_file(&path) {
+            Ok(()) => println!(
+                "two-factor: off on this device (switch it on again from the admin page)"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!("two-factor: already off")
+            }
+            Err(e) => anyhow::bail!(
+                "could not remove {}: {e} (run as the user the daemon runs as)",
+                path.display()
+            ),
+        },
+    }
+    Ok(())
+}
+
 fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let default = config::default_config_path().context("resolving default config path")?;
 
@@ -2636,6 +2689,7 @@ async fn daemon_main() -> Result<()> {
         Command::ReEnroll { token, org } => {
             re_enroll_cmd(&config_path, &token, org.as_deref()).await
         }
+        Command::TwoFactor { action } => two_factor_cmd(&config_path, action),
         Command::Anchor { action } => {
             use meshharbord::exec_service::{AnchorAction, parse_ssh_ceiling};
             let action = match action {
@@ -4858,6 +4912,8 @@ async fn run_cmd(
         ?encoder_preference,
         "agent starting"
     );
+    // FR-129 — two-factor's state lives beside this daemon's config.
+    meshharbor_node_core::two_factor::init(config_path);
 
     // Phase 8: pre-flight diagnostics (DNS / TCP / clock-skew). Non-
     // blocking — the signaling loop runs unconditionally afterward —
@@ -4867,7 +4923,10 @@ async fn run_cmd(
     // FR-43 P3 — an unenrolled worker dials no server, so there is none to probe.
     // FR-128 — a device whose zone reaches the centre through its entries does not probe the
     // centre's address directly: the probe would be the one direct connection it must not make.
-    let via_entries = meshharbor_node_core::management_path::entries_only(&cfg.management_entries);
+    let via_entries = meshharbor_node_core::management_path::entries_only(
+        &cfg.management_entries,
+        &meshharbor_node_core::management_path::centre_host(&cfg.server_url),
+    );
     if via_entries {
         tracing::info!(
             "preflight: this zone reaches the centre through its entries; direct probe skipped"

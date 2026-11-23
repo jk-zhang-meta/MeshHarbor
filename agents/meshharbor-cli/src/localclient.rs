@@ -911,14 +911,81 @@ struct RemoteRun {
     error: Option<String>,
 }
 
-/// Ask the local daemon to run `command` on `node` and wait for the answer.
+/// FR-129 — the environment variable a script sets to a two-factor code.
+pub const TWO_FACTOR_ENV: &str = "MH_2FA_CODE";
+
+/// FR-129 — the refusal word a device answers when it wants a (new) two-factor code, and the
+/// code to try next: `MH_2FA_CODE` on the first try, then one prompt per refusal on a
+/// terminal. `None` = stop (nobody to ask, or the device is locked).
+pub fn next_two_factor_code(device: &str, refusal: Option<&str>, attempt: u32) -> Option<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if attempt == 0 {
+        return std::env::var(TWO_FACTOR_ENV)
+            .ok()
+            .filter(|c| !c.trim().is_empty());
+    }
+    let refusal = refusal?;
+    if !matches!(refusal, "two_factor_required" | "two_factor_invalid") || attempt > 3 {
+        return None;
+    }
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    let why = if refusal == "two_factor_invalid" {
+        "that code was wrong, expired or already used; "
+    } else {
+        ""
+    };
+    eprint!("{device} asks for a two-factor code ({why}6 digits from the authenticator app): ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).ok()?;
+    let code = line.trim().to_string();
+    (!code.is_empty()).then_some(code)
+}
+
+/// The two-factor refusal word an exec error starts with, if it is one.
+fn two_factor_refusal(error: Option<&str>) -> Option<&str> {
+    let e = error?;
+    [
+        "two_factor_required",
+        "two_factor_invalid",
+        "two_factor_locked",
+        "two_factor_unavailable",
+    ]
+    .into_iter()
+    .find(|w| e.starts_with(w))
+}
+
+/// Ask the local daemon to run `command` on `node` and wait for the answer. A device with
+/// two-factor on gets a code (FR-129): see [`next_two_factor_code`].
 async fn run_remote(node: &str, shell: &str, command: &str, timeout_ms: u64) -> Result<RemoteRun> {
+    let mut code = next_two_factor_code(node, None, 0);
+    let mut attempt = 0;
+    loop {
+        let run = run_remote_once(node, shell, command, timeout_ms, code.take()).await?;
+        attempt += 1;
+        match next_two_factor_code(node, two_factor_refusal(run.error.as_deref()), attempt) {
+            Some(c) => code = Some(c),
+            None => return Ok(run),
+        }
+    }
+}
+
+async fn run_remote_once(
+    node: &str,
+    shell: &str,
+    command: &str,
+    timeout_ms: u64,
+    two_factor_code: Option<String>,
+) -> Result<RemoteRun> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let req = localapi::Request::ExecRemote {
         node: node.to_string(),
         shell: shell.to_string(),
         command: command.to_string(),
         timeout_ms,
+        two_factor_code: two_factor_code.map(localapi::Secret),
     };
     match client.request(&req).await.map_err(|e| anyhow!("{e}"))? {
         localapi::Response::ExecResult {
@@ -1036,11 +1103,31 @@ pub struct SshGrant {
 /// `public_key` is the caller's ephemeral session key — the daemon relays it
 /// and never sees the private half.
 pub async fn ssh_session(node: &str, public_key: &str, session_secs: u64) -> Result<SshGrant> {
+    let mut code = next_two_factor_code(node, None, 0);
+    let mut attempt = 0;
+    loop {
+        let (grant, refusal) =
+            ssh_session_once(node, public_key, session_secs, code.take()).await?;
+        attempt += 1;
+        match next_two_factor_code(node, refusal.as_deref(), attempt) {
+            Some(c) => code = Some(c),
+            None => return Ok(grant),
+        }
+    }
+}
+
+async fn ssh_session_once(
+    node: &str,
+    public_key: &str,
+    session_secs: u64,
+    two_factor_code: Option<String>,
+) -> Result<(SshGrant, Option<String>)> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let req = localapi::Request::SshSession {
         node: node.to_string(),
         public_key: public_key.to_string(),
         session_secs,
+        two_factor_code: two_factor_code.map(localapi::Secret),
     };
     match client.request(&req).await.map_err(|e| anyhow!("{e}"))? {
         localapi::Response::SshSession {
@@ -1048,13 +1135,17 @@ pub async fn ssh_session(node: &str, public_key: &str, session_secs: u64) -> Res
             port,
             host_pubkey,
             error,
+            two_factor,
             ..
-        } => Ok(SshGrant {
-            address,
-            port,
-            host_pubkey,
-            error,
-        }),
+        } => Ok((
+            SshGrant {
+                address,
+                port,
+                host_pubkey,
+                error,
+            },
+            two_factor,
+        )),
         localapi::Response::Error { message } => Err(anyhow!("{message}")),
         other => Err(anyhow!("unexpected daemon response: {other:?}")),
     }

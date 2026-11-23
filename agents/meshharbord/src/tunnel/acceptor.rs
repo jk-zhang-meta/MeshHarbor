@@ -44,6 +44,14 @@ const POOL_READY_WAIT: Duration = Duration::from_secs(10);
 /// can't leak waiting for a stream that never comes.
 const FLOW_RENDEZVOUS_WAIT: Duration = Duration::from_secs(10);
 
+const TWO_FACTOR_FORWARD: &str =
+    "agent: two-factor is on and this device's forward allowlist does not name the destination";
+
+/// FR-129 — read live at every flow: switching two-factor on closes forwards at once.
+fn two_factor_refuses(acl: &AgentForwardAcl) -> bool {
+    acl.allowlist.is_empty() && meshharbor_node_core::two_factor::active()
+}
+
 /// Policy + dial layer. Pure decision logic, no peer interaction —
 /// keeps the unit tests self-contained.
 pub async fn decide_forward(
@@ -54,6 +62,17 @@ pub async fn decide_forward(
     acl: &AgentForwardAcl,
     dial_timeout: Duration,
 ) -> Result<TcpStream, ClientMsg> {
+    // FR-129 — a forward carries no person's code: a two-factor device forwards only to what
+    // its own allowlist names (empty = nowhere), as a protected device does.
+    if two_factor_refuses(acl) {
+        info!(%session_id, %flow_id, %dst_host, %dst_port, "two-factor: forward refused");
+        return Err(ClientMsg::TcpForwardReject {
+            session_id,
+            flow_id,
+            kind: RejectKind::AclDenied,
+            reason: TWO_FACTOR_FORWARD.into(),
+        });
+    }
     if let AclDecision::Reject { reason } =
         acl.check(dst_host, dst_port, tunnel_core::policy::ProtocolKind::Tcp)
     {
@@ -319,6 +338,15 @@ pub async fn decide_forward_udp(
     acl: &AgentForwardAcl,
     dial_timeout: Duration,
 ) -> Result<tokio::net::UdpSocket, ClientMsg> {
+    if two_factor_refuses(acl) {
+        info!(%session_id, %flow_id, %dst_host, %dst_port, "two-factor: UDP forward refused");
+        return Err(ClientMsg::UdpForwardReject {
+            session_id,
+            flow_id,
+            kind: RejectKind::AclDenied,
+            reason: TWO_FACTOR_FORWARD.into(),
+        });
+    }
     if let AclDecision::Reject { reason } = acl.check(dst_host, dst_port, ProtocolKind::Udp) {
         info!(
             %session_id, %flow_id, %dst_host, %dst_port, %reason,

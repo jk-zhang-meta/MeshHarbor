@@ -35,6 +35,8 @@ pub struct SshGrantAnswer {
     /// request to, echoed. `None` on a person's request, and from a server
     /// before P3-8-1b, which ignored the ticket and answered as the owner's.
     pub ssh_ticket_id: Option<String>,
+    /// FR-129 — the target refused on two-factor (its wire spelling).
+    pub two_factor: Option<String>,
 }
 
 type Pending = HashMap<String, oneshot::Sender<SshGrantAnswer>>;

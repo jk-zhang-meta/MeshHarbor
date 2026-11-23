@@ -350,6 +350,12 @@ mod imp {
             info!(%attempt_id, "extauth: KE1 refused — not the primary org's socket");
             return refused(attempt_id, ExtauthRefusal::Unavailable, None);
         }
+        // FR-129 — an outsider has no code from this device's authenticator app: a
+        // two-factor device takes no external login (the same one answer as "not enabled").
+        if meshharbor_node_core::two_factor::active() {
+            info!(%attempt_id, "extauth: KE1 refused — two-factor is on");
+            return refused(attempt_id, ExtauthRefusal::Unavailable, None);
+        }
         // Gate 3 and the record, from the FILE: a revocation takes effect for
         // the next knock, not the next restart.
         let Some(cred) = remote_cfg.external_access_live().await else {

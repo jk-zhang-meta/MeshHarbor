@@ -670,6 +670,33 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// FR-129 — the device's answer to a [`ServerMsg::TwoFactorSetup`]. Always sent, because
+    /// the admin's request is parked on it.
+    #[serde(rename = "rc:agent.two_factor_result")]
+    TwoFactorResult {
+        request_id: String,
+        /// Absent = done. Otherwise why not: `already_on`, `already_off`, `no_pending`,
+        /// `not_primary`, `storage`, or a code refusal (`two_factor_invalid`, …).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        refused: Option<String>,
+        /// Seconds until codes are checked again, with `two_factor_locked`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_secs: Option<u64>,
+        /// Whether two-factor is on after this step.
+        enabled: bool,
+        /// `begin`: the key to type into the app (base32).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret: Option<crate::models::Confidential>,
+        /// `begin`: the URI the QR code carries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        otpauth_uri: Option<crate::models::Confidential>,
+        /// `begin`: what the `confirm` must carry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        setup_id: Option<String>,
+        /// `confirm`: the one-time recovery codes, shown once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        recovery_codes: Vec<crate::models::Confidential>,
+    },
     #[serde(rename = "rc:share.ssh.lease.challenge")]
     SharedSshLeaseChallenge {
         #[serde(with = "oid_hex")]
@@ -1005,6 +1032,10 @@ pub enum ClientMsg {
         shell: String,
         command: String,
         timeout_ms: u64,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// Device-originated meshharbor-SSH against ANOTHER device — the
@@ -1037,6 +1068,10 @@ pub enum ClientMsg {
         /// byte for byte what it was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ssh_ticket: Option<String>,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// FR-85 P3 — the device reports one thing that happened to a REMOTE
@@ -2033,6 +2068,10 @@ pub enum ClientMsg {
         /// multiple encoder rebuilds on first frame).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         initial_resolution: Option<InitialResolution>,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// Controller sends an SDP offer (after consent granted).
@@ -3048,6 +3087,7 @@ impl ClientMsg {
             ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
             ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
             ClientMsg::LocalAccountsResult { .. } => "rc:accounts.result",
+            ClientMsg::TwoFactorResult { .. } => "rc:agent.two_factor_result",
             ClientMsg::SharedSshLeaseChallenge { .. } => "rc:share.ssh.lease.challenge",
             ClientMsg::SharedLeaseChallenge { .. } => "rc:share.lease.challenge",
             ClientMsg::DerpTicketRequest { .. } => "rc:relay.derp_ticket_request",
@@ -3169,7 +3209,9 @@ impl ClientMsg {
             | ClientMsg::ConsentPending { .. }
             | ClientMsg::Ping { .. }
             // MeshHarbor — device management: the owner's view of its accounts.
-            | ClientMsg::LocalAccountsResult { .. } => Owner::Fleet,
+            | ClientMsg::LocalAccountsResult { .. }
+            // FR-129 — switching a device's two-factor on or off.
+            | ClientMsg::TwoFactorResult { .. } => Owner::Fleet,
             ClientMsg::SharedLeaseChallenge { .. }
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
@@ -3283,6 +3325,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:share.ssh.connect", Owner::Network),
     ("rc:share.ssh.prepared", Owner::Network),
     ("rc:accounts.result", Owner::Fleet),
+    ("rc:agent.two_factor_result", Owner::Fleet),
     ("rc:share.ssh.lease.challenge", Owner::Network),
     ("rc:share.lease.challenge", Owner::Remote),
     ("rc:agent.hello", Owner::Fleet),
@@ -3608,6 +3651,25 @@ pub enum LocalAccountOp {
     },
 }
 
+/// FR-129 — one step of switching a device's two-factor on or off, from the admin page. The
+/// device answers each with [`ClientMsg::TwoFactorResult`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TwoFactorOp {
+    /// Make a pending secret (10 min); answers it and its `otpauth://` URI. `account` is what
+    /// the authenticator app shows under the issuer (the device's name).
+    Begin { account: String },
+    /// Switch on with a code from the app; answers the recovery codes. `setup_id` is the one
+    /// `begin` answered: a `begin` from anyone else in between makes this one fail visibly.
+    Confirm {
+        code: crate::models::Confidential,
+        #[serde(default)]
+        setup_id: String,
+    },
+    /// Switch off with a code or a recovery code, checked by the device.
+    Disable { code: crate::models::Confidential },
+}
+
 /// Target-bound stream specification received only on the authenticated agent WS.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SharedSshSetup {
@@ -3639,6 +3701,10 @@ pub enum ServerMsg {
         request_id: String,
         op: LocalAccountOp,
     },
+    /// FR-129 — a step of switching this device's two-factor on or off. Sent only to a device
+    /// advertising `two-factor` ([`crate::models::RpcCap::TwoFactor`]); primary org only.
+    #[serde(rename = "rc:agent.two_factor")]
+    TwoFactorSetup { request_id: String, op: TwoFactorOp },
     #[serde(rename = "rc:share.ssh.setup")]
     SharedSshSetup {
         #[serde(with = "oid_hex")]
@@ -3881,6 +3947,10 @@ pub enum ServerMsg {
         /// [`ClientMsg::SessionRequest::initial_resolution`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         initial_resolution: Option<InitialResolution>,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// Server forwards SDP offer from controller → agent.
@@ -4337,6 +4407,10 @@ pub enum ServerMsg {
         /// command, not the whole frame, which a caller would wait out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_as: Option<String>,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// Kill an in-flight [`Self::RpcExec`] and its whole process tree. The
@@ -4398,6 +4472,10 @@ pub enum ServerMsg {
         /// older agents parse.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         one_command: bool,
+        /// FR-129 — the person's two-factor code, for a device that asks for one. Relayed to the
+        /// device and checked there; the centre never checks or keeps it. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<crate::models::Confidential>,
     },
 
     /// Answer to a device-originated [`ClientMsg::SshRequest`] — the
@@ -4439,6 +4517,10 @@ pub enum ServerMsg {
         /// presented (P3-8-2b). Absent from every other answer.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ssh_ticket_id: Option<String>,
+        /// FR-129 — the target's two-factor refusal (the wire spelling), next to the generic
+        /// `grant_refused`, so the caller can ask the person for a code.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor: Option<String>,
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
@@ -9032,6 +9114,7 @@ mod tests {
         // mapping kept sending the old shape, which compiles cleanly.
         const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample target";
         let m = ServerMsg::SshResponse {
+            two_factor: None,
             request_id: "r1".into(),
             address: Some("100.65.4.30".into()),
             port: Some(2222),
@@ -9054,6 +9137,7 @@ mod tests {
         // meaningful together — and an older server that omits the field must
         // land on "cannot verify", not on something a client treats as a key.
         let refused = ServerMsg::SshResponse {
+            two_factor: None,
             request_id: "r2".into(),
             address: None,
             port: None,
@@ -9078,6 +9162,7 @@ mod tests {
     #[test]
     fn ssh_session_fields_cross_only_when_set() {
         let request = |ssh_ticket: Option<&str>| ClientMsg::SshRequest {
+            two_factor_code: None,
             request_id: "q1".into(),
             target: "devbox".into(),
             public_key: "a-public-key".into(),
@@ -9094,6 +9179,7 @@ mod tests {
         ));
 
         let grant = |one_command: bool| ServerMsg::SshGrant {
+            two_factor_code: None,
             grant_id: "g1".into(),
             public_key: "a-public-key".into(),
             caller: "someone".into(),
@@ -9118,6 +9204,7 @@ mod tests {
         ));
 
         let answer = |ssh_ticket_id: Option<&str>| ServerMsg::SshResponse {
+            two_factor: None,
             request_id: "q1".into(),
             address: None,
             port: None,
@@ -9840,6 +9927,7 @@ mod tests {
         assert!(s.contains("\"agent_id\":\"507f1f77bcf86cd799439012\""));
 
         let req = ClientMsg::SessionRequest {
+            two_factor_code: None,
             share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW | Permissions::INPUT,
@@ -9865,6 +9953,7 @@ mod tests {
 
         // With a value set, the field appears
         let req_with_t = ClientMsg::SessionRequest {
+            two_factor_code: None,
             share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW,
@@ -9888,6 +9977,7 @@ mod tests {
             "None local_relay must be skipped"
         );
         let req_lr = ClientMsg::SessionRequest {
+            two_factor_code: None,
             share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW,
@@ -9931,6 +10021,7 @@ mod tests {
     #[test]
     fn request_rc_overlay_is_off_when_absent_and_round_trips_when_on() {
         let req = |rc_overlay| ServerMsg::Request {
+            two_factor_code: None,
             shared_lease: None,
             session_id: ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap(),
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
@@ -9981,6 +10072,7 @@ mod tests {
     fn request_session_policy_is_additive_and_reads_unknown_values_as_off() {
         use crate::models::{FeaturePolicy, SessionPolicy};
         let req = |session_policy| ServerMsg::Request {
+            two_factor_code: None,
             shared_lease: None,
             session_id: ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap(),
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
@@ -10077,6 +10169,7 @@ mod tests {
     fn the_idle_limit_fields_are_additive() {
         let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
         let req = |idle_secs| ServerMsg::Request {
+            two_factor_code: None,
             shared_lease: None,
             session_id: sid,
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
@@ -10161,6 +10254,7 @@ mod tests {
         use crate::models::LockOnEnd;
         let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
         let req = |lock_on_end| ServerMsg::Request {
+            two_factor_code: None,
             shared_lease: None,
             session_id: sid,
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
@@ -10241,6 +10335,7 @@ mod tests {
         let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
         let aid = ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap();
         let client_req = |initial_resolution| ClientMsg::SessionRequest {
+            two_factor_code: None,
             share_grant_id: None,
             agent_id: aid,
             permissions: Permissions::VIEW | Permissions::INPUT,
@@ -10254,6 +10349,7 @@ mod tests {
             initial_resolution,
         };
         let server_req = |initial_resolution| ServerMsg::Request {
+            two_factor_code: None,
             shared_lease: None,
             session_id: sid,
             controller_user_id: aid,
@@ -12147,6 +12243,7 @@ mod tests {
     #[test]
     fn rpc_exec_roundtrip() {
         let m = ServerMsg::RpcExec {
+            two_factor_code: None,
             request_id: "r1".into(),
             shell: "pwsh".into(),
             command: "Get-NetRoute -AddressFamily IPv4".into(),
@@ -12301,6 +12398,7 @@ mod tests {
     #[test]
     fn rpc_request_and_response_roundtrip() {
         let m = ClientMsg::RpcExecRequest {
+            two_factor_code: None,
             request_id: "c1".into(),
             target: "winhost-a".into(),
             shell: "pwsh".into(),

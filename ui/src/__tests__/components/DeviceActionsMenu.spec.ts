@@ -128,6 +128,7 @@ describe('DeviceActionsMenu', () => {
       'Reassign owner',
       'Execution policy',
       'SSH policy',
+      'Two-factor (2FA)',
       'External access',
       'Device configuration',
       'Zone assignment',
@@ -237,6 +238,47 @@ describe('DeviceActionsMenu', () => {
       'Evict / reassign overlay address',
       'Delete tunnel client',
     ])
+  })
+
+  // FR-129 — the device checks the code, so the entry needs a device that
+  // understands two-factor; one that already has it on stays reachable.
+  it('greys Two-factor on a device that predates it, and matches the verb by equality', async () => {
+    for (const rpc of [undefined, [], ['two-factor-x', 'ssh']]) {
+      const items = await openMenu({
+        row: row(),
+        agent: { id: 'a', capabilities: { rpc } } as unknown as Agent,
+      })
+      const tfa = items.find((i) => i.textContent?.includes('Two-factor (2FA)'))!
+      expect(tfa.className).toContain('v-list-item--disabled')
+      expect(tfa.textContent).toContain('Update the device first')
+      wrapper!.unmount()
+      wrapper = null
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('opens Two-factor on a device that supports it, and says when it is on', async () => {
+    let items = await openMenu({
+      row: row(),
+      agent: { id: 'a', capabilities: { rpc: ['exec', 'two-factor'] } } as unknown as Agent,
+    })
+    let tfa = items.find((i) => i.textContent?.includes('Two-factor (2FA)'))!
+    expect(tfa.className).not.toContain('v-list-item--disabled')
+    expect(tfa.textContent).not.toContain('On')
+    tfa.click()
+    expect(wrapper!.emitted('action')).toEqual([['two-factor']])
+    wrapper!.unmount()
+    document.body.innerHTML = ''
+
+    // On, even where the verb is missing (an agent rolled back): it must stay
+    // reachable to be switched off.
+    items = await openMenu({
+      row: row(),
+      agent: { id: 'a', capabilities: { two_factor: true } } as unknown as Agent,
+    })
+    tfa = items.find((i) => i.textContent?.includes('Two-factor (2FA)'))!
+    expect(tfa.className).not.toContain('v-list-item--disabled')
+    expect(tfa.textContent).toContain('On')
   })
 
   it('says which action was picked, and nothing more', async () => {

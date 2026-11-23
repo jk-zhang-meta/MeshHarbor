@@ -1906,6 +1906,7 @@ impl LocalApiState for DaemonState {
         shell: &str,
         command: &str,
         timeout_ms: u64,
+        two_factor_code: Option<&str>,
     ) -> Response {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
@@ -1922,6 +1923,8 @@ impl LocalApiState for DaemonState {
 
         if sink
             .send(meshharbor_remote_control::ClientMsg::RpcExecRequest {
+                two_factor_code: two_factor_code
+                    .map(|c| meshharbor_remote_control::models::Confidential(c.to_string())),
                 request_id: request_id.clone(),
                 target: node.to_string(),
                 shell: shell.to_string(),
@@ -1974,7 +1977,13 @@ impl LocalApiState for DaemonState {
     ///
     /// The public key is the CALLER's; the daemon never sees the private half,
     /// so a grant observed anywhere along this path is useless on its own.
-    async fn ssh_session(&self, node: &str, public_key: &str, session_secs: u64) -> Response {
+    async fn ssh_session(
+        &self,
+        node: &str,
+        public_key: &str,
+        session_secs: u64,
+        two_factor_code: Option<&str>,
+    ) -> Response {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
                 message: "not connected to the server — SSH grants need the control \
@@ -1990,6 +1999,8 @@ impl LocalApiState for DaemonState {
 
         if sink
             .send(meshharbor_remote_control::ClientMsg::SshRequest {
+                two_factor_code: two_factor_code
+                    .map(|c| meshharbor_remote_control::models::Confidential(c.to_string())),
                 request_id: request_id.clone(),
                 target: node.to_string(),
                 public_key: public_key.to_string(),
@@ -2033,6 +2044,7 @@ impl LocalApiState for DaemonState {
             grant_id: answer.grant_id,
             expires_at_ms: answer.expires_at_ms,
             error: answer.error,
+            two_factor: answer.two_factor,
         }
     }
 

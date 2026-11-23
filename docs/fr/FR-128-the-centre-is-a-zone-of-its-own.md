@@ -171,8 +171,9 @@ must not lend its zone, so:
   field log: red with the device's switch off, green through the gateway; the centre recorded the
   device's own address. The device's zone was pinned for the run, so the address, not a GeoIP
   zone, is what was shown.)
-- [ ] **AC2 (field).** While an entry works, a device in a strict zone whose countries exclude the
-  centre has no direct TCP connection to the centre.
+- [x] **AC2 (field).** While an entry works, a device in a strict zone whose countries exclude the
+  centre has no direct TCP connection to the centre. (2026-11-23 07:09, 0.4.211: four lab servers
+  and the mainland WSL hosts, 0 connections to the centre's address, 2 through the entry each.)
 - [x] **AC3.** None of these moves a zone (tests, `management_entry_tests.rs`, 8 pass): a token from another tenant's entry, an expired
   token, a forged token, a token presented from an address that is not the entry's. A current
   entry's address with no token gets no zone.
@@ -206,3 +207,5 @@ must not lend its zone, so:
 | 2026-11-23 | 0.4.210: the log uploader, the device view and the boot preflight follow the path too (the direct connection the field run saw); a path's bound 15 s → 25 s. Linux agent release. |
 | 2026-11-23 06:28–06:40 | 0.4.210 published (Linux). Before: 21 Linux devices listed, 16 online. Three lab servers on the strict mainland zone updated after the gateway: each holds 2 connections through the entry and **0 to the centre's address**, and the centre records each server's own address (AC2 met on those three). Red for the next fix: the gateway was itself updating, so it restarted while other mainland devices were coming up on 0.4.210 (06:32:56). They found the entry refusing connections, fell to direct as the last resort, and **stayed there**: one lab server still held 2 direct connections to the centre 6 min after the entry was back, and nothing moved it, because a last-resort socket is never re-planned. |
 | 2026-11-23 | 0.4.211: a socket on a last-resort direct path asks its entries for an attestation again after 2 min (doubling with each last resort in a row, at most 30 min) and reconnects through the first that answers (`management_path::entry_retry_after`, `mgmt_entry::first_reachable_entry`). Linux agent release. |
+| 2026-11-23 07:03–07:09 | 0.4.211 published; the gateway updated first and was back (listening, key received) before the other mainland devices were asked to update. Before they updated, the two lab servers still on 0.4.210 had again fallen to direct when the gateway restarted (3 direct connections each). After: all four lab servers and the mainland WSL hosts on 0.4.211, each with 2 connections through the entry and **0 to the centre's address**; the centre records each one's own address. **AC2 met.** The 2-min re-probe itself has not yet been seen moving a socket in the field (these moved on the update's restart). |
+| 2026-11-23 | The kept path is per centre (`management-path.json` `by_centre`, keyed by the centre's host). Found locally: an in-process test daemon on a host whose kept path said `direct: false` applied it to its loopback test server and every connect was refused. An older build's host-less path still serves a real centre at boot, never a loopback one, and a loopback store leaves it in place. Not yet released. |

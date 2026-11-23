@@ -100,6 +100,10 @@ pub struct ExecRequestBody {
     pub max_output_bytes: u64,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// FR-129 — the person's two-factor code for a device that asks for one; relayed to the
+    /// device, which checks it. A bulk run carries none (one code is for one device).
+    #[serde(default)]
+    pub two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
 }
 
 #[derive(Debug, Serialize)]
@@ -484,6 +488,7 @@ pub async fn dispatch(
             // the word.
             let as_person = run_as == ExecRunAs::ConsoleUser && !via_service;
             let msg = ServerMsg::RpcExec {
+                two_factor_code: body.two_factor_code.clone(),
                 request_id: request_id.clone(),
                 shell: shell.clone(),
                 command: body.command.clone(),
@@ -887,7 +892,7 @@ pub async fn exec_bulk(
     State(state): State<FleetState>,
     auth: AuthUser,
     Path(tenant_id): Path<String>,
-    Json(body): Json<BulkExecRequestBody>,
+    Json(mut body): Json<BulkExecRequestBody>,
 ) -> Result<Json<BulkExecResponse>, ApiError> {
     let tid = member_tenant(&state, &tenant_id, &auth).await?;
     if body.exec.command.trim().is_empty() {
@@ -931,6 +936,9 @@ pub async fn exec_bulk(
     }
 
     let caller = http_caller(&state, &auth).await;
+    // FR-129 — one code is for one device: a fan-out carries none, so a two-factor device in
+    // the sweep refuses, and no other target ever sees a live code.
+    body.exec.two_factor_code = None;
     let exec_body = &body.exec;
     // Bounded concurrency: a fleet sweep must not open one task per device and
     // starve the rest of the pod.

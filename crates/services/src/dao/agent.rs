@@ -461,6 +461,17 @@ impl AgentDao {
             .await
     }
 
+    /// FR-129 — the device's two-factor state, as it just answered a setup step. Its next hello
+    /// reports the same (the device is the authority); this only spares the admin page the wait.
+    pub async fn set_two_factor_reported(&self, agent_id: ObjectId, on: bool) -> DaoResult<bool> {
+        let update = if on {
+            doc! { "$set": { "capabilities.two_factor": true } }
+        } else {
+            doc! { "$unset": { "capabilities.two_factor": "" } }
+        };
+        self.base.update_by_id(agent_id, update).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn update_hello(
         &self,

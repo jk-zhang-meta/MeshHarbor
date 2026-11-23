@@ -1463,6 +1463,9 @@ pub enum Request {
         /// 0 ⇒ the server's default; clamped server- and agent-side.
         #[serde(default)]
         timeout_ms: u64,
+        /// FR-129 — the person's two-factor code for a target that asks for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<Secret>,
     },
     /// MeshHarbor SSH (P6b) — ask the server for a single-use session grant on
     /// ANOTHER device, so `mh ssh <device>` can dial it.
@@ -1486,6 +1489,9 @@ pub enum Request {
         /// 0 ⇒ the server's ceiling; clamped server-side.
         #[serde(default)]
         session_secs: u64,
+        /// FR-129 — the person's two-factor code for a target that asks for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor_code: Option<Secret>,
     },
     /// FR-85 — start a LOCAL screen recording (the daemon spawns
     /// `meshharbord record`). Mutating, and the endpoint ACL is NOT the whole
@@ -1925,6 +1931,10 @@ pub enum Response {
         /// Set when the request was refused, naming which gate said no.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// FR-129 — the target refused on two-factor (`two_factor_required` / `_invalid` /
+        /// `_locked`): the caller asks the person for a code.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        two_factor: Option<String>,
     },
     /// FR-84 D4 — answer to [`Request::EncoderCaps`].
     EncoderCaps(EncoderCapsSummary),
@@ -2923,6 +2933,7 @@ pub trait LocalApiState: Send + Sync {
         _shell: &str,
         _command: &str,
         _timeout_ms: u64,
+        _two_factor_code: Option<&str>,
     ) -> Response {
         Response::Error {
             message: "this node cannot originate remote commands (no server connection)".into(),
@@ -2931,7 +2942,13 @@ pub trait LocalApiState: Send + Sync {
 
     /// Ask the server for a single-use SSH grant on another device (P6b).
     /// Default: this node has no server connection, so it cannot originate.
-    async fn ssh_session(&self, _node: &str, _public_key: &str, _session_secs: u64) -> Response {
+    async fn ssh_session(
+        &self,
+        _node: &str,
+        _public_key: &str,
+        _session_secs: u64,
+        _two_factor_code: Option<&str>,
+    ) -> Response {
         Response::Error {
             message: "this node cannot originate SSH sessions (no server connection)".into(),
         }
@@ -3568,12 +3585,33 @@ where
                     shell,
                     command,
                     timeout_ms,
-                }) => state.exec_remote(&node, &shell, &command, timeout_ms).await,
+                    two_factor_code,
+                }) => {
+                    state
+                        .exec_remote(
+                            &node,
+                            &shell,
+                            &command,
+                            timeout_ms,
+                            two_factor_code.as_ref().map(|c| c.0.as_str()),
+                        )
+                        .await
+                }
                 Ok(Request::SshSession {
                     node,
                     public_key,
                     session_secs,
-                }) => state.ssh_session(&node, &public_key, session_secs).await,
+                    two_factor_code,
+                }) => {
+                    state
+                        .ssh_session(
+                            &node,
+                            &public_key,
+                            session_secs,
+                            two_factor_code.as_ref().map(|c| c.0.as_str()),
+                        )
+                        .await
+                }
                 // FR-85 — recording. Reading state is open to every local client;
                 // starting, stopping and deleting are the console user's alone.
                 Ok(Request::RecordStatus) => state.record_status().await,

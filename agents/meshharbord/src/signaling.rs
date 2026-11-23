@@ -1668,7 +1668,9 @@ async fn dial_centre(
     let host = crate::ws_connect::host_port(url)
         .map(|(h, _)| h)
         .unwrap_or_default();
-    let pushed = mp::state_path().map(|p| mp::load(&p)).unwrap_or_default();
+    let pushed = mp::state_path()
+        .map(|p| mp::load(&p, &host))
+        .unwrap_or_default();
     let (order, last_resort) = mp::plan(
         &pushed,
         &cfg.management_entries,
@@ -2338,10 +2340,13 @@ async fn connect_once(
         Some(after) if ctx.is_primary => {
             let found = entry_back.clone();
             let local = cfg.management_entries.clone();
+            let centre = meshharbor_node_core::management_path::centre_host(&cfg.server_url);
             Some(AbortOnDrop(tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(after).await;
-                    if let Some(entry) = crate::mgmt_entry::first_reachable_entry(&local).await {
+                    if let Some(entry) =
+                        crate::mgmt_entry::first_reachable_entry(&local, &centre).await
+                    {
                         info!(%entry, "management path: an entry answers again");
                         found.notify_one();
                         return;
@@ -3229,11 +3234,24 @@ async fn connect_once(
                                     let cfg = cfg.clone();
                                     let tx = outbound_tx.clone();
                                     tokio::spawn(async move {
-                                        let result = tokio::task::spawn_blocking(move || {
-                                            crate::local_accounts::handle(&cfg, &op)
-                                        })
-                                        .await
-                                        .unwrap_or_else(|e| Err(format!("account task failed: {e}")));
+                                        // FR-129 — creating a login account is a way in no
+                                        // code protects: a two-factor device creates none.
+                                        let refused = matches!(
+                                            op,
+                                            meshharbor_remote_control::signaling::LocalAccountOp::Create { .. }
+                                        ) && meshharbor_node_core::two_factor::active();
+                                        let result = if refused {
+                                            Err("two-factor is on: create accounts on the device itself"
+                                                .to_string())
+                                        } else {
+                                            tokio::task::spawn_blocking(move || {
+                                                crate::local_accounts::handle(&cfg, &op)
+                                            })
+                                            .await
+                                            .unwrap_or_else(|e| {
+                                                Err(format!("account task failed: {e}"))
+                                            })
+                                        };
                                         let (accounts, error) = match result {
                                             Ok(a) => (a, None),
                                             Err(e) => {
@@ -3780,6 +3798,27 @@ async fn handle_server_msg(
         shared_leases.end(*session_id);
         shared_ssh.end(*session_id);
     }
+    // FR-129 — on a two-factor device only a session this daemon admitted on its own check (a
+    // right code in its `rc:request`) gets a peer. Ahead of the delegation gate below, so a GUI
+    // worker never builds one either: a centre that skips the request, and the check with it,
+    // gets nothing.
+    if let ServerMsg::SdpOffer { session_id, .. } = &msg
+        && meshharbor_node_core::two_factor::active()
+        && !meshharbor_node_core::two_factor::admitted(&session_id.to_hex())
+    {
+        warn!(%session_id, "two-factor: an offer for a session this device did not admit — refused");
+        reply_for_session(
+            ws,
+            delegated,
+            &ClientMsg::Terminate {
+                session_id: *session_id,
+                reason: EndReason::AgentHangup,
+                limit: None,
+            },
+        )
+        .await?;
+        return Ok(());
+    }
     let shared_sid = match &msg {
         ServerMsg::SdpOffer { session_id, .. }
         | ServerMsg::SharedLeaseRenewal { session_id, .. }
@@ -3987,7 +4026,13 @@ async fn handle_server_msg(
     );
     match msg {
         ServerMsg::SharedSshSetup { session_id, setup } => {
-            let accepted = {
+            // FR-129 — a share link's SSH has nobody with the device's authenticator app: a
+            // two-factor device refuses it.
+            let two_factor = meshharbor_node_core::two_factor::active();
+            if two_factor {
+                info!(%session_id, "two-factor: a shared SSH session refused");
+            }
+            let accepted = !two_factor && {
                 #[cfg(feature = "ssh-server")]
                 {
                     let descriptor = setup.shared_lease.clone();
@@ -4060,7 +4105,47 @@ async fn handle_server_msg(
             lock_on_end,
             external,
             initial_resolution,
+            two_factor_code,
         } => {
+            // FR-129 — a device with two-factor on asks for a code on every session, checked
+            // HERE by the daemon before anything else: the centre only relayed it. A share
+            // link's or an outsider's session has nobody with the device's authenticator app,
+            // so it is refused outright; a person's session without a right code is refused
+            // with the reason, so the viewer asks for one.
+            if meshharbor_node_core::two_factor::active() {
+                if shared_lease.is_some() || external.is_some() {
+                    info!(%session_id, %controller_user_id, "two-factor: a shared or external session refused");
+                    let _ = reply_for_session(
+                        ws,
+                        delegated,
+                        &ClientMsg::Terminate {
+                            session_id,
+                            reason: EndReason::AgentHangup,
+                            limit: None,
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+                let session_hex = session_id.to_hex();
+                // A request the hub replays after this socket reconnected was admitted already:
+                // its code is used, and checking it again would end the person's session.
+                if !meshharbor_node_core::two_factor::admitted(&session_hex) {
+                    if let Err(r) = meshharbor_node_core::two_factor::check(
+                        two_factor_code.as_ref().map(|c| c.as_str()),
+                    ) {
+                        info!(%session_id, %controller_user_id, reason = r.wire(), "two-factor: session refused");
+                        let _ = outbound_tx.try_send(ClientMsg::Consent {
+                            session_id,
+                            granted: false,
+                            reason: Some(r.wire().to_string()),
+                        });
+                        return Ok(());
+                    }
+                    meshharbor_node_core::two_factor::admit(&session_hex);
+                    info!(%session_id, %controller_user_id, "two-factor: code accepted");
+                }
+            }
             if !shared_leases.note_optional(session_id, shared_lease.as_ref()) {
                 let _ = reply_for_session(
                     ws,
@@ -5776,9 +5861,10 @@ async fn handle_server_msg(
                     entries = pushed.entries.len(),
                     "management path received"
                 );
+                let centre = mp::centre_host(&agent_cfg.server_url);
                 if let Some(path) = mp::state_path()
-                    && mp::load(&path) != pushed
-                    && let Err(e) = mp::store(&path, &pushed)
+                    && mp::load(&path, &centre) != pushed
+                    && let Err(e) = mp::store(&path, &centre, &pushed)
                 {
                     warn!(%e, "management path: could not keep it");
                 }
@@ -5791,6 +5877,86 @@ async fn handle_server_msg(
                     )));
                 }
             }
+        }
+        // FR-129 — a step of switching this device's two-factor on or off, from the admin
+        // page. Machine-wide, so primary org only. The device makes and keeps the secret; the
+        // code a `confirm` / `disable` carries is checked here, like any other way in.
+        ServerMsg::TwoFactorSetup { request_id, op } => {
+            use meshharbor_node_core::two_factor as tf;
+            use meshharbor_remote_control::models::Confidential;
+            use meshharbor_remote_control::signaling::TwoFactorOp;
+            let mut answer = ClientMsg::TwoFactorResult {
+                request_id: request_id.clone(),
+                refused: None,
+                retry_after_secs: None,
+                enabled: tf::active(),
+                secret: None,
+                otpauth_uri: None,
+                setup_id: None,
+                recovery_codes: Vec::new(),
+            };
+            let refusal = |e: tf::SetupRefusal| {
+                let retry = match &e {
+                    tf::SetupRefusal::Code(tf::Refusal::Locked(s)) => Some(*s),
+                    _ => None,
+                };
+                if let tf::SetupRefusal::Storage(why) = &e {
+                    warn!(%request_id, %why, "two-factor: could not keep the state");
+                }
+                (e.wire().to_string(), retry)
+            };
+            let outcome: Result<(), (String, Option<u64>)> = if !ctx.is_primary {
+                Err(("not_primary".to_string(), None))
+            } else {
+                match op {
+                    TwoFactorOp::Begin { account } => match tf::begin(&account) {
+                        Ok(b) => {
+                            if let ClientMsg::TwoFactorResult {
+                                secret,
+                                otpauth_uri,
+                                setup_id,
+                                ..
+                            } = &mut answer
+                            {
+                                *secret = Some(Confidential(b.secret));
+                                *otpauth_uri = Some(Confidential(b.otpauth_uri));
+                                *setup_id = Some(b.setup_id);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(refusal(e)),
+                    },
+                    TwoFactorOp::Confirm { code, setup_id } => {
+                        match tf::confirm(code.as_str(), &setup_id) {
+                            Ok(codes) => {
+                                if let ClientMsg::TwoFactorResult { recovery_codes, .. } =
+                                    &mut answer
+                                {
+                                    *recovery_codes = codes.into_iter().map(Confidential).collect();
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(refusal(e)),
+                        }
+                    }
+                    TwoFactorOp::Disable { code } => tf::disable(code.as_str()).map_err(refusal),
+                }
+            };
+            if let ClientMsg::TwoFactorResult {
+                refused,
+                retry_after_secs,
+                enabled,
+                ..
+            } = &mut answer
+            {
+                *enabled = tf::active();
+                if let Err((why, retry)) = outcome {
+                    info!(%request_id, refused = %why, "two-factor: setup step refused");
+                    *refused = Some(why);
+                    *retry_after_secs = retry;
+                }
+            }
+            let _ = outbound_tx.send(answer).await;
         }
         // FR-128 — this device is its zone's management entry: the key it attests with.
         ServerMsg::ManagementEntryKey { key } => {
@@ -5905,6 +6071,19 @@ async fn handle_server_msg(
                 report_config_status(outbound_tx, revision, ConfigOutcome::NotOptedIn, None);
                 return Ok(());
             }
+            // FR-129 — a two-factor device takes no pushed config: a pushed key must not
+            // weaken what its code protects. Its owner changes it locally (over a session that
+            // carried a code). Reported as not-opted-in, with the reason in words.
+            if meshharbor_node_core::two_factor::active() {
+                info!(revision, "rc:agent.config ignored — two-factor is on");
+                report_config_status(
+                    outbound_tx,
+                    revision,
+                    ConfigOutcome::NotOptedIn,
+                    Some("two-factor is on: this device takes no pushed configuration"),
+                );
+                return Ok(());
+            }
             // Opted in and primary: reconcile against the file on DISK.
             // Idempotent — an already-matching desired state writes nothing,
             // which matters because this runs on every single reconnect.
@@ -5985,6 +6164,7 @@ async fn handle_server_msg(
             consent_mode,
             via_service,
             run_as,
+            two_factor_code,
         } => {
             // FR-94 — a command meant for the SYSTEM service. Only a Windows
             // build advertises `exec-system`, so a server should never send
@@ -6060,6 +6240,27 @@ async fn handle_server_msg(
                              (`mh config set exec_enabled true` to allow it)"
                                 .to_string(),
                         ),
+                    })
+                    .await;
+                return Ok(());
+            }
+            // FR-129 — two-factor, checked after gate 4 (a command the device would refuse
+            // anyway spends no code) and before anyone is asked to approve it. On the Windows
+            // service path this is the worker, before it rings: the service runs only what
+            // passed here.
+            if let Err(r) = meshharbor_node_core::two_factor::check(
+                two_factor_code.as_ref().map(|c| c.as_str()),
+            ) {
+                warn!(%request_id, %caller, reason = r.wire(), "rc:rpc.exec refused — two-factor");
+                let _ = outbound_tx
+                    .send(ClientMsg::RpcResult {
+                        request_id,
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        truncated: false,
+                        duration_ms: 0,
+                        error: Some(format!("{}: {}", r.wire(), r.message())),
                     })
                     .await;
                 return Ok(());
@@ -6276,7 +6477,28 @@ async fn handle_server_msg(
             // of the two serves it: the worker's below, or the SYSTEM
             // service's, which takes it from its own claim.
             one_command,
+            two_factor_code,
         } => {
+            // FR-129 — two-factor, checked before the grant is recorded or handed to the
+            // service, and only when SSH is on (a refused grant spends no code).
+            if agent_cfg.ssh_enabled
+                && let Err(r) = meshharbor_node_core::two_factor::check(
+                    two_factor_code.as_ref().map(|c| c.as_str()),
+                )
+            {
+                warn!(%grant_id, %caller, reason = r.wire(), "rc:ssh.grant refused — two-factor");
+                let _ = outbound_tx
+                    .send(ClientMsg::SshGrantAck {
+                        grant_id,
+                        refused: Some(
+                            meshharbor_remote_control::models::SshGrantRefusal::from_two_factor(
+                                r.wire(),
+                            ),
+                        ),
+                    })
+                    .await;
+                return Ok(());
+            }
             #[cfg(feature = "ssh-server")]
             if via_service {
                 // FR-105 — a grant for this device's SYSTEM service never
@@ -6741,6 +6963,19 @@ async fn handle_server_msg(
             user_email,
             ttl_secs,
         } => {
+            // FR-129 — a viewer's prompt drives an agent session on this device, and a view
+            // carries no person's code: on a two-factor device a session still running from
+            // before is watched, never driven.
+            #[cfg(hive_host)]
+            let (may_prompt, driving_refused) =
+                if may_prompt && meshharbor_node_core::two_factor::active() {
+                    (
+                        false,
+                        Some("two-factor is on: this device takes no prompts".to_string()),
+                    )
+                } else {
+                    (may_prompt, None)
+                };
             #[cfg(hive_host)]
             crate::hive::handle_view_grant(
                 crate::hive::ViewGrant {
@@ -6750,7 +6985,7 @@ async fn handle_server_msg(
                     user_name,
                     may_prompt,
                     user_email,
-                    driving_refused: None,
+                    driving_refused,
                     copy: false,
                     ttl_secs,
                     search: None,
@@ -7015,6 +7250,8 @@ async fn handle_server_msg(
             // FR-90 P3-8-2b — the echo of an agent session's ticket: its
             // daemon dials only on an answer that echoes the ticket it sent.
             ssh_ticket_id,
+            // FR-129 — the target refused on two-factor.
+            two_factor,
         } => {
             // The key itself is never logged — only whether one arrived. It is
             // public, but a log line is the wrong place to start treating key
@@ -7037,6 +7274,7 @@ async fn handle_server_msg(
                     expires_at_ms,
                     error,
                     ssh_ticket_id,
+                    two_factor,
                 },
             );
         }
@@ -8037,6 +8275,15 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
         }
         caps.management_entry_port = crate::mgmt_entry::listening_port();
     }
+    // FR-129 — this daemon checks two-factor codes on the sessions it admits and takes
+    // `rc:agent.two_factor` (from its primary org; a secondary is refused). Whether two-factor
+    // is on is stamped at every announcement, so the admin page follows a local reset too.
+    caps.rpc.push(
+        meshharbor_remote_control::models::RpcCap::TwoFactor
+            .wire()
+            .to_owned(),
+    );
+    caps.two_factor = meshharbor_node_core::two_factor::active();
     // `detect()` is memoized and config-blind, so the one capability that
     // depends on the host's config gets appended here: `tun` says "this
     // daemon's TUN is already muxed — a second org can join the mesh

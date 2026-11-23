@@ -1857,6 +1857,14 @@ impl Supervisor {
                 "agent sessions are off on this device (hive_enabled)",
             );
         }
+        // FR-129 — a session started from the centre carries no person's code: a two-factor
+        // device starts none.
+        if meshharbor_node_core::two_factor::active() {
+            return Answer::refused(
+                HiveRefusal::HiveDisabled,
+                "agent sessions are off on this device: two-factor is on",
+            );
+        }
         if order.harness != HARNESS_CLAUDE_CODE {
             return Answer::refused(
                 HiveRefusal::Other,
@@ -2570,6 +2578,14 @@ impl Supervisor {
             return Answer::refused(
                 HiveRefusal::HiveDisabled,
                 "agent sessions are off on this device (hive_enabled)",
+            );
+        }
+        // FR-129 — a session started from the centre carries no person's code: a two-factor
+        // device starts none.
+        if meshharbor_node_core::two_factor::active() {
+            return Answer::refused(
+                HiveRefusal::HiveDisabled,
+                "agent sessions are off on this device: two-factor is on",
             );
         }
         if order.harness != HARNESS_CLAUDE_CODE {

@@ -2382,6 +2382,55 @@
       @key-text="rc.sendKeyText"
       @key="rc.sendKey"
     />
+    <!-- FR-129 — this device asks for a code from its authenticator app on
+         every connection, and checks it itself. Asked BEFORE the request
+         when the device reports two-factor on, and again whenever it refuses
+         for want of a (fresh) code. Mounted outside the stage's phase chain
+         so it opens from any ending. -->
+    <v-dialog
+      :model-value="twoFactor.open.value"
+      max-width="420"
+      @update:model-value="(v: boolean) => { if (!v) twoFactor.cancel() }"
+    >
+      <v-card data-testid="rc-two-factor">
+        <v-card-title class="d-flex align-center">
+          <v-icon icon="mdi-two-factor-authentication" color="primary" class="mr-2" />
+          {{ t('mh.tfa.prompt.title') }}
+        </v-card-title>
+        <v-card-text>
+          <v-alert
+            v-if="twoFactor.note.value"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+          >
+            {{ twoFactor.note.value }}
+          </v-alert>
+          <p class="text-body-2 mb-3">
+            {{ t('mh.tfa.prompt.body', { name: agent?.display_name || agent?.name || t('mh.tfa.prompt.thisDevice') }) }}
+          </p>
+          <TwoFactorCodeInput
+            v-model="twoFactor.input.value"
+            autofocus
+            @submit="twoFactor.submit"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="twoFactor.cancel">{{ t('common.cancel') }}</v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!twoFactor.ready.value"
+            data-testid="rc-two-factor-connect"
+            @click="twoFactor.submit"
+          >
+            {{ t('mh.tfa.prompt.connect') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -2446,6 +2495,9 @@ import KeepBusyMenu from '@/components/remote/KeepBusyMenu.vue'
 import TouchControls from '@/components/remote/TouchControls.vue'
 import TouchPresetEditor from '@/components/remote/TouchPresetEditor.vue'
 import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
+import TwoFactorCodeInput from '@/components/common/TwoFactorCodeInput.vue'
+import { twoFactorOn } from '@/utils/twoFactor'
+import { useTwoFactorPrompt } from '@/composables/useTwoFactorPrompt'
 import { readMyPresets, writeMyPresets } from '@/composables/touchPresetEdit'
 import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'
@@ -5119,7 +5171,19 @@ function dismissRating() {
   ratingPending.value = null
 }
 
-function startSession() {
+// FR-129 — a device with two-factor on asks for a code on every connection,
+// before the request and again after a refusal (`useTwoFactorPrompt`). Never on
+// an external login: that path carries no code, and the device refuses it on a
+// two-factor device anyway.
+const twoFactor = useTwoFactorPrompt({
+  rc,
+  isOn: () => twoFactorOn(agent.value?.capabilities),
+  enabled: !isExternal,
+  connect: () => connectSession(),
+})
+const startSession = twoFactor.start
+
+function connectSession() {
   applyFitResolution(false)
   // FR-52 P4e — an external session starts from the login `/connect` handed
   // over, once. With none (a reload, or Connect after the session ended) the

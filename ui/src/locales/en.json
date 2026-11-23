@@ -1469,6 +1469,9 @@
       "reassign": "Reassign owner",
       "execPolicy": "Execution policy",
       "sshPolicy": "SSH policy",
+      "twoFactor": "Two-factor (2FA)",
+      "twoFactorOn": "On",
+      "twoFactorTooOld": "Update the device first",
       "externalAccess": "External access",
       "remoteConfig": "Device configuration",
       "routes": "Tunnel mesh routes",
@@ -1741,6 +1744,93 @@
         "named": "A named Unix account…"
       },
       "consentAuto": "Unattended — open immediately"
+    },
+    "tfa": {
+      "title": "Two-factor (2FA) — {name}",
+      "on": "Two-factor is on.",
+      "onBody": "Every remote desktop, SSH and console connection to this device asks for a 6-digit code from the authenticator app. Share links, external access and remote configuration are refused.",
+      "off": "Two-factor is off.",
+      "offBody": "Turn it on and every remote desktop, SSH and console connection to this device will ask for a 6-digit code from an authenticator app on your phone.",
+      "how": "The device keeps the secret and checks every code itself; the server never has it. So someone who has stolen an admin's sign-in can neither get in without a code nor switch this off.",
+      "tooOld": "This device runs agent {version}, which does not support two-factor. Update it first.",
+      "enable": "Enable 2FA",
+      "disable": "Disable 2FA",
+      "disableConfirm": "Turn off",
+      "back": "Back",
+      "chooseApp": "Which authenticator app will you use?",
+      "chooseAppHint": "Both work; only the steps in the app differ.",
+      "app": {
+        "microsoft": "Microsoft Authenticator",
+        "google": "Google Authenticator"
+      },
+      "scanTitle": "Add this device to {app}",
+      "otherApp": "Using {app} instead?",
+      "qrAlt": "QR code to scan with the authenticator app",
+      "qrFailed": "The QR code could not be drawn. Type the key into the app instead.",
+      "key": "Key (for typing in by hand)",
+      "copyKey": "Copy",
+      "copied": "Copied",
+      "steps": {
+        "microsoft": {
+          "s1": "On your phone, open Microsoft Authenticator and tap + (Add account).",
+          "s2": "Choose “Other account (Google, Facebook, etc.)”.",
+          "s3": "Scan the QR code. If you cannot scan it, tap “Or enter code manually” and type the key."
+        },
+        "google": {
+          "s1": "On your phone, open Google Authenticator and tap +.",
+          "s2": "Choose “Scan a QR code” and scan it.",
+          "s3": "If you cannot scan it, choose “Enter a setup key”, type a name (for example {name}) and the key, and keep “Time based”."
+        },
+        "last": "Type the 6-digit code the app now shows for MeshHarbor, then confirm."
+      },
+      "confirm": "Confirm and turn on",
+      "restart": "Start again",
+      "codesTitle": "Save your recovery codes now.",
+      "codesWarn": "They are shown only this once. If you lose your phone, each code works one time in place of a code from the app. Keep them somewhere safe, not on this computer.",
+      "copyAll": "Copy all",
+      "download": "Download .txt",
+      "saved": "I have saved them",
+      "disableBody": "To turn two-factor off, enter a current 6-digit code from the authenticator app, or one of the recovery codes.",
+      "disabledDone": "Two-factor is now off for this device.",
+      "file": {
+        "title": "MeshHarbor two-factor recovery codes",
+        "device": "Device: {name}",
+        "created": "Created: {when}",
+        "note": "Each code works once, in place of a code from the authenticator app."
+      },
+      "code": {
+        "label": "6-digit code",
+        "recoveryLabel": "Recovery code",
+        "useRecovery": "Use a recovery code instead",
+        "useApp": "Use a code from the app",
+        "reused": "That code was already tried. Wait for the next code in the app."
+      },
+      "prompt": {
+        "title": "Two-factor code",
+        "body": "{name} asks for a code on every connection. Enter the 6-digit code your authenticator app shows for this device.",
+        "thisDevice": "This device",
+        "connect": "Connect"
+      },
+      "console": {
+        "hint": "This device asks for a two-factor code with every command. Each code works once."
+      },
+      "reason": {
+        "required": "This device asks for a two-factor code on every connection.",
+        "invalid": "The two-factor code was wrong, expired or already used. Wait for the next code in the app and try again.",
+        "locked": "Too many wrong two-factor codes. The device is not accepting codes for now; try again later.",
+        "lockedFor": "Too many wrong two-factor codes. Try again in {time}.",
+        "unavailable": "The device cannot read its two-factor settings, so it refuses every code. Someone at the device can reset them with “meshharbord two-factor reset”.",
+        "alreadyOn": "Two-factor is already on for this device.",
+        "alreadyOff": "Two-factor is already off for this device.",
+        "noPending": "This setup has expired (after 10 minutes) or was replaced. Start again, scan the new QR code, and delete the old MeshHarbor entry from the app.",
+        "notPrimary": "Two-factor covers the whole machine, so only the device's primary organization can change it.",
+        "storage": "The device could not save its two-factor settings. Try again; if it keeps failing, check the device's disk.",
+        "other": "The device did not accept this step."
+      },
+      "time": {
+        "sec": "{n} s",
+        "min": "{n} min"
+      }
     },
     "rcfg": {
       "title": "Device configuration — {name}",

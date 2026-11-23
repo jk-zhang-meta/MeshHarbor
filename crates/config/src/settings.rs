@@ -1324,6 +1324,12 @@ pub struct AppSettings {
     /// Env: `MESHHARBOR__APP__MANAGEMENT_ENTRIES`.
     #[serde(default = "default_true")]
     pub management_entries: bool,
+    /// FR-129 — admins may switch a device's two-factor on from the admin page (each device
+    /// is off until they do). `false` refuses new setups; it cannot switch off a device that
+    /// has two-factor on, which only that device's own code (or its local reset) does.
+    /// Env: `MESHHARBOR__APP__DEVICE_TWO_FACTOR`.
+    #[serde(default = "default_true")]
+    pub device_two_factor: bool,
     /// MeshHarbor #21 relay locality for remote desktop: keep the STUN/TURN
     /// servers handed out for an RC session to the device's business zone.
     /// Deliberately INDEPENDENT of `business_isolation`: `enforce` withholds
@@ -1765,6 +1771,7 @@ impl Settings {
             .set_default("app.business_unknown_role", "warn")?
             .set_default("app.relay_auto_links", true)?
             .set_default("app.management_entries", true)?
+            .set_default("app.device_two_factor", true)?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1905,6 +1912,7 @@ mod rate_limit_tests {
             business_unknown_role: super::default_business_unknown_role(),
             relay_auto_links: true,
             management_entries: true,
+            device_two_factor: true,
             rc_ice_zone_mode: super::default_rc_ice_zone_mode(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,

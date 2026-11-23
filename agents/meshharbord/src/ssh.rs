@@ -1962,6 +1962,16 @@ pub(crate) mod sshd {
             if self.shared_stream {
                 return Ok(Auth::reject());
             }
+            // FR-129 — a key from the device-owned list opens a session with no grant, so no
+            // code: on a two-factor device only a grant (which carried a code the device
+            // checked) gets in. Malware holding a listed private key gets nothing.
+            if meshharbor_node_core::two_factor::active() {
+                warn!(
+                    peer = %self.peer, %user, %fingerprint,
+                    "ssh: rejected — two-factor is on, so ssh_authorized_keys open nothing"
+                );
+                return Ok(Auth::reject());
+            }
             // Otherwise the device-owned list. Compare KEY DATA, not the
             // `PublicKey` itself: the parsed value carries the trailing
             // comment, so the same key recorded with a different comment would

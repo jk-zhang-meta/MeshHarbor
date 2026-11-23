@@ -414,6 +414,10 @@ pub fn spawn_agent(
         #[cfg(target_os = "linux")]
         let mut native_set: Vec<crate::managed_forward_nft::NatForward> = Vec::new();
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // FR-129 — whether a pushed forward runs here: a two-factor device runs none (a
+        // forward carries no person's code), and one that was running when two-factor went on
+        // stops at the next tick.
+        let mut running = false;
         loop {
             let cmd = tokio::select! {
                 cmd = rx.recv() => match cmd {
@@ -421,6 +425,20 @@ pub fn spawn_agent(
                     None => break,
                 },
                 _ = tick.tick() => {
+                    if running && meshharbor_node_core::two_factor::active() {
+                        warn!("managed forward: two-factor is on — every pushed forward stops");
+                        forwarders.stop_all();
+                        #[cfg(target_os = "linux")]
+                        {
+                            if let Some(b) = nft.as_mut()
+                                && let Err(e) = b.clear().await
+                            {
+                                warn!(%e, "managed forward: could not remove the nft table");
+                            }
+                            native_set.clear();
+                        }
+                        running = false;
+                    }
                     #[cfg(target_os = "linux")]
                     if let Some(b) = nft.as_mut()
                         && b.expire().await
@@ -452,7 +470,23 @@ pub fn spawn_agent(
                 }
                 Cmd::Set(set) => set,
             };
+            let (set, refused) = if meshharbor_node_core::two_factor::active() {
+                let refused: Vec<ManagedForwardStatusWire> = set
+                    .iter()
+                    .map(|a| ManagedForwardStatusWire {
+                        id: a.id.clone(),
+                        revision: a.revision,
+                        listening: false,
+                        error: Some("two-factor is on: this device runs no pushed forward".into()),
+                    })
+                    .collect();
+                (Vec::new(), refused)
+            } else {
+                (set, Vec::new())
+            };
+            running = !set.is_empty();
             let (want, _native_want, mut statuses) = split(set);
+            statuses.extend(refused);
             for s in forwarders.reconcile(want).await {
                 statuses.push(wire(s));
             }

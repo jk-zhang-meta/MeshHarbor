@@ -151,6 +151,7 @@ import {
 import { modsOf, type ControlsSink, type MouseBtn } from './touchControls'
 import { parseFeaturesRefused } from './useSessionFeatures'
 import { ctrlAltDelFrames } from './ctrlAltDel'
+import { asTwoFactorRefusal, twoFactorRefusalText } from '@/utils/twoFactor'
 
 /**
  * Backoff ladder for the auto-reconnect path. The first three steps
@@ -332,6 +333,11 @@ export type RcDegradedReason =
  * #2251 - one `error` is final: `limit: 'no_common_codec'`, the device finding
  * no codec in common with this browser's offer. Asking again would send the
  * same offer into the same refusal, so it is said, never retried.
+ *
+ * FR-129 - the device's two-factor refusals (`two_factor_required`,
+ * `two_factor_invalid`, `two_factor_locked`) are never retried either: a
+ * replay carries no code (it is one-shot) or the same spent one, so only the
+ * person, typing a fresh code, can get past it. The viewer asks for one.
  */
 export function isRetryableTerminateReason(reason: unknown, limit?: unknown): boolean {
   if (limit === 'no_common_codec') return false
@@ -881,7 +887,10 @@ export function friendlyEndReason(reason: unknown, limit?: unknown): string | nu
     case 'error':
       return 'The session could not be established.'
     default:
-      return null
+      // FR-129 - the device asked for a two-factor code, or refused the one
+      // it got. In the interface language: the viewer asks for a code next to
+      // these words.
+      return asTwoFactorRefusal(reason) ? twoFactorRefusalText(String(reason)) : null
   }
 }
 
@@ -9766,6 +9775,12 @@ export function useRemoteControl(
   // `rc:session.request` and clears it. The server ignores it unless the caller
   // is a validated `ADMINISTRATOR`.
   const overrideReason = ref('')
+  // FR-129 - the person's two-factor code for the NEXT `rc:session.request`,
+  // set by the viewer right before `connect`. One-shot like `overrideReason`:
+  // cleared once sent, so no reconnect or later Connect ever replays a code
+  // the device has already spent (it refuses a code used once). ⚠️ Never
+  // logged.
+  const twoFactorCode = ref('')
 
   async function connect(
     agentId: string,
@@ -11640,6 +11655,11 @@ export function useRemoteControl(
     if (overrideReason.value.trim() && !externalMode && !sharedMode) {
       requestPayload.override_reason = overrideReason.value.trim()
     }
+    // FR-129 - the device checks it; the server only relays it. A share or an
+    // external login carries none (the device refuses those outright).
+    if (twoFactorCode.value && !externalMode && !sharedMode) {
+      requestPayload.two_factor_code = twoFactorCode.value
+    }
     // #1631 - a request we abandoned to this same agent may still be
     // answered, and that answer is now OURS: the hub coalesces a same-socket,
     // same-agent request onto the live session. Stop the terminator first.
@@ -11655,6 +11675,7 @@ export function useRemoteControl(
     requestSent = true
     markConnect('request_sent')
     overrideReason.value = ''
+    twoFactorCode.value = ''
     // Abandon-and-retry if the server never answers the request (WS
     // died mid-send, pod restart, ...). Cleared by rc:session.created.
     armSignalingTimeout()
@@ -11701,6 +11722,8 @@ export function useRemoteControl(
     lastConnectArgs = null
     // FR-52 P4e — the operator hung up: the login's key goes with the session.
     forgetExternalAuth()
+    // FR-129 — and so does a two-factor code that never went out.
+    twoFactorCode.value = ''
     // End of this agent's session: later picker changes are global-only
     // until the next connect() names an agent again.
     codecAgentId = null
@@ -15009,6 +15032,7 @@ export function useRemoteControl(
     endedBy,
     sessionId,
     overrideReason,
+    twoFactorCode,
     remoteStream,
     hasMedia,
     inputChannelOpen,

@@ -18,8 +18,10 @@ Authenticator or Google Authenticator: standard TOTP) on **every** connection. O
 every device.
 
 The property that makes it worth having: **the device keeps the secret and checks the code
-itself.** A stolen admin session, or a compromised centre, holds no secret and cannot compute a
-code, so it can neither get in nor switch two-factor off.
+itself.** A stolen admin session holds no secret and cannot compute a code, so it can neither get
+in nor switch two-factor off. A compromised centre is limited to misusing a code it saw a person
+send, once, within its minute ([two-factor](../two-factor.md), "What a compromised centre can
+still do").
 
 ```mermaid
 sequenceDiagram
@@ -60,8 +62,9 @@ sequenceDiagram
   - `begin` → the device makes a pending secret (10 min) and answers with it and the `otpauth://`
     URI. The page shows the app choice (Microsoft / Google: the same QR code, different
     instructions), the QR code, and the key in groups of four with a copy button.
-  - `confirm {code}` → the device checks the code against the pending secret, switches on, and
-    answers with the recovery codes, shown once.
+  - `confirm {code, setup_id}` → the device checks the code against the pending secret that
+    `begin` answered (`setup_id` binds the two), switches on, and answers with the recovery
+    codes, shown once.
   - `disable {code}` → the device checks a code or a recovery code, and switches off.
 - Relayed as `rc:agent.two_factor` / `rc:agent.two_factor_result` over the control socket, awaited
   like exec (`crates/modules/fleet/src/hub.rs:5091`). The centre stores no secret and no code.
@@ -94,14 +97,14 @@ frame to the device. Every new field is optional, so an older peer ignores it.
 | Switch | Effect |
 |---|---|
 | Per device (default **off**) | Nothing changes on a device until an admin turns it on for that device |
-| Centre `app.device_two_factor = false` | The admin page hides the switch and the route refuses `begin`/`confirm`. It cannot turn off a device that has it on (by design) |
+| Centre `app.device_two_factor = false` | The route refuses `begin`/`confirm` (403). It cannot turn off a device that has it on (by design): `disable` still reaches the device |
 | Device `meshharbord two-factor reset` (local) | Switches it off on that device |
 
 ## Phases
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| P1 | device secret + check, the three code-carrying ways in, the closed ways in, the admin page enable/disable dialog, code prompts in the viewer, web console and `mh` | per device; centre switch | open |
+| P1 | device secret + check, the three code-carrying ways in, the closed ways in, the admin page enable/disable dialog, code prompts in the viewer, web console and `mh` | per device; centre switch | built, not released |
 | P2 | the admin's own sign-in: TOTP at login and for sensitive actions (exec/ssh policy, device removal) | — | open |
 | P3 | a two-factor device takes overlay traffic only to ports it lists (raw mesh packets carry no code) | — | open |
 | P4 | the centre host's own SSH asks for a code (an operation on a shared host, separate approval) | — | open |
@@ -112,13 +115,15 @@ frame to the device. Every new field is optional, so an older peer ignores it.
   remote desktop, `mh ssh` and `mh exec` each refused without a code, refused with a wrong or reused
   code, accepted with a fresh one. Shown failing first (before switching on, they pass with no
   code).
-- [ ] **AC2.** A stolen admin session cannot switch it off or replace the secret: `disable` with no
-  or a wrong code is refused; `begin` on an enabled device is refused (tests).
+- [x] **AC2.** A stolen admin session cannot switch it off or replace the secret: `disable` with no
+  or a wrong code is refused; `begin` on an enabled device is refused (tests:
+  `two_factor::tests::it_cannot_be_replaced_or_switched_off_without_a_code`,
+  `two_factor_tests`).
 - [ ] **AC3.** Share links, external access, remote configuration and hive are refused on a
   two-factor device; forwards follow the device's own allowlist (tests).
 - [ ] **AC4.** A device with it off behaves exactly as before (the existing suites pass; no code
   is asked anywhere).
-- [ ] **AC5 (docs).** `docs/two-factor.md` (diagrams, anchors) and a row in
+- [x] **AC5 (docs).** `docs/two-factor.md` (diagrams, anchors) and a row in
   [docs/README.md](../README.md).
 
 ## Open decisions
@@ -136,3 +141,4 @@ frame to the device. Every new field is optional, so an older peer ignores it.
 
 | When (UTC) | What |
 |---|---|
+| 2026-11-23 | P1 built (not released). Local: the device's checks (`two_factor` tests: RFC 6238 vectors, one use per code, lock doubling and restart persistence, the 100-code cap, recovery past a lock, no replace or switch-off without a code, `confirm` bound to its `begin`), fleet 275, wire 503, localapi 90, meshharbord 2027, integration (`two_factor_tests`, remote control, SSH, exec, external access, shares, composition) all pass; UI build passes. AC1 (field) waits for the release. |

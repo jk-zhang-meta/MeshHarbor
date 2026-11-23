@@ -35,6 +35,12 @@ pub enum ConsentOutcome {
     /// companion, nothing). Distinct from `Timeout` because nobody was ever
     /// asked, so "try again and answer it" is the wrong advice.
     NoPromptSurface,
+    /// FR-129 — the device asks for a two-factor code and none came: ask the person for one.
+    TwoFactorRequired,
+    /// FR-129 — the code was wrong, expired or already used.
+    TwoFactorInvalid,
+    /// FR-129 — too many wrong codes, or the device cannot read its state: not now.
+    TwoFactorLocked,
 }
 
 /// Why an agent answered `granted: false`.
@@ -55,6 +61,14 @@ pub enum ConsentDenyReason {
     HostTimeout,
     /// No prompt surface was reachable, so no human was ever asked.
     NoPromptSurface,
+    /// FR-129 — the device asks for a two-factor code and the request carried none.
+    TwoFactorRequired,
+    /// FR-129 — the code was wrong, expired or already used.
+    TwoFactorInvalid,
+    /// FR-129 — too many wrong codes; checking resumes later.
+    TwoFactorLocked,
+    /// FR-129 — the device cannot read its two-factor state, so it refuses every code.
+    TwoFactorUnavailable,
 }
 
 impl ConsentDenyReason {
@@ -63,12 +77,20 @@ impl ConsentDenyReason {
     pub const ALL: &'static [ConsentDenyReason] = &[
         ConsentDenyReason::HostTimeout,
         ConsentDenyReason::NoPromptSurface,
+        ConsentDenyReason::TwoFactorRequired,
+        ConsentDenyReason::TwoFactorInvalid,
+        ConsentDenyReason::TwoFactorLocked,
+        ConsentDenyReason::TwoFactorUnavailable,
     ];
 
     pub fn wire(self) -> &'static str {
         match self {
             ConsentDenyReason::HostTimeout => "timeout",
             ConsentDenyReason::NoPromptSurface => "no_prompt_surface",
+            ConsentDenyReason::TwoFactorRequired => "two_factor_required",
+            ConsentDenyReason::TwoFactorInvalid => "two_factor_invalid",
+            ConsentDenyReason::TwoFactorLocked => "two_factor_locked",
+            ConsentDenyReason::TwoFactorUnavailable => "two_factor_unavailable",
         }
     }
 
@@ -82,6 +104,11 @@ impl ConsentDenyReason {
         match self {
             ConsentDenyReason::HostTimeout => ConsentOutcome::Timeout,
             ConsentDenyReason::NoPromptSurface => ConsentOutcome::NoPromptSurface,
+            ConsentDenyReason::TwoFactorRequired => ConsentOutcome::TwoFactorRequired,
+            ConsentDenyReason::TwoFactorInvalid => ConsentOutcome::TwoFactorInvalid,
+            ConsentDenyReason::TwoFactorLocked | ConsentDenyReason::TwoFactorUnavailable => {
+                ConsentOutcome::TwoFactorLocked
+            }
         }
     }
 }
@@ -328,6 +355,28 @@ mod tests {
         assert_eq!(
             ConsentDenyReason::NoPromptSurface.wire(),
             "no_prompt_surface"
+        );
+        // FR-129 — the device's two-factor refusals, the same spellings as
+        // `meshharbor_node_core::two_factor::Refusal::wire`.
+        assert_eq!(
+            ConsentDenyReason::TwoFactorRequired.wire(),
+            "two_factor_required"
+        );
+        assert_eq!(
+            ConsentDenyReason::TwoFactorInvalid.wire(),
+            "two_factor_invalid"
+        );
+        assert_eq!(
+            ConsentDenyReason::TwoFactorLocked.wire(),
+            "two_factor_locked"
+        );
+        assert_eq!(
+            ConsentDenyReason::TwoFactorUnavailable.wire(),
+            "two_factor_unavailable"
+        );
+        assert_eq!(
+            outcome_of(false, Some("two_factor_unavailable")),
+            ConsentOutcome::TwoFactorLocked
         );
         for r in ConsentDenyReason::ALL {
             assert_eq!(ConsentDenyReason::from_wire(r.wire()), Some(*r));

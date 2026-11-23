@@ -75,6 +75,18 @@
         :title="t('mh.devMenu.sshPolicy')"
         @click="emit('action', 'ssh-policy')"
       />
+      <!-- FR-129 — the device keeps the secret and checks every code itself,
+           so this needs a device that understands it (`two-factor` in its rpc
+           list, by equality). One that already has it on stays reachable, so
+           it can always be switched off. -->
+      <v-list-item
+        prepend-icon="mdi-two-factor-authentication"
+        :title="t('mh.devMenu.twoFactor')"
+        :subtitle="twoFactorSubtitle"
+        :disabled="!twoFactorReachable"
+        data-testid="menu-two-factor"
+        @click="emit('action', 'two-factor')"
+      />
       <!-- FR-52 gate 2. Distinct from every policy above it: those decide
            what a COLLEAGUE may do, this one admits someone outside the
            organization. -->
@@ -180,6 +192,7 @@ import type { Agent } from '@/stores/agents'
 import type { DeviceRow } from '@/stores/devices'
 import type { OverlayNode } from '@/stores/overlayRoutes'
 import type { TunnelClient } from '@/stores/tunnelClients'
+import { supportsTwoFactor, twoFactorOn } from '@/utils/twoFactor'
 
 /** What the menu can ask for. The page maps each to its dialog or request. */
 export type DeviceAction =
@@ -193,6 +206,7 @@ export type DeviceAction =
   | 'reassign'
   | 'exec-policy'
   | 'ssh-policy'
+  | 'two-factor'
   | 'external-access'
   | 'remote-config'
   | 'zone-assignment'
@@ -241,4 +255,18 @@ const effectiveCanAssignZone = computed(
   () => props.canAssignZone ?? (props.canManageAgents !== false),
 )
 const label = computed(() => props.row.display_name || props.row.name)
+
+/** FR-129 — on, or a device too old to offer it; nothing for an off device
+ *  that can be switched on. */
+const twoFactorIsOn = computed(() => twoFactorOn(props.agent?.capabilities))
+const twoFactorReachable = computed(
+  () => twoFactorIsOn.value || supportsTwoFactor(props.agent?.capabilities),
+)
+const twoFactorSubtitle = computed(() =>
+  twoFactorIsOn.value
+    ? t('mh.devMenu.twoFactorOn')
+    : twoFactorReachable.value
+      ? undefined
+      : t('mh.devMenu.twoFactorTooOld'),
+)
 </script>

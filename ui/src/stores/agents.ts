@@ -271,6 +271,13 @@ export interface AgentCapabilities {
    *  overlay (OS-TUN mode, or the owner's `rdp_over_mesh` opt-in on a netstack
    *  node). Absent on older agents. Mirrors `AgentCaps.rdp_mesh_reachable`. */
   rdp_mesh_reachable?: boolean
+  /** FR-129 — two-factor is ON: every session a person opens into this device
+   *  must carry a code from its authenticator app, which the device checks
+   *  itself. The device's own report (the server holds no secret). Absent =
+   *  off. Whether the device understands two-factor at all is `rpc`
+   *  containing `'two-factor'`. Read it through `utils/twoFactor`. Mirrors
+   *  `AgentCaps.two_factor`. */
+  two_factor?: boolean
 }
 
 /** FR-77 — one encoder and the chroma formats it opened in. Wire strings:
@@ -668,6 +675,36 @@ export interface KeyRotation {
   delivered_at?: string
   report?: KeyRotationReport
   state: KeyRotationState
+}
+
+/** FR-129 — a step of switching a device's two-factor on or off
+ *  (`POST /tenant/{tid}/agent/{aid}/two-factor`). `disable` takes a current
+ *  code or a recovery code. */
+export type TwoFactorStepRequest =
+  | { op: 'begin' }
+  | { op: 'confirm'; code: string; setup_id: string }
+  | { op: 'disable'; code: string }
+
+/** The device's answer to a {@link TwoFactorStepRequest}. A refusal is still a
+ *  200: `refused` names why (`already_on`, `no_pending`, `two_factor_invalid`,
+ *  …; see `utils/twoFactor`), `message` is the device's own sentence, and
+ *  `enabled` is the state it is in now. ⚠️ `secret`, `otpauth_uri` and
+ *  `recovery_codes` are secrets: shown to the person, never logged or kept. */
+export interface TwoFactorStepResult {
+  enabled: boolean
+  /** `begin`: the key to type into the app (base32). */
+  secret?: string
+  /** `begin`: what the QR code carries. */
+  otpauth_uri?: string
+  /** `begin`: sent back with `confirm`, so a setup someone else started in between makes this
+   *  one fail visibly (`no_pending`) instead of switching on their secret. */
+  setup_id?: string
+  /** `confirm`: the one-time recovery codes, shown once. */
+  recovery_codes?: string[]
+  refused?: string
+  message?: string
+  /** With `two_factor_locked`: seconds until codes are checked again. */
+  retry_after_secs?: number
 }
 
 /** One remote command's result. `exit_code: null` together with a non-null
@@ -1896,13 +1933,38 @@ export const useAgentStore = defineStore('agents', () => {
    *  Resolves even when the command was REFUSED — the server answers 200 with
    *  `error` set, so the caller renders one shape and never has to guess
    *  whether a rejection was a policy decision or a network failure. Only a
-   *  malformed request or a missing device throws. */
+   *  malformed request or a missing device throws.
+   *
+   *  FR-129 — `two_factor_code` is the person's code for a device with
+   *  two-factor on; the server relays it and the device checks it. A device
+   *  refusal comes back the same way, as `error` starting `two_factor_…: `
+   *  (`utils/twoFactor`). */
   async function execOnAgent(
     tenantId: string,
     agentId: string,
-    body: { shell?: string; command: string; timeout_ms?: number },
+    body: { shell?: string; command: string; timeout_ms?: number; two_factor_code?: string },
   ): Promise<ExecResult> {
     return await api.post<ExecResult>(`/tenant/${tenantId}/agent/${agentId}/exec`, body)
+  }
+
+  /** FR-129 — one step of switching a device's two-factor on or off. The
+   *  device does the work and answers; a device refusal is a 200 with
+   *  `refused`, so only a transport failure (offline, too old, the feature
+   *  off on the server, no permission) throws. Every answer carries the
+   *  device's current state, which is written into the local row at once —
+   *  the dialog and the viewers read `capabilities.two_factor`. */
+  async function twoFactorStep(
+    tenantId: string,
+    agentId: string,
+    body: TwoFactorStepRequest,
+  ): Promise<TwoFactorStepResult> {
+    const resp = await api.post<TwoFactorStepResult>(
+      `/tenant/${tenantId}/agent/${agentId}/two-factor`,
+      body,
+    )
+    const caps = agents.value.find((a) => a.id === agentId)?.capabilities
+    if (caps && typeof resp?.enabled === 'boolean') caps.two_factor = resp.enabled
+    return resp
   }
 
   /** Run one command across several devices. An empty `agentIds` means every
@@ -2054,6 +2116,7 @@ export const useAgentStore = defineStore('agents', () => {
     fetchSshAudit,
     fetchSshActivity,
     execOnAgent,
+    twoFactorStep,
     execOnFleet,
     cancelExec,
     fetchExecAudit,

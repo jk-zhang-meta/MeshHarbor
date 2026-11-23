@@ -96,6 +96,19 @@
           :disabled="running"
           @keydown.ctrl.enter.prevent="run"
         />
+        <!-- FR-129 — a device with two-factor on checks a code with every
+             command. A code works once, so the field empties after each run. -->
+        <div v-if="needsCode" class="mb-2" data-testid="console-tfa">
+          <div class="text-caption text-medium-emphasis mb-2">{{ t('mh.tfa.console.hint') }}</div>
+          <TwoFactorCodeInput
+            ref="codeInput"
+            v-model="twoFactorCode"
+            :disabled="running"
+            :error-messages="codeError || undefined"
+            style="max-width: 280px"
+            @submit="run"
+          />
+        </div>
         <div class="d-flex align-center mb-4">
           <span class="text-caption text-medium-emphasis">{{ t('mh.console.hint') }}</span>
           <v-spacer />
@@ -103,7 +116,8 @@
             color="primary"
             prepend-icon="mdi-play"
             :loading="running"
-            :disabled="!command.trim()"
+            :disabled="!command.trim() || (needsCode && !codeReady)"
+            data-testid="console-run"
             @click="run"
           >
             {{ t('mh.console.run') }}
@@ -148,8 +162,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useAgentStore, type Agent, type ExecResult } from '@/stores/agents'
+import TwoFactorCodeInput from '@/components/common/TwoFactorCodeInput.vue'
+import {
+  asksForCode,
+  codeForWire,
+  twoFactorOn,
+  twoFactorRefusalOfExecError,
+  twoFactorRefusalText,
+} from '@/utils/twoFactor'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useI18n } from 'vue-i18n'
@@ -185,6 +207,17 @@ const error = ref<string | null>(null)
 const history = ref<Array<ExecResult & { command: string; shell: string }>>([])
 /** The in-flight request, so Cancel has something to address. */
 const inFlight = ref<string | null>(null)
+
+// FR-129 — the device's two-factor. Asked for when the device reports it on,
+// and also once a device refuses for want of a code (its report can lag).
+const twoFactorCode = ref('')
+const codeError = ref('')
+const askedForCode = ref(false)
+const codeInput = ref<{ focus: () => void } | null>(null)
+/** The last code sent: a code works once, so the same one is never sent twice. */
+let sentCode = ''
+const needsCode = computed(() => askedForCode.value || twoFactorOn(props.agent?.capabilities))
+const codeReady = computed(() => !!codeForWire(twoFactorCode.value))
 
 /** Windows and Unix hosts offer different shells; showing `bash` for a
  *  Windows box would only produce an "unsupported shell" round trip. */
@@ -235,20 +268,42 @@ function statusColor(e: ExecResult): string {
 async function run() {
   const cmd = command.value.trim()
   if (!cmd || running.value) return
+  let code: string | undefined
+  if (needsCode.value) {
+    code = codeForWire(twoFactorCode.value) ?? undefined
+    if (!code) return
+    if (code === sentCode) {
+      codeError.value = t('mh.tfa.code.reused')
+      return
+    }
+    sentCode = code
+  }
   running.value = true
   error.value = null
+  codeError.value = ''
+  twoFactorCode.value = ''
   const usedShell = shell.value
   try {
     const res = await agentStore.execOnAgent(props.tenantId, props.agent.id, {
       shell: usedShell,
       command: cmd,
       timeout_ms: Math.max(1, Math.min(300, timeoutSecs.value || 30)) * 1000,
+      ...(code ? { two_factor_code: code } : {}),
     })
     inFlight.value = res.request_id
     history.value.unshift({ ...res, command: cmd, shell: usedShell })
+    // The device's refusal of the code: say why, and ask for a fresh one.
+    const refusal = twoFactorRefusalOfExecError(res.error)
+    if (refusal) {
+      askedForCode.value = true
+      codeError.value = twoFactorRefusalText(refusal)
+      if (asksForCode(refusal)) void nextTick(() => codeInput.value?.focus())
+    }
   } catch (e) {
     // Only transport / validation failures land here — a policy refusal
-    // comes back as a normal result carrying `error`.
+    // comes back as a normal result carrying `error`. The device most likely
+    // never saw the code, so typing it again is allowed.
+    sentCode = ''
     error.value = (e as Error).message
   } finally {
     running.value = false
@@ -281,6 +336,9 @@ function close() {
 watch(
   () => props.modelValue,
   (v) => {
+    // FR-129 — a typed code never outlives the dialog.
+    twoFactorCode.value = ''
+    codeError.value = ''
     if (!v) return
     error.value = null
     if (agentStore.orgExecEnabled === null) {

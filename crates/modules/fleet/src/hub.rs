@@ -2428,6 +2428,7 @@ impl Hub {
             None,
             SessionCreationOrigin::Unknown,
             None,
+            None,
         )
     }
 
@@ -2492,6 +2493,9 @@ impl Hub {
         share_files_account: Option<String>,
         origin: SessionCreationOrigin,
         initial_resolution: Option<meshharbor_remote_control::signaling::InitialResolution>,
+        // FR-129 — the person's two-factor code, relayed to the device in the Request and
+        // checked there; the hub never reads it.
+        two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
     ) -> Result<ObjectId> {
         // Positive provenance requires the dedicated, post-PDP local entry.
         // Optional scopes below only veto it; their absence never creates it.
@@ -2945,6 +2949,7 @@ impl Hub {
         // for Email/Push it will NOT respond — the owner resolves the slot.
         let shared_lease = self.shared_lease(session_id);
         let request = ServerMsg::Request {
+            two_factor_code,
             shared_lease,
             session_id,
             controller_user_id,
@@ -3139,6 +3144,20 @@ impl Hub {
             ConsentOutcome::NoPromptSurface => {
                 self.audit(session_id, agent_id, tenant_id, AuditKind::ConsentTimedOut);
                 let _ = self.terminate(session_id, EndReason::NoPromptSurface);
+            }
+            // FR-129 — the DEVICE refused on two-factor (it checks the code itself). Audited
+            // as a refusal; ended with the reason, so the viewer asks the person for a code.
+            ConsentOutcome::TwoFactorRequired => {
+                self.audit(session_id, agent_id, tenant_id, AuditKind::ConsentDenied);
+                let _ = self.terminate(session_id, EndReason::TwoFactorRequired);
+            }
+            ConsentOutcome::TwoFactorInvalid => {
+                self.audit(session_id, agent_id, tenant_id, AuditKind::ConsentDenied);
+                let _ = self.terminate(session_id, EndReason::TwoFactorInvalid);
+            }
+            ConsentOutcome::TwoFactorLocked => {
+                self.audit(session_id, agent_id, tenant_id, AuditKind::ConsentDenied);
+                let _ = self.terminate(session_id, EndReason::TwoFactorLocked);
             }
         }
     }
@@ -5515,6 +5534,7 @@ impl Hub {
                     // media is DTLS-E2E), overlay-IP-validated in forward_offer.
                     local_relay,
                     initial_resolution,
+                    two_factor_code,
                 },
             ) => {
                 // Forward browser codec caps verbatim to the agent in
@@ -5568,6 +5588,7 @@ impl Hub {
                     ctx.share_files_account.clone(),
                     origin,
                     initial_resolution,
+                    two_factor_code,
                 )?;
                 *created = Some(session_id);
                 Ok(())
@@ -6218,6 +6239,63 @@ mod tests {
         // Controller should now have a Ready message.
         let m = ctl_rx.try_recv().unwrap();
         assert!(matches!(m, ServerMsg::Ready { .. }));
+    }
+
+    /// FR-129 — the DEVICE refusing on two-factor ends the session with that reason (the
+    /// viewer then asks the person for a code), never as "a human refused you".
+    #[tokio::test]
+    async fn a_two_factor_refusal_ends_the_session_with_its_reason() {
+        let hub = test_hub().await;
+        for (wire, want) in [
+            ("two_factor_required", EndReason::TwoFactorRequired),
+            ("two_factor_invalid", EndReason::TwoFactorInvalid),
+            ("two_factor_locked", EndReason::TwoFactorLocked),
+            ("two_factor_unavailable", EndReason::TwoFactorLocked),
+        ] {
+            let agent_id = ObjectId::new();
+            let (_tx, _cancel, _rx) = hub.register_agent(
+                agent_id,
+                ObjectId::new(),
+                ObjectId::new(),
+                OsKind::Linux,
+                3,
+                false,
+                false,
+            );
+            let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
+            let sid = hub
+                .create_session(
+                    agent_id,
+                    ObjectId::new(),
+                    "Goran".into(),
+                    ctl_tx,
+                    Permissions::default(),
+                    Vec::new(),
+                    None,
+                    None,  // chroma_pref
+                    None,  // chunk_framing
+                    false, // audio_enabled
+                    ConsentMode::Prompt,
+                    None, // override_reason
+                    None, // local_relay
+                    None, // input_mode
+                    None, // tenant_name
+                )
+                .unwrap();
+            assert!(matches!(
+                ctl_rx.try_recv().unwrap(),
+                ServerMsg::SessionCreated { .. }
+            ));
+            hub.deliver_consent(sid, false, Some(wire)).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut ended = None;
+            while let Ok(m) = ctl_rx.try_recv() {
+                if let ServerMsg::Terminate { reason, .. } = m {
+                    ended = Some(reason);
+                }
+            }
+            assert_eq!(ended, Some(want), "{wire}");
+        }
     }
 
     /// 2026-08-05 winhost-a wedge, leg A — an agent whose control WS flaps
@@ -6979,6 +7057,7 @@ mod tests {
 
     fn file_child_session_request(agent_id: ObjectId) -> ClientMsg {
         ClientMsg::SessionRequest {
+            two_factor_code: None,
             agent_id,
             share_grant_id: None,
             permissions: Permissions::VIEW | Permissions::FILES,
@@ -11154,6 +11233,7 @@ mod tests {
 
     fn exec_msg(request_id: &str) -> ServerMsg {
         ServerMsg::RpcExec {
+            two_factor_code: None,
             request_id: request_id.to_string(),
             shell: "bash".into(),
             command: "id".into(),

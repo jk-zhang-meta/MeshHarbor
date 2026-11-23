@@ -302,6 +302,48 @@ describe('useAgentStore', () => {
     expect(out.exit_code).toBeNull()
   })
 
+  // FR-129 — the device's answer carries its state; the row shows it at once,
+  // a refusal included (a stale "off" would hide the switch-off path).
+  it('twoFactorStep posts the step and writes the device state into the row', async () => {
+    const s = useAgentStore()
+    s.agents = [
+      mkAgent({
+        capabilities: { codecs: [], hw_encoders: [], rpc: ['two-factor'] } as unknown as Agent['capabilities'],
+      }),
+    ]
+    mockApi.post.mockResolvedValueOnce({ enabled: true, recovery_codes: ['abcd-efgh'] })
+    const out = await s.twoFactorStep(TENANT_ID, 'a1', {
+      op: 'confirm',
+      code: '123456',
+      setup_id: 'setup-1',
+    })
+    expect(mockApi.post).toHaveBeenCalledWith(`/tenant/${TENANT_ID}/agent/a1/two-factor`, {
+      op: 'confirm',
+      code: '123456',
+      setup_id: 'setup-1',
+    })
+    expect(out.recovery_codes).toEqual(['abcd-efgh'])
+    expect(s.agents[0]!.capabilities!.two_factor).toBe(true)
+
+    mockApi.post.mockResolvedValueOnce({ enabled: true, refused: 'already_on' })
+    await s.twoFactorStep(TENANT_ID, 'a1', { op: 'begin' })
+    expect(s.agents[0]!.capabilities!.two_factor).toBe(true)
+
+    mockApi.post.mockResolvedValueOnce({ enabled: false })
+    await s.twoFactorStep(TENANT_ID, 'a1', { op: 'disable', code: 'abcd-efgh' })
+    expect(s.agents[0]!.capabilities!.two_factor).toBe(false)
+  })
+
+  it('execOnAgent carries a two-factor code when given one', async () => {
+    mockApi.post.mockResolvedValueOnce({ request_id: 'r', error: null })
+    const s = useAgentStore()
+    await s.execOnAgent(TENANT_ID, 'a1', { command: 'id', two_factor_code: '123456' })
+    expect(mockApi.post).toHaveBeenLastCalledWith(`/tenant/${TENANT_ID}/agent/a1/exec`, {
+      command: 'id',
+      two_factor_code: '123456',
+    })
+  })
+
   it('execOnFleet unwraps the results array', async () => {
     mockApi.post.mockResolvedValueOnce({
       results: [

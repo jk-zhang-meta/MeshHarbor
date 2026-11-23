@@ -182,6 +182,10 @@ mod managed_forward_tests;
 /// kill switch, and the path each device is told.
 #[cfg(test)]
 mod management_entry_tests;
+/// FR-129 — switching a device's two-factor on and off: each step relayed to the device, the
+/// code with it, no secret stored, who may ask, and the centre's switch.
+#[cfg(test)]
+mod two_factor_tests;
 /// FR-115 P5 — the meeting-length cap: warned at 55, ended at 60, once.
 #[cfg(test)]
 mod meeting_cap_tests;

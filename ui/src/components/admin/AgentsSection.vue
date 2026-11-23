@@ -1133,6 +1133,14 @@
     :tenant-id="tenantId"
     :agent="sshPolicyTarget"
   />
+  <!-- FR-129 — the device answers each step; the dialog writes its state into
+       the agent row itself, so the menu and the viewers read it at once. -->
+  <TwoFactorDialog
+    v-if="twoFactorTarget"
+    v-model="twoFactorDialogOpen"
+    :tenant-id="tenantId"
+    :agent="twoFactorTarget"
+  />
   <ExternalAccessDialog
     v-if="externalAccessTarget"
     v-model="externalAccessDialogOpen"
@@ -1479,6 +1487,7 @@ import AgentLogsDialog from './AgentLogsDialog.vue'
 import DeviceConsoleDialog from './DeviceConsoleDialog.vue'
 import ExecPolicyDialog from './ExecPolicyDialog.vue'
 import SshPolicyDialog from './SshPolicyDialog.vue'
+import TwoFactorDialog from './TwoFactorDialog.vue'
 import ExternalAccessDialog from './ExternalAccessDialog.vue'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import RemoteConfigDialog from './RemoteConfigDialog.vue'
@@ -1772,6 +1781,7 @@ function onDeviceAction(row: DeviceRow, action: DeviceAction) {
     case 'reassign': return openReassign(a)
     case 'exec-policy': return openExecPolicy(a)
     case 'ssh-policy': return openSshPolicy(a)
+    case 'two-factor': return openTwoFactor(a)
     case 'external-access': return openExternalAccess(a)
     case 'remote-config': return openRemoteConfig(a)
     case 'zone-assignment': return mayAssignZoneFor(row) ? openZoneDialog(row, a) : undefined
@@ -2349,6 +2359,14 @@ const sshPolicyTarget = ref<Agent | null>(null)
 function openSshPolicy(a: Agent) {
   sshPolicyTarget.value = a
   sshPolicyDialogOpen.value = true
+}
+
+const twoFactorDialogOpen = ref(false)
+const twoFactorTarget = ref<Agent | null>(null)
+
+function openTwoFactor(a: Agent) {
+  twoFactorTarget.value = a
+  twoFactorDialogOpen.value = true
 }
 
 const externalAccessDialogOpen = ref(false)

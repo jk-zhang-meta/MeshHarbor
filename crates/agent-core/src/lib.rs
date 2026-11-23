@@ -65,3 +65,4 @@ pub mod recording_dir;
 pub mod tcc;
 /// FR-103 — one enrollment's live agent token, read at the moment of use.
 pub mod token_slot;
+pub mod two_factor;

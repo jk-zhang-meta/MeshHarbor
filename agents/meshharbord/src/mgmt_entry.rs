@@ -292,9 +292,11 @@ impl std::fmt::Display for AttestFailure {
 /// Device side: the first of this device's entries (the kept pushed path and the owner's own,
 /// in dial order) that answers an attestation request. A refusal still answers: the entry can
 /// carry the connection, as the dial itself would use it.
-pub async fn first_reachable_entry(local: &[String]) -> Option<SocketAddr> {
+pub async fn first_reachable_entry(local: &[String], centre: &str) -> Option<SocketAddr> {
     use meshharbor_node_core::management_path as mp;
-    let pushed = mp::state_path().map(|p| mp::load(&p)).unwrap_or_default();
+    let pushed = mp::state_path()
+        .map(|p| mp::load(&p, centre))
+        .unwrap_or_default();
     for c in mp::plan(&pushed, local, None).0 {
         if let mp::Candidate::Entry(entry) = c
             && !matches!(
@@ -374,7 +376,10 @@ mod tests {
             w.write_all(me::no_line("no_key").as_bytes()).await.unwrap();
         });
         let local = [dead_addr.to_string(), alive_addr.to_string()];
-        assert_eq!(first_reachable_entry(&local).await, Some(alive_addr));
+        assert_eq!(
+            first_reachable_entry(&local, "127.0.0.1").await,
+            Some(alive_addr)
+        );
     }
 
     #[tokio::test]

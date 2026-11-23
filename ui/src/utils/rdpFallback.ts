@@ -315,6 +315,29 @@ export const RC_ERROR_CODE_TABLE: readonly RcErrorCodeSpec[] = [
     category: 'security-or-identity',
     reason: '被控端身份签名校验失败，疑似中间人篡改，必须阻断',
   },
+  // FR-129 — the device's own two-factor check refused the session. Never an
+  // RDP detour around it: the viewer asks the person for a fresh code instead.
+  {
+    code: 'two_factor_required',
+    source: 'rc:terminate',
+    showRdpCard: false,
+    category: 'security-or-identity',
+    reason: '设备已开启两步验证，本次请求未携带验证码，需由用户输入',
+  },
+  {
+    code: 'two_factor_invalid',
+    source: 'rc:terminate',
+    showRdpCard: false,
+    category: 'security-or-identity',
+    reason: '两步验证码错误、过期或已被使用，需由用户输入新的验证码',
+  },
+  {
+    code: 'two_factor_locked',
+    source: 'rc:terminate',
+    showRdpCard: false,
+    category: 'security-or-identity',
+    reason: '两步验证码错误次数过多，设备暂停核对验证码',
+  },
   {
     code: 'external_answer_unsealed',
     source: 'client-webrtc',

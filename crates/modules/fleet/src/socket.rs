@@ -964,6 +964,32 @@ pub async fn handle_agent_socket(
                                         }
                                         continue;
                                     }
+                                    // FR-129 — a device's answer to a two-factor
+                                    // step, to the admin's request parked on it.
+                                    ClientMsg::TwoFactorResult {
+                                        request_id,
+                                        refused,
+                                        retry_after_secs,
+                                        enabled,
+                                        secret,
+                                        otpauth_uri,
+                                        setup_id,
+                                        recovery_codes,
+                                    } => {
+                                        let answer = crate::two_factor::DeviceAnswer {
+                                            refused,
+                                            retry_after_secs,
+                                            enabled,
+                                            secret,
+                                            otpauth_uri,
+                                            setup_id,
+                                            recovery_codes,
+                                        };
+                                        if !crate::two_factor::deliver(&request_id, agent_id, answer) {
+                                            debug!(%agent_id, %request_id, "rc:agent.two_factor_result nobody awaits");
+                                        }
+                                        continue;
+                                    }
                                     // A device asking to run something on ANOTHER
                                     // device (`mh exec`). Spawned: the
                                     // target's command can take minutes and this
@@ -974,13 +1000,14 @@ pub async fn handle_agent_socket(
                                         shell,
                                         command,
                                         timeout_ms,
+                                        two_factor_code,
                                     } => {
                                         let state = state.clone();
                                         let reply_tx = registered_tx.clone();
                                         tokio::spawn(async move {
                                             handle_agent_exec_request(
                                                 &state, tenant_id, agent_id, request_id, target, shell,
-                                                command, timeout_ms, reply_tx,
+                                                command, timeout_ms, two_factor_code, reply_tx,
                                             )
                                             .await;
                                         });
@@ -1441,6 +1468,7 @@ async fn handle_agent_exec_request(
     shell: String,
     command: String,
     timeout_ms: u64,
+    two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
     reply_tx: meshharbor_remote_control::session::ClientTx,
 ) {
     use meshharbor_remote_control::models::ExecOutcome;
@@ -1507,6 +1535,7 @@ async fn handle_agent_exec_request(
         timeout_ms,
         max_output_bytes: 0,
         cwd: None,
+        two_factor_code,
     };
     let res = crate::agent_exec::dispatch(state, tenant_id, &agent, &caller, &body).await;
     if reply_tx.try_send(reply(res.outcome)).is_err() {

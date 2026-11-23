@@ -1469,6 +1469,9 @@
       "reassign": "更换所有者",
       "execPolicy": "命令执行策略",
       "sshPolicy": "SSH 策略",
+      "twoFactor": "两步验证（2FA）",
+      "twoFactorOn": "已开启",
+      "twoFactorTooOld": "请先更新设备",
       "externalAccess": "外部访问",
       "remoteConfig": "设备配置",
       "routes": "隧道网状路由",
@@ -1741,6 +1744,93 @@
         "named": "指定 Unix 账号…"
       },
       "consentAuto": "无人值守：立即打开"
+    },
+    "tfa": {
+      "title": "两步验证（2FA）· {name}",
+      "on": "两步验证已开启。",
+      "onBody": "连接此设备的每次远程桌面、SSH 和控制台会话都需要输入身份验证器应用中的 6 位验证码。分享链接、外部访问和远程配置会被拒绝。",
+      "off": "两步验证未开启。",
+      "offBody": "开启后，连接此设备的每次远程桌面、SSH 和控制台会话都需要输入手机上身份验证器应用中的 6 位验证码。",
+      "how": "密钥只保存在设备上，每个验证码都由设备自己核对，服务器从不持有密钥。因此，即使有人盗用了管理员的登录，没有验证码也无法连入，也无法关闭两步验证。",
+      "tooOld": "此设备运行的代理版本为 {version}，不支持两步验证。请先更新。",
+      "enable": "开启两步验证",
+      "disable": "关闭两步验证",
+      "disableConfirm": "关闭",
+      "back": "返回",
+      "chooseApp": "你要使用哪个身份验证器应用？",
+      "chooseAppHint": "两个应用都可以，只是应用内的操作步骤略有不同。",
+      "app": {
+        "microsoft": "Microsoft Authenticator",
+        "google": "Google Authenticator"
+      },
+      "scanTitle": "在 {app} 中添加此设备",
+      "otherApp": "改用 {app}？",
+      "qrAlt": "用身份验证器应用扫描的二维码",
+      "qrFailed": "无法生成二维码。请在应用中手动输入密钥。",
+      "key": "密钥（手动输入用）",
+      "copyKey": "复制",
+      "copied": "已复制",
+      "steps": {
+        "microsoft": {
+          "s1": "在手机上打开 Microsoft Authenticator，点击 +（添加账户）。",
+          "s2": "选择“其他账户（Google、Facebook 等）”。",
+          "s3": "扫描二维码。如果无法扫描，点击“或手动输入代码”，然后输入密钥。"
+        },
+        "google": {
+          "s1": "在手机上打开 Google Authenticator，点击 +。",
+          "s2": "选择“扫描二维码”并扫描。",
+          "s3": "如果无法扫描，选择“输入设置密钥”，填写名称（例如 {name}）和密钥，类型保持“基于时间”。"
+        },
+        "last": "输入应用中 MeshHarbor 这一项当前显示的 6 位验证码，然后确认。"
+      },
+      "confirm": "确认并开启",
+      "restart": "重新开始",
+      "codesTitle": "请立即保存恢复码。",
+      "codesWarn": "恢复码只显示这一次。如果手机丢失，每个恢复码可代替应用中的验证码使用一次。请保存在安全的地方，不要放在这台电脑上。",
+      "copyAll": "全部复制",
+      "download": "下载 .txt",
+      "saved": "我已保存",
+      "disableBody": "要关闭两步验证，请输入身份验证器应用中当前的 6 位验证码，或一个恢复码。",
+      "disabledDone": "此设备的两步验证已关闭。",
+      "file": {
+        "title": "MeshHarbor 两步验证恢复码",
+        "device": "设备：{name}",
+        "created": "生成时间：{when}",
+        "note": "每个恢复码只能使用一次，可代替身份验证器应用中的验证码。"
+      },
+      "code": {
+        "label": "6 位验证码",
+        "recoveryLabel": "恢复码",
+        "useRecovery": "改用恢复码",
+        "useApp": "使用应用中的验证码",
+        "reused": "这个验证码已经用过。请等待应用中的下一个验证码。"
+      },
+      "prompt": {
+        "title": "两步验证码",
+        "body": "{name} 每次连接都需要验证码。请输入身份验证器应用中此设备当前显示的 6 位验证码。",
+        "thisDevice": "此设备",
+        "connect": "连接"
+      },
+      "console": {
+        "hint": "此设备每条命令都需要两步验证码，每个验证码只能用一次。"
+      },
+      "reason": {
+        "required": "此设备每次连接都需要两步验证码。",
+        "invalid": "两步验证码错误、已过期或已经用过。请等待应用中的下一个验证码后重试。",
+        "locked": "两步验证码错误次数过多，设备暂时不接受验证码，请稍后再试。",
+        "lockedFor": "两步验证码错误次数过多，请在 {time}后再试。",
+        "unavailable": "设备无法读取自己的两步验证设置，因此拒绝所有验证码。可以在设备上运行“meshharbord two-factor reset”重置。",
+        "alreadyOn": "此设备已经开启了两步验证。",
+        "alreadyOff": "此设备的两步验证已经是关闭状态。",
+        "noPending": "本次设置已过期（10 分钟）或已被替换。请重新开始，扫描新的二维码，并在应用中删除旧的 MeshHarbor 条目。",
+        "notPrimary": "两步验证作用于整台机器，只有设备的主组织才能更改。",
+        "storage": "设备无法保存两步验证设置。请重试；如果一直失败，请检查设备的磁盘。",
+        "other": "设备未接受此操作。"
+      },
+      "time": {
+        "sec": "{n} 秒",
+        "min": "{n} 分钟"
+      }
     },
     "rcfg": {
       "title": "设备配置 — {name}",

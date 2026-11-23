@@ -87,6 +87,7 @@ pub mod setup_release;
 pub mod socket;
 pub mod tenant_hooks;
 pub mod tunnel_release;
+pub mod two_factor;
 
 pub use hub::Hub;
 
@@ -457,6 +458,7 @@ impl Module for FleetState {
                 post(agent_exec::cancel),
             )
             .route("/{agent_id}/exec-policy", put(agent_exec::set_policy))
+            .route("/{agent_id}/two-factor", post(two_factor::two_factor))
             // FR-94 — revoke a device's SYSTEM service without removing it.
             .route("/{agent_id}/exec-anchor", delete(exec_service::unanchor))
             // FR-52 gate 2 — approve a device for control by someone OUTSIDE

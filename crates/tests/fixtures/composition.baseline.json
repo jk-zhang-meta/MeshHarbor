@@ -693,6 +693,10 @@
       "methods": "DELETE,POST"
     },
     {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/two-factor",
+      "methods": "POST"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/agent/{agent_id}/update",
       "methods": "POST"
     },
@@ -6331,6 +6335,7 @@
     "rc:share.ssh.connect",
     "rc:share.ssh.prepared",
     "rc:accounts.result",
+    "rc:agent.two_factor_result",
     "rc:share.ssh.lease.challenge",
     "rc:share.lease.challenge",
     "rc:agent.hello",
@@ -6436,6 +6441,7 @@
     "rc:extauth.outcome",
     "rc:extauth.session",
     "rc:accounts.request",
+    "rc:agent.two_factor",
     "rc:share.ssh.setup",
     "rc:share.ssh.forward",
     "rc:share.ssh.lease.renewal",
@@ -6561,6 +6567,7 @@
     "rc:agent.key_rotated": "network",
     "rc:agent.name.ack": "fleet",
     "rc:agent.net_inventory": "network",
+    "rc:agent.two_factor_result": "fleet",
     "rc:consent": "fleet",
     "rc:consent.pending": "fleet",
     "rc:extauth.finish": "remote",

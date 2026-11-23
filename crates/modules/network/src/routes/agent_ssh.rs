@@ -106,6 +106,10 @@ pub struct SshRequestBody {
     /// means the ceiling.
     #[serde(default)]
     pub session_secs: u64,
+    /// FR-129 — the person's two-factor code for a device that asks for one; relayed to the
+    /// device in the grant, and checked there.
+    #[serde(default)]
+    pub two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +147,10 @@ pub struct SshResponseBody {
     /// person's request, so the HTTP body is what it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_ticket_id: Option<String>,
+    /// FR-129 — set when the DEVICE refused on two-factor (`two_factor_required` /
+    /// `two_factor_invalid` / `two_factor_locked`), so the caller can ask the person for a code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub two_factor: Option<String>,
 }
 
 impl SshResponseBody {
@@ -156,6 +164,7 @@ impl SshResponseBody {
             expires_at_ms: None,
             error: Some(reason.message().to_string()),
             ssh_ticket_id: None,
+            two_factor: reason.two_factor().map(str::to_string),
         }
     }
 }
@@ -402,6 +411,7 @@ pub async fn dispatch(
     caller: &Caller,
     public_key: &str,
     session_secs: u64,
+    two_factor_code: Option<&meshharbor_remote_control::models::Confidential>,
 ) -> SshResponseBody {
     let agent_id = agent.id.unwrap_or_default();
     // FR-90 P3-8-1b — a session's ticket that does not hold refuses the
@@ -416,7 +426,16 @@ pub async fn dispatch(
             Err(SshDenyReason::TicketRefused)
         }
         CallerSession::None | CallerSession::Bound(_) => {
-            decide(state, tenant_id, agent, caller, public_key, session_secs).await
+            decide(
+                state,
+                tenant_id,
+                agent,
+                caller,
+                public_key,
+                session_secs,
+                two_factor_code,
+            )
+            .await
         }
     };
     record_audit(state, tenant_id, agent_id, caller, &outcome).await;
@@ -449,6 +468,7 @@ pub async fn dispatch(
                 expires_at_ms: Some(g.expires_at_ms),
                 error: None,
                 ssh_ticket_id,
+                two_factor: None,
             }
         }
         Err(reason) => {
@@ -474,6 +494,7 @@ async fn decide(
     caller: &Caller,
     public_key: &str,
     session_secs: u64,
+    two_factor_code: Option<&meshharbor_remote_control::models::Confidential>,
 ) -> Result<Granted, SshDenyReason> {
     let authorization_started = bson::DateTime::now();
     let access_epoch = meshharbor_mod_fleet::device_invite::authorization_epoch(
@@ -591,6 +612,7 @@ async fn decide(
     .map_err(|_| SshDenyReason::CallerNotAllowed)?;
     let consent_mode = Some(effective_wire_consent(Some(consent_mode)));
     let msg = ServerMsg::SshGrant {
+        two_factor_code: two_factor_code.cloned(),
         grant_id: grant_id.clone(),
         public_key: public_key.to_string(),
         caller: caller.display.clone(),
@@ -1118,6 +1140,7 @@ pub async fn request_session(
             &caller,
             &body.public_key,
             body.session_secs,
+            body.two_factor_code.as_ref(),
         )
         .await,
     ))
