@@ -206,6 +206,22 @@ pub fn set_route(host: &str, via: Option<SocketAddr>) {
     *r = via.map(|a| (host.to_ascii_lowercase(), a));
 }
 
+/// The control socket's current route, `(centre host, entry)`; `None` = direct. A client built
+/// once compares it to rebuild when the path changes.
+pub fn current_route() -> Option<(String, SocketAddr)> {
+    ROUTE.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The kept path sends this device to its entries first (its zone may not reach the centre
+/// directly): a probe of the centre's address at boot would itself be a direct connection.
+pub fn entries_only(local: &[String]) -> bool {
+    if disabled() {
+        return false;
+    }
+    let pushed = state_path().map(|p| load(&p)).unwrap_or_default();
+    plan(&pushed, local, None).1
+}
+
 /// The entry requests to `host` go through, if the control socket is on one.
 pub fn route_for(host: &str) -> Option<SocketAddr> {
     let r = ROUTE.read().unwrap_or_else(|e| e.into_inner());

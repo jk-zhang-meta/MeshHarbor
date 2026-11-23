@@ -82,9 +82,10 @@ flowchart LR
 
 HTTP requests to the centre take the control socket's current path: the client resolves the
 centre's host to the entry address, so SNI and the certificate check are unchanged. P1 covers
-token renewal, the update check and download, crash upload and the device name. Still direct:
-the log uploader and the LocalAPI device view (their clients live for the daemon's life), the
-Windows SYSTEM services (another process), and enrollment and sign-in (P3).
+token renewal, the update check and download, crash upload, the device name, the log uploader
+(it rebuilds its client when the path changes) and the LocalAPI device view (0.4.210). The boot
+preflight does not probe the centre's address when the kept path sends the device to its entries.
+Still direct: the Windows SYSTEM services (another process), and enrollment and sign-in (P3).
 
 ### The entry forwarder
 
@@ -202,3 +203,4 @@ must not lend its zone, so:
 | 2026-11-23 05:43 | Server 0.4.209 cut over (24/26 online before and after, no panic, meeting settings kept). The agent 0.4.209 installed by hand on one mainland gateway only (backup kept), `management_entry_port = 18443`: listening, attestation key received. ⚠️ The first try lost the key: written into the config while the OLD daemon ran, it was dropped when that daemon saved its config (an older build does not know the key). Set it through the NEW daemon (`mh config set`), then restart. |
 | 2026-11-23 05:46 | A throwaway device (a network namespace on a Singapore host, its own user and config, enrolled ephemeral, pinned to the strict mainland zone), direct path open: told `direct=false entries=1`, moved onto the entry, connected in 6 s. The centre recorded the device's own address, not the gateway's. But one direct connection to the centre stayed open: a client not yet routed (the startup preflight logged a direct attempt; the log uploader and the device view also build their clients once). **AC2 not met in P1.** |
 | 2026-11-23 05:47–05:50 | Centre address dropped inside the namespace (other sites reachable, as in the lab outage). Red: the device's switch `MESHHARBORD_MANAGEMENT_ENTRIES=0`: every connect `connect to <centre>:443 timed out`, device offline. Green: switch off: online through the entry, own address recorded, 0 direct connections, 1 through the entry. The first entry try hit the 15 s per-path bound; the next round took 3 s, so the bound may be tight on a cross-border line. Rig removed, device deleted; the gateway keeps its entry. |
+| 2026-11-23 | 0.4.210: the log uploader, the device view and the boot preflight follow the path too (the direct connection the field run saw); a path's bound 15 s → 25 s. Linux agent release. |

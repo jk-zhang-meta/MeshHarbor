@@ -4865,7 +4865,15 @@ async fn run_cmd(
     // chase the wrong rabbit hole when the WS reconnect ladder kicks
     // in. 15 s overall budget, 5 s per probe in parallel.
     // FR-43 P3 — an unenrolled worker dials no server, so there is none to probe.
-    if !unenrolled_worker {
+    // FR-128 — a device whose zone reaches the centre through its entries does not probe the
+    // centre's address directly: the probe would be the one direct connection it must not make.
+    let via_entries = meshharbor_node_core::management_path::entries_only(&cfg.management_entries);
+    if via_entries {
+        tracing::info!(
+            "preflight: this zone reaches the centre through its entries; direct probe skipped"
+        );
+    }
+    if !unenrolled_worker && !via_entries {
         let preflight_report = preflight::run_checks(&cfg.server_url).await;
         preflight_report.log();
     }

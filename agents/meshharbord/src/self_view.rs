@@ -218,7 +218,18 @@ pub struct SelfView {
 /// The production HTTP client: the crash uploader's posture (system TLS
 /// roots, the platform's proxy settings) with this module's budgets.
 fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    build_client_from(reqwest::Client::builder())
+}
+
+/// FR-128 — the same client, pointed at the management entry the control socket is on.
+fn build_routed_client() -> Result<reqwest::Client, String> {
+    build_client_from(meshharbor_node_core::management_path::route_http(
+        reqwest::Client::builder(),
+    ))
+}
+
+fn build_client_from(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, String> {
+    builder
         .user_agent(concat!("meshharbord-localapi/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
@@ -427,10 +438,17 @@ impl SelfView {
         path: &str,
         params: &[(&'static str, String)],
     ) -> Result<Vec<u8>, Upstream> {
-        let http = self
-            .http()
-            .as_ref()
-            .map_err(|e| Upstream::new("server_unreachable", e.clone()))?;
+        // FR-128 — while the control socket is on a management entry, this request follows it
+        // (the cached client was built for the direct path).
+        let routed;
+        let http = if meshharbor_node_core::management_path::current_route().is_some() {
+            routed = build_routed_client().map_err(|e| Upstream::new("server_unreachable", e))?;
+            &routed
+        } else {
+            self.http()
+                .as_ref()
+                .map_err(|e| Upstream::new("server_unreachable", e.clone()))?
+        };
         let base = org.server_url.trim().trim_end_matches('/');
         if !(base.starts_with("https://") || base.starts_with("http://")) {
             return Err(Upstream::new(

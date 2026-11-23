@@ -1635,8 +1635,9 @@ enum ConnectError {
 
 #[allow(clippy::too_many_arguments)]
 /// FR-128 — one candidate's bound when the plan has more than one: long enough for a TLS
-/// handshake across a slow line, short enough that the next path is tried within a minute.
-const MANAGEMENT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
+/// handshake across a slow line (15 s timed out once on a cross-border entry whose next try took
+/// 3 s), short enough that the next path is tried within half a minute.
+const MANAGEMENT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// FR-128 — dial the centre along the management path (the primary org only; a secondary
 /// enrollment's centre is dialed directly): each candidate of the plan in turn, the WebSocket
