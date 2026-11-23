@@ -259,6 +259,7 @@
     "title": "Agent sessions",
     "stop": "Stop",
     "stopMirroring": "Stop mirroring",
+    "rowActions": "Session actions",
     "adopted": "Adopted",
     "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from MeshHarbor.",
     "empty": {

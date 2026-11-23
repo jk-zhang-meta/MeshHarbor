@@ -195,3 +195,57 @@ describe('HiveMemoryView (FR-90 P1e)', () => {
     expect(hoisted.fetchBrain).toHaveBeenCalledTimes(3)
   })
 })
+
+// FR-120 P2 — on a phone the three scopes stacked open were three screens;
+// there each is a panel titled with how full it is, opened on demand.
+describe('HiveMemoryView on a phone (FR-120 P2)', () => {
+  /** Vuetify reads the window's width when the plugin is made. */
+  async function renderAt(width: number) {
+    window.innerWidth = width
+    hoisted.fetchBrain.mockResolvedValue(orgOnly)
+    const sized = createVuetify({ components, directives })
+    const i18n = createI18n({ legacy: false, locale: 'en', messages: { en } })
+    const w = mount(HiveMemoryView, {
+      global: { plugins: [sized, i18n], stubs: { VDialog: DialogStub, VAutocomplete: PickDevice } },
+    })
+    await flushPromises()
+    return w
+  }
+
+  afterEach(() => {
+    window.innerWidth = 1024
+  })
+
+  it('shows each scope as a closed panel titled with how full it is', async () => {
+    const w = await renderAt(360)
+    expect(scope(w, 'org').classes()).toContain('v-expansion-panel')
+    expect(scope(w, 'org').find('[data-testid="hive-memory-summary"]').text()).toBe('2990 of 3000 characters')
+    expect(scope(w, 'user').find('[data-testid="hive-memory-summary"]').text()).toBe('23 of 1500 characters')
+    // No device chosen, so no budget: the title claims nothing.
+    expect(scope(w, 'device').find('[data-testid="hive-memory-summary"]').exists()).toBe(false)
+    // Closed: the facts and the draft wait until they are asked for.
+    expect(scope(w, 'org').find('[data-testid="hive-memory-text-org"]').exists()).toBe(false)
+  })
+
+  it('opens a scope on a tap, and keeps a fact from there as before', async () => {
+    const w = await renderAt(360)
+    await scope(w, 'org').find('.v-expansion-panel-title').trigger('click')
+    await flushPromises()
+    expect(scope(w, 'org').text()).toContain('Deploys go through promote.yml.')
+    await scope(w, 'org').find('[data-testid="hive-memory-text-org"] textarea').setValue('Never restart the build box.')
+    hoisted.keepFact.mockResolvedValue(fact('f3', 'org', 'Never restart the build box.'))
+    await scope(w, 'org').find('[data-testid="hive-memory-add-org"]').trigger('click')
+    await flushPromises()
+    expect(hoisted.keepFact).toHaveBeenCalledWith(
+      't1',
+      expect.objectContaining({ scope: 'org', text: 'Never restart the build box.' }),
+    )
+  })
+
+  it('keeps the row of open cards from 600 px up', async () => {
+    const w = await renderAt(1024)
+    expect(scope(w, 'org').classes()).toContain('v-card')
+    expect(w.find('[data-testid="hive-memory-summary"]').exists()).toBe(false)
+    expect(scope(w, 'org').find('[data-testid="hive-memory-text-org"]').exists()).toBe(true)
+  })
+})

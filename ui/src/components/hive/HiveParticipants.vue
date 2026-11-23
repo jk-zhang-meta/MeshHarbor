@@ -10,7 +10,7 @@
   sessions" (HIVE_RUN), and the server says so when they lack it.
 -->
 <template>
-  <v-dialog v-model="shown" max-width="560" scrollable>
+  <v-dialog v-model="shown" max-width="560" scrollable :fullscreen="fullscreen">
     <template #activator="{ props: activator }">
       <v-btn
         v-bind="activator"
@@ -23,7 +23,11 @@
       </v-btn>
     </template>
     <v-card>
-      <v-card-title>{{ $t('hive.people.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center">
+        <span class="text-wrap">{{ $t('hive.people.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="shown = false" />
+      </v-card-title>
       <v-card-text>
         <p class="text-body-2 text-medium-emphasis mb-3">{{ $t('hive.people.explain') }}</p>
         <v-progress-linear v-if="loading" indeterminate class="mb-2" />
@@ -125,6 +129,7 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useHiveStore, type HiveParticipant, type HiveParticipants } from '@/stores/hive'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 const props = withDefaults(
   defineProps<{
@@ -138,6 +143,8 @@ const props = withDefaults(
 const hive = useHiveStore()
 
 const shown = ref(false)
+// FR-120 P2 — full screen on a phone (a centred 560 px box left ~264 px).
+const { fullscreen } = useResponsiveDialog()
 const loading = ref(false)
 const items = ref<HiveParticipant[]>([])
 const mayManage = ref(false)

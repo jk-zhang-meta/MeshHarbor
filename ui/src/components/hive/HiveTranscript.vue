@@ -13,7 +13,9 @@
 -->
 <template>
   <div class="hive-transcript d-flex flex-column">
-    <div class="d-flex align-center px-3 py-2 ga-2">
+    <!-- FR-120 P2 — the header wraps: at 360 px its chips, Copies, Manage,
+         People and Reconnect overflowed one row and were clipped. -->
+    <div class="d-flex align-center flex-wrap px-3 py-2 ga-2">
       <v-chip size="small" :color="statusColor" variant="tonal" data-testid="hive-viewer-status">
         {{ $t(`hive.viewer.status.${statusKey}`) }}
       </v-chip>

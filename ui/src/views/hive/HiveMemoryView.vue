@@ -24,123 +24,130 @@
       {{ loadError }}
     </v-alert>
 
-    <v-row>
-      <v-col v-for="sec in sections" :key="sec.scope" cols="12" lg="4">
-        <v-card variant="outlined" :data-testid="`hive-memory-scope-${sec.scope}`">
-          <v-card-title class="text-subtitle-1">{{ $t(`hive.memory.scope.${sec.scope}`) }}</v-card-title>
-          <v-card-subtitle class="text-wrap">{{ $t(`hive.memory.scopeHint.${sec.scope}`) }}</v-card-subtitle>
-          <v-card-text>
-            <v-autocomplete
-              v-if="sec.scope === 'device'"
-              v-model="deviceId"
-              :items="deviceItems"
-              :label="$t('hive.memory.device')"
-              item-title="title"
-              item-value="value"
-              :loading="devices.loading"
-              density="compact"
-              clearable
-              data-testid="hive-memory-device"
+    <!-- FR-120 P2 — from 600 px up a row of cards, as always; on a phone a
+         list of expansion panels, each titled with how full its scope is. -->
+    <component :is="xs ? VExpansionPanels : VRow" :multiple="xs || undefined">
+      <HiveMemoryScope
+        v-for="sec in sections"
+        :key="sec.scope"
+        :title="$t(`hive.memory.scope.${sec.scope}`)"
+        :hint="$t(`hive.memory.scopeHint.${sec.scope}`)"
+        :summary="sec.budget ? $t('hive.memory.budget', { used: sec.budget.used, budget: sec.budget.budget }) : ''"
+        :data-testid="`hive-memory-scope-${sec.scope}`"
+      >
+        <v-autocomplete
+          v-if="sec.scope === 'device'"
+          v-model="deviceId"
+          :items="deviceItems"
+          :label="$t('hive.memory.device')"
+          item-title="title"
+          item-value="value"
+          :loading="devices.loading"
+          density="compact"
+          clearable
+          data-testid="hive-memory-device"
+        />
+        <template v-if="sec.scope !== 'device' || deviceId">
+          <div v-if="sec.budget" class="mb-2" :data-testid="`hive-memory-budget-${sec.scope}`">
+            <v-progress-linear
+              :model-value="(100 * sec.budget.used) / sec.budget.budget"
+              :color="sec.budget.used >= sec.budget.budget ? 'warning' : 'primary'"
+              height="6"
+              rounded
             />
-            <template v-if="sec.scope !== 'device' || deviceId">
-              <div v-if="sec.budget" class="mb-2" :data-testid="`hive-memory-budget-${sec.scope}`">
-                <v-progress-linear
-                  :model-value="(100 * sec.budget.used) / sec.budget.budget"
-                  :color="sec.budget.used >= sec.budget.budget ? 'warning' : 'primary'"
-                  height="6"
-                  rounded
-                />
-                <div class="text-caption text-medium-emphasis mt-1">
-                  {{ $t('hive.memory.budget', { used: sec.budget.used, budget: sec.budget.budget }) }}
-                </div>
-              </div>
-              <v-list density="compact" class="py-0">
-                <v-list-item
-                  v-for="f in sec.facts"
-                  :key="f.id"
-                  class="px-0"
-                  data-testid="hive-memory-fact"
-                  :data-scope="f.scope"
-                >
-                  <template #prepend>
-                    <v-chip size="x-small" variant="tonal" class="mr-2">{{ $t(`hive.memory.kind.${f.kind}`) }}</v-chip>
-                  </template>
-                  <v-list-item-title class="text-wrap text-body-2">{{ f.text }}</v-list-item-title>
-                  <template #append>
-                    <v-btn
-                      icon="mdi-pencil-outline"
-                      size="x-small"
-                      variant="text"
-                      :aria-label="$t('hive.memory.edit')"
-                      data-testid="hive-memory-edit"
-                      @click="openEdit(f)"
-                    />
-                    <v-btn
-                      icon="mdi-archive-outline"
-                      size="x-small"
-                      variant="text"
-                      :aria-label="$t('hive.memory.archive')"
-                      :loading="busy === f.id"
-                      data-testid="hive-memory-archive"
-                      @click="archive(f)"
-                    />
-                  </template>
-                </v-list-item>
-              </v-list>
-              <p v-if="sec.facts.length === 0" class="text-body-2 text-medium-emphasis my-2">
-                {{ $t('hive.memory.empty') }}
-              </p>
-              <v-textarea
-                v-model="drafts[sec.scope].text"
-                :label="$t('hive.memory.newFact')"
-                :counter="MAX_FACT_CHARS"
-                :maxlength="MAX_FACT_CHARS"
-                rows="2"
-                auto-grow
-                density="compact"
-                class="mt-2"
-                :data-testid="`hive-memory-text-${sec.scope}`"
-              />
-              <div class="d-flex align-center ga-2">
-                <v-select
-                  v-model="drafts[sec.scope].kind"
-                  :items="kindItems"
-                  :label="$t('hive.memory.kindLabel')"
-                  density="compact"
-                  hide-details
-                  style="max-width: 12rem"
-                />
-                <v-spacer />
+            <div class="text-caption text-medium-emphasis mt-1">
+              {{ $t('hive.memory.budget', { used: sec.budget.used, budget: sec.budget.budget }) }}
+            </div>
+          </div>
+          <v-list density="compact" class="py-0">
+            <v-list-item
+              v-for="f in sec.facts"
+              :key="f.id"
+              class="px-0"
+              data-testid="hive-memory-fact"
+              :data-scope="f.scope"
+            >
+              <template #prepend>
+                <v-chip size="x-small" variant="tonal" class="mr-2">{{ $t(`hive.memory.kind.${f.kind}`) }}</v-chip>
+              </template>
+              <v-list-item-title class="text-wrap text-body-2">{{ f.text }}</v-list-item-title>
+              <template #append>
                 <v-btn
-                  color="primary"
-                  variant="tonal"
-                  :disabled="!drafts[sec.scope].text.trim()"
-                  :loading="busy === sec.scope"
-                  :data-testid="`hive-memory-add-${sec.scope}`"
-                  @click="add(sec.scope)"
-                >
-                  {{ $t('hive.memory.add') }}
-                </v-btn>
-              </div>
-              <v-alert
-                v-if="errors[sec.scope]"
-                type="warning"
-                variant="tonal"
-                density="compact"
-                class="mt-2"
-                :data-testid="`hive-memory-error-${sec.scope}`"
-              >
-                {{ errors[sec.scope] }}
-              </v-alert>
-            </template>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
+                  icon="mdi-pencil-outline"
+                  size="x-small"
+                  variant="text"
+                  :aria-label="$t('hive.memory.edit')"
+                  data-testid="hive-memory-edit"
+                  @click="openEdit(f)"
+                />
+                <v-btn
+                  icon="mdi-archive-outline"
+                  size="x-small"
+                  variant="text"
+                  :aria-label="$t('hive.memory.archive')"
+                  :loading="busy === f.id"
+                  data-testid="hive-memory-archive"
+                  @click="archive(f)"
+                />
+              </template>
+            </v-list-item>
+          </v-list>
+          <p v-if="sec.facts.length === 0" class="text-body-2 text-medium-emphasis my-2">
+            {{ $t('hive.memory.empty') }}
+          </p>
+          <v-textarea
+            v-model="drafts[sec.scope].text"
+            :label="$t('hive.memory.newFact')"
+            :counter="MAX_FACT_CHARS"
+            :maxlength="MAX_FACT_CHARS"
+            rows="2"
+            auto-grow
+            density="compact"
+            class="mt-2"
+            :data-testid="`hive-memory-text-${sec.scope}`"
+          />
+          <div class="d-flex align-center ga-2">
+            <v-select
+              v-model="drafts[sec.scope].kind"
+              :items="kindItems"
+              :label="$t('hive.memory.kindLabel')"
+              density="compact"
+              hide-details
+              style="max-width: 12rem"
+            />
+            <v-spacer />
+            <v-btn
+              color="primary"
+              variant="tonal"
+              :disabled="!drafts[sec.scope].text.trim()"
+              :loading="busy === sec.scope"
+              :data-testid="`hive-memory-add-${sec.scope}`"
+              @click="add(sec.scope)"
+            >
+              {{ $t('hive.memory.add') }}
+            </v-btn>
+          </div>
+          <v-alert
+            v-if="errors[sec.scope]"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mt-2"
+            :data-testid="`hive-memory-error-${sec.scope}`"
+          >
+            {{ errors[sec.scope] }}
+          </v-alert>
+        </template>
+      </HiveMemoryScope>
+    </component>
 
-    <v-dialog v-model="editing" max-width="560">
+    <v-dialog v-model="editing" max-width="560" scrollable :fullscreen="fullscreen">
       <v-card v-if="edit.fact">
-        <v-card-title>{{ $t('hive.memory.editTitle') }}</v-card-title>
+        <v-card-title class="d-flex align-center">
+          <span class="text-wrap">{{ $t('hive.memory.editTitle') }}</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="editing = false" />
+        </v-card-title>
         <v-card-text>
           <v-textarea
             v-model="edit.text"
@@ -177,6 +184,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useDisplay } from 'vuetify'
+import { VExpansionPanels, VRow } from 'vuetify/components'
 import {
   FACT_KINDS,
   MAX_FACT_CHARS,
@@ -188,6 +197,8 @@ import {
   type FactKind,
 } from '@/stores/hive'
 import { useDeviceStore } from '@/stores/devices'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
+import HiveMemoryScope from '@/components/hive/HiveMemoryScope.vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -208,6 +219,10 @@ const drafts = reactive(
 )
 const errors = reactive<Record<BrainScope, string | null>>({ org: null, user: null, device: null })
 const editing = ref(false)
+// FR-120 P2 — the edit dialog covers the screen on a phone, and each scope
+// is a panel there.
+const { fullscreen } = useResponsiveDialog()
+const { xs } = useDisplay()
 const edit = reactive<{ fact: BrainFact | null; text: string; kind: FactKind; error: string | null }>({
   fact: null,
   text: '',

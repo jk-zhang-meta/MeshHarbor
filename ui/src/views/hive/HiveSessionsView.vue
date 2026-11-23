@@ -117,12 +117,49 @@
         </template>
         <v-list-item-title>{{ s.title }}</v-list-item-title>
         <v-list-item-subtitle>
+          <!-- FR-120 P2 — on a phone the state and "adopted" are words in this
+               line, not chips beside it: chips and buttons left the title,
+               device and folder 0–40 px at 360 px. -->
+          <span v-if="xs" data-testid="hive-row-state">{{ $t(`hive.state.${s.status}`, s.status) }}<template v-if="isAdopted(s)"> · {{ $t('hive.adopted') }}</template> · </span>
           {{ agentLabel(s.device_id, s.device_name || s.device_id) }} · {{ s.folder }}
           <span v-if="s.account"> · {{ s.account }}</span>
           <span v-if="s.refusal"> · {{ s.refusal }}</span>
           <span v-else-if="s.end_reason"> · {{ s.end_reason }}</span>
         </v-list-item-subtitle>
-        <template #append>
+        <!-- FR-120 P2 — on a phone the row's actions are one tap away in a
+             menu; from 600 px they sit beside the row as before. -->
+        <template v-if="xs" #append>
+          <v-menu v-if="rowHasActions(s)" location="bottom end">
+            <template #activator="{ props: menuProps }">
+              <v-btn
+                v-bind="menuProps"
+                icon="mdi-dots-vertical"
+                size="small"
+                variant="text"
+                :aria-label="$t('hive.rowActions')"
+                :data-testid="`hive-row-menu-${s.id}`"
+                @click.prevent.stop
+              />
+            </template>
+            <v-list density="compact">
+              <v-list-item
+                v-if="isLive(s) && s.status !== 'stopping'"
+                base-color="error"
+                prepend-icon="mdi-stop"
+                :title="isAdopted(s) ? $t('hive.stopMirroring') : $t('hive.stop')"
+                @click="stopSession(s.id)"
+              />
+              <v-list-item
+                v-if="copied && ownsIt(s)"
+                prepend-icon="mdi-delete-forever-outline"
+                :title="$t('hive.purge.open')"
+                :data-testid="`hive-purge-open-${s.id}`"
+                @click="askPurge(s)"
+              />
+            </v-list>
+          </v-menu>
+        </template>
+        <template v-else #append>
           <v-chip size="small" variant="tonal" :color="statusColor(s.status)" class="mr-2">
             {{ $t(`hive.state.${s.status}`, s.status) }}
           </v-chip>
@@ -162,10 +199,24 @@
         </template>
       </v-list-item>
     </v-list>
+    <!-- FR-120 P2 — every page of sessions, not only the first 50. -->
+    <v-pagination
+      v-if="pages > 1"
+      v-model="page"
+      :length="pages"
+      :total-visible="xs ? 5 : 7"
+      density="comfortable"
+      class="mt-2"
+      data-testid="hive-sessions-pager"
+    />
 
-    <v-dialog v-model="showStart" max-width="520">
+    <v-dialog v-model="showStart" max-width="520" :fullscreen="fullscreen" scrollable>
       <v-card>
-        <v-card-title>{{ $t('hive.start.title') }}</v-card-title>
+        <v-card-title class="d-flex align-center">
+          <span class="text-wrap">{{ $t('hive.start.title') }}</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.cancel')" @click="showStart = false" />
+        </v-card-title>
         <v-card-text>
           <v-autocomplete
             v-model="form.device_id"
@@ -217,6 +268,8 @@ import { isAdopted, isLive, useHiveStore, type HiveSession, type HiveSessionStat
 import { useDeviceStore } from '@/stores/devices'
 import { useAuthStore } from '@/stores/auth'
 import { useNodeLabel } from '@/composables/useNodeLabel'
+import { useDisplay } from 'vuetify'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import HivePurgeDialog from '@/components/hive/HivePurgeDialog.vue'
 import { MAX_QUERY_CHARS, snippetParts, useHiveSearch, type SearchHit } from '@/composables/useHiveSearch'
 
@@ -326,6 +379,22 @@ function ownsIt(s: HiveSession): boolean {
 }
 const purgeShown = ref(false)
 const purgeTarget = ref<HiveSession | null>(null)
+
+// FR-120 P2 — a phone lays the row out differently (`xs`), and the Start
+// dialog covers the screen there.
+const { xs } = useDisplay()
+const { fullscreen } = useResponsiveDialog()
+
+/** Whether the row's ⋮ menu (a phone) has anything to offer. */
+function rowHasActions(s: HiveSession): boolean {
+  return (isLive(s) && s.status !== 'stopping') || (copied.value && ownsIt(s))
+}
+
+// FR-120 P2 — the list is paged (50 a page) and the view asked only for page 1.
+const PER_PAGE = 50
+const page = ref(1)
+const pages = computed(() => Math.max(1, Math.ceil(hive.total / PER_PAGE)))
+watch(page, (p) => void hive.fetchSessions(tenantId.value, p, PER_PAGE))
 
 function askPurge(s: HiveSession): void {
   purgeTarget.value = s

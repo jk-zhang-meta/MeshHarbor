@@ -37,6 +37,7 @@ const hoisted = vi.hoisted(() => ({
   checkSearchable: vi.fn(),
   purge: vi.fn(),
   fetchPurge: vi.fn(),
+  stop: vi.fn(),
   fetchAgent: vi.fn(),
   fetchAgents: vi.fn(),
   push: vi.fn(),
@@ -56,7 +57,10 @@ const hoisted = vi.hoisted(() => ({
     loading: false,
     searchable: {} as Record<string, boolean>,
     copied: {} as Record<string, boolean>,
+    total: 0,
   },
+  /** FR-120 P2 — the sessions a test calls live (empty: none, as before). */
+  liveIds: new Set<string>(),
   agents: [] as Array<{ id: string; name: string; display_name?: string }>,
   user: { id: 'u1' } as { id: string } | null,
   state: null as SearchState | null,
@@ -64,10 +68,13 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('@/stores/hive', () => ({
   isAdopted: () => false,
-  isLive: () => false,
+  isLive: (s: { id: string }) => hoisted.liveIds.has(s.id),
   useHiveStore: () => ({
     get sessions() {
       return hoisted.hive.sessions
+    },
+    get total() {
+      return hoisted.hive.total
     },
     get loading() {
       return hoisted.hive.loading
@@ -83,6 +90,7 @@ vi.mock('@/stores/hive', () => ({
     checkSearchable: hoisted.checkSearchable,
     purge: hoisted.purge,
     fetchPurge: hoisted.fetchPurge,
+    stop: hoisted.stop,
   }),
 }))
 vi.mock('@/stores/devices', () => ({
@@ -163,11 +171,25 @@ beforeEach(() => {
       disconnect() {}
     },
   )
+  // FR-120 P2 — a row's menu measures itself against the viewport; jsdom has none.
+  vi.stubGlobal('visualViewport', {
+    width: 360,
+    height: 780,
+    offsetLeft: 0,
+    offsetTop: 0,
+    pageLeft: 0,
+    pageTop: 0,
+    scale: 1,
+    addEventListener() {},
+    removeEventListener() {},
+  })
   hoisted.hive.sessions = [{ id: 's-mine', owner_id: 'u1', title: 'Fix the kubelet', room_id: 'r-mine', status: 'ended' }]
   hoisted.agents = []
   hoisted.user = { id: 'u1' }
   hoisted.hive.searchable = { t1: true }
   hoisted.hive.copied = {}
+  hoisted.hive.total = 0
+  hoisted.liveIds.clear()
   hoisted.checkSearchable.mockResolvedValue(true)
   state().status.value = 'idle'
   state().reason.value = null
@@ -382,5 +404,98 @@ describe('HiveSessionsView — each session names its device as the Devices page
     const w = await render()
     expect(hoisted.fetchAgents, 'the agents, for the labels').toHaveBeenCalledWith('t1')
     w.unmount()
+  })
+})
+
+// FR-120 P2 — on a phone a row keeps its title, device and folder: the state
+// and "adopted" are words in its subtitle, and its actions are one tap away in
+// a menu. Chips and buttons beside it had left the text 0–40 px at 360 px.
+describe('HiveSessionsView on a phone (FR-120 P2)', () => {
+  /** Vuetify reads the window's width when the plugin is made. The menu's
+   *  list is teleported to the body, so a test that opens it attaches. */
+  let mounted: ReturnType<typeof mount> | null = null
+  async function renderAt(width: number, attach = false) {
+    window.innerWidth = width
+    const sized = createVuetify({ components, directives })
+    const i18n = createI18n({ legacy: false, locale: 'en', messages: { en } })
+    const w = mount(HiveSessionsView, {
+      global: { plugins: [sized, i18n], stubs: { VDialog: DialogStub } },
+      ...(attach ? { attachTo: document.body } : {}),
+    })
+    mounted = w
+    await flushPromises()
+    return w
+  }
+
+  afterEach(() => {
+    mounted?.unmount()
+    mounted = null
+    window.innerWidth = 1024
+  })
+
+  const live = { id: 's-live', owner_id: 'u1', title: 'Fix the kubelet', room_id: 'r-live', status: 'running', device_id: 'd1', device_name: 'build-01', folder: '/srv/app' }
+
+  it('says the state in the row and moves its actions into a menu', async () => {
+    hoisted.hive.sessions = [live]
+    hoisted.liveIds.add('s-live')
+    const w = await renderAt(360)
+    expect(w.find('[data-testid="hive-row-state"]').text()).toContain('Running')
+    expect(w.find('[data-testid="hive-row-menu-s-live"]').exists()).toBe(true)
+    // Nothing beside the row on a phone: no chip, no Stop button until the menu opens.
+    const row = w.find('[data-testid="hive-session-s-live"]')
+    expect(row.findAll('.v-chip')).toHaveLength(0)
+    expect(row.text()).not.toContain('Stop')
+  })
+
+  it('stops a live session from its row menu, one tap after opening it', async () => {
+    hoisted.hive.sessions = [live]
+    hoisted.liveIds.add('s-live')
+    hoisted.stop.mockResolvedValue(undefined)
+    const w = await renderAt(360, true)
+    await w.find('[data-testid="hive-row-menu-s-live"]').trigger('click')
+    await flushPromises()
+    const items = [...document.body.querySelectorAll('.v-overlay__content .v-list-item')] as HTMLElement[]
+    const stop = items.find((i) => i.textContent?.trim() === 'Stop')
+    expect(stop).toBeTruthy()
+    stop!.click()
+    await flushPromises()
+    expect(hoisted.stop).toHaveBeenCalledWith('t1', 's-live')
+    // The tap was the menu's, not the row's: nothing navigated.
+    expect(hoisted.push).not.toHaveBeenCalled()
+  })
+
+  it('offers no menu on a row with nothing to do', async () => {
+    hoisted.hive.sessions = [{ ...live, id: 's-ended', status: 'ended' }]
+    const w = await renderAt(360)
+    expect(w.find('[data-testid="hive-row-menu-s-ended"]').exists()).toBe(false)
+  })
+
+  it('keeps the row as it was from 600 px', async () => {
+    hoisted.hive.sessions = [live]
+    hoisted.liveIds.add('s-live')
+    const w = await renderAt(1024)
+    const row = w.find('[data-testid="hive-session-s-live"]')
+    expect(w.find('[data-testid="hive-row-state"]').exists()).toBe(false)
+    expect(row.find('.v-chip').text()).toContain('Running')
+    expect(row.text()).toContain('Stop')
+  })
+})
+
+// FR-120 P2 — the list is paged, 50 a page; the view asked only for page 1.
+describe('HiveSessionsView — the pager (FR-120 P2)', () => {
+  it('shows no pager for one page', async () => {
+    hoisted.hive.total = 50
+    const w = await render()
+    expect(w.find('[data-testid="hive-sessions-pager"]').exists()).toBe(false)
+  })
+
+  it('pages through every session, asking the server for the page chosen', async () => {
+    hoisted.hive.total = 120
+    const w = await render()
+    const pager = w.find('[data-testid="hive-sessions-pager"]')
+    expect(pager.exists()).toBe(true)
+    await pager.find('button[aria-label="Go to page 2"]').trigger('click')
+    await flushPromises()
+    expect(hoisted.fetchSessions).toHaveBeenLastCalledWith('t1', 2, 50)
   })
 })

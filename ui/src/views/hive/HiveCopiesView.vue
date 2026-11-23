@@ -266,9 +266,13 @@
       </v-col>
     </v-row>
 
-    <v-dialog v-model="adding" max-width="760" scrollable>
+    <v-dialog v-model="adding" max-width="760" scrollable :fullscreen="fullscreen">
       <v-card data-testid="hive-copies-add-dialog">
-        <v-card-title class="text-subtitle-1">{{ $t('hive.copies.add.title') }}</v-card-title>
+        <v-card-title class="d-flex align-center text-subtitle-1">
+          <span class="text-wrap">{{ $t('hive.copies.add.title') }}</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="adding = false" />
+        </v-card-title>
         <v-card-text>
           <p class="mb-2">{{ $t('hive.copies.add.intro') }}</p>
           <v-alert type="warning" variant="tonal" density="compact" class="mb-2">
@@ -337,6 +341,7 @@ import {
 import { useAgentStore, type EnrollmentToken } from '@/stores/agents'
 import { useTenantStore } from '@/stores/tenant'
 import { canSetHivePolicy } from '@/utils/permissions'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 /** The archive replica image (`Dockerfile.hive-archive`), as the
  *  `Archive replica image` workflow publishes it. */
@@ -597,6 +602,9 @@ async function saveRules(): Promise<void> {
 }
 
 const adding = ref(false)
+// FR-120 P2 — the add-a-replica dialog (a 760 px box with command blocks)
+// covers the screen on a phone.
+const { fullscreen } = useResponsiveDialog()
 const minting = ref(false)
 const minted = ref<EnrollmentToken | null>(null)
 const mintError = ref<string | null>(null)

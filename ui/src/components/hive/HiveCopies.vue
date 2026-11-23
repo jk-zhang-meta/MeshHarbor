@@ -11,7 +11,7 @@
   the server's own count (`holds`), the rule a move is decided by.
 -->
 <template>
-  <v-dialog v-if="hasCopies" v-model="shown" max-width="600" scrollable>
+  <v-dialog v-if="hasCopies" v-model="shown" max-width="600" scrollable :fullscreen="fullscreen">
     <template #activator="{ props: activator }">
       <v-btn
         v-bind="activator"
@@ -24,7 +24,11 @@
       </v-btn>
     </template>
     <v-card>
-      <v-card-title>{{ $t('hive.roomCopies.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center">
+        <span class="text-wrap">{{ $t('hive.roomCopies.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="shown = false" />
+      </v-card-title>
       <v-card-text>
         <p class="text-body-2 text-medium-emphasis mb-3">{{ $t('hive.roomCopies.explain') }}</p>
         <v-progress-linear v-if="loading" indeterminate class="mb-2" />
@@ -250,6 +254,7 @@ import { isLive, useHiveStore, type HiveReplicaMember, type HiveSession } from '
 import { useAgentStore } from '@/stores/agents'
 import { useAuthStore } from '@/stores/auth'
 import { deviceLabel } from '@/composables/useHideDeviceName'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import {
   aheadOfTargets,
   behind,
@@ -267,6 +272,8 @@ const auth = useAuthStore()
 const { t } = useI18n()
 
 const shown = ref(false)
+// FR-120 P2 — full screen on a phone (a centred 600 px box left ~264 px).
+const { fullscreen } = useResponsiveDialog()
 const loading = ref(false)
 const error = ref<string | null>(null)
 /** The record as read when the dialog opened, then as each move answers. */

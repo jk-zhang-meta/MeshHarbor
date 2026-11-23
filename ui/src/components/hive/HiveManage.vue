@@ -13,14 +13,18 @@
   <v-chip v-if="becoming && !shown" size="small" variant="tonal" color="info" data-testid="hive-manage-in-progress">
     {{ $t('hive.manage.inProgress') }}
   </v-chip>
-  <v-dialog v-if="offered || shown" v-model="shown" max-width="520">
+  <v-dialog v-if="offered || shown" v-model="shown" max-width="520" scrollable :fullscreen="fullscreen">
     <template #activator="{ props: activator }">
       <v-btn v-bind="activator" size="small" variant="text" prepend-icon="mdi-robot-outline" data-testid="hive-manage-open">
         {{ $t('hive.manage.button') }}
       </v-btn>
     </template>
     <v-card>
-      <v-card-title>{{ $t('hive.manage.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center">
+        <span class="text-wrap">{{ $t('hive.manage.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="shown = false" />
+      </v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3" data-testid="hive-manage-explain">
           {{ $t('hive.manage.explain', { device: deviceName }) }}
@@ -79,6 +83,7 @@ import { useI18n } from 'vue-i18n'
 import { isBecomingManaged, mayBecomeManaged, useHiveStore, type HiveSession } from '@/stores/hive'
 import { useAuthStore } from '@/stores/auth'
 import { useNodeLabel } from '@/composables/useNodeLabel'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 const props = defineProps<{ tenantId: string; sessionId: string }>()
 const hive = useHiveStore()
@@ -86,6 +91,8 @@ const auth = useAuthStore()
 const { t } = useI18n()
 
 const shown = ref(false)
+// FR-120 P2 — full screen on a phone.
+const { fullscreen } = useResponsiveDialog()
 const folder = ref('')
 const asking = ref(false)
 /** Asked, and the asking taken: nothing to ask again from this dialog. */

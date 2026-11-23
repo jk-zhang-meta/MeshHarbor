@@ -15,10 +15,15 @@
     :model-value="modelValue"
     max-width="560"
     scrollable
+    :fullscreen="fullscreen"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <v-card v-if="session">
-      <v-card-title>{{ $t('hive.purge.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center">
+        <span class="text-wrap">{{ $t('hive.purge.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" variant="text" size="small" :aria-label="$t('common.close')" @click="emit('update:modelValue', false)" />
+      </v-card-title>
       <v-card-text>
         <template v-if="!started">
           <p class="text-body-2 mb-2" data-testid="hive-purge-explain">{{ $t('hive.purge.explain', { title: session.title }) }}</p>
@@ -91,9 +96,12 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useHiveStore, type HivePurge, type HiveSession } from '@/stores/hive'
 import { useAgentStore } from '@/stores/agents'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 const props = defineProps<{ modelValue: boolean; tenantId: string; session: HiveSession | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
+// FR-120 P2 — full screen on a phone.
+const { fullscreen } = useResponsiveDialog()
 const hive = useHiveStore()
 const agents = useAgentStore()
 const { t } = useI18n()
