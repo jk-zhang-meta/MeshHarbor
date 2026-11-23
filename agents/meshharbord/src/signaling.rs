@@ -2330,10 +2330,37 @@ async fn connect_once(
     let mut net_rx: Option<NetDeltaRx> = None;
     let mut netchange_probe: Option<(std::time::Instant, u8)> = None;
 
+    // FR-128 — a socket that fell to the direct path as a last resort keeps looking for a
+    // working entry, and moves onto one once it answers (never ratchet: an entry that restarted
+    // for an update is back a minute later).
+    let entry_back = std::sync::Arc::new(tokio::sync::Notify::new());
+    let _entry_probe = match meshharbor_node_core::management_path::entry_retry_after() {
+        Some(after) if ctx.is_primary => {
+            let found = entry_back.clone();
+            let local = cfg.management_entries.clone();
+            Some(AbortOnDrop(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(after).await;
+                    if let Some(entry) = crate::mgmt_entry::first_reachable_entry(&local).await {
+                        info!(%entry, "management path: an entry answers again");
+                        found.notify_one();
+                        return;
+                    }
+                }
+            })))
+        }
+        _ => None,
+    };
+
     // #2551 — setup is done: from here each arm names its own stage.
     drop(setup_stage);
     loop {
         tokio::select! {
+            _ = entry_back.notified() => {
+                return Err(ConnectError::Transient(anyhow::anyhow!(
+                    "management path: moving back onto an entry"
+                )));
+            }
             _ = remote_cfg.names.changed.notified(), if ctx.is_primary => {
                 remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
             }

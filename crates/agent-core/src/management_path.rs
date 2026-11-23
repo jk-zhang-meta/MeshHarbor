@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 /// `MESHHARBORD_MANAGEMENT_ENTRIES=0`: dial the centre directly, whatever it pushed.
 pub const KILL_SWITCH_ENV: &str = "MESHHARBORD_MANAGEMENT_ENTRIES";
@@ -172,6 +174,9 @@ static ROUTE: RwLock<Option<(String, SocketAddr)>> = RwLock::new(None);
 /// The way the last control socket connected, and whether that was direct as a last resort.
 static LAST: RwLock<Option<(Candidate, bool)>> = RwLock::new(None);
 
+/// How many control sockets in a row fell to the direct path as a last resort.
+static LAST_RESORT_RUN: AtomicU32 = AtomicU32::new(0);
+
 /// The control socket to the centre at `host` connected along `c`.
 pub fn note_connected(host: &str, c: Candidate, last_resort: bool) {
     set_route(
@@ -182,6 +187,28 @@ pub fn note_connected(host: &str, c: Candidate, last_resort: bool) {
         },
     );
     *LAST.write().unwrap_or_else(|e| e.into_inner()) = Some((c, last_resort));
+    if last_resort {
+        LAST_RESORT_RUN.fetch_add(1, Ordering::Relaxed);
+    } else {
+        LAST_RESORT_RUN.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A socket on the direct path as a last resort looks for a working entry again after this
+/// long (never ratchet: an entry that was down for a restart is used again once it is back).
+/// `None` when the socket is not on a last resort.
+pub fn entry_retry_after() -> Option<Duration> {
+    if disabled() || !matches!(last_connected(), Some((Candidate::Direct, true))) {
+        return None;
+    }
+    Some(retry_delay(LAST_RESORT_RUN.load(Ordering::Relaxed)))
+}
+
+/// 2 min after the first last resort, doubling with each one in a row, at most 30 min: an entry
+/// that answers yet cannot carry the socket costs a reconnect that often, not every 2 min.
+fn retry_delay(run: u32) -> Duration {
+    let doublings = run.saturating_sub(1).min(4);
+    Duration::from_secs((120u64 << doublings).min(1800))
 }
 
 /// How the last control socket connected: `(path, direct as a last resort)`.
@@ -244,6 +271,15 @@ pub fn route_http(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_last_resort_looks_for_an_entry_again_backing_off_to_half_an_hour() {
+        let secs: Vec<u64> = [0, 1, 2, 3, 4, 5, 9]
+            .iter()
+            .map(|r| retry_delay(*r).as_secs())
+            .collect();
+        assert_eq!(secs, vec![120, 120, 240, 480, 960, 1800, 1800]);
+    }
 
     fn p(direct: bool, entries: &[&str]) -> Pushed {
         Pushed {

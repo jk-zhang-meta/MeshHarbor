@@ -289,6 +289,25 @@ impl std::fmt::Display for AttestFailure {
     }
 }
 
+/// Device side: the first of this device's entries (the kept pushed path and the owner's own,
+/// in dial order) that answers an attestation request. A refusal still answers: the entry can
+/// carry the connection, as the dial itself would use it.
+pub async fn first_reachable_entry(local: &[String]) -> Option<SocketAddr> {
+    use meshharbor_node_core::management_path as mp;
+    let pushed = mp::state_path().map(|p| mp::load(&p)).unwrap_or_default();
+    for c in mp::plan(&pushed, local, None).0 {
+        if let mp::Candidate::Entry(entry) = c
+            && !matches!(
+                request_attestation(entry, Duration::from_secs(5)).await,
+                Err(AttestFailure::Unreachable(_))
+            )
+        {
+            return Some(entry);
+        }
+    }
+    None
+}
+
 /// Device side: ask `entry` for an attestation of this device's address.
 pub async fn request_attestation(
     entry: SocketAddr,
@@ -340,6 +359,24 @@ mod tests {
 
     /// An entry on loopback forwards a plain TCP exchange to its "centre" and answers an
     /// attestation request with a token the centre's key verifies, naming the caller.
+    #[tokio::test]
+    async fn a_dead_entry_is_passed_over_for_one_that_answers_even_with_a_refusal() {
+        let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+        let alive = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let alive_addr = alive.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (s, _) = alive.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await.unwrap();
+            w.write_all(me::no_line("no_key").as_bytes()).await.unwrap();
+        });
+        let local = [dead_addr.to_string(), alive_addr.to_string()];
+        assert_eq!(first_reachable_entry(&local).await, Some(alive_addr));
+    }
+
     #[tokio::test]
     async fn an_entry_forwards_unread_and_attests_the_caller() {
         // The "centre": echoes one line.
