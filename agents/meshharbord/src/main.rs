@@ -4589,7 +4589,9 @@ async fn run_cmd(
             tunnel_core::env::register_config_fallbacks(fallbacks);
         }
         // FR-127 — before anything serves: a protected device never binds a relay listener,
-        // whatever its config, its env or the control plane says.
+        // whatever its config, its env or the control plane says. (A build without the overlay
+        // has no relay listener to refuse.)
+        #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
         tunnel_core::overlay::orgrelay::set_device_protected(cfg.protected);
         if cfg.protected {
             tracing::info!(
@@ -4685,6 +4687,11 @@ async fn run_cmd(
     // set `relay_server_enabled` binds nothing and logs nothing.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     meshharbord::relay_server::maybe_start().await;
+
+    // FR-128 — this device as its zone's management entry: owner opt-in (`management_entry_port`),
+    // refused while protected, serving only once the centre sends a gateway's key. Every build:
+    // it is plain TCP forwarding, no overlay needed.
+    meshharbord::mgmt_entry::maybe_start(&cfg).await;
 
     // Phase 3b: generate + persist this node's WireGuard identity on the
     // first overlay-enabled startup. The public key is what the netmap

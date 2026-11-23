@@ -59,6 +59,11 @@ pub struct WsParams {
     /// Absent = legacy client → accepted (the LB pins those to pod 1).
     #[serde(default)]
     pub tid: Option<String>,
+    /// FR-128 — an agent that came through a zone's management entry presents the entry's
+    /// attestation of its address here (`meshharbor_remote_control::management_entry`). Read
+    /// only for `role=agent`; checked by the fleet module before anything reads the origin.
+    #[serde(default)]
+    pub entry: Option<String>,
 }
 
 /// Validate a claimed affinity `tid` against a token-derived tenant id.

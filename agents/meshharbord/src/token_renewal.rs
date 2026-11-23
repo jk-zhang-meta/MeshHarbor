@@ -175,7 +175,8 @@ struct RenewBody {
 pub async fn request(server_url: &str, token: &str) -> anyhow::Result<Reply> {
     let base = server_url.trim().trim_end_matches('/');
     let url = format!("{base}/api/agent/self/renew");
-    let client = reqwest::Client::builder()
+    // FR-128 — to the centre along the control socket's path.
+    let client = meshharbor_node_core::management_path::route_http(reqwest::Client::builder())
         .user_agent(concat!(
             "meshharbord-token-renewal/",
             env!("CARGO_PKG_VERSION")

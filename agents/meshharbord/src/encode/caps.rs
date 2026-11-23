@@ -2239,6 +2239,9 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // the device's ExecPolicy, and the agent's own `exec_enabled` config
         // key all still have to say yes before anything runs.
         rpc: rpc_caps(),
+        // FR-128 — `None` HERE on purpose, like `record`: the entry binds after the probe, and
+        // `signaling::stub_caps` stamps it at every announcement.
+        management_entry_port: None,
         // FR-85 P3b — empty HERE on purpose: `detect()` is memoized and
         // config-blind, while the record words follow the owner's LIVE gate.
         // `signaling::stub_caps` fills them at every announcement (the hello,

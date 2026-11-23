@@ -55,7 +55,7 @@ pub async fn ws_upgrade(
             Some(t) => {
                 state
                     .modules
-                    .agent_upgrade(t, params.tid, connection_origin, ws)
+                    .agent_upgrade(t, params.tid, params.entry, connection_origin, ws)
                     .await
             }
             None => unauthorized("agent role requires ?token="),

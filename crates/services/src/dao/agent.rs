@@ -1051,6 +1051,31 @@ impl AgentDao {
         Ok(result.matched_count == 1)
     }
 
+    /// FR-128 — the org's approved relays that run a management entry and were last seen at
+    /// `public_ip`. A connection from such an address must carry that entry's attestation, or it
+    /// takes no address (an entry must not lend its own zone). Scoped to the org and to approved
+    /// relays on purpose: `management_entry_port` is the device owner's setting, and an
+    /// unapproved device, or another org's, must not be able to strip addresses (and zones)
+    /// from everyone behind a shared egress. The caller still checks it is a zone gateway.
+    pub async fn find_management_entries_at(
+        &self,
+        tenant_id: ObjectId,
+        public_ip: &str,
+    ) -> DaoResult<Vec<Agent>> {
+        self.base
+            .find_many(
+                doc! {
+                    "tenant_id": tenant_id,
+                    "deleted_at": null,
+                    "public_ip": public_ip,
+                    "peer_relay_policy.serve": true,
+                    "capabilities.management_entry_port": { "$type": "number" },
+                },
+                None,
+            )
+            .await
+    }
+
     /// Persist the agent's observed public IP on connect/hello.
     pub async fn update_public_ip(&self, agent_id: ObjectId, public_ip: &str) -> DaoResult<()> {
         if public_ip.is_empty() {

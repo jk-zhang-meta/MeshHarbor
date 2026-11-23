@@ -116,6 +116,12 @@ pub enum ConnectionOriginSource {
     InvalidProxyConfiguration,
     AmbiguousHeader,
     InvalidTrustedChain,
+    /// FR-128 — the connection came through a zone's management entry, and the entry's
+    /// attestation (checked by the caller) named the device's own address.
+    ManagementEntry,
+    /// FR-128 — the connection came from a current management entry's address without a valid
+    /// attestation: the entry must not lend its own address (and so its zone) to it.
+    UnattestedEntry,
 }
 
 impl ConnectionOriginSource {
@@ -127,6 +133,8 @@ impl ConnectionOriginSource {
             Self::InvalidProxyConfiguration => "invalid_proxy_configuration",
             Self::AmbiguousHeader => "ambiguous_header",
             Self::InvalidTrustedChain => "invalid_trusted_chain",
+            Self::ManagementEntry => "management_entry",
+            Self::UnattestedEntry => "unattested_entry",
         }
     }
 }
@@ -223,6 +231,25 @@ impl ConnectionOrigin {
 
     pub fn client_ip(&self) -> Option<IpAddr> {
         self.client_ip
+    }
+    /// FR-128 — this connection as the management entry it came through attested it: the
+    /// device's own address replaces the entry's. Only the upgrade's attestation check calls it,
+    /// after verifying the token AND that this connection's resolved address is that entry's.
+    pub fn through_management_entry(&self, device_ip: IpAddr) -> Self {
+        Self {
+            client_ip: Some(canonical_ip(device_ip)),
+            source: ConnectionOriginSource::ManagementEntry,
+            ..self.clone()
+        }
+    }
+    /// FR-128 — a connection from a current entry's address that carried no valid attestation:
+    /// no client address, so no zone (fail closed). The transport peer is kept for the record.
+    pub fn unattested_entry(&self) -> Self {
+        Self {
+            client_ip: None,
+            source: ConnectionOriginSource::UnattestedEntry,
+            ..self.clone()
+        }
     }
     /// Proxy-trust-validated public client IP for inventory display & GeoIP
     /// location: `Some(ip)` if and only if [`Self::client_ip`] resolved a

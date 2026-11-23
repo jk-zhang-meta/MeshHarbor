@@ -44,6 +44,7 @@ pub mod derp_ticket;
 pub mod device_access;
 pub mod error;
 pub mod hive;
+pub mod management_entry;
 pub mod models;
 pub mod net_inventory;
 pub mod permissions;

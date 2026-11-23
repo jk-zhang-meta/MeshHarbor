@@ -71,8 +71,28 @@ pub async fn connect(url: &str) -> Result<(Ws, Response), tungstenite::Error> {
     })))
 }
 
+/// FR-128 — the same handshake through a management entry: TCP to `entry`, then TLS and the
+/// WebSocket exactly as `url` says (SNI, the certificate check, `Host`), as if dialed directly.
+/// The entry forwards the bytes to the centre unread.
+pub async fn connect_via(
+    url: &str,
+    entry: std::net::SocketAddr,
+) -> Result<(Ws, Response), tungstenite::Error> {
+    let stream = match tokio::time::timeout(PER_ADDR_CONNECT, TcpStream::connect(entry)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(tungstenite::Error::Io(e)),
+        Err(_) => {
+            return Err(tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("connect to entry {entry} timed out"),
+            )));
+        }
+    };
+    client_async_tls_with_config(url, stream, None, None).await
+}
+
 /// Host and port of a `ws(s)://` URL, the scheme's default port when it has none.
-fn host_port(url: &str) -> Option<(String, u16)> {
+pub(crate) fn host_port(url: &str) -> Option<(String, u16)> {
     let uri: Uri = url.parse().ok()?;
     let host = uri.host()?.to_string();
     let port = uri.port_u16().unwrap_or(match uri.scheme_str() {

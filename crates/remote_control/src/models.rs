@@ -423,6 +423,11 @@ pub struct AgentCaps {
     /// leaving the caller to hang until its deadline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc: Vec<String>,
+    /// FR-128 — the TCP port this device's management entry listens on, once bound: the device's
+    /// owner set `management_entry_port`, and the device is not protected. The centre offers it
+    /// to the devices of the zones this device is a gateway of. `None` = no entry here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_entry_port: Option<u16>,
     /// FR-85 P3 — what this agent can record for a REMOTE controller, as
     /// [`RecordCap`] wire words:
     ///
@@ -1311,6 +1316,10 @@ pub enum RpcCap {
     /// Equality-matched; neither `relay-server` nor `relay-control` is a prefix
     /// of the other.
     RelayControl,
+    /// FR-128 — the agent parses `rc:agent.management_path` (how it may reach the centre:
+    /// direct, or through its zone's gateways) and, when it runs a management entry
+    /// ([`AgentCaps::management_entry_port`]), `rc:agent.management_entry`. Equality-matched.
+    ManagementPath,
 }
 
 impl RpcCap {
@@ -1332,6 +1341,7 @@ impl RpcCap {
             Self::ConfigReport => "config-report",
             Self::RelayServer => "relay-server",
             Self::RelayControl => "relay-control",
+            Self::ManagementPath => "management-path",
             Self::ManagedForward => "managed-forward",
             Self::ManagedForwardNft => "managed-forward-nft",
             Self::SharedFilesAsAccount => "shared-files-as-account",
@@ -1373,7 +1383,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 47] = [
+    pub const ALL: [RpcCap; 48] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1421,6 +1431,7 @@ impl RpcCap {
         Self::ManagedForward,
         Self::ManagedForwardNft,
         Self::SharedFilesAsAccount,
+        Self::ManagementPath,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -9870,6 +9881,10 @@ mod tests {
             // FR-127 — the protected switch: a server that could clear it would protect against
             // nothing a server can be made to do.
             "protected",
+            // FR-128 — a management entry forwards to the centre and attests addresses: the
+            // owner opens it, and the owner's own entries are the owner's.
+            "management_entry_port",
+            "management_entries",
             // RDP over the mesh is the device owner's opt-in, like the rest.
             "rdp_over_mesh",
             "ssh_max_privilege",

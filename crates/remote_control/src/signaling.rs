@@ -4216,6 +4216,26 @@ pub enum ServerMsg {
     #[serde(rename = "rc:agent.keep_busy_policy")]
     KeepBusyPolicy { denied: bool },
 
+    /// FR-128 — how this device may reach the centre. Sent on every connect to a device that
+    /// advertises `management-path` ([`crate::models::RpcCap::ManagementPath`]), never to one
+    /// that does not (a pre-FR-128 agent logs an unknown `rc:*` frame at WARN).
+    ///
+    /// `direct = false`: the device's zone may not reach the centre directly (a strict zone
+    /// whose countries do not hold the centre, the FR-124 verdict). It then uses `entries`, and
+    /// dials the centre directly only after every entry failed. `entries` are `ip:port`
+    /// literals: its zone's gateways that run a management entry, public addresses only. The
+    /// device persists the last one, so it holds at boot, before it reaches the centre.
+    #[serde(rename = "rc:agent.management_path")]
+    ManagementPath { direct: bool, entries: Vec<String> },
+
+    /// FR-128 — this device is a management entry of a zone: the key it signs attestations with
+    /// ([`crate::management_entry`]). Sent on connect to an approved gateway that advertises
+    /// [`crate::models::AgentCaps::management_entry_port`].
+    #[serde(rename = "rc:agent.management_entry")]
+    ManagementEntryKey {
+        key: crate::management_entry::EntryKey,
+    },
+
     /// Multi-org — join an ADDITIONAL org from the admin UI ("Add to another
     /// organization"), so a device that can't be reached for a hands-on
     /// `mh enroll` still gets a second enrollment.

@@ -65,21 +65,26 @@ flowchart LR
   device's verdict or entry list changes. The device persists it next to its config: it is state,
   not configuration.
 - **The device is never stranded.** If a device whose zone forbids direct has had every entry fail
-  for a whole round, it dials the centre directly as a last resort and says so: the log, and its
-  heartbeat's `management_path` field. Business isolation requires a mainland device to stay
-  manageable. The fallback is counted and visible.
+  for a whole round, it dials the centre directly as a last resort and says so in its log (P2
+  shows it in `mh status` and on the zone page). Business isolation requires a mainland device to
+  stay manageable.
 
 ### The device's path ladder
 
 1. The path that last worked.
 2. Then, in order: direct (if allowed), local entries, pushed entries.
 3. A candidate fails on TCP connect, TLS or the WebSocket handshake, within 15 s.
-4. On an entry while direct is allowed, the device probes the centre directly every 10 min and
-   reconnects direct when it answers. It never ratchets.
+4. Direct comes first again at every reconnect while it is allowed, so a device that fell back
+   to an entry returns to direct the next time its socket reconnects (P1). A periodic direct
+   probe that moves a live socket back sooner is P2.
+5. A socket on the direct path by choice moves onto an entry when a push forbids direct
+   (`should_move`). A socket that is direct as a last resort does not, or it would loop.
 
-HTTP requests to the centre (renew, update check and download, crash upload, service RPC) take
-the control socket's current path. The HTTP client resolves the centre's host to the entry
-address; SNI and the certificate check are unchanged.
+HTTP requests to the centre take the control socket's current path: the client resolves the
+centre's host to the entry address, so SNI and the certificate check are unchanged. P1 covers
+token renewal, the update check and download, crash upload and the device name. Still direct:
+the log uploader and the LocalAPI device view (their clients live for the daemon's life), the
+Windows SYSTEM services (another process), and enrollment and sign-in (P3).
 
 ### The entry forwarder
 
@@ -123,12 +128,22 @@ must not lend its zone, so:
 
   Then the connection's origin is the attested address (a new `ConnectionOriginSource::
   ManagementEntry`, `crates/core/src/client_ip.rs:111`). Zone, GeoIP and `public_ip` read it as if
-  the device had dialed directly.
-- **A connection from a current entry's address with no valid token gets no client address**, so
-  its zone is unresolved. A pin (`app.business_zone_pins`) still applies.
+  the device had dialed directly. An attested address that is private (a device on the entry's own
+  network) keeps the entry's address, which is then the true one.
+- **A connection from the address of one of its org's current entries, with no valid token, gets
+  no client address**, so its zone is unresolved. Only the org's current entries count (approved
+  relay, zone gateway, port set): the port is the owner's setting, and an unapproved device or
+  another org's must not be able to strip the address of everyone behind a shared egress (found
+  by the P1 tests). A pin (`app.business_zone_pins`) still applies. The cost: a device behind
+  the same NAT as an entry, dialing directly, gets no zone either. Give an entry an address of its
+  own, or pin its neighbours. An approved relay is exempt: two relays of one provider can share an
+  egress (seen in the field), and a relay that lost its zone would lose its lines.
 - An entry is trusted with its key: a gateway already relays its zone's traffic. A compromised
   entry could attest a wrong address for devices that come through it. It cannot read or forge
   their TLS.
+- Residual: no nonce is remembered, so a token can be replayed for up to 120 s, and only from the
+  entry's own address by a device of the same org. A device whose owner points it at ANOTHER
+  org's entry, without a token, takes that entry's address (the no-token rule is per org).
 
 ### Kill switches
 
@@ -136,14 +151,14 @@ must not lend its zone, so:
 |---|---|---|
 | device | `MESHHARBORD_MANAGEMENT_ENTRIES=0` | direct only, today's behaviour |
 | entry | `management_entry_port = 0` | no listener, no key |
-| centre | `app.management_entries = false` | pushes no path (devices keep direct) and ignores tokens |
+| centre | `app.management_entries = false` | tells every device "direct, no entries" and ignores tokens |
 
 ## Phases
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| P1 | entry forwarder and attestation, the device's path ladder (WebSocket and HTTP), the centre's push and token check, zone through an entry | all three above | in progress |
-| P2 | the zone page shows each zone's entries and every device's current path; `mh status` shows it | — | open |
+| P1 | entry forwarder and attestation, the device's path ladder (WebSocket and the main HTTP clients), the centre's push and token check, zone through an entry | all three above | built, not released |
+| P2 | the zone page shows each zone's entries and every device's current path; `mh status` shows it; a periodic direct probe moves a live socket back; the remaining HTTP clients | — | open |
 | P3 | install and sign-in carry the org's entry list, so a fresh install in a strict zone never dials the centre | — | open |
 | P4 | browser access (web console, remote-desktop viewer) through a zone's entry | — | open |
 | P5 | an entry caches release assets, so updates do not cross the line once per device | — | open |
@@ -178,3 +193,4 @@ must not lend its zone, so:
 | When (UTC) | What |
 |---|---|
 | 2026-11-23 ~01:04 | Red, before any change. Three lab servers on one subnet go silent on the control socket together; the centre reaps them at 01:05:41 (`receive-liveness deadline exceeded`, 104–108 s). From one of them: the centre's address answers no ICMP or TCP 80/443, while public sites, a mainland relay (TCP 22 open; other ports answer RST, so reachable) and a peer on the lab's other subnet all answer. That peer reaches the centre normally. The daemons keep running, with direct mesh paths to that peer. |
+| 2026-11-23 01:27–01:54 | The route came back by itself, one server at a time (01:27, 01:37, 01:54); one of them still had no route at 01:32 when tested. About 25–50 min off the fleet each, with the daemon running and the zone's gateway reachable the whole time. A later field run needs its own red: a host whose path to the centre's address is blocked on purpose (an outbound firewall rule, reverted after). |

@@ -213,6 +213,9 @@ impl ConnectionObservation {
         let coherent_source = match self.origin_source.as_str() {
             "socket_peer" => client.is_some() && client == peer,
             "trusted_proxy_chain" => client.is_some() && peer.is_some(),
+            // FR-128 — the address an entry attested (the transport peer is the entry or our
+            // proxy, never the device).
+            "management_entry" => client.is_some() && peer.is_some(),
             _ => false,
         };
         self.identity == device.identity

@@ -45,6 +45,7 @@ pub mod files_dir;
 pub mod logging;
 pub mod logs_upload;
 pub mod machine;
+pub mod management_path;
 pub mod notify;
 /// Personal account login -> default machine-level (`root` / `SYSTEM`) promotion
 /// request IPC, zero-LPE temp file lifecycle, and OS elevation helpers.

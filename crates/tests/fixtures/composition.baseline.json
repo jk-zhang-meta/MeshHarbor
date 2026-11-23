@@ -6464,6 +6464,8 @@
     "rc:forward.confirm",
     "rc:agent.key_rotate",
     "rc:agent.keep_busy_policy",
+    "rc:agent.management_path",
+    "rc:agent.management_entry",
     "rc:agent.join_org",
     "rc:rpc.exec",
     "rc:rpc.cancel",

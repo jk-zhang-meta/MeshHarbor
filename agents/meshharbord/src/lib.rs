@@ -113,6 +113,7 @@ pub mod logs_fetch;
 pub mod macos_supervisor;
 pub mod mdns_resolve;
 pub mod mem_trim;
+pub mod mgmt_entry;
 pub mod power;
 pub mod remote_config;
 // P5 — crate-private: its surface leans on `peer::TargetResolution`

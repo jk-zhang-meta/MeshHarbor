@@ -580,6 +580,8 @@ pub async fn handle_agent_socket(
             has_net,
             ice_policy,
             peer_relay_serve,
+            management_path,
+            entry_key,
         } => {
             let net_dao =
                 meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
@@ -594,6 +596,20 @@ pub async fn handle_agent_socket(
                 state
                     .rc_hub
                     .set_agent_zone_ice_policy(agent_id, ice_policy.clone());
+                // FR-128 — how this device may reach the centre, on every connect (so a switch
+                // turned off, or a zone that stopped being strict, reaches a device that
+                // persisted the old path), and a gateway's attestation key. Cap-gated.
+                if crate::management_path::advertises(&caps) {
+                    let (direct, entries) = management_path;
+                    info!(%agent_id, direct, entries = entries.len(), "management path pushed");
+                    let _ = registered_tx.try_send(ServerMsg::ManagementPath { direct, entries });
+                }
+                if caps.management_entry_port.is_some()
+                    && let Some(key) = entry_key
+                {
+                    info!(%agent_id, "management entry: attestation key delivered");
+                    let _ = registered_tx.try_send(ServerMsg::ManagementEntryKey { key });
+                }
                 if roamed_public_ip && has_net {
                     let countries_vec: Vec<String> =
                         ice_policy.allowed_countries.iter().cloned().collect();
@@ -1760,12 +1776,18 @@ fn valid_connect_backbone_endpoint(s: &str, tenant_cidr: &str) -> bool {
     }
 }
 
+// Built once per connect and matched at once: boxing the large variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 enum ConnectZoneSnapshot {
     Consistent {
         zone_revision: u64,
         has_net: bool,
         ice_policy: crate::hub::AgentZoneIcePolicy,
         peer_relay_serve: (bool, u64, Vec<String>),
+        /// FR-128 — `(direct, entries)` for `rc:agent.management_path`.
+        management_path: (bool, Vec<String>),
+        /// FR-128 — the gateway's attestation key, when it runs an entry.
+        entry_key: Option<meshharbor_remote_control::management_entry::EntryKey>,
     },
     Superseded,
     Failed,
@@ -2053,11 +2075,45 @@ async fn load_consistent_connect_zone_and_relay_state(
         );
         let composite_rev =
             effective_peer_relay_serve_revision(zone_revision, fresh_agent.peer_relay_revision);
+        // FR-128 — the device's zone entries, at their nodes' public addresses.
+        let mut gateway_nodes = std::collections::HashMap::new();
+        for gw in crate::management_path::zone_entry_gateways(
+            net1.as_ref(),
+            &ice_policy,
+            &approved_relays,
+        ) {
+            let Some(gw_id) = gw.id else { continue };
+            if let Some(node) = relay_nodes.get(&gw_id) {
+                gateway_nodes.insert(gw_id, node.clone());
+                continue;
+            }
+            match node_dao
+                .find_live_by_tenant_and_machine(tenant_id, &gw.machine_id)
+                .await
+            {
+                Ok(Some(node)) => {
+                    gateway_nodes.insert(gw_id, node);
+                }
+                Ok(None) => {}
+                Err(_) => return ConnectZoneSnapshot::Failed,
+            }
+        }
+        let management_path = crate::management_path::path_for(
+            state,
+            net1.as_ref(),
+            &fresh_agent,
+            &ice_policy,
+            &approved_relays,
+            &gateway_nodes,
+        );
+        let entry_key = crate::management_path::entry_key(state, net1.as_ref(), &fresh_agent);
         return ConnectZoneSnapshot::Consistent {
             zone_revision,
             has_net: net1.is_some(),
             ice_policy,
             peer_relay_serve: (fresh_agent.peer_relay_policy.serve, composite_rev, endpoints),
+            management_path,
+            entry_key,
         };
     }
     ConnectZoneSnapshot::Superseded
@@ -2158,6 +2214,7 @@ pub async fn ws_upgrade_agent(
     state: FleetState,
     token: String,
     tid: Option<String>,
+    entry: Option<String>,
     connection_origin: ConnectionOrigin,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -2276,6 +2333,31 @@ pub async fn ws_upgrade_agent(
     }
     let token_exp = claims.exp;
     let presented_generation = claims.generation;
+
+    // FR-128 — a connection through a zone's management entry: the entry's attestation names
+    // the device's own address; without one, an entry's address names nobody. Before the
+    // upgrade, so the zone observation and `public_ip` only ever see the resolved origin.
+    // Bounded like the reads above; a timeout on a connection that carried a token does not
+    // fall back to the entry's address.
+    let connection_origin = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        crate::management_path::resolve_origin(
+            &state,
+            tenant_id,
+            agent_id,
+            entry.as_deref(),
+            connection_origin.clone(),
+        ),
+    )
+    .await
+    {
+        Ok(origin) => origin,
+        Err(_) if entry.is_some() => {
+            warn!(%agent_id, "management entry: attestation check timed out — no address");
+            connection_origin.unattested_entry()
+        }
+        Err(_) => connection_origin,
+    };
 
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)

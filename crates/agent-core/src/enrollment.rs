@@ -307,6 +307,8 @@ pub async fn enroll_with_existing_identity(
         // that would let enrollment itself hand the server the local veto.
         remote_config_enabled: false,
         protected: false,
+        management_entry_port: None,
+        management_entries: Vec::new(),
         // FR-84 D3 — the built-in default (a person at a fresh device may
         // restart it from the companion); `preserve_operator_config` keeps an
         // owner's OFF across a re-enrollment.

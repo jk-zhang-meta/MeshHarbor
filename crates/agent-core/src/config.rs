@@ -760,6 +760,17 @@ pub struct AgentConfig {
     /// mars, where this exact confound nearly inverted E2E-3's result.
     #[serde(default)]
     pub relay_server_port: Option<u32>,
+    /// FR-128 — run a management entry on this TCP port: forward management connections from
+    /// this zone's devices to the centre (their TLS, unread) and attest the addresses they come
+    /// from. It serves only while the org admin has made this device a zone gateway: before
+    /// that the centre sends no key, and nobody is offered the port. `None` or `0` = off.
+    /// Device-owned, absent from `DesiredConfig`; refused under `protected`.
+    #[serde(default)]
+    pub management_entry_port: Option<u16>,
+    /// FR-128 — the owner's own management entries (`ip:port`, any address: a LAN peer that runs
+    /// one, say), tried before the ones the centre pushes. Device-owned.
+    #[serde(default)]
+    pub management_entries: Vec<String>,
     /// R4 — tunnel `quic-derp-v1` fallback: after repeated quick tunnel
     /// session deaths (a corp capture window killing fresh TURN/TLS legs),
     /// lead the next attempt with QUIC over the ESTABLISHED `/derp` WS
@@ -2685,6 +2696,14 @@ impl AgentConfig {
     pub fn vault_allowed(&self) -> bool {
         self.vault_enabled && !self.protected
     }
+    /// FR-128 — the port this device's management entry listens on, when one may run here.
+    pub fn management_entry_port_allowed(&self) -> Option<u16> {
+        if self.protected {
+            None
+        } else {
+            self.management_entry_port.filter(|p| *p != 0)
+        }
+    }
     /// This device serves as an org relay (`None` = not decided locally).
     pub fn relay_server_allowed(&self) -> Option<bool> {
         if self.protected {
@@ -3013,6 +3032,8 @@ pub fn test_fixture() -> AgentConfig {
         companion_autostart: true,
         remote_config_enabled: false,
         protected: false,
+        management_entry_port: None,
+        management_entries: Vec::new(),
         local_restart_enabled: true,
         external_access_enabled: false,
         rdp_over_mesh: false,

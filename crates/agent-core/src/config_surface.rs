@@ -695,6 +695,27 @@ const KEYS: &[KeyMeta] = &[
          survives a compromised server. Built-in default: OFF.",
     },
     KeyMeta {
+        key: "management_entry_port",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "number",
+        description: "FR-128 - run a MANAGEMENT ENTRY on this TCP port (1-65535; empty = off): forward \
+         management connections from this zone's devices to the centre, their TLS unread, and \
+         attest the address each one comes from. Serves only while the org admin has made this \
+         device a zone gateway. Device-local, never server-pushable; refused while protected.",
+    },
+    KeyMeta {
+        key: "management_entries",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "list",
+        description: "FR-128 - comma-separated ip:port management entries of your own (a LAN peer \
+         that runs one), tried before the ones the centre offers when this device reaches the \
+         centre. Device-local.",
+    },
+    KeyMeta {
         key: "relay_server_port",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2094,6 +2115,8 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_netcheck" => cfg.overlay_netcheck.map(fmt_bool),
         "relay_server_enabled" => cfg.relay_server_enabled.map(fmt_bool),
         "relay_server_port" => cfg.relay_server_port.map(|v| v.to_string()),
+        "management_entry_port" => cfg.management_entry_port.map(|v| v.to_string()),
+        "management_entries" => Some(cfg.management_entries.join(",")),
         "tunnel_derp_fallback" => cfg.tunnel_derp_fallback.map(fmt_bool),
         "tunnel_reupgrade" => cfg.tunnel_reupgrade.map(fmt_bool),
         "tunnel_peers_survive_reattach" => cfg.tunnel_peers_survive_reattach.map(fmt_bool),
@@ -2555,6 +2578,37 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_org_relay" => cfg.overlay_org_relay = parse_tribool(value)?,
         "overlay_netcheck" => cfg.overlay_netcheck = parse_tribool(value)?,
         "relay_server_enabled" => cfg.relay_server_enabled = parse_tribool(value)?,
+        "management_entry_port" => {
+            cfg.management_entry_port = match value.map(str::trim).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(v) => {
+                    let n: u16 = v.parse().map_err(|_| {
+                        format!("management_entry_port must be 1-65535 (got {v:?})")
+                    })?;
+                    if n == 0 { None } else { Some(n) }
+                }
+            }
+        }
+        "management_entries" => {
+            let mut out = Vec::new();
+            for e in value
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let ok = e
+                    .parse::<std::net::SocketAddr>()
+                    .is_ok_and(|a| a.port() != 0);
+                if !ok {
+                    return Err(format!(
+                        "management_entries must be ip:port entries (got {e:?})"
+                    ));
+                }
+                out.push(e.to_string());
+            }
+            cfg.management_entries = out;
+        }
         "relay_server_port" => {
             cfg.relay_server_port = match value.map(str::trim).filter(|s| !s.is_empty()) {
                 None => None,

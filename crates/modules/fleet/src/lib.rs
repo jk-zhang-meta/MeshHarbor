@@ -74,6 +74,7 @@ pub mod hub;
 pub mod install_trace;
 pub mod keep_busy;
 mod local_releases;
+pub mod management_path;
 pub mod name_sync;
 pub mod nudge;
 pub mod presence;

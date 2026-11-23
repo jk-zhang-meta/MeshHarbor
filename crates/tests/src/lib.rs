@@ -177,6 +177,11 @@ mod keep_busy_tests;
 mod key_rotation_tests;
 #[cfg(test)]
 mod managed_forward_tests;
+/// FR-128 — a management entry's key, its attestation of a device's address at the agent
+/// upgrade (forged, foreign, stale, misplaced and absent tokens move nothing), the centre's
+/// kill switch, and the path each device is told.
+#[cfg(test)]
+mod management_entry_tests;
 /// FR-115 P5 — the meeting-length cap: warned at 55, ended at 60, once.
 #[cfg(test)]
 mod meeting_cap_tests;

@@ -332,6 +332,7 @@ impl Modules {
         &self,
         token: String,
         tid: Option<String>,
+        entry: Option<String>,
         origin: meshharbor_core::client_ip::ConnectionOrigin,
         ws: axum::extract::WebSocketUpgrade,
     ) -> axum::response::Response {
@@ -341,6 +342,7 @@ impl Modules {
                 fleet.clone(),
                 token,
                 tid,
+                entry,
                 origin,
                 ws,
             )

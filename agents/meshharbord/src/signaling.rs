@@ -1634,6 +1634,117 @@ enum ConnectError {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// FR-128 — one candidate's bound when the plan has more than one: long enough for a TLS
+/// handshake across a slow line, short enough that the next path is tried within a minute.
+const MANAGEMENT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// FR-128 — dial the centre along the management path (the primary org only; a secondary
+/// enrollment's centre is dialed directly): each candidate of the plan in turn, the WebSocket
+/// through an entry carrying the entry's attestation of this device's address. The shape is
+/// `timeout(connect)`'s, so the caller's refusal handling is unchanged: the last failure, or
+/// `Err(())` when the last one timed out. An HTTP answer from the centre (a 401) ends the walk:
+/// another path would only hear it again.
+async fn dial_centre(
+    ctx: &OrgCtx,
+    cfg: &AgentConfig,
+    url: &str,
+) -> Result<
+    Result<
+        (
+            crate::ws_connect::Ws,
+            tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
+        ),
+        tokio_tungstenite::tungstenite::Error,
+    >,
+    (),
+> {
+    use meshharbor_node_core::management_path as mp;
+    if !ctx.is_primary || mp::disabled() {
+        return tokio::time::timeout(WS_CONNECT_TIMEOUT, crate::ws_connect::connect(url))
+            .await
+            .map_err(|_| ());
+    }
+    let host = crate::ws_connect::host_port(url)
+        .map(|(h, _)| h)
+        .unwrap_or_default();
+    let pushed = mp::state_path().map(|p| mp::load(&p)).unwrap_or_default();
+    let (order, last_resort) = mp::plan(
+        &pushed,
+        &cfg.management_entries,
+        mp::last_connected().map(|(c, _)| c),
+    );
+    let bound = if order.len() > 1 {
+        MANAGEMENT_CANDIDATE_TIMEOUT
+    } else {
+        WS_CONNECT_TIMEOUT
+    };
+    let last_index = order.len().saturating_sub(1);
+    let mut last: Result<Result<_, _>, ()> = Err(());
+    for (i, c) in order.into_iter().enumerate() {
+        let attempt = match c {
+            mp::Candidate::Direct => {
+                tokio::time::timeout(bound, crate::ws_connect::connect(url)).await
+            }
+            mp::Candidate::Entry(entry) => {
+                use crate::mgmt_entry::AttestFailure;
+                let attested = match crate::mgmt_entry::request_attestation(
+                    entry,
+                    Duration::from_secs(5),
+                )
+                .await
+                {
+                    Ok(t) => format!("{url}&entry={}", urlencode(&t)),
+                    Err(AttestFailure::Refused(reason)) => {
+                        // Still dial: the centre then gives this connection no address (and so
+                        // no zone) rather than the entry's, which is the safe way to be wrong.
+                        warn!(%entry, %reason, "management entry: no attestation; connecting without one");
+                        url.to_string()
+                    }
+                    Err(AttestFailure::Unreachable(reason)) => {
+                        if i < last_index {
+                            warn!(org = %ctx.label, path = %c, %reason, "management path: entry unreachable, trying the next");
+                        }
+                        last = Ok(Err(tokio_tungstenite::tungstenite::Error::Io(
+                            std::io::Error::other(format!("entry {entry} unreachable: {reason}")),
+                        )));
+                        continue;
+                    }
+                };
+                tokio::time::timeout(bound, crate::ws_connect::connect_via(&attested, entry)).await
+            }
+        };
+        match attempt {
+            Ok(Ok(pair)) => {
+                let as_last_resort = last_resort && c == mp::Candidate::Direct && i == last_index;
+                if as_last_resort {
+                    warn!(org = %ctx.label, "management path: every entry failed; connected to the centre directly as a last resort");
+                } else if c != mp::Candidate::Direct {
+                    info!(org = %ctx.label, path = %c, "management path: connected to the centre through an entry");
+                }
+                mp::note_connected(&host, c, as_last_resort);
+                return Ok(Ok(pair));
+            }
+            Ok(Err(e)) => {
+                if matches!(e, tokio_tungstenite::tungstenite::Error::Http(_)) {
+                    mp::note_connected(&host, c, false);
+                    return Ok(Err(e));
+                }
+                if i < last_index {
+                    warn!(org = %ctx.label, path = %c, error = %e, "management path: failed, trying the next");
+                }
+                last = Ok(Err(e));
+            }
+            Err(_) => {
+                if i < last_index {
+                    warn!(org = %ctx.label, path = %c, secs = bound.as_secs(), "management path: timed out, trying the next");
+                }
+                last = Err(());
+            }
+        }
+    }
+    last
+}
+
 async fn connect_once(
     ctx: &OrgCtx,
     cfg: &AgentConfig,
@@ -1724,8 +1835,7 @@ async fn connect_once(
                 .map_err(|e| ConnectError::Transient(e.context("loopback control sink")))?
         } else {
             let (ws, response) =
-                match tokio::time::timeout(WS_CONNECT_TIMEOUT, crate::ws_connect::connect(&url))
-                    .await
+                match dial_centre(ctx, cfg, &url).await
                 {
                     Ok(Ok(pair)) => pair,
                     Ok(Err(e)) => {
@@ -5626,6 +5736,46 @@ async fn handle_server_msg(
         // the safe direction, and the device applies the strictest of all its
         // orgs — any one org's deny stops keep busy here and refuses it until
         // that org allows it again. Persisted, so it holds at boot.
+        // FR-128 — how this device may reach the centre. Primary only (a secondary org's centre
+        // has no say over this device's way to its own). Persisted, so it holds at boot; a
+        // socket on the direct path by choice moves onto an entry when the zone now forbids it.
+        ServerMsg::ManagementPath { direct, entries } => {
+            if ctx.is_primary && !meshharbor_node_core::management_path::disabled() {
+                use meshharbor_node_core::management_path as mp;
+                let pushed = mp::Pushed { direct, entries };
+                info!(
+                    direct,
+                    entries = pushed.entries.len(),
+                    "management path received"
+                );
+                if let Some(path) = mp::state_path()
+                    && mp::load(&path) != pushed
+                    && let Err(e) = mp::store(&path, &pushed)
+                {
+                    warn!(%e, "management path: could not keep it");
+                }
+                if mp::should_move(&pushed, &agent_cfg.management_entries) {
+                    info!(
+                        "management path: this zone reaches the centre through its entries; reconnecting through one"
+                    );
+                    return Err(ConnectError::Transient(anyhow::anyhow!(
+                        "management path: moving onto an entry"
+                    )));
+                }
+            }
+        }
+        // FR-128 — this device is its zone's management entry: the key it attests with.
+        ServerMsg::ManagementEntryKey { key } => {
+            if ctx.is_primary {
+                match key.bytes() {
+                    Some(k) => {
+                        crate::mgmt_entry::set_key(&agent_cfg.agent_id, k);
+                        info!("management entry: attestation key received");
+                    }
+                    None => warn!("management entry: unusable key received"),
+                }
+            }
+        }
         ServerMsg::KeepBusyPolicy { denied } => {
             info!(org = %ctx.label, denied, "keep-busy: org policy received");
             crate::keep_busy::set_org_policy(tenant_id, denied);
@@ -7846,6 +7996,19 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
     // re-announce REPLACES the stored caps, so a hello-only word would be gone
     // at the first login.
     caps.update_mode = Some(crate::updater::update_mode(is_primary).to_string());
+    // FR-128 — this daemon follows `rc:agent.management_path` (the primary org's centre only),
+    // unless the kill switch keeps it on the direct path; and, once its listener bound, it is a
+    // management entry. Both stamped at every announcement, like `update_mode`.
+    if is_primary {
+        if !meshharbor_node_core::management_path::disabled() {
+            caps.rpc.push(
+                meshharbor_remote_control::models::RpcCap::ManagementPath
+                    .wire()
+                    .to_owned(),
+            );
+        }
+        caps.management_entry_port = crate::mgmt_entry::listening_port();
+    }
     // `detect()` is memoized and config-blind, so the one capability that
     // depends on the host's config gets appended here: `tun` says "this
     // daemon's TUN is already muxed — a second org can join the mesh

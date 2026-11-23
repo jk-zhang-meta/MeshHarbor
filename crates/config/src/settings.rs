@@ -1316,6 +1316,14 @@ pub struct AppSettings {
     /// through [`AppSettings::relay_auto_links_effective`].
     #[serde(default = "default_true")]
     pub relay_auto_links: bool,
+    /// FR-128 — the centre is a zone of its own: tell each device how it may reach the centre
+    /// (direct, or through its zone's gateways that run a management entry) and accept an
+    /// entry's attestation of a device's address. `false` tells every device "direct, no
+    /// entries" (so one that kept an older path returns to direct), and ignores attestations: a
+    /// connection from an entry's address then takes that address, as before FR-128.
+    /// Env: `MESHHARBOR__APP__MANAGEMENT_ENTRIES`.
+    #[serde(default = "default_true")]
+    pub management_entries: bool,
     /// MeshHarbor #21 relay locality for remote desktop: keep the STUN/TURN
     /// servers handed out for an RC session to the device's business zone.
     /// Deliberately INDEPENDENT of `business_isolation`: `enforce` withholds
@@ -1756,6 +1764,7 @@ impl Settings {
             .set_default("app.business_isolation", "warn")?
             .set_default("app.business_unknown_role", "warn")?
             .set_default("app.relay_auto_links", true)?
+            .set_default("app.management_entries", true)?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1895,6 +1904,7 @@ mod rate_limit_tests {
             business_zone_pins: Default::default(),
             business_unknown_role: super::default_business_unknown_role(),
             relay_auto_links: true,
+            management_entries: true,
             rc_ice_zone_mode: super::default_rc_ice_zone_mode(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,

@@ -1095,7 +1095,8 @@ async fn fetch_releases_from(url: &str) -> Result<Vec<GithubRelease>> {
     if url != origin.feed().as_str() {
         bail!("manifest URL differs from the configured trusted update feed");
     }
-    let client = reqwest::Client::builder()
+    // FR-128 — to the centre along the control socket's path.
+    let client = meshharbor_node_core::management_path::route_http(reqwest::Client::builder())
         .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .redirect(update_redirect_policy(origin, false))
@@ -1797,7 +1798,7 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
     let asset_url = origin
         .asset_url(&asset.browser_download_url)
         .map_err(anyhow::Error::msg)?;
-    let client = reqwest::Client::builder()
+    let client = meshharbor_node_core::management_path::route_http(reqwest::Client::builder())
         .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(600))
         .redirect(update_redirect_policy(origin.clone(), true))

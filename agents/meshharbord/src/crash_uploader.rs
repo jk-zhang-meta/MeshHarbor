@@ -160,13 +160,16 @@ pub async fn drain_and_upload(cfg: &AgentConfig, token: &crate::token_slot::Toke
 /// system TLS roots, default timeouts, plus an explicit per-request
 /// timeout via [`POST_TIMEOUT`].
 fn build_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!(
-            "meshharbord-crash-uploader/",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .timeout(POST_TIMEOUT)
-        .build()?)
+    // FR-128 — to the centre along the control socket's path.
+    Ok(
+        meshharbor_node_core::management_path::route_http(reqwest::Client::builder())
+            .user_agent(concat!(
+                "meshharbord-crash-uploader/",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .timeout(POST_TIMEOUT)
+            .build()?,
+    )
 }
 
 /// Categorisation of an upload attempt's outcome. Pure data — the

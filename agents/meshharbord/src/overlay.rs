@@ -1107,7 +1107,17 @@ pub async fn maybe_start(
     // uplink is still clean (before any split-default is installed), so exit
     // routing can exempt them. Only when this node opts into an exit node.
     let exit_server_ips = if cfg.overlay_exit_node.is_some() {
-        resolve_server_ips(&cfg.server_url).await
+        let mut ips = resolve_server_ips(&cfg.server_url).await;
+        // FR-128 — the management entries the control socket may ride are control plane
+        // too. Only beside the centre's own addresses: an empty list must still withhold.
+        if !ips.is_empty() {
+            for ip in meshharbor_node_core::management_path::entry_ips(&cfg.management_entries) {
+                if !ips.contains(&ip) {
+                    ips.push(ip);
+                }
+            }
+        }
+        ips
     } else {
         Vec::new()
     };

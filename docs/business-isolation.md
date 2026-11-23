@@ -58,10 +58,55 @@ A device's own connection to the center (`www.itachi.fans`: enrollment, login, t
 agent WebSocket's hello, heartbeat, configuration and policy pushes, forward
 control) is management traffic. No gate here ever refuses it, whatever the zones:
 it is the connection the zone is observed on, and a mainland device must stay
-manageable. What the center *brokers between two devices* is business traffic, even
+manageable. Its *path* does follow the zone since FR-128: a device whose zone may not
+reach the center directly reaches it through the zone's gateway
+([below](#management-through-a-zones-entry-fr-128)). What the center *brokers between two devices* is business traffic, even
 though it starts on the same WebSocket: a tunnel whose bytes cross the center's TURN
 relay or `/derp` is gated like any overlay carrier. There is no line exception for
 it: a line is an overlay org-relay session, which a tunnel never rides.
+
+## Management through a zone's entry (FR-128)
+
+The center is a zone of its own. A device's management connection used to go straight to it
+from wherever the device was, the one connection the zones never routed; one blocked path
+took a device off the fleet, and a strict zone's devices each held a direct cross-border
+connection. Now a zone's **gateways** can be its **management entries**: they forward the
+device's TLS connection to the center, unread, and say which address the device came from.
+
+```mermaid
+flowchart LR
+  subgraph Z["strict zone (its countries do not hold the center)"]
+    D[device] -- "1 MHE1 attest nonce" --> E[gateway<br/>management entry]
+    E -- "2 token: device address, signed" --> D
+    D -- "3 TLS to the center (SNI, cert check unchanged)" --> E
+  end
+  E -- "4 bytes copied, unread,<br/>only to its own center" --> C[(center)]
+  C -- "5 origin = attested address<br/>zone, public_ip as if direct" --> C
+```
+
+| | Rule | Where |
+|---|---|---|
+| who is an entry | an approved gateway of the zone (`gateway_relay_ids`, `peer_relay_policy.serve`) whose owner set `management_entry_port`; refused while `protected` | `is_gateway`, `entry_key` in [`management_path.rs`](../crates/modules/fleet/src/management_path.rs) (:43, :52); `maybe_start` in [`mgmt_entry.rs`](../agents/meshharbord/src/mgmt_entry.rs) (:59) |
+| may a device dial the center directly | the FR-124 verdict: not when its zone is `RouterOnly` and its countries do not hold the center; a zone's own gateway always may (it is the zone's line to the center); a device with no resolved zone keeps direct | `path_for` (:118) |
+| what the device is told | `rc:agent.management_path {direct, entries}` on every connect, to a device that advertises `management-path`; `entries` are the gateways' public addresses (static endpoints first) with the entry port, at most 8 | `socket.rs` (search `management path pushed`) |
+| the device's order | direct first when allowed, then its owner's `management_entries`, then the pushed ones; when direct is not allowed, the entries first and direct only as a last resort (logged), so a device stays manageable when every entry is down. A socket on the direct path by choice moves onto an entry when a push forbids direct | `plan`, `should_move` in [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs) (:67, :194); `dial_centre` in [`signaling.rs`](../agents/meshharbord/src/signaling.rs) (:1647) |
+| the device's HTTP requests | renewal, update check and download, crash upload, the device name follow the socket's path: the client resolves the center's host to the entry | `route_http` (:220) |
+| the device's address | the token names the address the entry saw; the center takes it only from a live entry of the **same org**, signed under that entry's key (derived from the server secret and its credential generation), at most 120 s old, on a connection that comes from that entry's own address | `resolve_origin`, `check_token` (:200, :285); `ConnectionOrigin::through_management_entry` in [`client_ip.rs`](../crates/core/src/client_ip.rs) (:238) |
+| a device on the entry's private network | its attested address is private: the entry's address is the true one, and stays | `resolve_origin` |
+| no token from an entry's address | when the address is that of one of the **org's current entries** (an approved relay, a zone gateway, with the port), the connection gets **no** address (`unattested_entry`, :247): an entry must not lend its zone. Only current entries count: the port is the owner's setting, and an unapproved device or another org's must not strip the addresses of everyone behind a shared egress. A pin still applies. An approved relay is exempt: it may share a provider's egress with a gateway, and losing its zone would cost it its lines | `resolve_origin` |
+
+> ⚠️ **A device behind the same NAT as an entry, connecting directly, gets no zone**: the center
+> cannot tell it from a connection the entry forwarded. Give an entry an address of its own, or
+> pin its neighbours (`app.business_zone_pins`).
+
+> ⚠️ An entry is trusted with its key, as a gateway is trusted with its zone's relaying: a
+> compromised entry can attest a wrong address for the devices that come through it. It cannot
+> read or forge their TLS, and it forwards only to the host of its own `server_url`.
+
+Kill switches: `MESHHARBORD_MANAGEMENT_ENTRIES=0` on a device (direct only, and the device
+stops advertising `management-path`); `management_entry_port` empty on an entry;
+`app.management_entries = false` on the center (every device is told direct with no entries,
+and tokens are ignored). The token format: [`management_entry.rs`](../crates/remote_control/src/management_entry.rs).
 
 ## Where a node's zone comes from
 
@@ -418,4 +463,5 @@ flowchart LR
 | the line's resilience, and roaming (GEO-05) | `connection_ended`, `recheck_zones`, `session_zones_fit`, `line_zones_fit` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs); `stamp_verdict` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
 | the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay`, `a_line_outlives_a_reconnect_from_its_zone_only` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | relay and TURN TestApp tests | `isolation_*` in [`peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
+| management through an entry (FR-128) | [`management_path.rs`](../crates/modules/fleet/src/management_path.rs), [`mgmt_entry.rs`](../agents/meshharbord/src/mgmt_entry.rs), [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs); TestApp tests in [`management_entry_tests.rs`](../crates/tests/src/management_entry_tests.rs) |
 | tunnel gate (#22) | `refuses_parties` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs), step 3d of `handle_tunnel_open` in [`tunnel.rs`](../crates/modules/network/src/tunnel.rs); test `a_center_brokered_tunnel_stays_in_one_zone` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
