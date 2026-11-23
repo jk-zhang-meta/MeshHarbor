@@ -200,6 +200,9 @@ pub async fn ask(
         public_key: public_key.to_string(),
         session_secs,
         ssh_ticket: Some(ticket.to_string()),
+        // FR-129 — an agent session has no person to type a code: a device that asks for one
+        // refuses it.
+        two_factor_code: None,
     })
     .await
     .map_err(|_| RunError::Session("the server connection is down".into()))?;
@@ -423,6 +426,7 @@ mod tests {
             expires_at_ms: Some(1),
             error: None,
             ssh_ticket_id: ticket_id.map(String::from),
+            two_factor: None,
         }
     }
 
@@ -523,8 +527,13 @@ mod tests {
                 public_key,
                 session_secs,
                 ssh_ticket,
+                two_factor_code,
             } => {
                 assert_eq!(t, target.to_hex());
+                assert!(
+                    two_factor_code.is_none(),
+                    "an agent session carries no code"
+                );
                 assert_eq!(public_key, "ssh-ed25519 AAAA");
                 assert_eq!(session_secs, 90);
                 assert_eq!(ssh_ticket.as_deref(), Some("the-ticket"));
