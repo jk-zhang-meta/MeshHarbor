@@ -853,7 +853,7 @@
         :disabled="!canConnect"
         @click="startSession"
       >
-        Connect
+        {{ t('remote.viewer.connect') }}
       </v-btn>
       <v-btn
         v-else
@@ -861,11 +861,11 @@
         variant="flat"
         prepend-icon="mdi-stop"
         class="rc-tb-session"
-        aria-label="Disconnect"
+        :aria-label="t('remote.viewer.disconnect')"
         @click="leave()"
       >
         <!-- Icon-only on a phone, where the row has no room for the word. -->
-        <span class="d-none d-sm-inline">Disconnect</span>
+        <span class="d-none d-sm-inline">{{ t('remote.viewer.disconnect') }}</span>
       </v-btn>
       <!-- Fullscreen: gated on (a) connected session AND (b) the
            document supports the Fullscreen API. iOS Safari only
@@ -1015,7 +1015,7 @@
         <template v-else>
           <v-icon size="96" color="grey-lighten-1">mdi-desktop-classic</v-icon>
           <p class="text-body-1 mt-2">
-            Click <strong>Connect</strong> to start a remote-control session.
+            {{ t('remote.viewer.idle') }}
           </p>
         </template>
         <!-- FR-102 P9b — after a session of 30 s or more, at most once a day:
@@ -1031,8 +1031,7 @@
           @dismiss="dismissRating"
         />
         <p v-if="agent && !agent.is_online" class="text-caption text-medium-emphasis">
-          This agent is currently offline. The session will fail until the agent
-          reconnects.
+          {{ t('remote.viewer.offline') }}
         </p>
         <!-- Not offered right after the person at the device ended the session:
              their Disconnect is an explicit "stop", and the next step offered is
@@ -1052,7 +1051,7 @@
         >
           <!-- FR-116 D6 — the label cannot wrap, and whole it ran 2 px past a
                360 px screen; the dialog behind it says what break-glass is. -->
-          Force control<span class="d-none d-sm-inline">&nbsp;(admin break-glass)</span>
+          {{ t('remote.viewer.force') }}<span class="d-none d-sm-inline">&nbsp;{{ t('remote.viewer.forceNote') }}</span>
         </v-btn>
 
         <!-- Phase 5 — admin break-glass. Starts the session skipping the device's
@@ -1060,16 +1059,14 @@
              is recorded in the audit log. -->
         <v-dialog v-model="forceDialogOpen" max-width="460">
         <v-card>
-          <v-card-title>Force control (break-glass)</v-card-title>
+          <v-card-title>{{ t('remote.viewer.forceTitle') }}</v-card-title>
           <v-card-text>
             <p class="text-body-2 mb-3">
-              This starts the session <strong>without</strong> the device's consent.
-              It only works if you're a tenant administrator, and it's recorded in the
-              audit log. Enter a reason:
+              {{ t('remote.viewer.forceBody') }}
             </p>
             <v-textarea
               v-model="forceReason"
-              label="Reason (required)"
+              :label="t('remote.viewer.forceReason')"
               rows="2"
               auto-grow
               autofocus
@@ -1080,14 +1077,14 @@
           </v-card-text>
           <v-card-actions>
             <v-spacer />
-            <v-btn variant="text" @click="forceDialogOpen = false">Cancel</v-btn>
+            <v-btn variant="text" @click="forceDialogOpen = false">{{ t('remote.viewer.cancel') }}</v-btn>
             <v-btn
               color="warning"
               variant="flat"
               :disabled="!forceReason.trim()"
               @click="confirmForce"
             >
-              Force control
+              {{ t('remote.viewer.force') }}
             </v-btn>
           </v-card-actions>
         </v-card>

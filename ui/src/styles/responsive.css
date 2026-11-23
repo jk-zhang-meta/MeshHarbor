@@ -70,3 +70,36 @@
     flex: 0 0 4.5rem;
   }
 }
+
+/*
+ * Touch targets at least 36 × 36 px on a touch screen (ported from upstream
+ * roomler-ai FR-120 P6, 1063224ec). A small button is 28 px and an x-small chip
+ * 20 px: fine for a mouse, a miss for a finger. On a coarse pointer each button
+ * and tappable chip gets an invisible ::before that grows its HIT AREA to 36 px,
+ * centred; its box and every layout stay as they were, and a mouse matches none
+ * of this. ::before, because Vuetify's .v-btn::after is the focus ring;
+ * isolation keeps the ::before under the control's own content.
+ */
+@media (pointer: coarse) {
+  .v-btn,
+  .v-chip--link {
+    isolation: isolate;
+  }
+  .v-btn::before,
+  .v-chip--link::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    top: min(0px, (100% - 36px) / 2);
+    bottom: min(0px, (100% - 36px) / 2);
+    left: min(0px, (100% - 36px) / 2);
+    right: min(0px, (100% - 36px) / 2);
+  }
+  .v-chip.v-chip--link {
+    overflow: visible;
+  }
+  .v-chip--link > .v-chip__content {
+    min-width: 0;
+    overflow: hidden;
+  }
+}

@@ -69,6 +69,18 @@
           "other": "其他"
         }
       }
+    },
+    "viewer": {
+      "connect": "连接",
+      "disconnect": "断开",
+      "idle": "点击「连接」开始远程控制会话。",
+      "offline": "这台设备当前离线，重新上线前无法开始会话。",
+      "force": "强制控制",
+      "forceNote": "（管理员紧急接管）",
+      "forceTitle": "强制控制（紧急接管）",
+      "forceBody": "这会在不经设备同意的情况下开始会话。只有组织管理员可以使用，并会记入审计日志。请填写原因：",
+      "forceReason": "原因（必填）",
+      "cancel": "取消"
     }
   },
   "auth": {
@@ -2003,7 +2015,9 @@
       "create": "创建",
       "createOrgFailed": "创建组织失败",
       "slugTaken": "该标识已被占用，请换一个",
-      "connecting": "正在连接…"
+      "connecting": "正在连接…",
+      "titleChat": "聊天",
+      "titleCall": "通话"
     },
     "chatView": {
       "files": "文件",

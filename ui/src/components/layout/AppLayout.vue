@@ -1169,8 +1169,8 @@ const pageTitle = computed(() => {
   if (name === 'my-devices') return t('mh.nav.myDevices')
   if (name === 'device-shares' || name === 'shared-remote') return t('mh.nav.deviceShares')
   if (name === 'account-approval') return t('mh.nav.accountApprovals')
-  if (name === 'room-chat') return 'Chat'
-  if (name === 'room-call') return 'Call'
+  if (name === 'room-chat') return t('mh.layout.titleChat')
+  if (name === 'room-call') return t('mh.layout.titleCall')
   return (route.meta.title as string) || PRODUCT_TITLE
 })
 

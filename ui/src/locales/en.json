@@ -69,6 +69,18 @@
           "other": "Something else"
         }
       }
+    },
+    "viewer": {
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "idle": "Select Connect to start a remote-control session.",
+      "offline": "This device is offline. A session cannot start until it reconnects.",
+      "force": "Force control",
+      "forceNote": "(admin break-glass)",
+      "forceTitle": "Force control (break-glass)",
+      "forceBody": "This starts the session without the device's consent. It works only for an organization administrator, and it is recorded in the audit log. Enter a reason:",
+      "forceReason": "Reason (required)",
+      "cancel": "Cancel"
     }
   },
   "auth": {
@@ -2003,7 +2015,9 @@
       "create": "Create",
       "createOrgFailed": "Failed to create organization",
       "slugTaken": "That slug is already taken — pick another",
-      "connecting": "Connecting…"
+      "connecting": "Connecting…",
+      "titleChat": "Chat",
+      "titleCall": "Call"
     },
     "chatView": {
       "files": "Files",
