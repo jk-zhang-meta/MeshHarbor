@@ -2869,5 +2869,77 @@
     "end": "立即结束",
     "endConfirm": "立即结束 {who} 对“{name}”的邀请？对方会立刻失去对该设备的访问。",
     "noneActive": "当前没有生效的邀请。"
+  },
+  "landing": {
+    "nav": {
+      "features": "功能",
+      "download": "下载",
+      "pricing": "价格",
+      "docs": "文档",
+      "login": "登录",
+      "getStarted": "免费开始",
+      "signUp": "注册",
+      "menu": "菜单",
+      "language": "切换语言"
+    },
+    "hero": {
+      "start": "免费开始"
+    },
+    "download": {
+      "wizard": "MeshHarbor 安装程序",
+      "orTerminal": "或者在终端里运行：",
+      "terminal": "在终端里运行："
+    },
+    "pricing": {
+      "popular": "最受欢迎",
+      "commercial": "商业用途免费",
+      "perUserMonth": "每用户每月",
+      "forever": "永久免费",
+      "startNow": "立即开始"
+    },
+    "footer": {
+      "tagline": "为你的设备和团队提供远程访问、私有组网与协作。",
+      "product": "产品",
+      "docs": "文档",
+      "install": "安装",
+      "selfHosting": "自行部署",
+      "legal": "法律信息",
+      "privacy": "隐私政策",
+      "terms": "服务条款",
+      "imprint": "网站信息",
+      "stayInTouch": "保持联系",
+      "copyright": "© {year} G ROX EOOD — Roomler。保留所有权利。MeshHarbor · 织港基于 Roomler 构建。"
+    },
+    "arch": {
+      "title": "MeshHarbor 网络架构",
+      "desc": "四台机器：你的笔记本、一台 GPU 工作站、一个 Kubernetes 集群，以及一台把家里局域网作为子网路由和出口节点接入的家用服务器。它们组成一张直连的加密网络，地址固定在 100.64 段，能穿过 NAT 和防火墙。每台机器都有一条细细的控制通道连到 meshharbor.itachi.fans 控制平面；GPU 工作站的远程桌面画面实时传到笔记本的浏览器里。",
+      "controlPlane": "控制平面",
+      "throughNat": "穿过 NAT 与防火墙",
+      "e2e": "端到端加密",
+      "laptop": "笔记本 — 你",
+      "gpu": "GPU 工作站",
+      "homeServer": "家用服务器",
+      "homeServerRole": "子网路由 · 出口节点 · 192.168.1.0/24",
+      "cluster": "k8s 集群",
+      "remoteStream": "远程桌面 · 60 fps",
+      "layers": "架构分层",
+      "defaultCaption": "你的设备，一张加密网络：由云端协调，彼此直连。",
+      "machines": {
+        "label": "机器",
+        "caption": "GPU 工作站、k8s 集群、家用服务器、包里的笔记本：只要装了客户端，它就在你的网络里。"
+      },
+      "mesh": {
+        "label": "加密组网",
+        "caption": "固定的 100.64.x.x 地址，WireGuard 式的直连隧道，端到端加密，直接穿过 NAT 和公司防火墙。"
+      },
+      "remote": {
+        "label": "远程桌面",
+        "caption": "打开一个标签页，GPU 工作站的桌面就在浏览器里：60 fps 实时画面，走它自己的加密隧道。"
+      },
+      "control": {
+        "label": "控制平面",
+        "caption": "meshharbor.itachi.fans 只负责协调：密钥、访问控制和在线状态。你的流量从不经过我们的服务器。"
+      }
+    }
   }
 }

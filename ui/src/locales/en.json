@@ -2869,5 +2869,77 @@
     "end": "End now",
     "endConfirm": "End the invitation from {who} on “{name}” now? They lose access to the device immediately.",
     "noneActive": "No invitation is in effect."
+  },
+  "landing": {
+    "nav": {
+      "features": "Features",
+      "download": "Download",
+      "pricing": "Pricing",
+      "docs": "Docs",
+      "login": "Log In",
+      "getStarted": "Get Started Free",
+      "signUp": "Sign Up",
+      "menu": "Menu",
+      "language": "Switch language"
+    },
+    "hero": {
+      "start": "Start Free"
+    },
+    "download": {
+      "wizard": "MeshHarbor Setup",
+      "orTerminal": "Or from a terminal:",
+      "terminal": "From a terminal:"
+    },
+    "pricing": {
+      "popular": "Most Popular",
+      "commercial": "Free for commercial use",
+      "perUserMonth": "per user / month",
+      "forever": "forever",
+      "startNow": "Start Now"
+    },
+    "footer": {
+      "tagline": "Remote access, private networking, and collaboration for your devices and your team.",
+      "product": "Product",
+      "docs": "Documentation",
+      "install": "Install",
+      "selfHosting": "Self-hosting",
+      "legal": "Legal",
+      "privacy": "Privacy Policy",
+      "terms": "Terms of Service",
+      "imprint": "Imprint",
+      "stayInTouch": "Stay in touch",
+      "copyright": "© {year} G ROX EOOD — Roomler. All rights reserved. MeshHarbor · 织港 is based on Roomler."
+    },
+    "arch": {
+      "title": "MeshHarbor network architecture",
+      "desc": "Four machines — your laptop, a GPU workstation, a Kubernetes cluster, and a home server routing its LAN as subnet router and exit node — joined in a direct encrypted mesh with stable 100.64 addresses that crosses NATs and firewalls. Thin control channels link each machine to the meshharbor.itachi.fans control plane, and a live remote desktop stream runs from the GPU workstation to the laptop's browser.",
+      "controlPlane": "control plane",
+      "throughNat": "through NAT & firewalls",
+      "e2e": "end-to-end encrypted",
+      "laptop": "laptop — you",
+      "gpu": "GPU workstation",
+      "homeServer": "home server",
+      "homeServerRole": "subnet router · exit node · 192.168.1.0/24",
+      "cluster": "k8s cluster",
+      "remoteStream": "remote desktop · 60 fps",
+      "layers": "Architecture layers",
+      "defaultCaption": "Your devices, one encrypted mesh — coordinated from the cloud, connected directly.",
+      "machines": {
+        "label": "Machines",
+        "caption": "A GPU workstation, a k8s cluster, a home server, the laptop in your bag — if it runs the agent, it is on your network."
+      },
+      "mesh": {
+        "label": "Encrypted mesh",
+        "caption": "Stable 100.64.x.x addresses and direct WireGuard-style tunnels, encrypted end to end — straight through NATs and corporate firewalls."
+      },
+      "remote": {
+        "label": "Remote desktop",
+        "caption": "Open a tab and the GPU box desktop is in your browser — pixel-fresh at 60 fps, streamed through its own encrypted tunnel."
+      },
+      "control": {
+        "label": "Control plane",
+        "caption": "meshharbor.itachi.fans only coordinates: keys, ACLs, presence. Your traffic never flows through our servers."
+      }
+    }
   }
 }

@@ -13,16 +13,28 @@
         <img :src="BRAND_LOGO_LIGHT" alt="MeshHarbor · 织港" width="180" height="36" class="landing-brand-logo" />
       </v-toolbar-title>
       <v-spacer />
-      <v-btn variant="text" href="#features" class="d-none d-md-inline-flex">Features</v-btn>
-      <v-btn variant="text" href="#download" class="d-none d-md-inline-flex">Download</v-btn>
-      <v-btn variant="text" href="#pricing" class="d-none d-md-inline-flex">Pricing</v-btn>
+      <v-btn variant="text" href="#features" class="d-none d-md-inline-flex">{{ t('landing.nav.features') }}</v-btn>
+      <v-btn variant="text" href="#download" class="d-none d-md-inline-flex">{{ t('landing.nav.download') }}</v-btn>
+      <v-btn variant="text" href="#pricing" class="d-none d-md-inline-flex">{{ t('landing.nav.pricing') }}</v-btn>
       <!-- FR-60: `href`, not `:to` — /docs is statically generated HTML served
            by nginx, not a route in this SPA's router. A router-link would
            resolve to the 404 view. -->
-      <v-btn variant="text" :href="appPath('/docs/')" class="d-none d-md-inline-flex">Docs</v-btn>
-      <v-btn variant="outlined" color="primary" :to="{ name: 'login' }" class="mx-2 d-none d-sm-inline-flex">Log In</v-btn>
-      <v-btn color="primary" :to="{ name: 'register' }" class="d-none d-sm-inline-flex">Get Started Free</v-btn>
-      <v-btn color="primary" :to="{ name: 'register' }" class="d-sm-none" size="small">Sign Up</v-btn>
+      <v-btn variant="text" :href="appPath('/docs/')" class="d-none d-md-inline-flex">{{ t('landing.nav.docs') }}</v-btn>
+      <!-- Two languages (2026-11-24): the other one is one tap away, and the
+           choice is remembered like the in-app switch. -->
+      <v-btn
+        variant="text"
+        :lang="otherLocale.code"
+        :aria-label="t('landing.nav.language')"
+        data-testid="landing-locale"
+        class="landing-locale"
+        @click="setLocale(otherLocale.code)"
+      >
+        {{ otherLocale.label }}
+      </v-btn>
+      <v-btn variant="outlined" color="primary" :to="{ name: 'login' }" class="mx-2 d-none d-sm-inline-flex">{{ t('landing.nav.login') }}</v-btn>
+      <v-btn color="primary" :to="{ name: 'register' }" class="d-none d-sm-inline-flex">{{ t('landing.nav.getStarted') }}</v-btn>
+      <v-btn color="primary" :to="{ name: 'register' }" class="d-sm-none" size="small">{{ t('landing.nav.signUp') }}</v-btn>
       <v-menu location="bottom end">
         <template #activator="{ props: menuProps }">
           <v-btn
@@ -30,18 +42,18 @@
             icon="mdi-menu"
             variant="text"
             class="d-md-none ml-1"
-            aria-label="Menu"
+            :aria-label="t('landing.nav.menu')"
             data-testid="landing-menu"
           />
         </template>
         <v-list density="comfortable" min-width="200">
-          <v-list-item href="#features" title="Features" />
-          <v-list-item href="#download" title="Download" />
-          <v-list-item href="#pricing" title="Pricing" />
-          <v-list-item :href="appPath('/docs/')" title="Docs" />
+          <v-list-item href="#features" :title="t('landing.nav.features')" />
+          <v-list-item href="#download" :title="t('landing.nav.download')" />
+          <v-list-item href="#pricing" :title="t('landing.nav.pricing')" />
+          <v-list-item :href="appPath('/docs/')" :title="t('landing.nav.docs')" />
           <template v-if="xs">
             <v-divider class="my-1" />
-            <v-list-item :to="{ name: 'login' }" title="Log In" prepend-icon="mdi-login" />
+            <v-list-item :to="{ name: 'login' }" :title="t('landing.nav.login')" prepend-icon="mdi-login" />
           </template>
         </v-list>
       </v-menu>
@@ -52,11 +64,11 @@
       <v-container>
         <v-row align="center" justify="center">
           <v-col cols="12" md="6" lg="5" class="text-center text-md-left hero-copy">
-            <h1 class="text-h4 text-md-h2 font-weight-bold mb-4">{{ HERO.titleLead }}<br/><span class="text-primary">{{ HERO.titleAccent }}</span></h1>
-            <p class="text-body-1 text-md-h6 landing-muted mb-6 mb-md-8">{{ HERO.lead }}</p>
+            <h1 class="text-h4 text-md-h2 font-weight-bold mb-4">{{ copy.HERO.titleLead }}<br/><span class="text-primary">{{ copy.HERO.titleAccent }}</span></h1>
+            <p class="text-body-1 text-md-h6 landing-muted mb-6 mb-md-8">{{ copy.HERO.lead }}</p>
             <div class="d-flex flex-wrap justify-center justify-md-start ga-3">
-              <v-btn color="primary" size="large" :to="{ name: 'register' }" class="px-6">Start Free</v-btn>
-              <v-btn variant="outlined" size="large" href="#download" class="px-6">Download</v-btn>
+              <v-btn color="primary" size="large" :to="{ name: 'register' }" class="px-6">{{ t('landing.hero.start') }}</v-btn>
+              <v-btn variant="outlined" size="large" href="#download" class="px-6">{{ t('landing.nav.download') }}</v-btn>
             </div>
           </v-col>
           <v-col cols="12" md="6" lg="6" class="mt-8 mt-md-0 hero-graphic">
@@ -70,7 +82,7 @@
     <section class="trust-section py-4 py-md-6">
       <v-container>
         <div class="d-flex flex-wrap justify-center ga-2">
-          <v-chip v-for="c in capabilities" :key="c" variant="tonal" color="primary" size="small">{{ c }}</v-chip>
+          <v-chip v-for="c in copy.CAPABILITIES" :key="c" variant="tonal" color="primary" size="small">{{ c }}</v-chip>
         </div>
       </v-container>
     </section>
@@ -78,8 +90,8 @@
     <!-- FR-88 P3: the video tour, as on the static homepage. -->
     <section id="video" class="py-8 py-md-12">
       <v-container style="max-width: 920px">
-        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ VIDEO_TOUR.title }}</h2>
-        <p class="text-center text-body-1 landing-muted mb-6">{{ VIDEO_TOUR.lead }}</p>
+        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ copy.VIDEO_TOUR.title }}</h2>
+        <p class="text-center text-body-1 landing-muted mb-6">{{ copy.VIDEO_TOUR.lead }}</p>
         <VideoFacade :video-id="FEATURED_VIDEO_ID" :poster="videoTourPoster" />
       </v-container>
     </section>
@@ -87,7 +99,7 @@
     <!-- Pillars -->
     <section id="features" class="features-section py-8 py-md-16">
       <v-container>
-        <div v-for="(pillar, pi) in pillars" :key="pillar.title" :class="pi > 0 ? 'mt-10 mt-md-16' : ''">
+        <div v-for="(pillar, pi) in copy.PILLARS" :key="pillar.title" :class="pi > 0 ? 'mt-10 mt-md-16' : ''">
           <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ pillar.title }}</h2>
           <p class="text-center text-body-1 landing-muted mb-6 mb-md-10">{{ pillar.subtitle }}</p>
           <v-row>
@@ -106,8 +118,8 @@
     <!-- Download / install -->
     <section id="download" class="download-section py-8 py-md-16">
       <v-container>
-        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ DOWNLOAD.title }}</h2>
-        <p class="text-center text-body-1 landing-muted mb-6 mb-md-12">{{ DOWNLOAD.lead }}</p>
+        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ copy.DOWNLOAD.title }}</h2>
+        <p class="text-center text-body-1 landing-muted mb-6 mb-md-12">{{ copy.DOWNLOAD.lead }}</p>
         <v-row justify="center">
           <v-col v-for="os in downloads" :key="os.os" cols="12" md="4">
             <v-card variant="outlined" class="pa-4 pa-md-6 h-100 d-flex flex-column" rounded="lg">
@@ -123,10 +135,10 @@
                 prepend-icon="mdi-download"
                 class="mb-4 align-self-start"
               >
-                MeshHarbor Setup
+                {{ t('landing.download.wizard') }}
               </v-btn>
               <p class="text-body-2 landing-muted mb-1">
-                {{ os.wizardUrl ? 'Or from a terminal:' : 'From a terminal:' }}
+                {{ os.wizardUrl ? t('landing.download.orTerminal') : t('landing.download.terminal') }}
               </p>
               <pre class="install-cmd text-caption pa-2 rounded flex-grow-1">{{ os.command }}</pre>
             </v-card>
@@ -138,8 +150,8 @@
     <!-- Pricing -->
     <section id="pricing" class="pricing-section py-8 py-md-16">
       <v-container>
-        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ PRICING.title }}</h2>
-        <p class="text-center text-body-1 landing-muted mb-6 mb-md-12">{{ PRICING.lead }}</p>
+        <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ copy.PRICING.title }}</h2>
+        <p class="text-center text-body-1 landing-muted mb-6 mb-md-12">{{ copy.PRICING.lead }}</p>
         <v-row justify="center">
           <v-col v-for="plan in plans" :key="plan.id" cols="12" sm="6" md="4">
             <v-card
@@ -149,8 +161,8 @@
               rounded="lg"
               :class="{ 'border-primary': plan.id === 'pro' }"
             >
-              <v-chip v-if="plan.id === 'pro'" color="primary" size="small" class="mb-4 align-self-start">Most Popular</v-chip>
-              <h3 class="text-h5 font-weight-bold">{{ plan.name }}</h3>
+              <v-chip v-if="plan.id === 'pro'" color="primary" size="small" class="mb-4 align-self-start">{{ t('landing.pricing.popular') }}</v-chip>
+              <h3 class="text-h5 font-weight-bold">{{ planName(plan, locale) }}</h3>
               <v-chip
                 v-if="plan.id === 'free' && plan.commercial_use !== false"
                 color="success"
@@ -159,20 +171,20 @@
                 class="mt-2 align-self-start"
                 data-testid="landing-commercial-use"
               >
-                Free for commercial use
+                {{ t('landing.pricing.commercial') }}
               </v-chip>
               <div class="my-4">
                 <span class="text-h3 font-weight-bold">${{ plan.price_cents / 100 }}</span>
                 <span v-if="plan.price_cents > 0" class="text-body-2 landing-muted">
                   <!-- FR-115 — the euro figure only once EUR is on sale (`stripe.currencies`) -->
-                  <template v-if="(plan.prices || []).some((p) => p.currency === 'eur')">/ €{{ plan.price_cents / 100 }} </template>per user / month
+                  <template v-if="(plan.prices || []).some((p) => p.currency === 'eur')">/ €{{ plan.price_cents / 100 }} </template>{{ t('landing.pricing.perUserMonth') }}
                 </span>
-                <span v-else class="text-body-2 landing-muted">forever</span>
-                <div v-if="annualLine(plan)" class="text-body-2 landing-muted">{{ annualLine(plan) }}</div>
+                <span v-else class="text-body-2 landing-muted">{{ t('landing.pricing.forever') }}</span>
+                <div v-if="annualLine(plan, locale)" class="text-body-2 landing-muted">{{ annualLine(plan, locale) }}</div>
               </div>
               <v-divider class="mb-4" />
               <v-list density="compact" class="flex-grow-1 bg-transparent">
-                <v-list-item v-for="f in plan.features" :key="f" :title="f" prepend-icon="mdi-check" />
+                <v-list-item v-for="f in plan.features" :key="f" :title="planFeature(f, locale)" prepend-icon="mdi-check" />
               </v-list>
               <v-btn
                 :color="plan.id === 'pro' ? 'primary' : undefined"
@@ -182,7 +194,7 @@
                 :to="{ name: 'register' }"
                 class="mt-4"
               >
-                {{ plan.price_cents === 0 ? 'Get Started Free' : 'Start Now' }}
+                {{ plan.price_cents === 0 ? t('landing.nav.getStarted') : t('landing.pricing.startNow') }}
               </v-btn>
             </v-card>
           </v-col>
@@ -195,9 +207,9 @@
       <v-container>
         <v-row justify="center">
           <v-col cols="12" md="8" class="text-center">
-            <h2 class="text-h4 text-md-h3 font-weight-bold mb-4 text-white">{{ CTA.title }}</h2>
-            <p class="text-body-1 cta-subtitle mb-6 mb-md-8">{{ CTA.lead }}</p>
-            <v-btn color="white" size="large" :to="{ name: 'register' }" class="px-6 text-primary">{{ CTA.button }}</v-btn>
+            <h2 class="text-h4 text-md-h3 font-weight-bold mb-4 text-white">{{ copy.CTA.title }}</h2>
+            <p class="text-body-1 cta-subtitle mb-6 mb-md-8">{{ copy.CTA.lead }}</p>
+            <v-btn color="white" size="large" :to="{ name: 'register' }" class="px-6 text-primary">{{ copy.CTA.button }}</v-btn>
 
             <v-divider class="my-8 cta-divider" />
             <StayInTouch source="landing" />
@@ -212,37 +224,37 @@
         <v-row>
           <v-col cols="12" sm="3">
             <div class="text-h6 font-weight-bold mb-2">MeshHarbor · 织港</div>
-            <p class="text-body-2 landing-muted">Remote access, private networking, and collaboration for your devices and your team.</p>
+            <p class="text-body-2 landing-muted">{{ t('landing.footer.tagline') }}</p>
           </v-col>
           <v-col cols="6" sm="2">
-            <div class="text-subtitle-2 font-weight-bold mb-2">Product</div>
-            <a href="#features" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Features</a>
-            <a href="#download" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Download</a>
-            <a href="#pricing" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Pricing</a>
-            <a :href="appPath('/docs/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Documentation</a>
+            <div class="text-subtitle-2 font-weight-bold mb-2">{{ t('landing.footer.product') }}</div>
+            <a href="#features" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.nav.features') }}</a>
+            <a href="#download" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.nav.download') }}</a>
+            <a href="#pricing" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.nav.pricing') }}</a>
+            <a :href="appPath('/docs/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.footer.docs') }}</a>
           </v-col>
           <v-col cols="6" sm="2">
-            <div class="text-subtitle-2 font-weight-bold mb-2">Install</div>
+            <div class="text-subtitle-2 font-weight-bold mb-2">{{ t('landing.footer.install') }}</div>
             <a :href="appPath('/docs/start/install/windows/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Windows</a>
             <a :href="appPath('/docs/start/install/macos/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">macOS</a>
             <a :href="appPath('/docs/start/install/linux/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Linux</a>
-            <a :href="appPath('/docs/start/self-hosting/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Self-hosting</a>
+            <a :href="appPath('/docs/start/self-hosting/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.footer.selfHosting') }}</a>
           </v-col>
           <v-col cols="6" sm="2">
-            <div class="text-subtitle-2 font-weight-bold mb-2">Legal</div>
-            <router-link to="/privacy" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Privacy Policy</router-link>
-            <router-link to="/terms" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Terms of Service</router-link>
-            <router-link to="/imprint" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Imprint</router-link>
+            <div class="text-subtitle-2 font-weight-bold mb-2">{{ t('landing.footer.legal') }}</div>
+            <router-link to="/privacy" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.footer.privacy') }}</router-link>
+            <router-link to="/terms" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.footer.terms') }}</router-link>
+            <router-link to="/imprint" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">{{ t('landing.footer.imprint') }}</router-link>
           </v-col>
           <v-col cols="12" sm="3">
             <!-- FR-58: the footer door into the same list — light variant,
                  its own source tag. -->
-            <div class="text-subtitle-2 font-weight-bold mb-2">Stay in touch</div>
+            <div class="text-subtitle-2 font-weight-bold mb-2">{{ t('landing.footer.stayInTouch') }}</div>
             <StayInTouch variant="light" source="landing-footer" />
           </v-col>
         </v-row>
         <v-divider class="my-4" />
-        <div class="text-body-2 landing-muted text-center">&copy; {{ new Date().getFullYear() }} G ROX EOOD &mdash; Roomler. All rights reserved. MeshHarbor · 织港 is based on Roomler.</div>
+        <div class="text-body-2 landing-muted text-center">{{ t('landing.footer.copyright', { year: new Date().getFullYear() }) }}</div>
       </v-container>
     </v-footer>
 
@@ -256,7 +268,8 @@
 <script setup lang="ts">
 import { appOrigin } from '@/utils/deployment'
 import { appPath } from '@/utils/deployment'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import ArchitectureGraphic from '@/components/landing/ArchitectureGraphic.vue'
@@ -264,7 +277,8 @@ import NewsletterPrompt from '@/components/landing/NewsletterPrompt.vue'
 import StayInTouch from '@/components/landing/StayInTouch.vue'
 import { BRAND_LOGO_LIGHT } from '@/composables/useBrand'
 import { installCards } from '@/utils/enrollCommands'
-import { CAPABILITIES, CTA, DOWNLOAD, FALLBACK_PLANS, HERO, PILLARS, PRICING, VIDEO_TOUR, annualLine, type Plan } from '@/utils/landing'
+import { FALLBACK_PLANS, annualLine, landingCopy, planFeature, planName, type Plan } from '@/utils/landing'
+import { LOCALES, setLocale } from '@/plugins/i18n'
 import { FEATURED_VIDEO_ID } from '@/utils/videos'
 import VideoFacade from '@/components/common/VideoFacade.vue'
 import videoTourPoster from '@/assets/tutorial/video-C1YdfmhbAKM.jpg'
@@ -275,9 +289,11 @@ const route = useRoute()
 const { xs } = useDisplay()
 
 // FR-87: the copy and the plan table live in `@/utils/landing`, shared with
-// the static homepage the docs generator writes for `/`.
-const capabilities = CAPABILITIES
-const pillars = PILLARS
+// the static homepage the docs generator writes for `/`; the page reads it in
+// the interface language, English or Chinese.
+const { t, locale } = useI18n()
+const copy = computed(() => landingCopy(locale.value))
+const otherLocale = computed(() => LOCALES.find((l) => l.code !== locale.value) ?? LOCALES[0])
 
 // One-line installs — same vitest-locked template source the in-app
 // enrollment dialog uses (token placeholder until they have one), and the

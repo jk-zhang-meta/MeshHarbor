@@ -8,15 +8,8 @@
       role="img"
       aria-labelledby="arch-title arch-desc"
     >
-      <title id="arch-title">MeshHarbor network architecture</title>
-      <desc id="arch-desc">
-        Four machines — your laptop, a GPU workstation, a Kubernetes cluster, and a
-        home server routing its LAN as subnet router and exit node — joined in a
-        direct encrypted mesh with stable 100.64 addresses that crosses NATs and
-        firewalls. Thin control channels link each machine to the meshharbor.itachi.fans control
-        plane, and a live remote desktop stream runs from the GPU workstation to the
-        laptop's browser.
-      </desc>
+      <title id="arch-title">{{ t('landing.arch.title') }}</title>
+      <desc id="arch-desc">{{ t('landing.arch.desc') }}</desc>
       <defs>
         <linearGradient id="agDesk" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="rgba(0, 150, 136, 0.35)" />
@@ -36,7 +29,7 @@
           stroke-width="1.5"
         />
         <text x="277" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#00796B">meshharbor.itachi.fans</text>
-        <text x="277" y="75" text-anchor="middle" font-size="9" fill="rgba(26, 26, 46, 0.55)">control plane</text>
+        <text x="277" y="75" text-anchor="middle" font-size="9" fill="rgba(26, 26, 46, 0.55)">{{ t('landing.arch.controlPlane') }}</text>
         <path class="ctrl-line" d="M234 84 Q130 130 100 198" />
         <path class="ctrl-line" d="M324 84 Q430 128 458 192" />
         <path class="ctrl-line" d="M250 92 Q175 255 150 388" />
@@ -55,7 +48,7 @@
           stroke-width="1"
           fill="none"
         />
-        <text x="360" y="242" text-anchor="middle" font-size="8.5" fill="rgba(26, 26, 46, 0.55)">through NAT &amp; firewalls</text>
+        <text x="360" y="242" text-anchor="middle" font-size="8.5" fill="rgba(26, 26, 46, 0.55)">{{ t('landing.arch.throughNat') }}</text>
         <line class="mesh-line" x1="136" y1="222" x2="418" y2="216" />
         <line class="mesh-line" x1="100" y1="250" x2="143" y2="388" style="animation-delay: -0.3s" />
         <line class="mesh-line" x1="128" y1="248" x2="392" y2="405" style="animation-delay: -0.6s" />
@@ -69,7 +62,7 @@
         <rect x="245" y="308" width="110" height="20" rx="10" fill="#ffffff" stroke="rgba(0, 150, 136, 0.35)" />
         <path d="M253 317 v-2 a3 3 0 0 1 6 0 v2" fill="none" stroke="#00796B" stroke-width="1.3" />
         <rect x="252" y="317" width="8" height="6" rx="1" fill="#00796B" />
-        <text x="308" y="321.5" text-anchor="middle" font-size="9" fill="#00796B">end-to-end encrypted</text>
+        <text x="308" y="321.5" text-anchor="middle" font-size="9" fill="#00796B">{{ t('landing.arch.e2e') }}</text>
         <!-- Concrete ops story on the laptop-to-cluster tunnel. -->
         <rect x="290" y="353" width="56" height="15" rx="7.5" fill="#ffffff" stroke="rgba(0, 150, 136, 0.35)" />
         <text x="318" y="363.5" text-anchor="middle" font-size="8.5" fill="#00796B">ssh · kubectl</text>
@@ -85,7 +78,7 @@
         <path d="M60 242 h80 l7 9 h-94 z" fill="#cfd8dc" />
         <circle cx="135" cy="197" r="3.5" fill="#4caf50" />
         <circle class="ring" cx="135" cy="197" r="3.5" fill="none" stroke="rgba(76, 175, 80, 0.5)" />
-        <text x="100" y="272" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">laptop — you</text>
+        <text x="100" y="272" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">{{ t('landing.arch.laptop') }}</text>
         <text class="ip" x="100" y="286" text-anchor="middle" font-size="10" fill="#00796B">100.64.0.12</text>
 
         <!-- GPU workstation (the machine you reach): monitor with code,
@@ -108,7 +101,7 @@
         <rect x="495" y="235" width="14" height="2" rx="1" fill="rgba(0, 150, 136, 0.3)" />
         <circle cx="510" cy="193" r="3.5" fill="#4caf50" />
         <circle class="ring" cx="510" cy="193" r="3.5" fill="none" stroke="rgba(76, 175, 80, 0.5)" style="animation-delay: 0.5s" />
-        <text x="466" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">GPU workstation</text>
+        <text x="466" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">{{ t('landing.arch.gpu') }}</text>
         <text class="ip" x="466" y="282" text-anchor="middle" font-size="10" fill="#00796B">100.64.0.23</text>
 
         <!-- Home server inside its LAN. -->
@@ -118,9 +111,9 @@
         <circle cx="138" cy="432" r="2" fill="#4caf50" />
         <circle class="ring" cx="138" cy="432" r="2" fill="none" stroke="rgba(76, 175, 80, 0.5)" style="animation-delay: 1s" />
         <circle cx="145" cy="432" r="2" fill="#009688" />
-        <text x="150" y="461" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">home server</text>
+        <text x="150" y="461" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">{{ t('landing.arch.homeServer') }}</text>
         <text class="ip" x="150" y="475" text-anchor="middle" font-size="10" fill="#00796B">100.64.0.31</text>
-        <text x="150" y="490" text-anchor="middle" font-size="9" fill="rgba(26, 26, 46, 0.55)">subnet router · exit node · 192.168.1.0/24</text>
+        <text x="150" y="490" text-anchor="middle" font-size="9" fill="rgba(26, 26, 46, 0.55)">{{ t('landing.arch.homeServerRole') }}</text>
 
         <!-- Kubernetes cluster: hexagon with three worker nodes. -->
         <path d="M415 393 L438 406.5 V433.5 L415 447 L392 433.5 V406.5 Z" fill="#ffffff" stroke="rgba(0, 150, 136, 0.5)" stroke-width="1.5" />
@@ -132,7 +125,7 @@
         <circle cx="408.5" cy="430.5" r="1.4" fill="#009688" />
         <circle cx="440" cy="398" r="3.5" fill="#4caf50" />
         <circle class="ring" cx="440" cy="398" r="3.5" fill="none" stroke="rgba(76, 175, 80, 0.5)" style="animation-delay: 1.5s" />
-        <text x="415" y="466" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">k8s cluster</text>
+        <text x="415" y="466" text-anchor="middle" font-size="11" font-weight="600" fill="#1a1a2e">{{ t('landing.arch.cluster') }}</text>
         <text class="ip" x="415" y="480" text-anchor="middle" font-size="10" fill="#00796B">100.64.0.44</text>
       </g>
 
@@ -142,7 +135,7 @@
         <path d="M136 214 Q283 156 418 204" fill="none" stroke="rgba(239, 83, 80, 0.18)" stroke-width="7" />
         <path class="rd-line" d="M136 214 Q283 156 418 204" fill="none" />
         <rect x="217" y="163" width="132" height="20" rx="10" fill="#ffffff" stroke="rgba(239, 83, 80, 0.4)" />
-        <text x="283" y="176.5" text-anchor="middle" font-size="9.5" fill="#ef5350">remote desktop · 60 fps</text>
+        <text x="283" y="176.5" text-anchor="middle" font-size="9.5" fill="#ef5350">{{ t('landing.arch.remoteStream') }}</text>
         <!-- Browser on the laptop showing the workstation's desktop. -->
         <rect x="70" y="202" width="60" height="7" fill="#37474f" />
         <circle cx="74" cy="205.5" r="1.2" fill="#ef5350" />
@@ -156,7 +149,7 @@
       </g>
     </svg>
 
-    <div class="arch-legend d-flex flex-wrap ga-2 justify-center mt-4" role="group" aria-label="Architecture layers">
+    <div class="arch-legend d-flex flex-wrap ga-2 justify-center mt-4" role="group" :aria-label="t('landing.arch.layers')">
       <v-chip
         v-for="l in layers"
         :key="l.id"
@@ -171,7 +164,7 @@
         @blur="hovered = null"
         @click="pinned = pinned === l.id ? null : l.id"
       >
-        {{ l.label }}
+        {{ t(`landing.arch.${l.id}.label`) }}
       </v-chip>
     </div>
     <p class="arch-caption text-body-2 text-center mt-2" aria-live="polite">
@@ -184,49 +177,26 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 type LayerId = 'machines' | 'mesh' | 'remote' | 'control'
 
+// The words live in the locale files (`landing.arch.<id>.label` / `.caption`).
 const layers = [
-  {
-    id: 'machines',
-    label: 'Machines',
-    color: '#455a64',
-    caption:
-      'A GPU workstation, a k8s cluster, a home server, the laptop in your bag — if it runs the agent, it is on your network.',
-  },
-  {
-    id: 'mesh',
-    label: 'Encrypted mesh',
-    color: '#00796B',
-    caption:
-      'Stable 100.64.x.x addresses and direct WireGuard-style tunnels, encrypted end to end — straight through NATs and corporate firewalls.',
-  },
-  {
-    id: 'remote',
-    label: 'Remote desktop',
-    color: '#ef5350',
-    caption:
-      'Open a tab and the GPU box desktop is in your browser — pixel-fresh at 60 fps, streamed through its own encrypted tunnel.',
-  },
-  {
-    id: 'control',
-    label: 'Control plane',
-    color: '#009688',
-    caption:
-      'meshharbor.itachi.fans only coordinates: keys, ACLs, presence. Your traffic never flows through our servers.',
-  },
+  { id: 'machines', color: '#455a64' },
+  { id: 'mesh', color: '#00796B' },
+  { id: 'remote', color: '#ef5350' },
+  { id: 'control', color: '#009688' },
 ] as const
 
-const DEFAULT_CAPTION =
-  'Your devices, one encrypted mesh — coordinated from the cloud, connected directly.'
+const { t } = useI18n()
 
 const hovered = ref<LayerId | null>(null)
 const pinned = ref<LayerId | null>(null)
 const cycled = ref<LayerId | null>(null)
 const active = computed(() => hovered.value ?? pinned.value ?? cycled.value)
-const caption = computed(
-  () => layers.find((l) => l.id === active.value)?.caption ?? DEFAULT_CAPTION,
+const caption = computed(() =>
+  active.value ? t(`landing.arch.${active.value}.caption`) : t('landing.arch.defaultCaption'),
 )
 
 function layerCls(id: LayerId) {
