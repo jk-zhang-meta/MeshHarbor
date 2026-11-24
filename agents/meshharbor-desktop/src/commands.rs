@@ -2263,6 +2263,92 @@ pub async fn cmd_open_meshharbor(app: tauri::AppHandle) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Resolve the primary organization's `(server_url, Option<tenant_id>)` for the
+/// T8b 3D globe action. Prefers the local config when readable; falls back to
+/// the device service's primary `OrgStatus` on root/system installs.
+fn primary_globe_target_from(
+    cfg: Option<&AgentConfig>,
+    orgs: &[localapi::OrgStatus],
+) -> Result<(String, Option<String>), String> {
+    match cfg {
+        Some(cfg) => {
+            let tid = cfg.tenant_id.trim();
+            Ok((
+                cfg.server_url.clone(),
+                (!tid.is_empty()).then(|| tid.to_string()),
+            ))
+        }
+        None => {
+            let primary = orgs
+                .iter()
+                .find(|o| o.primary)
+                .ok_or_else(|| "This device isn't enrolled yet — no server to open.".to_string())?;
+            let tid = primary
+                .tenant_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
+            Ok((primary.server_url.clone(), tid))
+        }
+    }
+}
+
+/// T8b — open the primary organization's full-page 3D globe embed URL
+/// (`{server}/tenant/{tid}/network/globe?embed=1&lang=...&theme=...`):
+/// - Windows (`#[cfg(windows)]`): opens directly inside the existing
+///   `meshharbor-web` WebView2 window via [`open_web_window_for_server`],
+///   preserving its signed-in profile, origin policy, and zero general `__TAURI__` IPC.
+/// - macOS & Linux (`#[cfg(not(windows))]`): follows the exact same path as
+///   "Open MeshHarbor" ([`open_web_or_browser`]: installed Chromium-family
+///   `--app=` window, falling back to the OS default browser tab).
+pub(crate) async fn open_network_globe_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    lang: Option<String>,
+    theme: Option<String>,
+) -> Result<WebSurface, String> {
+    let src = enrollment_sources().await;
+    let (server, tenant_id) = primary_globe_target_from(src.cfg.as_ref(), &src.orgs)?;
+    let server_origin = crate::globe_url::validate_server_origin(&server)?;
+    let fallback_lang = crate::tray_i18n::current_lang().code();
+    let url = crate::globe_url::build_network_globe_url(
+        &server_origin,
+        tenant_id.as_deref(),
+        lang.as_deref(),
+        fallback_lang,
+        theme.as_deref(),
+    )?;
+    let app2 = app.clone();
+    #[cfg(windows)]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let result = open_web_window_for_server(&app2, &url, &server_origin)
+                .map(|()| WebSurface::Window);
+            let _ = tx.send(result);
+        })
+        .map_err(|_| "Cannot schedule the globe window".to_string())?;
+        rx.await.map_err(|_| "Globe window task ended".to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = &server_origin;
+        tokio::task::spawn_blocking(move || open_web_or_browser(&app2, &url))
+            .await
+            .map_err(|_| "Globe window task ended".to_string())?
+    }
+}
+
+/// T8b — open the organization's live 3D network globe from the companion UI.
+#[tauri::command]
+pub async fn open_network_globe(
+    app: tauri::AppHandle,
+    lang: Option<String>,
+    theme: Option<String>,
+) -> Result<WebSurface, String> {
+    open_network_globe_impl(&app, lang, theme).await
+}
+
 /// Personal directory and sharing are account-authenticated, never agent-token lists.
 #[tauri::command]
 pub async fn cmd_open_account(

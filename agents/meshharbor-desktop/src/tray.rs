@@ -43,6 +43,7 @@ struct TrayStaticItems<R: Runtime> {
     devices: Submenu<R>,
     invites: Submenu<R>,
     open_status: MenuItem<R>,
+    open_globe: MenuItem<R>,
     open_web: MenuItem<R>,
     check_updates: MenuItem<R>,
     open_logs: MenuItem<R>,
@@ -61,6 +62,7 @@ pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
         let _ = items.devices.set_text(tray_i18n::network_devices(lang));
         let _ = items.invites.set_text(tray_i18n::invitations(lang));
         let _ = items.open_status.set_text(tray_i18n::open_meshharbor(lang));
+        let _ = items.open_globe.set_text(tray_i18n::open_globe(lang));
         let _ = items.open_web.set_text(tray_i18n::admin_console(lang));
         let _ = items.check_updates.set_text(tray_i18n::check_updates(lang));
         let _ = items.open_logs.set_text(tray_i18n::open_logs(lang));
@@ -117,6 +119,15 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         app,
         "open_status",
         tray_i18n::open_meshharbor(lang),
+        true,
+        None::<&str>,
+    )?;
+    // T8b — open the primary org's live 3D globe in the embedded web window
+    // (Windows) or Chromium app window / default browser (macOS & Linux).
+    let open_globe = MenuItem::with_id(
+        app,
+        "open_globe",
+        tray_i18n::open_globe(lang),
         true,
         None::<&str>,
     )?;
@@ -180,6 +191,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         devices: devices.clone(),
         invites: invites.clone(),
         open_status: open_status.clone(),
+        open_globe: open_globe.clone(),
         open_web: open_web.clone(),
         check_updates: check_updates_item.clone(),
         open_logs: open_logs.clone(),
@@ -199,6 +211,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             &devices,
             &sep,
             &open_status,
+            &open_globe,
             &open_web,
             &record,
             &keep_busy,
@@ -210,6 +223,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let on_menu = |app: &AppHandle<R>, event: tauri::menu::MenuEvent| match event.id.as_ref() {
         "open_status" => show_window(app, "/overview"),
+        "open_globe" => open_network_globe(app),
         "open_web" => open_meshharbor_web(app),
         "user_sign_out" => {
             tauri::async_runtime::spawn(async {
@@ -263,13 +277,16 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     spawn_account_watch(
         app.clone(),
-        account_status,
-        login,
-        sign_out,
-        join,
-        invites,
-        devices,
-        open_web.clone(),
+        AccountMenuItems {
+            status: account_status,
+            login,
+            sign_out,
+            join,
+            invites,
+            devices,
+            open_globe: open_globe.clone(),
+            admin: open_web.clone(),
+        },
     );
     spawn_recording_watch(app.clone(), record);
     spawn_keep_busy_watch(keep_busy);
@@ -801,6 +818,21 @@ fn show_window<R: Runtime>(app: &AppHandle<R>, path: &str) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// T8b — open the primary org's 3D network globe from the tray menu using the
+/// active persisted UI language (with OS fallback) and `theme=system`.
+fn open_network_globe<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            crate::commands::open_network_globe_impl(&app, None, Some("system".to_string())).await
+        {
+            tracing::warn!(%error, "tray: could not open network globe");
+            LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).error =
+                Some((error, std::time::Instant::now()));
+        }
+    });
 }
 
 /// S7 — resolve the server origin OFF the menu thread (config load +
@@ -1506,16 +1538,28 @@ fn account_view_at_in(
     }
 }
 
-fn spawn_account_watch<R: Runtime>(
-    app: AppHandle<R>,
+struct AccountMenuItems<R: Runtime> {
     status: MenuItem<R>,
     login: MenuItem<R>,
     sign_out: MenuItem<R>,
     join: MenuItem<R>,
     invites: tauri::menu::Submenu<R>,
     devices: tauri::menu::Submenu<R>,
+    open_globe: MenuItem<R>,
     admin: MenuItem<R>,
-) {
+}
+
+fn spawn_account_watch<R: Runtime>(app: AppHandle<R>, items: AccountMenuItems<R>) {
+    let AccountMenuItems {
+        status,
+        login,
+        sign_out,
+        join,
+        invites,
+        devices,
+        open_globe,
+        admin,
+    } = items;
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<AccountView> = None;
         let mut shown_lang: Option<Lang> = None;
@@ -1575,6 +1619,7 @@ fn spawn_account_watch<R: Runtime>(
                 let _ = sign_out.set_enabled(view.sign_out_enabled);
                 let _ = join.set_enabled(view.join_enabled);
                 let _ = devices.set_enabled(!view.temporary);
+                let _ = open_globe.set_enabled(!view.temporary);
                 let _ = admin.set_enabled(!view.temporary);
                 let _ = invites.set_enabled(!view.invitations.is_empty());
                 if shown.as_ref().map(|s| &s.invitations) != Some(&view.invitations) || lang_changed

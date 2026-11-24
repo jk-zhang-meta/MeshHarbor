@@ -870,6 +870,52 @@ textarea {
 .cols-moves { display: inline-flex; gap: 4px; }
 .cols-move { padding: 0 7px; }
 
+/* T8b — Network map (3D globe launcher card on Devices / Network page). */
+.globe-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.globe-card-copy {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.globe-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 6px;
+}
+.globe-card-head h3 {
+  margin: 0;
+}
+.globe-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--mh-radius-sm);
+  background: var(--primary-tint);
+  border: 1px solid var(--border);
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+.globe-card-desc {
+  margin: 0;
+  line-height: 1.45;
+}
+.globe-card-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.globe-card-err {
+  margin: 10px 0 0;
+}
+
 /* The mesh graph (mesh.js). Colours come from the --mesh-* variables. */
 .mesh-controls {
   display: flex;

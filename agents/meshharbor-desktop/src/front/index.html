@@ -352,6 +352,30 @@
             </div>
           </div>
 
+          <div class="card globe-card" id="dv-globe-card">
+            <div class="globe-card-row">
+              <div class="globe-card-copy">
+                <div class="globe-card-head">
+                  <span class="globe-card-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9.5"></circle>
+                      <path d="M2.5 12h19"></path>
+                      <path d="M12 2.5a14.5 14.5 0 0 1 0 19 14.5 14.5 0 0 1 0-19"></path>
+                    </svg>
+                  </span>
+                  <h3 data-i18n="dv.globe.title">Network map</h3>
+                </div>
+                <p class="muted small globe-card-desc" data-i18n="dv.globe.desc">
+                  View your organization’s devices and live peer links on the interactive 3D globe in a dedicated window.
+                </p>
+              </div>
+              <div class="globe-card-actions">
+                <button type="button" id="dv-open-globe" class="primary" data-i18n="dv.globe.openBtn">Open globe</button>
+              </div>
+            </div>
+            <p id="dv-globe-error" class="error small globe-card-err" role="alert" hidden></p>
+          </div>
+
           <div class="card" id="dv-mesh-card">
             <div class="card-title-row">
               <h3 data-i18n="dv.mesh.title">Mesh</h3>

@@ -445,5 +445,86 @@
     return { render, rerender };
   }
 
-  window.MeshHarbor.Mesh = { create, layout, chordPath, angleDelta, nodesFromView, CARRIERS };
+  /** Detect the companion's active theme preference (`light` | `dark` | `system`). */
+  function detectCompanionTheme() {
+    if (typeof document !== 'undefined') {
+      const root = document.documentElement;
+      if (root.classList.contains('theme-dark') || root.dataset.theme === 'dark') return 'dark';
+      if (root.classList.contains('theme-light') || root.dataset.theme === 'light') return 'light';
+    }
+    return 'system';
+  }
+
+  /** Detect the companion's active UI language (`en` | `zh-CN`). */
+  function detectCompanionLang() {
+    if (window.MeshHarborI18n && typeof window.MeshHarborI18n.getLang === 'function') {
+      return window.MeshHarborI18n.getLang();
+    }
+    const docLang = typeof document !== 'undefined' ? document.documentElement.lang : '';
+    return /^zh\b/i.test(docLang) ? 'zh-CN' : 'en';
+  }
+
+  /** Open the organization's live 3D network globe in its dedicated window/browser. */
+  async function openGlobe() {
+    const lang = detectCompanionLang();
+    const theme = detectCompanionTheme();
+    return window.MeshHarbor.invoke('open_network_globe', { lang, theme });
+  }
+
+  function wireGlobeCard() {
+    const btn = document.getElementById('dv-open-globe');
+    const errEl = document.getElementById('dv-globe-error');
+    if (!btn) return;
+    let busy = false;
+    btn.addEventListener('click', async () => {
+      if (busy) return;
+      busy = true;
+      btn.disabled = true;
+      btn.textContent = t('dv.globe.opening', null, 'Opening…');
+      if (errEl) {
+        errEl.textContent = '';
+        errEl.hidden = true;
+      }
+      try {
+        await openGlobe();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || t('common.unknownError', null, 'unknown error'));
+        if (errEl) {
+          errEl.textContent = t('dv.globe.openFailed', { err: msg }, 'Could not open the 3D globe: ' + msg);
+          errEl.hidden = false;
+        }
+      } finally {
+        busy = false;
+        btn.disabled = false;
+        btn.textContent = t('dv.globe.openBtn', null, 'Open globe');
+      }
+    });
+    document.addEventListener('meshharbor:lang', () => {
+      if (!busy) btn.textContent = t('dv.globe.openBtn', null, 'Open globe');
+      if (errEl && !errEl.hidden) {
+        errEl.hidden = true;
+        errEl.textContent = '';
+      }
+    });
+  }
+
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', wireGlobeCard);
+    } else {
+      wireGlobeCard();
+    }
+  }
+
+  window.MeshHarbor.Mesh = {
+    create,
+    layout,
+    chordPath,
+    angleDelta,
+    nodesFromView,
+    CARRIERS,
+    detectCompanionTheme,
+    detectCompanionLang,
+    openGlobe,
+  };
 })();

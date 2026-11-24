@@ -330,6 +330,13 @@ pub const fn open_meshharbor(lang: Lang) -> &'static str {
     }
 }
 
+pub const fn open_globe(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Open globe",
+        Lang::ZhCn => "打开地球",
+    }
+}
+
 pub const fn admin_console(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Admin console…",
@@ -804,6 +811,11 @@ mod tests {
                 "open_meshharbor",
                 open_meshharbor(Lang::En).into(),
                 open_meshharbor(Lang::ZhCn).into(),
+            ),
+            (
+                "open_globe",
+                open_globe(Lang::En).into(),
+                open_globe(Lang::ZhCn).into(),
             ),
             (
                 "admin_console",

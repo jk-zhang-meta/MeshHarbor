@@ -39,6 +39,7 @@ mod commands;
 mod desktop_log;
 mod editor;
 mod first_run;
+mod globe_url;
 mod panels;
 #[cfg(target_os = "linux")]
 mod pin;
@@ -186,6 +187,7 @@ fn main() {
             commands::cmd_open_rdp,
             commands::cmd_open_meshharbor,
             commands::cmd_open_account,
+            commands::open_network_globe,
             // FR-85 — the Recordings view.
             commands::cmd_recordings_view,
             commands::cmd_record_start,
