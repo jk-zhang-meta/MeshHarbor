@@ -48,7 +48,7 @@
       </v-col>
 
       <v-col cols="12" md="9" lg="9">
-        <v-card variant="outlined" class="pa-4 pa-md-6" rounded="lg">
+        <v-card ref="chapterCard" variant="outlined" class="pa-4 pa-md-6 tutorial-chapter" rounded="lg">
           <div class="d-flex align-center ga-2 mb-3">
             <v-avatar size="36" color="primary" variant="tonal">
               <v-icon :icon="active.icon" />
@@ -301,10 +301,22 @@ const nextChapter = computed(() => chapters[activeIndex.value + 1])
 
 const { doneCount, isDone, toggle, reset } = useTutorialProgress(() => auth.user?.id)
 
+// FR-120 P5 — `<v-main>` is the page's scroller, not the window, and a hash
+// change does not reset it (AppLayout resets on a PATH change only), so
+// `window.scrollTo` moved nothing: on a phone the rail sits above the chapter
+// and a tap changed the content off-screen. Bring the chapter's top into
+// view whenever it is not: below the fold (the rail above it) or scrolled
+// past (Next at the bottom of a long chapter). Already in view: no jump.
+const chapterCard = ref<{ $el: HTMLElement } | null>(null)
+
 function go(id: string) {
   activeId.value = id
   router.replace({ hash: `#${id}` })
-  globalThis.scrollTo?.({ top: 0, behavior: 'smooth' })
+  const el = chapterCard.value?.$el
+  const top = el?.getBoundingClientRect?.().top
+  if (el && top !== undefined && (top < 0 || top > globalThis.innerHeight / 2)) {
+    el.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }
 }
 
 /** Steps name a route; the tenant id comes from where the reader already
@@ -328,6 +340,12 @@ async function copy(text: string) {
 .tutorial-rail {
   position: sticky;
   top: 76px;
+}
+
+/* FR-120 P5 — `go()` scrolls the chapter into view; the app bar sits over
+   `<v-main>`, so keep the chapter's top below it, as the rail's own offset. */
+.tutorial-chapter {
+  scroll-margin-top: 76px;
 }
 
 .tutorial-headline {

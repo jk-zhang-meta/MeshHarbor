@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
-  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6" fluid>
+  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6 page-no-sideways" fluid>
     <v-row align="center" justify="center">
       <v-col cols="12" sm="8" md="5">
         <v-card class="pa-4 pa-md-6">

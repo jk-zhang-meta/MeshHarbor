@@ -238,7 +238,9 @@
         />
       </div>
       <v-card>
-        <v-table density="compact">
+        <!-- FR-120 P5 — a card per org below 600 px (table-stack-xs), so
+             `inspect`, the rightmost column, stays on screen. -->
+        <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
             <tr>
               <th>Org</th>
@@ -255,10 +257,10 @@
                 {{ o.name }}
                 <v-chip v-if="!o.active" size="x-small" variant="tonal" class="ml-2">idle</v-chip>
               </td>
-              <td class="text-right">{{ o.members }}</td>
-              <td class="text-right">{{ o.online }} / {{ o.total }}</td>
-              <td class="text-right">{{ o.calls }}</td>
-              <td class="text-right">{{ Math.round(o.minutes) }}</td>
+              <td class="text-right" data-label="Members">{{ o.members }}</td>
+              <td class="text-right" data-label="Online">{{ o.online }} / {{ o.total }}</td>
+              <td class="text-right" data-label="Calls (30d)">{{ o.calls }}</td>
+              <td class="text-right" data-label="Minutes (30d)">{{ Math.round(o.minutes) }}</td>
               <td class="text-right">
                 <v-btn
                   size="x-small"

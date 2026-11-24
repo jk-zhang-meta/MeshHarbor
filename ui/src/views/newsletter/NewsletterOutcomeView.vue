@@ -11,7 +11,7 @@
   no human ever saw either message — FR-58 field evidence 2.
 -->
 <template>
-  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6" fluid>
+  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6 page-no-sideways" fluid>
     <v-row align="center" justify="center">
       <v-col cols="12" sm="8" md="6" class="text-center">
         <v-icon :icon="view.icon" :color="view.color" size="72" class="mb-6" />

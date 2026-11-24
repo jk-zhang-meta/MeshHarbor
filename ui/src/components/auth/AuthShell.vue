@@ -7,7 +7,7 @@
   Below md the panel folds away and the form stands alone.
 -->
 <template>
-  <div class="mh-auth">
+  <div class="mh-auth page-no-sideways">
     <aside class="mh-auth__brand">
       <svg class="mh-auth__weave" aria-hidden="true" focusable="false">
         <defs>

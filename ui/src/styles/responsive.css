@@ -103,3 +103,16 @@
     overflow: hidden;
   }
 }
+
+/*
+ * FR-120 P5 — a page outside AppLayout clips what its gutters push past the
+ * screen. A `v-row`'s negative margins (12 px) inside the house `pa-2` (8 px)
+ * overhang it by 4 px on a phone, and with no clipped `<v-main>` around them
+ * (AppLayout's `.app-main-no-scroll`, FR-116) the document scrolled 4 px
+ * sideways under a finger (sign-in and sign-up at 360 and 390 px).
+ * `clip`, not `hidden`: `hidden` would turn the page into a second vertical
+ * scroller.
+ */
+.page-no-sideways {
+  overflow-x: clip;
+}

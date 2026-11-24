@@ -12,7 +12,7 @@
   401-refresh-logout chain.
 -->
 <template>
-  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6" fluid>
+  <v-container class="fill-height pa-2 pa-md-4 pa-xl-6 page-no-sideways" fluid>
     <v-row align="center" justify="center">
       <v-col cols="12" sm="8" md="6" class="text-center">
         <template v-if="phase === 'ready' || phase === 'busy'">

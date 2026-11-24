@@ -224,7 +224,9 @@
               >
                 Weekly activity {{ orgs.not_measured }}.
               </v-alert>
-              <v-table density="compact" class="growth-wide">
+              <!-- FR-120 P5 — a card per org below 600 px (table-stack-xs), so
+                   `timeline`, the rightmost column, stays on screen. -->
+              <v-table density="compact" class="growth-wide table-stack-xs table-stack-xs--compact">
                 <thead>
                   <tr>
                     <th class="text-left">Org</th>
@@ -243,19 +245,19 @@
                       <v-chip v-if="o.archived" size="x-small" variant="tonal" class="ml-1">archived</v-chip>
                       <v-chip v-if="o.at_risk" size="x-small" color="warning" class="ml-1">at risk</v-chip>
                     </td>
-                    <td>
+                    <td data-label="Channel">
                       {{ o.owner?.channel ?? 'unknown' }}
                       <span v-if="o.owner?.source" class="text-caption text-medium-emphasis">
                         / {{ o.owner.source }}
                       </span>
                     </td>
-                    <td>{{ o.plan }}<span v-if="o.billing_status" class="text-caption text-medium-emphasis"> · {{ o.billing_status }}</span></td>
-                    <td class="text-right">
+                    <td data-label="Plan">{{ o.plan }}<span v-if="o.billing_status" class="text-caption text-medium-emphasis"> · {{ o.billing_status }}</span></td>
+                    <td class="text-right" data-label="Devices">
                       <template v-if="o.devices">{{ o.devices.live }}/{{ o.devices.enrolled }}</template>
                       <template v-else>—</template>
                     </td>
-                    <td>{{ o.last_value_day ?? '—' }}</td>
-                    <td>
+                    <td data-label="Last value">{{ o.last_value_day ?? '—' }}</td>
+                    <td data-label="Activity (12w)">
                       <span class="activity-strip">
                         <span
                           v-for="(w, i) in o.weeks"

@@ -224,7 +224,9 @@
           <v-btn size="x-small" variant="text" @click="copyMinted">copy</v-btn>
           <v-btn size="x-small" variant="text" @click="minted = null">done</v-btn>
         </v-alert>
-        <v-table v-if="keys.length" density="compact">
+        <!-- FR-120 P5 — a card per key below 600 px (table-stack-xs), so
+             `revoke`, the rightmost column, stays on screen. -->
+        <v-table v-if="keys.length" density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
             <tr>
               <th class="text-left">Kind</th>
@@ -238,12 +240,12 @@
           </thead>
           <tbody>
             <tr v-for="k in keys" :key="k.id">
-              <td>{{ k.kind }}</td>
-              <td><code>{{ k.prefix }}…</code></td>
-              <td>{{ k.label }}</td>
-              <td>{{ k.created_at.slice(0, 10) }}</td>
-              <td>{{ k.last_used_at ? k.last_used_at.slice(0, 16).replace('T', ' ') : '—' }}</td>
-              <td>
+              <td data-label="Kind">{{ k.kind }}</td>
+              <td data-label="Prefix"><code>{{ k.prefix }}…</code></td>
+              <td data-label="Label">{{ k.label }}</td>
+              <td data-label="Created">{{ k.created_at.slice(0, 10) }}</td>
+              <td data-label="Last used">{{ k.last_used_at ? k.last_used_at.slice(0, 16).replace('T', ' ') : '—' }}</td>
+              <td data-label="State">
                 <v-chip size="x-small" :color="k.live ? 'success' : 'grey'" variant="tonal">
                   {{ k.live ? 'live' : 'revoked' }}
                 </v-chip>
