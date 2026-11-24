@@ -314,6 +314,23 @@ pub struct ConnectedAgent {
     /// finishes a removal purge before it exits, so a purged connection is
     /// told like any other. Per connection; `hive-purge-all` does NOT imply it.
     pub supports_hive_purge_drain: bool,
+    /// FR-130 — the device advertises `rc-resume` on this connection: it can
+    /// read `rc:agent.resume_window`, the only frame an announce sends. An
+    /// older agent drops the unknown tag, so it is never sent one.
+    pub advertises_resume: bool,
+    /// FR-130 — the window, in seconds, announced to THIS connection
+    /// (`rc:agent.resume_window`): set at registration for a device that
+    /// advertises `rc-resume` and is in the resume scope while
+    /// `rc.session_resume_secs` is above 0. `Some` ⇒ the connection's loss
+    /// detaches its live sessions instead of ending them
+    /// ([`Hub::unregister_agent`]). Per CONNECTION, like every word above:
+    /// the next connection is announced its own, or none.
+    pub resume_window: Option<u32>,
+    /// FR-130 — the sessions this connection's hello claims back that are not
+    /// answered yet. Each holds a place in the device's capacity (the busy
+    /// gate counts it) from the registration until the claim is answered,
+    /// so a new request cannot slip into a slot a kept session holds.
+    pub pending_claims: Vec<ObjectId>,
 }
 
 /// #2267 — what a removal's kick did to the device's connection on this pod
@@ -760,9 +777,9 @@ pub struct HubInner {
     consent_tx: Option<mpsc::Sender<ConsentEvent>>,
 
     /// Fleet RPC — callers parked on a `rc:rpc.result`, keyed by request id.
-    /// Same-pod only: the agent's WS receive path and the HTTP handler that
-    /// is awaiting live in one process, and the API layer routes a request to
-    /// the owner pod BEFORE reaching the Hub (see `ws/rc_relay.rs`).
+    /// Same-pod only: the agent's WS receive path and the awaiting HTTP
+    /// handler live in one process; a pod without the device's socket answers
+    /// offline (`agent_exec.rs`), and FR-94's service path uses `exec_pending`.
     exec_waiters: DashMap<String, oneshot::Sender<ExecOutcome>>,
 
     /// MeshHarbor — owners parked on a `rc:accounts.result`, keyed by request
@@ -1777,6 +1794,40 @@ impl Hub {
         // (see [`ConnectedAgent::supports_exec`]).
         supports_exec: bool,
     ) -> (ClientTx, Arc<Notify>, mpsc::Receiver<ServerMsg>) {
+        let reg = self.register_agent_resuming(
+            agent_id,
+            tenant_id,
+            owner_user_id,
+            os,
+            max_sessions,
+            input_arbiter,
+            supports_exec,
+            ResumeHello::default(),
+        );
+        (reg.tx, reg.cancel, reg.rx)
+    }
+
+    /// FR-130 — [`Self::register_agent`], with what the hello said about
+    /// resuming: whether the device advertises `rc-resume`, the window this
+    /// connection is announced (`None`: none) and the sessions it claims back.
+    /// Each claim the window admits holds a place in the device's capacity
+    /// from here until it is answered, and is spared the in-memory reap
+    /// below: whether it goes on is the claim's to decide. With no window,
+    /// every claim is refused at once and the reap runs as it always has.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_agent_resuming(
+        &self,
+        agent_id: ObjectId,
+        tenant_id: ObjectId,
+        owner_user_id: ObjectId,
+        os: OsKind,
+        max_sessions: u8,
+        input_arbiter: bool,
+        supports_exec: bool,
+        hello: ResumeHello,
+    ) -> Registration {
+        let resume_window = hello.window;
+        let (claims, refused) = resume::sort_claims(hello.window, hello.kept, max_sessions);
         let (tx, rx) = mpsc::channel(SERVER_TX_CAPACITY);
         let cancel = Arc::new(Notify::new());
         let entry = ConnectedAgent {
@@ -1883,7 +1934,16 @@ impl Hub {
             // #2294 — set by `set_agent_hive_purge_drain_support`; `false` =
             // a purged connection is not told at its removal, as before.
             supports_hive_purge_drain: false,
+            // FR-130 — whether the device keeps its peers at all, the window
+            // this connection is announced, and the claims it holds a place
+            // for until they are answered.
+            advertises_resume: hello.advertised,
+            resume_window,
+            pending_claims: claims.clone(),
         };
+        // FR-130 — a row created before this instant belongs to an earlier
+        // connection: the registration read's line.
+        let registered_at = bson::DateTime::now();
         if let Some(prev) = self.inner.agents.insert(agent_id, entry) {
             // rc.53: don't just `drop(prev)` — that leaves the old WS
             // read-loop polling `socket_rx.next()` for up to one 25 s
@@ -1951,6 +2011,11 @@ impl Hub {
         // (AwaitingConsent / Negotiating) are deliberately spared — they
         // legitimately span a WS flap and the consent re-push below plus
         // the negotiating reaper own their lifecycle.
+        //
+        // FR-130 — a session this hello claims back is spared: the device
+        // kept its peer, and the claim decides whether it goes on. With no
+        // window there are no claims, and every Active session is reaped as
+        // it always was.
         let zombies: Vec<ObjectId> = self
             .inner
             .sessions
@@ -1960,14 +2025,15 @@ impl Hub {
                 s.agent_id == agent_id && s.phase == SessionPhase::Active
             })
             .map(|e| *e.key())
+            .filter(|sid| !claims.contains(sid))
             .collect();
-        for session_id in zombies {
+        for session_id in &zombies {
             warn!(
                 %agent_id, %session_id,
                 "agent re-registered with a stale ACTIVE session — reaping the zombie \
                  (its Terminate died with the previous control WS)"
             );
-            let _ = self.terminate(session_id, EndReason::AgentDisconnect);
+            let _ = self.end_own(*session_id, EndReason::AgentDisconnect, None);
         }
         // Re-push any consent-pending Request to the fresh connection: an
         // agent whose control WS flapped between the Request and its
@@ -1994,7 +2060,15 @@ impl Hub {
                 let _ = tx.try_send(req);
             }
         }
-        (tx, cancel, rx)
+        Registration {
+            tx,
+            cancel,
+            rx,
+            claims,
+            refused,
+            reaped: zombies,
+            registered_at,
+        }
     }
 
     /// Unregister a connected agent. The optional `tx` is the channel
@@ -2018,34 +2092,41 @@ impl Hub {
         // Keep the identity comparison and removal under the same DashMap
         // shard lock: a replacement must not slip between them.
         let removed = match tx {
-            Some(expected_tx) => self
-                .inner
-                .agents
-                .remove_if(&agent_id, |_, agent| {
-                    let matches = ptr_eq(&agent.tx, expected_tx);
-                    #[cfg(test)]
-                    if matches {
-                        tests::pause_agent_remove_if_armed(agent_id);
-                    }
-                    matches
-                })
-                .is_some(),
-            None => self.inner.agents.remove(&agent_id).is_some(),
+            Some(expected_tx) => self.inner.agents.remove_if(&agent_id, |_, agent| {
+                let matches = ptr_eq(&agent.tx, expected_tx);
+                #[cfg(test)]
+                if matches {
+                    tests::pause_agent_remove_if_armed(agent_id);
+                }
+                matches
+            }),
+            None => self.inner.agents.remove(&agent_id),
         };
-        if !removed && tx.is_some() {
-            info!(
-                "agent {} unregister skipped (tx no longer matches; newer connection holds the slot)",
-                agent_id
-            );
+        // FR-130 — the entry itself comes out, not only the fact that it
+        // did: the window its connection was announced decides below whether
+        // its live sessions end or are kept for the device to claim back.
+        let Some((_, entry)) = removed else {
+            if tx.is_some() {
+                info!(
+                    "agent {} unregister skipped (tx no longer matches; newer connection holds the slot)",
+                    agent_id
+                );
+            }
+            return false;
+        };
+        info!("agent {} offline", agent_id);
+        match entry.resume_window {
+            // FR-130 — this connection was announced a window: its live
+            // sessions outlive the socket (the device keeps their peers),
+            // and the rest end as they always have.
+            Some(window_secs) => self.detach_agent_sessions(agent_id, window_secs),
+            None => self.end_agent_sessions(agent_id),
         }
-        if removed {
-            info!("agent {} offline", agent_id);
-            self.end_agent_sessions(agent_id);
-        }
-        removed
+        true
     }
 
-    /// Force-close every session tied to this agent.
+    /// Force-close every session tied to this agent. FR-130 — an end the hub
+    /// decides on its own, so each is fenced at the number the hub holds.
     pub(crate) fn end_agent_sessions(&self, agent_id: ObjectId) {
         let dead: Vec<ObjectId> = self
             .inner
@@ -2057,7 +2138,7 @@ impl Hub {
             })
             .collect();
         for sid in dead {
-            let _ = self.terminate(sid, EndReason::AgentDisconnect);
+            let _ = self.end_own(sid, EndReason::AgentDisconnect, None);
         }
     }
 
@@ -2130,7 +2211,8 @@ impl Hub {
         let Some(agent) = self.inner.agents.get(&agent_id) else {
             return NudgeOutcome::NotRegistered;
         };
-        if agent.active_sessions > 0 {
+        // FR-130 — a claim not answered yet is a session the device holds.
+        if agent.active_sessions > 0 || !agent.pending_claims.is_empty() {
             return NudgeOutcome::RcBusy;
         }
         info!(
@@ -2235,8 +2317,10 @@ impl Hub {
             })
             .map(|e| *e.key())
             .collect();
+        // FR-130 — a session its viewer may hold is kept for the viewer to
+        // rejoin (`hold.rs`); everything else ends here as it always has.
         for session_id in orphaned {
-            let _ = self.terminate(session_id, EndReason::ControllerHangup);
+            let _ = self.viewer_gone(session_id, tx);
         }
     }
 
@@ -2294,8 +2378,8 @@ impl Hub {
 
     /// Controller asked to start a session against `agent_id`.
     /// Creates the session, notifies the agent, returns the new session id.
-    /// The caller (WS dispatcher) is expected to follow up by awaiting consent
-    /// in a spawned task — see [`Self::run_consent_flow`].
+    /// Consent is then awaited on a task the session spawns itself
+    /// ([`Self::create_session_full`]), ending in `handle_consent_outcome`.
     // Each new field on `rc:session.request` lands as another arg
     // here. Clippy's 7-arg threshold is conservative for an internal
     // helper whose call sites are exhaustive; allowing it is cheaper
@@ -2552,6 +2636,16 @@ impl Hub {
         // indicator + peer. Mirrors the iterate-and-lock pattern in
         // `unregister_controller`; a mid-setup session keeps a live
         // controller_tx so it is never a false positive.
+        //
+        // FR-130 — a session with NO controller is never an orphan here: a
+        // session a device's claim rebuilt waits for its viewer's rejoin with
+        // none, and so does one held through its viewer's socket loss. Before
+        // FR-130 no session was ever without one. A session held for its
+        // viewer (`hold::held_for_viewer`: its controller gone or closed) is
+        // spared against ANOTHER person's request, and reaped as before for
+        // its own person's: a page too old to send `replaces`, or that
+        // person's other tab. The remote module reaps those first, before it
+        // claims the org's slot (`Hub::reap_held_for`).
         let orphaned: Vec<ObjectId> = self
             .inner
             .sessions
@@ -2559,17 +2653,20 @@ impl Hub {
             .filter_map(|e| {
                 let dead_controller = {
                     let s = e.value().lock();
+                    let gone = s.controller_tx.as_ref().is_none_or(|tx| tx.is_closed());
+                    let held = hold::held_for_viewer(&s) && gone;
                     s.agent_id == agent_id
-                        && s.controller_tx
-                            .as_ref()
-                            .map(|tx| tx.is_closed())
-                            .unwrap_or(true)
+                        && if held {
+                            s.controller_user_id == controller_user_id
+                        } else {
+                            s.controller_tx.as_ref().is_some_and(|tx| tx.is_closed())
+                        }
                 };
                 dead_controller.then(|| *e.key())
             })
             .collect();
         for sid in orphaned {
-            let _ = self.terminate(sid, EndReason::ControllerHangup);
+            let _ = self.end_own(sid, EndReason::ControllerHangup, None);
         }
 
         // #1045 — coalesce a DUPLICATE request that arrives on the SAME
@@ -2610,6 +2707,7 @@ impl Hub {
                     s.privacy_refused,
                     s.features_refused.clone(),
                     s.idle_secs,
+                    s.resume_secs,
                 )
             })
         });
@@ -2620,6 +2718,7 @@ impl Hub {
             existing_privacy_refused,
             existing_features_refused,
             existing_idle_secs,
+            existing_resume_secs,
         )) = existing
         {
             info!(
@@ -2653,6 +2752,9 @@ impl Hub {
                 features_refused: refusals_wire(&existing_features_refused),
                 // FR-101 P4b-2 — and the idle limit it runs under.
                 idle_secs: existing_idle_secs,
+                // FR-130 — and whether it may be held, as its first answer
+                // said.
+                resume_secs: existing_resume_secs,
             });
             return Ok(existing_id);
         }
@@ -2709,13 +2811,18 @@ impl Hub {
             agent_floor,
             agent_enforces_idle,
             agent_honours_lock,
+            agent_window,
         ) = {
             let mut agent = self
                 .inner
                 .agents
                 .get_mut(&agent_id)
                 .ok_or_else(|| Error::AgentOffline(agent_id.to_hex()))?;
-            if agent.active_sessions >= agent.max_sessions {
+            // FR-130 — a claim not answered yet holds its place: a new request
+            // cannot slip into a slot a kept session holds.
+            if usize::from(agent.active_sessions) + agent.pending_claims.len()
+                >= usize::from(agent.max_sessions)
+            {
                 return Err(Error::AgentBusy);
             }
             agent.active_sessions += 1;
@@ -2728,6 +2835,8 @@ impl Hub {
                 agent.device_session_policy,
                 agent.enforces_idle,
                 agent.honours_lock_on_end,
+                // FR-130 — the window this connection was announced, if any.
+                agent.resume_window,
             )
         };
 
@@ -2889,6 +2998,16 @@ impl Hub {
                 meshharbor_remote_control::signaling::FileChildDirection::Upload,
             ) && browser_caps.iter().any(|c| c == "file-child-upload"),
         );
+        // FR-130 — an outsider's session, FR-52's external one or one opened
+        // through a device share, is never held or resumed (upstream's D3;
+        // a share's lease needs the centre every few seconds).
+        live.external = external.is_some() || share_grant_id.is_some();
+        let live_external = live.external;
+        // FR-130 — its viewer may hold it through a socket's loss for the
+        // window the device's connection holds (a positive one); never an
+        // outsider's.
+        let resume_secs = agent_window.filter(|&w| w > 0 && !live_external);
+        live.resume_secs = resume_secs;
         // Multi-region relay: freeze the session's region NOW — a load-aware
         // pick over the agent's home + its RTT-ordered prefs — so Ready/
         // Offer/Answer all issue from the same PoP regardless of mid-setup
@@ -2933,6 +3052,10 @@ impl Hub {
             privacy_refused: privacy_refused.map(str::to_string),
             features_refused: refusals_wire(&features_refused),
             idle_secs: idle_told,
+            // FR-130 — this session may be held, for this long: the page then
+            // keeps it through a socket's loss and claims it back with
+            // `rc:session.rejoin`. Absent with no window, as before.
+            resume_secs,
         });
 
         // Per-mode consent window: modes with an owner-side (email/push) leg get
@@ -2960,6 +3083,10 @@ impl Hub {
         // Request (it needs the codec / transport context) + the mode directive;
         // for Email/Push it will NOT respond — the owner resolves the slot.
         let shared_lease = self.shared_lease(session_id);
+        // FR-130 (review 1, L6) — the row's `external` marker, where a claim
+        // refuses it (D3): only while the device's connection holds a window,
+        // so with none the row is the one it always was.
+        let external_marked = live_external && agent_window.is_some_and(|w| w > 0);
         let request = ServerMsg::Request {
             two_factor_code,
             shared_lease,
@@ -3028,6 +3155,7 @@ impl Hub {
                 idle_enforced: idle_secs.map(|_| agent_enforces_idle),
                 lock_on_end,
                 lock_enforced: lock_on_end.map(|_| agent_honours_lock),
+                external: external_marked,
             },
         );
         self.audit(session_id, agent_id, agent_org, AuditKind::ConsentPrompted);
@@ -3102,7 +3230,7 @@ impl Hub {
                     s.transition(SessionPhase::Negotiating)
                 }) {
                     warn!("post-consent transition failed: {e}");
-                    let _ = self.terminate(session_id, EndReason::Error);
+                    let _ = self.end_own(session_id, EndReason::Error, None);
                     return;
                 }
                 // Tell the controller it can send its offer.
@@ -3194,7 +3322,7 @@ impl Hub {
                  likely never received Ready; terminating so its ladder can retry",
                 NEGOTIATING_TIMEOUT.as_secs()
             );
-            let _ = self.terminate(session_id, EndReason::Error);
+            let _ = self.end_own(session_id, EndReason::Error, None);
         }
     }
 
@@ -3431,8 +3559,14 @@ impl Hub {
         // Once the answer is in flight, mark the session active.
         // (The peers may still be doing ICE, but signaling is done from our POV.)
         self.with_session(session_id, |s| s.transition(SessionPhase::Active))?;
-        let (sid, aid, oid, max_duration) = self.with_session(session_id, |s| {
-            Ok((s.id, s.agent_id, s.tenant_id, s.max_duration.take()))
+        let (sid, aid, oid, max_duration, attach_seq) = self.with_session(session_id, |s| {
+            Ok((
+                s.id,
+                s.agent_id,
+                s.tenant_id,
+                s.max_duration.take(),
+                s.attach_seq,
+            ))
         })?;
         let peer_auth = peer_auth_verdict.filter(|v| {
             let known = meshharbor_remote_control::signaling::peer_auth_verdict_is_known(v);
@@ -3447,21 +3581,11 @@ impl Hub {
         // session went live, not from the request: consent can take minutes.
         // Taken above, so a renegotiation never arms a second timer. A session
         // that ended first is simply gone when it fires (`terminate` is
-        // idempotent, and a session id is never reused).
+        // idempotent, and a session id is never reused). FR-130 — a session a
+        // claim resumes keeps its id, so the timer also checks the fencing
+        // number it was armed at: the resume arms its own, from `started_at`.
         if let Some(limit) = max_duration {
-            let hub = self.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(limit).await;
-                if hub.inner.sessions.contains_key(&sid) {
-                    info!(
-                        session = %sid.to_hex(),
-                        limit_secs = limit.as_secs(),
-                        "rc session reached the org's maximum length — ending it"
-                    );
-                    let _ =
-                        hub.terminate_with_limit(sid, EndReason::IdleTimeout, Some("max_duration"));
-                }
-            });
+            self.arm_max_duration(sid, attach_seq, limit, limit);
         }
         Ok(())
     }
@@ -3508,25 +3632,75 @@ impl Hub {
     /// FR-101 P4b — [`Self::terminate`], naming the limit that ended the
     /// session (`max_duration`) on `rc:terminate` and in the audit row, so a
     /// viewer and a reader of the audit can tell it from idleness.
+    ///
+    /// FR-130 — an end someone asked for (an admin's, the controller's, the
+    /// device's): written to the row at any fencing number, as every end was
+    /// before. An end the hub decides on its own goes through
+    /// [`Self::end_own`].
     pub fn terminate_with_limit(
         &self,
         session_id: ObjectId,
         reason: EndReason,
         limit: Option<&'static str>,
     ) -> Result<()> {
+        self.end_session(session_id, reason, limit, EndWrite::Asked)
+    }
+
+    /// FR-130 — an end the hub decides on its own (a socket loss, an orphan,
+    /// the length limit, a reaper): written fenced at the number the hub
+    /// holds, so it cannot end a session another pod resumed.
+    pub(crate) fn end_own(
+        &self,
+        session_id: ObjectId,
+        reason: EndReason,
+        limit: Option<&'static str>,
+    ) -> Result<()> {
+        self.end_session(session_id, reason, limit, EndWrite::Own)
+    }
+
+    /// The one place a session this hub holds ends: out of the map, its slot
+    /// given back, the device's count freed, both ends told, and the end
+    /// written to its row as `write` says.
+    fn end_session(
+        &self,
+        session_id: ObjectId,
+        reason: EndReason,
+        limit: Option<&'static str>,
+        write: EndWrite,
+    ) -> Result<()> {
         let Some((_, arc)) = self.inner.sessions.remove(&session_id) else {
             return Ok(()); // already gone, idempotent
         };
+        self.end_removed(session_id, &arc, reason, limit, write);
+        Ok(())
+    }
+
+    /// [`Self::end_session`], once the session is out of the map: the caller
+    /// took exactly this copy out (FR-130's refused claim removes the copy it
+    /// read, and no other).
+    fn end_removed(
+        &self,
+        session_id: ObjectId,
+        arc: &Arc<Mutex<LiveSession>>,
+        reason: EndReason,
+        limit: Option<&'static str>,
+        write: EndWrite,
+    ) {
         // FR-115 P3b — the session's slot goes back with it.
         if let Some((_, lease)) = self.inner.slotted.remove(&session_id) {
             self.release_slot(lease);
         }
 
-        let (agent_id, tenant_id, controller_tx) = {
+        let (agent_id, tenant_id, controller_tx, attach_seq) = {
             let mut s = arc.lock();
             // Best-effort transition; ignore if already closed.
             let _ = s.transition(SessionPhase::Closed);
-            (s.agent_id, s.tenant_id, s.controller_tx.clone())
+            (
+                s.agent_id,
+                s.tenant_id,
+                s.controller_tx.clone(),
+                s.attach_seq,
+            )
         };
 
         // Decrement agent session counter.
@@ -3547,6 +3721,12 @@ impl Hub {
             let _ = agent_tx.try_send(msg);
         }
 
+        let attach_seq = match write {
+            EndWrite::Asked => None,
+            EndWrite::Own => Some(attach_seq),
+            // FR-130 — the row already holds the end this one follows.
+            EndWrite::Nothing => return,
+        };
         self.audit(
             session_id,
             agent_id,
@@ -3554,9 +3734,11 @@ impl Hub {
             AuditKind::SessionEnded {
                 reason,
                 limit: limit.map(str::to_string),
+                attach_seq,
+                ended_at: None,
+                end_source: None,
             },
         );
-        Ok(())
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
@@ -3574,8 +3756,8 @@ impl Hub {
     /// `SendFailed` if the channel is full (rare — the agent rx pump
     /// reads as fast as it can serialise + write to the socket).
     ///
-    /// Used by the `mh` relay path in
-    /// `crates/api/src/ws/tunnel.rs` to forward
+    /// Used by the `mh` relay path in the network module's
+    /// `crates/modules/network/src/tunnel.rs` to forward
     /// `ServerMsg::TcpForwardForward` / `TcpHalfClose` /
     /// `TcpClosed` / `TunnelTerminate` to the agent on behalf of a
     /// connected tunnel-client. Distinct from the remote-control
@@ -3608,9 +3790,9 @@ impl Hub {
     // ─── Fleet RPC broker ────────────────────────────────────────────
     //
     // Push a command to a device and park the caller on its answer. Purely
-    // same-pod: the API layer has already routed the request to whichever pod
-    // holds the agent's WS (`ws/rc_relay.rs`), so by the time we're here the
-    // agent's tx and the waiter live in one process.
+    // same-pod: the agent's tx and the waiter live in one process, and a pod
+    // that does not hold the agent's WS answers the request as offline
+    // (`agent_exec.rs`).
 
     /// Does this device's agent understand `rc:rpc.exec`? `None` = not online
     /// here.
@@ -5625,6 +5807,11 @@ impl Hub {
                     local_relay,
                     initial_resolution,
                     two_factor_code,
+                    // FR-130 — the held session this redial gives up. The
+                    // remote module ends it before this request meets any
+                    // capacity gate, the org's slot it claims before this
+                    // dispatch included (`Hub::end_replaced`).
+                    replaces: _,
                 },
             ) => {
                 // Forward browser codec caps verbatim to the agent in
@@ -6032,6 +6219,16 @@ impl Hub {
                 }
             }
             (_, ClientMsg::Ping { id: _ }) => Ok(()), // pong handled by WS layer
+            // FR-130 — a viewer's claim on a session held for it. The remote
+            // module answers it on the pod the viewer's socket is on: it checks
+            // that the row names this person and runs the gate a request runs
+            // before it binds here or relays here (`remote::rejoin`). This arm
+            // is the bind, on the hub that holds the session.
+            (Role::Controller, ClientMsg::SessionRejoin { session_id }) => {
+                let user_id = ctx.user_id.ok_or(Error::PermissionDenied("no user"))?;
+                let tx = ctx.controller_tx.clone().ok_or(Error::SendFailed)?;
+                self.rejoin(session_id, user_id, &tx)
+            }
             (
                 _,
                 ClientMsg::AgentHello { .. }
@@ -6052,6 +6249,18 @@ impl Hub {
         }
     }
 }
+
+// FR-130 — the hub's half of a session that outlives its device's control
+// socket: the detach, the claim's bookkeeping and the row ends of sessions no
+// hub holds. At the end of the file so no anchor above moves.
+mod resume;
+use resume::EndWrite;
+pub use resume::{Registration, ResumeHello, Resumed, ResumedSession, RowEnd};
+// FR-130 P1b-2 — the hub's half of a session that outlives its VIEWER's
+// socket: the hold, the rejoin, `replaces`, and the orphan reap's same-person
+// rule.
+mod hold;
+pub use hold::HeldParties;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
@@ -7159,6 +7368,7 @@ mod tests {
             override_reason: None,
             local_relay: None,
             initial_resolution: None,
+            replaces: None,
         }
     }
 
@@ -7171,7 +7381,7 @@ mod tests {
         agent_tx: ClientTx,
         agent_rx: mpsc::Receiver<ServerMsg>,
         other_agent_rx: mpsc::Receiver<ServerMsg>,
-        _audit_events: mpsc::Receiver<meshharbor_remote_control::models::RemoteAuditEvent>,
+        _audit_events: meshharbor_remote_control::audit::AuditTestRx,
     }
     impl FileChildDispatchFixture {
         async fn new() -> Self {

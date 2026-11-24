@@ -15831,6 +15831,31 @@ pub fn rtp_track_unanswerable(track_codec: &str, transport: Option<&str>, offer_
     !on_data_channel(transport) && has_video && !offer_carries_track(offer_sdp, track_codec)
 }
 
+/// FR-130 — what the org loop's session table reads of a peer it keeps through
+/// the loss of its control socket (`crate::session_table::TablePeer`).
+impl AgentPeer {
+    /// Whether this peer's connection is `Connected` now. A peer kept after a
+    /// net change closes once it is not: the RC path has no ICE restart.
+    pub(crate) fn is_connected(&self) -> bool {
+        matches!(
+            self.pc.connection_state(),
+            RTCPeerConnectionState::Connected
+        )
+    }
+
+    /// P2a-2 (M1) — whether this peer's connection is `Failed` or `Closed`: it
+    /// cannot come back. Its state handler says `Terminate` once, on `Failed`,
+    /// and the watchdog stops watching there, so a peer that died while its
+    /// control socket was dying told only that socket. The table closes such
+    /// a peer instead of keeping it, and never resumes it.
+    pub(crate) fn is_dead(&self) -> bool {
+        matches!(
+            self.pc.connection_state(),
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+        )
+    }
+}
+
 /// The video codecs an offer names, each once and in its order, for the line
 /// a refusal logs. Retransmission and FEC payloads are left out.
 pub fn offered_video_codecs(offer_sdp: &str) -> Vec<String> {

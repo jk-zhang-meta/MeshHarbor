@@ -208,6 +208,9 @@ pub mod session_idle;
 /// FR-101 P2b — the session policy for clipboard, files and audio, the
 /// device's half: the owner's floor, and the masking every grant goes through.
 pub mod session_policy;
+/// FR-130 P2a — the org loop's remote-control sessions, kept through the loss
+/// of the control socket until the server answers their claim.
+pub(crate) mod session_table;
 pub mod session_telemetry;
 /// MeshHarbor — the SFTP server a device runs when its OS has none
 /// (`meshharbord sftp-server`, started by the SSH server as the session's

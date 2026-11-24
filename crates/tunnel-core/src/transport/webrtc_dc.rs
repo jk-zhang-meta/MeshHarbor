@@ -315,7 +315,7 @@ const _: () = {
     assert!(highest < 1024, "high stream ids reserved for future media");
 };
 // If you change SCTP_RECV_BUFFER_BYTES, also update:
-//   * crates/api/src/ws/tunnel.rs (sctp_rwnd_bytes in ServerMsg::TunnelOpened)
+//   * crates/modules/network/src/tunnel.rs (sctp_rwnd_bytes in ServerMsg::TunnelOpened)
 //   * crates/remote_control/src/signaling.rs comment block
 //   * crates/vendored/webrtc/Cargo.toml patch notes
 const _: () = assert!(SCTP_RECV_BUFFER_BYTES == 8 * 1024 * 1024);

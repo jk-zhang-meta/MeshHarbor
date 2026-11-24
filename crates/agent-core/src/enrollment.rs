@@ -376,6 +376,7 @@ pub async fn enroll_with_existing_identity(
         overlay_init_auth_first: None,
         overlay_srflx_seek: None,
         ws_replaced_exit: None,
+        rc_sessions_survive_reattach: None,
         overlay_warm_relay: None,
         overlay_quic_async: None,
         overlay_vpn_vantage: None,

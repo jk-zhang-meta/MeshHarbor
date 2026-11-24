@@ -51,7 +51,8 @@ use meshharbor_services::dao::{
     config_audit::ConfigAuditDao, consent_request::ConsentRequestDao,
     enroll_token_issued::EnrollTokenIssuedDao, enrollment_key::EnrollmentKeyDao,
     exec_audit::ExecAuditDao, exec_pending::ExecPendingDao, external_rc_audit::ExternalRcAuditDao,
-    keep_busy_event::KeepBusyEventDao, setup_diagnostics::SetupDiagnosticsDao,
+    keep_busy_event::KeepBusyEventDao, rc_resume_scope::RcResumeScopeDao,
+    setup_diagnostics::SetupDiagnosticsDao,
 };
 use tokio::sync::mpsc;
 
@@ -82,6 +83,8 @@ mod release_delivery;
 pub mod releases;
 pub mod remote_config;
 pub mod removal;
+/// FR-130 — the platform admin's resume scope and its route.
+pub mod resume_scope;
 pub mod setup_diagnostics;
 pub mod setup_release;
 pub mod socket;
@@ -127,6 +130,15 @@ pub struct FleetState {
     /// changes and the devices' reported ons and offs, told apart by
     /// `source`. No TTL (operator, 2026-10-11).
     pub keep_busy_events: Arc<KeepBusyEventDao>,
+    /// FR-130 — the orgs and devices a remote session may outlive its
+    /// device's control socket on: the platform admin's list, read by the hub
+    /// at a device's registration (from P1b). Nothing reads it while
+    /// `rc.session_resume_secs` is 0.
+    pub rc_resume_scope: Arc<RcResumeScopeDao>,
+    /// FR-130 P1b-2 (review 2, N2) — the turn a reading of the scope takes on
+    /// this pod (`resume_scope::reconcile`): one at a time, so the last one
+    /// applies the newest list.
+    pub rc_resume_reconcile: Arc<tokio::sync::Mutex<()>>,
     pub rc_hub: Arc<Hub>,
     /// Phase A-1 — the Redis presence owner-token per locally-registered
     /// agent WS. Written/removed by the agent socket; read by the shutdown
@@ -326,6 +338,8 @@ impl Module for FleetState {
             external_rc_audit: Arc::new(ExternalRcAuditDao::new(db)),
             config_audit: Arc::new(ConfigAuditDao::new(db)),
             keep_busy_events: Arc::new(KeepBusyEventDao::new(db)),
+            rc_resume_scope: Arc::new(RcResumeScopeDao::new(db)),
+            rc_resume_reconcile: Arc::new(tokio::sync::Mutex::new(())),
             rc_hub,
             agent_presence_tokens: Arc::new(DashMap::new()),
             presence_fanout: Arc::new(presence::PresenceFanout::default()),
@@ -396,6 +410,10 @@ impl Module for FleetState {
         // a DB-name-scoped Redis NX claim; first tick a full interval out so
         // tests driving `run_presence_sweep` directly stay deterministic).
         presence::spawn_sweeper(state.clone());
+        // FR-130 P1b-2 (review 2, N2) — while the window is on, the resume
+        // scope is read again on the same cadence, so a change whose event
+        // was lost still reaches this pod's devices. Not spawned at window 0.
+        resume_scope::spawn_reconciler(state.clone());
         // C-2/PR-1 — the owner-side idle-agent nudge handler (P7b, from the
         // host): cycles an agent's socket iff every holder reads it idle.
         nudge::register_bus_handler(&state);
@@ -694,6 +712,12 @@ impl Module for FleetState {
                 "/tenant/{tenant_id}/device-grants/{invite_id}",
                 delete(device_invite::host_end),
             )
+            // FR-130 — the resume scope, for platform admins only (the 404
+            // every `/api/admin/*` route gives anyone else).
+            .route(
+                "/admin/rc-resume-scope",
+                get(resume_scope::get_scope).put(resume_scope::put_scope),
+            )
             .with_state(self.clone())
     }
 
@@ -908,6 +932,16 @@ impl Module for FleetState {
                     index(bson::doc! { "tenant_id": 1, "created_at": -1 }),
                     index(bson::doc! { "state": 1, "access_until": 1 }),
                 ],
+            },
+            // FR-130 — the resume scope: one row per target, so the unique
+            // `(kind, id)` keeps a save idempotent (`all` has no id and keys
+            // as null, so there is one at most), and the hub's read at a
+            // device's registration is a lookup on it. No TTL: the platform
+            // admin's list.
+            IndexSet {
+                collection: meshharbor_services::dao::rc_resume_scope::RC_RESUME_SCOPE,
+                pre_ops: Vec::new(),
+                indexes: vec![index_unique(bson::doc! { "kind": 1, "id": 1 })],
             },
         ]
     }

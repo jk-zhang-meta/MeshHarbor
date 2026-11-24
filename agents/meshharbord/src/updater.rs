@@ -3929,6 +3929,16 @@ pub fn request_update_now(pin: Option<String>) -> bool {
 /// exit (installer running, agent about to be replaced). Shared by the
 /// periodic and forced paths.
 fn act_on_outcome(outcome: CheckOutcome, shutdown_tx: &tokio::sync::watch::Sender<bool>) -> bool {
+    act_on_outcome_with(outcome, shutdown_tx, spawn_installer_with_watch)
+}
+
+/// [`act_on_outcome`] with the installer's spawn handed in, so a test reaches
+/// the shutdown an update signals without running an installer (FR-130 AC6).
+fn act_on_outcome_with(
+    outcome: CheckOutcome,
+    shutdown_tx: &tokio::sync::watch::Sender<bool>,
+    spawn: impl FnOnce(&std::path::Path, Option<&str>) -> Result<()>,
+) -> bool {
     match outcome {
         CheckOutcome::UpToDate { current, latest } => {
             tracing::info!(current = %current, latest = %latest, "up to date");
@@ -3964,7 +3974,7 @@ fn act_on_outcome(outcome: CheckOutcome, shutdown_tx: &tokio::sync::watch::Sende
                 path = %installer_path.display(),
                 "new release available — spawning installer and exiting"
             );
-            if let Err(e) = spawn_installer_with_watch(&installer_path, Some(&latest)) {
+            if let Err(e) = spawn(&installer_path, Some(&latest)) {
                 tracing::error!(error = %e, "installer spawn failed; will retry next cycle");
                 // FR-90 P1d-1 — no restart is coming: take agent prompts again.
                 hold_agent_prompts(false);
@@ -8451,5 +8461,42 @@ mod install_owner_fence_tests {
             &journal,
             &malformed_prev
         ));
+    }
+
+    /// FR-130 AC6 — an update ends every session as a shutdown does. Once the
+    /// installer is running, the updater sends `true` on the daemon's shutdown
+    /// watch (the daemon hands it a clone of the one sender), which the
+    /// connection's shutdown arm reads, and that arm closes every peer, a kept
+    /// one included (`session_table`'s `arm_shutdown_closes_every_peer`).
+    #[test]
+    fn an_update_reaches_the_shutdown_that_closes_every_peer() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut spawned = None;
+        let exits = act_on_outcome_with(
+            CheckOutcome::UpdateReady {
+                current: "0.4.216".into(),
+                latest: "agent-v0.4.217".into(),
+                installer_path: PathBuf::from("staged-installer.msi"),
+            },
+            &shutdown_tx,
+            |path, version| {
+                spawned = Some((path.to_path_buf(), version.map(str::to_owned)));
+                Ok(())
+            },
+        );
+        assert_eq!(
+            spawned,
+            Some((
+                PathBuf::from("staged-installer.msi"),
+                Some("agent-v0.4.217".to_owned())
+            )),
+            "the installer is spawned, watched for the version it installs \
+             (a debug build under MESHHARBORD_UPDATE_DRY_RUN spawns none)"
+        );
+        assert!(
+            *shutdown_rx.borrow(),
+            "the installer is running: the daemon is told to shut down"
+        );
+        assert!(exits, "and the update loop ends");
     }
 }

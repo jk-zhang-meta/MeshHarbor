@@ -80,7 +80,8 @@ pub mod user_analytics;
 pub mod ws;
 
 pub use agent_socket::{
-    AgentCtx, AgentMsgHandler, AgentSocketHooks, AgentSocketLifecycle, AgentSocketRegistry,
+    AgentCtx, AgentMsgHandler, AgentResume, AgentSocketHooks, AgentSocketLifecycle,
+    AgentSocketRegistry,
 };
 pub use capabilities::{Capabilities, TenantCtx};
 pub use error::ApiError;

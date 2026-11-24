@@ -88,6 +88,9 @@ import {
   type RcConnectRecorder,
 } from './rcConnectTiming'
 import { createConnectTimingUploader, type RcConnectOutcome } from './rcConnectTimingUpload'
+import { createResumeRecordUploader } from './rcResumeRecord'
+import { createHoldPaintGap, createSessionHold, holdWindowFor, type RcHoldPaintGap, type RcHoldSummary } from './rcSessionHold'
+import { PAINT_GAP_CLOSED, PAINT_GAP_MARK, PAINT_GAP_MARKED, createPaintGapMark } from '@/workers/rc-paint-gap'
 import {
   PROBE_TARGET,
   benchSessionMode,
@@ -167,8 +170,8 @@ function rcT(key: string, named?: Record<string, unknown>): string {
  * resolves in well under a second, and a 2 s first-retry would leave
  * a visible black-frame window every time the user touches the lock
  * screen. The last three (2 s / 4 s / 8 s) cover real network drops.
- * 6 attempts caps the worst case at ~16 s before we give up and
- * surface an error to the operator.
+ * Past them the ladder retries every `RC_RECONNECT_STEADY_MS` and never
+ * gives up on its own (rc.23): the operator's Disconnect ends it.
  */
 export const RC_RECONNECT_LADDER_MS = [250, 500, 1000, 2000, 4000, 8000] as const
 
@@ -905,6 +908,10 @@ export function friendlyEndReason(reason: unknown, limit?: unknown): string | nu
     return rcT('remote.viewer.end.noCommonCodec')
   }
   switch (reason) {
+    // FR-130 §2.5 — an admin's end said nothing; so did a resume the server
+    // refused because this person may no longer control the device.
+    case 'admin_terminated':
+      return rcT('remote.session.endedByAdmin')
     case 'user_denied':
       return rcT('remote.viewer.end.user_denied')
     case 'consent_timeout':
@@ -936,9 +943,12 @@ export function classifyDegraded(inp: {
   pcState: string | null
   wsConnected: boolean
   stallTicks: number
+  /** FR-130 — the session is held: its device's socket dropped (`rc:session.detached`). */
+  held?: boolean
 }): RcDegradedReason | null {
   if (inp.pcState === 'disconnected') return 'transport_unstable'
   if (inp.stallTicks >= RC_STALL_PROBE_TICKS) return 'media_stalled'
+  if (inp.held) return 'signalling_offline'
   if (!inp.wsConnected) return 'signalling_offline'
   return null
 }
@@ -1574,6 +1584,11 @@ export type RcControlInbound =
   /** FR-101 P4b-2b — the device's idle limit: the session ends in `endsInMs`
    *  unless someone acts; `null` withdraws the warning. */
   | { kind: 'idle'; endsInMs: number | null }
+  /** FR-130 — the session ended while the server could not tell this page
+   *  (the person at the device, or the server's end of a session the device
+   *  holds): the device says it peer to peer, with the reason and limit an
+   *  `rc:terminate` carries, and the page reads it as one. */
+  | { kind: 'ended'; reason: string; limit: string | null }
   | { kind: 'control_state'; state: RcControlState }
   | { kind: 'logs_fetch_reply'; reply: RcLogsFetchReply }
   | { kind: 'logs_fetch_start'; id: string | null; path?: string; totalLines?: number; truncated?: boolean }
@@ -1853,6 +1868,11 @@ export function parseControlInbound(data: unknown): RcControlInbound {
       activeTag: obj.active,
       installed,
     }
+  }
+  // FR-130 — `{"t":"rc:ended","reason":…,"limit"?:…}`: an end the device
+  // says peer to peer. No reason, no message.
+  if (obj.t === 'rc:ended' && typeof obj.reason === 'string' && obj.reason.length > 0) {
+    return { kind: 'ended', reason: obj.reason, limit: typeof obj.limit === 'string' ? obj.limit : null }
   }
   return null
 }
@@ -5548,6 +5568,166 @@ export function useRemoteControl(
     }
   }
 
+  // ── FR-130 P1c — the hold (`rcSessionHold.ts`, spec §4.5) ──────────────
+  /** A session the server called resumable rides out the loss of its control
+   *  socket: `true` from the cut (this page's socket dropped, or
+   *  `rc:session.detached`) to its outcome. The phase stays `connected`, so the
+   *  stage stays mounted, and the chip reads `connected · server link down`. */
+  const sessionHeld = ref(false)
+  /** The held session a redial replaces: sent as `replaces` on every
+   *  `rc:session.request` until one is answered, so the server ends it before
+   *  its capacity gate (spec §4.4). Only a redial of a session the server
+   *  called resumable sets it; `null` is today's request, byte for byte. */
+  let replacesId: string | null = null
+  /** `rc.resume`'s `gap_ms` for the hold in progress, and the paint path that
+   *  answers for it. */
+  let holdGap: RcHoldPaintGap | null = null
+  let holdGapPath: 'webcodecs' | 'hevc' | 'vp9_444' | 'video' | null = null
+  let holdHiddenAtCut = false
+  /** The `<video>` path's frames, as the view's frame callback reports them. */
+  const videoPaintMark = createPaintGapMark()
+  const resumeRecordUploader = createResumeRecordUploader()
+  const hold = createSessionHold({
+    now: () => performance.now(),
+    wallNow: () => Date.now(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+    socketUp: () => ws.status === 'connected',
+    sendRejoin: (sid) => {
+      console.info('[rc] FR-130: asking for the held session back (rc:session.rejoin)', sid)
+      ws.sendRaw({ t: 'rc:session.rejoin', session_id: sid })
+    },
+    onStart: (sid) => onHoldStart(sid),
+    onExpired: (s) => {
+      console.warn('[rc] FR-130: no answer by the held session\'s deadline - closing the peer and redialing', s.sessionId)
+      onHoldEnd(s)
+      scheduleReconnect()
+    },
+  })
+
+  /** The cut: ask the session's paint path how long ago it painted, and for
+   *  the first frame after it. */
+  function onHoldStart(sid: string) {
+    sessionHeld.value = true
+    holdHiddenAtCut = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const now = performance.now()
+    holdGap = createHoldPaintGap(now)
+    try {
+      if (webcodecsWorker && webcodecsActive.value) {
+        holdGapPath = 'webcodecs'
+        webcodecsWorker.postMessage({ type: PAINT_GAP_MARK })
+      } else if (hevcWorker && hevcActive.value) {
+        holdGapPath = 'hevc'
+        hevcWorker.postMessage({ type: PAINT_GAP_MARK })
+      } else if (vp9_444Worker && vp9_444Active.value) {
+        holdGapPath = 'vp9_444'
+        vp9_444Worker.postMessage({ type: PAINT_GAP_MARK })
+      } else {
+        holdGapPath = 'video'
+        holdGap.marked(videoPaintMark.mark(now))
+      }
+    } catch {
+      /* a worker gone mid-post: the record says the gap is open */
+    }
+    refreshDegraded()
+    console.info(
+      '[rc] FR-130: holding the session through the loss of its control socket', sid,
+      ws.status === 'connected' ? '(the device\'s dropped)' : '(this page\'s dropped)',
+    )
+  }
+
+  /** The hold's outcome: its record, `rc.resume`, and the chip. */
+  function onHoldEnd(s: RcHoldSummary) {
+    sessionHeld.value = false
+    const gap = holdGap?.read(performance.now()) ?? { gapMs: null, open: true }
+    holdGap = null
+    holdGapPath = null
+    resumeRecordUploader.send({
+      tenantId: expectedOrgTid(null, location.pathname) ?? lastConnectArgs?.orgId ?? null,
+      agentOrgId: lastConnectArgs?.orgId ?? null,
+      agentId: lastConnectArgs?.agentId ?? null,
+      sessionId: s.sessionId,
+      outcome: s.outcome,
+      reason: s.reason,
+      heldMs: s.heldMs,
+      wsDownMs: s.wsDownMs,
+      gapMs: gap.gapMs,
+      gapOpen: gap.open,
+      hidden: holdHiddenAtCut || (typeof document !== 'undefined' && document.visibilityState === 'hidden'),
+    })
+    refreshDegraded()
+    const line = `[rc] FR-130: held ${s.heldMs} ms, ${s.outcome}${s.reason ? ` (${s.reason})` : ''}`
+    if (s.outcome === 'resumed') console.info(line)
+    else console.warn(line)
+  }
+
+  /** End the hold in progress, if one runs, as `ended` with `reason`. */
+  function endHold(reason: string) {
+    const s = hold.end(reason)
+    if (s) onHoldEnd(s)
+  }
+
+  /** The chip now, rather than at the media watchdog's next tick. */
+  function refreshDegraded() {
+    if (phase.value !== 'connected') return
+    degraded.value = classifyDegraded({
+      pcState: pc?.connectionState ?? null,
+      wsConnected: ws.status === 'connected',
+      stallTicks,
+      held: hold.holding(),
+    })
+  }
+
+  /** FR-130 — a frame the `<video>` element presented (the view's frame
+   *  callback): that path's half of `rc.resume`'s `gap_ms`. */
+  function notePaint(nowMs: number = performance.now()) {
+    const closed = videoPaintMark.painted(nowMs)
+    if (closed && holdGapPath === 'video') holdGap?.closed(closed.gapMs)
+  }
+
+  /** FR-130 — one end per session: the server's `rc:terminate` and the
+   *  device's `rc:ended` may both say it, and the first one wins. */
+  let endedSessionId: string | null = null
+  function claimEnd(sid: string | null): boolean {
+    if (!sid) return true
+    if (endedSessionId === sid) return false
+    endedSessionId = sid
+    return true
+  }
+
+  /** FR-130 — `rc:ended` on the control channel: the session ended while the
+   *  server could not tell this page, and the device says so peer to peer. The
+   *  person at the device (Disconnect, the idle limit), or the server's end of
+   *  a session the device holds (a kick, the maximum length, a refused claim).
+   *  Classified as `rc:terminate` is: a retryable reason starts today's ladder,
+   *  and a final one closes with no ladder and the replay arguments dropped,
+   *  so a reload resumes nothing either. `fromPc`: the peer whose control
+   *  channel said it; a channel this session no longer owns ends nothing. */
+  function onDeviceEnded(reason: string, limit: string | null, fromPc: RTCPeerConnection | null) {
+    if (fromPc !== pc || phase.value === 'idle' || phase.value === 'closed' || phase.value === 'error' || phase.value === 'reconnecting') return
+    if (!claimEnd(sessionId.value)) return
+    endHold(reason)
+    const action = terminateAction({
+      phase: phase.value,
+      retryable: isRetryableTerminateReason(reason, limit),
+      canReplay: !!lastConnectArgs,
+    })
+    if (action === 'reconnect') {
+      console.info('[rc] FR-130: the device ended the session (rc:ended', reason, ') - auto-reconnecting')
+      scheduleReconnect({ notifyServer: false })
+      return
+    }
+    console.info('[rc] FR-130: the device ended the session (rc:ended', reason, ') - not reconnecting')
+    phase.value = 'closed'
+    if (endedByHost(reason)) endedBy.value = 'host'
+    cancelReconnect()
+    lastConnectArgs = null
+    replacesId = null
+    const friendly = friendlyEndReason(reason, limit)
+    if (friendly) error.value = friendly
+    teardown()
+  }
+
   /** (Re-)arm the signalling stuck-detector for the CURRENT phase.
    *  FR-22 - the bound is per-phase (`signalingTimeoutFor`): 'requesting'
    *  waits on ONE server hop, 'negotiating' waits on ICE, and guarding
@@ -5651,6 +5831,7 @@ export function useRemoteControl(
         pcState: pc?.connectionState ?? null,
         wsConnected: ws.status === 'connected',
         stallTicks: deadTicks,
+        held: hold.holding(),
       })
       const action = nextStallAction(stallTicks, deadTicks)
       if (action === 'probe') {
@@ -8026,6 +8207,14 @@ export function useRemoteControl(
         onBenchProbe(msg.seq, msg.paintedAt, 'webcodecs')
         return
       }
+      // FR-130 — its answers to a hold's mark (`rc.resume`'s `gap_ms`).
+      if (msg.type === PAINT_GAP_MARKED || msg.type === PAINT_GAP_CLOSED) {
+        if (holdGapPath === 'webcodecs' && worker === webcodecsWorker) {
+          if (msg.type === PAINT_GAP_MARKED) holdGap?.marked(msg.sinceMs)
+          else holdGap?.closed(msg.gapMs)
+        }
+        return
+      }
       if (msg.type === 'first-frame' && typeof msg.width === 'number' && typeof msg.height === 'number') {
         mediaIntrinsicW.value = msg.width
         mediaIntrinsicH.value = msg.height
@@ -8321,6 +8510,13 @@ export function useRemoteControl(
         onBenchProbe(msg.seq, msg.paintedAt, 'vp9-444')
         return
       }
+      if (msg.type === PAINT_GAP_MARKED || msg.type === PAINT_GAP_CLOSED) {
+        if (holdGapPath === 'vp9_444' && worker === vp9_444Worker) {
+          if (msg.type === PAINT_GAP_MARKED) holdGap?.marked((msg.sinceMs as number | null) ?? null)
+          else holdGap?.closed((msg.gapMs as number | null) ?? null)
+        }
+        return
+      }
       if (msg.type === 'request-keyframe') {
         // rc.130 — worker dropped deltas on a decode backlog; ask the agent
         // for a fresh IDR so it can resync.
@@ -8608,6 +8804,13 @@ export function useRemoteControl(
       if (!msg || typeof msg.type !== 'string') return
       if (msg.type === 'bench-probe') {
         onBenchProbe(msg.seq, msg.paintedAt, 'hevc')
+        return
+      }
+      if (msg.type === PAINT_GAP_MARKED || msg.type === PAINT_GAP_CLOSED) {
+        if (holdGapPath === 'hevc' && worker === hevcWorker) {
+          if (msg.type === PAINT_GAP_MARKED) holdGap?.marked((msg.sinceMs as number | null) ?? null)
+          else holdGap?.closed((msg.gapMs as number | null) ?? null)
+        }
         return
       }
       if (msg.type === 'request-keyframe') {
@@ -8996,6 +9199,10 @@ export function useRemoteControl(
       }
       requestSent = false
       sessionId.value = msg.session_id
+      // FR-130 — the server calls this session resumable (`resume_secs`): it
+      // may be held. The request is answered, so nothing is left to replace.
+      hold.arm(msg.session_id, holdWindowFor(msg.resume_secs, externalMode || sharedMode))
+      replacesId = null
       // Multi-user P3: the server reports the EFFECTIVE grant, which the
       // single-INPUT-holder rule may have narrowed (another live session
       // already drives this host). Absent from pre-P3 servers = treat as
@@ -9367,11 +9574,30 @@ export function useRemoteControl(
       const reason = typeof msg.reason === 'string' && msg.reason ? msg.reason : 'policy_changed'
       closeAllFileChildren(`file child capability revoked (${reason})`)
     })
+    // FR-130 — the device's control socket dropped and the server keeps the
+    // session: hold it, and ask for it back once a second until the device
+    // has claimed it. An older viewer ignores this and redials as today.
+    on('rc:session.detached', (msg) => {
+      if (phase.value !== 'connected') return
+      if (typeof msg.session_id !== 'string' || msg.session_id !== sessionId.value) return
+      hold.detached(msg.session_id, msg.resume_by)
+    })
+    // FR-130 — the claim was accepted: the session goes on as it was.
+    on('rc:session.resumed', (msg) => {
+      if (typeof msg.session_id !== 'string' || msg.session_id !== sessionId.value) return
+      const s = hold.resumed(msg.session_id)
+      if (s) onHoldEnd(s)
+    })
     on('rc:terminate', (msg) => {
       // While the ladder timer is pending every terminate refers to a
       // session we already abandoned — ignore.
       if (phase.value === 'reconnecting') return
       if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      // FR-130 — the device's `rc:ended` may have said this end first.
+      if (!claimEnd(typeof msg.session_id === 'string' && msg.session_id ? msg.session_id : sessionId.value)) return
+      // FR-130 — a held session's end, the answer to a rejoin included: the
+      // hold's record says why, and the rest is today's.
+      endHold(typeof msg.reason === 'string' ? msg.reason : 'terminate')
       // Involuntary endings (agent WS displacement — the classic
       // "host joined a VPN" symptom — or a transient agent error)
       // auto-re-create the session instead of dumping the operator
@@ -9476,6 +9702,17 @@ export function useRemoteControl(
       // session (e.g. session_not_found for our own hangup). Ignore.
       if (phase.value === 'reconnecting') return
       if (!sessionGateAllows(msg.session_id, sessionId.value)) return
+      // FR-130 — while a session is held, the page sends nothing but its
+      // rejoins, so an error now is the server refusing one: it will not
+      // resume this session. Redial, naming what the redial replaces, rather
+      // than fail a session whose pixels may still flow.
+      if (hold.holding()) {
+        const code = typeof msg.code === 'string' ? msg.code : 'unknown'
+        console.warn('[rc] FR-130: rc:error (', code, ') while the session is held - redialing')
+        endHold(code)
+        scheduleReconnect({ notifyServer: false })
+        return
+      }
       // #2251 - and once the server has ENDED this session, an error scoped to
       // it is fallout of frames in flight, never news: the end said why.
       if (isFalloutOfEndedSession(phase.value, msg.session_id, sessionId.value)) {
@@ -9543,6 +9780,9 @@ export function useRemoteControl(
   }
 
   function failWith(message: string, code?: string | null) {
+    // FR-130 — a hold this failure ends, and nothing left to replace.
+    endHold('error')
+    replacesId = null
     error.value = message
     errorCode.value = code ?? attemptErrorCode ?? null
     phase.value = 'error'
@@ -9581,10 +9821,9 @@ export function useRemoteControl(
   /**
    * Schedule the next reconnect attempt according to
    * `RC_RECONNECT_LADDER_MS`. Cancels any prior schedule (no
-   * stacking). After `RC_RECONNECT_LADDER_MS.length` attempts have
-   * elapsed without a 'connected' transition resetting the counter,
-   * gives up and calls `failWith` so the operator sees the failure
-   * instead of a hung "reconnecting" UI.
+   * stacking). Past the ladder it retries every
+   * `RC_RECONNECT_STEADY_MS` (`nextReconnectDelayMs`) and never gives
+   * up on its own (rc.23); only a missing replay argument fails it.
    *
    * The PC is torn down at schedule time (not retry time) so any
    * lingering ICE / track listeners don't fire on the dead PC while
@@ -9641,13 +9880,28 @@ export function useRemoteControl(
     // request bounces off `agent_busy` for many seconds. Skipped
     // (notifyServer: false) when the trigger was the server ending
     // the session itself.
-    if (opts?.notifyServer !== false && sessionId.value) {
+    // FR-130 D5 = A — skipped too for a session the server has told this page
+    // is detached (`rc:session.detached`, not resumed since), this redial
+    // included when the hold's own deadline started it. Its device is away,
+    // so the session ended on the device's side, and the redial's `replaces`
+    // records that (`agent_disconnect`, inferred) and gives the org's slot
+    // back before the request's gate. A hangup would free nothing the device
+    // can hear, and wrote `controller_hangup` for a session nobody hung up
+    // (#3604, AC4 cell (d)). A person's Disconnect still says it (`disconnect`).
+    if (opts?.notifyServer !== false && sessionId.value && !hold.deviceDetached(sessionId.value)) {
       ws.sendRaw({
         t: 'rc:terminate',
         session_id: sessionId.value,
         reason: 'controller_hangup',
       })
     }
+    // FR-130 — a transport signal during a hold keeps today's meaning: the
+    // peer failed. A session the server may hold keeps its id, as the
+    // `replaces` of every request until one is answered: the hangup above
+    // goes nowhere while this page's socket is down, and is not sent for a
+    // detached session (spec §4.4, §4.5).
+    endHold('transport')
+    if (!externalMode && !sharedMode && sessionId.value && hold.resumable(sessionId.value)) replacesId = sessionId.value
     sessionId.value = null
     const attemptIdx = reconnectAttempt.value
     // rc.23 — nextReconnectDelayMs always returns a positive delay
@@ -9765,7 +10019,25 @@ export function useRemoteControl(
     },
   )
 
+  // FR-130 — the page's own socket, for the hold: its loss while a resumable
+  // session is live starts one, and its return (`ws:reconnected`, the store's
+  // status first) asks the server for the session back at once. Synchronous,
+  // so the rejoin goes out on the socket that just opened, before anything else.
+  watch(
+    () => ws.status,
+    (s, prev) => {
+      if (s === 'connected' && prev !== 'connected') hold.socketUp()
+      else if (s !== 'connected' && prev === 'connected' && phase.value === 'connected') hold.socketDown()
+    },
+    { flush: 'sync' },
+  )
+
   function teardown() {
+    // FR-130 — whatever ends the session ends its hold, and the session is no
+    // longer one to hold.
+    endHold('teardown')
+    hold.disarm()
+    videoPaintMark.reset()
     // #1631 - invalidate any connect() still in its pre-flight (see
     // `connectGen`): the peer it would build belongs to a state that just
     // ended. Every teardown path - disconnect(), failWith(), a scoped
@@ -9892,6 +10164,8 @@ export function useRemoteControl(
     // the right args from the original user click.
     if (!isReconnect) {
       lastConnectArgs = { agentId, permissions, orgId }
+      // FR-130 — a fresh request replaces nothing; only a redial does.
+      replacesId = null
       // FR-27 P10 - a fresh request is the operator's answer to "the person
       // at the device ended it"; the notice has done its job.
       endedBy.value = null
@@ -10242,6 +10516,10 @@ export function useRemoteControl(
 
     pc.onicecandidate = (ev) => {
       if (!sessionId.value) return
+      // FR-130 — nothing to trickle to while the session is held: no pod
+      // routes it until the rejoin is answered, and the error a pod would
+      // answer with is no news about this peer.
+      if (hold.holding()) return
       // Note: null candidate signals end-of-gather — skip it.
       if (!ev.candidate) return
       localIceOutbox.onCandidate(sessionId.value, ev.candidate.toJSON())
@@ -10256,6 +10534,9 @@ export function useRemoteControl(
       if (state === 'connected') {
         markConnect('pc_connected')
         phase.value = 'connected'
+        // FR-130 — a resumable session that goes live while this page's socket
+        // is down is held from here: its return asks for it back.
+        if (ws.status !== 'connected') hold.socketDown()
         // FR-93 P5j — a session that connects is a computer that woke.
         if (isKeptSleepNotice(mediaWaiting.value, Date.now())) mediaWaiting.value = null
         // Stand down the pending retry timer, but KEEP the attempt counters:
@@ -11030,6 +11311,9 @@ export function useRemoteControl(
     // same parse-by-`t` switch. Unknown `t` values are dropped
     // silently; older agents emitted nothing here, so backward-
     // compat is automatic.
+    // FR-130 — the peer this channel belongs to: an `rc:ended` it says late
+    // must not end the session a redial opened since.
+    const controlPc = pc
     channels.control.onmessage = (ev) => {
       // rc.23 hotfix — trace every inbound control envelope to the
       // browser console so the field can see, via DevTools, exactly
@@ -11166,6 +11450,10 @@ export function useRemoteControl(
         deadAirStreak.value = 0
         reconnectAttempt.value = 0
         notice.value = null
+      } else if (parsed?.kind === 'ended') {
+        // FR-130 — the session ended while the server could not tell this
+        // page, and the device said so peer to peer, on this peer's channel.
+        onDeviceEnded(parsed.reason, parsed.limit, controlPc)
       } else if (parsed?.kind === 'idle') {
         // FR-101 P4b-2b — the device's idle limit: a countdown on this
         // browser's clock, or its withdrawal (there was activity).
@@ -11668,6 +11956,12 @@ export function useRemoteControl(
         requestPayload.initial_resolution = initRes
       }
     }
+    // FR-130 — a redial of a held session names it, so the server ends it
+    // before its capacity gate: a held session never costs its own viewer the
+    // slot. Absent on every other request, as before (spec §4.4).
+    if (!externalMode && !sharedMode && replacesId && /^[0-9a-f]{24}$/.test(replacesId)) {
+      requestPayload.replaces = replacesId
+    }
     sessionDcTransport = preferredTransport
     // FR-77 — which chroma cell this session runs in (mirrors the chroma_pref
     // logic below; an unstated VP9 chroma is profile 1 on the agent).
@@ -11785,6 +12079,9 @@ export function useRemoteControl(
         ? (lastConnectArgs?.agentId ?? null)
         : null
     requestSent = false
+    // FR-130 — the person's own hangup ends a hold, and replaces nothing.
+    endHold('controller_hangup')
+    replacesId = null
     // Operator-initiated teardown must override any pending
     // reconnect timer; otherwise a reconnect could fire after the
     // user already dismissed the viewer, racing the WS rc:terminate
@@ -15139,6 +15436,10 @@ export function useRemoteControl(
      * `phase === 'reconnecting'`.
      */
     reconnectAttempt,
+    /** FR-130 - the session rides out the loss of its control socket (spec §4.5). */
+    sessionHeld,
+    /** FR-130 - the view's `<video>` frame callback: a frame presented, for `rc.resume`'s `gap_ms`. */
+    notePaint,
     lastTtffMs,
     /**
      * S3 — sub-connected health. Non-null while `phase ===

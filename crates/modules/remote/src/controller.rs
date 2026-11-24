@@ -303,6 +303,36 @@ async fn dispatch_controller_rc(
         }
     }
     let is_session_request = matches!(&parsed, ClientMsg::SessionRequest { .. });
+    // FR-130 P1b-2 — the viewer's half of a held session, all of it inert at
+    // window 0. Its rejoin is answered here, on the pod its socket reached
+    // (`crate::rejoin`). A request first ends what it `replaces` and what is
+    // held for this person on that device, before the org's slot below is
+    // claimed. And an end the controller asks for of a session no hub here
+    // holds is written to the row (`crate::row_end`); the hub's own dispatch
+    // then finds nothing of it to end, as before.
+    match &parsed {
+        ClientMsg::SessionRejoin { session_id } => {
+            let viewer = crate::rejoin::Viewer {
+                user_id,
+                name: controller_name,
+                tx: controller_tx,
+                connection_id,
+            };
+            crate::rejoin::rejoin(state, viewer, *session_id).await;
+            return true;
+        }
+        ClientMsg::SessionRequest {
+            agent_id, replaces, ..
+        } => {
+            crate::row_end::before_request(state, user_id, *agent_id, *replaces).await;
+        }
+        ClientMsg::Terminate {
+            session_id, reason, ..
+        } => {
+            crate::row_end::controller_end(state, user_id, *session_id, *reason).await;
+        }
+        _ => {}
+    }
     // FR-115 P3b — on the pod that owns the device, the org's cap is a
     // cluster-wide slot, claimed here because the hub is synchronous: the
     // org's own sessions and the external ones run for it share one count.
@@ -1355,5 +1385,244 @@ fn error_session_id(e: &meshharbor_remote_control::Error) -> Option<bson::oid::O
         SessionNotFound(hex) => bson::oid::ObjectId::parse_str(hex).ok(),
         BadPhase(hex, _) => bson::oid::ObjectId::parse_str(hex).ok(),
         _ => None,
+    }
+}
+
+/// FR-130 — what the gate a request runs says, run again at a resume: the
+/// device's claim and the viewer's rejoin (spec §4.4). Three ways, so a read
+/// that fails is never taken for a yes or a no (P1b-1's review, H1): the
+/// request's own gate reads a device row it cannot read as "allow" and a
+/// member row it cannot read as "no permission", and neither is right for a
+/// session that is already running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResumeGate {
+    /// Allowed, with what a claim arms again: the org's maximum length and
+    /// its session cap.
+    Allow {
+        max_duration: Option<std::time::Duration>,
+        org_session_cap: Option<u32>,
+    },
+    /// Refused: the device or its org is gone, quarantined or archived, or
+    /// the person may no longer control the device.
+    Deny(String),
+    /// A read failed, so the gate decided nothing. The caller refuses the
+    /// resume as `agent_disconnect` and writes nothing: the viewer's redial
+    /// then runs the whole gate, consent included.
+    Unknown(String),
+}
+
+/// One read the resume gate makes: a missing row (the device removed, the
+/// org gone, the person no longer a member) is a refusal; any other failure
+/// is no answer.
+fn gate_read<T>(
+    read: Result<T, meshharbor_services::dao::base::DaoError>,
+    missing: &str,
+    what: &str,
+) -> Result<T, ResumeGate> {
+    use meshharbor_services::dao::base::DaoError;
+    match read {
+        Ok(v) => Ok(v),
+        Err(DaoError::NotFound | DaoError::NotAMember) => {
+            Err(ResumeGate::Deny(missing.to_string()))
+        }
+        Err(e) => Err(ResumeGate::Unknown(format!("{what}: {e}"))),
+    }
+}
+
+/// FR-130 — the gate a new `rc:session.request` runs, run again for a
+/// session `controller_user_id` already had on `agent_id`, a device of
+/// `tenant_id`, holding `permissions` (spec §4.4, "The claim"; the rejoin,
+/// §4.5). The same decisions as [`resolve_session_authz`] makes for a
+/// request, in the same order:
+///
+/// 1. the ceiling a personal or temporary device's holder set for this
+///    caller still permits what the session holds;
+/// 2. the device is live in its org and not quarantined, the org is there
+///    and not archived;
+/// 3. the person is the device's owner, or
+/// 4. on a temporary device, one of the people its invitation allows, and
+/// 5. an ADMINISTRATOR, or a member still holding `REMOTE_CONTROL` and on
+///    the device's allowlist.
+///
+/// Consent is the one check not re-run: the session is the one the device
+/// decided on. What the DEVICE checks for a new session (its two-factor code,
+/// FR-129; its protected switch, FR-127) is not re-run either, for the same
+/// reason, and is never skipped for a new one: a resume opens nothing, and a
+/// viewer's redial is an ordinary request that meets every one of them.
+///
+/// A session opened through a device share never reaches this gate: its row
+/// is marked `external`, and the claim refuses it first.
+pub(crate) async fn resume_gate(
+    state: &RemoteState,
+    controller_user_id: ObjectId,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    permissions: meshharbor_remote_control::permissions::Permissions,
+) -> ResumeGate {
+    use meshharbor_db::models::role::permissions as bits;
+    use meshharbor_remote_control::models::AgentStatus;
+
+    state
+        .resume_gate_runs
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // The holder's ceiling, strictly: a session holding more than the ceiling
+    // permits now is refused, and its viewer's redial asks again.
+    match meshharbor_mod_fleet::device_invite::features_for_caller(
+        &state.fleet,
+        agent_id,
+        controller_user_id,
+    )
+    .await
+    {
+        Ok(Some(ceiling)) if !ceiling.permits_session(permissions) => {
+            return ResumeGate::Deny(
+                "the device's holder no longer allows these capabilities for this caller"
+                    .to_string(),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return ResumeGate::Unknown(format!(
+                "the device access selection could not be read: {e:?}"
+            ));
+        }
+    }
+    let agent = match gate_read(
+        state
+            .fleet
+            .agents
+            .find_live_in_tenant(tenant_id, agent_id)
+            .await,
+        "the device was removed",
+        "the device could not be read",
+    ) {
+        Ok(a) => a,
+        Err(gate) => return gate,
+    };
+    if agent.status == AgentStatus::Quarantined {
+        return ResumeGate::Deny("the device is quarantined".to_string());
+    }
+    let tenant = match gate_read(
+        state.tenants.base.find_by_id(agent.tenant_id).await,
+        "the organization is gone",
+        "the organization could not be read",
+    ) {
+        Ok(t) => t,
+        Err(gate) => return gate,
+    };
+    if tenant.is_archived {
+        return ResumeGate::Deny("the organization is archived".to_string());
+    }
+    let allow = ResumeGate::Allow {
+        max_duration: tenant
+            .settings
+            .rc_limits
+            .max_secs
+            .map(|secs| std::time::Duration::from_secs(u64::from(secs))),
+        org_session_cap: if state.settings.rc.org_session_cap && state.plans_sold {
+            org_session_cap_of(&tenant)
+        } else {
+            None
+        },
+    };
+    if agent.owner_user_id == controller_user_id {
+        return allow;
+    }
+    // A temporary device: only the people its invitation allows, as at a
+    // request. An invitation that ended during the gap ends the session here.
+    if state.settings.auth.native_device_invite_enabled {
+        match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id).await {
+            Ok(None) => {}
+            Ok(Some(grant)) => {
+                let roles = match gate_read(
+                    state
+                        .tenants
+                        .member_role_ids(agent.tenant_id, controller_user_id)
+                        .await,
+                    "no longer a member of the device's organization",
+                    "the member's roles could not be read",
+                ) {
+                    Ok(r) => r,
+                    Err(gate) => return gate,
+                };
+                if !grant.allows(Some(controller_user_id), &roles) {
+                    return ResumeGate::Deny(
+                        "a temporary device: no longer one of the people its invitation allows"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(e) => {
+                return ResumeGate::Unknown(format!(
+                    "the temporary device's access could not be read: {e:?}"
+                ));
+            }
+        }
+    }
+    let perms = match gate_read(
+        state
+            .tenants
+            .get_member_permissions(agent.tenant_id, controller_user_id)
+            .await,
+        "no longer a member of the device's organization",
+        "the membership could not be read",
+    ) {
+        Ok(p) => p,
+        Err(gate) => return gate,
+    };
+    if bits::has(perms, bits::ADMINISTRATOR) {
+        return allow;
+    }
+    if !bits::has(perms, bits::REMOTE_CONTROL) {
+        return ResumeGate::Deny("no longer allowed to control others' devices".to_string());
+    }
+    let policy = &agent.access_policy;
+    if (policy.allowed_user_ids.is_empty() && policy.allowed_role_ids.is_empty())
+        || policy.allowed_user_ids.contains(&controller_user_id)
+    {
+        return allow;
+    }
+    match gate_read(
+        state
+            .tenants
+            .member_role_ids(agent.tenant_id, controller_user_id)
+            .await,
+        "no longer a member of the device's organization",
+        "the member's roles could not be read",
+    ) {
+        Ok(roles) if policy.allowed_role_ids.iter().any(|r| roles.contains(r)) => allow,
+        Ok(_) => ResumeGate::Deny("no longer on the device's control allowlist".to_string()),
+        Err(gate) => gate,
+    }
+}
+
+#[cfg(test)]
+mod resume_gate_tests {
+    use super::*;
+
+    /// FR-130 (P1b-1's review, H1) — the resume gate's reads: a row that is
+    /// not there (the device removed, the org gone, the person not a member)
+    /// refuses; any other failure decides nothing, so a database that cannot
+    /// answer neither resumes a session nor ends a healthy one.
+    #[test]
+    fn a_resume_gate_read_refuses_a_missing_row_and_decides_nothing_on_a_failure() {
+        use meshharbor_services::dao::base::DaoError;
+        assert_eq!(gate_read(Ok::<u8, DaoError>(7), "gone", "read"), Ok(7));
+        for missing in [DaoError::NotFound, DaoError::NotAMember] {
+            assert_eq!(
+                gate_read::<u8>(Err(missing), "gone", "read"),
+                Err(ResumeGate::Deny("gone".to_string()))
+            );
+        }
+        for failed in [
+            DaoError::Validation("x".into()),
+            DaoError::Forbidden("x".into()),
+            DaoError::DuplicateKey("x".into()),
+        ] {
+            assert!(matches!(
+                gate_read::<u8>(Err(failed), "gone", "read"),
+                Err(ResumeGate::Unknown(_))
+            ));
+        }
     }
 }

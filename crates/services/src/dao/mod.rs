@@ -34,6 +34,7 @@ pub mod overlay_policy;
 pub mod peer_relay_audit;
 pub mod privacy_activity;
 pub mod push_subscription;
+pub mod rc_resume_scope;
 pub mod reaction;
 pub mod recording;
 pub mod recording_activity;

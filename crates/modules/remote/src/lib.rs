@@ -48,12 +48,27 @@ use meshharbor_services::dao::{
 
 pub mod agent_socket;
 pub mod controller;
+/// FR-130 P1b-2 — `POST /api/admin/rc-sessions/close-dead`, the one-time
+/// close of the session rows a pod that died before FR-130 left open.
+pub mod dead_rows;
 pub mod device_share;
 pub mod extauth;
+/// FR-130 P1b-2 — `rc:session.rejoin`, the viewer's claim on a session held
+/// for it, answered on the pod its socket reached.
+pub mod rejoin;
 pub mod relay;
+/// FR-130 — the answer to a device's claim on the sessions it kept, and the
+/// registration read.
+pub mod resume;
 pub mod routes;
+/// FR-130 P1b-2 — an end someone asked for, of a session no hub on this pod
+/// holds, written to its row.
+pub mod row_end;
 pub mod session_policy;
 pub mod slots;
+/// FR-130 P1b-2 — the sweep: the rows nobody will ever claim, ended at their
+/// own last clock, one pod at a time.
+pub mod sweep;
 pub mod touch_presets;
 
 /// The module's state: the core, the fleet module it is built on, and what
@@ -98,6 +113,23 @@ pub struct RemoteState {
     /// the waiters for the device's answers. Pod-local, like the Hub it
     /// relays through. See [`extauth`].
     pub extauth: Arc<extauth::ExtauthRelay>,
+    /// FR-130 P1b-2 — per agent connection, the sessions its registration
+    /// ended without seeing their end, so the device's own end of one
+    /// replaces the inferred reason (`resume::device_end`).
+    pub registration_ends: Arc<resume::RegistrationEnds>,
+    /// FR-130 P1b-2 (review 2, N7) — where this pod's sweep reads the quiet
+    /// rows on from (`sweep::Cursor`).
+    pub sweep_cursor: Arc<sweep::Cursor>,
+    /// FR-130 (review 2, N14) — how many times this pod has run the resume
+    /// gate (`controller::resume_gate`). The integration tests' counting
+    /// seam for the rejoin's rate limit; nothing reads it in production.
+    #[doc(hidden)]
+    pub resume_gate_runs: Arc<std::sync::atomic::AtomicU64>,
+    /// FR-130 (review 2, N14) — when each viewer last ran the resume gate
+    /// for a session no hub on this pod holds (`rejoin::gate_due`): its
+    /// rejoin runs the gate at most once per 5 s per session and viewer, and
+    /// always before a bind or a relay.
+    pub rejoin_gates: Arc<rejoin::GateRuns>,
 }
 
 impl std::ops::Deref for RemoteState {
@@ -136,21 +168,34 @@ impl Module for RemoteState {
             rc_proxy_controllers: Arc::new(relay::ProxyControllers::new()),
             remote_rc_conns: Arc::new(relay::RemoteRcConns::new()),
             extauth: Arc::new(extauth::ExtauthRelay::new()),
+            registration_ends: Arc::new(resume::RegistrationEnds::new()),
+            sweep_cursor: Arc::new(sweep::Cursor::default()),
+            resume_gate_runs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rejoin_gates: Arc::new(rejoin::GateRuns::new()),
             fleet,
             core,
         };
         // PR-2 — the cross-pod rc signalling relay: owner-side rc.cmd /
         // rc.conn_closed / rc.conn_alive + the proxy janitor sweep.
         relay::wire_rc_relay(&state);
+        // FR-130 P1b-2 — the sweep of the session rows nobody will claim, and
+        // the answer the dead-row close asks of the pod that holds a device's
+        // socket: does your hub hold this session?
+        sweep::spawn(state.clone());
+        dead_rows::wire_session_held(&state);
         // The agent socket is fleet's; this module's arm (the session-stats
         // merge) is dispatched to it by `ClientMsg::namespace()` (P5c).
+        // FR-130 — and its lifecycle answers a hello's claims on the sessions
+        // the device kept, and ends what earlier connections left open.
         state.core.agent_socket.register(
             Self::ID,
             AgentSocketHooks {
                 handler: Some(Arc::new(agent_socket::RemoteAgentSocket::new(
                     state.clone(),
                 ))),
-                lifecycle: None,
+                lifecycle: Some(Arc::new(agent_socket::RemoteAgentLifecycle::new(
+                    state.clone(),
+                ))),
             },
         );
         Ok(state)
@@ -199,6 +244,10 @@ impl Module for RemoteState {
                 "/device-shares/{share_id}/remote",
                 get(device_share::device),
             )
+            // FR-130 P1b-2 — a platform operator's one-time close of the
+            // rows a pod that died before FR-130 left open: a dry run unless
+            // the body says otherwise.
+            .route("/admin/rc-sessions/close-dead", post(dead_rows::close_dead))
             .nest("/tenant/{tenant_id}/session", session)
             .nest("/tenant/{tenant_id}/recording-activity", recording)
             .nest("/tenant/{tenant_id}/transfer-activity", transfers)
@@ -273,6 +322,21 @@ impl Module for RemoteState {
                 collection: "remote_sessions",
                 pre_ops: Vec::new(),
                 indexes: vec![index(bson::doc! { "tenant_id": 1, "created_at": -1 })],
+            },
+            // FR-130 P1b-2 (P1b-1's review, L3) — the registration read: a
+            // device's live rows, oldest first, at each registration of a device
+            // announced a window. Without it the read walked the device's whole
+            // history, for every device of a roll. Part two — every live row
+            // by age, for the sweep and the dead-row close: only live sessions
+            // and the rows a dead pod left are Active, so the phase bounds the
+            // read.
+            IndexSet {
+                collection: "remote_sessions",
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index(bson::doc! { "agent_id": 1, "phase": 1, "created_at": 1 }),
+                    index(bson::doc! { "phase": 1, "created_at": 1 }),
+                ],
             },
             // FR-85 P3 — remote-recording activity the devices report (a
             // claim, beside `remote_audit`'s decision) — 90-day retention,

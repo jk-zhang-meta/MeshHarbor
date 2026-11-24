@@ -298,6 +298,37 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(session = %sid, "rc ctrl: terminate applied from another pod");
             }
         }
+        // FR-130 P1b-2 — the controller's own end (its `rc:terminate`, or a
+        // redial's `replaces`) of a session the pod it reached did not hold:
+        // that pod wrote the end to the row, and the pod that holds the
+        // session ends it here. The tenant AND the controller are re-checked,
+        // so an envelope cannot end another person's session. The reason is
+        // the one the hub records for a controller (`host_disconnect` is the
+        // device's alone); an absent or unknown one reads `controller_hangup`.
+        Some("controller_terminate") => {
+            let oid = |key: &str| {
+                ctrl.get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok())
+            };
+            let (Some(sid), Some(tid), Some(uid)) =
+                (oid("session_id"), oid("tenant_id"), oid("user_id"))
+            else {
+                return;
+            };
+            use meshharbor_remote_control::models::EndReason;
+            let reason = match ctrl
+                .get("reason")
+                .cloned()
+                .and_then(|v| serde_json::from_value::<EndReason>(v).ok())
+            {
+                None | Some(EndReason::HostDisconnect) => EndReason::ControllerHangup,
+                Some(r) => r,
+            };
+            if hub.session_snapshot(sid) == Some((tid, uid)) && hub.terminate(sid, reason).is_ok() {
+                info!(session = %sid, "rc ctrl: a controller's end applied from another pod");
+            }
+        }
         // P2b — cycle an agent's WS so it re-establishes its overlay session
         // on the tenant's NEW block (self_ip binds once, at establish). Rides
         // the ctrl lane rather than a directed RPC because the renumber
@@ -408,6 +439,23 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(agent = %aid, purge = %pid, "rc ctrl: a removed device's purge delivered from another pod");
             }
         }
+        // FR-130 P1b-2 — `resume_scope` is read from the store, which the hub
+        // does not reach: [`apply_rc_ctrl_on`] takes it.
         _ => {}
+    }
+}
+
+/// C-2 — [`apply_rc_ctrl`], with the module's state at hand for the events
+/// that need more than the hub. FR-130 P1b-2 (review 2, N2): a change to the
+/// resume scope made on another pod is only a nudge. This pod reads the store
+/// itself and tells its connections under its OWN window
+/// ([`crate::resume_scope::nudge`]), whatever the event carries: one that
+/// arrives late or twice applies the newest list, and a pod at window 0
+/// announces nothing.
+pub fn apply_rc_ctrl_on(state: &crate::FleetState, ctrl: &serde_json::Value) {
+    if ctrl.get("evt").and_then(|v| v.as_str()) == Some("resume_scope") {
+        crate::resume_scope::nudge(state);
+    } else {
+        apply_rc_ctrl(&state.rc_hub, ctrl);
     }
 }

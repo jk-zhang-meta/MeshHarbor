@@ -1104,6 +1104,16 @@ pub struct RcSettings {
     /// Env: `MESHHARBOR__RC__SESSION_SLOTS`.
     #[serde(default)]
     pub session_slots: bool,
+    /// FR-130 — how long a live remote session may outlive its device's
+    /// control socket, in seconds: the window the hub announces to a device
+    /// that advertises `rc-resume` and is in the resume scope (the platform
+    /// admin's list, `/api/admin/rc-resume-scope`). Default **0**: off. No
+    /// window is announced, a socket loss ends the session as it always has,
+    /// and the scope is not read. The setting is the ceiling and the
+    /// fleet-wide off; the scope says which devices get it; the device caps
+    /// it at 120 s. Env: `MESHHARBOR__RC__SESSION_RESUME_SECS`.
+    #[serde(default)]
+    pub session_resume_secs: u64,
 }
 
 fn default_agent_token_ttl_secs() -> u64 {
@@ -1134,6 +1144,7 @@ impl Default for RcSettings {
             removal_goodbye: true,
             org_session_cap: true,
             session_slots: false,
+            session_resume_secs: 0,
         }
     }
 }
@@ -1811,6 +1822,7 @@ impl Settings {
             .set_default("rc.removal_goodbye", true)?
             .set_default("rc.org_session_cap", true)?
             .set_default("rc.session_slots", false)?
+            .set_default("rc.session_resume_secs", 0)?
             .set_default("s3.enabled", false)?
             .set_default("s3.endpoint", "http://localhost:9000")?
             .set_default("s3.access_key", "minioadmin")?

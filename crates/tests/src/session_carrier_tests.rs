@@ -26,10 +26,10 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-type Ws =
+pub(crate) type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     s.replace('+', "%2B")
         .replace('/', "%2F")
         .replace('=', "%3D")
@@ -121,7 +121,7 @@ async fn ask(app: &TestApp, token: &str, agent_id: &str) -> (Ws, String) {
     panic!("no rc:session.created within 5 s");
 }
 
-async fn wait_for_session_row(app: &TestApp, seeded: &SeededTenant, session_id: &str) {
+pub(crate) async fn wait_for_session_row(app: &TestApp, seeded: &SeededTenant, session_id: &str) {
     for _ in 0..50 {
         let resp = app
             .client

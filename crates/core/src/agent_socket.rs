@@ -61,6 +61,33 @@ pub struct AgentCtx {
     /// the device (a reply routed through the Hub's pump, never a second
     /// writer on the socket).
     pub tx: mpsc::Sender<ServerMsg>,
+    /// FR-130 — the window this connection was announced and what its hello
+    /// claims back. Empty for every connection announced none.
+    pub resume: AgentResume,
+}
+
+/// FR-130 — what an agent's hello claims back, as the Hub registered it
+/// (spec §4.4, "The claim"). The module that owns remote sessions answers
+/// each claim in its [`AgentSocketLifecycle::hello`], before the socket's read
+/// loop starts, and the socket refuses whatever is still unanswered after
+/// every lifecycle has run.
+#[derive(Clone, Debug, Default)]
+pub struct AgentResume {
+    /// The window announced to this connection, in seconds: 0 when none was,
+    /// and then nothing below is set and nothing reads the sessions.
+    pub window_secs: u32,
+    /// The sessions the hello claims back, each holding a place in the
+    /// device's capacity until it is answered: deduplicated, at most the
+    /// capacity.
+    pub claims: Vec<ObjectId>,
+    /// The Hub's clock when it registered this connection: a row created
+    /// before it belongs to an earlier connection. `None` when no window was
+    /// announced.
+    pub registered_at: Option<bson::DateTime>,
+    /// The sessions the Hub held for an earlier connection of this device
+    /// and ended at this registration (its in-memory reap). Their ends are
+    /// real, so the registration read leaves them alone.
+    pub reaped: Vec<ObjectId>,
 }
 
 /// A module's handler for the client messages it owns. Returns the message
@@ -198,6 +225,7 @@ mod tests {
             dialed_tid: None,
             conn_established_ms: 0,
             tx,
+            resume: AgentResume::default(),
         }
     }
 

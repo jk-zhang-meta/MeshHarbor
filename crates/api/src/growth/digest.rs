@@ -1689,6 +1689,17 @@ struct RemoteFacts {
     per_org_day: HashMap<ObjectId, (i64, i64)>,
 }
 
+/// FR-130 — whether somebody saw a session row's end: not when it was
+/// inferred (`end_source`: the registration read, the sweep, the dead-row
+/// close, a detached session's redial), whose `ended_at` is only the row's
+/// own last clock. Such an end is no end in the quality section's counts by
+/// `ended_at` (review 2, N12): it is no failure a pod saw, and it would land,
+/// back-dated, in a day already reported. Its hours still count, up to that
+/// end (`read_remote_usage`).
+fn end_was_seen(d: &Document) -> bool {
+    matches!(d.get("end_source"), None | Some(Bson::Null))
+}
+
 async fn read_remote_usage(
     state: &AppState,
     w: &Windows,
@@ -1714,6 +1725,10 @@ async fn read_remote_usage(
         let (Some(s), Ok(tenant)) = (dt_ms(d, "started_at"), d.get_object_id("tenant_id")) else {
             continue;
         };
+        // FR-130 — an end nobody saw (`end_source`) counts up to the inferred
+        // `ended_at`: the row was seen alive at that clock, so the end is a
+        // proven lower bound, and `growth_org_daily` counts the row the same
+        // way, so this digest and the nightly freeze agree.
         let e = dt_ms(d, "ended_at").unwrap_or(now_ms).max(s);
         started.push(s);
         for (i, span) in [Span::Day, Span::D7, Span::D28].into_iter().enumerate() {
@@ -2318,14 +2333,15 @@ async fn remote_quality(
             "ended_at": w.between(Span::D28),
             "tenant_id": { "$nin": excluded.clone() },
         },
-        doc! { "ended_at": 1, "end_reason": 1 },
+        doc! { "ended_at": 1, "end_reason": 1, "end_source": 1 },
     )
     .await?;
     let mut ended = Vec::new();
     let mut by_class: HashMap<&'static str, Vec<i64>> = HashMap::new();
     let mut day_reasons: BTreeMap<String, i64> = BTreeMap::new();
     for d in &docs {
-        let Some(t) = dt_ms(d, "ended_at") else {
+        // FR-130 (review 2, N12) — an inferred end is no end a pod saw.
+        let Some(t) = dt_ms(d, "ended_at").filter(|_| end_was_seen(d)) else {
             continue;
         };
         ended.push(t);
@@ -3771,6 +3787,26 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         parse_day(s).unwrap()
+    }
+
+    /// FR-130 (review 2, N12) — a row whose end was inferred (`end_source`)
+    /// is no end the quality section counts: its `ended_at` is only its own
+    /// last clock. A row whose end was seen, or a row from before the field,
+    /// counts as it always has. Its hours count either way
+    /// (`growth_digest_tests::an_inferred_end_counts_its_hours_and_no_failure`).
+    #[test]
+    fn an_inferred_end_is_no_end_a_pod_saw() {
+        assert!(end_was_seen(&doc! { "ended_at": DateTime::now() }));
+        assert!(end_was_seen(&doc! { "end_source": Bson::Null }));
+        for source in [
+            "registration",
+            "sweep",
+            "backfill",
+            "redial",
+            "a_later_source",
+        ] {
+            assert!(!end_was_seen(&doc! { "end_source": source }), "{source}");
+        }
     }
 
     #[test]

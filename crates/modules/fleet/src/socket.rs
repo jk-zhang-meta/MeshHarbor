@@ -147,6 +147,9 @@ pub async fn handle_agent_socket(
             ssh_host_pubkey,
             vault_key,
             peer_auth_key,
+            // FR-130 — the sessions the device kept through the loss of its
+            // last control socket, which this hello claims back.
+            kept_sessions,
         }) => (
             machine_name,
             os,
@@ -156,7 +159,7 @@ pub async fn handle_agent_socket(
             caps,
             advertised_routes,
             supports_relay_regions,
-            (ssh_host_pubkey, vault_key, peer_auth_key),
+            (ssh_host_pubkey, vault_key, peer_auth_key, kept_sessions),
         ),
         other => {
             warn!(?other, "agent opened WS without rc:agent.hello — closing");
@@ -172,7 +175,7 @@ pub async fn handle_agent_socket(
         caps,
         advertised_routes,
         supports_relay_regions,
-        (ssh_host_pubkey, vault_key, peer_auth_key),
+        (ssh_host_pubkey, vault_key, peer_auth_key, kept_sessions),
     ) = hello;
     // FR-90 P3-3a — a vault key is stored only as one the vault can seal to;
     // anything else is stored as none, so the device takes no leases until a
@@ -387,7 +390,22 @@ pub async fn handle_agent_socket(
     let searches_hive = caps.has_rpc(RpcCap::HiveSearch);
     // FR-92 — it parses the org's keep-busy policy. Equality, never a prefix.
     let supports_keep_busy = advertises_keep_busy(&caps);
-    let (registered_tx, cancel, rx) = state.rc_hub.register_agent(
+    // FR-130 — the window this connection is announced, if any: read before
+    // the registration, which holds a place for each session the hello claims
+    // back only under one. With the window at 0, or no `rc-resume`, nothing
+    // is read.
+    let resume =
+        crate::resume_scope::resume_hello(&state, tenant_id, agent_id, &caps, kept_sessions).await;
+    let resume_window = resume.window;
+    let crate::hub::Registration {
+        tx: registered_tx,
+        cancel,
+        rx,
+        claims: resume_claims,
+        refused: refused_claims,
+        reaped: reaped_at_registration,
+        registered_at,
+    } = state.rc_hub.register_agent_resuming(
         agent_id,
         tenant_id,
         owner_user_id,
@@ -395,7 +413,25 @@ pub async fn handle_agent_socket(
         max_sessions,
         input_arbiter,
         supports_exec,
+        resume,
     );
+    // FR-130 — the window goes out before anything answers a claim, and a
+    // claim refused at once (no window, or past the device's capacity) is
+    // answered now.
+    if let Some(secs) = resume_window {
+        let _ = registered_tx.try_send(ServerMsg::AgentResumeWindow { secs });
+        info!(%agent_id, secs, claims = resume_claims.len(), "rc resume window announced");
+    }
+    for session_id in &refused_claims {
+        let _ = registered_tx.try_send(ServerMsg::Terminate {
+            session_id: *session_id,
+            reason: meshharbor_remote_control::models::EndReason::AgentDisconnect,
+            limit: None,
+        });
+    }
+    if !refused_claims.is_empty() {
+        info!(%agent_id, refused = refused_claims.len(), "rc session claims refused at the hello");
+    }
     state.rc_hub.set_agent_ssh_support(agent_id, supports_ssh);
     // FR-94 — equality-matched: `exec` is its prefix (see the word's doc).
     state
@@ -797,10 +833,26 @@ pub async fn handle_agent_socket(
         dialed_tid,
         conn_established_ms,
         tx: registered_tx.clone(),
+        resume: meshharbor_core::AgentResume {
+            window_secs: resume_window.unwrap_or(0),
+            claims: resume_claims,
+            registered_at: resume_window.map(|_| registered_at),
+            reaped: reaped_at_registration,
+        },
     };
     let lifecycles = state.agent_socket.lifecycles();
     for (_, lc) in &lifecycles {
         lc.hello(&actx).await;
+    }
+    // FR-130 — every claim is answered before the read loop starts, so the
+    // device's next frames meet its sessions decided. The module that owns
+    // remote sessions answers them in its `hello`; what is left (it is not
+    // mounted, or failed part way) is refused here.
+    let unanswered = state
+        .rc_hub
+        .refuse_unanswered_claims(agent_id, &registered_tx);
+    if !unanswered.is_empty() {
+        warn!(%agent_id, unanswered = unanswered.len(), "rc session claims no module answered — refused");
     }
 
     // Build a ctx once — it's Copy-able across messages for this connection.

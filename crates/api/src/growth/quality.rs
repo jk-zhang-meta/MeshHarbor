@@ -159,7 +159,17 @@ pub struct SessionRow {
     pub avg_rtt_ms: Option<f64>,
     /// P9c — as the agent recorded it; `None` reads as [`UNKNOWN_CARRIER`].
     pub carrier: Option<String>,
+    /// FR-130 — nobody saw the end (`end_source` is set: the registration
+    /// read, the sweep, the dead-row close, a detached session's redial). Its
+    /// `ended_at` is only the row's own last clock, so it is no duration and
+    /// its `agent_disconnect` is no failure a pod saw: it is counted as
+    /// [`INFERRED_END`].
+    pub inferred: bool,
 }
+
+/// FR-130 (review 2, N12) — how the quality rule counts an end nobody saw.
+/// Classed `other` by the digest, so never a failure.
+pub const INFERRED_END: &str = "inferred";
 
 /// From a projected document; `None` without an id or a `created_at`.
 pub fn session_row(d: &Document) -> Option<SessionRow> {
@@ -174,6 +184,7 @@ pub fn session_row(d: &Document) -> Option<SessionRow> {
         peak_fps: stats.and_then(|s| f64_of(s, "peak_fps")),
         avg_rtt_ms: stats.and_then(|s| f64_of(s, "avg_rtt_ms")),
         carrier: str_of(d, "carrier").filter(|c| !c.is_empty()),
+        inferred: !matches!(d.get("end_source"), None | Some(Bson::Null)),
     })
 }
 
@@ -182,6 +193,7 @@ pub fn session_projection() -> Document {
     doc! {
         "tenant_id": 1, "agent_id": 1, "created_at": 1, "started_at": 1, "ended_at": 1,
         "end_reason": 1, "stats.peak_fps": 1, "stats.avg_rtt_ms": 1, "carrier": 1,
+        "end_source": 1,
     }
 }
 
@@ -215,6 +227,11 @@ pub fn session_quality<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> Se
         q.requested += 1;
         let active = r.started_ms.is_some();
         let duration = match (r.started_ms, r.ended_ms) {
+            // FR-130 — an inferred end is no duration: only a lower bound.
+            (Some(_), Some(_)) if r.inferred => {
+                q.reached_active += 1;
+                None
+            }
             (Some(s), Some(e)) => {
                 q.reached_active += 1;
                 let d = (e - s).max(0);
@@ -235,6 +252,7 @@ pub fn session_quality<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> Se
             }
         };
         let reason = match r.ended_ms {
+            Some(_) if r.inferred => INFERRED_END.to_string(),
             Some(_) => r
                 .end_reason
                 .clone()
@@ -1160,6 +1178,7 @@ mod tests {
             peak_fps: None,
             avg_rtt_ms: None,
             carrier: None,
+            inferred: false,
         }
     }
 
@@ -1327,6 +1346,45 @@ mod tests {
         assert!(
             session_row(&doc! { "_id": ObjectId::new() }).is_none(),
             "no created_at"
+        );
+    }
+
+    /// FR-130 (review 2, N12) — a row whose end was inferred (`end_source`:
+    /// the registration read, the sweep, the dead-row close, a detached
+    /// session's redial) adds no duration, since its `ended_at` is only its
+    /// own last clock, and its end is counted as `inferred`, never as the
+    /// `agent_disconnect` failure a pod saw. It still went live. The
+    /// projection reads the field.
+    #[test]
+    fn an_inferred_end_adds_no_duration_and_no_failure() {
+        let at = |s: &str| DateTime::from_millis(ms(s));
+        let inferred = session_row(&doc! {
+            "_id": ObjectId::new(), "agent_id": ObjectId::new(),
+            "created_at": at("2026-10-15T10:00:00Z"),
+            "started_at": at("2026-10-15T10:00:02Z"),
+            "ended_at": at("2026-10-15T10:40:02Z"),
+            "end_reason": "agent_disconnect", "end_source": "sweep",
+        })
+        .unwrap();
+        let q = session_quality([&inferred]);
+        assert_eq!((q.requested, q.reached_active), (1, 1));
+        assert_eq!(q.duration_ms.n, 0, "{:?}", q.duration_ms);
+        assert!(
+            q.by_carrier.iter().all(|c| c.duration_ms.n == 0),
+            "{:?}",
+            q.by_carrier
+        );
+        assert!(
+            q.by_end_reason
+                .iter()
+                .all(|c| c.reason != "agent_disconnect"),
+            "{:?}",
+            q.by_end_reason
+        );
+        assert!(
+            session_projection().contains_key("end_source"),
+            "{}",
+            session_projection()
         );
     }
 

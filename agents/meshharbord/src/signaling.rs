@@ -27,6 +27,7 @@ use crate::config::AgentConfig;
 use crate::indicator::ViewerIndicator;
 use crate::notify;
 use crate::peer::AgentPeer;
+use crate::session_table::{ConnExit, SessionTable};
 use crate::tunnel::quic_setup::{Begin, QuicSetupError, Settled};
 use crate::watchdog;
 use tunnel_core::localapi::OverlayView;
@@ -90,7 +91,7 @@ const SESSION_STATS_BUDGET: Duration = Duration::from_secs(3);
 
 /// Hard bound on one peer's `pc.close()` during connection teardown — the
 /// same webrtc-internals hang class as [`SESSION_STATS_BUDGET`], on the
-/// paths that run BEFORE the reconnect can start (`close_all_peers` &c.).
+/// paths that run BEFORE the reconnect can start (`SessionTable` &c.).
 /// Bounding it is safe: the P6 session-scoped teardown (arbiter dereg,
 /// display-match release) runs in `AgentPeer`'s Drop on every path, so an
 /// expired close forfeits only the polite goodbye to a peer that is
@@ -202,7 +203,7 @@ async fn device_end(
 /// webrtc internals it did not reach (the ICE agent's connectivity checker, a
 /// 200 ms tick) stay alive for the life of the process. Every close site goes
 /// through here so that it never happens without a line.
-async fn close_within_budget(
+pub(crate) async fn close_within_budget(
     close: impl std::future::Future<Output = ()>,
     session: bson::oid::ObjectId,
     why: &'static str,
@@ -605,8 +606,11 @@ async fn next_major_netchange(rx: &mut Option<NetDeltaRx>) -> String {
 /// keepalive tick (mirrors the overlay runtime's `RESUME_SKEW_THRESHOLD`).
 /// Below this it's scheduler jitter; above it the host slept and the WS is
 /// cycled proactively instead of trusting a possibly-dead socket for up to
-/// another RX-deadline window.
-const RESUME_SKEW_MIN: Duration = Duration::from_secs(120);
+/// another RX-deadline window. FR-130 P2a-2 (M2) — also the pause at the RX
+/// deadline that ends the connection as a resume from suspend
+/// (`ConnExit::after_rx_deadline`): FR-130's line, past which a session is
+/// not kept.
+pub(crate) const RESUME_SKEW_MIN: Duration = Duration::from_secs(120);
 
 /// A5 — a control-WS outage this long (or longer) triggers an immediate
 /// update check on reconnect: the standing fleet-heal path for an agent
@@ -1031,6 +1035,32 @@ pub async fn run(
     let _consent_keepalive = consent_tx;
     // Keep the sender alive for the loop's lifetime (see above).
     let _kill_keepalive = kill_tx;
+    // FR-130 P2a — this org's remote-control sessions, owned here and lent to
+    // each connection, so a live one can outlive the socket it was built on.
+    // Every return below closes it first.
+    let mut table: SessionTable = SessionTable::new(
+        usize::from(crate::encode::caps::rc_max_sessions()),
+        crate::session_table::real_end_hook(indicator.clone()),
+    );
+    // FR-130 P2b — on a supervised Mac's daemon, the table keeps records of
+    // keepable delegated sessions and sends the worker orders through the host.
+    if let Some(host) = delegation.host() {
+        table.set_host(host.clone());
+    }
+    // FR-130 P2b (B1) — on a GUI worker, a second table beside the worker's
+    // own, driven by the daemon's orders instead of the worker's connection.
+    // Every return below closes it too (`close_side`).
+    let mut side: Option<DelegatedSide> = delegation.worker_side().map(|(orders, channel)| {
+        DelegatedSide::new(
+            SessionTable::for_worker(
+                usize::from(crate::encode::caps::rc_max_sessions()),
+                crate::session_table::real_end_hook(indicator.clone()),
+                &channel,
+            ),
+            orders,
+            channel,
+        )
+    });
     // Operator-consent broker: created in `run_cmd` and passed in (P2b), so the
     // LocalAPI shares the SAME instance and its live `pending` set. Lives across
     // reconnects, so a sentinel dropped while the WS was down is still honoured.
@@ -1103,6 +1133,8 @@ pub async fn run(
     loop {
         if *shutdown.borrow() {
             info!("shutdown signalled; exiting signaling loop");
+            table.close_all(ConnExit::Shutdown.label()).await;
+            close_side(&mut side, ConnExit::Shutdown.label()).await;
             return Ok(());
         }
 
@@ -1134,10 +1166,14 @@ pub async fn run(
             &mut idle_rx,
             &carrier_ready_tx,
             &mut carrier_ready_rx,
+            &mut table,
+            &mut side,
         )
         .await;
         #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
         crate::overlay::note_control_detached(&cfg.tenant_id);
+        // FR-130 — an exit that skipped its arm (a `?`) strands no session.
+        table.close_stranded().await;
         if !matches!(attempt, Err(ConnectError::AuthRejected)) {
             recovered_last = false;
         }
@@ -1160,6 +1196,9 @@ pub async fn run(
                 }
             }
             Err(ConnectError::AuthRejected) => {
+                // FR-130 — a refused token: the device's credential is gone,
+                // so the sessions it kept go with it.
+                table.close_all("token_refused").await;
                 // FR-103 — before the ladder: a newer token in the config file
                 // (re-enrolled while this ran), else a renewal, which the
                 // server grants up to 90 days past expiry. Either puts a
@@ -1172,9 +1211,12 @@ pub async fn run(
                 {
                     recovered_last = true;
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                        _ = serving_delegated(tokio::time::sleep(Duration::from_secs(1)), &mut side) => {},
                         _ = shutdown.changed() => {
-                            if *shutdown.borrow() { return Ok(()); }
+                            if *shutdown.borrow() {
+                                close_side(&mut side, ConnExit::Shutdown.label()).await;
+                                return Ok(());
+                            }
                         },
                     }
                     continue;
@@ -1211,9 +1253,12 @@ pub async fn run(
                     }
                 }
                 tokio::select! {
-                    _ = tokio::time::sleep(auth_backoff) => {},
+                    _ = serving_delegated(tokio::time::sleep(auth_backoff), &mut side) => {},
                     _ = shutdown.changed() => {
-                        if *shutdown.borrow() { return Ok(()); }
+                        if *shutdown.borrow() {
+                            close_side(&mut side, ConnExit::Shutdown.label()).await;
+                            return Ok(());
+                        }
                     },
                 }
             }
@@ -1244,6 +1289,7 @@ pub async fn run(
                             "temporary device: could not remove the ended enrollment"),
                     }
                     let _ = (reason, message);
+                    close_side(&mut side, "loop_ended").await;
                     return Err(InvitationEnded {
                         label: ctx.label.clone(),
                     }
@@ -1261,6 +1307,7 @@ pub async fn run(
                         org = %ctx.label,
                         "{gone} — stopping this org's loop (other orgs unaffected)"
                     );
+                    close_side(&mut side, "loop_ended").await;
                     return Err(gone.into());
                 }
                 // Temporary devices: the server removing a temporary device
@@ -1308,7 +1355,7 @@ pub async fn run(
                 // rc.53: server told us to stop reconnecting. The
                 // teardown of in-flight peers already ran in the
                 // `handle_server_msg::ServerMsg::Goodbye` arm
-                // (close_all_peers + close_all_tunnel_peers) — this
+                // (the session table + close_all_tunnel_peers) — this
                 // arm only writes the operator sentinel + exits.
                 // #2293 — the last line names what brings this install back:
                 // systemd never restarts exit 7.
@@ -1372,9 +1419,12 @@ pub async fn run(
                     "overlay key rotated — reconnecting under the new identity"
                 );
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(500)) => {},
+                    _ = serving_delegated(tokio::time::sleep(Duration::from_millis(500)), &mut side) => {},
                     _ = shutdown.changed() => {
-                        if *shutdown.borrow() { return Ok(()); }
+                        if *shutdown.borrow() {
+                            close_side(&mut side, ConnExit::Shutdown.label()).await;
+                            return Ok(());
+                        }
                     },
                 }
             }
@@ -1408,6 +1458,7 @@ pub async fn run(
                             "duplicate-instance duel on this org — stopping its loop \
                              (other orgs unaffected)"
                         );
+                        close_side(&mut side, "loop_ended").await;
                         return Err(anyhow::anyhow!(
                             "duplicate-instance duel: displaced {displacements}× in the \
                              window — another process is using this org's agent_id ({message})",
@@ -1439,9 +1490,12 @@ pub async fn run(
                 // stagger out of phase and one wins; sustained duels climb
                 // the ladder instead of escalating to an exit.
                 tokio::select! {
-                    _ = tokio::time::sleep(replaced_backoff_for(displacements)) => {},
+                    _ = serving_delegated(tokio::time::sleep(replaced_backoff_for(displacements)), &mut side) => {},
                     _ = shutdown.changed() => {
-                        if *shutdown.borrow() { return Ok(()); }
+                        if *shutdown.borrow() {
+                            close_side(&mut side, ConnExit::Shutdown.label()).await;
+                            return Ok(());
+                        }
                     },
                 }
                 // Reset the transient backoff — the next reconnect
@@ -1467,26 +1521,70 @@ pub async fn run(
                 // every failure mode, blocking root-cause analysis.
                 let cause = error_chain(e.as_ref());
                 warn!(error = %e, %cause, "signaling connect failed; backing off");
-                tokio::select! {
-                    _ = tokio::time::sleep(backoff) => {
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                    },
-                    // netstate PR-2b — the network moved: retry NOW with a
-                    // reset ladder instead of waiting out a backoff sized
-                    // for the network that no longer exists.
-                    _ = next_major_netchange(&mut ladder_net_rx) => {
-                        info!("network changed during reconnect backoff — retrying immediately");
-                        backoff = Duration::from_secs(1);
-                        // New network = new throttle regime: the slowness
-                        // treadmill re-earns its verdict from scratch.
-                        slowness_cycles = 0;
-                    },
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() { return Ok(()); }
-                    },
+                // FR-130 — the wait serves what the last connection kept: a
+                // deadline closes on time, and the person's Disconnect or the
+                // idle limit ends a kept session at once. While anything is
+                // kept the redial is flat (`kept_redial_wait`): a claim the
+                // server has not answered by the deadline is a claim refused,
+                // and the ladder's later steps are longer than the window.
+                let wait = tokio::time::sleep(kept_redial_wait(backoff, table.has_kept()));
+                tokio::pin!(wait);
+                loop {
+                    let kept = table.has_kept() || side_holds_any(&side);
+                    tokio::select! {
+                        _ = &mut wait => {
+                            backoff = (backoff * 2).min(Duration::from_secs(60));
+                            break;
+                        },
+                        // netstate PR-2b — the network moved: retry NOW with a
+                        // reset ladder instead of waiting out a backoff sized
+                        // for the network that no longer exists.
+                        _ = next_major_netchange(&mut ladder_net_rx) => {
+                            info!("network changed during reconnect backoff — retrying immediately");
+                            backoff = Duration::from_secs(1);
+                            // New network = new throttle regime: the slowness
+                            // treadmill re-earns its verdict from scratch.
+                            slowness_cycles = 0;
+                            break;
+                        },
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() {
+                                table.close_all(ConnExit::Shutdown.label()).await;
+                                close_side(&mut side, ConnExit::Shutdown.label()).await;
+                                return Ok(());
+                            }
+                            break;
+                        },
+                        event = table.next_event() => table.serve(event).await,
+                        // FR-130 P2b (B4) — and the worker's delegated side.
+                        event = next_side(&mut side) => serve_side(&mut side, event).await,
+                        Some((sid, end)) = device_end(&mut kill_rx, &mut idle_rx), if kept => {
+                            end_in_gap(&mut table, &mut side, sid, end, &indicator).await;
+                        },
+                    }
                 }
             }
         }
+    }
+}
+
+/// FR-130 — how long the org loop waits before its next dial while it holds a
+/// kept session: flat and short, whatever the ladder says.
+const KEPT_REDIAL: Duration = Duration::from_secs(5);
+
+/// FR-130 — the wait before the next dial. While a session is kept, its claim
+/// must be answered before its deadline, which no reconnect moves, and the
+/// ladder's later steps (16 s, 32 s, 60 s) are a large part of any window the
+/// server announces: a server that is back 20 s after it went would be dialled
+/// again at 31 s, and one back at 35 s only at 63 s, after a 60 s window. So
+/// with something kept the wait is capped at [`KEPT_REDIAL`]; with nothing
+/// kept it is the ladder's, as it always was. Only a device holding a live
+/// session redials this fast, and only until that session's deadline.
+fn kept_redial_wait(backoff: Duration, kept: bool) -> Duration {
+    if kept {
+        backoff.min(KEPT_REDIAL)
+    } else {
+        backoff
     }
 }
 
@@ -1633,7 +1731,6 @@ enum ConnectError {
     Transient(#[from] anyhow::Error),
 }
 
-#[allow(clippy::too_many_arguments)]
 /// FR-128 — one candidate's bound when the plan has more than one: long enough for a TLS
 /// handshake across a slow line (15 s timed out once on a cross-border entry whose next try took
 /// 3 s), short enough that the next path is tried within half a minute.
@@ -1748,6 +1845,7 @@ async fn dial_centre(
     last
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_once(
     ctx: &OrgCtx,
     cfg: &AgentConfig,
@@ -1798,6 +1896,13 @@ async fn connect_once(
     // channel's doc).
     carrier_ready_tx: &mpsc::Sender<bson::oid::ObjectId>,
     carrier_ready_rx: &mut mpsc::Receiver<bson::oid::ObjectId>,
+    // FR-130 P2a — the org's sessions, borrowed from `run` so a kept one
+    // outlives this connection. Every exit below detaches or closes them.
+    peers: &mut SessionTable,
+    // FR-130 P2b (B1) — on a GUI worker, the delegated sessions the daemon
+    // will claim. Borrowed from `run` so they outlive the worker's own
+    // connection.
+    side: &mut Option<DelegatedSide>,
 ) -> Result<(), ConnectError> {
     // S6 — `tid` is the tenant-affinity key the server-front LB hashes
     // on, co-locating this agent's WS with its tenant's controllers on
@@ -1837,8 +1942,11 @@ async fn connect_once(
                 .await
                 .map_err(|e| ConnectError::Transient(e.context("loopback control sink")))?
         } else {
+            // FR-130 — the dial (FR-128's ladder of paths to the centre
+            // included) serves what the last connection kept meanwhile.
+            let dial = dial_centre(ctx, cfg, &url);
             let (ws, response) =
-                match dial_centre(ctx, cfg, &url).await
+                match serving_kept(dial, peers, side, kill_rx, idle_rx, &indicator).await
                 {
                     Ok(Ok(pair)) => pair,
                     Ok(Err(e)) => {
@@ -1907,6 +2015,15 @@ async fn connect_once(
     }
 
     // Say hello.
+    // FR-130 — the switch, read once for this connection: with it on, the
+    // hello says `rc-resume` and claims what the last connection kept (P2b:
+    // including a supervised Mac daemon's keepable delegated sessions). An
+    // unenrolled worker speaks to no server at all.
+    let survive = crate::session_table::connection_keeps(
+        crate::session_table::survive_enabled() && !ctx.unenrolled,
+        delegation.host().is_some(),
+    );
+    let kept_sessions = peers.begin_connection(survive).await;
     let mut hello_caps = stub_caps(
         cfg.overlay_multi_org,
         ctx.is_primary,
@@ -1923,6 +2040,7 @@ async fn connect_once(
         &mut hello_caps.rpc,
         crate::vault::takes_leases(cfg.vault_allowed(), ctx.is_primary),
     );
+    crate::session_table::apply_resume_word(&mut hello_caps.rpc, survive);
     // FR-94 — `exec-system` on exactly the connection of the device this
     // machine's SYSTEM service is anchored for, and the heartbeat re-announces
     // when that changes (an anchor written or removed while connected).
@@ -2020,8 +2138,22 @@ async fn connect_once(
             // connection (one key per org, never shared): made on the first
             // hello, kept beside the config, and offered only once it is on disk.
             peer_auth_key: crate::peer_auth::hello_key(remote_cfg.config_path(), &cfg.tenant_id),
+            // FR-130 — the sessions kept through the last socket's loss, claimed
+            // back. Empty unless the switch is on and a window was announced.
+            kept_sessions,
         };
-        send_msg(&mut ws, &hello).await.context("sending hello")?;
+        // FR-130 P2a-2 (L8) — the send can take `WS_SEND_TIMEOUT`, and what the
+        // last connection kept is served meanwhile: its deadlines, its ends.
+        serving_kept(
+            send_msg(&mut ws, &hello),
+            peers,
+            side,
+            kill_rx,
+            idle_rx,
+            &indicator,
+        )
+        .await
+        .context("sending hello")?;
         // rc.58: explicit tick on hello — the 25 s keepalive timer hasn't
         // fired yet, and a slow first server response (no inbound frame
         // for 30+ s) would otherwise leave the pump's `last_tick` at the
@@ -2081,6 +2213,8 @@ async fn connect_once(
     // rotation, say so again on this healthy socket: the copy sent on the
     // dying session can be lost (it was, in the second field run).
     drain_pending_rotation_report(&cfg.tenant_id, &outbound_tx);
+    // FR-130 — and what the device ended while no socket was up.
+    peers.connected(&outbound_tx);
     // FR-99 P1d — the curtains the previous process died holding, reported as
     // `worker_exit` on the first healthy connection of the org each belonged to.
     crate::privacy::drain_leftovers(&cfg.tenant_id, &outbound_tx);
@@ -2141,7 +2275,8 @@ async fn connect_once(
     // runtime sends its `ClientMsg`s back through `outbound_tx`, like any
     // peer, and tears down when this connection's `overlay_evt_tx` drops.
     // #2551 — a re-attach to a persistent runtime awaits that runtime's
-    // event channel, unbounded.
+    // event channel, unbounded. FR-130 P2a-2 (L8) — so what the last
+    // connection kept is served meanwhile, as at the dial.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     watchdog::stage(ctx.pump, "setup.overlay");
     // FR-43 P3 — never in an unenrolled worker: the mesh is the root daemon's.
@@ -2149,7 +2284,7 @@ async fn connect_once(
     let mut overlay_evt_tx = if ctx.unenrolled {
         None
     } else {
-        crate::overlay::maybe_start(
+        let start = crate::overlay::maybe_start(
             cfg,
             ctx.token.clone(),
             outbound_tx.clone(),
@@ -2163,8 +2298,11 @@ async fn connect_once(
                 },
                 activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
             },
-        )
-        .await
+        );
+        // FR-130 P2a-2 (L8) — a re-attach to a persistent runtime awaits that
+        // runtime's event channel, unbounded, so what the last connection
+        // kept is served meanwhile, as at the dial.
+        serving_kept(start, peers, side, kill_rx, idle_rx, &indicator).await
     };
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     watchdog::stage(ctx.pump, "setup");
@@ -2200,13 +2338,12 @@ async fn connect_once(
     let _ = (&overlay_view_tx, &rtt_sample_slot);
     #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
     let overlay_evt_tx: Option<()> = None;
-    let mut peers: HashMap<bson::oid::ObjectId, AgentPeer> = HashMap::new();
     let mut shared_leases = crate::shared_lease::SharedLeases::default();
     let mut shared_ssh = crate::ssh_shared_bridge::SharedSshTargets::default();
-    // 2026-07-27 — this connect iteration starts with a fresh session map;
-    // release any GPU-clock pin a previous iteration left engaged (its
-    // sessions died with the old map).
-    crate::gpu_clock::on_sessions_changed(0);
+    // 2026-07-27 — this connect iteration starts with only what the last one
+    // kept (FR-130); release any GPU-clock pin a previous iteration left
+    // engaged for sessions that have since ended.
+    crate::gpu_clock::on_sessions_changed(peers.len());
     // Codec selected for each pending session (computed from the
     // browser∩agent intersection when `rc:session.request` arrives, read
     // at `rc:sdp.offer` time to drive the track + encoder). Entries are
@@ -2430,7 +2567,8 @@ async fn connect_once(
                     if ctx.is_primary {
                         crate::mgmt_entry::stop();
                     }
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::Shutdown).await;
+                    close_side(side, ConnExit::Shutdown.label()).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     // Terminal: a daemon shutdown must tear peers down, never
                     // stash them (the process is going away).
@@ -2439,7 +2577,11 @@ async fn connect_once(
                     return Ok(());
                 }
             }
-            _ = keepalive.tick() => {
+            due = keepalive.tick() => {
+                // FR-130 P2a-2 (M2) — how late this tick came: for at least
+                // that long the loop did not run, whatever the network did.
+                // Read at the RX deadline below.
+                let late = due.elapsed();
                 let _stage = watchdog::enter(ctx.pump, "keepalive");
                 // W4(a) — TUN-death self-heal & F1 backoff retry. The overlay
                 // runtime EXITS when its TUN dies, and if a WS reconnect
@@ -2481,7 +2623,8 @@ async fn connect_once(
                         napped_s = (wall_gap - mono_gap).as_secs(),
                         "suspend/resume detected at keepalive — cycling the control WS"
                     );
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::ResumeFromSuspend).await;
+                    close_side(side, ConnExit::ResumeFromSuspend.label()).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Err(ConnectError::Transient(anyhow::anyhow!(
@@ -2495,7 +2638,16 @@ async fn connect_once(
                         "no inbound WS frames within the RX deadline — half-open socket \
                          (middlebox still ACKs our pings); reconnecting"
                     );
-                    close_all_peers(&mut peers, &indicator).await;
+                    // FR-130 P2a-2 (M2) — where the monotonic clock counts a
+                    // sleep (Windows'), a resume from suspend lands here, not
+                    // in the wall-clock check above: a tick that late ends the
+                    // connection as the resume it is, and nothing is kept.
+                    peers
+                        .end_connection(ConnExit::after_rx_deadline(Some(late)))
+                        .await;
+                    if ConnExit::after_rx_deadline(Some(late)) == ConnExit::ResumeFromSuspend {
+                        close_side(side, ConnExit::ResumeFromSuspend.label()).await;
+                    }
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Err(ConnectError::Transient(anyhow::anyhow!(
@@ -2521,7 +2673,7 @@ async fn connect_once(
                                 misses,
                                 "control WS unresponsive after a MAJOR network change — cycling now"
                             );
-                            close_all_peers(&mut peers, &indicator).await;
+                            peers.end_connection(ConnExit::NetChangeProbe).await;
                             close_all_tunnel_peers(&mut tunnel_peers).await;
                             park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                             return Err(ConnectError::Transient(anyhow::anyhow!(
@@ -2541,7 +2693,7 @@ async fn connect_once(
                             send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
                         {
                             warn!(%e, "net-change re-probe ping failed — reconnecting");
-                            close_all_peers(&mut peers, &indicator).await;
+                            peers.end_connection(ConnExit::NetChangeReprobe).await;
                             close_all_tunnel_peers(&mut tunnel_peers).await;
                             park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                             return Err(ConnectError::Transient(e.context("net-change re-probe")));
@@ -2575,7 +2727,7 @@ async fn connect_once(
                                 );
                                 slow_pongs = 0;
                             } else {
-                                close_all_peers(&mut peers, &indicator).await;
+                                peers.end_connection(ConnExit::KeepaliveUnanswered).await;
                                 close_all_tunnel_peers(&mut tunnel_peers).await;
                                 park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                                 return Err(ConnectError::Transient(anyhow::anyhow!(
@@ -2596,7 +2748,7 @@ async fn connect_once(
                         send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
                     {
                         warn!(%e, "keepalive ping failed — will reconnect");
-                        close_all_peers(&mut peers, &indicator).await;
+                        peers.end_connection(ConnExit::KeepaliveSendFailed).await;
                         close_all_tunnel_peers(&mut tunnel_peers).await;
                         park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                         return Err(ConnectError::Transient(e.context("ws ping")));
@@ -2634,7 +2786,7 @@ async fn connect_once(
                         send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
                     {
                         warn!(%e, "net-change probe ping failed — reconnecting");
-                        close_all_peers(&mut peers, &indicator).await;
+                        peers.end_connection(ConnExit::NetChangePingFailed).await;
                         close_all_tunnel_peers(&mut tunnel_peers).await;
                         park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                         return Err(ConnectError::Transient(e.context("net-change probe ping")));
@@ -2778,6 +2930,7 @@ async fn connect_once(
                     );
                     crate::exec_service::apply_word(&mut c.rpc, exec_system_now);
                     crate::ssh_service::apply_word(&mut c.rpc, ssh_system_now);
+                    crate::session_table::apply_resume_word(&mut c.rpc, survive);
                     c.record = record_now;
                     if let Some((perms, has_input)) = caps_now {
                         c.permissions = Some(perms);
@@ -2807,7 +2960,7 @@ async fn connect_once(
                 };
                 if let Err(e) = send_msg(&mut ws, &hb).await {
                     warn!(%e, "heartbeat send failed — will reconnect");
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::HeartbeatSendFailed).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Err(ConnectError::Transient(e.context("heartbeat send")));
@@ -2827,6 +2980,12 @@ async fn connect_once(
                     // queue — or its telemetry timing out — skips that peer
                     // and never stops the others.
                     send_one_session_stats(*session_id, peer, ctx.pump).await;
+                }
+                // FR-130 P2b (B7) — and the delegated table's, each on its link.
+                if let Some(s) = side.as_ref() {
+                    for (session_id, peer) in s.table.iter() {
+                        send_one_session_stats(*session_id, peer, ctx.pump).await;
+                    }
                 }
                 watchdog::tick(ctx.pump);
             }
@@ -2866,7 +3025,7 @@ async fn connect_once(
                     // send never surfaces on the read side at all. Same
                     // teardown as every other fatal arm.
                     warn!(%e, "failed to flush peer-originated message — will reconnect");
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::OutboundFlushFailed).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Err(ConnectError::Transient(e.context("outbound flush")));
@@ -2893,7 +3052,10 @@ async fn connect_once(
                 // the weak-handle property P9c kept. A full or closed sender
                 // is logged by the shared helper, never fatal, and the next
                 // tick retries.
-                if let Some(peer) = peers.get(&sid) {
+                if let Some(peer) = peers
+                    .get(&sid)
+                    .or_else(|| side.as_ref().and_then(|s| s.table.get(&sid)))
+                {
                     send_one_session_stats(sid, peer, ctx.pump).await;
                 }
                 watchdog::tick(ctx.pump);
@@ -2916,12 +3078,45 @@ async fn connect_once(
                 indicator.hide_prompt(&session_hex);
                 watchdog::tick(ctx.pump);
             }
+            // FR-130 — what the last connection kept waits for its claim here:
+            // a deadline, a kept peer's own end, a net change's close.
+            event = peers.next_event() => {
+                let _stage = watchdog::enter(ctx.pump, "kept_sessions");
+                peers.serve(event).await;
+                crate::gpu_clock::on_sessions_changed(peers.len());
+                watchdog::tick(ctx.pump);
+            }
+            // FR-130 P2b (B4) — the daemon's orders about the delegated
+            // sessions it will claim, and their table's events.
+            event = next_side(side) => {
+                let _stage = watchdog::enter(ctx.pump, "delegated_sessions");
+                serve_side(side, event).await;
+                watchdog::tick(ctx.pump);
+            }
             Some((sid, end)) = device_end(kill_rx, idle_rx) => {
                 let _stage = watchdog::enter(ctx.pump, "device_end");
+                // FR-130 P2b (B7) — a session of the worker's delegated table:
+                // its end, and the audit's last sample before it, go up the
+                // channel through that table, which never waits (F3). The road
+                // comes from the table, never from the peer's sender, which is
+                // its link's.
+                if let Some(s) = side.as_mut()
+                    && s.table.holds(&sid)
+                {
+                    end_delegated_by_device(&mut s.table, sid, end, true).await;
+                    pending_codecs.remove(&sid);
+                    pending_transports.remove(&sid);
+                    pending_audio.remove(&sid);
+                    pending_permissions.remove(&sid);
+                    pending_session_meta.remove(&sid);
+                    crate::extauth::end_session(remote_cfg, sid);
+                    watchdog::tick(ctx.pump);
+                    continue;
+                }
                 // FR-101 P4b-2 — a hand-back from an idle watcher races the
                 // session's own end; one this connection no longer holds has
                 // nothing left to end (a disconnect closed every peer).
-                if end == DeviceEnd::Idle && !peers.contains_key(&sid) {
+                if end == DeviceEnd::Idle && !peers.holds(&sid) {
                     debug!(session_id = %sid, "idle limit reached for a session no longer held — nothing to end");
                     continue;
                 }
@@ -2948,6 +3143,13 @@ async fn connect_once(
                         info!(session_id = %sid, "idle limit reached — ending the session")
                     }
                 }
+                // FR-130 — a session the last connection kept, its claim not
+                // answered yet: it ends as in a gap, and its end goes out here.
+                if peers.end_kept_by_device(sid, end.terminate(sid), end.label(), host_disconnect_grace()) {
+                    crate::gpu_clock::on_sessions_changed(peers.len());
+                    watchdog::tick(ctx.pump);
+                    continue;
+                }
                 // FR-85 P3b-3 — the person at the device sent the controller
                 // away: a recording of this session STOPS now, rather than
                 // wait for the controller to come back (a drop does wait). An
@@ -2958,7 +3160,7 @@ async fn connect_once(
                 // Control ends at the click, not after the grace: no input,
                 // clipboard, files or frames from here on, while the bare
                 // connection waits for the viewer to hear why.
-                let peer = peers.remove(&sid);
+                let peer = peers.take(&sid, "device_end");
                 if let Some(peer) = &peer {
                     peer.stop_serving();
                     // FR-101 P3 — the audit's last sample, while the server
@@ -3160,6 +3362,11 @@ async fn connect_once(
                                 pending_chunk_framing.insert(sid, p.chunk_framing);
                                 pending_audio.insert(sid, p.audio);
                                 pending_permissions.insert(sid, p.permissions);
+                                // FR-130 P2b (B2) — the daemon will claim this
+                                // one: its messages go to the delegated table.
+                                if let Some(s) = side.as_mut() {
+                                    s.note_params(sid, p.keepable);
+                                }
                                 // FR-85 P1e-mac — the record context the daemon
                                 // resolved. This worker is the half that records:
                                 // it owns the peer, and its recorder runs as the
@@ -3212,6 +3419,15 @@ async fn connect_once(
                     kind = crate::delegate::server_msg_kind(&delegated_msg),
                     "delegation: serving a delegated rc message"
                 );
+                // FR-130 P2b (B2) — a session the daemon will claim is served
+                // on the delegated table; everything else as today.
+                let on_side = side.as_ref().is_some_and(|s| s.serves(&delegated_msg));
+                let served_id = crate::delegate::server_session_id(&delegated_msg);
+                let ended = matches!(delegated_msg, ServerMsg::Terminate { .. });
+                let table: &mut SessionTable = match side.as_mut() {
+                    Some(s) if on_side => &mut s.table,
+                    _ => &mut *peers,
+                };
                 handle_server_msg(
                     ctx,
                     &cfg.tenant_id,
@@ -3219,7 +3435,7 @@ async fn connect_once(
                     delegated_msg,
                     &mut shared_leases,
                     &mut shared_ssh,
-                    &mut peers,
+                    table,
                     &mut pending_codecs,
                     &mut pending_transports,
                     &mut pending_chroma,
@@ -3247,6 +3463,12 @@ async fn connect_once(
                     carrier_ready_tx,
                 )
                 .await?;
+                if on_side
+                    && let Some(s) = side.as_mut()
+                    && let Some(sid) = served_id
+                {
+                    s.served(sid, ended);
+                }
             }
             maybe_msg = ws.next() => match maybe_msg {
                 Some(Ok(Message::Text(text))) => {
@@ -3348,7 +3570,7 @@ async fn connect_once(
                                 parsed,
                                 &mut shared_leases,
                                 &mut shared_ssh,
-                                &mut peers,
+                                peers,
                                 &mut pending_codecs,
                                 &mut pending_transports,
                                 &mut pending_chroma,
@@ -3421,7 +3643,7 @@ async fn connect_once(
                     last_rx = std::time::Instant::now();
                     if let Err(e) = send_frame(&mut ws, Message::Pong(data)).await {
                         warn!(%e, "pong reply failed — will reconnect");
-                        close_all_peers(&mut peers, &indicator).await;
+                        peers.end_connection(ConnExit::PongReplyFailed).await;
                         close_all_tunnel_peers(&mut tunnel_peers).await;
                         park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                         return Err(ConnectError::Transient(e.context("ws pong")));
@@ -3431,14 +3653,14 @@ async fn connect_once(
                 Some(Ok(Message::Close(_))) | None => {
                     let _stage = watchdog::enter(ctx.pump, "ws.close");
                     info!("ws closed by peer");
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::ServerClosed).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Ok(());
                 }
                 Some(Err(e)) => {
                     let _stage = watchdog::enter(ctx.pump, "ws.error");
-                    close_all_peers(&mut peers, &indicator).await;
+                    peers.end_connection(ConnExit::ReadError).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                     return Err(ConnectError::Transient(anyhow::Error::new(e).context("ws read")));
@@ -3471,7 +3693,7 @@ async fn connect_once(
                                     );
                                     slow_pongs = 0;
                                 } else {
-                                    close_all_peers(&mut peers, &indicator).await;
+                                    peers.end_connection(ConnExit::PongRttDegraded).await;
                                     close_all_tunnel_peers(&mut tunnel_peers).await;
                                     park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                                     return Err(ConnectError::Transient(anyhow::anyhow!(
@@ -3654,7 +3876,7 @@ async fn handle_server_msg(
     msg: ServerMsg,
     shared_leases: &mut crate::shared_lease::SharedLeases,
     shared_ssh: &mut crate::ssh_shared_bridge::SharedSshTargets,
-    peers: &mut HashMap<bson::oid::ObjectId, AgentPeer>,
+    peers: &mut SessionTable,
     pending_codecs: &mut HashMap<bson::oid::ObjectId, String>,
     pending_transports: &mut HashMap<bson::oid::ObjectId, Option<String>>,
     pending_chroma: &mut HashMap<bson::oid::ObjectId, Option<String>>,
@@ -3958,11 +4180,20 @@ async fn handle_server_msg(
     // …and a session's end ends its binding HERE, for the same reason: a
     // delegated `Terminate` never reaches the arm below. (A no-op for every
     // session that was not external.) FR-100 P1b's notes end with it.
-    if let ServerMsg::Terminate { session_id, .. } = &msg {
+    // FR-130 P2b (A7, review HIGH-1) — and for a delegated session the daemon
+    // keeps a record of, the record goes here too and its worker is ordered to
+    // end it on the lane it serves even while its own socket is down.
+    if let ServerMsg::Terminate {
+        session_id,
+        reason,
+        limit,
+    } = &msg
+    {
         shared_leases.end(*session_id);
         crate::share_files::forget(*session_id);
         crate::extauth::end_session(remote_cfg, *session_id);
         remote_cfg.peer_auth_offers().forget(*session_id);
+        peers.drop_record(session_id, reason, limit.as_deref());
     }
 
     // FR-43 P2b — hand a remote-desktop session to the GUI worker, if there is
@@ -3993,16 +4224,34 @@ async fn handle_server_msg(
         let _ = delegate.send_to_worker(&msg);
         return Ok(());
     }
+    // FR-130 P2b (A3, review LOW-1) — the attach generation is read BEFORE an
+    // offer crosses: a channel that ends between the send and the record
+    // leaves the record under the generation of the worker that got the offer,
+    // which is gone, and so never claimed or counted. None off the host.
+    let offer_generation = peers.live_generation();
+    // FR-130 P2b (A1) — routing first, then delegation: while this loop keeps
+    // (P4-0: a window open, or a session still kept), a session its own table
+    // holds is served here, and its `Terminate` or `Ice` never crosses to a
+    // worker that attached since. Otherwise the gate is today's.
     if let Some(delegate) = delegate
         && ctx.is_primary
         && !shared_message
         && crate::delegate::delegable_inbound(&msg)
+        && !crate::delegate::served_by_daemon(
+            peers.keeping(),
+            crate::delegate::server_session_id(&msg).is_some_and(|s| peers.holds(&s)),
+        )
         && delegate.send_to_worker(&msg)
     {
         tracing::debug!(
             kind = crate::delegate::server_msg_kind(&msg),
             "delegated an rc message to the GUI worker"
         );
+        // FR-130 P2b (A3) — a keepable session's offer crossed: the daemon
+        // keeps a record of it, to claim it through this socket's loss.
+        if let ServerMsg::SdpOffer { session_id, .. } = &msg {
+            peers.cross_offer(*session_id, offer_generation);
+        }
         return Ok(());
     }
 
@@ -4142,6 +4391,25 @@ async fn handle_server_msg(
             initial_resolution,
             two_factor_code,
         } => {
+            // FR-130 — sessions kept through the last socket's loss hold the
+            // device's capacity until their claim is answered: a new one is
+            // refused as busy, never served beside a kept peer. Before the
+            // two-factor check below on purpose: a code is used once, and a
+            // request this device cannot serve must not spend one.
+            if peers.full_beside_kept() {
+                info!(
+                    %session_id,
+                    held = peers.len(),
+                    "rc:session.request refused as busy: kept sessions hold this device's capacity (FR-130)"
+                );
+                // P2a-2 (L7) — never lost to a full queue.
+                peers.queue_end(ClientMsg::Terminate {
+                    session_id,
+                    reason: EndReason::AgentHangup,
+                    limit: None,
+                });
+                return Ok(());
+            }
             // FR-129 — a device with two-factor on asks for a code on every session, checked
             // HERE by the daemon before anything else: the centre only relayed it. A share
             // link's or an outsider's session has nobody with the device's authenticator app,
@@ -4531,6 +4799,15 @@ async fn handle_server_msg(
                         // the session goes live in its process.
                         lock_on_end,
                         initial_resolution: initial_resolution.clone(),
+                        // FR-130 P2b (A2), P4-0 — true only while a window is
+                        // open on this connection, the worker advertised
+                        // `keep-delegated`, and the session is neither
+                        // external nor a device share.
+                        keepable: crate::delegate::session_keepable(
+                            peers.window_open(),
+                            delegate.worker_keeps(),
+                            external_consent.is_some() || shared_lease.is_some(),
+                        ),
                     }),
                 ));
                 if !sent {
@@ -4834,7 +5111,7 @@ async fn handle_server_msg(
             // Build a fresh peer for this session. If an old one somehow
             // exists (controller retry?), close it first so the browser sees
             // a clean answer.
-            if let Some(old) = peers.remove(&session_id) {
+            if let Some(old) = peers.take(&session_id, "replaced_by_offer") {
                 // FR-101 P3 — the session goes on under a new peer, and the
                 // old one's drop forgets its counters: carry the transfer
                 // readings across, so the cumulative tallies never go back.
@@ -4956,6 +5233,18 @@ async fn handle_server_msg(
                 return Ok(());
             }
 
+            // FR-130 — a session this connection may keep through its loss
+            // holds one sender for everything (its link), which the table
+            // points at each new connection. P2b: on a GUI worker's delegated
+            // table (`is_worker()`), its link points at the delegation channel
+            // instead, and the table switches it on the daemon's orders. With
+            // the switch off every session takes its connection's sender.
+            let link = (peers.keeps_sessions() && (delegated.is_none() || peers.is_worker()))
+                .then(|| peers.link(session_id, delegated.unwrap_or(outbound_tx)));
+            let session_tx = link.as_ref().map_or_else(
+                || delegated.unwrap_or(outbound_tx).clone(),
+                crate::session_table::SessionLink::sender,
+            );
             let peer = match AgentPeer::new(
                 session_id,
                 &ice_servers,
@@ -4964,7 +5253,7 @@ async fn handle_server_msg(
                 // the sender it is constructed with, so a delegated session
                 // needs exactly one decision, taken once, here. Nothing
                 // downstream has to know it is delegated.
-                delegated.unwrap_or(outbound_tx).clone(),
+                session_tx.clone(),
                 encoder_preference,
                 chosen_codec,
                 track_codec,
@@ -5045,7 +5334,7 @@ async fn handle_server_msg(
                     prompt_window: meta.prompt_window,
                     consent: consent_broker.clone(),
                     indicator: indicator.clone(),
-                    outbound: delegated.unwrap_or(outbound_tx).clone(),
+                    outbound: session_tx.clone(),
                     companion: crate::recording::remote::Companion::System,
                 });
             }
@@ -5061,7 +5350,7 @@ async fn handle_server_msg(
                 // P1d — reported on THIS connection: the session belongs to
                 // the org that asked, and the server looks it up there.
                 report: crate::privacy::Reporter {
-                    outbound: delegated.unwrap_or(outbound_tx).clone(),
+                    outbound: session_tx,
                     tenant_id: tenant_id.to_string(),
                     ledger: crate::privacy::ledger(),
                 },
@@ -5116,6 +5405,10 @@ async fn handle_server_msg(
                     return Ok(());
                 }
             };
+            // FR-130 D3 — an outsider's session is never kept: FR-52's
+            // external one, and one opened through a device share, whose
+            // lease the centre must keep renewing, which a gap cannot.
+            let external = extauth_mac.is_some() || shared_lease.is_some();
             // FR-100 P1b — and an in-org session's answer is signed with this
             // enrollment's device key when its offer asked (a nonce). Unsigned
             // otherwise: nothing to sign against, or no key kept. A GUI worker
@@ -5170,7 +5463,7 @@ async fn handle_server_msg(
             .await
             {
                 // The answer never left, so nobody will connect to this peer,
-                // and it is in no map `close_all_peers` walks: close it here
+                // and it is in no session table yet: close it here
                 // (dropping a WebRTC peer frees none of its sockets) and take
                 // down the banner just raised for it (found in review).
                 // FR-99 P3: a session that never went live has no say in
@@ -5199,7 +5492,9 @@ async fn handle_server_msg(
             for candidate in shared_leases.take_ice(session_id) {
                 let _ = peer.add_remote_candidate(candidate).await;
             }
-            peers.insert(session_id, peer);
+            peers
+                .insert(session_id, peer, link.filter(|_| !external))
+                .await;
             // 2026-07-27 — first live session engages the GPU-clock pin
             // (opt-in, `MESHHARBORD_GPU_CLOCK_PIN`; no-op otherwise).
             crate::gpu_clock::on_sessions_changed(peers.len());
@@ -5257,14 +5552,27 @@ async fn handle_server_msg(
             // its recording lives — P1e-mac.)
             #[cfg(feature = "recording")]
             crate::recording::remote::session_ended(session_id);
-            if let Some(peer) = peers.remove(&session_id) {
+            // FR-130 — a kept session too: the server refused its claim.
+            if let Some(peer) = peers.take(&session_id, "terminate") {
                 // FR-101 P3 — the audit's last sample, before the close.
                 if let Some(stats) = final_session_stats(session_id, &peer).await
                     && let Err(e) = reply_for_session(ws, delegated, &stats).await
                 {
                     debug!(%session_id, %e, "final session stats send failed");
                 }
-                close_within_budget(peer.close(), session_id, "terminate").await;
+                // FR-130 P2a-2 (C1) — with a window open (P4-0), or on a GUI
+                // worker's delegated table, the viewer hears the end peer to
+                // peer first: it may not have rejoined since a resume, and a
+                // bare close reads as a drop it redials. Else closed here.
+                peers
+                    .close_terminated(
+                        peer,
+                        session_id,
+                        &reason,
+                        limit.as_deref(),
+                        host_disconnect_grace(),
+                    )
+                    .await;
             }
             // 2026-07-27 — last session gone → release the GPU-clock pin
             // (Drop resets the locked clocks).
@@ -5304,7 +5612,7 @@ async fn handle_server_msg(
         // The teardown invariant lives HERE — not in `run()` — because
         // the existing `connect_once` exit paths only run cleanup at
         // explicit `return` sites and the `?` propagation of this
-        // arm's Err would otherwise SKIP `close_all_peers`. SM-1b
+        // arm's Err would otherwise SKIP the session table's close. SM-1b
         // (delete-agent-with-active-session) checks this invariant
         // explicitly.
         ServerMsg::Goodbye { reason, message } => {
@@ -5325,7 +5633,7 @@ async fn handle_server_msg(
                     "server-side rc:goodbye received — stopping this org's session loop"
                 );
             }
-            close_all_peers(peers, indicator).await;
+            peers.end_connection(ConnExit::Goodbye).await;
             close_all_tunnel_peers(tunnel_peers).await;
             close_all_tunnel_quic_peers(tunnel_quic_peers).await;
             // Drop pending codec / transport entries too; they're tied
@@ -5353,6 +5661,22 @@ async fn handle_server_msg(
             debug!(%session_id, "unexpected controller-side msg on agent socket");
         }
         ServerMsg::Pong { .. } => {}
+
+        // FR-130 — how long this device may keep a live session through the
+        // loss of its control socket, from the server this connection speaks
+        // to; 0 withdraws it. The table caps it at two minutes.
+        ServerMsg::AgentResumeWindow { secs } => {
+            peers.set_window(secs);
+        }
+        // FR-130 — the server accepted a kept session's claim: it goes on
+        // under its own id, every sender it holds pointed at this connection.
+        // One its deadline already closed, or whose peer died, is said to be
+        // gone: by the table, which never loses the answer to a full queue
+        // (P2a-2, M1 and L7).
+        ServerMsg::SessionResumed { session_id } if peers.keeps_sessions() => {
+            peers.resume(session_id, outbound_tx).await;
+            crate::gpu_clock::on_sessions_changed(peers.len());
+        }
 
         // Multi-region relay PoPs: stash the pushed region list; probe now
         // when the set actually changed (rev), else let the periodic
@@ -7507,7 +7831,7 @@ async fn handle_server_msg(
                 // Same teardown as `Goodbye`: the `?`-propagated Err below
                 // would otherwise skip it and leave peers to a 10–30 s
                 // silence-detect instead of a clean close.
-                close_all_peers(peers, indicator).await;
+                peers.end_connection(ConnExit::KeyRotated).await;
                 close_all_tunnel_peers(tunnel_peers).await;
                 close_all_tunnel_quic_peers(tunnel_quic_peers).await;
                 pending_codecs.clear();
@@ -7777,42 +8101,6 @@ pub(crate) fn check_file_child_offer(
         .check_offer(offer)
 }
 
-async fn close_all_peers(
-    peers: &mut HashMap<bson::oid::ObjectId, AgentPeer>,
-    indicator: &ViewerIndicator,
-) {
-    // rc.24 — also hide the viewer-indicator overlay for every
-    // session being torn down. Previously the indicator only
-    // hid on receipt of `rc:terminate`, which never fires when
-    // the WS itself drops (e.g. server pod recreate, network
-    // blip). Field repro 2026-05-13 on the field-test host: after a meshharbor.itachi.fans
-    // web deploy, the red "Being viewed by gjovanov" frame stayed
-    // painted on the host indefinitely + the operator couldn't
-    // reconnect ("agent capacity exceeded") until the agent
-    // service was restarted manually. By hiding the overlay here
-    // the next session can reconnect with a clean slate.
-    if peers.is_empty() {
-        return;
-    }
-    let count = peers.len();
-    for (session_id, peer) in peers.drain() {
-        // FR-85 P3b-3 — the session is over whether or not its close
-        // finishes (see the `Terminate` arm).
-        #[cfg(feature = "recording")]
-        crate::recording::remote::session_ended(session_id);
-        indicator.hide_session(session_id.to_hex());
-        // Bounded ([`PEER_CLOSE_BUDGET`]): `pc.close()` hangs on webrtc
-        // internals when the network was captured mid-session — the
-        // stalled=signaling suicide class. Dropping `peer` right after
-        // runs the P6 Drop teardown either way.
-        close_within_budget(peer.close(), session_id, "ws_disconnect").await;
-    }
-    info!(
-        count,
-        "torn down peers + hid indicator overlays on ws disconnect"
-    );
-}
-
 /// #2551 — the `t` tag of a server message, read from its raw JSON without
 /// building the message a second time: the stage a `ws.text` arm is refined
 /// to, so a stall in the dispatch names the message it was handling.
@@ -7836,7 +8124,7 @@ async fn close_all_tunnel_peers(
     }
     let count = tunnel_peers.len();
     for (session_id, peer) in tunnel_peers.drain() {
-        // Same bound as `close_all_peers` — a webrtc close on a captured
+        // Same bound as the session table's — a webrtc close on a captured
         // network must not stall the signaling loop into the watchdog.
         close_within_budget(peer.close(), session_id, "tunnel_ws_disconnect").await;
     }
@@ -8209,7 +8497,7 @@ async fn send_one_session_stats(
 /// moved nothing worth auditing, or when its telemetry did not answer within
 /// [`SESSION_STATS_BUDGET`]: a sample of zeros could overwrite the live
 /// totals of a session the server has not ended yet.
-async fn final_session_stats(
+pub(crate) async fn final_session_stats(
     session_id: bson::oid::ObjectId,
     peer: &AgentPeer,
 ) -> Option<ClientMsg> {
@@ -8604,6 +8892,254 @@ async fn temporary_watch(
             Err(e) => debug!(error = %e, "temporary watch: no answer this round"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    }
+}
+
+/// FR-130 — run `fut` while serving the sessions the last connection kept:
+/// their deadlines, a kept peer's own end, and an end at the device. What the
+/// org loop does wherever it waits with no connection up (the dial, the
+/// backoff). With nothing kept it is `fut` alone, as before.
+/// FR-130 P2b (B4) — and a GUI worker's delegated side: on a two-row Mac a
+/// worker's own connection may dial while it holds delegated sessions.
+async fn serving_kept<F: std::future::Future>(
+    fut: F,
+    table: &mut SessionTable,
+    side: &mut Option<DelegatedSide>,
+    kill_rx: &mut mpsc::Receiver<bson::oid::ObjectId>,
+    idle_rx: &mut mpsc::Receiver<bson::oid::ObjectId>,
+    indicator: &ViewerIndicator,
+) -> F::Output {
+    tokio::pin!(fut);
+    loop {
+        let kept = table.has_kept() || side_holds_any(side);
+        tokio::select! {
+            out = &mut fut => return out,
+            event = table.next_event() => table.serve(event).await,
+            event = next_side(side) => serve_side(side, event).await,
+            Some((sid, end)) = device_end(kill_rx, idle_rx), if kept => {
+                end_in_gap(table, side, sid, end, indicator).await;
+            }
+        }
+    }
+}
+
+/// FR-130 P2b (B1) — a GUI worker's delegated sessions that the daemon said it
+/// will claim through the loss of its control socket (`SessionParams.keepable`):
+/// a second table beside the worker's own, driven by the daemon's orders
+/// ([`crate::delegate::WorkerOrder`]) instead of by the worker's own
+/// connection, and living across that connection's reconnects. What its
+/// sessions say goes up the delegation channel. Every return of [`run`]
+/// closes it.
+pub(crate) struct DelegatedSide {
+    table: SessionTable,
+    /// `None` where no attach loop feeds the lane, or once it closed.
+    orders: Option<mpsc::Receiver<crate::delegate::WorkerOrder>>,
+    /// The delegation channel's sender.
+    channel: mpsc::Sender<ClientMsg>,
+    /// B2 — sessions whose params said `keepable`, until their offer puts them
+    /// on the table or their end comes. Bounded, oldest out.
+    keepable: std::collections::VecDeque<bson::oid::ObjectId>,
+}
+
+/// More than the device's capacity can ever ask for at once.
+const SIDE_KEEPABLE_CAP: usize = 64;
+
+impl DelegatedSide {
+    fn new(
+        table: SessionTable,
+        orders: Option<mpsc::Receiver<crate::delegate::WorkerOrder>>,
+        channel: mpsc::Sender<ClientMsg>,
+    ) -> Self {
+        Self {
+            table,
+            orders,
+            channel,
+            keepable: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// B2 — a session's params arrived: one the daemon will claim is noted,
+    /// and its messages go to this table.
+    fn note_params(&mut self, session_id: bson::oid::ObjectId, keepable: bool) {
+        self.keepable.retain(|s| *s != session_id);
+        if keepable {
+            self.keepable.push_back(session_id);
+            while self.keepable.len() > SIDE_KEEPABLE_CAP {
+                self.keepable.pop_front();
+            }
+        }
+    }
+
+    /// B2 — whether `msg` is about a session this side serves: noted from its
+    /// params, or held.
+    fn serves(&self, msg: &ServerMsg) -> bool {
+        crate::delegate::server_session_id(msg)
+            .is_some_and(|s| self.keepable.contains(&s) || self.table.holds(&s))
+    }
+
+    /// B2 — a message about `session_id` was served here: once the table holds
+    /// it, or it ended, it needs no note.
+    fn served(&mut self, session_id: bson::oid::ObjectId, ended: bool) {
+        if ended || self.table.holds(&session_id) {
+            self.keepable.retain(|s| *s != session_id);
+        }
+    }
+
+    /// One of the daemon's orders, served by the delegated table.
+    async fn obey(&mut self, order: crate::delegate::WorkerOrder) {
+        self.table
+            .obey(order, &self.channel, host_disconnect_grace())
+            .await;
+    }
+}
+
+/// FR-130 P2b — what the delegated side must act on next.
+enum SideEvent {
+    /// An order; `None` once the lane closed.
+    Order(Option<crate::delegate::WorkerOrder>),
+    Table(crate::session_table::TableEvent),
+}
+
+/// FR-130 P2b (B4) — the delegated side's next order or table event. Never,
+/// for every process that is not a GUI worker. Cancel-safe.
+async fn next_side(side: &mut Option<DelegatedSide>) -> SideEvent {
+    let Some(side) = side.as_mut() else {
+        return std::future::pending().await;
+    };
+    let orders = side.orders.as_mut();
+    tokio::select! {
+        order = next_order(orders) => SideEvent::Order(order),
+        event = side.table.next_event() => SideEvent::Table(event),
+    }
+}
+
+async fn next_order(
+    rx: Option<&mut mpsc::Receiver<crate::delegate::WorkerOrder>>,
+) -> Option<crate::delegate::WorkerOrder> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// FR-130 P2b — act on what [`next_side`] returned.
+async fn serve_side(side: &mut Option<DelegatedSide>, event: SideEvent) {
+    let Some(s) = side.as_mut() else {
+        return;
+    };
+    match event {
+        SideEvent::Table(event) => s.table.serve(event).await,
+        // A closed lane is never polled again: it would ready at once.
+        SideEvent::Order(None) => s.orders = None,
+        SideEvent::Order(Some(order)) => s.obey(order).await,
+    }
+}
+
+/// FR-130 P2b (B4) — `fut`, while the delegated side is served: what `run`
+/// does wherever it waits.
+async fn serving_delegated<F: std::future::Future>(
+    fut: F,
+    side: &mut Option<DelegatedSide>,
+) -> F::Output {
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            out = &mut fut => return out,
+            event = next_side(side) => serve_side(side, event).await,
+        }
+    }
+}
+
+/// FR-130 P2b (B8) — the delegated sessions close: an exit about the machine
+/// itself (a stop, a resume from suspend), or the loop's end. The worker's own
+/// row's goodbye, key rotation or refused token are about its own enrollment,
+/// and leave them to the daemon.
+async fn close_side(side: &mut Option<DelegatedSide>, why: &'static str) {
+    if let Some(s) = side.as_mut() {
+        s.table.close_all(why).await;
+    }
+}
+
+/// FR-130 P2b — the delegated side holds a session, attached or kept: an end
+/// at the device is served for it while this loop has no connection.
+fn side_holds_any(side: &Option<DelegatedSide>) -> bool {
+    side.as_ref().is_some_and(|s| s.table.len() > 0)
+}
+
+/// FR-130 P2b (B7) — the device ends a session of a GUI worker's delegated
+/// table: ended through that table, up the channel, which never waits (F3).
+/// With `last_sample` the audit's last sample goes up first, as the WS loop's
+/// device-end arm sends it; [`end_in_gap`] sends none.
+async fn end_delegated_by_device<P: crate::session_table::TablePeer>(
+    table: &mut SessionTable<P>,
+    sid: bson::oid::ObjectId,
+    end: DeviceEnd,
+    last_sample: bool,
+) {
+    match end {
+        DeviceEnd::HostDisconnect => {
+            info!(session_id = %sid, "viewee requested disconnect via overlay badge")
+        }
+        DeviceEnd::Idle => {
+            info!(session_id = %sid, "idle limit reached — ending the session")
+        }
+    }
+    if last_sample
+        && let Some(peer) = table.get(&sid)
+        && let Some(stats) = peer.final_stats(sid).await
+    {
+        table.queue_end(stats);
+    }
+    table.end_by_device(
+        sid,
+        end.terminate(sid),
+        end.label(),
+        host_disconnect_grace(),
+    );
+}
+
+/// FR-130 — the person at the device ended a session while no connection is
+/// up. A kept one stops serving at once, says `rc:ended` on its control
+/// channel, closes after the grace, and its `rc:terminate` waits for the next
+/// connection. One the table does not hold is said on the next connection, as
+/// it would have been read off this channel there. FR-130 P2b (B7) — one of a
+/// GUI worker's delegated table ends through that table, up the channel.
+async fn end_in_gap(
+    table: &mut SessionTable,
+    side: &mut Option<DelegatedSide>,
+    sid: bson::oid::ObjectId,
+    end: DeviceEnd,
+    indicator: &ViewerIndicator,
+) {
+    if let Some(s) = side.as_mut()
+        && s.table.holds(&sid)
+    {
+        end_delegated_by_device(&mut s.table, sid, end, false).await;
+        return;
+    }
+    if table.end_kept_by_device(
+        sid,
+        end.terminate(sid),
+        end.label(),
+        host_disconnect_grace(),
+    ) {
+        return;
+    }
+    match end {
+        DeviceEnd::Idle => {
+            debug!(session_id = %sid, "idle limit reached for a session no longer held — nothing to end");
+        }
+        DeviceEnd::HostDisconnect => {
+            info!(
+                session_id = %sid,
+                reason = end.label(),
+                "device end for a session this loop does not hold; the next connection says it"
+            );
+            #[cfg(feature = "recording")]
+            crate::recording::remote::host_ended(sid);
+            table.queue_end(end.terminate(sid));
+            indicator.hide_session(sid.to_hex());
+        }
     }
 }
 
@@ -9191,6 +9727,41 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(server_msg_tag(&json), Some("rc:goodbye"));
+    }
+
+    /// FR-130 — while the org loop holds a kept session its next dial is at
+    /// most [`KEPT_REDIAL`] away, wherever the ladder stands: the claim must be
+    /// answered before the session's deadline, and the ladder's later steps
+    /// alone outlast a 60 s window. With nothing kept the wait is the
+    /// ladder's, to the millisecond.
+    #[test]
+    fn a_kept_session_holds_the_redial_flat() {
+        for secs in [1, 2, 4, 8, 16, 32, 60] {
+            let backoff = Duration::from_secs(secs);
+            assert_eq!(kept_redial_wait(backoff, false), backoff, "{secs} s");
+            assert_eq!(
+                kept_redial_wait(backoff, true),
+                backoff.min(KEPT_REDIAL),
+                "{secs} s, kept"
+            );
+        }
+        // A server back 25 s after it went is dialled within the window
+        // whatever the ladder had reached: flat, the dials land every 5 s.
+        let mut at = Duration::ZERO;
+        let mut backoff = Duration::from_secs(1);
+        let mut dials = Vec::new();
+        while at < Duration::from_secs(60) {
+            at += kept_redial_wait(backoff, true);
+            dials.push(at.as_secs());
+            backoff = (backoff * 2).min(Duration::from_secs(60));
+        }
+        assert_eq!(&dials[..5], &[1, 3, 7, 12, 17], "{dials:?}");
+        assert!(
+            dials
+                .windows(2)
+                .all(|w| w[1] - w[0] <= KEPT_REDIAL.as_secs()),
+            "{dials:?}"
+        );
     }
 
     /// #2221 — a dropped session that lived restarts the reconnect ladder. A

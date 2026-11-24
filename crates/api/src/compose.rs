@@ -410,12 +410,12 @@ impl Modules {
     }
 
     /// P7b — apply one cross-pod rc control event (consent verdicts, admin
-    /// kicks) to the local Hub; a no-op without fleet.
+    /// kicks, FR-130's resume scope) to the local Hub; a no-op without fleet.
     #[allow(unused_variables)]
     pub fn apply_rc_ctrl(&self, ctrl: &serde_json::Value) {
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
-            meshharbor_mod_fleet::ctrl::apply_rc_ctrl(&fleet.rc_hub, ctrl);
+            meshharbor_mod_fleet::ctrl::apply_rc_ctrl_on(fleet, ctrl);
         }
     }
 

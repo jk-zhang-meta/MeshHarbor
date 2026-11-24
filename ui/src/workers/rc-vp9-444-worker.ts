@@ -57,6 +57,12 @@ import {
 } from './rc-chunk-framing'
 import { createBenchSampler } from './rc-bench-sampler'
 import { createDecodeRecovery } from './rc-decode-recovery'
+import {
+  PAINT_GAP_CLOSED,
+  PAINT_GAP_MARK,
+  PAINT_GAP_MARKED,
+  createPaintGapMark,
+} from './rc-paint-gap'
 
 type InitCanvasMessage = {
   type: 'init-canvas'
@@ -126,6 +132,8 @@ type RenderModeMessage = { type: 'render-mode'; sharpen?: string; sharpness?: nu
 type ClockOffsetMessage = { type: 'clock-offset'; offsetUs: number | null }
 /** FR-16 L4 — the main thread just sent bench probe `seq`. */
 type BenchArmMessage = { type: 'bench-arm'; seq: number }
+/** FR-130 — mark a held session's cut to measure the paint gap. */
+type PaintGapMarkMessage = { type: typeof PAINT_GAP_MARK }
 type CloseMessage = { type: 'close' }
 type IncomingMessage =
   | InitCanvasMessage
@@ -134,6 +142,7 @@ type IncomingMessage =
   | RenderModeMessage
   | ClockOffsetMessage
   | BenchArmMessage
+  | PaintGapMarkMessage
   | CloseMessage
 
 const HEADER_BYTES = 13
@@ -154,6 +163,8 @@ const bench = createBenchSampler({ post: (m) => workerScope.postMessage(m), now:
 
 /** FR-131 P2 (upstream FR-135 R1) — whether a failed decoder is replaced in place. */
 const decodeRecovery = createDecodeRecovery()
+/** FR-130 — this worker's half of `rc.resume`'s `gap_ms`. */
+const paintGap = createPaintGapMark()
 
 let canvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
@@ -470,6 +481,8 @@ workerScope.onmessage = (e) => {
       consumeBytes(u8)
     }
     maybeEmitStats()
+  } else if (msg.type === PAINT_GAP_MARK) {
+    workerScope.postMessage({ type: PAINT_GAP_MARKED, sinceMs: paintGap.mark(performance.now()) })
   } else if (msg.type === 'close') {
     teardown()
   }
@@ -539,8 +552,12 @@ function initDecoder() {
       // `frame`; null unless a bench probe is outstanding.
       const benchClone = bench.take(frame)
       const paintT0 = performance.now()
-      paintFrame(frame, w, h)
-      paintStats.add(performance.now() - paintT0)
+      const drew = paintFrame(frame, w, h)
+      const paintDone = performance.now()
+      paintStats.add(paintDone - paintT0)
+      // FR-130 — the first frame painted after a held session's cut.
+      const gapClosed = drew ? paintGap.painted(paintDone) : null
+      if (gapClosed) workerScope.postMessage({ type: PAINT_GAP_CLOSED, gapMs: gapClosed.gapMs })
       if (benchClone) bench.settle(benchClone, epochNowMs())
       // FR-131 P2 — this paint ends an outage, if one is open.
       const recovered = decodeRecovery.onOutput(performance.now())
@@ -757,10 +774,10 @@ function emitFrame(): void {
   }
 }
 
-function paintFrame(frame: VideoFrame, w: number, h: number): void {
+function paintFrame(frame: VideoFrame, w: number, h: number): boolean {
   if (!canvas || !ctx) {
     frame.close()
-    return
+    return false
   }
   try {
     // P7 — FSR sharpening upscale (mirrors rc-hevc-worker; see
@@ -802,8 +819,10 @@ function paintFrame(frame: VideoFrame, w: number, h: number): void {
       ctx.drawImage(frame, 0, 0)
       lastRenderPass = 'blit'
     }
+    return true
   } catch {
     /* canvas lost mid-teardown */
+    return false
   } finally {
     frame.close()
   }
@@ -850,6 +869,7 @@ function teardown(): void {
   assembler.headerHave = 0
   assembler.payloadBuf = null
   assembler.payloadHave = 0
+  paintGap.reset()
 }
 
 function extractErrorMessage(err: unknown): string {

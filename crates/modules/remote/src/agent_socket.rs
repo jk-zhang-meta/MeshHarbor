@@ -7,13 +7,14 @@
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use meshharbor_core::{AgentCtx, AgentMsgHandler};
+use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
 use meshharbor_remote_control::models::{
     PrivacyActivityEvent, PrivacyActivityKind, RecordingActivityEvent, RecordingActivityKind,
     TransferActivityEvent, TransferActivityKind,
 };
 use meshharbor_remote_control::permissions::Permissions;
 use meshharbor_remote_control::signaling::{ClientMsg, TransferDirection, Transfers};
+
 use tracing::{debug, warn};
 
 use crate::RemoteState;
@@ -157,6 +158,36 @@ impl AgentMsgHandler for RemoteAgentSocket {
                     debug!(agent = %ctx.agent_id, %attempt_id, "extauth: outcome for no waiting step");
                 }
                 None
+            }
+            // FR-130 P1b-2 — the device's own end of a session no hub here
+            // holds, which this connection's registration ended without
+            // seeing its end (it ended at the device during the gap): its
+            // reason replaces the inferred one (`resume::device_end`).
+            // Anything else reaches the Hub's dispatch as before, and only a
+            // connection announced a window ever gets here.
+            ClientMsg::Terminate {
+                session_id,
+                reason,
+                limit,
+            } if ctx.resume.window_secs > 0
+                && self
+                    .state
+                    .fleet
+                    .rc_hub
+                    .session_snapshot(session_id)
+                    .is_none() =>
+            {
+                if crate::resume::device_end(&self.state, ctx, session_id, reason, limit.as_deref())
+                    .await
+                {
+                    None
+                } else {
+                    Some(ClientMsg::Terminate {
+                        session_id,
+                        reason,
+                        limit,
+                    })
+                }
             }
             other => Some(other),
         }
@@ -418,5 +449,32 @@ impl RemoteAgentSocket {
             // Best-effort, like every activity log: never gates the session.
             debug!(agent = %ctx.agent_id, %e, "transfer activity write failed");
         }
+    }
+}
+
+/// FR-130 — `remote`'s half of the agent socket's lifecycle: at the hello,
+/// before the socket's read loop starts, the device's claims on the sessions
+/// it kept and the registration read ([`crate::resume`]). Nothing for a
+/// connection announced no window.
+pub struct RemoteAgentLifecycle {
+    state: RemoteState,
+}
+
+impl RemoteAgentLifecycle {
+    pub fn new(state: RemoteState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl AgentSocketLifecycle for RemoteAgentLifecycle {
+    async fn hello(&self, ctx: &AgentCtx) {
+        crate::resume::on_hello(&self.state, ctx).await;
+    }
+
+    /// P1b-2 — what this connection's registration ended is no longer its
+    /// to replace.
+    async fn closing(&self, ctx: &AgentCtx) {
+        crate::resume::forget_connection(&self.state, ctx);
     }
 }

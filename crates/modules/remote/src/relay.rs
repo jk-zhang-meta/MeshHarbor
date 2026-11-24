@@ -230,6 +230,17 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     return Ok(serde_json::json!({ "dispatched": handled }));
                 }
 
+                // FR-130 P1b-2 — this pod holds the device, so the session a
+                // relayed redial `replaces`, and what is held for this person
+                // on the device, end here before the org's slot is claimed
+                // below and before the hub's own capacity gate, as on the
+                // local path. Inert at window 0.
+                if let ClientMsg::SessionRequest {
+                    agent_id, replaces, ..
+                } = &frame
+                {
+                    crate::row_end::before_request(&state, user_id, *agent_id, *replaces).await;
+                }
                 // FR-115 P3b — this pod owns the device, so the org's slot is
                 // claimed here, exactly as the local path claims it.
                 let mut org_session_cap = org_session_cap;

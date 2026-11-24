@@ -5565,15 +5565,19 @@ async fn run_cmd(
     #[cfg(unix)]
     let (delegation_role, worker_channels) = if supervised {
         // Two ordinary channels rather than the socket: the socket outlives a
-        // WS reconnect and the signalling loop does not.
+        // WS reconnect and the signalling loop does not. FR-130 P2b — and a
+        // third for the daemon's orders about the sessions it will claim,
+        // which the loop serves wherever it waits.
         let (in_tx, in_rx) = tokio::sync::mpsc::channel(64);
         let (out_tx, out_rx) = tokio::sync::mpsc::channel(64);
+        let (orders_tx, orders_rx) = tokio::sync::mpsc::channel(64);
         (
             meshharbord::delegate::Delegation::Worker(meshharbord::delegate::WorkerLink {
                 inbound: in_rx,
                 outbound: out_tx,
+                orders: Some(orders_rx),
             }),
-            Some((in_tx, out_rx)),
+            Some((in_tx, out_rx, orders_tx)),
         )
     } else {
         #[cfg(target_os = "macos")]

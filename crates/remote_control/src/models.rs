@@ -1333,6 +1333,17 @@ pub enum RpcCap {
     /// FR-129 — the agent parses `rc:agent.two_factor` (switch its two-factor on or off) and
     /// reads `two_factor_code` on the sessions it admits. Equality-matched.
     TwoFactor,
+    /// FR-130 — this device keeps a live session's peer through the loss of
+    /// its control socket, for the window the server announced it
+    /// (`rc:agent.resume_window`), and claims the session back in its next
+    /// hello (`kept_sessions`). Advertised only while the device's own switch
+    /// is on. The server announces a window, and keeps a session through a
+    /// socket loss, only for a connection advertising this; for any other, a
+    /// socket loss ends the session as it always has.
+    ///
+    /// ⚠️ Equality-matched like every verb here: no other verb is a prefix of
+    /// it, nor it of another (a test walks [`RpcCap::ALL`]).
+    RcResume,
 }
 
 impl RpcCap {
@@ -1394,11 +1405,12 @@ impl RpcCap {
             Self::SharedSessionLease => "shared-session-lease-v1",
             Self::SharedSshStream => "shared-ssh-stream-v1",
             Self::LocalAccounts => "local-accounts-v1",
+            Self::RcResume => "rc-resume",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 50] = [
+    pub const ALL: [RpcCap; 51] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1449,6 +1461,7 @@ impl RpcCap {
         Self::ManagementPath,
         Self::ManagementEntry,
         Self::TwoFactor,
+        Self::RcResume,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -5897,6 +5910,75 @@ pub struct RemoteSession {
     /// session that ended before the observation landed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carrier: Option<String>,
+    /// FR-130 — the session's fencing number: 0 when it is created, bumped by
+    /// each claim that resumes it. A hub's own write about a session it holds
+    /// (a detach, an end it decides) applies only at the number it holds, so
+    /// a pod that no longer holds the session cannot detach or end one that
+    /// another pod resumed (spec §4.4).
+    ///
+    /// ⚠️ Absent reads 0, and is never written as 0: every row created before
+    /// FR-130 lacks it. A filter for 0 must match a missing field too
+    /// (`{"$in": [0, null]}`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub attach_seq: u32,
+    /// FR-130 — when the device's control socket dropped and this session was
+    /// kept: set by the detach, cleared by the claim that resumes it. Absent
+    /// on a session that was never detached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached_at: Option<DateTime>,
+    /// FR-130 — the detach plus the window: a detached session nobody claimed
+    /// by then is ended. Set and cleared with `detached_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_by: Option<DateTime>,
+    /// FR-130 — when the live stats merge last wrote this row: about every
+    /// 15 s while the session lives. The clock an end nobody saw is dated by
+    /// when the row has no `detached_at` (spec §4.4). Absent on a row the
+    /// merge never reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_at: Option<DateTime>,
+    /// FR-130 — who ended a session whose end nobody saw: the read at the
+    /// device's registration, the sweep, or a redial that named it in
+    /// `replaces` while it was detached. Absent on every session whose end
+    /// was seen, so an hour-weighted read can leave out the inferred ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_source: Option<EndSource>,
+    /// FR-130 (review 1, L6) — an external session (FR-52's door) requested
+    /// while its device's connection held a resume window. A device never
+    /// keeps one (D3), so a claim of a row marked external is refused. Absent
+    /// on every other row, and on an external session requested with no
+    /// window (harmless: the device does not keep it either).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+}
+
+/// `skip_serializing_if` for a count whose zero is its absence.
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// FR-130 — what ended a session whose end nobody saw (`RemoteSession`'s
+/// `end_source`). The server is the only writer.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EndSource {
+    /// The device registered again and did not claim the session.
+    Registration,
+    /// The sweep found it detached past `resume_by`, or its device offline for
+    /// longer than the window.
+    Sweep,
+    /// P1b-2 — the one-time close of a row a pod that died before FR-130 left
+    /// open (`POST /api/admin/rc-sessions/close-dead`), dated by the row's own
+    /// last clock. An older image reads it as [`Self::Unknown`].
+    Backfill,
+    /// D5 = A — a redial named it in `replaces` while it was detached: its
+    /// viewer gave it up (its peer gone, or its own deadline passed) while
+    /// the device was away, and hung up nothing first, so nobody saw how the
+    /// device's side ended. Dated by the row's own last clock. An older image
+    /// reads it as [`Self::Unknown`].
+    Redial,
+    /// A source a newer server wrote: the row still reads.
+    #[serde(other)]
+    Unknown,
 }
 
 impl RemoteSession {
@@ -6451,6 +6533,12 @@ pub enum AuditKind {
         /// admin asked for that this session's end will not take.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lock_enforced: Option<bool>,
+        /// FR-130 (review 1, L6) — an external session (FR-52's door), whose
+        /// device's connection held a resume window when it was requested:
+        /// projected onto the row, where a claim refuses it (D3). Written only
+        /// then, so a session with no window records what it always did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        external: bool,
     },
     ConsentPrompted,
     ConsentGranted,
@@ -6480,6 +6568,26 @@ pub enum AuditKind {
         /// variant, so a pod on an older build can still read the row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<String>,
+        /// FR-130 — the fencing number the writer held, for an end a hub
+        /// decided on its own (a socket loss, an orphan, the length limit, a
+        /// reaper, an inferred end): the row takes it only while it is open
+        /// and still at that number, so a pod that no longer holds the session
+        /// cannot end one another pod resumed. Absent for an end someone asked
+        /// for (an admin's, the controller's, the person's at the device),
+        /// which applies at any number, as every end did before FR-130.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attach_seq: Option<u32>,
+        /// FR-130 — an end nobody saw, dated by the row's own last clock
+        /// (`detached_at`, else `stats_at`, else `started_at`), never by the
+        /// reader's. Absent: the session ended when this event was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at: Option<DateTime>,
+        /// FR-130 — who inferred that end (the read at the device's
+        /// registration, the sweep, or a redial's `replaces` of a detached
+        /// session), written onto the row so an hour-weighted read can leave
+        /// it out. Absent on every end seen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_source: Option<EndSource>,
     },
     // FR-101 P3 — the four clipboard and file kinds below are never written.
     // A transfer is something the DEVICE reports (the payload never crosses
@@ -6522,6 +6630,28 @@ pub enum AuditKind {
     AdminOverride {
         reason: String,
     },
+    /// FR-130 — the device's control socket dropped and the session was kept,
+    /// not ended: the device holds its peer until `resume_by`. Written by the
+    /// hub that held the session, at the fencing number it held, and
+    /// projected onto the row as `detached_at` and `resume_by` (spec §4.4).
+    SessionDetached {
+        /// The row's `attach_seq` the detaching hub held.
+        #[serde(default)]
+        attach_seq: u32,
+        /// When the session ends unless a claim resumes it first.
+        resume_by: DateTime,
+    },
+    /// FR-130 — a claim resumed the session on the pod that took it.
+    SessionResumed {
+        /// The row's `attach_seq` after the claim bumped it.
+        #[serde(default)]
+        attach_seq: u32,
+    },
+    /// A kind this build does not know, written by a newer one. The listing
+    /// reads a whole page of rows, so one unknown kind must not fail it
+    /// (upstream FR-137 S-B5's class, FR-130 §2.5). Never written.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -10206,6 +10336,7 @@ mod tests {
                 idle_enforced: None,
                 lock_on_end: None,
                 lock_enforced: None,
+                external: false,
             },
             // FR-99 — the new bit takes the same raw path.
             AuditKind::SessionRequested {
@@ -10224,6 +10355,7 @@ mod tests {
                 // FR-99 P3b — and a lock it cannot take.
                 lock_on_end: Some(LockOnEnd::Always),
                 lock_enforced: Some(false),
+                external: true,
             },
             AuditKind::PermissionsChanged {
                 permissions: Permissions::VIEW,
@@ -10302,6 +10434,12 @@ mod tests {
             recording_url: None,
             stats: SessionStats::default(),
             carrier: None,
+            attach_seq: 0,
+            detached_at: None,
+            resume_by: None,
+            stats_at: None,
+            end_source: None,
+            external: false,
         };
         let names = bson::to_document(&row).unwrap();
         assert_eq!(
@@ -10919,5 +11057,355 @@ mod backbone_policy_tests {
             resolve_device_zone(&malformed, Some("centre"), Some("HK")),
             DeviceZoneResolution::Resolved(z) if z.id == "centre" && z.is_centre
         ));
+    }
+}
+
+/// FR-130 P1a — the verb, the session row's resume fields and the two audit
+/// kinds, all inert: nothing writes them yet. At the end of the file so no
+/// anchor above moves.
+#[cfg(test)]
+mod fr130_resume_tests {
+    use super::*;
+
+    fn caps(rpc: &[&str]) -> AgentCaps {
+        AgentCaps {
+            rpc: rpc.iter().map(|v| v.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The spelling is a compatibility surface, and the verb is matched by
+    /// equality: no near spelling and no other verb reads as it (the `ssh` /
+    /// `ssh-consent` trap).
+    #[test]
+    fn rc_resume_is_spelled_once_and_matched_by_equality() {
+        assert_eq!(RpcCap::RcResume.wire(), "rc-resume");
+        assert_eq!(RpcCap::from_wire("rc-resume"), Some(RpcCap::RcResume));
+        assert!(RpcCap::ALL.contains(&RpcCap::RcResume));
+        for near in [
+            "rc",
+            "rc-",
+            "rc-resum",
+            "rc-resume ",
+            "rc-resume-x",
+            "RC-RESUME",
+            "resume",
+            "rc-overlay-auto",
+        ] {
+            assert!(
+                !caps(&[near]).has_rpc(RpcCap::RcResume),
+                "{near:?} must not read as rc-resume"
+            );
+        }
+        let both = caps(&["relay-control", "rc-resume"]);
+        assert!(both.has_rpc(RpcCap::RcResume) && both.has_rpc(RpcCap::RelayControl));
+        assert!(!caps(&["rc-resume"]).has_rpc(RpcCap::RelayControl));
+        for cap in RpcCap::ALL.into_iter().filter(|c| *c != RpcCap::RcResume) {
+            assert!(
+                !cap.wire().starts_with("rc-resume") && !"rc-resume".starts_with(cap.wire()),
+                "{cap:?} and rc-resume must not be prefixes of each other"
+            );
+        }
+    }
+
+    fn row() -> RemoteSession {
+        RemoteSession {
+            id: Some(ObjectId::new()),
+            agent_id: ObjectId::new(),
+            tenant_id: ObjectId::new(),
+            controller_user_id: ObjectId::new(),
+            watchers: Vec::new(),
+            permissions: Permissions::VIEW,
+            phase: SessionPhase::Active,
+            created_at: bson::DateTime::now(),
+            started_at: Some(bson::DateTime::now()),
+            ended_at: None,
+            end_reason: None,
+            recording_url: None,
+            stats: SessionStats::default(),
+            carrier: None,
+            attach_seq: 0,
+            detached_at: None,
+            resume_by: None,
+            stats_at: None,
+            end_source: None,
+            external: false,
+        }
+    }
+
+    const FR130_KEYS: [&str; 5] = [
+        "attach_seq",
+        "detached_at",
+        "resume_by",
+        "stats_at",
+        "end_source",
+    ];
+
+    /// A row written before FR-130 (none of its fields) reads, at fencing
+    /// number 0 with nothing detached; and a row written now, with nothing
+    /// set, holds none of them, so the sink's projection writes the bytes it
+    /// wrote before.
+    #[test]
+    fn a_row_from_before_reads_and_an_unset_row_writes_none_of_the_fields() {
+        let doc = bson::to_document(&row()).unwrap();
+        for key in FR130_KEYS {
+            assert!(!doc.contains_key(key), "{key} written unset: {doc}");
+        }
+        let back: RemoteSession = bson::from_document(doc).unwrap();
+        assert_eq!(back.attach_seq, 0);
+        assert!(back.detached_at.is_none() && back.resume_by.is_none());
+        assert!(back.stats_at.is_none() && back.end_source.is_none());
+    }
+
+    /// The fields as a later phase writes them read back, the fencing number
+    /// whichever integer type `$inc` left it in, and an `end_source` this
+    /// build does not know reads as `Unknown` instead of failing the row.
+    #[test]
+    fn a_row_with_the_fields_reads_and_an_unknown_end_source_does_not_fail_it() {
+        let at = bson::DateTime::from_millis(1_762_700_000_000);
+        let by = bson::DateTime::from_millis(1_762_700_060_000);
+        let mut set = row();
+        set.attach_seq = 3;
+        set.detached_at = Some(at);
+        set.resume_by = Some(by);
+        set.stats_at = Some(at);
+        set.end_source = Some(EndSource::Sweep);
+        let doc = bson::to_document(&set).unwrap();
+        assert_eq!(doc.get_str("end_source").unwrap(), "sweep");
+        let back: RemoteSession = bson::from_document(doc.clone()).unwrap();
+        assert_eq!(back.attach_seq, 3);
+        assert_eq!(back.detached_at, Some(at));
+        assert_eq!(back.resume_by, Some(by));
+        assert_eq!(back.stats_at, Some(at));
+        assert_eq!(back.end_source, Some(EndSource::Sweep));
+
+        for seq in [bson::Bson::Int32(7), bson::Bson::Int64(7)] {
+            let mut d = doc.clone();
+            d.insert("attach_seq", seq);
+            let back: RemoteSession = bson::from_document(d).unwrap();
+            assert_eq!(back.attach_seq, 7);
+        }
+        let mut d = doc.clone();
+        d.insert("end_source", "registration");
+        let back: RemoteSession = bson::from_document(d).unwrap();
+        assert_eq!(back.end_source, Some(EndSource::Registration));
+        // P1b-2 — the one-time close of the rows a dead pod left open.
+        let mut d = doc.clone();
+        d.insert("end_source", "backfill");
+        let back: RemoteSession = bson::from_document(d).unwrap();
+        assert_eq!(back.end_source, Some(EndSource::Backfill));
+        assert_eq!(
+            bson::to_bson(&EndSource::Backfill).unwrap(),
+            bson::Bson::String("backfill".into())
+        );
+        // D5 = A — a redial's `replaces` of a detached session.
+        let mut d = doc.clone();
+        d.insert("end_source", "redial");
+        let back: RemoteSession = bson::from_document(d).unwrap();
+        assert_eq!(back.end_source, Some(EndSource::Redial));
+        assert_eq!(
+            bson::to_bson(&EndSource::Redial).unwrap(),
+            bson::Bson::String("redial".into())
+        );
+        let mut d = doc;
+        d.insert("end_source", "a_later_source");
+        let back: RemoteSession = bson::from_document(d).unwrap();
+        assert_eq!(back.end_source, Some(EndSource::Unknown));
+        assert_eq!(
+            serde_json::from_str::<EndSource>(r#""a_later_source""#).unwrap(),
+            EndSource::Unknown
+        );
+    }
+
+    fn event(kind: bson::Document) -> bson::Document {
+        bson::doc! {
+            "_id": ObjectId::new(),
+            "session_id": ObjectId::new(),
+            "agent_id": ObjectId::new(),
+            "tenant_id": ObjectId::new(),
+            "at": bson::DateTime::now(),
+            "event": kind,
+        }
+    }
+
+    /// The two new kinds round-trip through BSON, as the sink writes them and
+    /// the listing reads them, and through JSON, as the listing answers.
+    #[test]
+    fn the_detach_and_resume_kinds_round_trip() {
+        let by = bson::DateTime::from_millis(1_762_700_060_000);
+        let kinds = [
+            AuditKind::SessionDetached {
+                attach_seq: 2,
+                resume_by: by,
+            },
+            AuditKind::SessionResumed { attach_seq: 3 },
+        ];
+        for kind in kinds {
+            let ev = RemoteAuditEvent {
+                id: None,
+                session_id: ObjectId::new(),
+                agent_id: ObjectId::new(),
+                tenant_id: ObjectId::new(),
+                at: bson::DateTime::now(),
+                event: kind,
+            };
+            let doc = bson::to_document(&ev).unwrap();
+            let back: RemoteAuditEvent = bson::from_document(doc.clone()).unwrap();
+            match (&ev.event, &back.event) {
+                (
+                    AuditKind::SessionDetached {
+                        attach_seq: a,
+                        resume_by: r,
+                    },
+                    AuditKind::SessionDetached {
+                        attach_seq: b,
+                        resume_by: s,
+                    },
+                ) => assert_eq!((a, r), (b, s)),
+                (
+                    AuditKind::SessionResumed { attach_seq: a },
+                    AuditKind::SessionResumed { attach_seq: b },
+                ) => assert_eq!(a, b),
+                other => panic!("round trip changed the kind: {other:?}"),
+            }
+            let raw = bson::to_raw_document_buf(&ev).unwrap();
+            let _: RemoteAuditEvent = bson::from_slice(raw.as_bytes()).unwrap();
+            let json = serde_json::to_value(&ev.event).unwrap();
+            assert!(
+                json["kind"] == "session_detached" || json["kind"] == "session_resumed",
+                "{json}"
+            );
+        }
+    }
+
+    /// A kind this build does not know, as a newer image would write it,
+    /// reads as `Unknown` and does not fail the page it is on. Before this
+    /// variant, one such row failed the whole audit listing (§2.5).
+    #[test]
+    fn an_audit_page_holding_an_unknown_kind_still_reads() {
+        let page = vec![
+            event(bson::doc! { "kind": "consent_prompted" }),
+            event(bson::doc! { "kind": "session_paused_in_a_later_build", "why": "x", "n": 3 }),
+            event(bson::doc! { "kind": "a_later_unit_kind" }),
+            event(bson::doc! { "kind": "session_resumed", "attach_seq": 1 }),
+            event(bson::doc! { "kind": "session_ended", "reason": "agent_disconnect" }),
+        ];
+        let read: Vec<RemoteAuditEvent> = page
+            .into_iter()
+            .map(|d| bson::from_document(d).expect("every row of the page reads"))
+            .collect();
+        assert!(matches!(read[0].event, AuditKind::ConsentPrompted));
+        assert!(matches!(read[1].event, AuditKind::Unknown));
+        assert!(matches!(read[2].event, AuditKind::Unknown));
+        assert!(matches!(
+            read[3].event,
+            AuditKind::SessionResumed { attach_seq: 1 }
+        ));
+        assert!(matches!(
+            read[4].event,
+            AuditKind::SessionEnded {
+                reason: EndReason::AgentDisconnect,
+                ..
+            }
+        ));
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"kind":"another_later_kind","with":{"a":1}}"#).unwrap();
+        assert!(matches!(
+            serde_json::from_value::<AuditKind>(json).unwrap(),
+            AuditKind::Unknown
+        ));
+        assert_eq!(
+            serde_json::to_value(AuditKind::Unknown).unwrap(),
+            serde_json::json!({ "kind": "unknown" })
+        );
+    }
+}
+
+/// FR-130 P1b-1 — `SessionEnded`'s fencing and inferred-end fields. At the
+/// end of the file so no anchor above moves.
+#[cfg(test)]
+mod fr130_session_ended_tests {
+    use super::*;
+
+    /// An end with none of the new fields is the end every build before
+    /// FR-130 wrote, byte for byte, and one an older build wrote reads with
+    /// none of them: an end someone asked for, at any fencing number.
+    #[test]
+    fn an_end_without_the_fields_is_the_end_an_older_build_wrote() {
+        let today = AuditKind::SessionEnded {
+            reason: EndReason::AdminTerminated,
+            limit: None,
+            attach_seq: None,
+            ended_at: None,
+            end_source: None,
+        };
+        let doc = bson::to_document(&today).unwrap();
+        assert_eq!(
+            doc,
+            bson::doc! { "kind": "session_ended", "reason": "admin_terminated" }
+        );
+        let older: AuditKind = bson::from_document(bson::doc! {
+            "kind": "session_ended", "reason": "idle_timeout", "limit": "max_duration",
+        })
+        .unwrap();
+        match older {
+            AuditKind::SessionEnded {
+                reason: EndReason::IdleTimeout,
+                limit: Some(l),
+                attach_seq: None,
+                ended_at: None,
+                end_source: None,
+            } => assert_eq!(l, "max_duration"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A fenced, inferred end carries its number, its date and its source
+    /// through BSON (the sink and the listing) and JSON (the listing's
+    /// answer); an older build's reader skips the three fields.
+    #[test]
+    fn a_fenced_inferred_end_round_trips_and_an_older_reader_skips_it() {
+        let at = bson::DateTime::from_millis(1_762_700_000_000);
+        let ev = AuditKind::SessionEnded {
+            reason: EndReason::AgentDisconnect,
+            limit: None,
+            attach_seq: Some(2),
+            ended_at: Some(at),
+            end_source: Some(EndSource::Registration),
+        };
+        let doc = bson::to_document(&ev).unwrap();
+        assert_eq!(doc.get_str("end_source").unwrap(), "registration");
+        assert_eq!(doc.get_datetime("ended_at").unwrap(), &at);
+        match bson::from_document::<AuditKind>(doc.clone()).unwrap() {
+            AuditKind::SessionEnded {
+                attach_seq: Some(2),
+                ended_at: Some(back),
+                end_source: Some(EndSource::Registration),
+                ..
+            } => assert_eq!(back, at),
+            other => panic!("{other:?}"),
+        }
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["kind"], "session_ended");
+        assert_eq!(json["attach_seq"], 2);
+        assert_eq!(json["end_source"], "registration");
+
+        // The shape a build before FR-130 has: it reads the reason and skips
+        // the rest (no `deny_unknown_fields` on the variant).
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Older {
+            SessionEnded {
+                reason: EndReason,
+                #[serde(default)]
+                limit: Option<String>,
+            },
+        }
+        match bson::from_document::<Older>(doc).unwrap() {
+            Older::SessionEnded { reason, limit } => {
+                assert_eq!(reason, EndReason::AgentDisconnect);
+                assert_eq!(limit, None);
+            }
+        }
     }
 }

@@ -1134,6 +1134,7 @@ async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
             idle_enforced: None,
             lock_on_end: None,
             lock_enforced: None,
+            external: false,
         },
     );
     sink.record(
@@ -1151,6 +1152,9 @@ async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
         AuditKind::SessionEnded {
             reason: EndReason::ControllerHangup,
             limit: None,
+            attach_seq: None,
+            ended_at: None,
+            end_source: None,
         },
     );
     // Closing the channel makes the flusher drain and exit: every write
@@ -1283,6 +1287,7 @@ async fn file_child_local_controller_source_requires_http_authentication_and_act
             override_reason: None,
             local_relay: None,
             initial_resolution: None,
+            replaces: None,
         })
         .unwrap()
     }
@@ -1470,6 +1475,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 override_reason: None,
                 local_relay: None,
                 initial_resolution: None,
+                replaces: None,
             })
             .unwrap()
             .into(),
@@ -1554,6 +1560,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 override_reason: None,
                 local_relay: None,
                 initial_resolution: None,
+                replaces: None,
             })
             .unwrap()
             .into(),

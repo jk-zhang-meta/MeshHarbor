@@ -5516,11 +5516,14 @@ watch(
       }
       const rvfc = elWithRvfc.requestVideoFrameCallback
       if (typeof rvfc === 'function') {
-        const tick = () => {
+        const tick = (now: number) => {
           if (!videoEl.value) {
             rvfcHandle = null
             return
           }
+          // FR-130 — a frame presented: the `<video>` path's half of the
+          // picture's gap across a held session's cut (`rc.resume`).
+          rc.notePaint(now)
           if (videoEl.value.paused) {
             videoEl.value.play().catch(() => { /* autoplay gating — ignore */ })
           }

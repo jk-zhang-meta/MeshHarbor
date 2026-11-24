@@ -291,20 +291,22 @@ impl TestApp {
     /// one shared Redis at :6379), each with its own pod-local in-memory
     /// state (rc-hub, room manager, …). The second app shortens nothing;
     /// pass a `mutator` applied to BOTH apps' settings for e.g. short
-    /// liveness deadlines.
-    pub async fn spawn_pair(mutator: fn(&mut Settings)) -> (Self, Self) {
+    /// liveness deadlines. A closure works too (FR-130's tests hand both pods
+    /// the window they run under).
+    pub async fn spawn_pair(mutator: impl Fn(&mut Settings) + Clone) -> (Self, Self) {
         init_tracing();
         let shared_db = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
         let owners = Arc::new(AtomicUsize::new(0));
         let run = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let (db1, pod1) = (shared_db.clone(), format!("testpod1-{run}"));
+        let first = mutator.clone();
         let app1 = Box::pin(Self::spawn_inner(
             move |s| {
                 s.database.name = db1.clone();
                 // C-1: distinct stable pod identities per in-process app (env
                 // vars are process-global, so identity must ride Settings).
                 s.app.pod_id = Some(pod1.clone());
-                mutator(s);
+                first(s);
             },
             reqwest::Client::builder().cookie_store(true),
             Arc::clone(&owners),

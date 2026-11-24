@@ -37,6 +37,12 @@ pub struct DesiredConfigBody {
     pub encoder_cells_deny: Option<String>,
     #[serde(default)]
     pub fps_deny: Option<String>,
+    /// Every other key in the body, kept only to be refused if it names a
+    /// switch that is the device's own ([`DeviceSwitch::named_in`]). Dropped
+    /// silently, such a key would answer 200 as if the push had taken. Never
+    /// stored or logged.
+    #[serde(flatten)]
+    pub rest: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// ⚠️ `desired` is the SAME projection the listing returns
@@ -66,6 +72,37 @@ pub enum ConfigDenyReason {
     CannotGrantExec,
     /// Asked to change SSH without holding `SSH_DEVICE`.
     CannotGrantSsh,
+    /// FR-130 — the body names one of the device's own switches, which no
+    /// server may push. All share one code; the words name the key.
+    DeviceOwnedSwitch(DeviceSwitch),
+}
+
+/// A switch that is the device's own: each turns new code on, which is the
+/// device's decision or a release's, so no server may push it. A body naming
+/// one is refused by the switch's WHOLE name ([`DeviceSwitch::named_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceSwitch {
+    /// FR-130 — `rc_sessions_survive_reattach`, a live session kept through
+    /// the loss of the control socket. The server's own lever is its window
+    /// and its resume scope.
+    SessionsSurviveReattach,
+}
+
+impl DeviceSwitch {
+    const ALL: [Self; 1] = [Self::SessionsSurviveReattach];
+
+    /// The switch's key in the device's config.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::SessionsSurviveReattach => "rc_sessions_survive_reattach",
+        }
+    }
+
+    /// The switch a body names, by equality: a key that only starts like one,
+    /// or that one only starts like, is not it.
+    fn named_in(rest: &std::collections::BTreeMap<String, serde_json::Value>) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| rest.contains_key(s.key()))
+    }
 }
 
 impl ConfigDenyReason {
@@ -74,6 +111,7 @@ impl ConfigDenyReason {
             Self::NotDeviceAdmin => "not_device_admin",
             Self::CannotGrantExec => "cannot_grant_exec",
             Self::CannotGrantSsh => "cannot_grant_ssh",
+            Self::DeviceOwnedSwitch(_) => "device_owned_switch",
         }
     }
 
@@ -87,6 +125,11 @@ impl ConfigDenyReason {
             Self::CannotGrantSsh => {
                 "Changing SSH access on a device requires SSH_DEVICE — you cannot open a door \
                  you cannot walk through"
+            }
+            Self::DeviceOwnedSwitch(DeviceSwitch::SessionsSurviveReattach) => {
+                "rc_sessions_survive_reattach keeps a live remote session through the loss \
+                 of the device's control socket, which is the device's decision or a \
+                 release's: no server can push it"
             }
         }
     }
@@ -181,7 +224,13 @@ pub async fn set_desired_config(
     // ONE call site records both arms. `decide` returning a Result rather than
     // a bool is what makes "a new refusal that forgets to audit itself"
     // unrepresentable — the same shape as `agent_ssh::dispatch`.
-    let verdict = decide(perms, &agent.desired_config, &requested);
+    let verdict = decide(perms, &agent.desired_config, &requested).and_then(|()| {
+        // FR-130 — by WHOLE name: a 200 would say a push took that never will.
+        match DeviceSwitch::named_in(&body.rest) {
+            Some(switch) => Err(ConfigDenyReason::DeviceOwnedSwitch(switch)),
+            None => Ok(()),
+        }
+    });
     if let Err(e) = state
         .config_audit
         .record(
@@ -199,6 +248,13 @@ pub async fn set_desired_config(
     }
 
     if let Err(reason) = verdict {
+        if let ConfigDenyReason::DeviceOwnedSwitch(switch) = reason {
+            tracing::warn!(
+                tenant = %tid, agent = %aid, admin = %auth.user_id,
+                "desired-config: {} was pushed — refused, it is the device's",
+                switch.key()
+            );
+        }
         return Err(ApiError::Forbidden(reason.message().to_string()));
     }
 
@@ -220,6 +276,32 @@ pub async fn set_desired_config(
 mod tests {
     use super::*;
     use permissions::*;
+
+    /// FR-130 — a body naming one of the device's own switches is refused by
+    /// the switch's WHOLE name, under the one code `device_owned_switch`, in
+    /// words that name that switch. A key that only starts like a switch, or
+    /// that one only starts like, is not it: `ssh` is a prefix of
+    /// `ssh-consent`, and the two differ.
+    #[test]
+    fn a_device_switch_is_refused_by_its_whole_name() {
+        let body = |key: &str| {
+            std::collections::BTreeMap::from([(key.to_owned(), serde_json::json!(true))])
+        };
+        for switch in DeviceSwitch::ALL {
+            assert_eq!(DeviceSwitch::named_in(&body(switch.key())), Some(switch));
+            let reason = ConfigDenyReason::DeviceOwnedSwitch(switch);
+            assert_eq!(reason.wire(), "device_owned_switch");
+            let words = reason.message();
+            assert!(words.starts_with(switch.key()), "{words}");
+        }
+        for near in [
+            "rc_sessions_survive_reattach_v2",
+            "rc_sessions_survive",
+            "x_rc_sessions_survive_reattach",
+        ] {
+            assert_eq!(DeviceSwitch::named_in(&body(near)), None, "{near}");
+        }
+    }
 
     fn exec_req() -> DesiredConfig {
         DesiredConfig {

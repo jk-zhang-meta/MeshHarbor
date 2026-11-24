@@ -1187,6 +1187,7 @@ async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
         dialed_tid: None,
         conn_established_ms: 0,
         tx,
+        resume: Default::default(),
     };
     let handler = meshharbor_mod_remote::agent_socket::RemoteAgentSocket::new(remote.clone());
     let challenge = || ClientMsg::SharedLeaseChallenge {
@@ -1390,6 +1391,7 @@ async fn shared_ssh_start(
         dialed_tid: None,
         conn_established_ms: 0,
         tx,
+        resume: Default::default(),
     };
     let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
         f.app.state.modules.network.as_ref().unwrap().clone(),

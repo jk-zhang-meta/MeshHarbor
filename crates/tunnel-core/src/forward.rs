@@ -21,7 +21,7 @@
 //!   half until EOF or error.
 //!
 //! Cross-references that MUST stay in sync if these constants move:
-//! `crates/api/src/ws/tunnel.rs` (server-side audit) and
+//! `crates/modules/network/src/tunnel.rs` (server-side audit) and
 //! `crates/remote_control/src/signaling.rs` (`CloseReason` taxonomy).
 
 use std::collections::HashMap;

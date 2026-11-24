@@ -2504,6 +2504,7 @@ async fn single_use_and_fail_closed() {
         dialed_tid: None,
         conn_established_ms: 0,
         tx,
+        resume: Default::default(),
     };
     let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
         app.state.modules.network.as_ref().unwrap().clone(),
@@ -2646,6 +2647,7 @@ async fn established_grant_session_live_revoke() {
         dialed_tid: None,
         conn_established_ms: 0,
         tx,
+        resume: Default::default(),
     };
     let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
         app.state.modules.network.as_ref().unwrap().clone(),
@@ -3207,6 +3209,7 @@ async fn persistent_decision_audit() {
         dialed_tid: None,
         conn_established_ms: 0,
         tx,
+        resume: Default::default(),
     };
     let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
         app.state.modules.network.as_ref().unwrap().clone(),

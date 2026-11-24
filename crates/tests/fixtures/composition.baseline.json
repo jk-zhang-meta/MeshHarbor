@@ -161,6 +161,14 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/admin/rc-resume-scope",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
+      "path": "/api/admin/rc-sessions/close-dead",
+      "methods": "POST"
+    },
+    {
       "path": "/api/admin/stats/attribution",
       "methods": "GET,HEAD"
     },
@@ -2693,6 +2701,18 @@
         ]
       },
       {
+        "collection": "rc_resume_scope",
+        "indexes": [
+          {
+            "key": {
+              "kind": 1,
+              "id": 1
+            },
+            "unique": true
+          }
+        ]
+      },
+      {
         "collection": "reactions",
         "indexes": [
           {
@@ -2805,6 +2825,24 @@
             "key": {
               "tenant_id": 1,
               "created_at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "remote_sessions",
+        "indexes": [
+          {
+            "key": {
+              "agent_id": 1,
+              "phase": 1,
+              "created_at": 1
+            }
+          },
+          {
+            "key": {
+              "phase": 1,
+              "created_at": 1
             }
           }
         ]
@@ -5198,6 +5236,18 @@
         ]
       },
       {
+        "collection": "rc_resume_scope",
+        "indexes": [
+          {
+            "key": {
+              "kind": 1,
+              "id": 1
+            },
+            "unique": true
+          }
+        ]
+      },
+      {
         "collection": "reactions",
         "indexes": [
           {
@@ -5310,6 +5360,24 @@
             "key": {
               "tenant_id": 1,
               "created_at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "remote_sessions",
+        "indexes": [
+          {
+            "key": {
+              "agent_id": 1,
+              "phase": 1,
+              "created_at": 1
+            }
+          },
+          {
+            "key": {
+              "phase": 1,
+              "created_at": 1
             }
           }
         ]
@@ -6394,6 +6462,7 @@
     "rc:file.ice",
     "rc:file.child.complete",
     "rc:file.child.revoke_ack",
+    "rc:session.rejoin",
     "rc:ice",
     "rc:terminate",
     "rc:ping",
@@ -6460,6 +6529,9 @@
     "rc:consent.pending",
     "rc:ready",
     "rc:terminate",
+    "rc:agent.resume_window",
+    "rc:session.resumed",
+    "rc:session.detached",
     "rc:pong",
     "rc:error",
     "rc:goodbye",
@@ -6634,6 +6706,7 @@
     "rc:rpc.result": "fleet",
     "rc:sdp.answer": "remote",
     "rc:sdp.offer": "remote",
+    "rc:session.rejoin": "remote",
     "rc:session.request": "remote",
     "rc:session.stats": "remote",
     "rc:share.lease.challenge": "remote",

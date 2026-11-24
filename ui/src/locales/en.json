@@ -48,6 +48,7 @@
       }
     },
     "session": {
+      "endedByAdmin": "An administrator ended this session, or changed who may control this device.",
       "endedByHost": {
         "title": "The person at the device ended the session.",
         "body": "They ended it from their screen (Disconnect, or their desktop's own Stop for screen sharing), so this viewer stays disconnected. Reconnect asks them again, as any new session does.",

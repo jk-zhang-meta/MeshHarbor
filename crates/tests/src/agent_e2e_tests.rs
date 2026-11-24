@@ -41,7 +41,7 @@ use std::time::Duration;
 /// LocalAPI / consent handles `signaling::run` gained in the Unification
 /// P1 + P2b work. Duplicated from `agent_tests.rs` so this file stands
 /// alone (same rationale as the `enrol` helper below).
-fn spawn_agent_signaling(
+pub(crate) fn spawn_agent_signaling(
     cfg: AgentConfig,
     stop_rx: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -97,7 +97,7 @@ fn spawn_agent_signaling(
 /// Helper copy of `agent_tests::enrol_via_agent_lib` — duplicated
 /// rather than pulled into a shared module so this file can stand
 /// alone if the agent_tests.rs surface gets refactored.
-async fn enrol(
+pub(crate) async fn enrol(
     app: &TestApp,
     seeded: &crate::fixtures::seed::SeededTenant,
     machine_id: &str,
@@ -128,7 +128,7 @@ async fn enrol(
 /// Spawn signaling::run in a task and wait for the agent's online
 /// flag to flip. Returns the task handle + shutdown sender so the
 /// caller controls teardown.
-async fn spawn_agent_and_wait_online(
+pub(crate) async fn spawn_agent_and_wait_online(
     app: &TestApp,
     seeded: &crate::fixtures::seed::SeededTenant,
     cfg: &AgentConfig,

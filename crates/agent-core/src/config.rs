@@ -834,6 +834,13 @@ pub struct AgentConfig {
     /// needed none of it (`MESHHARBORD_WS_REPLACED_EXIT`).
     #[serde(default)]
     pub ws_replaced_exit: Option<bool>,
+    /// FR-130 — keep a live remote-control session's peer through the loss of
+    /// the control socket, for the window the server announces (capped at
+    /// 120 s), instead of closing it with the socket
+    /// (`MESHHARBORD_RC_SESSIONS_SURVIVE_REATTACH`). Built-in default: ON (P4-1). See
+    /// `rc_sessions_survive_reattach` in the config surface.
+    #[serde(default)]
+    pub rc_sessions_survive_reattach: Option<bool>,
     /// C4 stage 1 — the standing warm TURN/UDP allocation, established
     /// while UDP works and kept alive so corp-VPN flow-grandfathering
     /// preserves a UDP relay leg across a VPN connect. Measurement-only
@@ -3103,6 +3110,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_init_auth_first: None,
         overlay_srflx_seek: None,
         ws_replaced_exit: None,
+        rc_sessions_survive_reattach: None,
         overlay_warm_relay: None,
         overlay_quic_async: None,
         overlay_vpn_vantage: None,
@@ -3345,7 +3353,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 96] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 97] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3410,6 +3418,10 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 96]
         ("OVERLAY_INIT_AUTH_FIRST", cfg.overlay_init_auth_first),
         ("OVERLAY_SRFLX_SEEK", cfg.overlay_srflx_seek),
         ("WS_REPLACED_EXIT", cfg.ws_replaced_exit),
+        (
+            "RC_SESSIONS_SURVIVE_REATTACH",
+            cfg.rc_sessions_survive_reattach,
+        ),
         ("OVERLAY_WARM_RELAY", cfg.overlay_warm_relay),
         ("OVERLAY_QUIC_ASYNC", cfg.overlay_quic_async),
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),

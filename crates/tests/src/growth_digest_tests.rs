@@ -865,6 +865,66 @@ async fn include_internal_shows_the_raw_totals_and_stores_nothing() {
     );
 }
 
+async fn sections_json(s: &Seeded, set: &ExclusionSet) -> Value {
+    let sections = digest::compute(&s.app.state, day(), set, DateTime::now())
+        .await
+        .unwrap();
+    serde_json::to_value(&sections).unwrap()
+}
+
+/// FR-130 — a row whose end nobody saw (`end_source`: the registration read,
+/// the sweep, the dead-row close) counts its hours up to that inferred end:
+/// the row was seen alive then, so the end is a proven lower bound, and
+/// `growth_org_daily` counts the row the same way. The quality section still
+/// counts no end and no failure for it (review 2, N12): its `ended_at` would
+/// land, back-dated, in a day already reported.
+#[tokio::test]
+async fn an_inferred_end_counts_its_hours_and_no_failure() {
+    let s = seed().await;
+    let set = ExclusionSet::load(&s.app.state.core).await.unwrap();
+    let before = sections_json(&s, &set).await;
+    // An hour on DAY, ended by the sweep at the row's own last clock.
+    insert(
+        &s.app,
+        "remote_sessions",
+        doc! {
+            "agent_id": ObjectId::new(), "tenant_id": s.org_a, "controller_user_id": ObjectId::new(),
+            "watchers": [], "permissions": 0_i32, "phase": "closed",
+            "created_at": at(0, 10, 0, 0), "started_at": at(0, 10, 0, 0),
+            "ended_at": at(0, 11, 0, 0), "end_reason": "agent_disconnect",
+            "end_source": "sweep", "recording_url": Bson::Null,
+        },
+    )
+    .await;
+    let after = sections_json(&s, &set).await;
+
+    let (b, a) = (
+        figf(&before["usage"]["remote"]["session_minutes"]),
+        figf(&after["usage"]["remote"]["session_minutes"]),
+    );
+    // The digest reports minutes to a tenth, and the difference of two such
+    // floats is not exact (150.2 - 90.2 = 59.999999999999986): compare it at
+    // the digest's own precision.
+    let grew = |after: f64, before: f64| ((after - before) * 10.0).round() / 10.0;
+    assert_eq!(
+        (grew(a.0, b.0), grew(a.1, b.1), grew(a.2, b.2)),
+        (60.0, 60.0, 60.0),
+        "the hour up to the inferred end counts: before {b:?}, after {a:?}"
+    );
+    let (b, a) = (
+        fig(&before["usage"]["remote"]["sessions_started"]),
+        fig(&after["usage"]["remote"]["sessions_started"]),
+    );
+    assert_eq!((a.0 - b.0, a.1 - b.1, a.2 - b.2), (1, 1, 1), "started");
+    for k in ["ended", "failures"] {
+        assert_eq!(
+            fig(&after["quality"]["remote"][k]),
+            fig(&before["quality"]["remote"][k]),
+            "{k}: an inferred end is no end a pod saw"
+        );
+    }
+}
+
 /// AC23 — two pods racing: one insert, one send; then the retry rules.
 #[tokio::test]
 async fn two_concurrent_runs_store_once_and_send_once() {

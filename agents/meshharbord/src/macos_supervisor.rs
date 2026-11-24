@@ -264,6 +264,24 @@ pub fn crash_summary(end: WorkerEnd, uid: u32, ran: Duration) -> Option<String> 
 #[cfg(target_os = "macos")]
 pub use imp::run;
 
+/// FR-130 P4-0 — root-daemon settings forwarded to the supervised GUI worker
+/// across `sudo`'s `Defaults env_reset` via `/usr/bin/env MESHHARBORD_<suffix>=<v>`.
+/// One device, one switch: the root's `rc_sessions_survive_reattach`, set in
+/// its environment or its config, binds the worker's own session table and its
+/// hello, never the person's config, so the root's off is the worker's off.
+pub const WORKER_ENV_FORWARD: &[&str] = &["RC_SESSIONS_SURVIVE_REATTACH"];
+
+/// The worker's `MESHHARBORD_<suffix>=<value>` assignments: every
+/// [`WORKER_ENV_FORWARD`] suffix `lookup` has a value for, in that order.
+/// `lookup` is `tunnel_core::env::node_env` in the daemon (environment, then
+/// config). No shell sees them, so values stay literal.
+pub fn worker_env_args(lookup: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    WORKER_ENV_FORWARD
+        .iter()
+        .filter_map(|suffix| lookup(suffix).map(|v| format!("MESHHARBORD_{suffix}={v}")))
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
@@ -342,12 +360,29 @@ mod imp {
     /// would have used. P1 changes who launches the worker, nothing about its
     /// identity.
     fn spawn_worker(uid: u32, exe: &std::path::Path, secret: &str) -> std::io::Result<Child> {
-        let mut child = Command::new("launchctl")
-            .arg("asuser")
+        let mut cmd = Command::new("launchctl");
+        cmd.arg("asuser")
             .arg(uid.to_string())
             .arg("sudo")
             .arg("-u")
-            .arg(format!("#{uid}"))
+            .arg(format!("#{uid}"));
+        // FR-130 P4-0 — `sudo` runs under `Defaults env_reset` (below), so the
+        // root daemon's effective switch (`rc_sessions_survive_reattach`) goes
+        // across as an explicit `env` assignment so the worker's own session
+        // table and hello follow the root's value, not the person's config.
+        let forward = worker_env_args(tunnel_core::env::node_env);
+        if !forward.is_empty() {
+            let keys: Vec<&str> = forward
+                .iter()
+                .map(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k))
+                .collect();
+            tracing::info!(
+                ?keys,
+                "macOS supervisor: the worker inherits the root's session knobs"
+            );
+            cmd.arg("/usr/bin/env").args(&forward);
+        }
+        let mut child = cmd
             .arg(exe)
             .arg("run")
             // FR-43 P2a — tell the worker it is ours, and that its
@@ -1086,5 +1121,21 @@ mod tests {
             worker_end(ExitStatus::from_raw(11 | 0x80)),
             Some(WorkerEnd::Signal(11))
         );
+    }
+
+    /// FR-130 P4-0 — one device, one switch: the root's
+    /// `rc_sessions_survive_reattach`, set in its environment or its config,
+    /// binds the supervised worker, whose own table would otherwise follow the
+    /// person's config. Its off reaches the worker as off.
+    #[test]
+    fn the_roots_resume_switch_binds_the_worker() {
+        assert!(WORKER_ENV_FORWARD.contains(&"RC_SESSIONS_SURVIVE_REATTACH"));
+        for value in ["0", "off", "1"] {
+            assert_eq!(
+                worker_env_args(|k| (k == "RC_SESSIONS_SURVIVE_REATTACH").then(|| value.into())),
+                vec![format!("MESHHARBORD_RC_SESSIONS_SURVIVE_REATTACH={value}")]
+            );
+        }
+        assert!(worker_env_args(|_| None).is_empty());
     }
 }
