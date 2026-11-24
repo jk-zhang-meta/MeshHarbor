@@ -11,7 +11,12 @@
 > 节点转发的，所以我要扩展到无论什么消息都按照底层算法走这个，而不再像以前一样中央节点的控制信息也要求直连。
 
 - **The centre is a zone.** Its only node is the centre's own host device. Geography never assigns a
-  device to it; only an explicit pin does.
+  device to it; only an explicit pin does. At zone save (`PUT /network-zones`), a centre zone
+  (`is_centre = true`) accepts an active tenant device in `gateway_relay_ids` even with
+  `peer_relay_policy.serve = false` so the shared centre host never has to enable relay/entry
+  serving (it stays `is_gateway = false` with no entry key, while pinned centre-zone members still
+  dial the centre directly). Every non-centre zone still requires active approved relays
+  (`peer_relay_policy.serve = true`).
 - **A zone names its gateways.** A zone with no gateway is refused at save.
 - **One rule for every message.** A device in a zone reaches the centre only through its own zone's
   gateways, for every connection it makes to the centre: the control WebSocket, every HTTP client

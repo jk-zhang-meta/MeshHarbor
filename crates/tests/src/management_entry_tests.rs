@@ -975,3 +975,163 @@ async fn fr134_live_gateway_demotion_revokes_entry_key_and_updates_zone_paths() 
     );
     drop((gw_ws, dev_ws));
 }
+
+#[tokio::test]
+async fn fr134_centre_zone_allows_non_serving_gateway_while_other_zones_require_serve_true() {
+    let app = spawn(true).await;
+    let seeded = app.seed_tenant("fr134-centre-noserve").await;
+    let admin = &seeded.admin.access_token;
+
+    let (centre_host_id, centre_host_tok) = enroll(&app, &seeded, "centre-host").await;
+    let (centre_member_id, centre_member_tok) = enroll(&app, &seeded, "centre-member").await;
+    let (cn_gw_id, _) = enroll(&app, &seeded, "cn-gw").await;
+
+    set_mode(&app, &seeded, "on").await;
+    // Approve ONLY the non-centre zone gateway; leave `centre_host_id` at default `serve = false`.
+    assert_eq!(approve(&app, &seeded, &cn_gw_id, true).await, 200);
+
+    // 1. A non-centre zone listing the `serve = false` device must STILL be refused (400).
+    let (s_non_centre, body_non_centre) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({
+            "zones": [{
+                "id": "cn",
+                "name": "CN",
+                "auto_countries": ["CN"],
+                "is_default": false,
+                "gateway_relay_ids": [centre_host_id],
+                "cross_zone_mode": "router_only",
+                "is_centre": false,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(
+        s_non_centre, 400,
+        "non-centre zone with serve=false gateway must still be refused: {body_non_centre}"
+    );
+
+    // 2. A centre zone listing a nonexistent device ObjectId must still be refused (400).
+    let missing_oid = bson::oid::ObjectId::new().to_hex();
+    let (s_missing, body_missing) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({
+            "zones": [{
+                "id": "centre",
+                "name": "Centre",
+                "auto_countries": [],
+                "is_default": false,
+                "gateway_relay_ids": [missing_oid],
+                "cross_zone_mode": "router_only",
+                "is_centre": true,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(
+        s_missing, 400,
+        "centre zone referencing unknown device must be refused: {body_missing}"
+    );
+
+    // 3. A centre zone whose only gateway has `serve = false` saves cleanly (200) alongside a
+    //    normal serving zone gateway.
+    let (s_ok, body_ok) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({
+            "zones": [
+                {
+                    "id": "centre",
+                    "name": "Centre",
+                    "auto_countries": [],
+                    "is_default": false,
+                    "gateway_relay_ids": [centre_host_id],
+                    "cross_zone_mode": "router_only",
+                    "is_centre": true,
+                },
+                {
+                    "id": "cn",
+                    "name": "CN",
+                    "auto_countries": ["CN"],
+                    "is_default": false,
+                    "gateway_relay_ids": [cn_gw_id],
+                    "cross_zone_mode": "router_only",
+                    "is_centre": false,
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(
+        s_ok, 200,
+        "centre zone with serve=false active device must save cleanly: {body_ok}"
+    );
+    assert_eq!(body_ok["zones"][0]["is_centre"], json!(true));
+
+    // Pin both centre host and centre member to `centre`.
+    for aid in [&centre_host_id, &centre_member_id] {
+        let (st, b) = put(
+            &app,
+            &tenant_url(&seeded, &format!("/agent/{aid}/zone-assignment")),
+            admin,
+            json!({ "pinned_zone_id": "centre" }),
+        )
+        .await;
+        assert_eq!(st, 200, "pin {aid} to centre: {b}");
+    }
+
+    // 4. Verify runtime semantics: `centre_host` is NOT a gateway (`is_gateway == false`, no
+    //    `rc:agent.management_entry` key pushed even when advertising `management-entry`), and
+    //    both the centre host and another centre-zone member get `direct == true, entries == []`.
+    let rpc = ["management-path", "management-entry"];
+    let mut host_ws = connect(&app, &centre_host_tok, &rpc, "203.0.113.30", None, None).await;
+    let p_host = path_frame(&mut host_ws, "centre host").await;
+    assert_eq!(p_host["direct"], json!(true), "centre host direct: {p_host}");
+    assert_eq!(p_host["entries"], json!([]), "centre host entries: {p_host}");
+    let host_extra = collect(&mut host_ws, Duration::from_millis(400)).await;
+    assert!(
+        !has_t(&host_extra, "rc:agent.management_entry"),
+        "serve=false centre host must never receive an entry key (is_gateway=false): {host_extra:?}"
+    );
+
+    let mut member_ws = connect(&app, &centre_member_tok, &rpc, "198.51.100.31", None, None).await;
+    let p_member = path_frame(&mut member_ws, "centre member").await;
+    assert_eq!(
+        p_member["direct"],
+        json!(true),
+        "centre zone member must dial direct: {p_member}"
+    );
+    assert_eq!(p_member["entries"], json!([]), "centre member entries: {p_member}");
+    let member_extra = collect(&mut member_ws, Duration::from_millis(400)).await;
+    assert!(
+        !has_t(&member_extra, "rc:agent.management_entry"),
+        "centre zone member must not receive an entry key: {member_extra:?}"
+    );
+
+    // 5. Backbone view reports centre host with `is_centre=true, serving_relay=false, entry_listening=false`.
+    let bb: Value = app
+        .auth_get(&tenant_url(&seeded, "/network-zones/backbone"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let g_centre = bb["gateways"]
+        .as_array()
+        .expect("backbone gateways")
+        .iter()
+        .find(|g| g["agent_id"] == json!(centre_host_id))
+        .expect("centre host in backbone gateways");
+    assert_eq!(g_centre["is_centre"], json!(true));
+    assert_eq!(g_centre["serving_relay"], json!(false));
+    assert_eq!(g_centre["entry_listening"], json!(false));
+    assert_eq!(g_centre["entry_port"], Value::Null);
+
+    drop((host_ws, member_ws));
+}

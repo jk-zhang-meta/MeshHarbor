@@ -121,6 +121,7 @@ pub async fn set_zones(
     }
     let active_agents = state.fleet.agents.list_all_active_for_tenant(tid).await?;
 
+    let active_ids: HashSet<ObjectId> = active_agents.iter().filter_map(|a| a.id).collect();
     let approved_relays: HashSet<ObjectId> = active_agents
         .iter()
         .filter(|a| a.peer_relay_policy.serve)
@@ -134,7 +135,18 @@ pub async fn set_zones(
                     z.id, gw_hex
                 ))
             })?;
-            if !approved_relays.contains(&gw_id) {
+            // FR-134 — the centre zone names the centre's own active host device without
+            // requiring relay/entry serving (`peer_relay_policy.serve = false`), so saving
+            // zones never requires toggling `serve` on/off on a shared centre host. Every
+            // non-centre zone still requires an active approved relay (`serve = true`).
+            if z.is_centre {
+                if !active_ids.contains(&gw_id) {
+                    return Err(ApiError::BadRequest(format!(
+                        "Centre zone '{}' references gateway_relay_id '{}' which is not an active device in this tenant",
+                        z.id, gw_hex
+                    )));
+                }
+            } else if !approved_relays.contains(&gw_id) {
                 return Err(ApiError::BadRequest(format!(
                     "Zone '{}' references gateway_relay_id '{}' which is not an active approved relay (serve=true) in this tenant",
                     z.id, gw_hex
