@@ -1023,12 +1023,20 @@
 
   <!-- Overlay eviction (lifted from MachinesSection; shared by devices and
        tunnel clients — the confirm copy branches on will_rejoin). -->
-  <v-dialog v-model="evictDialogOpen" max-width="540">
+  <!-- FR-120 P3 — this dialog and the four below with real content (update
+       all, delete, another org, routes) are full screen on a phone with their
+       own close; a question that names the device wraps, because the name is
+       the one thing to read before confirming. -->
+  <v-dialog v-model="evictDialogOpen" max-width="540" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>
-        {{ evictTarget?.will_rejoin
-          ? $t('mh.dev.evict.titleRejoin', { name: nodeLabel(evictTarget) })
-          : $t('mh.dev.evict.titleRemove', { name: nodeLabel(evictTarget) }) }}
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">
+          {{ evictTarget?.will_rejoin
+            ? $t('mh.dev.evict.titleRejoin', { name: nodeLabel(evictTarget) })
+            : $t('mh.dev.evict.titleRemove', { name: nodeLabel(evictTarget) }) }}
+        </span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="$t('common.close')" @click="evictDialogOpen = false" />
       </v-card-title>
       <v-card-text>
         <ul class="text-body-2 mb-3 ps-4">
@@ -1169,7 +1177,8 @@
   <!-- FR-40 — rotate-overlay-key confirmation -->
   <v-dialog v-model="rotateKeyDialogOpen" max-width="520">
     <v-card>
-      <v-card-title>{{ $t('mh.dev.rotate.title', { name: deviceLabel(rotateKeyTarget) }) }}</v-card-title>
+      <!-- FR-120 P3 — the question names the device: it wraps, never clips. -->
+      <v-card-title class="text-wrap">{{ $t('mh.dev.rotate.title', { name: deviceLabel(rotateKeyTarget) }) }}</v-card-title>
       <v-card-text>
         <i18n-t keypath="mh.dev.rotate.body" tag="span">
           <template #onDevice><strong>{{ $t('mh.dev.rotate.onDevice') }}</strong></template>
@@ -1197,9 +1206,13 @@
   </v-dialog>
 
   <!-- S1a — Update-all confirmation -->
-  <v-dialog v-model="updateAllDialogOpen" max-width="480">
+  <v-dialog v-model="updateAllDialogOpen" max-width="480" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>{{ $t('mh.dev.upd.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">{{ $t('mh.dev.upd.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="$t('common.close')" @click="updateAllDialogOpen = false" />
+      </v-card-title>
       <v-card-text>
         {{ $t('mh.dev.upd.body', { total: agentStore.agents.length, online: agentStore.agents.filter((a) => a.is_online).length }) }}
         <div v-if="wontUpdateHere.length > 0" class="mt-3">
@@ -1222,9 +1235,13 @@
   </v-dialog>
 
   <!-- Delete confirmation -->
-  <v-dialog v-model="deleteDialogOpen" max-width="540">
+  <v-dialog v-model="deleteDialogOpen" max-width="540" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>{{ $t('mh.dev.del.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">{{ $t('mh.dev.del.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="$t('common.close')" @click="deleteDialogOpen = false" />
+      </v-card-title>
       <v-card-text>
         <p class="font-weight-medium mb-3">{{ deviceLabel(deleteTarget) }}</p>
         <ul class="text-body-2 mb-3 ps-4">
@@ -1262,9 +1279,13 @@
   <!-- Multi-org — add an already-enrolled device to a second organization
        without touching the machine. Needs MANAGE_AGENTS in both; the picker
        only lists orgs where the caller actually has it. -->
-  <v-dialog v-model="joinOrgDialogOpen" max-width="520">
+  <v-dialog v-model="joinOrgDialogOpen" max-width="520" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>{{ $t('mh.dev.join.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">{{ $t('mh.dev.join.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="$t('common.close')" @click="joinOrgDialogOpen = false" />
+      </v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
           <i18n-t keypath="mh.dev.join.body" tag="span">
@@ -1386,9 +1407,13 @@
   </v-dialog>
 
   <!-- Subnet routes (mesh subnet-router, Phase 2 — MANAGE_AGENTS) -->
-  <v-dialog v-model="routesDialogOpen" max-width="560">
+  <v-dialog v-model="routesDialogOpen" max-width="560" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>{{ $t('mh.dev.routes.title') }}</v-card-title>
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">{{ $t('mh.dev.routes.title') }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="$t('common.close')" @click="routesDialogOpen = false" />
+      </v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
           <i18n-t keypath="mh.dev.routes.body" tag="span">
@@ -1509,6 +1534,7 @@ import { useNetworkZonesStore } from '@/stores/networkZones'
 import { formatDeviceLocation, formatDeviceZone } from '@/utils/deviceLocation'
 import { canManageAgents, canManageRelays } from '@/utils/permissions'
 import { useGridColumns } from '@/composables/useGridColumns'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import {
   deviceLabel,
   secondaryDeviceName,
@@ -2118,6 +2144,8 @@ async function onRcOverlayChange(a: Agent, rc_overlay: boolean) {
 // (≤1280) drives the codec-chip rollup so mid-width viewports don't blow past
 // the Actions column.
 const { smAndDown: mobile, xs, lgAndDown } = useDisplay()
+// FR-120 P3 — the page's dialogs of substance cover the screen below 600 px.
+const { fullscreen } = useResponsiveDialog()
 
 // The cards have no v-data-table-server to fire @update:options, so below md a
 // page change fetches here. Guarded by `mobile`: on the grid the table's

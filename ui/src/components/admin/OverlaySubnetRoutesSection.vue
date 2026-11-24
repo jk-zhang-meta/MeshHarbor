@@ -2,14 +2,16 @@
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
   <v-card>
-    <v-card-title class="d-flex align-center">
+    <!-- FR-120 P3 — the row wraps (docs/ui.md, "a title row with buttons"):
+         with a device filter's chip in it, one line pushed Refresh off the
+         card on a phone. -->
+    <v-card-title class="d-flex align-center flex-wrap ga-2">
       <span>{{ $t('nav.subnetRoutes') }}</span>
       <v-chip
         v-if="nodeFilter"
         size="small"
         variant="tonal"
         closable
-        class="ml-3"
         @click:close="clearNodeFilter"
       >
         {{ filteredNodeName ?? $t('mh.routes.deviceFilter') }}

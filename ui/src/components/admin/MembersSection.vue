@@ -194,11 +194,14 @@
     @confirm="doRemove"
   />
 
-  <!-- Per-member role assignment -->
-  <v-dialog v-model="rolesDialog" max-width="500">
+  <!-- Per-member role assignment. FR-120 P3 — full screen on a phone, with
+       its own close; the title wraps, so whose roles these are stays legible. -->
+  <v-dialog v-model="rolesDialog" max-width="500" scrollable :fullscreen="fullscreen">
     <v-card>
-      <v-card-title>
-        {{ t('mh.members.rolesTitle', { name: dialogMember?.display_name }) }}
+      <v-card-title class="d-flex align-center ga-2">
+        <span class="text-wrap" style="min-width: 0">{{ t('mh.members.rolesTitle', { name: dialogMember?.display_name }) }}</span>
+        <v-spacer />
+        <v-btn icon="mdi-close" size="small" variant="text" :aria-label="t('common.close')" @click="rolesDialog = false" />
       </v-card-title>
       <v-card-text>
         <v-alert v-if="dialogError" type="error" variant="tonal" density="compact" class="mb-4">
@@ -263,6 +266,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useValidation } from '@/composables/useValidation'
 import { canManageInvites, permissionLabel } from '@/utils/permissions'
 import { useGridColumns } from '@/composables/useGridColumns'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useI18n } from 'vue-i18n'
@@ -280,6 +284,8 @@ const { rules } = useValidation()
 // rows, from the same headers): the Roles column and the Roles / Remove
 // actions were behind a sideways scroll inside the table.
 const { xs } = useDisplay()
+// FR-120 P3 — a member's roles dialog covers the screen below 600 px.
+const { fullscreen } = useResponsiveDialog()
 
 const myUserId = computed(() => auth.user?.id)
 const ownerId = computed(() => tenantStore.current?.owner_id)

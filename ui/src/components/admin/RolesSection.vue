@@ -2,7 +2,11 @@
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
   <v-card>
-    <v-card-title class="d-flex align-center">
+    <!-- FR-120 P3 — the row wraps where it must (below ~350 px New Role
+         went past the card's edge). `gr-2`, not `ga-2`: the spacer already
+         parts the two on one line, and column gaps would wrap it at 360 px,
+         where it fits. -->
+    <v-card-title class="d-flex align-center flex-wrap gr-2">
       <span>{{ t('mh.roles.title') }}</span>
       <v-spacer />
       <v-btn

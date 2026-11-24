@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
-  <v-dialog v-model="open" max-width="600" scrollable>
+  <!-- FR-120 P3 — full screen on a phone: centred, the grid was ~312 px wide. -->
+  <v-dialog v-model="open" max-width="600" scrollable :fullscreen="fullscreen">
     <v-card>
       <v-card-title class="d-flex align-center">
         <span>{{ t('mh.chat.gifs') }}</span>
         <v-spacer />
-        <v-btn icon="mdi-close" size="small" variant="text" @click="open = false" />
+        <v-btn icon="mdi-close" size="small" variant="text" aria-label="Close" @click="open = false" />
       </v-card-title>
 
       <v-tabs v-model="tab" density="compact">
@@ -69,8 +70,10 @@
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import { useI18n } from 'vue-i18n'
+import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 const { t } = useI18n()
+const { fullscreen } = useResponsiveDialog()
 
 interface GiphyImage {
   url: string
