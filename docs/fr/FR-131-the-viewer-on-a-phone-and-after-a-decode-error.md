@@ -1,6 +1,6 @@
 # FR-131: The viewer on a phone held sideways, and after a decode error
 
-> **Status:** P1–P3 on production since 2026-11-24 ~03:10Z (master `c158a01c3`, a web-only cutover);
+> **Status:** closed 2026-11-24, every criterion met. P1–P3 on production since 2026-11-24 ~03:10Z (master `c158a01c3`, a web-only cutover);
 > AC1–AC4 met, AC2 red then green on production (see the log); AC5 (docs) met. Claimed 2026-11-24. Tracking issue: none (GitHub Issues are disabled on
 > this repository); this spec and its registry row are the record. Ports of upstream roomler-ai's
 > FR-125 (immersive landscape on phones, `8aa77f8d2`), FR-135 R1 (a decode error recovers in place,
@@ -108,8 +108,9 @@
   `remoteViewerI18n.spec.ts` (no English word in any viewer template — red against master's
   `KeepBusyMenu.vue`; every `remote.*` / `keepBusy.*` key has Chinese except 6 technical names) and the
   parity test `i18n.spec.ts`.
-- [ ] **AC5 (docs).** `docs/remote-control.md` / `docs/ui.md` describe both and a row in
-  [docs/README.md](../README.md).
+- [x] **AC5 (docs).** `docs/remote-control.md` / `docs/ui.md` describe both and a row in
+  [docs/README.md](../README.md): `remote-control.md` §11.10 and §18.6, `ui.md`, `touch-controls.md`,
+  and the index rows updated.
 
 ## What the field test must check
 
