@@ -163,7 +163,7 @@ pub enum Need {
 }
 
 /// The verdict on a typed selector.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Resolution<'a> {
     /// Send the selector exactly as typed — a literal address, a hex id, a
     /// name the server or daemon resolves itself, or a display name nobody

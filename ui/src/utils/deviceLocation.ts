@@ -9,12 +9,18 @@
  * identically.
  */
 
+export type GeoLevel = 'coords' | 'city' | 'region' | 'country' | 'unknown'
+
 export interface GeoLocationFields {
   public_ip?: string | null
   country_code?: string | null
   country?: string | null
   region?: string | null
   city?: string | null
+  lat?: number | null
+  lon?: number | null
+  accuracy_radius_km?: number | null
+  geo_level?: GeoLevel | null
 }
 
 export interface DeviceZoneFields {

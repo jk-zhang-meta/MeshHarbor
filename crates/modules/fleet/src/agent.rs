@@ -1006,6 +1006,14 @@ pub struct AgentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accuracy_radius_km: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geo_level: Option<meshharbor_remote_control::models::GeoLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_id: Option<String>,
@@ -2060,11 +2068,13 @@ fn to_agent_response(
         .and_then(|s| s.parse::<std::net::IpAddr>().ok())
         .and_then(meshharbor_core::user_analytics::canonical_public_ip)
         .map(|ip| ip.to_string());
-        let geo = public_ip
+    let geo = public_ip
         .as_deref()
         .and_then(|s| s.parse::<std::net::IpAddr>().ok())
         .map(|ip| state.core.geoip.lookup_location(ip))
         .unwrap_or_default();
+    let country_code = effective_cc.or(geo.country_code.clone());
+    let geo_level = geo.effective_geo_level(country_code.as_deref());
     AgentResponse {
         presence,
         id,
@@ -2106,10 +2116,14 @@ fn to_agent_response(
         peer_auth_key,
         peer_auth_fingerprint,
         public_ip,
-        country_code: effective_cc.or(geo.country_code),
+        country_code,
         country: geo.country,
         region: geo.region,
         city: geo.city,
+        lat: geo.lat,
+        lon: geo.lon,
+        accuracy_radius_km: geo.accuracy_radius_km,
+        geo_level,
         pinned_zone_id,
         effective_zone_id,
         effective_zone_name,
@@ -2616,5 +2630,131 @@ mod enrollment_token_request_tests {
         );
         assert_eq!(read(Some("application/json"), "{}"), Some(false));
         assert_eq!(read(Some("application/json"), "{not json"), None, "a 400");
+    }
+}
+
+#[cfg(test)]
+mod geo_serialization_tests {
+    use super::{AgentPresence, AgentResponse};
+    use meshharbor_remote_control::models::{
+        AccessPolicy, AgentCaps, AgentStatus, GeoLevel, OsKind,
+    };
+
+    fn sample_agent_response() -> AgentResponse {
+        AgentResponse {
+            id: "0123456789abcdef01234567".into(),
+            tenant_id: "0123456789abcdef01234568".into(),
+            owner_user_id: "0123456789abcdef01234569".into(),
+            name: "device-a".into(),
+            name_sync: crate::name_sync::NameSyncView {
+                revision: "0".into(),
+                acked_revision: None,
+                event_seq: "0".into(),
+                state: "unverified",
+                scope: "device",
+                error: None,
+            },
+            display_name: None,
+            tags: Vec::new(),
+            machine_id: "machine-a".into(),
+            os: OsKind::Linux,
+            agent_version: "0.4.180".into(),
+            companion_version: None,
+            keep_busy: None,
+            status: AgentStatus::Online,
+            ephemeral: false,
+            ephemeral_ttl_secs: None,
+            presence: AgentPresence::Online,
+            is_online: true,
+            last_seen_at: "2026-11-24T00:00:00Z".into(),
+            access_policy: AccessPolicy::default(),
+            routes: Vec::new(),
+            advertised_routes: Vec::new(),
+            capabilities: AgentCaps::default(),
+            ssh_host_pubkey: String::new(),
+            relay_home: None,
+            exec_policy: None,
+            exec_anchor: None,
+            token_expires_at: None,
+            install: None,
+            ssh_policy: None,
+            external_access_policy: None,
+            remote_config: None,
+            overlay_public_key: None,
+            overlay_key_epoch: None,
+            key_rotation: None,
+            peer_auth_key: None,
+            peer_auth_fingerprint: None,
+            public_ip: None,
+            country_code: None,
+            country: None,
+            region: None,
+            city: None,
+            lat: None,
+            lon: None,
+            accuracy_radius_km: None,
+            geo_level: None,
+            pinned_zone_id: None,
+            effective_zone_id: None,
+            effective_zone_name: None,
+        }
+    }
+
+    #[test]
+    fn agent_response_omits_absent_geo_fields_for_backwards_compatibility() {
+        let resp = sample_agent_response();
+        let json = serde_json::to_value(&resp).unwrap();
+        for key in [
+            "public_ip",
+            "country_code",
+            "country",
+            "region",
+            "city",
+            "lat",
+            "lon",
+            "accuracy_radius_km",
+            "geo_level",
+        ] {
+            assert!(
+                json.get(key).is_none(),
+                "{key} must be omitted when None: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_response_serializes_mmdb_coords_and_preserves_existing_geo_fields() {
+        let mut resp = sample_agent_response();
+        resp.public_ip = Some("192.0.2.10".into());
+        resp.country_code = Some("CN".into());
+        resp.country = Some("中国".into());
+        resp.region = Some("广东省".into());
+        resp.city = Some("深圳市".into());
+        resp.lat = Some(22.5431);
+        resp.lon = Some(114.0579);
+        resp.accuracy_radius_km = Some(50);
+        resp.geo_level = Some(GeoLevel::Coords);
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["public_ip"], serde_json::json!("192.0.2.10"));
+        assert_eq!(json["country_code"], serde_json::json!("CN"));
+        assert_eq!(json["country"], serde_json::json!("中国"));
+        assert_eq!(json["region"], serde_json::json!("广东省"));
+        assert_eq!(json["city"], serde_json::json!("深圳市"));
+        assert_eq!(json["lat"], serde_json::json!(22.5431));
+        assert_eq!(json["lon"], serde_json::json!(114.0579));
+        assert_eq!(json["accuracy_radius_km"], serde_json::json!(50));
+        assert_eq!(json["geo_level"], serde_json::json!("coords"));
+
+        // City without coords omits lat/lon/accuracy_radius_km cleanly.
+        resp.lat = None;
+        resp.lon = None;
+        resp.accuracy_radius_km = None;
+        resp.geo_level = Some(GeoLevel::City);
+        let city_json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(city_json["geo_level"], serde_json::json!("city"));
+        assert!(city_json.get("lat").is_none());
+        assert!(city_json.get("lon").is_none());
+        assert!(city_json.get("accuracy_radius_km").is_none());
     }
 }

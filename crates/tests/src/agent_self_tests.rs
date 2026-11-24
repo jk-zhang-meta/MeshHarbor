@@ -1460,6 +1460,10 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
         "country",
         "region",
         "city",
+        "lat",
+        "lon",
+        "accuracy_radius_km",
+        "geo_level",
         "pinned_zone_id",
         "effective_zone_id",
         "effective_zone_name",
@@ -1547,7 +1551,17 @@ async fn temporary_guest_without_node_stays_isolated_when_invitations_disabled_a
             .all(|r| r["id"] != json!(perm_id)),
         "temporary invitee must never see permanent account inventory: {guest_page}"
     );
-    for key in ["public_ip", "country_code", "country", "region", "city"] {
+    for key in [
+        "public_ip",
+        "country_code",
+        "country",
+        "region",
+        "city",
+        "lat",
+        "lon",
+        "accuracy_radius_km",
+        "geo_level",
+    ] {
         assert!(
             g_row.get(key).is_none(),
             "temporary invitee must have {key} blanked: {g_row}"
@@ -1670,4 +1684,408 @@ async fn permanent_caller_lists_nodeless_tunnel_clients_while_temporary_guest_hi
         BTreeSet::from([guest_id]),
         "temporary guest must never see non-netmap permanent tunnel clients: {guest_page}"
     );
+}
+
+/// Build an IPv4 MaxMind City MMDB with RFC 5737 TEST-NET records exercising all
+/// FR-136 P6 `geo_level` tiers:
+/// - `192.0.2.10`    -> CN / 中国 / 广东省 / 深圳市 + coords (22.5431, 114.0579, r=50) -> `coords`
+/// - `198.51.100.10` -> US / United States / Texas / Houston (no `location`)         -> `city`
+/// - `198.51.100.20` -> CN / 中国 / 广东省 (province centroid `location`, no city)    -> `region` (coords suppressed)
+/// - `203.0.113.10`  -> US / United States (country centroid `location`, r=1000)     -> `country` (coords suppressed)
+fn city_coords_fixture_mmdb() -> Vec<u8> {
+    fn text(out: &mut Vec<u8>, v: &str) {
+        let len = v.len();
+        if len < 29 {
+            out.push(0x40 | len as u8);
+        } else {
+            out.push(0x40 | 29);
+            out.push((len - 29) as u8);
+        }
+        out.extend_from_slice(v.as_bytes());
+    }
+    fn map(out: &mut Vec<u8>, entries: u8) {
+        out.push(0xE0 | entries);
+    }
+    fn array(out: &mut Vec<u8>, entries: u8) {
+        out.extend_from_slice(&[entries, 11 - 7]);
+    }
+    fn uint16(out: &mut Vec<u8>, v: u16) {
+        out.push(0xA2);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn uint32(out: &mut Vec<u8>, v: u32) {
+        out.push(0xC4);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn uint64(out: &mut Vec<u8>, v: u64) {
+        out.extend_from_slice(&[0x08, 9 - 7]);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn double(out: &mut Vec<u8>, v: f64) {
+        out.push(0x68);
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    fn names(out: &mut Vec<u8>, zh: Option<&str>, en: &str) {
+        map(out, if zh.is_some() { 2 } else { 1 });
+        if let Some(zh) = zh {
+            text(out, "zh-CN");
+            text(out, zh);
+        }
+        text(out, "en");
+        text(out, en);
+    }
+    fn record(
+        code: &str,
+        country_zh: Option<&str>,
+        country_en: &str,
+        region: Option<(Option<&str>, &str)>,
+        city: Option<(Option<&str>, &str)>,
+        location: Option<(f64, f64, Option<u16>)>,
+    ) -> Vec<u8> {
+        let mut d = Vec::new();
+        let fields = 1
+            + u8::from(region.is_some())
+            + u8::from(city.is_some())
+            + u8::from(location.is_some());
+        map(&mut d, fields);
+        text(&mut d, "country");
+        map(&mut d, 2);
+        text(&mut d, "iso_code");
+        text(&mut d, code);
+        text(&mut d, "names");
+        names(&mut d, country_zh, country_en);
+        if let Some((r_zh, r_en)) = region {
+            text(&mut d, "subdivisions");
+            array(&mut d, 1);
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names(&mut d, r_zh, r_en);
+        }
+        if let Some((c_zh, c_en)) = city {
+            text(&mut d, "city");
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names(&mut d, c_zh, c_en);
+        }
+        if let Some((lat, lon, acc)) = location {
+            text(&mut d, "location");
+            map(&mut d, 2 + u8::from(acc.is_some()));
+            text(&mut d, "latitude");
+            double(&mut d, lat);
+            text(&mut d, "longitude");
+            double(&mut d, lon);
+            if let Some(r) = acc {
+                text(&mut d, "accuracy_radius");
+                uint16(&mut d, r);
+            }
+        }
+        d
+    }
+
+    let entries: Vec<(std::net::Ipv4Addr, Vec<u8>)> = vec![
+        (
+            "192.0.2.10".parse().unwrap(),
+            record(
+                "CN",
+                Some("中国"),
+                "China",
+                Some((Some("广东省"), "Guangdong")),
+                Some((Some("深圳市"), "Shenzhen")),
+                Some((22.5431, 114.0579, Some(50))),
+            ),
+        ),
+        (
+            "198.51.100.10".parse().unwrap(),
+            record(
+                "US",
+                None,
+                "United States",
+                Some((None, "Texas")),
+                Some((None, "Houston")),
+                None,
+            ),
+        ),
+        (
+            "198.51.100.20".parse().unwrap(),
+            record(
+                "CN",
+                Some("中国"),
+                "China",
+                Some((Some("广东省"), "Guangdong")),
+                None,
+                Some((23.1291, 113.2644, Some(200))),
+            ),
+        ),
+        (
+            "203.0.113.10".parse().unwrap(),
+            record(
+                "US",
+                None,
+                "United States",
+                None,
+                None,
+                Some((37.751, -97.822, Some(1000))),
+            ),
+        ),
+    ];
+
+    #[derive(Clone, Copy)]
+    enum NodeRef {
+        Internal(usize),
+        Leaf(usize),
+    }
+    let mut nodes: Vec<[Option<NodeRef>; 2]> = vec![[None, None]];
+    for (entry_idx, (ip, _)) in entries.iter().enumerate() {
+        let bits = u32::from(*ip);
+        let mut cur = 0usize;
+        for shift in (0..32).rev() {
+            let bit = ((bits >> shift) & 1) as usize;
+            if shift == 0 {
+                nodes[cur][bit] = Some(NodeRef::Leaf(entry_idx));
+            } else {
+                match nodes[cur][bit] {
+                    Some(NodeRef::Internal(next)) => cur = next,
+                    _ => {
+                        let next = nodes.len();
+                        nodes.push([None, None]);
+                        nodes[cur][bit] = Some(NodeRef::Internal(next));
+                        cur = next;
+                    }
+                }
+            }
+        }
+    }
+
+    let node_count = nodes.len() as u32;
+    let mut offsets = Vec::with_capacity(entries.len());
+    let mut data_section = Vec::new();
+    for (_, rec) in &entries {
+        offsets.push(node_count + 16 + data_section.len() as u32);
+        data_section.extend_from_slice(rec);
+    }
+    let built = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 60;
+    let mut db = Vec::new();
+    for pair in &nodes {
+        for slot in pair {
+            let val: u32 = match slot {
+                None => node_count,
+                Some(NodeRef::Internal(i)) => *i as u32,
+                Some(NodeRef::Leaf(i)) => offsets[*i],
+            };
+            db.extend_from_slice(&val.to_be_bytes()[1..]);
+        }
+    }
+    db.extend_from_slice(&[0; 16]);
+    db.extend_from_slice(&data_section);
+    db.extend_from_slice(b"\xab\xcd\xefMaxMind.com");
+    map(&mut db, 9);
+    text(&mut db, "binary_format_major_version");
+    uint16(&mut db, 2);
+    text(&mut db, "binary_format_minor_version");
+    uint16(&mut db, 0);
+    text(&mut db, "build_epoch");
+    uint64(&mut db, built);
+    text(&mut db, "database_type");
+    text(&mut db, "GeoLite2-City");
+    text(&mut db, "description");
+    map(&mut db, 1);
+    text(&mut db, "en");
+    text(&mut db, "city coords geoip fixture");
+    text(&mut db, "ip_version");
+    uint16(&mut db, 4);
+    text(&mut db, "languages");
+    array(&mut db, 2);
+    text(&mut db, "en");
+    text(&mut db, "zh-CN");
+    text(&mut db, "node_count");
+    uint32(&mut db, node_count);
+    text(&mut db, "record_size");
+    uint16(&mut db, 24);
+    db
+}
+
+#[tokio::test]
+async fn device_listings_emit_mmdb_coords_accuracy_and_geo_level_and_redact_for_temporary_caller() {
+    use crate::peer_relay_mint_tests::connect_from;
+
+    let geo = tempfile::tempdir().unwrap();
+    let mmdb_path = geo.path().join("geolite2-city-coords.mmdb");
+    std::fs::write(&mmdb_path, city_coords_fixture_mmdb()).unwrap();
+    let mmdb_str = mmdb_path.to_str().unwrap().to_owned();
+
+    let app = TestApp::spawn_with_settings(move |s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.business_isolation = "off".into();
+        s.auth.native_device_invite_enabled = true;
+        s.stats.geoip_mmdb = Some(mmdb_str);
+    })
+    .await;
+    let seeded = app.seed_tenant("p6-mmdb-coords").await;
+    let admin = &seeded.admin.access_token;
+
+    let (coords_id, coords_tok) = enroll(&app, &seeded, "p6-coords", "device-a").await;
+    let (city_id, city_tok) = enroll(&app, &seeded, "p6-city", "device-b").await;
+    let (region_id, region_tok) = enroll(&app, &seeded, "p6-region", "device-c").await;
+    let (country_id, country_tok) = enroll(&app, &seeded, "p6-country", "device-d").await;
+    let (guest_id, guest_tok) = enroll(&app, &seeded, "p6-guest", "guest-a").await;
+
+    let mut coords_ws = connect_from(&app, &coords_tok, &[], Some("192.0.2.10")).await;
+    join(&mut coords_ws, 21).await;
+    let city_ws = connect_from(&app, &city_tok, &[], Some("198.51.100.10")).await;
+    let region_ws = connect_from(&app, &region_tok, &[], Some("198.51.100.20")).await;
+    let country_ws = connect_from(&app, &country_tok, &[], Some("203.0.113.10")).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(city_ws);
+    drop(region_ws);
+    drop(country_ws);
+
+    let resp = app
+        .auth_post(
+            &tenant_url(&seeded, &format!("/agent/{guest_id}/temporary")),
+            admin,
+        )
+        .json(&json!({ "duration_secs": 3600 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let assert_tier_rows = |items: &[Value], surface: &str| {
+        let by_id = |id: &str| -> &Value {
+            items
+                .iter()
+                .find(|r| r["id"] == json!(id))
+                .unwrap_or_else(|| panic!("{surface}: missing device {id}: {items:?}"))
+        };
+
+        let r_coords = by_id(&coords_id);
+        assert_eq!(r_coords["country_code"], json!("CN"), "{surface}");
+        assert_eq!(r_coords["city"], json!("深圳市"), "{surface}");
+        assert_eq!(r_coords["lat"], json!(22.5431), "{surface}");
+        assert_eq!(r_coords["lon"], json!(114.0579), "{surface}");
+        assert_eq!(r_coords["accuracy_radius_km"], json!(50), "{surface}");
+        assert_eq!(r_coords["geo_level"], json!("coords"), "{surface}");
+
+        let r_city = by_id(&city_id);
+        assert_eq!(r_city["city"], json!("Houston"), "{surface}");
+        assert_eq!(r_city["geo_level"], json!("city"), "{surface}");
+        assert!(r_city.get("lat").is_none(), "{surface}: {r_city}");
+        assert!(r_city.get("lon").is_none(), "{surface}: {r_city}");
+        assert!(
+            r_city.get("accuracy_radius_km").is_none(),
+            "{surface}: {r_city}"
+        );
+
+        let r_region = by_id(&region_id);
+        assert_eq!(r_region["region"], json!("广东省"), "{surface}");
+        assert!(r_region.get("city").is_none(), "{surface}: {r_region}");
+        assert_eq!(r_region["geo_level"], json!("region"), "{surface}");
+        assert!(r_region.get("lat").is_none(), "{surface}: {r_region}");
+        assert!(r_region.get("lon").is_none(), "{surface}: {r_region}");
+        assert!(
+            r_region.get("accuracy_radius_km").is_none(),
+            "{surface}: {r_region}"
+        );
+
+        let r_country = by_id(&country_id);
+        assert_eq!(r_country["country_code"], json!("US"), "{surface}");
+        assert!(r_country.get("region").is_none(), "{surface}: {r_country}");
+        assert!(r_country.get("city").is_none(), "{surface}: {r_country}");
+        assert_eq!(r_country["geo_level"], json!("country"), "{surface}");
+        assert!(r_country.get("lat").is_none(), "{surface}: {r_country}");
+        assert!(r_country.get("lon").is_none(), "{surface}: {r_country}");
+        assert!(
+            r_country.get("accuracy_radius_km").is_none(),
+            "{surface}: {r_country}"
+        );
+    };
+
+    // 1. GET /api/tenant/{tid}/agent
+    let ag_list: Value = app
+        .auth_get(&tenant_url(&seeded, "/agent"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_tier_rows(ag_list["items"].as_array().unwrap(), "GET /agent");
+
+    // 2. GET /api/tenant/{tid}/agent/{aid}
+    let ag_one: Value = app
+        .auth_get(&tenant_url(&seeded, &format!("/agent/{coords_id}")), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ag_one["lat"], json!(22.5431));
+    assert_eq!(ag_one["lon"], json!(114.0579));
+    assert_eq!(ag_one["accuracy_radius_km"], json!(50));
+    assert_eq!(ag_one["geo_level"], json!("coords"));
+
+    // 3. GET /api/tenant/{tid}/device
+    let dev_list: Value = app
+        .auth_get(&tenant_url(&seeded, "/device"), admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_tier_rows(dev_list["items"].as_array().unwrap(), "GET /device");
+
+    // 4. GET /api/agent/self/devices (permanent caller)
+    let (status, self_page) = get_devices(&app, &coords_tok, "").await;
+    assert_eq!(status, 200, "{self_page}");
+    assert_tier_rows(
+        self_page["items"].as_array().unwrap(),
+        "GET /agent/self/devices",
+    );
+
+    // 5. GET /api/account/devices
+    let acct_list: Value = app
+        .auth_get("/api/account/devices?page=1&per_page=25", admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_tier_rows(
+        acct_list["items"].as_array().unwrap(),
+        "GET /account/devices",
+    );
+
+    // 6. Temporary caller MUST NOT receive MMDB coords or geo_level even from a coords IP.
+    let guest_ws = connect_from(&app, &guest_tok, &[], Some("192.0.2.10")).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (status, guest_page) = get_devices(&app, &guest_tok, "").await;
+    assert_eq!(status, 200, "{guest_page}");
+    let g_row = item(&guest_page, &guest_id);
+    for key in [
+        "public_ip",
+        "country_code",
+        "country",
+        "region",
+        "city",
+        "lat",
+        "lon",
+        "accuracy_radius_km",
+        "geo_level",
+    ] {
+        assert!(
+            g_row.get(key).is_none(),
+            "temporary caller must not receive {key}: {g_row}"
+        );
+    }
+
+    drop(guest_ws);
+    drop(coords_ws);
 }

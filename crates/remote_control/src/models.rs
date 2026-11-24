@@ -3381,8 +3381,39 @@ impl TunnelClient {
 // an admin's label and an address — never the fleet record. Adding one of
 // those here is a security change, not a convenience.
 
+/// Precision tier of a resolved GeoIP location (FR-136 P6 / S7).
+///
+/// Mirrors the globe's precision hierarchy so callers never mistake a
+/// country- or province-centroid MMDB record for city-level coordinates:
+/// - `Coords`: city-level MMDB record with valid finite WGS-84 `(lat, lon)`.
+/// - `City`: city name resolved, without valid MMDB coordinates.
+/// - `Region`: subdivision/province/state resolved, without a city name.
+/// - `Country`: country/region code or name resolved, without subdivision or city.
+/// - `Unknown`: reserved explicit unknown tier (omitted as `None` on wire when unresolvable).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GeoLevel {
+    Coords,
+    City,
+    Region,
+    Country,
+    Unknown,
+}
+
+impl GeoLevel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Coords => "coords",
+            Self::City => "city",
+            Self::Region => "region",
+            Self::Country => "country",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// One device THIS device may see — itself, or a peer its netmap carries.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct VisibleDeviceRow {
     /// `agent` | `tunnel_client`.
     #[serde(default)]
@@ -3459,6 +3490,14 @@ pub struct VisibleDeviceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accuracy_radius_km: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_level: Option<GeoLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_zone_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_zone_id: Option<String>,
@@ -3467,7 +3506,7 @@ pub struct VisibleDeviceRow {
 }
 
 /// The page `GET /api/agent/self/devices` answers with.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct VisibleDevicesPage {
     #[serde(default)]
     pub items: Vec<VisibleDeviceRow>,
@@ -3533,6 +3572,10 @@ mod visible_device_tests {
             country: None,
             region: None,
             city: None,
+            lat: None,
+            lon: None,
+            accuracy_radius_km: None,
+            geo_level: None,
             pinned_zone_id: None,
             effective_zone_id: None,
             effective_zone_name: None,
@@ -3566,6 +3609,39 @@ mod visible_device_tests {
         assert_eq!(v["reachable"], serde_json::json!(true));
         // `ephemeral: false` is omitted, like the admin row.
         assert!(v.get("ephemeral").is_none());
+        // Absent geo precision fields stay omitted for backwards compatibility.
+        for absent in ["lat", "lon", "accuracy_radius_km", "geo_level"] {
+            assert!(
+                v.get(absent).is_none(),
+                "{absent} should be omitted when None"
+            );
+        }
+    }
+
+    #[test]
+    fn visible_row_serializes_and_round_trips_geo_precision_fields() {
+        let mut r = row();
+        r.country_code = Some("CN".into());
+        r.country = Some("中国".into());
+        r.region = Some("广东省".into());
+        r.city = Some("深圳市".into());
+        r.lat = Some(22.5431);
+        r.lon = Some(114.0579);
+        r.accuracy_radius_km = Some(50);
+        r.geo_level = Some(GeoLevel::Coords);
+
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["country_code"], serde_json::json!("CN"));
+        assert_eq!(v["country"], serde_json::json!("中国"));
+        assert_eq!(v["region"], serde_json::json!("广东省"));
+        assert_eq!(v["city"], serde_json::json!("深圳市"));
+        assert_eq!(v["lat"], serde_json::json!(22.5431));
+        assert_eq!(v["lon"], serde_json::json!(114.0579));
+        assert_eq!(v["accuracy_radius_km"], serde_json::json!(50));
+        assert_eq!(v["geo_level"], serde_json::json!("coords"));
+
+        let back: VisibleDeviceRow = serde_json::from_value(v).unwrap();
+        assert_eq!(back, r);
     }
 
     /// Additive on the way in: a page from an older server (fewer fields)

@@ -9,6 +9,7 @@ import { useTenantStore } from '@/stores/tenant'
 import { canManageOrgSettings } from '@/utils/permissions'
 import { isKeepBusyPattern, type KeepBusyPattern } from '@/composables/keepBusy'
 import type { AgentReleaseBrief } from '@/utils/updateStall'
+import type { GeoLevel } from '@/utils/deviceLocation'
 import { mergeNameSync, type NameSync } from '@/utils/nameSync'
 
 /**
@@ -421,7 +422,7 @@ export interface Agent {
    *  server-side from its STUN probe reports), e.g. "us-east". Absent/null =
    *  never probed or all probes timed out — the default region serves it. */
   relay_home?: string | null
-  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`). */
+  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`) and MMDB coordinates (FR-136 P6). */
   public_ip?: string | null
   country_code?: string | null
   country?: string | null
@@ -431,7 +432,7 @@ export interface Agent {
   lat?: number | null
   lon?: number | null
   accuracy_radius_km?: number | null
-  geo_level?: 'coords' | 'city' | 'region' | 'country' | 'unknown' | null
+  geo_level?: GeoLevel | null
   /** Per-device logical network zone assignment (`null`/absent = Auto, string = Pinned) & server-resolved zone. */
   pinned_zone_id?: string | null
   effective_zone_id?: string | null

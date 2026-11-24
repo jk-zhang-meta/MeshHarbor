@@ -3,6 +3,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
+import type { GeoLevel } from '@/utils/deviceLocation'
 import { mergeNameSync, type NameSync } from '@/utils/nameSync'
 
 /**
@@ -45,12 +46,16 @@ export interface DeviceRow {
   /** FR-51 — enrolled as temporary: reaped after silence, removed outright on
    *  a clean stop; a later enrollment is a NEW device. Present only when true. */
   ephemeral?: boolean
-  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`). */
+  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`) and MMDB coordinates (FR-136 P6). */
   public_ip?: string | null
   country_code?: string | null
   country?: string | null
   region?: string | null
   city?: string | null
+  lat?: number | null
+  lon?: number | null
+  accuracy_radius_km?: number | null
+  geo_level?: GeoLevel | null
   /** Per-device logical network zone assignment (`null`/absent = Auto, string = Pinned) & server-resolved zone. */
   pinned_zone_id?: string | null
   effective_zone_id?: string | null

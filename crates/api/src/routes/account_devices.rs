@@ -45,6 +45,14 @@ pub struct DeviceRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accuracy_radius_km: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geo_level: Option<meshharbor_remote_control::models::GeoLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_id: Option<String>,
@@ -268,6 +276,7 @@ pub async fn list(
                 .clone()
                 .or_else(|| zone_cc.clone())
                 .or(a.country_code);
+            let geo_level = loc.effective_geo_level(display_cc.as_deref());
             let zones = tenant_zones
                 .get(&a.tenant_id)
                 .map(Vec::as_slice)
@@ -292,6 +301,10 @@ pub async fn list(
                 country: loc.country,
                 region: loc.region,
                 city: loc.city,
+                lat: loc.lat,
+                lon: loc.lon,
+                accuracy_radius_km: loc.accuracy_radius_km,
+                geo_level,
                 pinned_zone_id: a.pinned_zone_id.filter(|s| !s.trim().is_empty()),
                 effective_zone_id,
                 effective_zone_name,

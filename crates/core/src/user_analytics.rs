@@ -104,13 +104,38 @@ pub struct GeoIpSecurityLookup {
     pub country_code: Option<String>,
 }
 
+pub use meshharbor_remote_control::models::GeoLevel;
+
 /// Physical location resolved from a MaxMind/DB-IP City or Country MMDB.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GeoIpLocation {
     pub country_code: Option<String>,
     pub country: Option<String>,
     pub region: Option<String>,
     pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accuracy_radius_km: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_level: Option<GeoLevel>,
+}
+
+impl GeoIpLocation {
+    /// Return the resolved `geo_level`, falling back to [`GeoLevel::Country`]
+    /// when a caller resolved a country code outside `lookup_location` (e.g.
+    /// persisted `country_code` or static-endpoint zone country) while MMDB
+    /// city/region lookup yielded nothing.
+    pub fn effective_geo_level(&self, effective_country_code: Option<&str>) -> Option<GeoLevel> {
+        self.geo_level.or_else(|| {
+            effective_country_code
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(|_| GeoLevel::Country)
+        })
+    }
 }
 
 /// Warn during the last 30 days of the 120-day security validity window.
@@ -251,9 +276,16 @@ impl GeoIp {
         looked.country.and_then(|c| c.iso_code).map(str::to_string)
     }
 
-    /// Physical location (`country_code`, `country`, `region`, `city`) from a
-    /// City MMDB, falling back to `geoip2::Country` on Country-only MMDBs.
+    /// Physical location (`country_code`, `country`, `region`, `city`, `lat`,
+    /// `lon`, `accuracy_radius_km`, `geo_level`) from a City MMDB, falling back
+    /// to `geoip2::Country` on Country-only MMDBs.
     /// Prefers `"zh-CN"` names when present, falling back to `"en"`.
+    ///
+    /// Coordinates and `accuracy_radius_km` are emitted with `geo_level = Coords`
+    /// only when the MMDB record resolves a city AND supplies valid finite WGS-84
+    /// coordinates. Country- and subdivision-only MMDB records that include a
+    /// coarse centroid remain `Region` or `Country` with `None` coordinates so
+    /// callers never mistake an admin centroid for city-level coordinates.
     pub fn lookup_location(&self, ip: IpAddr) -> GeoIpLocation {
         let Some(ip) = canonical_public_ip(ip) else {
             return GeoIpLocation::default();
@@ -281,11 +313,41 @@ impl GeoIp {
                 .city
                 .as_ref()
                 .and_then(|c| pick_localized_name(c.names.as_ref()));
+            let raw_coords = city
+                .location
+                .as_ref()
+                .and_then(|loc| valid_wgs84_coords(loc.latitude, loc.longitude));
+            let raw_accuracy_radius_km = raw_coords.and_then(|_| {
+                city.location
+                    .as_ref()
+                    .and_then(|loc| loc.accuracy_radius)
+                    .filter(|&r| r > 0)
+            });
+
+            let (lat, lon, accuracy_radius_km, geo_level) = match (&city_name, raw_coords) {
+                (Some(_), Some((lat, lon))) => (
+                    Some(lat),
+                    Some(lon),
+                    raw_accuracy_radius_km,
+                    Some(GeoLevel::Coords),
+                ),
+                (Some(_), None) => (None, None, None, Some(GeoLevel::City)),
+                (None, _) if region.is_some() => (None, None, None, Some(GeoLevel::Region)),
+                (None, _) if country_code.is_some() || country.is_some() => {
+                    (None, None, None, Some(GeoLevel::Country))
+                }
+                (None, _) => (None, None, None, None),
+            };
+
             return GeoIpLocation {
                 country_code,
                 country,
                 region,
                 city: city_name,
+                lat,
+                lon,
+                accuracy_radius_km,
+                geo_level,
             };
         }
         if let Ok(country_rec) = r.lookup::<maxminddb::geoip2::Country>(ip) {
@@ -299,11 +361,17 @@ impl GeoIp {
                 .country
                 .as_ref()
                 .and_then(|c| pick_localized_name(c.names.as_ref()));
+            let geo_level =
+                (country_code.is_some() || country.is_some()).then_some(GeoLevel::Country);
             return GeoIpLocation {
                 country_code,
                 country,
                 region: None,
                 city: None,
+                lat: None,
+                lon: None,
+                accuracy_radius_km: None,
+                geo_level,
             };
         }
         GeoIpLocation::default()
@@ -364,6 +432,27 @@ fn pick_localized_name(
         }
     }
     None
+}
+
+/// Validate a WGS-84 coordinate pair from an MMDB `location` record.
+///
+/// Rejects missing half-pairs, `NaN`/infinite values, out-of-range coordinates,
+/// and exact `(0.0, 0.0)` ("Null Island" in the Gulf of Guinea, a common
+/// missing-coordinate sentinel in GeoIP datasets). Normalizes `-0.0` to `0.0`.
+fn valid_wgs84_coords(lat: Option<f64>, lon: Option<f64>) -> Option<(f64, f64)> {
+    let (lat, lon) = (lat?, lon?);
+    if !lat.is_finite() || !lon.is_finite() {
+        return None;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    let lat = if lat == 0.0 { 0.0 } else { lat };
+    let lon = if lon == 0.0 { 0.0 } else { lon };
+    if lat == 0.0 && lon == 0.0 {
+        return None;
+    }
+    Some((lat, lon))
 }
 
 /// Only explicit private/local source categories are excluded here. This is not
@@ -934,6 +1023,10 @@ mod tests {
                 country: Some("中国".into()),
                 region: Some("广东省".into()),
                 city: Some("深圳市".into()),
+                lat: None,
+                lon: None,
+                accuracy_radius_km: None,
+                geo_level: Some(GeoLevel::City),
             }
         );
         assert_eq!(g.zone_of_ip("14.20.0.1".parse().unwrap()), Some(Mainland));
@@ -942,6 +1035,7 @@ mod tests {
         assert_eq!(loc_hk.country_code.as_deref(), Some("HK"));
         assert_eq!(loc_hk.country.as_deref(), Some("香港"));
         assert_eq!(loc_hk.city.as_deref(), Some("香港"));
+        assert_eq!(loc_hk.geo_level, Some(GeoLevel::City));
         assert_eq!(
             g.zone_of_ip("103.10.0.1".parse().unwrap()),
             Some(NonMainland),
@@ -961,6 +1055,10 @@ mod tests {
                 country: Some("United States".into()),
                 region: Some("Texas".into()),
                 city: Some("Houston".into()),
+                lat: None,
+                lon: None,
+                accuracy_radius_km: None,
+                geo_level: Some(GeoLevel::City),
             }
         );
         assert_eq!(
@@ -980,10 +1078,499 @@ mod tests {
         assert_eq!(loc_country_only.country_code.as_deref(), Some("US"));
         assert_eq!(loc_country_only.region, None);
         assert_eq!(loc_country_only.city, None);
+        assert_eq!(loc_country_only.lat, None);
+        assert_eq!(loc_country_only.lon, None);
+        assert_eq!(loc_country_only.accuracy_radius_km, None);
+        assert_eq!(loc_country_only.geo_level, Some(GeoLevel::Country));
         assert_eq!(
             gc.zone_of_ip("8.8.8.8".parse().unwrap()),
             Some(NonMainland)
         );
+    }
+
+    /// Build a minimal IPv4 MaxMind DB v2 from exact `(Ipv4Addr, record_bytes)` entries.
+    fn build_ipv4_mmdb(database_type: &str, entries: &[(std::net::Ipv4Addr, Vec<u8>)]) -> Vec<u8> {
+        fn text(out: &mut Vec<u8>, v: &str) {
+            assert!(v.len() < 29);
+            out.push(0x40 | v.len() as u8);
+            out.extend_from_slice(v.as_bytes());
+        }
+        fn map(out: &mut Vec<u8>, entries: u8) {
+            out.push(0xE0 | entries);
+        }
+        fn array(out: &mut Vec<u8>, entries: u8) {
+            out.extend_from_slice(&[entries, 11 - 7]);
+        }
+        fn uint16(out: &mut Vec<u8>, v: u16) {
+            out.push(0xA2);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn uint32(out: &mut Vec<u8>, v: u32) {
+            out.push(0xC4);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn uint64(out: &mut Vec<u8>, v: u64) {
+            out.extend_from_slice(&[0x08, 9 - 7]);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+
+        // Binary trie: each node has [left, right] where `None` means "missing",
+        // `Some(NodeRef::Internal(idx))` points to another node, and
+        // `Some(NodeRef::Leaf(entry_idx))` points to an entry in `entries`.
+        #[derive(Clone, Copy)]
+        enum NodeRef {
+            Internal(usize),
+            Leaf(usize),
+        }
+        let mut nodes: Vec<[Option<NodeRef>; 2]> = vec![[None, None]];
+        for (entry_idx, (ip, _)) in entries.iter().enumerate() {
+            let bits = u32::from(*ip);
+            let mut cur = 0usize;
+            for shift in (0..32).rev() {
+                let bit = ((bits >> shift) & 1) as usize;
+                if shift == 0 {
+                    nodes[cur][bit] = Some(NodeRef::Leaf(entry_idx));
+                } else {
+                    match nodes[cur][bit] {
+                        Some(NodeRef::Internal(next)) => cur = next,
+                        _ => {
+                            let next = nodes.len();
+                            nodes.push([None, None]);
+                            nodes[cur][bit] = Some(NodeRef::Internal(next));
+                            cur = next;
+                        }
+                    }
+                }
+            }
+        }
+
+        let node_count = nodes.len() as u32;
+        let mut offsets = Vec::with_capacity(entries.len());
+        let mut data_section = Vec::new();
+        for (_, rec) in entries {
+            offsets.push(node_count + 16 + data_section.len() as u32);
+            data_section.extend_from_slice(rec);
+        }
+
+        let mut db = Vec::new();
+        for pair in &nodes {
+            for slot in pair {
+                let val: u32 = match slot {
+                    None => node_count, // MMDB sentinel: IP not found
+                    Some(NodeRef::Internal(i)) => *i as u32,
+                    Some(NodeRef::Leaf(i)) => offsets[*i],
+                };
+                db.extend_from_slice(&val.to_be_bytes()[1..]);
+            }
+        }
+        db.extend_from_slice(&[0; 16]);
+        db.extend_from_slice(&data_section);
+        db.extend_from_slice(b"\xab\xcd\xefMaxMind.com");
+        map(&mut db, 9);
+        text(&mut db, "binary_format_major_version");
+        uint16(&mut db, 2);
+        text(&mut db, "binary_format_minor_version");
+        uint16(&mut db, 0);
+        text(&mut db, "build_epoch");
+        uint64(&mut db, 1_790_812_800);
+        text(&mut db, "database_type");
+        text(&mut db, database_type);
+        text(&mut db, "description");
+        map(&mut db, 1);
+        text(&mut db, "en");
+        text(&mut db, "coords fixture");
+        text(&mut db, "ip_version");
+        uint16(&mut db, 4);
+        text(&mut db, "languages");
+        array(&mut db, 2);
+        text(&mut db, "en");
+        text(&mut db, "zh-CN");
+        text(&mut db, "node_count");
+        uint32(&mut db, node_count);
+        text(&mut db, "record_size");
+        uint16(&mut db, 24);
+        db
+    }
+
+    struct CityRecordSpec<'a> {
+        iso: Option<&'a str>,
+        country: Option<(Option<&'a str>, &'a str)>,
+        region: Option<(Option<&'a str>, &'a str)>,
+        city: Option<(Option<&'a str>, &'a str)>,
+        location: Option<(Option<f64>, Option<f64>, Option<u16>)>,
+    }
+
+    fn encode_mmdb_city_record(spec: CityRecordSpec<'_>) -> Vec<u8> {
+        fn text(out: &mut Vec<u8>, v: &str) {
+            assert!(v.len() < 29);
+            out.push(0x40 | v.len() as u8);
+            out.extend_from_slice(v.as_bytes());
+        }
+        fn map(out: &mut Vec<u8>, entries: u8) {
+            out.push(0xE0 | entries);
+        }
+        fn array(out: &mut Vec<u8>, entries: u8) {
+            out.extend_from_slice(&[entries, 11 - 7]);
+        }
+        fn uint16(out: &mut Vec<u8>, v: u16) {
+            out.push(0xA2);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn double(out: &mut Vec<u8>, v: f64) {
+            out.push(0x68);
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        fn names_map(out: &mut Vec<u8>, zh: Option<&str>, en: &str) {
+            if let Some(zh) = zh {
+                map(out, 2);
+                text(out, "en");
+                text(out, en);
+                text(out, "zh-CN");
+                text(out, zh);
+            } else {
+                map(out, 1);
+                text(out, "en");
+                text(out, en);
+            }
+        }
+
+        let has_country = spec.iso.is_some() || spec.country.is_some();
+        let count = u8::from(has_country)
+            + u8::from(spec.region.is_some())
+            + u8::from(spec.city.is_some())
+            + u8::from(spec.location.is_some());
+        let mut d = Vec::new();
+        map(&mut d, count);
+        if has_country {
+            text(&mut d, "country");
+            let c_fields = u8::from(spec.iso.is_some()) + u8::from(spec.country.is_some());
+            map(&mut d, c_fields);
+            if let Some(code) = spec.iso {
+                text(&mut d, "iso_code");
+                text(&mut d, code);
+            }
+            if let Some((czh, cen)) = spec.country {
+                text(&mut d, "names");
+                names_map(&mut d, czh, cen);
+            }
+        }
+        if let Some((rzh, ren)) = spec.region {
+            text(&mut d, "subdivisions");
+            array(&mut d, 1);
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names_map(&mut d, rzh, ren);
+        }
+        if let Some((czh, cen)) = spec.city {
+            text(&mut d, "city");
+            map(&mut d, 1);
+            text(&mut d, "names");
+            names_map(&mut d, czh, cen);
+        }
+        if let Some((lat, lon, acc)) = spec.location {
+            text(&mut d, "location");
+            let l_fields =
+                u8::from(lat.is_some()) + u8::from(lon.is_some()) + u8::from(acc.is_some());
+            map(&mut d, l_fields);
+            if let Some(v) = lat {
+                text(&mut d, "latitude");
+                double(&mut d, v);
+            }
+            if let Some(v) = lon {
+                text(&mut d, "longitude");
+                double(&mut d, v);
+            }
+            if let Some(v) = acc {
+                text(&mut d, "accuracy_radius");
+                uint16(&mut d, v);
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn geoip_location_emits_honest_coords_accuracy_and_geo_level_tiers() {
+        let entries = vec![
+            // Full city + coords + accuracy_radius -> Coords
+            (
+                "192.0.2.10".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("CN"),
+                    country: Some((Some("中国"), "China")),
+                    region: Some((Some("广东省"), "Guangdong")),
+                    city: Some((Some("深圳市"), "Shenzhen")),
+                    location: Some((Some(22.5431), Some(114.0579), Some(50))),
+                }),
+            ),
+            // City-state + coords without accuracy_radius (DBIP-City-Lite shape) -> Coords
+            (
+                "192.0.2.20".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("HK"),
+                    country: Some((Some("香港"), "Hong Kong")),
+                    region: None,
+                    city: Some((Some("香港"), "Hong Kong")),
+                    location: Some((Some(22.3193), Some(114.1694), None)),
+                }),
+            ),
+            // City + coords with accuracy_radius = 0 -> Coords with accuracy_radius_km = None
+            (
+                "192.0.2.21".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("JP"),
+                    country: Some((Some("日本"), "Japan")),
+                    region: Some((Some("东京都"), "Tokyo")),
+                    city: Some((Some("东京"), "Tokyo")),
+                    location: Some((Some(35.6895), Some(139.6917), Some(0))),
+                }),
+            ),
+            // City without location -> City, no coords
+            (
+                "198.51.100.10".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("US"),
+                    country: Some((None, "United States")),
+                    region: Some((None, "Texas")),
+                    city: Some((None, "Houston")),
+                    location: None,
+                }),
+            ),
+            // Region-only WITH province centroid coords -> Region, centroid suppressed!
+            (
+                "198.51.100.20".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("CN"),
+                    country: Some((Some("中国"), "China")),
+                    region: Some((Some("广东省"), "Guangdong")),
+                    city: None,
+                    location: Some((Some(23.1291), Some(113.2644), Some(200))),
+                }),
+            ),
+            // Country-only WITH GeoLite2 country centroid + 1000 km radius -> Country, centroid suppressed!
+            (
+                "203.0.113.10".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("US"),
+                    country: Some((None, "United States")),
+                    region: None,
+                    city: None,
+                    location: Some((Some(37.751), Some(-97.822), Some(1000))),
+                }),
+            ),
+            // Continent/bare-location record with no country/region/city -> None
+            (
+                "203.0.113.11".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: None,
+                    country: None,
+                    region: None,
+                    city: None,
+                    location: Some((Some(47.0), Some(8.0), Some(1000))),
+                }),
+            ),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("city-coords.mmdb");
+        std::fs::write(&path, build_ipv4_mmdb("GeoLite2-City", &entries)).unwrap();
+        let g = GeoIp::open(path.to_str());
+
+        // 1. Full city + coords + accuracy_radius
+        let loc = g.lookup_location("192.0.2.10".parse().unwrap());
+        assert_eq!(
+            loc,
+            GeoIpLocation {
+                country_code: Some("CN".into()),
+                country: Some("中国".into()),
+                region: Some("广东省".into()),
+                city: Some("深圳市".into()),
+                lat: Some(22.5431),
+                lon: Some(114.0579),
+                accuracy_radius_km: Some(50),
+                geo_level: Some(GeoLevel::Coords),
+            }
+        );
+
+        // 2. City-state + coords without accuracy_radius
+        let hk = g.lookup_location("192.0.2.20".parse().unwrap());
+        assert_eq!(hk.lat, Some(22.3193));
+        assert_eq!(hk.lon, Some(114.1694));
+        assert_eq!(hk.accuracy_radius_km, None);
+        assert_eq!(hk.geo_level, Some(GeoLevel::Coords));
+
+        // 3. Zero accuracy_radius filtered to None while keeping Coords
+        let jp = g.lookup_location("192.0.2.21".parse().unwrap());
+        assert_eq!(jp.lat, Some(35.6895));
+        assert_eq!(jp.lon, Some(139.6917));
+        assert_eq!(jp.accuracy_radius_km, None);
+        assert_eq!(jp.geo_level, Some(GeoLevel::Coords));
+
+        // 4. City without location -> City
+        let city_only = g.lookup_location("198.51.100.10".parse().unwrap());
+        assert_eq!(city_only.city.as_deref(), Some("Houston"));
+        assert_eq!(city_only.lat, None);
+        assert_eq!(city_only.lon, None);
+        assert_eq!(city_only.accuracy_radius_km, None);
+        assert_eq!(city_only.geo_level, Some(GeoLevel::City));
+
+        // 5. Region-only with province centroid -> Region, coords suppressed
+        let region_only = g.lookup_location("198.51.100.20".parse().unwrap());
+        assert_eq!(region_only.region.as_deref(), Some("广东省"));
+        assert_eq!(region_only.city, None);
+        assert_eq!(region_only.lat, None);
+        assert_eq!(region_only.lon, None);
+        assert_eq!(region_only.accuracy_radius_km, None);
+        assert_eq!(region_only.geo_level, Some(GeoLevel::Region));
+
+        // 6. Country-only with 1000 km centroid -> Country, coords suppressed
+        let country_only = g.lookup_location("203.0.113.10".parse().unwrap());
+        assert_eq!(country_only.country_code.as_deref(), Some("US"));
+        assert_eq!(country_only.region, None);
+        assert_eq!(country_only.city, None);
+        assert_eq!(country_only.lat, None);
+        assert_eq!(country_only.lon, None);
+        assert_eq!(country_only.accuracy_radius_km, None);
+        assert_eq!(country_only.geo_level, Some(GeoLevel::Country));
+
+        // 7. Bare coords without admin entity -> Default (all None)
+        assert_eq!(
+            g.lookup_location("203.0.113.11".parse().unwrap()),
+            GeoIpLocation::default()
+        );
+
+        // 8. IP not in MMDB, private/CGNAT/loopback IPs, or disabled GeoIp -> all None
+        for ip in ["203.0.113.99", "10.0.0.1", "100.64.0.1", "127.0.0.1"] {
+            assert_eq!(
+                g.lookup_location(ip.parse().unwrap()),
+                GeoIpLocation::default(),
+                "expected empty GeoIpLocation for {ip}"
+            );
+        }
+        assert_eq!(
+            GeoIp::open(None).lookup_location("192.0.2.10".parse().unwrap()),
+            GeoIpLocation::default()
+        );
+
+        // 9. `effective_geo_level` falls back to Country only when MMDB yielded None
+        assert_eq!(loc.effective_geo_level(Some("CN")), Some(GeoLevel::Coords));
+        assert_eq!(
+            GeoIpLocation::default().effective_geo_level(Some("CN")),
+            Some(GeoLevel::Country)
+        );
+        assert_eq!(
+            GeoIpLocation::default().effective_geo_level(Some("  ")),
+            None
+        );
+        assert_eq!(GeoIpLocation::default().effective_geo_level(None), None);
+    }
+
+    #[test]
+    fn geoip_location_rejects_invalid_nan_out_of_range_and_null_island_coords() {
+        let austin_with = |location| {
+            encode_mmdb_city_record(CityRecordSpec {
+                iso: Some("US"),
+                country: Some((None, "United States")),
+                region: Some((None, "Texas")),
+                city: Some((None, "Austin")),
+                location: Some(location),
+            })
+        };
+        let entries = vec![
+            (
+                "192.0.2.1".parse().unwrap(),
+                austin_with((Some(f64::NAN), Some(-97.7431), Some(20))),
+            ),
+            (
+                "192.0.2.2".parse().unwrap(),
+                austin_with((Some(f64::INFINITY), Some(-97.7431), Some(20))),
+            ),
+            (
+                "192.0.2.3".parse().unwrap(),
+                austin_with((Some(90.001), Some(-97.7431), Some(20))),
+            ),
+            (
+                "192.0.2.4".parse().unwrap(),
+                austin_with((Some(-91.0), Some(-97.7431), Some(20))),
+            ),
+            (
+                "192.0.2.5".parse().unwrap(),
+                austin_with((Some(30.2672), Some(180.5), Some(20))),
+            ),
+            (
+                "192.0.2.6".parse().unwrap(),
+                austin_with((Some(30.2672), Some(-181.0), Some(20))),
+            ),
+            (
+                "192.0.2.7".parse().unwrap(),
+                austin_with((Some(30.2672), None, Some(20))),
+            ),
+            (
+                "192.0.2.8".parse().unwrap(),
+                austin_with((Some(0.0), Some(0.0), Some(20))),
+            ),
+            // Valid equator coordinate with negative-zero lat normalized to +0.0
+            (
+                "192.0.2.9".parse().unwrap(),
+                encode_mmdb_city_record(CityRecordSpec {
+                    iso: Some("SG"),
+                    country: Some((Some("新加坡"), "Singapore")),
+                    region: None,
+                    city: Some((Some("新加坡"), "Singapore")),
+                    location: Some((Some(-0.0), Some(103.8198), Some(10))),
+                }),
+            ),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid-coords.mmdb");
+        std::fs::write(&path, build_ipv4_mmdb("GeoLite2-City", &entries)).unwrap();
+        let g = GeoIp::open(path.to_str());
+
+        for last_octet in 1..=8 {
+            let ip: IpAddr = format!("192.0.2.{last_octet}").parse().unwrap();
+            let loc = g.lookup_location(ip);
+            assert_eq!(loc.city.as_deref(), Some("Austin"), "for {ip}");
+            assert_eq!(loc.lat, None, "invalid lat must be rejected for {ip}");
+            assert_eq!(loc.lon, None, "invalid lon must be rejected for {ip}");
+            assert_eq!(
+                loc.accuracy_radius_km, None,
+                "accuracy_radius_km must be dropped when coords rejected for {ip}"
+            );
+            assert_eq!(
+                loc.geo_level,
+                Some(GeoLevel::City),
+                "must downgrade honestly to City for {ip}"
+            );
+        }
+
+        let sg = g.lookup_location("192.0.2.9".parse().unwrap());
+        assert_eq!(sg.lat, Some(0.0));
+        assert!(sg.lat.unwrap().is_sign_positive());
+        assert_eq!(sg.lon, Some(103.8198));
+        assert_eq!(sg.accuracy_radius_km, Some(10));
+        assert_eq!(sg.geo_level, Some(GeoLevel::Coords));
+
+        // Direct boundary checks on valid_wgs84_coords
+        assert_eq!(
+            valid_wgs84_coords(Some(90.0), Some(180.0)),
+            Some((90.0, 180.0))
+        );
+        assert_eq!(
+            valid_wgs84_coords(Some(-90.0), Some(-180.0)),
+            Some((-90.0, -180.0))
+        );
+        assert_eq!(
+            valid_wgs84_coords(Some(51.5074), Some(0.0)),
+            Some((51.5074, 0.0))
+        );
+        assert_eq!(valid_wgs84_coords(Some(f64::NEG_INFINITY), Some(0.0)), None);
+        assert_eq!(valid_wgs84_coords(Some(-0.0), Some(-0.0)), None);
+
+        // Serialization omits None precision fields cleanly
+        let empty_json = serde_json::to_value(GeoIpLocation::default()).unwrap();
+        for key in ["lat", "lon", "accuracy_radius_km", "geo_level"] {
+            assert!(empty_json.get(key).is_none());
+        }
     }
 
     #[test]

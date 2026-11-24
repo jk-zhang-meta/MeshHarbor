@@ -71,7 +71,7 @@ pub struct DevicesQuery {
 /// ⚠️ Deliberately absent, by shape: `machine_id`, owner ids, WireGuard keys,
 /// consent settings, codecs. The server never sends them on this route and a
 /// device has no business holding them.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct DeviceRowLite {
     /// `agent` | `tunnel_client`.
     #[serde(default, deserialize_with = "null_as_default")]
@@ -145,6 +145,14 @@ pub struct DeviceRowLite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accuracy_radius_km: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_zone_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_zone_id: Option<String>,
@@ -154,7 +162,7 @@ pub struct DeviceRowLite {
 
 /// One page of [`DeviceRowLite`]s plus the envelope — the answer to
 /// [`crate::Request::Devices`].
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct DevicesPage {
     /// Which enrollment the page is for (`primary` or an `[[orgs]]` label).
     /// Stamped by the DAEMON, not the server: the server knows only the
@@ -441,6 +449,10 @@ mod tests {
             country: None,
             region: None,
             city: None,
+            lat: None,
+            lon: None,
+            accuracy_radius_km: None,
+            geo_level: None,
             pinned_zone_id: None,
             effective_zone_id: None,
             effective_zone_name: None,

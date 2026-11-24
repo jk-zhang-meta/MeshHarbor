@@ -373,6 +373,10 @@ pub async fn devices(
             r.country = None;
             r.region = None;
             r.city = None;
+            r.lat = None;
+            r.lon = None;
+            r.accuracy_radius_km = None;
+            r.geo_level = None;
             r.pinned_zone_id = None;
             r.effective_zone_id = None;
             r.effective_zone_name = None;
@@ -423,6 +427,10 @@ pub async fn devices(
                 country: r.country,
                 region: r.region,
                 city: r.city,
+                lat: r.lat,
+                lon: r.lon,
+                accuracy_radius_km: r.accuracy_radius_km,
+                geo_level: r.geo_level,
                 pinned_zone_id: r.pinned_zone_id,
                 effective_zone_id: r.effective_zone_id,
                 effective_zone_name: r.effective_zone_name,
