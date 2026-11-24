@@ -1,0 +1,809 @@
+{
+  "12:Ji County": [
+    "蓟州区"
+  ],
+  "12:Lunan District": [
+    "路南区"
+  ],
+  "13:Luan County": [
+    "滦州市"
+  ],
+  "13:Ren County": [
+    "任泽区"
+  ],
+  "14:Nanjiao District": [
+    "南郊区"
+  ],
+  "14:矿区": [
+    "矿区",
+    "Kuangqu District"
+  ],
+  "15:Abag Banner": [
+    "阿巴嘎旗"
+  ],
+  "15:Alxa Left Banner": [
+    "阿拉善左旗"
+  ],
+  "15:Alxa Right Banner": [
+    "阿拉善右旗"
+  ],
+  "15:Ar Khorchin Banner": [
+    "阿鲁科尔沁旗"
+  ],
+  "15:Arun Banner": [
+    "阿荣旗"
+  ],
+  "15:Arxan City": [
+    "阿尔山市"
+  ],
+  "15:Baarin Left Banner": [
+    "巴林左旗"
+  ],
+  "15:Baarin Right Banner": [
+    "巴林右旗"
+  ],
+  "15:Bayan Obo Mining District": [
+    "白云鄂博矿区"
+  ],
+  "15:Bordered Yellow Banner": [
+    "镶黄旗"
+  ],
+  "15:Chahar Right Back Banner": [
+    "察哈尔右翼后旗"
+  ],
+  "15:Chahar Right Front Banner": [
+    "察哈尔右翼前旗"
+  ],
+  "15:Chahar Right Middle Banner": [
+    "察哈尔右翼中旗"
+  ],
+  "15:Dalad Banner": [
+    "达拉特旗"
+  ],
+  "15:Darhan Muminggan United Banner": [
+    "达尔罕茂明安联合旗"
+  ],
+  "15:East Ujimqin Banner": [
+    "东乌珠穆沁旗"
+  ],
+  "15:Ejin Banner": [
+    "额济纳旗"
+  ],
+  "15:Ejin Horo Banner": [
+    "伊金霍洛旗"
+  ],
+  "15:Erenhot City": [
+    "二连浩特市"
+  ],
+  "15:Ergun": [
+    "额尔古纳市",
+    "Ergun City"
+  ],
+  "15:Evenk Autonomous Banner": [
+    "鄂温克族自治旗"
+  ],
+  "15:Hailar": [
+    "海拉尔区"
+  ],
+  "15:Hanggin Banner": [
+    "杭锦旗"
+  ],
+  "15:Hanggin Rear Banner": [
+    "杭锦后旗"
+  ],
+  "15:Hexigten Banner": [
+    "克什克腾旗"
+  ],
+  "15:Holingol City": [
+    "霍林郭勒市"
+  ],
+  "15:Hondlon District": [
+    "昆都仑区"
+  ],
+  "15:Horinger": [
+    "和林格尔县"
+  ],
+  "15:Horqin District": [
+    "科尔沁区"
+  ],
+  "15:Horqin Left Back Banner": [
+    "科尔沁左翼后旗"
+  ],
+  "15:Horqin Left Middle Banner": [
+    "科尔沁左翼中旗"
+  ],
+  "15:Horqin Right Front Banner": [
+    "科尔沁右翼前旗"
+  ],
+  "15:Horqin Right Middle Banner": [
+    "科尔沁右翼中旗"
+  ],
+  "15:Hure Banner": [
+    "库伦旗"
+  ],
+  "15:Jalaid Banner": [
+    "扎赉特旗"
+  ],
+  "15:Jarud Banner": [
+    "扎鲁特旗"
+  ],
+  "15:Jungar Banner": [
+    "准格尔旗"
+  ],
+  "15:Kharchin Banner": [
+    "喀喇沁旗"
+  ],
+  "15:Morin Dawa Daur": [
+    "莫力达瓦达斡尔族自治旗"
+  ],
+  "15:New Barga Left Banner": [
+    "新巴尔虎左旗"
+  ],
+  "15:New Barga Right Banner": [
+    "新巴尔虎右旗"
+  ],
+  "15:Old Barga Banner": [
+    "陈巴尔虎旗"
+  ],
+  "15:Ongniud Banner": [
+    "翁牛特旗"
+  ],
+  "15:Oroqen Autonomous Banner": [
+    "鄂伦春自治旗"
+  ],
+  "15:Otog Banner": [
+    "鄂托克旗"
+  ],
+  "15:Otog Front Banner": [
+    "鄂托克前旗"
+  ],
+  "15:Plain Blue Banner": [
+    "正蓝旗"
+  ],
+  "15:Plain and Bordered White Banner": [
+    "正镶白旗"
+  ],
+  "15:Sonid Left Banner": [
+    "苏尼特左旗"
+  ],
+  "15:Sonid Right Banner": [
+    "苏尼特右旗"
+  ],
+  "15:Taibus Banner": [
+    "太仆寺旗"
+  ],
+  "15:Togtoh County": [
+    "托克托县"
+  ],
+  "15:Tumed Left Banner": [
+    "土默特左旗"
+  ],
+  "15:Tumed Right Banner": [
+    "土默特右旗"
+  ],
+  "15:Ulanhot City": [
+    "乌兰浩特市"
+  ],
+  "15:Urat Front Banner": [
+    "乌拉特前旗"
+  ],
+  "15:Urat Middle Banner": [
+    "乌拉特中旗"
+  ],
+  "15:Urat Rear Banner": [
+    "乌拉特后旗"
+  ],
+  "15:Uxin Banner": [
+    "乌审旗"
+  ],
+  "15:West Ujimqin Banner": [
+    "西乌珠穆沁旗"
+  ],
+  "15:Xilinhot City": [
+    "锡林浩特市"
+  ],
+  "15:康巴什区": [
+    "康巴什区",
+    "Kangbashi District"
+  ],
+  "21:Harqin Left Wing Mongolian Autonomous County": [
+    "喀喇沁左翼蒙古族自治县"
+  ],
+  "21:兴隆台区 (Xīnglóngtái Qū)": [
+    "兴隆台区",
+    "Xinglongtai District"
+  ],
+  "21:雙臺子區 (Shuāngtáizi Qū)": [
+    "双台子区",
+    "Shuangtaizi District"
+  ],
+  "22:Changbai Korean Autonomous County": [
+    "长白朝鲜族自治县"
+  ],
+  "22:Qian Gorlos Mongol Autonomous County": [
+    "前郭尔罗斯蒙古族自治县"
+  ],
+  "23:Cuiluan District": [
+    "翠峦区"
+  ],
+  "23:Dailing District": [
+    "带岭区"
+  ],
+  "23:Dorbod-Mongol Autonomous County": [
+    "杜尔伯特蒙古族自治县"
+  ],
+  "23:Fularji District": [
+    "富拉尔基区"
+  ],
+  "23:Hongxing District": [
+    "红星区"
+  ],
+  "23:Jinshantun District": [
+    "金山屯区"
+  ],
+  "23:Meixi District": [
+    "美溪区"
+  ],
+  "23:Sartu District": [
+    "萨尔图区"
+  ],
+  "23:Shangganling District": [
+    "上甘岭区"
+  ],
+  "23:Tangwanghe District": [
+    "汤旺河区"
+  ],
+  "23:Wumahe District": [
+    "乌马河区"
+  ],
+  "23:Wuyiling District": [
+    "乌伊岭区"
+  ],
+  "23:Wuying District": [
+    "五营区"
+  ],
+  "23:Xilin District": [
+    "西林区"
+  ],
+  "23:Xinqing District": [
+    "新青区"
+  ],
+  "32:Gangzha District": [
+    "港闸区"
+  ],
+  "32:Qinghe District": [
+    "清河区"
+  ],
+  "32:Qingpu District": [
+    "清江浦区"
+  ],
+  "32:虎丘区": [
+    "虎丘区",
+    "Huqiu District"
+  ],
+  "33:Jianggan District": [
+    "江干区"
+  ],
+  "33:Xiacheng District": [
+    "下城区"
+  ],
+  "34:Sanshan District": [
+    "三山区"
+  ],
+  "35:Meilie District": [
+    "梅列区"
+  ],
+  "35:Sha County": [
+    "沙县"
+  ],
+  "36:Gan County": [
+    "赣县"
+  ],
+  "36:Wanli District": [
+    "湾里区"
+  ],
+  "36:珠山区": [
+    "珠山区",
+    "Zhushan District"
+  ],
+  "37:Changdao County": [
+    "长岛县"
+  ],
+  "37:Laicheng District": [
+    "莱城区"
+  ],
+  "37:费县 Feixian": [
+    "费县",
+    "Fei County"
+  ],
+  "41:Jili District": [
+    "吉利区"
+  ],
+  "42:下陆区": [
+    "下陆区",
+    "Xialu District"
+  ],
+  "44:金湾区": [
+    "金湾区",
+    "Jinwan District"
+  ],
+  "45:Heng County": [
+    "横县"
+  ],
+  "46:Donghu District": [
+    "秀英区",
+    "Xiuying District"
+  ],
+  "51:Barkam County": [
+    "马尔康县"
+  ],
+  "51:Dawu County": [
+    "道孚县"
+  ],
+  "51:Garzê County": [
+    "甘孜县"
+  ],
+  "51:Ngawa County": [
+    "阿坝县"
+  ],
+  "51:Pi County": [
+    "郫县"
+  ],
+  "51:Sêrtar County": [
+    "色达县"
+  ],
+  "51:Sêrxü County": [
+    "石渠县"
+  ],
+  "51:Zamthang County": [
+    "壤塘县"
+  ],
+  "51:Zoigê County": [
+    "若尔盖县"
+  ],
+  "53:Dêqên": [
+    "德钦县"
+  ],
+  "53:Shangri-La County": [
+    "香格里拉县"
+  ],
+  "54:Amdo County": [
+    "安多县"
+  ],
+  "54:Bainang County": [
+    "白朗县"
+  ],
+  "54:Baingoin County": [
+    "班戈县"
+  ],
+  "54:Banbar County": [
+    "边坝县"
+  ],
+  "54:Baqên County": [
+    "巴青县"
+  ],
+  "54:Baxoi County": [
+    "八宿县"
+  ],
+  "54:Bomê County": [
+    "波密县"
+  ],
+  "54:Burang County": [
+    "普兰县"
+  ],
+  "54:Comai County": [
+    "措美县"
+  ],
+  "54:Coqên County": [
+    "措勤县"
+  ],
+  "54:Dagzê County": [
+    "达孜县"
+  ],
+  "54:Damxung County": [
+    "当雄县"
+  ],
+  "54:Dinggyê County": [
+    "定结县"
+  ],
+  "54:Doilungdêqên District": [
+    "堆龙德庆区"
+  ],
+  "54:Dêngqên County": [
+    "丁青县"
+  ],
+  "54:Gamba County": [
+    "岗巴县"
+  ],
+  "54:Gar County": [
+    "噶尔县"
+  ],
+  "54:Gongbo'gyamda County": [
+    "工布江达县"
+  ],
+  "54:Gonggar County": [
+    "贡嘎县"
+  ],
+  "54:Gonjo County": [
+    "贡觉县"
+  ],
+  "54:Gyaca County": [
+    "加查县"
+  ],
+  "54:Gyantse County": [
+    "江孜县"
+  ],
+  "54:Gyirong County": [
+    "吉隆县"
+  ],
+  "54:Gê'gyai County": [
+    "革吉县"
+  ],
+  "54:Gêrzê County": [
+    "改则县"
+  ],
+  "54:Jomda County": [
+    "江达县"
+  ],
+  "54:Kangmar County": [
+    "康马县"
+  ],
+  "54:Karub District": [
+    "卡若区"
+  ],
+  "54:Lhari County": [
+    "嘉黎县"
+  ],
+  "54:Lhatse": [
+    "拉孜县"
+  ],
+  "54:Lhorong County": [
+    "洛隆县"
+  ],
+  "54:Lhünzhub County": [
+    "林周县"
+  ],
+  "54:Lhünzê County": [
+    "隆子县"
+  ],
+  "54:Lozhag County": [
+    "洛扎县"
+  ],
+  "54:Mainling County": [
+    "米林县"
+  ],
+  "54:Maizhokunggar County": [
+    "墨竹工卡县"
+  ],
+  "54:Markam County": [
+    "芒康县"
+  ],
+  "54:Nagarzê County": [
+    "浪卡子县"
+  ],
+  "54:Nagqu County": [
+    "色尼区"
+  ],
+  "54:Namling County": [
+    "南木林县"
+  ],
+  "54:Nang County": [
+    "朗县"
+  ],
+  "54:Ngamring County": [
+    "昂仁县"
+  ],
+  "54:Nyainrong County": [
+    "聂荣县"
+  ],
+  "54:Nyalam County": [
+    "聂拉木县"
+  ],
+  "54:Nyima County": [
+    "尼玛县"
+  ],
+  "54:Nyêmo County": [
+    "尼木县"
+  ],
+  "54:Nêdong District": [
+    "乃东区"
+  ],
+  "54:Qonggyai County": [
+    "琼结县"
+  ],
+  "54:Qusum County": [
+    "曲松县"
+  ],
+  "54:Qüxü County": [
+    "曲水县"
+  ],
+  "54:Rinbung County": [
+    "仁布县"
+  ],
+  "54:Riwoqê County": [
+    "类乌齐县"
+  ],
+  "54:Rutog County": [
+    "日土县"
+  ],
+  "54:Sa'gya County": [
+    "萨迦县"
+  ],
+  "54:Samzhubzê District": [
+    "桑珠孜区"
+  ],
+  "54:Sog County": [
+    "索县"
+  ],
+  "54:Tingri County": [
+    "定日县"
+  ],
+  "54:Xainza County": [
+    "申扎县"
+  ],
+  "54:Xaitongmoin County": [
+    "谢通门县"
+  ],
+  "54:Zayü County": [
+    "察隅县"
+  ],
+  "54:Zhag'yab County": [
+    "察雅县"
+  ],
+  "54:Zogang County": [
+    "左贡县"
+  ],
+  "61:Bin County": [
+    "彬县"
+  ],
+  "61:Hu County": [
+    "户县"
+  ],
+  "62:Bairi Tibetan Autonomous County": [
+    "天祝藏族自治县"
+  ],
+  "62:Changcheng District": [
+    "长城区"
+  ],
+  "62:Dongxiang Autonomous County": [
+    "东乡族自治县"
+  ],
+  "62:Jingtie District": [
+    "镜铁区"
+  ],
+  "62:Jonê County": [
+    "卓尼县"
+  ],
+  "62:Têwo County": [
+    "迭部县"
+  ],
+  "62:Xiongguan District": [
+    "雄关区"
+  ],
+  "62:Zhugqu County": [
+    "舟曲县"
+  ],
+  "63:Aksai Kazakh Autonomous County": [
+    "阿克塞哈萨克族自治县"
+  ],
+  "63:Chindu County": [
+    "称多县"
+  ],
+  "63:Da Qaidam Administrative Zone": [
+    "大柴旦行委"
+  ],
+  "63:Darlag County": [
+    "达日县"
+  ],
+  "63:Gadê County": [
+    "甘德县"
+  ],
+  "63:Gangca County": [
+    "刚察县"
+  ],
+  "63:Golmud City": [
+    "格尔木市"
+  ],
+  "63:Jainca County": [
+    "尖扎县"
+  ],
+  "63:Jigzhi County": [
+    "久治县"
+  ],
+  "63:Lenghu Administrative Zone": [
+    "冷湖行委"
+  ],
+  "63:Madoi County": [
+    "玛多县"
+  ],
+  "63:Mangnai Administrative Zone": [
+    "茫崖市"
+  ],
+  "63:Maqên County": [
+    "玛沁县"
+  ],
+  "63:Nangchen County": [
+    "囊谦县"
+  ],
+  "63:Qumarlêb County": [
+    "曲麻莱县"
+  ],
+  "63:Ulan County": [
+    "乌兰县"
+  ],
+  "63:Zadoi County": [
+    "杂多县"
+  ],
+  "63:Zhidoi County": [
+    "治多县"
+  ],
+  "63:Zêkog County": [
+    "泽库县"
+  ],
+  "65:Akqi County": [
+    "阿合奇县"
+  ],
+  "65:Aksu City": [
+    "阿克苏市"
+  ],
+  "65:Akto County": [
+    "阿克陶县"
+  ],
+  "65:Altay City": [
+    "阿勒泰市"
+  ],
+  "65:Aral City": [
+    "阿拉尔市"
+  ],
+  "65:Artux City": [
+    "阿图什市"
+  ],
+  "65:Awat County": [
+    "阿瓦提县"
+  ],
+  "65:Bagrax County": [
+    "博湖县"
+  ],
+  "65:Barköl Kazakh Autonomous County": [
+    "巴里坤哈萨克自治县"
+  ],
+  "65:Burqin County": [
+    "布尔津县"
+  ],
+  "65:Hoboksar Mongol Autonomous County": [
+    "和布克塞尔蒙古自治县"
+  ],
+  "65:Hotan County": [
+    "和田县"
+  ],
+  "65:Hoxud County": [
+    "和硕县"
+  ],
+  "65:Jeminay County": [
+    "吉木乃县"
+  ],
+  "65:Jimsar County": [
+    "吉木萨尔县"
+  ],
+  "65:Kalpin County": [
+    "柯坪县"
+  ],
+  "65:Karakax County": [
+    "墨玉县"
+  ],
+  "65:Karamay District": [
+    "克拉玛依区"
+  ],
+  "65:Kargilik County": [
+    "叶城县"
+  ],
+  "65:Kashgar City": [
+    "喀什市"
+  ],
+  "65:Keriya County": [
+    "于田县"
+  ],
+  "65:Kokdala": [
+    "可克达拉市",
+    "Kokdala City"
+  ],
+  "65:Korla": [
+    "库尔勒市"
+  ],
+  "65:Kuqa County": [
+    "库车县"
+  ],
+  "65:Kuytun City": [
+    "奎屯市"
+  ],
+  "65:Lop County": [
+    "洛浦县"
+  ],
+  "65:Makit County": [
+    "麦盖提县"
+  ],
+  "65:Manas County": [
+    "玛纳斯县"
+  ],
+  "65:Maralbexi County": [
+    "巴楚县"
+  ],
+  "65:Mori Kazakh Autonomous County": [
+    "木垒哈萨克自治县"
+  ],
+  "65:Nilka County": [
+    "尼勒克县"
+  ],
+  "65:Peyziwat County": [
+    "伽师县"
+  ],
+  "65:Poskam County": [
+    "泽普县"
+  ],
+  "65:Qapqal Xibe Autonomous County": [
+    "察布查尔锡伯自治县"
+  ],
+  "65:Qira County": [
+    "策勒县"
+  ],
+  "65:Saybagh District": [
+    "沙依巴克区"
+  ],
+  "65:Taxkorgan Tajik Autonomous County": [
+    "塔什库尔干塔吉克自治县"
+  ],
+  "65:Tekes County": [
+    "特克斯县"
+  ],
+  "65:Toksu County": [
+    "新和县"
+  ],
+  "65:Toksun County": [
+    "托克逊县"
+  ],
+  "65:Toli County": [
+    "托里县"
+  ],
+  "65:Tumxuk City": [
+    "图木舒克市"
+  ],
+  "65:Ulugqat County": [
+    "乌恰县"
+  ],
+  "65:Uqturpan County": [
+    "乌什县"
+  ],
+  "65:Urho District": [
+    "乌尔禾区"
+  ],
+  "65:Usu City": [
+    "乌苏市"
+  ],
+  "65:Xayar County": [
+    "沙雅县"
+  ],
+  "65:Yarkant": [
+    "莎车县"
+  ],
+  "65:Yengisar County": [
+    "英吉沙县"
+  ],
+  "65:Yopurga County": [
+    "岳普湖县"
+  ],
+  "65:Ürümqi County": [
+    "乌鲁木齐县"
+  ],
+  "65:和田市 (Hotan)خوتەن شەھىرى": [
+    "和田市",
+    "Hotan City"
+  ],
+  "65:铁门关市": [
+    "铁门关市",
+    "Tiemenguan City"
+  ],
+  "65:霍尔果斯市": [
+    "霍尔果斯市",
+    "Khorgas City"
+  ]
+}

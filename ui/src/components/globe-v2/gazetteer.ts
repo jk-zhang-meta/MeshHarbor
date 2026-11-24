@@ -53,9 +53,9 @@ export const NEUTRAL_REGION_OVERRIDES: Readonly<
 
 /** Required map data attribution strings (FR-136 S6). */
 export const ATTRIBUTION_TEXT: Readonly<{ en: string; 'zh-CN': string }> = {
-  en: 'Boundaries: Natural Earth (public domain); geoBoundaries (CC BY 4.0), incl. © OpenStreetMap contributors (ODbL)',
+  en: 'Boundaries: Natural Earth (public domain); geoBoundaries (CC BY 4.0); © OpenStreetMap contributors (ODbL); UN OCHA (CC BY-IGO)',
   'zh-CN':
-    '边界：Natural Earth（公有领域）；geoBoundaries（CC BY 4.0），含 © OpenStreetMap 贡献者（ODbL）数据',
+    '边界：Natural Earth（公有领域）；geoBoundaries（CC BY 4.0）；© OpenStreetMap 贡献者（ODbL）；UN OCHA（CC BY-IGO）',
 }
 
 // Keep synchronized verbatim with `TRAD_TO_SIMP` in scripts/globe/build-gazetteer.py

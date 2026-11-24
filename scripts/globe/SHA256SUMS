@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Expected SHA-256 of the P1 mh-boundaries-v1.pmtiles artifact built by
-# scripts/globe/build-boundaries.sh (z0..z8 global NE admin-0 + global
-# geoBoundaries CGAZ ADM1/ADM2 + NE HK/MO patch, 21,626,627 bytes).
-ac2993c247acdb124fb2bbd25fd612580f44014ed3c573d0e616bf9fe52d3dd5  mh-boundaries-v1.pmtiles
+# scripts/globe/build-boundaries.sh (z0..z9 global NE admin-0 + global
+# geoBoundaries CGAZ ADM1/ADM2 + NE HK/MO patch + China 4-level boundaries
+# admin2_pref/admin2 + label_admin2, 34,700,500 bytes).
+7a86fcccaa306e25b7694074e2ad1d22e4200010c839218d62b50f21ebf42399  mh-boundaries-v1.pmtiles

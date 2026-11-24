@@ -3,25 +3,38 @@
 # Copyright (C) 2026 G ROX EOOD
 #
 # Reproducibly build:
-#   1) ui/public/geo/mh-boundaries-v1.pmtiles (z0..z8, <= 25 MB, gitignored)
+#   1) ui/public/geo/mh-boundaries-v1.pmtiles (z0..z9, <= 40 MB, gitignored)
 #   2) ui/src/components/globe-v2/data/gazetteer-v1.json (<= 150 KB gz)
-# from pinned Natural Earth 5.1.2 (public domain) + global geoBoundaries CGAZ
-# ADM1/ADM2 (CC BY 4.0 / ODbL) sources listed in scripts/globe/SOURCES.lock.
+# from pinned Natural Earth 5.1.2 (public domain), global geoBoundaries CGAZ
+# ADM1/ADM2 (CC BY 4.0 / ODbL), geoBoundaries CHN ADM3 (OSM ODbL 1.0),
+# UN OCHA COD-AB China 2020 (CC BY-IGO), and GB/T 2260 / pinyin tables
+# listed in scripts/globe/SOURCES.lock.
 #
-# Policy (FR-136 S1 / S4 / S6 / S11 / AC6 / AC7):
-# - Admin-0 de facto boundary lines come ONLY from Natural Earth
-#   (disputed segments flagged cls="disputed" for dashed [3,2], limits
-#   cls="limit" for dotted [0,2]; claim lines from disputed_areas are NEVER
-#   included; international borders are NEVER taken from CGAZ).
-# - Admin-1 internal shared lines come from global geoBoundaries CGAZ ADM1
-#   (`-simplify 5% weighted keep-shapes -split shapeGroup -innerlines`),
-#   clipped to NE world mask, with Hong Kong & Macau patched from NE 10m
-#   admin-1 internal lines.
-# - Admin-2 internal shared lines come from global geoBoundaries CGAZ ADM2
-#   (`-simplify 5% weighted keep-shapes -split shapeGroup -innerlines`),
-#   clipped to NE world mask, suppressing segments strictly coincident with
-#   admin-1, tagged with `cc` (ISO-3 uppercase for style.ts `cc == "CHN"`
-#   filter) and `iso_a2` (ISO-2 uppercase).
+# Policy (FR-136 S1 / S4 / S6 / S11 / AC6 / AC7 + China 4-level zoom):
+# - Level 0 (`admin0`, z0..z9): de facto country boundary lines come ONLY from
+#   Natural Earth (disputed segments cls="disputed", limits cls="limit";
+#   international borders are NEVER taken from OSM/CGAZ/OCHA).
+# - Level 1 (`admin1`, z2..z9):
+#   - Outside China (`cc !== "CHN"`): global geoBoundaries CGAZ ADM1 internal
+#     shared lines + Natural Earth 10m HK/MO patch, clipped to NE world mask.
+#   - China (`cc === "CHN"`): 31 mainland provinces dissolved from unified
+#     geoBoundaries CHN ADM3 topology, clipped strictly to NE de facto CHN mask
+#     (excluding TW/HK/MO/territories outside NE CHN).
+# - Level 2 (`admin2_pref`, z5..z9, `cc="CHN"`, `iso_a2="CN"`):
+#   - China prefecture-level city internal lines (市界, ~358 prefecture units
+#     across 31 mainland provinces), dissolved from the same unified topology
+#     with `-split ocha_p1 -innerlines` so ZERO province/country borders leak.
+# - Level 3 (`admin2`):
+#   - Outside China (`cc !== "CHN"`, z5..z9): global geoBoundaries CGAZ ADM2
+#     internal shared lines, clipped to NE world mask, ADM1-coincident segments
+#     suppressed.
+#   - China (`cc === "CHN"`, z7..z9): ~2,847 modern mainland China district and
+#     county internal lines (区县界), extracted via `-split ocha_p2 -innerlines`
+#     from the exact same planar topology (zero double-lines with admin1 or
+#     admin2_pref), clipped strictly to NE de facto CHN mask minus HK/MO.
+# - District/county labels (`label_admin2`, z8..z9): PointOnSurface interior
+#   points for China's districts/counties with Simplified Chinese `name_zh` and
+#   English `name_en` (`cc="CHN"`, `iso_a2="CN"`).
 # - Neutral region overrides: TWN -> 台湾/Taiwan, HKG -> 香港/Hong Kong,
 #   MAC -> 澳门/Macau (both override and primary fields sanitized).
 # - The output .pmtiles binary is gitignored and never committed to git.
@@ -38,10 +51,11 @@ STAGE_DIR="$WORK_DIR/stage"
 TILES_DIR="$WORK_DIR/tiles"
 OUT_FILE="${GLOBE_OUT_PMTILES:-$REPO_ROOT/ui/public/geo/mh-boundaries-v1.pmtiles}"
 GAZETTEER_OUT="${GLOBE_OUT_GAZETTEER:-$REPO_ROOT/ui/src/components/globe-v2/data/gazetteer-v1.json}"
-MAX_ZOOM="${GLOBE_MAX_ZOOM:-8}"
+MAX_ZOOM="${GLOBE_MAX_ZOOM:-9}"
 ADM1_SIMPLIFY="${GLOBE_ADM1_SIMPLIFY:-5%}"
 ADM2_SIMPLIFY="${GLOBE_ADM2_SIMPLIFY:-5%}"
-MAX_PMTILES_BYTES="${GLOBE_MAX_PMTILES_BYTES:-25000000}"
+CHN_SIMPLIFY="${GLOBE_CHN_SIMPLIFY:-18%}"
+MAX_PMTILES_BYTES="${GLOBE_MAX_PMTILES_BYTES:-40000000}"
 
 MAPSHAPER_BIN="${MAPSHAPER_BIN:-$(command -v mapshaper || true)}"
 MAPSHAPER_XL_BIN="${MAPSHAPER_XL_BIN:-$(command -v mapshaper-xl || true)}"
@@ -50,7 +64,6 @@ if [ -z "$MAPSHAPER_BIN" ]; then
   exit 1
 fi
 if [ -z "$MAPSHAPER_XL_BIN" ]; then
-  # Sibling mapshaper-xl next to MAPSHAPER_BIN if present
   cand="$(dirname "$MAPSHAPER_BIN")/mapshaper-xl"
   if [ -x "$cand" ]; then
     MAPSHAPER_XL_BIN="$cand"
@@ -76,7 +89,7 @@ done
 
 mkdir -p "$SRC_DIR" "$STAGE_DIR" "$TILES_DIR" "$(dirname "$OUT_FILE")"
 
-echo "[1/7] Fetching & verifying pinned sources from SOURCES.lock..."
+echo "[1/8] Fetching & verifying pinned sources from SOURCES.lock..."
 while read -r filename expected_sha url; do
   [[ -z "${filename:-}" || "$filename" == \#* ]] && continue
   dest="$SRC_DIR/$filename"
@@ -93,7 +106,7 @@ while read -r filename expected_sha url; do
   fi
 done < "$LOCK_FILE"
 
-echo "[2/7] Building NE land, coastline, world clip mask, and admin-0 de facto lines..."
+echo "[2/8] Building NE land, coastline, world/CHN/HKMO clip masks, and admin-0 de facto lines..."
 "$MAPSHAPER_BIN" -i "$SRC_DIR/ne_50m_land.geojson" \
   -filter-fields "" \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/land_low.geojson"
@@ -116,6 +129,11 @@ echo "[2/7] Building NE land, coastline, world clip mask, and admin-0 de facto l
 "$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
   -dissolve \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/world_mask.geojson"
+
+"$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
+  -filter 'ADM0_A3 === "CHN"' \
+  -dissolve \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/chn_mask.geojson"
 
 "$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
   -filter 'ADM0_A3 === "HKG" || ADM0_A3 === "MAC"' \
@@ -157,7 +175,67 @@ print(f"  admin0 lines: {len(out_feats)} features ({dict(counts)})")
 assert counts['disputed'] >= 60, f"expected >= 60 disputed segments, got {counts['disputed']}"
 PY
 
-echo "[3/7] Building global geoBoundaries CGAZ ADM1 internal lines + NE HK/MO patch..."
+echo "[3/8] Building China unified 3-tier topology (admin1 province, admin2_pref prefecture, admin2 district) + label_admin2..."
+OCHA_CHN_DIR="$WORK_DIR/ocha_chn"
+mkdir -p "$OCHA_CHN_DIR"
+if [ ! -s "$OCHA_CHN_DIR/chn_admbnda_adm2_ocha_2020.shp" ]; then
+  unzip -q -o "$SRC_DIR/chn_adm_ocha_2020_shp.zip" -d "$OCHA_CHN_DIR"
+fi
+
+python3 "$SCRIPT_DIR/build-chn-admin.py" \
+  --ne-admin0 "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
+  --ocha-adm2-shp "$OCHA_CHN_DIR/chn_admbnda_adm2_ocha_2020.shp" \
+  --gb-adm3 "$SRC_DIR/geoBoundaries-CHN-ADM3_simplified.geojson" \
+  --modood-cities "$SRC_DIR/modood-cities.json" \
+  --modood-areas "$SRC_DIR/modood-areas.json" \
+  --pinyin "$SRC_DIR/pinyin.txt" \
+  --exonyms "$SCRIPT_DIR/chn-district-exonyms.json" \
+  --out-tagged "$STAGE_DIR/chn_adm3_tagged.geojson" \
+  --out-labels "$STAGE_DIR/label_admin2.geojson"
+
+# Clean & simplify China ADM3 polygons ONCE so all 3 internal line tiers share exact vertices
+run_mapshaper_xl 4gb -i "$STAGE_DIR/chn_adm3_tagged.geojson" \
+  -clean \
+  -simplify "$CHN_SIMPLIFY" weighted keep-shapes \
+  -o format=topojson "$STAGE_DIR/chn_adm3_clean.topojson"
+
+# Level 1 (China province internal borders: 省界)
+run_mapshaper_xl 4gb -i "$STAGE_DIR/chn_adm3_clean.topojson" \
+  -dissolve ocha_p1 \
+  -innerlines \
+  -each 'cc = "CHN"' \
+  -clip "$STAGE_DIR/chn_mask.geojson" \
+  -erase "$STAGE_DIR/hkmo_mask.geojson" \
+  -filter 'this.partCount > 0' \
+  -filter-fields cc \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_chn.geojson"
+
+# Level 2 (China prefecture-level city internal borders: 市界)
+run_mapshaper_xl 4gb -i "$STAGE_DIR/chn_adm3_clean.topojson" \
+  -dissolve ocha_p2 copy-fields=ocha_p1 \
+  -split ocha_p1 \
+  -innerlines target=* \
+  -each target=* 'cc = "CHN"' \
+  -merge-layers target=* force \
+  -clip "$STAGE_DIR/chn_mask.geojson" \
+  -erase "$STAGE_DIR/hkmo_mask.geojson" \
+  -filter 'this.partCount > 0' \
+  -filter-fields cc \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2_pref_raw.geojson"
+
+# Level 3 (China district/county intra-prefecture internal borders: 区县界)
+run_mapshaper_xl 4gb -i "$STAGE_DIR/chn_adm3_clean.topojson" \
+  -split ocha_p2 \
+  -innerlines target=* \
+  -each target=* 'cc = "CHN"' \
+  -merge-layers target=* force \
+  -clip "$STAGE_DIR/chn_mask.geojson" \
+  -erase "$STAGE_DIR/hkmo_mask.geojson" \
+  -filter 'this.partCount > 0' \
+  -filter-fields cc \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2_chn_raw.geojson"
+
+echo "[4/8] Building global geoBoundaries CGAZ ADM1 (non-CHN) + NE HK/MO patch..."
 CGAZ_ADM1_DIR="$WORK_DIR/cgaz_adm1"
 mkdir -p "$CGAZ_ADM1_DIR"
 if [ ! -s "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" ]; then
@@ -165,6 +243,7 @@ if [ ! -s "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" ]; then
 fi
 
 run_mapshaper_xl 6gb -i "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" \
+  -filter 'shapeGroup !== "CHN"' \
   -simplify "$ADM1_SIMPLIFY" weighted keep-shapes \
   -split shapeGroup \
   -innerlines target=* \
@@ -172,8 +251,9 @@ run_mapshaper_xl 6gb -i "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" \
   -merge-layers target=* force \
   -clip "$STAGE_DIR/world_mask.geojson" \
   -erase "$STAGE_DIR/hkmo_mask.geojson" \
+  -filter 'this.partCount > 0' \
   -filter-fields cc \
-  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_cgaz.geojson"
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_cgaz_non_chn.geojson"
 
 "$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_1_states_provinces.geojson" \
   -filter 'adm0_a3 === "HKG" || adm0_a3 === "MAC"' \
@@ -182,14 +262,18 @@ run_mapshaper_xl 6gb -i "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" \
   -each target=* 'cc = this.layer_name' \
   -merge-layers target=* force \
   -clip "$STAGE_DIR/world_mask.geojson" \
+  -filter 'this.partCount > 0' \
   -filter-fields cc \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_hkmo.geojson"
 
-"$MAPSHAPER_BIN" -i "$STAGE_DIR/admin1_cgaz.geojson" "$STAGE_DIR/admin1_hkmo.geojson" combine-files \
+"$MAPSHAPER_BIN" -i \
+  "$STAGE_DIR/admin1_cgaz_non_chn.geojson" \
+  "$STAGE_DIR/admin1_chn.geojson" \
+  "$STAGE_DIR/admin1_hkmo.geojson" combine-files \
   -merge-layers target=* force \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_raw.geojson"
 
-echo "[4/7] Building global geoBoundaries CGAZ ADM2 internal lines ($ADM2_SIMPLIFY)..."
+echo "[5/8] Building global geoBoundaries CGAZ ADM2 (non-CHN, $ADM2_SIMPLIFY) and finalizing admin1 / admin2_pref / admin2..."
 CGAZ_ADM2_DIR="$WORK_DIR/cgaz_adm2"
 mkdir -p "$CGAZ_ADM2_DIR"
 if [ ! -s "$CGAZ_ADM2_DIR/geoBoundariesCGAZ_ADM2.shp" ]; then
@@ -197,32 +281,41 @@ if [ ! -s "$CGAZ_ADM2_DIR/geoBoundariesCGAZ_ADM2.shp" ]; then
 fi
 
 run_mapshaper_xl 8gb -i "$CGAZ_ADM2_DIR/geoBoundariesCGAZ_ADM2.shp" \
+  -filter 'shapeGroup !== "CHN"' \
   -simplify "$ADM2_SIMPLIFY" weighted keep-shapes \
   -split shapeGroup \
   -innerlines target=* \
   -each target=* 'cc = this.layer_name' \
   -merge-layers target=* force \
   -clip "$STAGE_DIR/world_mask.geojson" \
+  -filter 'this.partCount > 0' \
   -filter-fields cc \
-  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2_raw.geojson"
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2_non_chn_raw.geojson"
 
-# Enrich admin1/admin2 with ISO-2 `iso_a2` (preserving ISO-3 `cc` for style.ts `cc == "CHN"`)
-# and suppress admin2 segments strictly coincident with admin1 on a 1e-3 deg (~100 m) grid.
+# Enrich admin1, admin2_pref, and admin2 with ISO-2 `iso_a2` (preserving ISO-3 `cc`),
+# suppress coincident duplicate segments across tiers, and set per-feature tippecanoe
+# minzoom (non-CHN admin2: z5..zMAX; CHN admin2 districts: z7..zMAX).
 python3 - \
   "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
   "$STAGE_DIR/admin1_raw.geojson" \
-  "$STAGE_DIR/admin2_raw.geojson" \
+  "$STAGE_DIR/admin2_pref_raw.geojson" \
+  "$STAGE_DIR/admin2_non_chn_raw.geojson" \
+  "$STAGE_DIR/admin2_chn_raw.geojson" \
   "$STAGE_DIR/admin1.geojson" \
-  "$STAGE_DIR/admin2.geojson" <<'PY'
+  "$STAGE_DIR/admin2_pref.geojson" \
+  "$STAGE_DIR/admin2.geojson" \
+  "$MAX_ZOOM" <<'PY'
 import json, sys
 from collections import Counter
 
-a0_path, a1_in, a2_in, a1_out, a2_out = sys.argv[1:6]
-a0 = json.load(open(a0_path, encoding='utf-8'))
+(a0_path, a1_in, pref_in, a2_other_in, a2_chn_in,
+ a1_out, pref_out, a2_out, max_zoom_str) = sys.argv[1:10]
+max_zoom = int(max_zoom_str)
 
+a0 = json.load(open(a0_path, encoding='utf-8'))
 a3_to_a2 = {
     'TWN': 'TW', 'HKG': 'HK', 'MAC': 'MO', 'FRA': 'FR', 'NOR': 'NO',
-    'KOS': 'XK', 'XKX': 'XK',
+    'KOS': 'XK', 'XKX': 'XK', 'CHN': 'CN',
 }
 for f in a0['features']:
     p = f.get('properties') or {}
@@ -240,6 +333,37 @@ def seg_key(p1, p2):
         return None
     return (q1, q2) if q1 < q2 else (q2, q1)
 
+def collect_segs(geom, target_set):
+    lines = [geom['coordinates']] if geom['type'] == 'LineString' else (
+        geom['coordinates'] if geom['type'] == 'MultiLineString' else []
+    )
+    for line in lines:
+        for i in range(len(line) - 1):
+            k = seg_key(line[i], line[i + 1])
+            if k is not None:
+                target_set.add(k)
+
+def strip_coincident(line, forbid_set):
+    runs = []
+    cur = []
+    suppressed = 0
+    for i in range(len(line) - 1):
+        k = seg_key(line[i], line[i + 1])
+        if k is not None and k in forbid_set:
+            suppressed += 1
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+        else:
+            if not cur:
+                cur = [line[i], line[i + 1]]
+            else:
+                cur.append(line[i + 1])
+    if len(cur) >= 2:
+        runs.append(cur)
+    return runs, suppressed
+
+# 1) admin1
 a1_data = json.load(open(a1_in, encoding='utf-8'))
 a1_segs = set()
 a1_cc_counts = Counter()
@@ -254,68 +378,93 @@ for f in a1_data['features']:
         props['iso_a2'] = a3_to_a2[cc]
     a1_cc_counts[cc] += 1
     a1_feats.append({'type': 'Feature', 'geometry': g, 'properties': props})
-    lines = [g['coordinates']] if g['type'] == 'LineString' else (g['coordinates'] if g['type'] == 'MultiLineString' else [])
-    for line in lines:
-        for i in range(len(line) - 1):
-            k = seg_key(line[i], line[i + 1])
-            if k is not None:
-                a1_segs.add(k)
-
+    collect_segs(g, a1_segs)
 json.dump({'type': 'FeatureCollection', 'features': a1_feats}, open(a1_out, 'w', encoding='utf-8'))
 
-a2_data = json.load(open(a2_in, encoding='utf-8'))
-a2_feats = []
-a2_cc_counts = Counter()
-suppressed_segs = 0
-
-def strip_coincident(line):
-    global suppressed_segs
-    runs = []
-    cur = []
-    for i in range(len(line) - 1):
-        k = seg_key(line[i], line[i + 1])
-        if k is not None and k in a1_segs:
-            suppressed_segs += 1
-            if len(cur) >= 2:
-                runs.append(cur)
-            cur = []
-        else:
-            if not cur:
-                cur = [line[i], line[i + 1]]
-            else:
-                cur.append(line[i + 1])
-    if len(cur) >= 2:
-        runs.append(cur)
-    return runs
-
-for f in a2_data['features']:
+# 2) admin2_pref (China prefecture-level city internal lines: 市界)
+pref_data = json.load(open(pref_in, encoding='utf-8'))
+pref_segs = set()
+pref_feats = []
+pref_suppressed = 0
+for f in pref_data['features']:
     g = f.get('geometry')
     if not g:
         continue
-    cc = str((f.get('properties') or {}).get('cc') or '').strip().upper()
-    lines = [g['coordinates']] if g['type'] == 'LineString' else (g['coordinates'] if g['type'] == 'MultiLineString' else [])
-    kept_lines = []
+    lines = [g['coordinates']] if g['type'] == 'LineString' else (
+        g['coordinates'] if g['type'] == 'MultiLineString' else []
+    )
+    kept = []
     for line in lines:
-        kept_lines.extend(strip_coincident(line))
-    if not kept_lines:
+        runs, s = strip_coincident(line, a1_segs)
+        pref_suppressed += s
+        kept.extend(runs)
+    if not kept:
         continue
-    props = {'cc': cc}
-    if cc in a3_to_a2:
-        props['iso_a2'] = a3_to_a2[cc]
-    geom = {'type': 'LineString', 'coordinates': kept_lines[0]} if len(kept_lines) == 1 else {'type': 'MultiLineString', 'coordinates': kept_lines}
-    a2_cc_counts[cc] += 1
-    a2_feats.append({'type': 'Feature', 'geometry': geom, 'properties': props})
+    geom = {'type': 'LineString', 'coordinates': kept[0]} if len(kept) == 1 else {
+        'type': 'MultiLineString', 'coordinates': kept
+    }
+    collect_segs(geom, pref_segs)
+    pref_feats.append({
+        'type': 'Feature',
+        'geometry': geom,
+        'properties': {'cc': 'CHN', 'iso_a2': 'CN'},
+    })
+json.dump({'type': 'FeatureCollection', 'features': pref_feats}, open(pref_out, 'w', encoding='utf-8'))
+
+# 3) admin2 (non-CHN z5..max_zoom + CHN districts z7..max_zoom)
+forbid_chn_a2 = a1_segs | pref_segs
+a2_feats = []
+a2_cc_counts = Counter()
+a2_suppressed = 0
+
+def ingest_admin2(src_path, forbid_set, min_zoom):
+    global a2_suppressed
+    data = json.load(open(src_path, encoding='utf-8'))
+    for f in data['features']:
+        g = f.get('geometry')
+        if not g:
+            continue
+        cc = str((f.get('properties') or {}).get('cc') or '').strip().upper()
+        lines = [g['coordinates']] if g['type'] == 'LineString' else (
+            g['coordinates'] if g['type'] == 'MultiLineString' else []
+        )
+        kept = []
+        for line in lines:
+            runs, s = strip_coincident(line, forbid_set)
+            a2_suppressed += s
+            kept.extend(runs)
+        if not kept:
+            continue
+        props = {'cc': cc}
+        if cc in a3_to_a2:
+            props['iso_a2'] = a3_to_a2[cc]
+        geom = {'type': 'LineString', 'coordinates': kept[0]} if len(kept) == 1 else {
+            'type': 'MultiLineString', 'coordinates': kept
+        }
+        a2_cc_counts[cc] += 1
+        a2_feats.append({
+            'type': 'Feature',
+            'tippecanoe': {'minzoom': min_zoom, 'maxzoom': max_zoom},
+            'geometry': geom,
+            'properties': props,
+        })
+
+ingest_admin2(a2_other_in, a1_segs, 5)
+ingest_admin2(a2_chn_in, forbid_chn_a2, 7)
 
 json.dump({'type': 'FeatureCollection', 'features': a2_feats}, open(a2_out, 'w', encoding='utf-8'))
+
 ac6 = ('CHN', 'USA', 'IND', 'DEU', 'BRA', 'JPN', 'AUS', 'RUS', 'ZAF', 'TWN')
-print(f"  admin1: {len(a1_feats)} features across {len(a1_cc_counts)} units; AC6={ {k: a1_cc_counts[k] for k in ac6} }")
-print(f"  admin2: {len(a2_feats)} features across {len(a2_cc_counts)} units (suppressed {suppressed_segs} ADM1-coincident segs); AC6={ {k: a2_cc_counts[k] for k in ac6} }")
+print(f"  admin1:      {len(a1_feats)} features across {len(a1_cc_counts)} units; AC6={ {k: a1_cc_counts[k] for k in ac6} }")
+print(f"  admin2_pref: {len(pref_feats)} CHN prefecture lines (suppressed {pref_suppressed} ADM1-coincident segs)")
+print(f"  admin2:      {len(a2_feats)} features across {len(a2_cc_counts)} units (suppressed {a2_suppressed} coincident segs); AC6={ {k: a2_cc_counts[k] for k in ac6} }")
+assert len(pref_feats) >= 500, f"expected >= 500 China prefecture lines, got {len(pref_feats)}"
 for k in ac6:
     assert a1_cc_counts[k] > 0, f"AC6 country {k} missing from admin1"
     assert a2_cc_counts[k] > 0, f"AC6 country {k} missing from admin2"
 PY
 
-echo "[5/7] Building label point layers with neutral region overrides (TWN/HKG/MAC)..."
+echo "[6/8] Building label point layers (admin0, admin1, place) with neutral region overrides (TWN/HKG/MAC)..."
 python3 - \
   "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
   "$SRC_DIR/ne_10m_admin_1_states_provinces.geojson" \
@@ -470,34 +619,36 @@ print(f"  labels: admin0={len(feats_a0)}, admin1={len(feats_a1)}, place={len(fea
 PY
 
 if [ "${GLOBE_SKIP_GAZETTEER:-0}" != "1" ]; then
-  echo "[6/7] Generating lazy gazetteer ($GAZETTEER_OUT)..."
+  echo "[7/8] Generating lazy gazetteer ($GAZETTEER_OUT)..."
   python3 "$SCRIPT_DIR/build-gazetteer.py" \
     --sources-dir "$SRC_DIR" \
     --output "$GAZETTEER_OUT"
 else
-  echo "[6/7] Skipping gazetteer generation (GLOBE_SKIP_GAZETTEER=1)"
+  echo "[7/8] Skipping gazetteer generation (GLOBE_SKIP_GAZETTEER=1)"
 fi
 
-echo "[7/7] Tiling layers with tippecanoe & joining into $OUT_FILE (maxzoom=$MAX_ZOOM)..."
+echo "[8/8] Tiling layers with tippecanoe & joining into $OUT_FILE (maxzoom=$MAX_ZOOM)..."
 COMMON_FLAGS=(--force --no-feature-limit --no-tile-size-limit --detect-shared-borders)
 
 # Run from WORK_DIR with relative paths so host paths never leak into PMTiles metadata
 (
   cd "$WORK_DIR"
-  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l land_low   -o tiles/land_low.pmtiles   stage/land_low.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l land_high  -o tiles/land_high.pmtiles  stage/land_high.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l coast_low  -o tiles/coast_low.pmtiles  stage/coast_low.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l coast_high -o tiles/coast_high.pmtiles stage/coast_high.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z"$MAX_ZOOM" -l admin0     -o tiles/admin0.pmtiles     stage/admin0.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z2 -z"$MAX_ZOOM" -l admin1     -o tiles/admin1.pmtiles     stage/admin1.geojson
-  tippecanoe "${COMMON_FLAGS[@]}" -Z5 -z"$MAX_ZOOM" -l admin2     -o tiles/admin2.pmtiles     stage/admin2.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l land_low    -o tiles/land_low.pmtiles    stage/land_low.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l land_high   -o tiles/land_high.pmtiles   stage/land_high.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l coast_low   -o tiles/coast_low.pmtiles   stage/coast_low.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l coast_high  -o tiles/coast_high.pmtiles  stage/coast_high.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z"$MAX_ZOOM" -l admin0      -o tiles/admin0.pmtiles      stage/admin0.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z2 -z"$MAX_ZOOM" -l admin1      -o tiles/admin1.pmtiles      stage/admin1.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z5 -z"$MAX_ZOOM" -l admin2_pref -o tiles/admin2_pref.pmtiles stage/admin2_pref.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z5 -z"$MAX_ZOOM" -l admin2      -o tiles/admin2.pmtiles      stage/admin2.geojson
   tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z0 -z"$MAX_ZOOM" -l label_admin0 -o tiles/label_admin0.pmtiles stage/label_admin0.geojson
   tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_admin1 -o tiles/label_admin1.pmtiles stage/label_admin1.geojson
   tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_place  -o tiles/label_place.pmtiles  stage/label_place.geojson
+  tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z8 -z"$MAX_ZOOM" -l label_admin2 -o tiles/label_admin2.pmtiles stage/label_admin2.geojson
 
   tile-join --force --no-tile-size-limit \
     -n "mh-boundaries-v1" \
-    -N "MeshHarbor Neutral De Facto Boundaries (Natural Earth 5.1.2 + global geoBoundaries CGAZ ADM1/ADM2)" \
+    -N "MeshHarbor Neutral De Facto Boundaries (Natural Earth 5.1.2 + geoBoundaries CC BY 4.0 + OpenStreetMap ODbL + UN OCHA CC BY-IGO)" \
     -o tiles/mh-boundaries-v1.pmtiles \
     tiles/land_low.pmtiles \
     tiles/land_high.pmtiles \
@@ -505,10 +656,12 @@ COMMON_FLAGS=(--force --no-feature-limit --no-tile-size-limit --detect-shared-bo
     tiles/coast_high.pmtiles \
     tiles/admin0.pmtiles \
     tiles/admin1.pmtiles \
+    tiles/admin2_pref.pmtiles \
     tiles/admin2.pmtiles \
     tiles/label_admin0.pmtiles \
     tiles/label_admin1.pmtiles \
-    tiles/label_place.pmtiles
+    tiles/label_place.pmtiles \
+    tiles/label_admin2.pmtiles
 )
 
 cp -f "$TILES_DIR/mh-boundaries-v1.pmtiles" "$OUT_FILE"

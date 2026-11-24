@@ -3,6 +3,14 @@
 # and gazetteer-v1.json (FR-136 P1).
 # Format: <filename> <sha256> <url>
 # Build-time download ONLY; ZERO external requests at runtime.
+#
+# Licenses (all open, attributed in ui/src/components/globe-v2/gazetteer.ts):
+# - Natural Earth 5.1.2: Public Domain
+# - geoBoundaries CGAZ ADM1/ADM2: CC BY 4.0 (incl. OSM ODbL)
+# - geoBoundaries CHN ADM3 (pinned commit 9469f09592): OpenStreetMap ODbL 1.0
+# - UN OCHA HDX COD-AB China 2020: CC BY-IGO
+# - modood/Administrative-divisions-of-China (pinned commit c49d495b40): WTFPL
+# - mozillazg/pinyin-data (pinned commit fe29ad32bd): MIT
 
 ne_50m_land.geojson e874b27a51d146452be360cafb3cc50c86001074a67d534113e6534682f9826b https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_land.geojson
 ne_10m_land.geojson 1ac90796408bc6ad6911d69448485d3c4dbf2190370080368a09976e1c9f7416 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_land.geojson
@@ -12,3 +20,8 @@ ne_10m_admin_1_states_provinces.geojson 22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a
 ne_10m_populated_places.geojson 9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_populated_places.geojson
 geoBoundariesCGAZ_ADM1.zip 767ed22dfddf8a82d5c7d23149628378f8d2d95a2bb915401afaa65c5593e6f8 https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.zip
 geoBoundariesCGAZ_ADM2.zip 598f6c70893d60a35b96eb0dc31fd1c045e69177e4b8203407710306f6585de1 https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.zip
+geoBoundaries-CHN-ADM3_simplified.geojson ea64fe24f193e319ce48895f229a5b3f46d2a60f3f3df67e6172ab037e4cc8fd https://github.com/wmgeolab/geoBoundaries/raw/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen/CHN/ADM3/geoBoundaries-CHN-ADM3_simplified.geojson
+chn_adm_ocha_2020_shp.zip f6a1f0fd969dbcc830e395c8211746730a80e8429585e045c6b0da92cd6e0ec9 https://data.humdata.org/dataset/17a2aaa2-dea9-4a2e-8b3f-92d1bdfb850c/resource/9e67ddf9-ce26-4b7a-82b1-51e5ca0714c8/download/chn_adm_ocha_2020_shp.zip
+modood-cities.json 3f569aaa0bfbeba72f1597657511c64f54107baae71710fef7146f390a41af32 https://raw.githubusercontent.com/modood/Administrative-divisions-of-China/c49d495b40ac73eb1a66f6eeae5f8fd10696f035/dist/cities.json
+modood-areas.json fbe1575eecba4ffd4d50c3d2d6887bd873ceca6a203fb2d66698b5007826b6b6 https://raw.githubusercontent.com/modood/Administrative-divisions-of-China/c49d495b40ac73eb1a66f6eeae5f8fd10696f035/dist/areas.json
+pinyin.txt 2342a6f98c85dbc3c8d26aef31744876a36326c6466e51e9a0f16898c36c2011 https://raw.githubusercontent.com/mozillazg/pinyin-data/fe29ad32bdf352b31a02b9936e537f575432e9a6/pinyin.txt

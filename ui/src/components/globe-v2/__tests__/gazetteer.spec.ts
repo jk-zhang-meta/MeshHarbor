@@ -229,17 +229,21 @@ describe('globe-v2 lazy gazetteer (S4 / S6 / S11 / AC7)', () => {
     expect(normalizeGeoKey('  —  ')).toBe('')
   })
 
-  it('exports required bilingual attribution text citing Natural Earth, geoBoundaries, and OSM', () => {
+  it('exports required bilingual attribution text citing Natural Earth, geoBoundaries, OSM, and UN OCHA', () => {
     expect(ATTRIBUTION_TEXT.en).toContain('Natural Earth')
     expect(ATTRIBUTION_TEXT.en).toContain('geoBoundaries')
     expect(ATTRIBUTION_TEXT.en).toContain('CC BY 4.0')
     expect(ATTRIBUTION_TEXT.en).toContain('OpenStreetMap')
     expect(ATTRIBUTION_TEXT.en).toContain('ODbL')
+    expect(ATTRIBUTION_TEXT.en).toContain('UN OCHA')
+    expect(ATTRIBUTION_TEXT.en).toContain('CC BY-IGO')
 
     expect(ATTRIBUTION_TEXT['zh-CN']).toContain('Natural Earth')
     expect(ATTRIBUTION_TEXT['zh-CN']).toContain('geoBoundaries')
     expect(ATTRIBUTION_TEXT['zh-CN']).toContain('CC BY 4.0')
     expect(ATTRIBUTION_TEXT['zh-CN']).toContain('OpenStreetMap')
     expect(ATTRIBUTION_TEXT['zh-CN']).toContain('ODbL')
+    expect(ATTRIBUTION_TEXT['zh-CN']).toContain('UN OCHA')
+    expect(ATTRIBUTION_TEXT['zh-CN']).toContain('CC BY-IGO')
   })
 })
