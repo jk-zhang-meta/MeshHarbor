@@ -39,6 +39,7 @@
         :style="shellStyle"
         data-testid="globe-v2-shell"
         :data-full-page="isFullLayout ? '1' : '0'"
+        :data-view-mode="activeViewMode"
       >
         <div
           ref="mapHostEl"
@@ -106,13 +107,44 @@
           />
         </div>
 
-        <!-- Mobile Full-Page 48px Top Bar (S10) -->
+        <!-- Mobile Full-Page 48px Top Bar (S10 / S12) -->
         <header
           v-if="isMobile && isFullLayout"
           class="mh-gv2-mobile-topbar"
           data-testid="globe-v2-mobile-topbar"
         >
-          <span class="mh-gv2-mobile-topbar__title">{{ $t('mh.globeV2.deviceNetworkTitle') }}</span>
+          <div
+            v-if="canSwitchView"
+            class="mh-gv2-segmented"
+            role="tablist"
+            data-testid="globe-v2-view-switcher"
+          >
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="!isBackboneView"
+              class="mh-gv2-seg-btn"
+              :class="{ 'mh-gv2-seg-btn--active': !isBackboneView }"
+              data-testid="globe-v2-view-devices"
+              @click="switchViewMode('devices')"
+            >
+              {{ $t('mh.backbone.viewDevices') }}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="isBackboneView"
+              class="mh-gv2-seg-btn"
+              :class="{ 'mh-gv2-seg-btn--active': isBackboneView }"
+              data-testid="globe-v2-view-backbone"
+              @click="switchViewMode('backbone')"
+            >
+              {{ $t('mh.backbone.viewBackbone') }}
+            </button>
+          </div>
+          <span v-else class="mh-gv2-mobile-topbar__title">
+            {{ isBackboneView ? $t('mh.backbone.title') : $t('mh.globeV2.deviceNetworkTitle') }}
+          </span>
           <div class="mh-gv2-mobile-topbar__actions">
             <button
               type="button"
@@ -170,43 +202,101 @@
           </div>
         </header>
 
-        <!-- Desktop Full-Page Top-Left Title & Filters (S9 / S5 R4) -->
+        <!-- Desktop Full-Page Top-Left Title / Segmented View Switcher & Filters (S9 / S12) -->
         <div
           v-if="!isMobile && isFullLayout"
           class="mh-gv2-full-left"
           data-testid="globe-v2-full-toolbar"
         >
-          <span class="mh-gv2-full-left__title">{{ $t('mh.globeV2.deviceNetworkTitle') }}</span>
-          <button
-            type="button"
-            class="mh-gv2-chip-btn"
-            :class="{ 'mh-gv2-chip-btn--active': effectiveOnlyProblems }"
-            data-testid="globe-v2-filter-problems"
-            @click="localOnlyProblems = !effectiveOnlyProblems"
+          <div
+            v-if="canSwitchView"
+            class="mh-gv2-segmented"
+            role="tablist"
+            data-testid="globe-v2-view-switcher"
           >
-            {{ $t('mh.globeV2.onlyProblems') }}
-          </button>
-          <label class="mh-gv2-rtt-filter">
-            <span class="mh-mono">{{ $t('mh.globeV2.minRtt', { ms: effectiveMinRttMs }) }}</span>
-            <input
-              type="range"
-              min="0"
-              max="500"
-              step="5"
-              :value="effectiveMinRttMs"
-              data-testid="globe-v2-filter-rtt"
-              @input="localMinRttMs = Number(($event.target as HTMLInputElement).value)"
-            />
-          </label>
-          <button
-            type="button"
-            class="mh-gv2-chip-btn"
-            :class="{ 'mh-gv2-chip-btn--active': showingAllDevicesList }"
-            data-testid="globe-v2-open-all-list"
-            @click="toggleAllDevicesList"
-          >
-            {{ $t('mh.globeV2.deviceList') }} ({{ allGlobeNodes.length }})
-          </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="!isBackboneView"
+              class="mh-gv2-seg-btn"
+              :class="{ 'mh-gv2-seg-btn--active': !isBackboneView }"
+              data-testid="globe-v2-view-devices"
+              @click="switchViewMode('devices')"
+            >
+              {{ $t('mh.backbone.viewDevices') }}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="isBackboneView"
+              class="mh-gv2-seg-btn"
+              :class="{ 'mh-gv2-seg-btn--active': isBackboneView }"
+              data-testid="globe-v2-view-backbone"
+              @click="switchViewMode('backbone')"
+            >
+              {{ $t('mh.backbone.viewBackbone') }}
+            </button>
+          </div>
+          <span v-else class="mh-gv2-full-left__title">
+            {{ isBackboneView ? $t('mh.backbone.title') : $t('mh.globeV2.deviceNetworkTitle') }}
+          </span>
+
+          <!-- Device view filters -->
+          <template v-if="!isBackboneView">
+            <button
+              type="button"
+              class="mh-gv2-chip-btn"
+              :class="{ 'mh-gv2-chip-btn--active': effectiveOnlyProblems }"
+              data-testid="globe-v2-filter-problems"
+              @click="localOnlyProblems = !effectiveOnlyProblems"
+            >
+              {{ $t('mh.globeV2.onlyProblems') }}
+            </button>
+            <label class="mh-gv2-rtt-filter">
+              <span class="mh-mono">{{ $t('mh.globeV2.minRtt', { ms: effectiveMinRttMs }) }}</span>
+              <input
+                type="range"
+                min="0"
+                max="500"
+                step="5"
+                :value="effectiveMinRttMs"
+                data-testid="globe-v2-filter-rtt"
+                @input="localMinRttMs = Number(($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <button
+              type="button"
+              class="mh-gv2-chip-btn"
+              :class="{ 'mh-gv2-chip-btn--active': showingAllDevicesList }"
+              data-testid="globe-v2-open-all-list"
+              @click="toggleAllDevicesList"
+            >
+              {{ $t('mh.globeV2.deviceList') }} ({{ activeListNodes.length }})
+            </button>
+          </template>
+
+          <!-- Backbone view controls (S12: optional Show devices toggle + Gateways list) -->
+          <template v-else>
+            <button
+              type="button"
+              class="mh-gv2-chip-btn"
+              :class="{ 'mh-gv2-chip-btn--active': showDevices }"
+              :aria-pressed="showDevices"
+              data-testid="globe-v2-show-devices-toggle"
+              @click="setShowDevicesOverlay(!showDevices)"
+            >
+              {{ $t('mh.backbone.showDevices') }}
+            </button>
+            <button
+              type="button"
+              class="mh-gv2-chip-btn"
+              :class="{ 'mh-gv2-chip-btn--active': showingAllDevicesList }"
+              data-testid="globe-v2-open-all-list"
+              @click="toggleAllDevicesList"
+            >
+              {{ $t('mh.backbone.gatewayList') }} ({{ activeListNodes.length }})
+            </button>
+          </template>
         </div>
 
         <!-- Top-right quick controls (embedded mobile card shows ONLY full-page button per S10!) -->
@@ -353,7 +443,8 @@
         >
           <div class="mh-gv2-hover-card__head">
             <span class="mh-gv2-hover-card__title">{{ hoverCard.title }}</span>
-            <span v-if="hoverCard.mixed" class="mh-gv2-badge-mixed">{{ $t('mh.globeV2.mixedTag') }}</span>
+            <span v-if="hoverCard.badge" class="mh-gv2-badge-mixed">{{ hoverCard.badge }}</span>
+            <span v-else-if="hoverCard.mixed" class="mh-gv2-badge-mixed">{{ $t('mh.globeV2.mixedTag') }}</span>
           </div>
           <div class="mh-gv2-hover-card__meta">{{ hoverCard.subtitle }}</div>
           <div v-if="hoverCard.breakdown" class="mh-gv2-hover-card__breakdown mh-mono">
@@ -362,7 +453,7 @@
           <div v-if="hoverCard.extra" class="mh-gv2-hover-card__extra">{{ hoverCard.extra }}</div>
         </div>
 
-        <!-- Bottom-left legend (Fix #4: <600px collapsed by default to ONE compact chip; popover dismisses on outside tap/Esc) -->
+        <!-- Bottom-left legend (collapsed on card, open in desktop full-page, collapsed on mobile; S12 backbone aware) -->
         <div
           ref="legendEl"
           class="mh-gv2-legend"
@@ -380,38 +471,79 @@
             class="mh-gv2-legend-popover"
             data-testid="globe-v2-legend-popover"
           >
-            <div class="mh-gv2-legend__row">
-              <span class="mh-gv2-swatch-dot" :style="{ background: tokens.online }" />
-              <span>{{ $t('mh.mesh.status.online') }}</span>
-              <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--half" :style="{ '--c': tokens.stale, '--bg': tokens.ocean }" />
-              <span>{{ $t('mh.mesh.status.stale') }}</span>
-              <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--off" :style="{ borderColor: tokens.offline }" />
-              <span>{{ $t('mh.mesh.status.offline') }}</span>
-            </div>
-            <div class="mh-gv2-legend__row">
-              <span class="mh-gv2-swatch-line" :style="{ background: tokens.direct }" />
-              <span>{{ $t('mh.mesh.carriers.direct') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dash" :style="{ '--c': tokens.relay }" />
-              <span>{{ $t('mh.mesh.carriers.relay') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.derp }" />
-              <span>{{ $t('mh.mesh.carriers.derp') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
-              <span>{{ $t('mh.mesh.stalled') }}</span>
-              <span class="mh-gv2-swatch-mixed" :style="{ color: tokens.labelSecondary }">◆</span>
-              <span>{{ $t('mh.globeV2.mixedLegend') }}</span>
-            </div>
-            <div v-if="grouped.unlocated.length > 0 || linkAgg.overflowCount > 0" class="mh-gv2-legend__chips">
+            <template v-if="!isBackboneView">
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-dot" :style="{ background: tokens.online }" />
+                <span>{{ $t('mh.mesh.status.online') }}</span>
+                <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--half" :style="{ '--c': tokens.stale, '--bg': tokens.ocean }" />
+                <span>{{ $t('mh.mesh.status.stale') }}</span>
+                <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--off" :style="{ borderColor: tokens.offline }" />
+                <span>{{ $t('mh.mesh.status.offline') }}</span>
+              </div>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.direct }" />
+                <span>{{ $t('mh.mesh.carriers.direct') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dash" :style="{ '--c': tokens.relay }" />
+                <span>{{ $t('mh.mesh.carriers.relay') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.derp }" />
+                <span>{{ $t('mh.mesh.carriers.derp') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
+                <span>{{ $t('mh.mesh.stalled') }}</span>
+                <span class="mh-gv2-swatch-mixed" :style="{ color: tokens.labelSecondary }">◆</span>
+                <span>{{ $t('mh.globeV2.mixedLegend') }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-diamond" :style="{ background: tokens.centre }" />
+                <span>{{ $t('mh.backbone.legendCentre') }}</span>
+                <span class="mh-gv2-swatch-gw" :style="{ '--c': tokens.zones[0] }" />
+                <span>{{ $t('mh.backbone.legendGateway') }}</span>
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.zones[0] }" />
+                <span>{{ $t('mh.backbone.legendMgmtPath') }}</span>
+              </div>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.labelPrimary, height: '2.5px' }" />
+                <span>{{ $t('mh.backbone.legendBackboneLink') }}</span>
+                <span class="mh-gv2-swatch-arrow" :style="{ color: tokens.labelPrimary }">▸</span>
+                <span>{{ $t('mh.backbone.legendUnidirectional') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.offline }" />
+                <span>{{ $t('mh.backbone.legendDisabled') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
+                <span>{{ $t('mh.mesh.stalled') }}</span>
+              </div>
+              <div v-if="zones.length > 0" class="mh-gv2-legend__row">
+                <span v-for="z in zones" :key="z.id" class="mh-gv2-legend__zone">
+                  <span class="mh-gv2-swatch-dot" :style="{ background: backboneResolved.zoneColors.get(z.id) }" />
+                  <span>{{ z.name }}</span>
+                </span>
+              </div>
+            </template>
+            <div
+              v-if="unlocatedCentres.length > 0 || unknownNodesForView.length > 0 || (!isBackboneView && linkAgg.overflowCount > 0)"
+              class="mh-gv2-legend__chips"
+            >
               <button
-                v-if="grouped.unlocated.length > 0"
+                v-for="cNode in unlocatedCentres"
+                :key="cNode.id"
+                type="button"
+                class="mh-gv2-chip mh-gv2-chip--centre"
+                data-testid="globe-v2-unlocated-centre-chip"
+                @click="openUnlocatedCentre(cNode)"
+              >
+                ◆ {{ $t('mh.backbone.unlocatedCentreChip') }}
+              </button>
+              <button
+                v-if="unknownNodesForView.length > 0"
                 type="button"
                 class="mh-gv2-chip mh-gv2-chip--warn"
                 data-testid="globe-v2-unknown-chip"
                 @click="openUnknownList"
               >
-                {{ $t('mh.globeV2.unknownLocation', { n: grouped.unlocated.length }) }}
+                {{ $t('mh.globeV2.unknownLocation', { n: unknownNodesForView.length }) }}
               </button>
               <span
-                v-if="linkAgg.overflowCount > 0"
+                v-if="!isBackboneView && linkAgg.overflowCount > 0"
                 class="mh-gv2-chip"
                 data-testid="globe-v2-overflow-chip"
               >
@@ -434,24 +566,34 @@
             >
               <span>{{ $t('mh.globeV2.legend') }}</span>
               <span
-                v-if="isMobile && legendCollapsed && grouped.unlocated.length > 0"
+                v-if="isMobile && legendCollapsed && (unknownNodesForView.length > 0 || unlocatedCentres.length > 0)"
                 class="mh-gv2-legend__dot-warn"
-                :title="$t('mh.globeV2.unknownLocation', { n: grouped.unlocated.length })"
+                :title="$t('mh.globeV2.unknownLocation', { n: unknownNodesForView.length + unlocatedCentres.length })"
               />
               <span class="mh-gv2-legend__caret">{{ legendCollapsed ? '▸' : '▾' }}</span>
             </button>
             <template v-if="!isMobile">
               <button
-                v-if="grouped.unlocated.length > 0"
+                v-for="cNode in unlocatedCentres"
+                :key="cNode.id"
+                type="button"
+                class="mh-gv2-chip mh-gv2-chip--centre"
+                data-testid="globe-v2-unlocated-centre-chip"
+                @click="openUnlocatedCentre(cNode)"
+              >
+                ◆ {{ $t('mh.backbone.unlocatedCentreChip') }}
+              </button>
+              <button
+                v-if="unknownNodesForView.length > 0"
                 type="button"
                 class="mh-gv2-chip mh-gv2-chip--warn"
                 data-testid="globe-v2-unknown-chip"
                 @click="openUnknownList"
               >
-                {{ $t('mh.globeV2.unknownLocation', { n: grouped.unlocated.length }) }}
+                {{ $t('mh.globeV2.unknownLocation', { n: unknownNodesForView.length }) }}
               </button>
               <span
-                v-if="linkAgg.overflowCount > 0"
+                v-if="!isBackboneView && linkAgg.overflowCount > 0"
                 class="mh-gv2-chip"
                 data-testid="globe-v2-overflow-chip"
               >
@@ -462,26 +604,54 @@
 
           <!-- Desktop expanded legend body -->
           <div v-if="!isMobile && !legendCollapsed" class="mh-gv2-legend__body">
-            <div class="mh-gv2-legend__row">
-              <span class="mh-gv2-swatch-dot" :style="{ background: tokens.online }" />
-              <span>{{ $t('mh.mesh.status.online') }}</span>
-              <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--half" :style="{ '--c': tokens.stale, '--bg': tokens.ocean }" />
-              <span>{{ $t('mh.mesh.status.stale') }}</span>
-              <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--off" :style="{ borderColor: tokens.offline }" />
-              <span>{{ $t('mh.mesh.status.offline') }}</span>
-            </div>
-            <div class="mh-gv2-legend__row">
-              <span class="mh-gv2-swatch-line" :style="{ background: tokens.direct }" />
-              <span>{{ $t('mh.mesh.carriers.direct') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dash" :style="{ '--c': tokens.relay }" />
-              <span>{{ $t('mh.mesh.carriers.relay') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.derp }" />
-              <span>{{ $t('mh.mesh.carriers.derp') }}</span>
-              <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
-              <span>{{ $t('mh.mesh.stalled') }}</span>
-              <span class="mh-gv2-swatch-mixed" :style="{ color: tokens.labelSecondary }">◆</span>
-              <span>{{ $t('mh.globeV2.mixedLegend') }}</span>
-            </div>
+            <template v-if="!isBackboneView">
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-dot" :style="{ background: tokens.online }" />
+                <span>{{ $t('mh.mesh.status.online') }}</span>
+                <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--half" :style="{ '--c': tokens.stale, '--bg': tokens.ocean }" />
+                <span>{{ $t('mh.mesh.status.stale') }}</span>
+                <span class="mh-gv2-swatch-dot mh-gv2-swatch-dot--off" :style="{ borderColor: tokens.offline }" />
+                <span>{{ $t('mh.mesh.status.offline') }}</span>
+              </div>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.direct }" />
+                <span>{{ $t('mh.mesh.carriers.direct') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dash" :style="{ '--c': tokens.relay }" />
+                <span>{{ $t('mh.mesh.carriers.relay') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.derp }" />
+                <span>{{ $t('mh.mesh.carriers.derp') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
+                <span>{{ $t('mh.mesh.stalled') }}</span>
+                <span class="mh-gv2-swatch-mixed" :style="{ color: tokens.labelSecondary }">◆</span>
+                <span>{{ $t('mh.globeV2.mixedLegend') }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-diamond" :style="{ background: tokens.centre }" />
+                <span>{{ $t('mh.backbone.legendCentre') }}</span>
+                <span class="mh-gv2-swatch-gw" :style="{ '--c': tokens.zones[0] }" />
+                <span>{{ $t('mh.backbone.legendGateway') }}</span>
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.zones[0] }" />
+                <span>{{ $t('mh.backbone.legendMgmtPath') }}</span>
+              </div>
+              <div class="mh-gv2-legend__row">
+                <span class="mh-gv2-swatch-line" :style="{ background: tokens.labelPrimary, height: '2.5px' }" />
+                <span>{{ $t('mh.backbone.legendBackboneLink') }}</span>
+                <span class="mh-gv2-swatch-arrow" :style="{ color: tokens.labelPrimary }">▸</span>
+                <span>{{ $t('mh.backbone.legendUnidirectional') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--short" :style="{ '--c': tokens.offline }" />
+                <span>{{ $t('mh.backbone.legendDisabled') }}</span>
+                <span class="mh-gv2-swatch-line mh-gv2-swatch-line--dot" :style="{ '--c': tokens.stalled }" />
+                <span>{{ $t('mh.mesh.stalled') }}</span>
+              </div>
+              <div v-if="zones.length > 0" class="mh-gv2-legend__row">
+                <span v-for="z in zones" :key="z.id" class="mh-gv2-legend__zone">
+                  <span class="mh-gv2-swatch-dot" :style="{ background: backboneResolved.zoneColors.get(z.id) }" />
+                  <span>{{ z.name }}</span>
+                </span>
+              </div>
+            </template>
             <div class="mh-gv2-legend__attr" data-testid="globe-v2-attribution">
               {{ attributionText }}
             </div>
@@ -559,7 +729,7 @@
               data-testid="globe-v2-tab-list"
               @click="mobileTab = 'list'"
             >
-              {{ $t('mh.globeV2.tabList') }} ({{ allGlobeNodes.length }})
+              {{ $t('mh.globeV2.tabList') }} ({{ activeListNodes.length }})
             </button>
             <button
               type="button"
@@ -578,45 +748,60 @@
             class="mh-gv2-panel__body"
             data-testid="globe-v2-mobile-filters-body"
           >
-            <div class="mh-gv2-section__title">{{ $t('mh.globeV2.carriersLabel') }}</div>
-            <div class="mh-gv2-carrier-checks">
-              <button
-                v-for="cls in ALL_CARRIERS"
-                :key="cls"
-                type="button"
-                class="mh-gv2-chip-btn"
-                :class="{ 'mh-gv2-chip-btn--active': activeCarrierSet.has(cls) }"
-                @click="toggleLocalCarrier(cls)"
-              >
-                <span class="mh-gv2-swatch-dot" :style="{ background: carrierTokenColor(cls) }" />
-                {{ carrierLabel(cls) }}
-              </button>
-            </div>
+            <template v-if="isBackboneView">
+              <div class="mh-gv2-section">
+                <label class="mh-gv2-toggle-row">
+                  <input
+                    type="checkbox"
+                    :checked="showDevices"
+                    data-testid="globe-v2-mobile-show-devices"
+                    @change="setShowDevicesOverlay(($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>{{ $t('mh.backbone.showDevices') }}</span>
+                </label>
+              </div>
+            </template>
+            <template v-else>
+              <div class="mh-gv2-section__title">{{ $t('mh.globeV2.carriersLabel') }}</div>
+              <div class="mh-gv2-carrier-checks">
+                <button
+                  v-for="cls in ALL_CARRIERS"
+                  :key="cls"
+                  type="button"
+                  class="mh-gv2-chip-btn"
+                  :class="{ 'mh-gv2-chip-btn--active': activeCarrierSet.has(cls) }"
+                  @click="toggleLocalCarrier(cls)"
+                >
+                  <span class="mh-gv2-swatch-dot" :style="{ background: carrierTokenColor(cls) }" />
+                  {{ carrierLabel(cls) }}
+                </button>
+              </div>
 
-            <div class="mh-gv2-section">
-              <label class="mh-gv2-toggle-row">
-                <input
-                  type="checkbox"
-                  :checked="effectiveOnlyProblems"
-                  @change="localOnlyProblems = ($event.target as HTMLInputElement).checked"
-                />
-                <span>{{ $t('mh.globeV2.onlyProblems') }}</span>
-              </label>
-              <label class="mh-gv2-rtt-filter mh-gv2-rtt-filter--block">
-                <span class="mh-mono">{{ $t('mh.globeV2.minRtt', { ms: effectiveMinRttMs }) }}</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="500"
-                  step="5"
-                  :value="effectiveMinRttMs"
-                  @input="localMinRttMs = Number(($event.target as HTMLInputElement).value)"
-                />
-              </label>
-              <button type="button" class="mh-gv2-chip-btn mt-2" @click="resetLocalFilters">
-                {{ $t('mh.globeV2.resetFilters') }}
-              </button>
-            </div>
+              <div class="mh-gv2-section">
+                <label class="mh-gv2-toggle-row">
+                  <input
+                    type="checkbox"
+                    :checked="effectiveOnlyProblems"
+                    @change="localOnlyProblems = ($event.target as HTMLInputElement).checked"
+                  />
+                  <span>{{ $t('mh.globeV2.onlyProblems') }}</span>
+                </label>
+                <label class="mh-gv2-rtt-filter mh-gv2-rtt-filter--block">
+                  <span class="mh-mono">{{ $t('mh.globeV2.minRtt', { ms: effectiveMinRttMs }) }}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="500"
+                    step="5"
+                    :value="effectiveMinRttMs"
+                    @input="localMinRttMs = Number(($event.target as HTMLInputElement).value)"
+                  />
+                </label>
+                <button type="button" class="mh-gv2-chip-btn mt-2" @click="resetLocalFilters">
+                  {{ $t('mh.globeV2.resetFilters') }}
+                </button>
+              </div>
+            </template>
           </div>
 
           <!-- Mobile List Tab Content -->
@@ -640,7 +825,7 @@
                   />
                   {{ item.name }}
                 </span>
-                <span class="mh-mono">{{ nodeCityShort(item) }}</span>
+                <span class="mh-mono">{{ isBackboneView ? (item.zoneName || nodeCityShort(item)) : nodeCityShort(item) }}</span>
               </button>
             </div>
             <div v-if="allListTotalPages > 1" class="mh-gv2-pager">
@@ -666,6 +851,12 @@
                   :style="{ background: carrierTokenColor(selectedLink.majorityClass) }"
                   aria-hidden="true"
                 />
+                <span
+                  v-else-if="selectedBackboneArc"
+                  class="mh-gv2-swatch-dot"
+                  :style="{ background: selectedBackboneArc.stalled ? tokens.stalled : tokens.labelPrimary }"
+                  aria-hidden="true"
+                />
                 <div class="mh-gv2-panel__title" :title="panelTitle">{{ panelTitle }}</div>
               </div>
               <button
@@ -679,26 +870,52 @@
               </button>
             </div>
 
-            <!-- Single device detail (full GlobeDetailPanel parity + S7 precision + same-city + remote links) -->
+            <!-- Single node detail (Device / Gateway / Centre — strictly separated role badges + S12 backbone fields) -->
             <div v-if="selectedNode" class="mh-gv2-panel__body" data-testid="globe-v2-device-detail">
               <div class="mh-gv2-badges">
                 <span class="mh-gv2-badge" :style="{ borderColor: presenceTokenColor(selectedNode), color: presenceTokenColor(selectedNode) }">
                   {{ presenceLabel(selectedNode) }}
                 </span>
-                <span v-if="selectedNode.isCentre || selectedNode.role === 'centre'" class="mh-gv2-badge">
+                <span
+                  v-if="selectedNode.isCentre || selectedNode.role === 'centre'"
+                  class="mh-gv2-badge mh-gv2-badge--centre"
+                  data-testid="globe-v2-role-centre"
+                >
                   {{ $t('mh.mesh.role.centre') }}
                 </span>
-                <span v-if="selectedNode.isGateway || selectedNode.role === 'gateway'" class="mh-gv2-badge">
+                <span
+                  v-if="selectedNode.isGateway || selectedNode.role === 'gateway'"
+                  class="mh-gv2-badge mh-gv2-badge--gateway"
+                  data-testid="globe-v2-role-gateway"
+                >
                   {{ $t('mh.mesh.role.gateway') }}
                 </span>
-                <span v-if="selectedNode.isEntry || selectedNode.role === 'entry'" class="mh-gv2-badge">
+                <span
+                  v-if="selectedNode.isEntry || selectedNode.role === 'entry'"
+                  class="mh-gv2-badge mh-gv2-badge--entry"
+                  data-testid="globe-v2-role-entry"
+                >
                   {{ $t('mh.mesh.role.entry') }}
                 </span>
-                <span v-if="selectedNodeZoneText" class="mh-gv2-badge">
-                  <svg v-if="selectedNode.zonePinned" viewBox="0 0 16 16" width="10" height="10" fill="currentColor" style="margin-right: 3px" aria-hidden="true">
-                    <path d="M9.8 1.5l4.7 4.7-1.1 1.1-1.3-.4-2.6 2.6.5 2.4-1 1-2.5-2.5-3.4 3.4-.9-.9 3.4-3.4L3.1 7l1-1 2.4.5 2.6-2.6-.4-1.3z" />
-                  </svg>{{ selectedNodeZoneText }}
-                </span>
+                <template v-if="selectedNodeZoneChips.length">
+                  <span
+                    v-for="zc in selectedNodeZoneChips"
+                    :key="zc.key"
+                    class="mh-gv2-badge"
+                    data-testid="globe-v2-zone-chip"
+                  >
+                    <span
+                      v-if="zc.color"
+                      class="mh-gv2-swatch-dot"
+                      style="width: 6px; height: 6px; margin-right: 4px"
+                      :style="{ background: zc.color }"
+                      aria-hidden="true"
+                    />
+                    <svg v-if="selectedNode.zonePinned" viewBox="0 0 16 16" width="10" height="10" fill="currentColor" style="margin-right: 3px" aria-hidden="true">
+                      <path d="M9.8 1.5l4.7 4.7-1.1 1.1-1.3-.4-2.6 2.6.5 2.4-1 1-2.5-2.5-3.4 3.4-.9-.9 3.4-3.4L3.1 7l1-1 2.4.5 2.6-2.6-.4-1.3z" />
+                    </svg>{{ zc.name }}
+                  </span>
+                </template>
               </div>
 
               <dl class="mh-gv2-facts">
@@ -709,6 +926,27 @@
                 <div v-if="selectedNodeLastSeen" class="mh-gv2-fact">
                   <dt>{{ $t('mh.mesh.panel.lastSeen') }}</dt>
                   <dd class="mh-mono">{{ selectedNodeLastSeen }}</dd>
+                </div>
+                <div v-if="selectedNode.zoneDeviceCount != null" class="mh-gv2-fact" data-testid="globe-v2-zone-devices">
+                  <dt>{{ $t('mh.backbone.zoneDevicesLabel') }}</dt>
+                  <dd class="mh-mono">{{ $t('mh.backbone.deviceCountShort', { n: selectedNode.zoneDeviceCount }) }}</dd>
+                </div>
+                <div v-if="selectedNode.managementEntry" class="mh-gv2-fact" data-testid="globe-v2-mgmt-entry">
+                  <dt>{{ $t('mh.mesh.panel.managementEntry') }}</dt>
+                  <dd class="mh-mono">
+                    {{
+                      selectedNode.managementEntry.listening
+                        ? selectedNode.managementEntry.port
+                          ? $t('mh.mesh.panel.entryListeningPort', { port: selectedNode.managementEntry.port })
+                          : $t('mh.mesh.panel.entryListening')
+                        : $t('mh.mesh.panel.entryNotListening')
+                    }}
+                    · {{ $t('mh.mesh.panel.entryDevicesCount', { n: selectedNode.managementEntry.deviceCount }) }}
+                  </dd>
+                </div>
+                <div v-if="selectedNodeMgmtPathText" class="mh-gv2-fact" data-testid="globe-v2-mgmt-path">
+                  <dt>{{ isBackboneView ? $t('mh.backbone.mgmtPathLabel') : $t('mh.mesh.panel.pathToCentre') }}</dt>
+                  <dd>{{ selectedNodeMgmtPathText }}</dd>
                 </div>
                 <div class="mh-gv2-fact">
                   <dt>{{ $t('mh.globeV2.countryRegion') }}</dt>
@@ -730,14 +968,37 @@
                   <dt>{{ $t('mh.mesh.panel.relayHome') }}</dt>
                   <dd class="mh-mono">{{ selectedNode.relayHome }}</dd>
                 </div>
-                <div v-if="selectedNodeMgmtPathText" class="mh-gv2-fact" data-testid="globe-v2-mgmt-path">
-                  <dt>{{ $t('mh.mesh.panel.pathToCentre') }}</dt>
-                  <dd>{{ selectedNodeMgmtPathText }}</dd>
-                </div>
               </dl>
 
-              <!-- Same-city devices (paginated 50/page) -->
-              <div v-if="sameCityDevices.length > 1" class="mh-gv2-section" data-testid="globe-v2-same-city-section">
+              <!-- Backbone incident links (when in backbone view) -->
+              <div v-if="isBackboneView && selectedNodeBackboneLinks.length" class="mh-gv2-section" data-testid="globe-v2-backbone-node-links">
+                <div class="mh-gv2-section__title">
+                  {{ $t('mh.backbone.linksHeading', { n: selectedNodeBackboneLinks.length }) }}
+                </div>
+                <div class="mh-gv2-list">
+                  <button
+                    v-for="bl in selectedNodeBackboneLinks"
+                    :key="bl.arc.key"
+                    type="button"
+                    class="mh-gv2-list-row"
+                    @click="selectBackboneLink(bl.arc)"
+                  >
+                    <span class="mh-gv2-list-row__name">
+                      <span
+                        class="mh-gv2-swatch-dot"
+                        :style="{ background: bl.arc.stalled ? tokens.stalled : tokens.labelPrimary }"
+                      />
+                      <span>{{ bl.peerName }}</span>
+                    </span>
+                    <span class="mh-mono mh-gv2-list-row__meta">
+                      {{ carrierLabel(bl.arc.carrier) }}<template v-if="bl.arc.rttMs != null"> · {{ bl.arc.rttMs }} ms</template><template v-if="bl.arc.stalled"> · ⚠</template>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Same-city devices (Devices view only, paginated 50/page) -->
+              <div v-if="!isBackboneView && sameCityDevices.length > 1" class="mh-gv2-section" data-testid="globe-v2-same-city-section">
                 <div class="mh-gv2-section__title">
                   {{ $t('mh.globeV2.sameCityDevices', { n: sameCityDevices.length }) }}
                 </div>
@@ -767,8 +1028,8 @@
                 </div>
               </div>
 
-              <!-- Links grouped by remote city (with majority carrier + mixed + breakdown + RTT) -->
-              <div v-if="egoLinks.length" class="mh-gv2-section" data-testid="globe-v2-remote-links">
+              <!-- Links grouped by remote city (Devices view only) -->
+              <div v-if="!isBackboneView && egoLinks.length" class="mh-gv2-section" data-testid="globe-v2-remote-links">
                 <div class="mh-gv2-section__title">
                   {{ $t('mh.globeV2.linksByRemoteCity', { n: egoLinks.length }) }}
                 </div>
@@ -792,7 +1053,7 @@
               </div>
 
               <button
-                v-if="showOpenDeviceAction && !selectedNode.isCentre"
+                v-if="showOpenDeviceAction && (selectedNode.agentId || !selectedNode.isCentre)"
                 type="button"
                 class="mh-gv2-primary-btn"
                 data-testid="globe-v2-open-device-btn"
@@ -800,6 +1061,109 @@
               >
                 {{ $t('mh.globeV2.openDevicePage') }}
               </button>
+            </div>
+
+            <!-- Backbone Link detail (S12 / FR-137) -->
+            <div v-else-if="selectedBackboneArc" class="mh-gv2-panel__body" data-testid="globe-v2-backbone-link-detail">
+              <div class="mh-gv2-badges">
+                <span class="mh-gv2-badge">
+                  {{ carrierLabel(selectedBackboneArc.carrier) }}
+                </span>
+                <span
+                  v-if="selectedBackboneArc.crossZone"
+                  class="mh-gv2-badge mh-gv2-badge--accent"
+                  data-testid="globe-v2-cross-zone-badge"
+                >
+                  {{ $t('mh.backbone.crossZone') }}
+                </span>
+                <span class="mh-gv2-badge">
+                  {{
+                    isUnidirectionalBackboneArc(selectedBackboneArc)
+                      ? $t('mh.backbone.unidirectional')
+                      : $t('mh.backbone.bidirectional')
+                  }}
+                </span>
+                <span
+                  v-if="selectedBackboneArc.enabled === false"
+                  class="mh-gv2-badge"
+                  :style="{ borderColor: tokens.offline, color: tokens.offline }"
+                >
+                  {{ $t('mh.backbone.disabled') }}
+                </span>
+                <span
+                  v-else-if="selectedBackboneArc.stalled"
+                  class="mh-gv2-badge"
+                  :style="{ borderColor: tokens.stalled, color: tokens.stalled }"
+                >
+                  {{ $t('mh.mesh.stalled') }}
+                </span>
+              </div>
+
+              <dl class="mh-gv2-facts">
+                <div class="mh-gv2-fact">
+                  <dt>{{ backboneNodeName(selectedBackboneArc.from) }}</dt>
+                  <dd>{{ backboneNodeZonesText(selectedBackboneArc.from) || '—' }}</dd>
+                </div>
+                <div class="mh-gv2-fact">
+                  <dt>{{ backboneNodeName(selectedBackboneArc.to) }}</dt>
+                  <dd>{{ backboneNodeZonesText(selectedBackboneArc.to) || '—' }}</dd>
+                </div>
+                <template v-if="selectedBackboneLinkDirections.length">
+                  <div v-for="dir in selectedBackboneLinkDirections" :key="dir.label" class="mh-gv2-fact">
+                    <dt>{{ dir.label }}</dt>
+                    <dd class="mh-mono">
+                      {{ dir.carrier }}<template v-if="dir.rttMs != null"> · {{ dir.rttMs }} ms</template><template v-if="dir.stalled"> · {{ $t('mh.mesh.stalled') }}</template>
+                    </dd>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="mh-gv2-fact">
+                    <dt>{{ $t('mh.mesh.panel.carrier') }}</dt>
+                    <dd class="mh-mono">{{ carrierLabel(selectedBackboneArc.carrier) }}</dd>
+                  </div>
+                  <div v-if="selectedBackboneArc.rttMs != null" class="mh-gv2-fact">
+                    <dt>{{ $t('mh.mesh.panel.rtt') }}</dt>
+                    <dd class="mh-mono">{{ selectedBackboneArc.rttMs }} ms</dd>
+                  </div>
+                </template>
+                <div v-if="selectedBackboneArc.reports != null" class="mh-gv2-fact">
+                  <dt>{{ $t('mh.mesh.panel.reports') }}</dt>
+                  <dd>
+                    {{
+                      selectedBackboneArc.reports === 1
+                        ? $t('mh.mesh.panel.oneSided')
+                        : $t('mh.mesh.panel.reportsCount', { n: selectedBackboneArc.reports })
+                    }}
+                  </dd>
+                </div>
+                <div class="mh-gv2-fact">
+                  <dt>{{ $t('mh.backbone.directionLabel') }}</dt>
+                  <dd>
+                    {{
+                      isUnidirectionalBackboneArc(selectedBackboneArc)
+                        ? $t('mh.backbone.unidirectional')
+                        : $t('mh.backbone.bidirectional')
+                    }}
+                  </dd>
+                </div>
+              </dl>
+
+              <div class="mh-gv2-endpoints">
+                <button
+                  type="button"
+                  class="mh-gv2-chip-btn"
+                  @click="focusNodeById(selectedBackboneArc.from)"
+                >
+                  {{ backboneNodeName(selectedBackboneArc.from) }}
+                </button>
+                <button
+                  type="button"
+                  class="mh-gv2-chip-btn"
+                  @click="focusNodeById(selectedBackboneArc.to)"
+                >
+                  {{ backboneNodeName(selectedBackboneArc.to) }}
+                </button>
+              </div>
             </div>
 
             <!-- Aggregated link detail (Fix #6: majority carrier, mixed badge, full per-carrier breakdown) -->
@@ -932,7 +1296,9 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { Protocol } from 'pmtiles'
 import { appPath } from '@/utils/deployment'
+import { edgeSides, qualifiedCarrier } from '@/utils/mesh'
 import type { GlobeArc, GlobeCenter, GlobeNode } from '@/components/globe/types'
+import type { BackboneZoneView } from '@/stores/serverTopology'
 import {
   BOUNDARY_ATTRIBUTION,
   CJK_FONT_STACK,
@@ -943,6 +1309,7 @@ import {
 } from './tokens'
 import {
   loadGazetteerIfPresent,
+  resolveV2Location,
   type GazetteerV1,
 } from './locationResolver'
 import {
@@ -983,11 +1350,32 @@ import {
   type AggregatedLink,
   type LinkCarrierClass,
 } from './links'
-import { ensureStaticIcons, hitHalfBoxPx, resolveClusterIconId } from './icons'
+import {
+  buildBackboneDevicesOverlayGeoJson,
+  buildBackboneLinksGeoJson,
+  buildBackboneMgmtPathsGeoJson,
+  formatBackboneNodeLabel,
+  isUnidirectionalBackboneArc,
+  resolveBackboneNodes,
+  type PlacedBackboneNode,
+} from './backbone'
+import {
+  ensureBackboneStaticIcons,
+  ensureStaticIcons,
+  hitHalfBoxPx,
+  resolveBackboneNodeIconId,
+  resolveClusterIconId,
+} from './icons'
 import {
   ACCURACY_CIRCLES_SOURCE_ID,
   applyLangToMap,
   applyThemeToMap,
+  applyViewModeLayerVisibility,
+  BACKBONE_ARROWS_SOURCE_ID,
+  BACKBONE_DEVICES_SOURCE_ID,
+  BACKBONE_LINK_LAYER_IDS,
+  BACKBONE_LINKS_SOURCE_ID,
+  BACKBONE_MGMT_PATHS_SOURCE_ID,
   buildGlobeStyle,
   LINK_BADGES_SOURCE_ID,
   LINKS_SOURCE_ID,
@@ -1036,9 +1424,16 @@ export interface GlobePerfReport {
 
 const props = withDefaults(
   defineProps<{
+    viewMode?: 'devices' | 'backbone'
     nodes: readonly GlobeNode[]
     arcs: readonly GlobeArc[]
     center?: GlobeCenter | null
+    zones?: readonly BackboneZoneView[]
+    overlayDevices?: readonly GlobeNode[]
+    overlayDeviceArcs?: readonly GlobeArc[]
+    backboneNodes?: readonly GlobeNode[]
+    backboneArcs?: readonly GlobeArc[]
+    showDevicesOverlay?: boolean
     themeMode?: GlobeThemeMode
     lang?: GlobeLang
     pixelRatio?: number
@@ -1058,7 +1453,14 @@ const props = withDefaults(
     standaloneFullPage?: boolean
   }>(),
   {
+    viewMode: 'devices',
     center: null,
+    zones: () => [],
+    overlayDevices: () => [],
+    overlayDeviceArcs: () => [],
+    backboneNodes: () => [],
+    backboneArcs: () => [],
+    showDevicesOverlay: false,
     themeMode: 'dark',
     lang: 'zh-CN',
     pixelRatio: 2,
@@ -1082,6 +1484,8 @@ const emit = defineEmits<{
   (e: 'node-click', nodeId: string): void
   (e: 'arc-click', arcKey: string): void
   (e: 'open-device', nodeId: string): void
+  (e: 'update:view-mode', mode: 'devices' | 'backbone'): void
+  (e: 'update:show-devices-overlay', show: boolean): void
   (e: 'full-page-change', full: boolean): void
   (e: 'webgl-error', reason: string): void
   (
@@ -1200,15 +1604,22 @@ const maxZoomSpanHint = computed(() =>
 const selectedNode = ref<GlobeNode | null>(null)
 const selectedCluster = ref<DisplayCluster | null>(null)
 const selectedLink = ref<AggregatedLink | null>(null)
+const selectedBackboneArc = ref<GlobeArc | null>(null)
 const showingUnknownList = ref(false)
 const showingAllDevicesList = ref(false)
 const hoveredDisplayId = ref<string | null>(null)
 const hoveredNode = ref<GlobeNode | null>(null)
+const hoveredBackboneNodeId = ref<string | null>(null)
 const hoveredLinkKey = ref<string | null>(null)
 const listPage = ref(1)
 const sameCityPage = ref(1)
 const allListPage = ref(1)
 const pulseKey = ref(0)
+
+// S12 Shared MapLibre view mode (`devices` | `backbone`) + optional Devices overlay toggle
+const activeViewMode = ref<'devices' | 'backbone'>(props.viewMode)
+const isBackboneView = computed(() => activeViewMode.value === 'backbone')
+const showDevices = ref<boolean>(props.showDevicesOverlay)
 
 // Full-page / mobile local filter overrides
 const localOnlyProblems = ref<boolean | null>(null)
@@ -1234,6 +1645,7 @@ interface HoverCardState {
   y: number
   title: string
   subtitle: string
+  badge?: string
   breakdown?: string
   mixed?: boolean
   extra?: string
@@ -1278,7 +1690,7 @@ const fullPage = useFullPage({
       map.resize()
       // Fix #1: Re-fit globe cleanly to 85–90% diameter on entering/exiting full-page!
       userManuallyZoomed = false
-      fitGlobeToContainer(false)
+      fitCameraToActiveNodes(false)
       applyCameraPadding(false)
       syncFresnelRim()
       refreshMarkerEdgePlacements()
@@ -1317,9 +1729,26 @@ const mobileSheetDynamicStyle = computed(() => {
   }
 })
 
-// All nodes including optional centre node (when located and control plane shown)
+// Separate view datasets so switching `devices` <-> `backbone` never recreates the MapLibre Map
+const deviceDatasetNodes = computed<readonly GlobeNode[]>(() =>
+  props.viewMode === 'devices' ? props.nodes : props.overlayDevices,
+)
+const deviceDatasetArcs = computed<readonly GlobeArc[]>(() =>
+  props.viewMode === 'devices' ? props.arcs : props.overlayDeviceArcs,
+)
+const activeBackboneNodes = computed<readonly GlobeNode[]>(() =>
+  props.viewMode === 'backbone' ? props.nodes : props.backboneNodes,
+)
+const activeBackboneArcs = computed<readonly GlobeArc[]>(() =>
+  props.viewMode === 'backbone' ? props.arcs : props.backboneArcs,
+)
+const canSwitchView = computed(
+  () => deviceDatasetNodes.value.length > 0 && activeBackboneNodes.value.length > 0,
+)
+
+// All device-view nodes including optional centre node (when located and control plane shown)
 const allGlobeNodes = computed<GlobeNode[]>(() => {
-  const list = [...props.nodes]
+  const list = [...deviceDatasetNodes.value]
   if (props.showControlPlane && props.center) {
     const hasCoords =
       typeof props.center.lat === 'number' && typeof props.center.lon === 'number'
@@ -1345,9 +1774,24 @@ const grouped = computed(() => groupNodesByLocation(allGlobeNodes.value, loadedG
 const merged = computed(() => clusterGroupsForZoom(grouped.value.groups, currentZi.value, 40))
 const clusterById = computed(() => new Map(merged.value.clusters.map((c) => [c.id, c])))
 
+// S12 Backbone resolved nodes, zones, and unlocated chips
+const backboneResolved = computed(() =>
+  resolveBackboneNodes(activeBackboneNodes.value, props.zones, props.themeMode, loadedGazetteer.value),
+)
+const backboneNodeById = computed(() => new Map(activeBackboneNodes.value.map((n) => [n.id, n])))
+const activeListNodes = computed<readonly GlobeNode[]>(() =>
+  isBackboneView.value ? activeBackboneNodes.value : allGlobeNodes.value,
+)
+const unknownNodesForView = computed<readonly GlobeNode[]>(() =>
+  isBackboneView.value ? backboneResolved.value.unlocatedOthers : grouped.value.unlocated,
+)
+const unlocatedCentres = computed<readonly GlobeNode[]>(() =>
+  isBackboneView.value ? backboneResolved.value.unlocatedCentres : [],
+)
+
 const linkAgg = computed(() =>
   aggregateLinks(
-    props.arcs,
+    deviceDatasetArcs.value,
     merged.value.displayIdByNodeId,
     grouped.value.groupKeyByNodeId,
     clusterById.value,
@@ -1371,9 +1815,9 @@ const activeFocus = computed<{ nodeId?: string | null; displayId?: string | null
 })
 
 const egoLinks = computed<AggregatedLink[]>(() => {
-  if (!activeFocus.value) return []
+  if (!activeFocus.value || isBackboneView.value) return []
   return buildEgoNetwork(
-    props.arcs,
+    deviceDatasetArcs.value,
     activeFocus.value,
     merged.value.displayIdByNodeId,
     grouped.value.groupKeyByNodeId,
@@ -1392,7 +1836,7 @@ const selectedNodeDisplayId = computed(() =>
 )
 
 const selectedNodeGroup = computed(() => {
-  if (!selectedNode.value) return null
+  if (!selectedNode.value || isBackboneView.value) return null
   const key = grouped.value.groupKeyByNodeId.get(selectedNode.value.id)
   return key ? grouped.value.groupByKey.get(key) ?? null : null
 })
@@ -1411,9 +1855,9 @@ const selectedNodeIntraCityCount = computed(() => {
   return key ? linkAgg.value.intraCityCountByGroup.get(key) ?? 0 : 0
 })
 
-const listPanelNodes = computed<GlobeNode[]>(() => {
-  if (showingUnknownList.value) return grouped.value.unlocated
-  if (showingAllDevicesList.value) return allGlobeNodes.value
+const listPanelNodes = computed<readonly GlobeNode[]>(() => {
+  if (showingUnknownList.value) return unknownNodesForView.value
+  if (showingAllDevicesList.value) return activeListNodes.value
   if (selectedCluster.value) return selectedCluster.value.nodes
   return []
 })
@@ -1427,11 +1871,11 @@ const pagedListNodes = computed(() => {
 })
 
 const allListTotalPages = computed(() =>
-  Math.max(1, Math.ceil(allGlobeNodes.value.length / LIST_PAGE_SIZE)),
+  Math.max(1, Math.ceil(activeListNodes.value.length / LIST_PAGE_SIZE)),
 )
 const pagedAllNodes = computed(() => {
   const start = (allListPage.value - 1) * LIST_PAGE_SIZE
-  return allGlobeNodes.value.slice(start, start + LIST_PAGE_SIZE)
+  return activeListNodes.value.slice(start, start + LIST_PAGE_SIZE)
 })
 
 const selectedClusterIntraCity = computed(() => {
@@ -1453,6 +1897,7 @@ const panelOpen = computed(() =>
   Boolean(
     selectedNode.value ||
       selectedLink.value ||
+      selectedBackboneArc.value ||
       showingUnknownList.value ||
       showingAllDevicesList.value ||
       selectedCluster.value,
@@ -1461,14 +1906,19 @@ const panelOpen = computed(() =>
 
 const panelTitle = computed(() => {
   if (selectedNode.value) return selectedNode.value.name
+  if (selectedBackboneArc.value) {
+    const arrow = isUnidirectionalBackboneArc(selectedBackboneArc.value) ? '→' : '↔'
+    return `${backboneNodeName(selectedBackboneArc.value.from)} ${arrow} ${backboneNodeName(selectedBackboneArc.value.to)}`
+  }
   if (selectedLink.value) {
     return `${clusterLabelById(selectedLink.value.fromDisplayId)} ↔ ${clusterLabelById(selectedLink.value.toDisplayId)}`
   }
   if (showingUnknownList.value) {
-    return t('mh.globeV2.unknownLocation', { n: grouped.value.unlocated.length })
+    return t('mh.globeV2.unknownLocation', { n: unknownNodesForView.value.length })
   }
   if (showingAllDevicesList.value) {
-    return `${t('mh.globeV2.deviceList')} (${allGlobeNodes.value.length})`
+    const heading = isBackboneView.value ? t('mh.backbone.gatewayList') : t('mh.globeV2.deviceList')
+    return `${heading} (${activeListNodes.value.length})`
   }
   if (selectedCluster.value) {
     return formatClusterLabel(selectedCluster.value, props.lang)
@@ -1476,14 +1926,64 @@ const panelTitle = computed(() => {
   return ''
 })
 
-const selectedNodeZoneText = computed(() => {
+const selectedNodeZoneChips = computed(() => {
   const n = selectedNode.value
-  if (!n) return ''
-  if (n.zoneName) return n.zoneName
-  if (n.zoneId) return n.zoneId
-  if (n.zoneKind === 'mainland') return t('mh.topo.mainland')
-  if (n.zoneKind === 'non_mainland') return t('mh.topo.nonMainland')
-  return ''
+  if (!n) return [] as Array<{ key: string; name: string; color?: string }>
+  if (n.zoneIds?.length) {
+    const zoneById = new Map(props.zones.map((z) => [z.id, z]))
+    return n.zoneIds.map((zid, idx) => ({
+      key: zid,
+      name: zoneById.get(zid)?.name ?? n.zoneNames?.[idx] ?? zid,
+      color: backboneResolved.value.zoneColors.get(zid) ?? n.color,
+    }))
+  }
+  if (n.zoneNames?.length) {
+    return n.zoneNames.map((name, idx) => ({
+      key: `${name}-${idx}`,
+      name,
+      color: n.color,
+    }))
+  }
+  if (n.zoneName) return [{ key: n.zoneId ?? n.zoneName, name: n.zoneName, color: n.color }]
+  if (n.zoneId) return [{ key: n.zoneId, name: n.zoneId, color: n.color }]
+  if (n.zoneKind === 'mainland') return [{ key: 'mainland', name: t('mh.topo.mainland') }]
+  if (n.zoneKind === 'non_mainland') return [{ key: 'non_mainland', name: t('mh.topo.nonMainland') }]
+  return []
+})
+
+const selectedNodeBackboneLinks = computed(() => {
+  const n = selectedNode.value
+  if (!n || !isBackboneView.value) return [] as Array<{ arc: GlobeArc; peerName: string }>
+  return activeBackboneArcs.value
+    .filter((a) => a.kind !== 'control' && a.kind !== 'mgmt_path' && (a.from === n.id || a.to === n.id))
+    .map((arc) => {
+      const peerId = arc.from === n.id ? arc.to : arc.from
+      return { arc, peerName: backboneNodeName(peerId) }
+    })
+})
+
+const selectedBackboneLinkDirections = computed(() => {
+  const a = selectedBackboneArc.value
+  if (!a?.ends?.length) return [] as Array<{ label: string; carrier: string; rttMs: number | null; stalled: boolean }>
+  const sides = edgeSides(a.ends, a.from, a.to)
+  const out: Array<{ label: string; carrier: string; rttMs: number | null; stalled: boolean }> = []
+  if (sides.from) {
+    out.push({
+      label: `${backboneNodeName(a.from)} → ${backboneNodeName(a.to)}`,
+      carrier: qualifiedCarrier(sides.from.carrier, sides.from.relay),
+      rttMs: sides.from.rtt_ms ?? null,
+      stalled: Boolean(sides.from.stalled),
+    })
+  }
+  if (sides.to) {
+    out.push({
+      label: `${backboneNodeName(a.to)} → ${backboneNodeName(a.from)}`,
+      carrier: qualifiedCarrier(sides.to.carrier, sides.to.relay),
+      rttMs: sides.to.rtt_ms ?? null,
+      stalled: Boolean(sides.to.stalled),
+    })
+  }
+  return out
 })
 
 const selectedNodeOsVersion = computed(() => {
@@ -1515,7 +2015,9 @@ const selectedNodeLastSeen = computed(() => {
 const selectedNodeRegionText = computed(() => {
   const n = selectedNode.value
   if (!n) return '—'
-  const res = grouped.value.resolvedByNodeId.get(n.id)
+  const res = isBackboneView.value
+    ? resolveV2Location(n, loadedGazetteer.value)
+    : grouped.value.resolvedByNodeId.get(n.id) ?? resolveV2Location(n, loadedGazetteer.value)
   if (!res || res.precision === 'unknown') return t('mh.mesh.panel.locationUnknown')
   return (
     formatNeutralRegionName(res.countryCode, res.locationLabel || res.placeEn, props.lang) ||
@@ -1526,22 +2028,45 @@ const selectedNodeRegionText = computed(() => {
 const selectedNodePrecisionText = computed(() => {
   const n = selectedNode.value
   if (!n) return ''
-  const res = grouped.value.resolvedByNodeId.get(n.id)
+  const res = isBackboneView.value
+    ? resolveV2Location(n, loadedGazetteer.value)
+    : grouped.value.resolvedByNodeId.get(n.id) ?? resolveV2Location(n, loadedGazetteer.value)
   return precisionText(res?.precision ?? 'unknown', res?.accuracyRadiusKm ?? null)
 })
 
 const selectedNodeMgmtPathText = computed(() => {
   const mp = selectedNode.value?.managementPath
   if (!mp) return ''
+  if (mp.mode === 'centre_host') return t('mh.backbone.mgmtPathCentre')
+  if (mp.mode === 'gateway_entry_ready') {
+    const port = selectedNode.value?.managementEntry?.port
+    return port
+      ? t('mh.backbone.mgmtPathReadyPort', { port })
+      : t('mh.backbone.mgmtPathReady')
+  }
+  if (mp.mode === 'gateway_relay_only') return t('mh.backbone.mgmtPathRelayOnly')
   if (mp.mode === 'gateway') {
     return mp.gatewayName
       ? t('mh.mesh.panel.viaGateway', { name: mp.gatewayName })
       : t('mh.mesh.panel.viaGatewayGeneric')
   }
   if (mp.mode === 'last_resort_direct') return t('mh.mesh.panel.lastResortDirect')
-  if (mp.mode === 'direct') return t('mh.mesh.panel.directToCentre')
+  if (mp.mode === 'direct') {
+    return isBackboneView.value ? t('mh.backbone.mgmtPathDirectCentre') : t('mh.mesh.panel.directToCentre')
+  }
   return mp.mode
 })
+
+function backboneNodeName(id: string): string {
+  return backboneNodeById.value.get(id)?.name ?? id.slice(-6)
+}
+
+function backboneNodeZonesText(id: string): string {
+  const n = backboneNodeById.value.get(id)
+  if (!n) return ''
+  if (n.zoneNames?.length) return n.zoneNames.join(', ')
+  return n.zoneName ?? ''
+}
 
 function precisionText(precision: string, accuracyRadiusKm: number | null = null): string {
   if (precision === 'coords') {
@@ -1571,6 +2096,7 @@ function carrierTokenColor(cls: string): string {
     case 'tunnel':
       return tokens.value.tunnel
     case 'relay':
+    case 'org_relay':
       return tokens.value.relay
     case 'derp':
       return tokens.value.derp
@@ -1597,7 +2123,9 @@ function formatBreakdownText(link: AggregatedLink): string {
 }
 
 function nodeCityShort(node: GlobeNode): string {
-  const res = grouped.value.resolvedByNodeId.get(node.id)
+  const res = isBackboneView.value
+    ? resolveV2Location(node, loadedGazetteer.value)
+    : grouped.value.resolvedByNodeId.get(node.id)
   if (!res || res.precision === 'unknown') return t('mh.mesh.panel.locationUnknown')
   return props.lang === 'zh-CN' ? res.placeZh || res.placeEn : res.placeEn || res.placeZh
 }
@@ -1707,6 +2235,92 @@ function fitGlobeToContainer(animate = false, center?: [number, number]): void {
   }
   currentZoom.value = zoom
   currentZi.value = Math.floor(zoom)
+}
+
+function computeBackboneCenter(): [number, number] {
+  const pts = backboneResolved.value.placed
+  if (!pts.length) return [DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]]
+  let sx = 0
+  let sy = 0
+  let sz = 0
+  const deg = Math.PI / 180
+  for (const p of pts) {
+    const phi = p.lat * deg
+    const lam = p.lon * deg
+    sx += Math.cos(phi) * Math.cos(lam)
+    sy += Math.cos(phi) * Math.sin(lam)
+    sz += Math.sin(phi)
+  }
+  const len = Math.hypot(sx, sy, sz)
+  if (len < 1e-5) return [DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]]
+  const lat = Math.max(-55, Math.min(55, (Math.asin(sz / len) * 180) / Math.PI))
+  const lon = (Math.atan2(sy, sx) * 180) / Math.PI
+  return [lon, lat]
+}
+
+function fitCameraToActiveNodes(animate = false): void {
+  if (isBackboneView.value) {
+    fitGlobeToContainer(animate, computeBackboneCenter())
+  } else {
+    fitGlobeToContainer(animate)
+  }
+}
+
+function syncViewUrl(mode: 'devices' | 'backbone'): void {
+  if (!props.syncUrl) return
+  if (injectedRouter && injectedRoute) {
+    if (injectedRoute.query.g_view === mode) return
+    const nextQuery = { ...injectedRoute.query, g_view: mode }
+    void injectedRouter.replace({ query: nextQuery }).catch(() => {})
+  } else if (typeof window !== 'undefined' && window.history?.replaceState) {
+    const url = new URL(window.location.href)
+    url.searchParams.set('g_view', mode)
+    window.history.replaceState(window.history.state, '', url.toString())
+  }
+}
+
+function switchViewMode(nextMode: 'devices' | 'backbone'): void {
+  if (activeViewMode.value === nextMode) return
+  collapseSpiderfy()
+  selectedNode.value = null
+  selectedCluster.value = null
+  selectedLink.value = null
+  selectedBackboneArc.value = null
+  showingUnknownList.value = false
+  showingAllDevicesList.value = false
+  hoverCard.value = null
+  hoveredDisplayId.value = null
+  hoveredNode.value = null
+  hoveredBackboneNodeId.value = null
+  hoveredLinkKey.value = null
+  stopFlowingDash()
+  detachPulseMarker()
+
+  activeViewMode.value = nextMode
+  emit('update:view-mode', nextMode)
+  syncViewUrl(nextMode)
+  syncSelectionUrl()
+
+  const map = mapRef.value
+  if (map && styleReady.value) {
+    applyViewModeLayerVisibility(map, nextMode, showDevices.value)
+    lastMarkerLayoutSig = ''
+    userManuallyZoomed = false
+    fitCameraToActiveNodes(true)
+    applyCameraPadding(true)
+    syncMapSources()
+  }
+}
+
+function setShowDevicesOverlay(next: boolean): void {
+  if (showDevices.value === next) return
+  showDevices.value = next
+  emit('update:show-devices-overlay', next)
+  const map = mapRef.value
+  if (map && styleReady.value) {
+    applyViewModeLayerVisibility(map, activeViewMode.value, next)
+    syncMapSources()
+  }
 }
 
 function computeDesiredPadding(): { top: number; right: number; bottom: number; left: number } {
@@ -1834,11 +2448,12 @@ function cycleMobileSnap(): void {
   applyCameraPadding(true)
 }
 
-// ── URL Query Sync (`g_sel`) (S8) ─────────────────────────────────────────────
+// ── URL Query Sync (`g_sel`, `g_view`) (S8 / S12) ─────────────────────────────
 
 function currentSelectionQueryValue(): string | null {
   if (selectedNode.value) return `dev:${selectedNode.value.id}`
   if (selectedCluster.value) return `grp:${selectedCluster.value.id}`
+  if (selectedBackboneArc.value) return `lnk:${selectedBackboneArc.value.key}`
   if (selectedLink.value) return `lnk:${selectedLink.value.key}`
   return null
 }
@@ -1863,6 +2478,25 @@ function syncSelectionUrl(): void {
 
 function hydrateSelectionFromUrl(): void {
   if (!props.syncUrl || typeof window === 'undefined') return
+  const rawView = injectedRoute
+    ? typeof injectedRoute.query.g_view === 'string'
+      ? injectedRoute.query.g_view
+      : null
+    : new URLSearchParams(window.location.search).get('g_view')
+  if ((rawView === 'devices' || rawView === 'backbone') && rawView !== activeViewMode.value) {
+    if (
+      (rawView === 'devices' && deviceDatasetNodes.value.length > 0) ||
+      (rawView === 'backbone' && activeBackboneNodes.value.length > 0)
+    ) {
+      activeViewMode.value = rawView
+      const map = mapRef.value
+      if (map && styleReady.value) {
+        applyViewModeLayerVisibility(map, rawView, showDevices.value)
+        syncMapSources()
+      }
+    }
+  }
+
   const raw = injectedRoute
     ? typeof injectedRoute.query.g_sel === 'string'
       ? injectedRoute.query.g_sel
@@ -1871,9 +2505,8 @@ function hydrateSelectionFromUrl(): void {
   if (!raw) return
   if (raw.startsWith('dev:')) {
     const id = raw.slice(4)
-    const found = allGlobeNodes.value.find((n) => n.id === id)
-    if (found) selectNodeFromList(found)
-  } else if (raw.startsWith('grp:')) {
+    focusNodeById(id)
+  } else if (raw.startsWith('grp:') && !isBackboneView.value) {
     const key = raw.slice(4)
     const c = clusterById.value.get(key)
     if (c) {
@@ -1884,8 +2517,7 @@ function hydrateSelectionFromUrl(): void {
     }
   } else if (raw.startsWith('lnk:')) {
     const key = raw.slice(4)
-    const l = linkAgg.value.allAggregated.find((x) => x.key === key)
-    if (l) selectAggregatedLink(l)
+    focusArcByKey(key)
   }
 }
 
@@ -2011,10 +2643,78 @@ function syncCooperativeGestures(): void {
   emitMetrics()
 }
 
+function buildBackboneMarkerFeatures(map: MapLibreMap): {
+  features: Array<GeoJSON.Feature<GeoJSON.Point>>
+  layoutSig: string
+} {
+  const dpr = Math.max(1, Math.min(2, props.pixelRatio))
+  ensureStaticIcons(map, props.themeMode, dpr)
+  ensureBackboneStaticIcons(map, props.themeMode, dpr)
+
+  const z = map.getZoom()
+  const center = map.getCenter()
+  const rect = mapHostEl.value?.getBoundingClientRect()
+  const stageW = rect?.width || 800
+  const stageH = rect?.height || props.height
+
+  const selNodeId = selectedNode.value?.id ?? null
+  const selArc = selectedBackboneArc.value
+  const hasFocus = Boolean(selNodeId || selArc)
+  const sigParts: string[] = []
+
+  const features: Array<GeoJSON.Feature<GeoJSON.Point>> = backboneResolved.value.placed.map((p, idx) => {
+    const isSel = p.id === selNodeId
+    const isArcEnd = Boolean(selArc && (selArc.from === p.id || selArc.to === p.id))
+    const icon = resolveBackboneNodeIconId(map, p, props.themeMode, dpr, isSel)
+
+    let sortKey = 60 + idx
+    if (isSel) sortKey = 10
+    else if (p.kind === 'centre') sortKey = 20
+    else if (p.kind === 'gateway') sortKey = 30
+    else if (p.kind === 'entry') sortKey = 40
+    else sortKey = 50 + idx
+
+    const pt = map.project([p.lon, p.lat])
+    const rawLabel = formatBackboneNodeLabel(p, props.lang)
+    let edgePlacement: 'extend-both' | 'extend-right' | 'extend-left' | 'hide' = 'hide'
+
+    if (rawLabel) {
+      const ang = centralAngleRad([p.lon, p.lat], [center.lng, center.lat])
+      if (z >= 4 || ang < Math.PI * 0.48) {
+        edgePlacement = assignMarkerEdgePlacement(pt.x, pt.y, stageW, stageH, rawLabel)
+      }
+    }
+
+    const finalLabel = edgePlacement === 'hide' ? '' : rawLabel
+    const opacity = hasFocus ? (isSel || isArcEnd ? 1 : 0.45) : 1
+    sigParts.push(`bb:${p.id}:${icon}:${edgePlacement}:${finalLabel}:${opacity}`)
+
+    return {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+      properties: {
+        id: p.id,
+        icon,
+        label: finalLabel,
+        edgePlacement,
+        sortKey,
+        opacity,
+        count: p.zoneDeviceCount ?? 1,
+      },
+    }
+  })
+
+  return { features, layoutSig: sigParts.join('|') }
+}
+
 function buildMarkerFeatures(map: MapLibreMap): {
   features: Array<GeoJSON.Feature<GeoJSON.Point>>
   layoutSig: string
 } {
+  if (isBackboneView.value) {
+    return buildBackboneMarkerFeatures(map)
+  }
+
   const dpr = Math.max(1, Math.min(2, props.pixelRatio))
   ensureStaticIcons(map, props.themeMode, dpr)
 
@@ -2125,7 +2825,7 @@ function syncAccuracyCircles(map: MapLibreMap): void {
   const src = map.getSource(ACCURACY_CIRCLES_SOURCE_ID) as GeoJSONSource | undefined
   if (!src) return
   const z = map.getZoom()
-  if (z < 3) {
+  if (isBackboneView.value || z < 3) {
     src.setData({ type: 'FeatureCollection', features: [] })
     return
   }
@@ -2145,9 +2845,20 @@ function syncAccuracyCircles(map: MapLibreMap): void {
   src.setData({ type: 'FeatureCollection', features })
 }
 
+const EMPTY_GEOJSON: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] }
+
+let lastBackboneStats = {
+  mgmtPaths: 0,
+  links: 0,
+  arrows: 0,
+  overlayDevices: 0,
+}
+
 function syncMapSources(): void {
   const map = mapRef.value
   if (!map || !styleReady.value) return
+
+  applyViewModeLayerVisibility(map, activeViewMode.value, showDevices.value)
 
   const { features, layoutSig } = buildMarkerFeatures(map)
   lastMarkerLayoutSig = layoutSig
@@ -2156,19 +2867,70 @@ function syncMapSources(): void {
 
   syncAccuracyCircles(map)
 
-  const hasSpiderfy = Boolean(activeSpiderfy.value)
-  const hasEgo = Boolean(activeFocus.value && egoLinks.value.length > 0)
-  const { lines, badges } = buildLinkGeoJson(linkAgg.value.displayed, egoLinks.value, {
-    hoveredLinkKey: hoveredLinkKey.value,
-    selectedLinkKey: selectedLink.value?.key ?? null,
-    hasEgoFocus: hasEgo,
-    dimAll: hasSpiderfy && !hasEgo,
-  })
-
   const linksSrc = map.getSource(LINKS_SOURCE_ID) as GeoJSONSource | undefined
-  linksSrc?.setData(lines)
   const badgesSrc = map.getSource(LINK_BADGES_SOURCE_ID) as GeoJSONSource | undefined
-  badgesSrc?.setData(badges)
+  const bbMgmtSrc = map.getSource(BACKBONE_MGMT_PATHS_SOURCE_ID) as GeoJSONSource | undefined
+  const bbLinksSrc = map.getSource(BACKBONE_LINKS_SOURCE_ID) as GeoJSONSource | undefined
+  const bbArrowsSrc = map.getSource(BACKBONE_ARROWS_SOURCE_ID) as GeoJSONSource | undefined
+  const bbDevicesSrc = map.getSource(BACKBONE_DEVICES_SOURCE_ID) as GeoJSONSource | undefined
+
+  if (isBackboneView.value) {
+    linksSrc?.setData(EMPTY_GEOJSON)
+
+    const focusedNodeId = hoveredBackboneNodeId.value ?? selectedNode.value?.id ?? null
+    const hasSelection = Boolean(selectedNode.value || selectedBackboneArc.value)
+
+    const mgmtPaths = buildBackboneMgmtPathsGeoJson(
+      backboneResolved.value.placed,
+      activeBackboneArcs.value,
+      { focusedNodeId, hasSelection },
+    )
+    bbMgmtSrc?.setData(mgmtPaths)
+
+    const { lines, arrows, badges } = buildBackboneLinksGeoJson(
+      activeBackboneArcs.value,
+      backboneResolved.value.placedById,
+      props.themeMode,
+      {
+        hoveredLinkKey: hoveredLinkKey.value,
+        selectedLinkKey: selectedBackboneArc.value?.key ?? null,
+        focusedNodeId,
+      },
+    )
+    bbLinksSrc?.setData(lines)
+    bbArrowsSrc?.setData(arrows)
+    badgesSrc?.setData(badges)
+
+    const devOverlay = showDevices.value
+      ? buildBackboneDevicesOverlayGeoJson(deviceDatasetNodes.value, loadedGazetteer.value)
+      : EMPTY_GEOJSON
+    bbDevicesSrc?.setData(devOverlay)
+
+    lastBackboneStats = {
+      mgmtPaths: mgmtPaths.features.length,
+      links: lines.features.length,
+      arrows: arrows.features.length,
+      overlayDevices: devOverlay.features.length,
+    }
+  } else {
+    bbMgmtSrc?.setData(EMPTY_GEOJSON)
+    bbLinksSrc?.setData(EMPTY_GEOJSON)
+    bbArrowsSrc?.setData(EMPTY_GEOJSON)
+    bbDevicesSrc?.setData(EMPTY_GEOJSON)
+    lastBackboneStats = { mgmtPaths: 0, links: 0, arrows: 0, overlayDevices: 0 }
+
+    const hasSpiderfy = Boolean(activeSpiderfy.value)
+    const hasEgo = Boolean(activeFocus.value && egoLinks.value.length > 0)
+    const { lines, badges } = buildLinkGeoJson(linkAgg.value.displayed, egoLinks.value, {
+      hoveredLinkKey: hoveredLinkKey.value,
+      selectedLinkKey: selectedLink.value?.key ?? null,
+      hasEgoFocus: hasEgo,
+      dimAll: hasSpiderfy && !hasEgo,
+    })
+
+    linksSrc?.setData(lines)
+    badgesSrc?.setData(badges)
+  }
 
   emitMetrics()
 }
@@ -2276,6 +3038,7 @@ function onHoverSpiderfyNode(node: GlobeNode | null): void {
 
 function selectAggregatedLink(link: AggregatedLink): void {
   selectedLink.value = link
+  selectedBackboneArc.value = null
   selectedNode.value = null
   selectedCluster.value = null
   showingUnknownList.value = false
@@ -2293,9 +3056,50 @@ function selectAggregatedLink(link: AggregatedLink): void {
   startFlowingDashOnSelection()
 }
 
+function selectBackboneLink(arc: GlobeArc): void {
+  selectedBackboneArc.value = arc
+  selectedLink.value = null
+  selectedNode.value = null
+  selectedCluster.value = null
+  showingUnknownList.value = false
+  showingAllDevicesList.value = false
+  if (isMobile.value && fullPage.isFull.value) {
+    mobileSheetOpen.value = true
+    mobileTab.value = 'details'
+    mobileSnap.value = 'peek'
+  }
+  emit('arc-click', arc.key)
+  syncSelectionUrl()
+  applyCameraPadding(true)
+  detachPulseMarker()
+  syncMapSources()
+}
+
+function openUnlocatedCentre(node: GlobeNode): void {
+  collapseSpiderfy()
+  if (isMobile.value) legendCollapsed.value = true
+  selectedNode.value = node
+  selectedBackboneArc.value = null
+  selectedLink.value = null
+  selectedCluster.value = null
+  showingUnknownList.value = false
+  showingAllDevicesList.value = false
+  if (isMobile.value && fullPage.isFull.value) {
+    mobileSheetOpen.value = true
+    mobileTab.value = 'details'
+    mobileSnap.value = 'mid'
+  }
+  emit('node-click', node.id)
+  syncSelectionUrl()
+  applyCameraPadding(true)
+  detachPulseMarker()
+  syncMapSources()
+}
+
 function selectNodeFromList(node: GlobeNode): void {
   selectedNode.value = node
   selectedLink.value = null
+  selectedBackboneArc.value = null
   showingUnknownList.value = false
   showingAllDevicesList.value = false
   selectedCluster.value = null
@@ -2308,16 +3112,19 @@ function selectNodeFromList(node: GlobeNode): void {
   emit('node-click', node.id)
   syncSelectionUrl()
   applyCameraPadding(true)
-  const res = grouped.value.resolvedByNodeId.get(node.id)
+  const placedBb = isBackboneView.value ? backboneResolved.value.placedById.get(node.id) : null
+  const res = placedBb ?? grouped.value.resolvedByNodeId.get(node.id)
   if (res?.lon != null && res?.lat != null) {
     triggerSelectionPulse([res.lon, res.lat])
     mapRef.value?.easeTo({
       center: [res.lon, res.lat],
       duration: prefersReducedMotion.value ? 0 : 450,
     })
+  } else {
+    detachPulseMarker()
   }
   syncMapSources()
-  startFlowingDashOnSelection()
+  if (!isBackboneView.value) startFlowingDashOnSelection()
 }
 
 function focusClusterById(displayId: string): void {
@@ -2332,6 +3139,7 @@ function focusClusterById(displayId: string): void {
   } else {
     selectedNode.value = null
     selectedLink.value = null
+    selectedBackboneArc.value = null
     showingUnknownList.value = false
     showingAllDevicesList.value = false
     selectedCluster.value = c
@@ -2349,6 +3157,7 @@ function openUnknownList(): void {
   if (isMobile.value) legendCollapsed.value = true
   selectedNode.value = null
   selectedLink.value = null
+  selectedBackboneArc.value = null
   selectedCluster.value = null
   showingAllDevicesList.value = false
   showingUnknownList.value = true
@@ -2366,6 +3175,7 @@ function closePanel(): void {
   selectedNode.value = null
   selectedCluster.value = null
   selectedLink.value = null
+  selectedBackboneArc.value = null
   showingUnknownList.value = false
   showingAllDevicesList.value = false
   mobileSheetOpen.value = false
@@ -2388,9 +3198,55 @@ function scheduleHoverClose(): void {
   hoverCloseTimer = setTimeout(() => {
     hoverCard.value = null
     hoveredDisplayId.value = null
+    hoveredBackboneNodeId.value = null
     hoveredLinkKey.value = null
     syncMapSources()
   }, 150)
+}
+
+function pickNearestBackboneNodeAt(map: MapLibreMap, x: number, y: number): PlacedBackboneNode | null {
+  const half = hitHalfBoxPx(isCoarsePointer.value)
+  const feats = map.queryRenderedFeatures(
+    [
+      [x - half, y - half],
+      [x + half, y + half],
+    ],
+    { layers: ['mh-markers'] },
+  )
+  if (!feats.length) return null
+  let best: PlacedBackboneNode | null = null
+  let bestDist = Infinity
+  let bestSort = Infinity
+  for (const f of feats) {
+    const id = String(f.properties?.id ?? '')
+    const p = backboneResolved.value.placedById.get(id)
+    if (!p) continue
+    const pt = map.project([p.lon, p.lat])
+    const dist = Math.hypot(pt.x - x, pt.y - y)
+    const sortKey = Number(f.properties?.sortKey ?? 999)
+    if (dist < bestDist - 0.5 || (Math.abs(dist - bestDist) <= 0.5 && sortKey < bestSort)) {
+      bestDist = dist
+      bestSort = sortKey
+      best = p
+    }
+  }
+  return best
+}
+
+function pickBackboneLinkAt(map: MapLibreMap, x: number, y: number): GlobeArc | null {
+  const tol = isCoarsePointer.value ? 12 : 6
+  const activeBbLayers = BACKBONE_LINK_LAYER_IDS.filter((id) => Boolean(map.getLayer(id)))
+  if (!activeBbLayers.length) return null
+  const feats = map.queryRenderedFeatures(
+    [
+      [x - tol, y - tol],
+      [x + tol, y + tol],
+    ],
+    { layers: activeBbLayers },
+  )
+  if (!feats.length) return null
+  const key = String(feats[0]?.properties?.key ?? '')
+  return activeBackboneArcs.value.find((a) => a.key === key) ?? null
 }
 
 function pickNearestMarkerAt(map: MapLibreMap, x: number, y: number): DisplayCluster | null {
@@ -2455,6 +3311,38 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
 
   const { x, y } = e.point
 
+  if (isBackboneView.value) {
+    const hitBbNode = pickNearestBackboneNodeAt(map, x, y)
+    if (hitBbNode) {
+      selectedNode.value = hitBbNode.node
+      selectedBackboneArc.value = null
+      selectedCluster.value = null
+      selectedLink.value = null
+      showingUnknownList.value = false
+      showingAllDevicesList.value = false
+      if (isMobile.value && fullPage.isFull.value) {
+        mobileSheetOpen.value = true
+        mobileTab.value = 'details'
+        mobileSnap.value = 'peek'
+      }
+      emit('node-click', hitBbNode.id)
+      syncSelectionUrl()
+      applyCameraPadding(true)
+      triggerSelectionPulse([hitBbNode.lon, hitBbNode.lat])
+      syncMapSources()
+      return
+    }
+    const hitBbLink = pickBackboneLinkAt(map, x, y)
+    if (hitBbLink) {
+      selectBackboneLink(hitBbLink)
+      return
+    }
+    if (panelOpen.value || mobileSheetOpen.value) {
+      closePanel()
+    }
+    return
+  }
+
   const hitCluster = pickNearestMarkerAt(map, x, y)
   if (hitCluster) {
     if (hitCluster.isMultiCity) {
@@ -2471,6 +3359,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
       } else {
         selectedNode.value = null
         selectedLink.value = null
+        selectedBackboneArc.value = null
         showingUnknownList.value = false
         showingAllDevicesList.value = false
         selectedCluster.value = hitCluster
@@ -2496,6 +3385,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
       selectedNode.value = targetNode
       selectedCluster.value = null
       selectedLink.value = null
+      selectedBackboneArc.value = null
       showingUnknownList.value = false
       showingAllDevicesList.value = false
       sameCityPage.value = 1
@@ -2516,6 +3406,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
       collapseSpiderfy()
       selectedNode.value = null
       selectedLink.value = null
+      selectedBackboneArc.value = null
       showingUnknownList.value = false
       showingAllDevicesList.value = false
       selectedCluster.value = hitCluster
@@ -2558,6 +3449,80 @@ function handleMapMouseMove(e: maplibregl.MapMouseEvent): void {
 
   // S8: 120 ms hover delay, max-width 260 px, 8 px offset
   hoverShowTimer = setTimeout(() => {
+    if (isBackboneView.value) {
+      const hitBb = pickNearestBackboneNodeAt(map, x, y)
+      if (hitBb) {
+        cancelHoverClose()
+        map.getCanvas().style.cursor = 'pointer'
+        const rect = map.getContainer().getBoundingClientRect()
+        const roles: string[] = []
+        if (hitBb.node.isCentre) roles.push(t('mh.mesh.role.centre'))
+        if (hitBb.node.isGateway) roles.push(t('mh.mesh.role.gateway'))
+        if (hitBb.node.isEntry) roles.push(t('mh.mesh.role.entry'))
+        const zoneBits: string[] = []
+        if (hitBb.zoneName) zoneBits.push(hitBb.zoneName)
+        if (hitBb.zoneDeviceCount != null) {
+          zoneBits.push(t('mh.backbone.deviceCountShort', { n: hitBb.zoneDeviceCount }))
+        }
+        const entry = hitBb.node.managementEntry
+        const entryTip = entry
+          ? entry.listening
+            ? entry.port
+              ? t('mh.mesh.panel.entryTipListeningPort', { port: entry.port, n: entry.deviceCount })
+              : t('mh.mesh.panel.entryTipListening', { n: entry.deviceCount })
+            : t('mh.mesh.panel.entryTipOff')
+          : ''
+        hoverCard.value = {
+          x: Math.min(x + 8, Math.max(8, rect.width - 268)),
+          y: Math.min(y + 8, Math.max(8, rect.height - 116)),
+          title: hitBb.node.name,
+          badge: roles.join(' · ') || undefined,
+          subtitle: zoneBits.join(' · ') || presenceLabel(hitBb.node),
+          breakdown: entryTip || undefined,
+          extra: precisionText(hitBb.precision, hitBb.accuracyRadiusKm),
+        }
+        if (hoveredBackboneNodeId.value !== hitBb.id || hoveredLinkKey.value !== null) {
+          hoveredBackboneNodeId.value = hitBb.id
+          hoveredLinkKey.value = null
+          syncMapSources()
+        }
+        return
+      }
+
+      const hitBbLink = pickBackboneLinkAt(map, x, y)
+      if (hitBbLink) {
+        cancelHoverClose()
+        map.getCanvas().style.cursor = 'pointer'
+        const rect = map.getContainer().getBoundingClientRect()
+        const uni = isUnidirectionalBackboneArc(hitBbLink)
+        const arrow = uni ? '→' : '↔'
+        const subBits = [carrierLabel(hitBbLink.carrier)]
+        if (hitBbLink.rttMs != null) subBits.push(`${hitBbLink.rttMs} ms`)
+        if (hitBbLink.enabled === false) subBits.push(t('mh.backbone.disabled'))
+        else if (hitBbLink.stalled) subBits.push(t('mh.mesh.stalled'))
+        hoverCard.value = {
+          x: Math.min(x + 8, Math.max(8, rect.width - 268)),
+          y: Math.min(y + 8, Math.max(8, rect.height - 116)),
+          title: `${backboneNodeName(hitBbLink.from)} ${arrow} ${backboneNodeName(hitBbLink.to)}`,
+          badge: hitBbLink.crossZone ? t('mh.backbone.crossZone') : undefined,
+          subtitle: subBits.join(' · '),
+          extra: uni ? t('mh.backbone.unidirectional') : t('mh.backbone.bidirectional'),
+        }
+        if (hoveredLinkKey.value !== hitBbLink.key || hoveredBackboneNodeId.value !== null) {
+          hoveredLinkKey.value = hitBbLink.key
+          hoveredBackboneNodeId.value = null
+          syncMapSources()
+        }
+        return
+      }
+
+      map.getCanvas().style.cursor = ''
+      if (hoverCard.value || hoveredBackboneNodeId.value || hoveredLinkKey.value) {
+        scheduleHoverClose()
+      }
+      return
+    }
+
     const hitCluster = pickNearestMarkerAt(map, x, y)
     if (hitCluster) {
       cancelHoverClose()
@@ -2624,6 +3589,7 @@ function handleKeyDown(e: KeyboardEvent): void {
     if (hoverCard.value) {
       hoverCard.value = null
       hoveredDisplayId.value = null
+      hoveredBackboneNodeId.value = null
       hoveredLinkKey.value = null
       syncMapSources()
       return
@@ -2679,10 +3645,15 @@ function resetView(): void {
   if (!map) return
   collapseSpiderfy()
   userManuallyZoomed = false
-  fitGlobeToContainer(true, [DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]])
+  if (isBackboneView.value) {
+    fitCameraToActiveNodes(true)
+  } else {
+    fitGlobeToContainer(true, [DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]])
+  }
 }
 
 let ro: ResizeObserver | null = null
+let initialBackboneFitted = false
 
 function handleResize(): void {
   viewportWidth.value = typeof window !== 'undefined' ? window.innerWidth : 1280
@@ -2707,7 +3678,7 @@ onMounted(() => {
   ensureMapLibreSetup()
   if (!mapHostEl.value) return
 
-  // Lazily load P1 gazetteer if present (no-op until P1 lands `./gazetteer.ts`)
+  // Lazily load P1 gazetteer if present
   void loadGazetteerIfPresent().then((g) => {
     if (g) {
       loadedGazetteer.value = g
@@ -2717,10 +3688,13 @@ onMounted(() => {
 
   const { width: initW, height: initH } = getStageDimensions()
   stageWidthPx.value = initW
+  const initCenter = isBackboneView.value
+    ? computeBackboneCenter()
+    : ([DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]] as [number, number])
   const initialZoom = computeFitGlobeZoom(
     initW,
     initH,
-    DEFAULT_GLOBE_CENTER[1],
+    initCenter[1],
     DEFAULT_TARGET_DIAMETER_RATIO,
   )
   currentZoom.value = initialZoom
@@ -2730,8 +3704,14 @@ onMounted(() => {
   try {
     map = new maplibregl.Map({
       container: mapHostEl.value,
-      style: buildGlobeStyle(props.themeMode, props.lang, resolvedPmtilesUrl.value, isMobile.value),
-      center: [DEFAULT_GLOBE_CENTER[0], DEFAULT_GLOBE_CENTER[1]],
+      style: buildGlobeStyle(
+        props.themeMode,
+        props.lang,
+        resolvedPmtilesUrl.value,
+        isMobile.value,
+        activeViewMode.value,
+      ),
+      center: initCenter,
       zoom: initialZoom,
       minZoom: MIN_GLOBE_ZOOM,
       maxZoom: maxZoomSetting.value,
@@ -2757,7 +3737,7 @@ onMounted(() => {
   map.touchZoomRotate.disableRotation()
   cooperativeGesturesActive.value = Boolean(map.cooperativeGestures?.isEnabled())
 
-  // Instrument setStyle so automated checks prove 0 style reloads on theme/lang switch
+  // Instrument setStyle so automated checks prove 0 style reloads on theme/lang/view switch
   const origSetStyle = map.setStyle.bind(map)
   map.setStyle = ((...args: Parameters<MapLibreMap['setStyle']>) => {
     styleReloadCount.value++
@@ -2784,7 +3764,10 @@ onMounted(() => {
       firstFrameMs.value = Math.round(performance.now() - mountTime)
     }
     if (!userManuallyZoomed) {
-      fitGlobeToContainer(false)
+      fitCameraToActiveNodes(false)
+      if (isBackboneView.value && backboneResolved.value.placed.length > 0) {
+        initialBackboneFitted = true
+      }
     }
     syncMapSources()
     syncFresnelRim()
@@ -2823,7 +3806,7 @@ onMounted(() => {
       const rect = mapHostEl.value?.getBoundingClientRect()
       if (rect && rect.width > 40) stageWidthPx.value = rect.width
       if (styleReady.value && !userManuallyZoomed && !activeSpiderfy.value) {
-        fitGlobeToContainer(false)
+        fitCameraToActiveNodes(false)
       }
       syncFresnelRim()
       refreshMarkerEdgePlacements()
@@ -2878,6 +3861,29 @@ watch(
   },
 )
 
+watch(
+  () => props.viewMode,
+  (next) => {
+    if (next !== activeViewMode.value) {
+      switchViewMode(next)
+    }
+  },
+)
+
+watch(
+  () => props.showDevicesOverlay,
+  (next) => {
+    if (next !== showDevices.value) {
+      showDevices.value = next
+      const map = mapRef.value
+      if (map && styleReady.value) {
+        applyViewModeLayerVisibility(map, activeViewMode.value, next)
+        syncMapSources()
+      }
+    }
+  },
+)
+
 // Live updates with ZERO setStyle() reload (S6 / AC10)
 watch(
   () => props.themeMode,
@@ -2917,8 +3923,28 @@ watch(
 )
 
 watch(
-  [allGlobeNodes, () => props.arcs, activeCarrierSet, effectiveOnlyProblems, effectiveMinRttMs],
+  [
+    allGlobeNodes,
+    deviceDatasetArcs,
+    activeBackboneNodes,
+    activeBackboneArcs,
+    () => props.zones,
+    activeCarrierSet,
+    effectiveOnlyProblems,
+    effectiveMinRttMs,
+    showDevices,
+  ],
   () => {
+    if (
+      isBackboneView.value &&
+      !initialBackboneFitted &&
+      !userManuallyZoomed &&
+      styleReady.value &&
+      backboneResolved.value.placed.length > 0
+    ) {
+      initialBackboneFitted = true
+      fitCameraToActiveNodes(false)
+    }
     syncMapSources()
   },
 )
@@ -3044,13 +4070,45 @@ async function triggerClusterByName(nameQuery: string): Promise<string | null> {
 }
 
 function selectNodeById(id: string): boolean {
-  const found = allGlobeNodes.value.find((n) => n.id === id)
+  const pool = isBackboneView.value ? activeBackboneNodes.value : allGlobeNodes.value
+  const found = pool.find((n) => n.id === id)
   if (!found) return false
   selectNodeFromList(found)
   return true
 }
 
+function focusNodeById(id: string): boolean {
+  return selectNodeById(id)
+}
+
+function focusArcByKey(key: string): boolean {
+  if (isBackboneView.value) {
+    const found = activeBackboneArcs.value.find((a) => a.key === key)
+    if (!found) return false
+    selectBackboneLink(found)
+    const pFrom = backboneResolved.value.placedById.get(found.from)
+    const pTo = backboneResolved.value.placedById.get(found.to)
+    if (pFrom && pTo) {
+      mapRef.value?.easeTo({
+        center: [(pFrom.lon + pTo.lon) / 2, (pFrom.lat + pTo.lat) / 2],
+        duration: prefersReducedMotion.value ? 0 : 450,
+      })
+    }
+    return true
+  }
+  const found = linkAgg.value.allAggregated.find((x) => x.key === key)
+  if (!found) return false
+  selectAggregatedLink(found)
+  return true
+}
+
 function selectFirstLink(): string | null {
+  if (isBackboneView.value) {
+    const first = activeBackboneArcs.value[0]
+    if (!first) return null
+    selectBackboneLink(first)
+    return first.key
+  }
   const first = linkAgg.value.displayed[0]
   if (!first) return null
   selectAggregatedLink(first)
@@ -3118,6 +4176,9 @@ function getDebugState() {
 
   return {
     loaded: styleReady.value,
+    viewMode: activeViewMode.value,
+    canSwitchView: canSwitchView.value,
+    showDevicesOverlay: showDevices.value,
     zoom: map?.getZoom() ?? 0,
     pitch: map?.getPitch() ?? 0,
     bearing: map?.getBearing() ?? 0,
@@ -3140,9 +4201,15 @@ function getDebugState() {
     mobileSheetOpen: mobileSheetOpen.value,
     mobileSnap: mobileSnap.value,
     listPanelCount: listPanelNodes.value.length,
-    unlocatedCount: grouped.value.unlocated.length,
-    displayedLinks: linkAgg.value.displayed.length,
-    overflowLinks: linkAgg.value.overflowCount,
+    unlocatedCount: unknownNodesForView.value.length,
+    unlocatedCentreCount: unlocatedCentres.value.length,
+    backbonePlacedCount: backboneResolved.value.placed.length,
+    backboneMgmtPathCount: lastBackboneStats.mgmtPaths,
+    backboneLinkCount: lastBackboneStats.links,
+    backboneArrowLinkCount: lastBackboneStats.arrows,
+    backboneOverlayDeviceCount: lastBackboneStats.overlayDevices,
+    displayedLinks: isBackboneView.value ? lastBackboneStats.links : linkAgg.value.displayed.length,
+    overflowLinks: isBackboneView.value ? 0 : linkAgg.value.overflowCount,
     restingMixedLinks: linkAgg.value.displayed.filter((l) => l.isMixed).length,
     renderedMarkerLabels,
     renderedBasemapLabels,
@@ -3154,8 +4221,12 @@ defineExpose({
   runPerfBenchmark,
   toggleFullPage: () => fullPage.toggleFullPage(),
   exitFullPage: () => fullPage.exitFullPage(false),
+  setViewMode: switchViewMode,
+  setShowDevicesOverlay,
   triggerClusterByName,
   selectNodeById,
+  focusNodeById,
+  focusArcByKey,
   selectFirstLink,
   setMaxZoom: applyMaxZoom,
   setCamera,
@@ -3906,5 +4977,104 @@ defineExpose({
   border-radius: 8px;
   z-index: 20;
   font-weight: 600;
+}
+/* S12 Segmented Devices / Backbone Switcher */
+.mh-gv2-segmented {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(143, 163, 191, 0.35);
+  padding: 2px;
+  gap: 2px;
+}
+.mh-gv2-seg-btn {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.78;
+}
+.mh-gv2-seg-btn--active {
+  opacity: 1;
+  background: rgba(86, 180, 233, 0.22);
+}
+.mh-gv2-shell--light .mh-gv2-seg-btn--active {
+  background: rgba(0, 114, 178, 0.16);
+}
+/* S12 Backbone Legend Swatches & Role Badges */
+.mh-gv2-chip--centre {
+  cursor: pointer;
+  border-color: #f59e0b;
+  color: #fbbf24;
+  font-weight: 600;
+}
+.mh-gv2-shell--light .mh-gv2-chip--centre {
+  border-color: #b45309;
+  color: #b45309;
+}
+.mh-gv2-legend__zone {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mh-gv2-swatch-diamond {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+  flex: 0 0 auto;
+}
+.mh-gv2-swatch-gw {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--c);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 45%, transparent);
+  margin: 0 2px;
+  flex: 0 0 auto;
+}
+.mh-gv2-swatch-arrow {
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+}
+.mh-gv2-badge--centre {
+  border-color: #f59e0b;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+}
+.mh-gv2-shell--light .mh-gv2-badge--centre {
+  border-color: #b45309;
+  color: #92400e;
+  background: rgba(217, 119, 6, 0.12);
+}
+.mh-gv2-badge--gateway {
+  border-color: #56b4e9;
+  color: #56b4e9;
+}
+.mh-gv2-shell--light .mh-gv2-badge--gateway {
+  border-color: #0072b2;
+  color: #0072b2;
+}
+.mh-gv2-badge--entry {
+  border-color: #2bb58a;
+  color: #2bb58a;
+}
+.mh-gv2-shell--light .mh-gv2-badge--entry {
+  border-color: #00785a;
+  color: #00785a;
+}
+.mh-gv2-badge--accent {
+  border-color: #d98cb8;
+  color: #d98cb8;
+}
+.mh-gv2-shell--light .mh-gv2-badge--accent {
+  border-color: #a3527f;
+  color: #a3527f;
 }
 </style>

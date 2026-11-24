@@ -16,6 +16,13 @@ export interface GlobeManagementPath {
   entries?: string[]
 }
 
+/** FR-137 — live gateway management entry state & connected device count. */
+export interface GlobeManagementEntry {
+  listening: boolean
+  port?: number | null
+  deviceCount: number
+}
+
 export interface GlobeNode {
   /** Primary identifier (overlay node id in T6; agent_id in T7). */
   id: string
@@ -48,14 +55,21 @@ export interface GlobeNode {
   overlayIp?: string | null
   /** Populated ONLY where the current UI already displays public IP (fleet view). */
   publicIp?: string | null
-  /** Logical network zone (T6) or business zone (T7). */
+  /** Logical network zone (T6) or backbone zone (T7/S12). */
   zoneId?: string | null
   zoneName?: string | null
+  /** FR-137 — all zone ids & display names when a gateway serves >=1 zone. */
+  zoneIds?: string[]
+  zoneNames?: string[]
+  /** S12 — resolved device count in the node's primary zone for the gateway zone chip. */
+  zoneDeviceCount?: number | null
   zonePinned?: boolean
   zoneKind?: 'mainland' | 'non_mainland' | 'centre' | string | null
   /** FR-134 optional path to the centre. */
   managementPath?: GlobeManagementPath | null
-  /** Optional custom colour override (e.g. T7 zone dot palette). */
+  /** FR-137 optional live gateway management entry state. */
+  managementEntry?: GlobeManagementEntry | null
+  /** Optional custom colour override (e.g. S12/T7 zone palette). */
   color?: string
   /** T7 interaction hook: highlights node while picking the second link endpoint. */
   pending?: boolean
@@ -78,9 +92,13 @@ export interface GlobeArc {
   rttMs?: number | null
   reports?: number
   ends?: MeshEdgeEnd[]
-  /** T7 backbone link state. */
+  /** FR-137 — true when a gateway↔gateway link spans distinct zones. */
+  crossZone?: boolean
+  /** S12 — true when the backbone link is unidirectional (draws directional arrows every 120 px). */
+  directional?: boolean
+  /** T7 backbone link state (false renders muted 1.5 px dashed [2,2]). */
   enabled?: boolean
-  kind?: 'peer' | 'control' | 'backbone'
+  kind?: 'peer' | 'control' | 'backbone' | 'mgmt_path'
 }
 
 export interface GlobeCenter {

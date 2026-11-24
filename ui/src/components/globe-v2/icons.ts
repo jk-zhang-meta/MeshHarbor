@@ -4,8 +4,18 @@
 // Retina Canvas2D constant-screen-size marker & city donut icon generator (S3 / AC2 / AC3).
 
 import type { GlobePresence } from '@/components/globe/types'
+import {
+  BACKBONE_CENTRE_DIAMOND_PX,
+  BACKBONE_ENTRY_TRIANGLE_PX,
+  BACKBONE_GATEWAY_HALO_DIAMETER_PX,
+  BACKBONE_GATEWAY_HALO_OPACITY,
+  BACKBONE_GATEWAY_HALO_STROKE_PX,
+  BACKBONE_GATEWAY_SQUARE_PX,
+  BACKBONE_SERVER_SQUARE_PX,
+  type PlacedBackboneNode,
+} from './backbone'
 import type { DisplayCluster } from './grouping'
-import { getGlobeTokens, type GlobeThemeMode, type GlobeTokens } from './tokens'
+import { getGlobeTokens, hexToRgbaArray, type GlobeThemeMode, type GlobeTokens } from './tokens'
 
 export interface IconImageData {
   width: number
@@ -421,4 +431,382 @@ export function resolveClusterIconId(
     map.addImage(donutId, drawDonutIcon(cluster, tokens, dpr, selected), { pixelRatio: dpr })
   }
   return donutId
+}
+
+// ── S12 Zone Backbone Icons ───────────────────────────────────────────────────
+
+function rgbaCss(hex: string, alpha: number): string {
+  const [r, g, b] = hexToRgbaArray(hex, alpha)
+  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`
+}
+
+function roundedSquarePath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  r: number,
+): void {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + size - r, y)
+  ctx.quadraticCurveTo(x + size, y, x + size, y + r)
+  ctx.lineTo(x + size, y + size - r)
+  ctx.quadraticCurveTo(x + size, y + size, x + size - r, y + size)
+  ctx.lineTo(x + r, y + size)
+  ctx.quadraticCurveTo(x, y + size, x, y + size - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+}
+
+/** S12 Centre node: 14×14 diamond filled with `tokens.centre` (+ optional Ø22 gateway halo if also serving relay). */
+export function drawBackboneCentreIcon(
+  tokens: GlobeTokens,
+  dpr: number,
+  selected = false,
+  gatewayHaloColor?: string | null,
+): IconImageData {
+  const box = 32
+  const cx = box / 2
+  const cy = box / 2
+  const { canvas, ctx } = makeCanvas(box, box, dpr)
+
+  if (gatewayHaloColor) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, BACKBONE_GATEWAY_HALO_DIAMETER_PX / 2, 0, Math.PI * 2)
+    ctx.strokeStyle = rgbaCss(gatewayHaloColor, BACKBONE_GATEWAY_HALO_OPACITY)
+    ctx.lineWidth = BACKBONE_GATEWAY_HALO_STROKE_PX
+    ctx.stroke()
+  }
+
+  if (selected) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, 12.5, 0, Math.PI * 2)
+    ctx.strokeStyle = tokens.focusRing
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  const half = BACKBONE_CENTRE_DIAMOND_PX / 2 // 7 -> 14x14 diamond
+  ctx.beginPath()
+  ctx.moveTo(cx, cy - half)
+  ctx.lineTo(cx + half, cy)
+  ctx.lineTo(cx, cy + half)
+  ctx.lineTo(cx - half, cy)
+  ctx.closePath()
+  ctx.fillStyle = tokens.centre
+  ctx.fill()
+  ctx.lineWidth = 1.5
+  ctx.strokeStyle = tokens.ocean
+  ctx.stroke()
+
+  return toImageData(canvas, ctx)
+}
+
+/**
+ * S12 Zone Gateway: 10×10 square filled with zone's `zoneN` color
+ * (`online` solid, `stale` left-half filled, `offline` hollow)
+ * + outer Ø22, 1 px, 50% opacity zone-color halo ring.
+ */
+export function drawBackboneGatewayIcon(
+  presence: GlobePresence,
+  zoneColor: string,
+  tokens: GlobeTokens,
+  dpr: number,
+  selected = false,
+): IconImageData {
+  const box = 34
+  const cx = box / 2
+  const cy = box / 2
+  const { canvas, ctx } = makeCanvas(box, box, dpr)
+
+  // Outer Ø22, 1 px, 50% opacity zone-color halo ring
+  ctx.beginPath()
+  ctx.arc(cx, cy, BACKBONE_GATEWAY_HALO_DIAMETER_PX / 2, 0, Math.PI * 2)
+  ctx.strokeStyle = rgbaCss(zoneColor, BACKBONE_GATEWAY_HALO_OPACITY)
+  ctx.lineWidth = BACKBONE_GATEWAY_HALO_STROKE_PX
+  ctx.stroke()
+
+  if (selected) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, 14, 0, Math.PI * 2)
+    ctx.strokeStyle = tokens.focusRing
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  const size = BACKBONE_GATEWAY_SQUARE_PX // 10x10
+  const x = cx - size / 2
+  const y = cy - size / 2
+  const r = 2
+
+  if (presence === 'online') {
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = zoneColor
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = tokens.ocean
+    ctx.stroke()
+  } else if (presence === 'stale') {
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.save()
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.clip()
+    ctx.fillStyle = zoneColor
+    ctx.fillRect(x, y, size / 2, size)
+    ctx.restore()
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = zoneColor
+    ctx.stroke()
+  } else {
+    // offline: hollow square with zone-color outline
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = zoneColor
+    ctx.stroke()
+  }
+
+  return toImageData(canvas, ctx)
+}
+
+/** S12 Entry node: equilateral triangle side 10 px. */
+export function drawBackboneEntryIcon(
+  presence: GlobePresence,
+  zoneColor: string,
+  tokens: GlobeTokens,
+  dpr: number,
+  selected = false,
+): IconImageData {
+  const box = 28
+  const cx = box / 2
+  const cy = box / 2
+  const { canvas, ctx } = makeCanvas(box, box, dpr)
+
+  if (selected) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, 10.5, 0, Math.PI * 2)
+    ctx.strokeStyle = tokens.focusRing
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  const side = BACKBONE_ENTRY_TRIANGLE_PX
+  const h = (Math.sqrt(3) / 2) * side
+  const traceTri = () => {
+    ctx.beginPath()
+    ctx.moveTo(cx, cy - (h * 2) / 3)
+    ctx.lineTo(cx + side / 2, cy + h / 3)
+    ctx.lineTo(cx - side / 2, cy + h / 3)
+    ctx.closePath()
+  }
+
+  if (presence === 'online') {
+    traceTri()
+    ctx.fillStyle = zoneColor
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = tokens.ocean
+    ctx.stroke()
+  } else if (presence === 'stale') {
+    traceTri()
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.save()
+    traceTri()
+    ctx.clip()
+    ctx.fillStyle = zoneColor
+    ctx.fillRect(cx - side / 2, cy - h, side / 2, h * 2)
+    ctx.restore()
+    traceTri()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = zoneColor
+    ctx.stroke()
+  } else {
+    traceTri()
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = zoneColor
+    ctx.stroke()
+  }
+
+  return toImageData(canvas, ctx)
+}
+
+/** S12 Neutral server node: 10×10 neutral square. */
+export function drawBackboneServerIcon(
+  presence: GlobePresence,
+  tokens: GlobeTokens,
+  dpr: number,
+  selected = false,
+): IconImageData {
+  const box = 28
+  const cx = box / 2
+  const cy = box / 2
+  const { canvas, ctx } = makeCanvas(box, box, dpr)
+
+  if (selected) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, 10.5, 0, Math.PI * 2)
+    ctx.strokeStyle = tokens.focusRing
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  const size = BACKBONE_SERVER_SQUARE_PX
+  const x = cx - size / 2
+  const y = cy - size / 2
+  const r = 2
+  const neutral = tokens.labelSecondary
+
+  if (presence === 'online') {
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = neutral
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = tokens.ocean
+    ctx.stroke()
+  } else if (presence === 'stale') {
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.save()
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.clip()
+    ctx.fillStyle = neutral
+    ctx.fillRect(x, y, size / 2, size)
+    ctx.restore()
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = neutral
+    ctx.stroke()
+  } else {
+    roundedSquarePath(ctx, x, y, size, r)
+    ctx.fillStyle = tokens.ocean
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = neutral
+    ctx.stroke()
+  }
+
+  return toImageData(canvas, ctx)
+}
+
+/** S12 Directional line arrow icon (points +X for MapLibre `symbol-placement: 'line'` every 120 px). */
+export function drawBackboneArrowIcon(
+  color: string,
+  tokens: GlobeTokens,
+  dpr: number,
+): IconImageData {
+  const box = 14
+  const cx = box / 2
+  const cy = box / 2
+  const { canvas, ctx } = makeCanvas(box, box, dpr)
+
+  ctx.beginPath()
+  ctx.moveTo(cx + 4.2, cy)
+  ctx.lineTo(cx - 3.2, cy - 3.6)
+  ctx.lineTo(cx - 1.4, cy)
+  ctx.lineTo(cx - 3.2, cy + 3.6)
+  ctx.closePath()
+  ctx.lineWidth = 1.2
+  ctx.strokeStyle = tokens.ocean
+  ctx.stroke()
+  ctx.fillStyle = color
+  ctx.fill()
+
+  return toImageData(canvas, ctx)
+}
+
+/** Register static S12 backbone centre, neutral server, and directional arrow icons for a theme mode. */
+export function ensureBackboneStaticIcons(
+  map: IconRegistryMap,
+  mode: GlobeThemeMode,
+  dpr: number,
+): void {
+  const tokens = getGlobeTokens(mode)
+  const presences: GlobePresence[] = ['online', 'stale', 'offline']
+  for (const selected of [false, true]) {
+    const selTag = selected ? '-sel' : ''
+    const centreId = `mh-bb-centre${selTag}-${mode}`
+    if (!map.hasImage(centreId)) {
+      map.addImage(centreId, drawBackboneCentreIcon(tokens, dpr, selected), { pixelRatio: dpr })
+    }
+    for (const p of presences) {
+      const srvId = `mh-bb-srv-${p}${selTag}-${mode}`
+      if (!map.hasImage(srvId)) {
+        map.addImage(srvId, drawBackboneServerIcon(p, tokens, dpr, selected), { pixelRatio: dpr })
+      }
+    }
+  }
+  const activeArrowId = `mh-bb-arrow-active-${mode}`
+  if (!map.hasImage(activeArrowId)) {
+    map.addImage(activeArrowId, drawBackboneArrowIcon(tokens.labelPrimary, tokens, dpr), {
+      pixelRatio: dpr,
+    })
+  }
+  const stalledArrowId = `mh-bb-arrow-stalled-${mode}`
+  if (!map.hasImage(stalledArrowId)) {
+    map.addImage(stalledArrowId, drawBackboneArrowIcon(tokens.stalled, tokens, dpr), {
+      pixelRatio: dpr,
+    })
+  }
+}
+
+/** Resolve (and lazily cache) the S12 icon id for a placed backbone node. */
+export function resolveBackboneNodeIconId(
+  map: IconRegistryMap,
+  placed: PlacedBackboneNode,
+  mode: GlobeThemeMode,
+  dpr: number,
+  selected: boolean,
+): string {
+  const tokens = getGlobeTokens(mode)
+  const selTag = selected ? '-sel' : ''
+  const colorKey = placed.zoneColor.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+
+  if (placed.kind === 'centre') {
+    if (placed.node.isGateway) {
+      const id = `mh-bb-centre-gw-${colorKey}${selTag}-${mode}`
+      if (!map.hasImage(id)) {
+        map.addImage(id, drawBackboneCentreIcon(tokens, dpr, selected, placed.zoneColor), {
+          pixelRatio: dpr,
+        })
+      }
+      return id
+    }
+    return `mh-bb-centre${selTag}-${mode}`
+  }
+
+  if (placed.kind === 'gateway') {
+    const id = `mh-bb-gw-${placed.presence}-${colorKey}${selTag}-${mode}`
+    if (!map.hasImage(id)) {
+      map.addImage(
+        id,
+        drawBackboneGatewayIcon(placed.presence, placed.zoneColor, tokens, dpr, selected),
+        { pixelRatio: dpr },
+      )
+    }
+    return id
+  }
+
+  if (placed.kind === 'entry') {
+    const id = `mh-bb-entry-${placed.presence}-${colorKey}${selTag}-${mode}`
+    if (!map.hasImage(id)) {
+      map.addImage(
+        id,
+        drawBackboneEntryIcon(placed.presence, placed.zoneColor, tokens, dpr, selected),
+        { pixelRatio: dpr },
+      )
+    }
+    return id
+  }
+
+  return `mh-bb-srv-${placed.presence}${selTag}-${mode}`
 }

@@ -16,6 +16,11 @@
 //   vs full-strength carrier-patterned active/ego links (`mh-links-active-*`).
 
 import type { ExpressionSpecification, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
+import {
+  BACKBONE_ARROW_SPACING_PX,
+  BACKBONE_DEVICE_DOT_OPACITY,
+  BACKBONE_DEVICE_DOT_RADIUS_PX,
+} from './backbone'
 import { LABEL_BLOCKER_ICON_ID } from './icons'
 import {
   getGlobeTokens,
@@ -30,6 +35,10 @@ export const ACCURACY_CIRCLES_SOURCE_ID = 'mh-accuracy-circles'
 export const LINKS_SOURCE_ID = 'mh-links'
 export const LINK_BADGES_SOURCE_ID = 'mh-link-badges'
 export const MARKERS_SOURCE_ID = 'mh-markers'
+export const BACKBONE_DEVICES_SOURCE_ID = 'mh-backbone-devices'
+export const BACKBONE_MGMT_PATHS_SOURCE_ID = 'mh-backbone-mgmt-paths'
+export const BACKBONE_LINKS_SOURCE_ID = 'mh-backbone-links'
+export const BACKBONE_ARROWS_SOURCE_ID = 'mh-backbone-arrows'
 
 export const SURFACE_LINK_LAYER_IDS = [
   'mh-links-rest',
@@ -40,6 +49,25 @@ export const SURFACE_LINK_LAYER_IDS = [
   'mh-links-active-blocked',
   'mh-links-active-stalled',
 ] as const
+
+export const BACKBONE_LINK_LAYER_IDS = [
+  'mh-backbone-links-active',
+  'mh-backbone-links-disabled',
+  'mh-backbone-links-stalled',
+] as const
+
+export const DEVICE_VIEW_ONLY_LAYER_IDS = [
+  'mh-accuracy-circles',
+  ...SURFACE_LINK_LAYER_IDS,
+] as const
+
+export const BACKBONE_VIEW_ONLY_LAYER_IDS = [
+  'mh-backbone-mgmt-paths',
+  ...BACKBONE_LINK_LAYER_IDS,
+  'mh-backbone-link-arrows',
+] as const
+
+export const BACKBONE_DEVICES_OVERLAY_LAYER_ID = 'mh-backbone-devices-overlay'
 
 export const MARKER_LABEL_LAYER_IDS = [
   'mh-marker-labels-right',
@@ -109,6 +137,18 @@ function buildLinkBadgeColorExpr(t: GlobeTokens): ExpressionSpecification {
   ]
 }
 
+function buildBackboneDeviceColorExpr(t: GlobeTokens): ExpressionSpecification {
+  return [
+    'match',
+    ['get', 'presence'],
+    'online',
+    t.online,
+    'stale',
+    t.stale,
+    t.offline,
+  ]
+}
+
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] }
 
 export function buildGlobeStyle(
@@ -116,10 +156,13 @@ export function buildGlobeStyle(
   lang: GlobeLang,
   pmtilesUrl: string,
   isMobile = false,
+  initialViewMode: 'devices' | 'backbone' = 'devices',
 ): StyleSpecification {
   const t = getGlobeTokens(theme)
   const [op0, op1, op2] = t.borderOpacity
   const coastOpacity = theme === 'dark' ? 0.82 : 0.85
+  const devVis: 'visible' | 'none' = initialViewMode === 'devices' ? 'visible' : 'none'
+  const bbVis: 'visible' | 'none' = initialViewMode === 'backbone' ? 'visible' : 'none'
 
   return {
     version: 8,
@@ -136,7 +179,23 @@ export function buildGlobeStyle(
         type: 'geojson',
         data: EMPTY_FC,
       },
+      [BACKBONE_DEVICES_SOURCE_ID]: {
+        type: 'geojson',
+        data: EMPTY_FC,
+      },
       [LINKS_SOURCE_ID]: {
+        type: 'geojson',
+        data: EMPTY_FC,
+      },
+      [BACKBONE_MGMT_PATHS_SOURCE_ID]: {
+        type: 'geojson',
+        data: EMPTY_FC,
+      },
+      [BACKBONE_LINKS_SOURCE_ID]: {
+        type: 'geojson',
+        data: EMPTY_FC,
+      },
+      [BACKBONE_ARROWS_SOURCE_ID]: {
         type: 'geojson',
         data: EMPTY_FC,
       },
@@ -296,11 +355,25 @@ export function buildGlobeStyle(
         type: 'line',
         source: ACCURACY_CIRCLES_SOURCE_ID,
         minzoom: 3,
+        layout: { visibility: devVis },
         paint: {
           'line-color': t.online,
           'line-width': 1,
           'line-opacity': 0.25,
           'line-dasharray': [3, 3],
+        },
+      },
+      // S12 optional Devices overlay (OFF by default; 3 px dot @ 35% opacity, NO labels)
+      {
+        id: BACKBONE_DEVICES_OVERLAY_LAYER_ID,
+        type: 'circle',
+        source: BACKBONE_DEVICES_SOURCE_ID,
+        layout: { visibility: 'none' },
+        paint: {
+          'circle-radius': BACKBONE_DEVICE_DOT_RADIUS_PX,
+          'circle-opacity': BACKBONE_DEVICE_DOT_OPACITY,
+          'circle-color': buildBackboneDeviceColorExpr(t),
+          'circle-stroke-width': 0,
         },
       },
       // Fix #6: Calm resting peer links (1–1.5 px, ~0.45 opacity, solid, majority-carrier color)
@@ -309,7 +382,7 @@ export function buildGlobeStyle(
         type: 'line',
         source: LINKS_SOURCE_ID,
         filter: ['==', ['get', 'active'], false],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': buildRestLinkColorExpr(t),
           'line-width': ['get', 'width'],
@@ -327,7 +400,7 @@ export function buildGlobeStyle(
           ['==', ['get', 'carrier'], 'direct'],
           ['!', ['get', 'stalled']],
         ],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.direct,
           'line-width': ['get', 'width'],
@@ -344,7 +417,7 @@ export function buildGlobeStyle(
           ['==', ['get', 'carrier'], 'tunnel'],
           ['!', ['get', 'stalled']],
         ],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.tunnel,
           'line-width': 0.75,
@@ -362,7 +435,7 @@ export function buildGlobeStyle(
           ['==', ['get', 'carrier'], 'relay'],
           ['!', ['get', 'stalled']],
         ],
-        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'butt', 'line-join': 'round' },
         paint: {
           'line-color': t.relay,
           'line-width': ['get', 'width'],
@@ -380,7 +453,7 @@ export function buildGlobeStyle(
           ['==', ['get', 'carrier'], 'derp'],
           ['!', ['get', 'stalled']],
         ],
-        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'butt', 'line-join': 'round' },
         paint: {
           'line-color': t.derp,
           'line-width': ['get', 'width'],
@@ -398,7 +471,7 @@ export function buildGlobeStyle(
           ['==', ['get', 'carrier'], 'blocked'],
           ['!', ['get', 'stalled']],
         ],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.blocked,
           'line-width': ['get', 'width'],
@@ -411,12 +484,84 @@ export function buildGlobeStyle(
         type: 'line',
         source: LINKS_SOURCE_ID,
         filter: ['all', ['==', ['get', 'active'], true], ['==', ['get', 'stalled'], true]],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: devVis, 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.stalled,
           'line-width': ['get', 'width'],
           'line-opacity': ['get', 'opacity'],
           'line-dasharray': [0, 2],
+        },
+      },
+      // S12 FR-134 Management path: gateway -> centre, 2 px solid zone-color great-circle line
+      {
+        id: 'mh-backbone-mgmt-paths',
+        type: 'line',
+        source: BACKBONE_MGMT_PATHS_SOURCE_ID,
+        layout: { visibility: bbVis, 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+          'line-offset': ['get', 'offset'],
+        },
+      },
+      // S12 Backbone disabled links: 1.5 px muted dashed [2, 2]
+      {
+        id: 'mh-backbone-links-disabled',
+        type: 'line',
+        source: BACKBONE_LINKS_SOURCE_ID,
+        filter: ['==', ['get', 'state'], 'disabled'],
+        layout: { visibility: bbVis, 'line-cap': 'butt', 'line-join': 'round' },
+        paint: {
+          'line-color': t.offline,
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+          'line-dasharray': [2, 2],
+        },
+      },
+      // S12 Backbone active links: 2.5 px #E6EDF6 dark / #1F2937 light @ 0.8 opacity
+      {
+        id: 'mh-backbone-links-active',
+        type: 'line',
+        source: BACKBONE_LINKS_SOURCE_ID,
+        filter: ['==', ['get', 'state'], 'active'],
+        layout: { visibility: bbVis, 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': t.labelPrimary,
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+        },
+      },
+      // S12 Backbone stalled links: R7 stalled dotted [0, 2] round cap
+      {
+        id: 'mh-backbone-links-stalled',
+        type: 'line',
+        source: BACKBONE_LINKS_SOURCE_ID,
+        filter: ['==', ['get', 'state'], 'stalled'],
+        layout: { visibility: bbVis, 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': t.stalled,
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+          'line-dasharray': [0, 2],
+        },
+      },
+      // S12 Unidirectional backbone link arrows every 120 px along the line
+      {
+        id: 'mh-backbone-link-arrows',
+        type: 'symbol',
+        source: BACKBONE_ARROWS_SOURCE_ID,
+        layout: {
+          visibility: bbVis,
+          'symbol-placement': 'line',
+          'symbol-spacing': BACKBONE_ARROW_SPACING_PX,
+          'icon-image': ['get', 'arrowIcon'],
+          'icon-rotation-alignment': 'map',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+        paint: {
+          'icon-opacity': ['get', 'opacity'],
         },
       },
       // Basemap labels — rendered BELOW `mh-label-blockers` and `mh-marker-labels-*` so
@@ -697,6 +842,9 @@ export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
   if (map.getLayer('mh-accuracy-circles')) {
     map.setPaintProperty('mh-accuracy-circles', 'line-color', t.online)
   }
+  if (map.getLayer(BACKBONE_DEVICES_OVERLAY_LAYER_ID)) {
+    map.setPaintProperty(BACKBONE_DEVICES_OVERLAY_LAYER_ID, 'circle-color', buildBackboneDeviceColorExpr(t))
+  }
 
   map.setPaintProperty('mh-links-rest', 'line-color', buildRestLinkColorExpr(t))
   map.setPaintProperty('mh-links-active-direct', 'line-color', t.direct)
@@ -705,6 +853,16 @@ export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
   map.setPaintProperty('mh-links-active-derp', 'line-color', t.derp)
   map.setPaintProperty('mh-links-active-blocked', 'line-color', t.blocked)
   map.setPaintProperty('mh-links-active-stalled', 'line-color', t.stalled)
+
+  if (map.getLayer('mh-backbone-links-active')) {
+    map.setPaintProperty('mh-backbone-links-active', 'line-color', t.labelPrimary)
+  }
+  if (map.getLayer('mh-backbone-links-disabled')) {
+    map.setPaintProperty('mh-backbone-links-disabled', 'line-color', t.offline)
+  }
+  if (map.getLayer('mh-backbone-links-stalled')) {
+    map.setPaintProperty('mh-backbone-links-stalled', 'line-color', t.stalled)
+  }
 
   if (map.getLayer('label-admin2')) {
     map.setPaintProperty('label-admin2', 'text-color', t.labelMuted)
@@ -725,6 +883,30 @@ export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
       map.setPaintProperty(id, 'text-color', t.labelPrimary)
       map.setPaintProperty(id, 'text-halo-color', t.labelHalo)
     }
+  }
+}
+
+/**
+ * Switch layer visibility between `'devices'` and `'backbone'` on the SAME MapLibre Map
+ * instance with ZERO `setStyle()` reload (S12).
+ */
+export function applyViewModeLayerVisibility(
+  map: MapLibreMap,
+  viewMode: 'devices' | 'backbone',
+  showDevicesOverlay = false,
+): void {
+  const devVis = viewMode === 'devices' ? 'visible' : 'none'
+  const bbVis = viewMode === 'backbone' ? 'visible' : 'none'
+  const overlayVis = viewMode === 'backbone' && showDevicesOverlay ? 'visible' : 'none'
+
+  for (const id of DEVICE_VIEW_ONLY_LAYER_IDS) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', devVis)
+  }
+  for (const id of BACKBONE_VIEW_ONLY_LAYER_IDS) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', bbVis)
+  }
+  if (map.getLayer(BACKBONE_DEVICES_OVERLAY_LAYER_ID)) {
+    map.setLayoutProperty(BACKBONE_DEVICES_OVERLAY_LAYER_ID, 'visibility', overlayVis)
   }
 }
 

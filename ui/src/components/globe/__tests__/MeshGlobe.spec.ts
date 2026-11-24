@@ -138,6 +138,20 @@ describe('MeshGlobe — WebGL2 unavailable fallback', () => {
       })
       expect(wLegacy.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('legacy')
       wLegacy.unmount()
+
+      // Backbone view ALWAYS uses MapLibre v2 even when ?globe=legacy is set
+      const wBackbone = mount(MeshGlobe, {
+        props: { viewMode: 'backbone', nodes: sampleNodes, arcs: sampleArcs },
+        global: {
+          plugins: [vuetify],
+          provide: {
+            [routeLocationKey as symbol]: { query: { globe: 'legacy' } },
+          },
+        },
+      })
+      expect(wBackbone.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('v2')
+      expect(wBackbone.find('[data-testid="mesh-globe-root"]').attributes('data-globe-view')).toBe('backbone')
+      wBackbone.unmount()
     } finally {
       spy.mockRestore()
       vi.unstubAllGlobals()
@@ -246,5 +260,11 @@ describe('i18n parity for mh.mesh', () => {
     expect(enV2.length).toBeGreaterThan(35)
     expect(enV2.filter((k) => !zhV2.includes(k))).toEqual([])
     expect(zhV2.filter((k) => !enV2.includes(k))).toEqual([])
+
+    const enBb = leaves((en as unknown as { mh: { backbone: Tree } }).mh.backbone, 'mh.backbone.')
+    const zhBb = leaves((zhCN as unknown as { mh: { backbone: Tree } }).mh.backbone, 'mh.backbone.')
+    expect(enBb.length).toBeGreaterThan(35)
+    expect(enBb.filter((k) => !zhBb.includes(k))).toEqual([])
+    expect(zhBb.filter((k) => !enBb.includes(k))).toEqual([])
   })
 })
