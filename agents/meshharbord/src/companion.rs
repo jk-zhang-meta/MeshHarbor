@@ -170,12 +170,113 @@ pub fn reopen_after_update(respawn: RespawnContext, companion_autostart: bool) {
 
 /// FR-84 D6 — what the SCM service host does for the companion at every
 /// start, after the version refresh: bring the machine-wide Run value in line
-/// with the device switch and the installed EXE (the self-heal), then run the
-/// post-install launcher.
+/// with the device switch and the installed EXE (the self-heal), retire any
+/// stale per-user companion autostart/shortcut left from an earlier per-user
+/// install, then run the post-install launcher.
 #[cfg(target_os = "windows")]
 pub async fn scm_host_startup() {
     sync_machine_autostart_logged(scm_companion_autostart());
+    retire_stale_per_user_companion_logged();
     launch_once_after_install(LaunchOwner::ScmHost).await;
+}
+
+/// Discover deduplicated `(roaming_app_data, local_app_data)` roots for active
+/// interactive user profiles reachable from this Windows process (whether it
+/// runs as `LocalSystem` in session 0/1 or as an interactive/elevated user).
+///
+/// Feature-free (`win_identity` + `win_service::supervisor` + `companion_spawn`
+/// are compiled on every Windows build) and skips the SYSTEM profile.
+#[cfg(target_os = "windows")]
+pub fn discover_user_app_data_roots() -> Vec<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    use std::path::PathBuf;
+
+    let mut out: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut push_unique = |roaming: PathBuf, local: Option<PathBuf>| {
+        let key = roaming.to_string_lossy().to_ascii_lowercase();
+        if key.is_empty() || key.contains("\\systemprofile\\") {
+            return;
+        }
+        if !out
+            .iter()
+            .any(|(existing, _)| existing.to_string_lossy().eq_ignore_ascii_case(&key))
+        {
+            out.push((roaming, local));
+        }
+    };
+
+    // 1. Own process environment when not running as LocalSystem.
+    if !crate::win_identity::process_is_local_system()
+        && let Some(roaming) = std::env::var_os("APPDATA").map(PathBuf::from)
+    {
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        push_unique(roaming, local);
+    }
+
+    // 2. Active session user's profile (for a SystemContext worker in session 1+).
+    if let Some(profile) = crate::win_identity::session_user_profile_dir() {
+        let root = PathBuf::from(profile);
+        push_unique(
+            root.join("AppData").join("Roaming"),
+            Some(root.join("AppData").join("Local")),
+        );
+    }
+
+    // 3. Active console session user's token (for session-0 SCM host / MSI CA).
+    if let Some(session_id) = crate::win_service::supervisor::active_console_session_id()
+        && let Ok(Some(token)) = crate::win_service::supervisor::query_user_token(session_id)
+    {
+        let profile_local = crate::win_identity::profile_dir_of_token(token.raw())
+            .map(|p| PathBuf::from(p).join("AppData").join("Local"));
+        // SAFETY: `token` is a live user token returned by `WTSQueryUserToken`.
+        let roaming = unsafe {
+            crate::win_service::companion_spawn::roaming_app_data_for_token(token.raw())
+        };
+        if let Some(roaming) = roaming {
+            push_unique(roaming, profile_local);
+        } else if let Some(ref local) = profile_local
+            && let Some(appdata) = local.parent()
+        {
+            push_unique(appdata.join("Roaming"), profile_local.clone());
+        }
+    }
+
+    out
+}
+
+/// Retire stale per-user companion autostart (`HKCU`/`HKU` Run values) and
+/// Start-menu `.lnk` shortcuts pointing inside `%LOCALAPPDATA%\Programs\MeshHarbor\...`.
+///
+/// Called by per-machine daemon startup (SCM host & per-machine worker) and
+/// `service install --as-service` so hosts upgrading via the auto-updater
+/// self-heal without ever touching Program Files registrations or user data.
+#[cfg(target_os = "windows")]
+pub fn retire_stale_per_user_companion_logged() {
+    use meshharbor_node_core::companion_autostart::{
+        WINDOWS_RUN_SUBKEY, retire_stale_user_start_menu_shortcuts,
+        registry::{retire_per_user_run_value_in_hkcu, retire_per_user_run_values_in_loaded_hku},
+    };
+
+    let own_local = (!crate::win_identity::process_is_local_system())
+        .then(|| std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from))
+        .flatten();
+    match retire_per_user_run_value_in_hkcu(WINDOWS_RUN_SUBKEY, own_local.as_deref()) {
+        Ok(true) => tracing::info!("retired stale per-user companion HKCU Run value"),
+        Ok(false) => {}
+        Err(e) => tracing::debug!(error = %e, "could not inspect/retire HKCU Run value"),
+    }
+
+    for retired in retire_per_user_run_values_in_loaded_hku(WINDOWS_RUN_SUBKEY) {
+        tracing::info!(entry = %retired, "retired stale per-user companion HKU Run value");
+    }
+
+    for (roaming, local) in discover_user_app_data_roots() {
+        for lnk in retire_stale_user_start_menu_shortcuts(&roaming, local.as_deref(), false) {
+            tracing::info!(
+                path = %lnk.display(),
+                "retired stale per-user companion Start-menu shortcut"
+            );
+        }
+    }
 }
 
 /// The device's `companion_autostart` as the SCM host can see it: from the
@@ -348,22 +449,112 @@ pub async fn ensure_running() -> bool {
 /// One attempt per this interval, process-wide.
 const ENSURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// FR-27 — the version of the companion INSTALLED on this host, for the
-/// heartbeat, or `None` when there is none / it cannot be read.
+/// How long a companion's `CompanionHello` keeps [`connected_version`] live
+/// without a refresh. The companion sends `CompanionHello` every 30 s, so 90 s
+/// tolerates two missed ticks before expiring back to `None` if a companion
+/// crashes without sending `CompanionBye`.
+pub const CONNECTED_COMPANION_TTL: std::time::Duration = std::time::Duration::from_secs(90);
+
+#[derive(Debug, Clone)]
+struct ConnectedEntry {
+    version: String,
+    pid: Option<u32>,
+    seen_at: std::time::Instant,
+}
+
+#[derive(Debug, Default)]
+struct ConnectedTracker {
+    current: Option<ConnectedEntry>,
+}
+
+impl ConnectedTracker {
+    fn record_at(&mut self, version: &str, pid: Option<u32>, now: std::time::Instant) -> bool {
+        let Some(clean) = sanitize_version(version) else {
+            return false;
+        };
+        self.current = Some(ConnectedEntry {
+            version: clean,
+            pid,
+            seen_at: now,
+        });
+        true
+    }
+
+    fn clear(&mut self, pid: Option<u32>) -> bool {
+        match (&self.current, pid) {
+            (None, _) => false,
+            // When both sides name a PID and they disagree, keep the live
+            // companion's record (e.g. a delayed CompanionBye from an older
+            // tray exiting during version handover must not erase the newer
+            // tray's freshly recorded hello).
+            (Some(entry), Some(bye_pid)) if entry.pid.is_some_and(|live| live != bye_pid) => false,
+            (Some(_), _) => {
+                self.current = None;
+                true
+            }
+        }
+    }
+
+    fn version_at(&self, now: std::time::Instant) -> Option<String> {
+        let entry = self.current.as_ref()?;
+        (now.saturating_duration_since(entry.seen_at) < CONNECTED_COMPANION_TTL)
+            .then(|| entry.version.clone())
+    }
+}
+
+static CONNECTED_COMPANION: std::sync::Mutex<ConnectedTracker> =
+    std::sync::Mutex::new(ConnectedTracker { current: None });
+
+/// Record a live `CompanionHello` received over the LocalAPI.
+/// Returns `true` when `version` sanitized to a non-empty version string.
+pub fn record_connected_version(version: &str, pid: Option<u32>) -> bool {
+    CONNECTED_COMPANION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .record_at(version, pid, std::time::Instant::now())
+}
+
+/// Clear the live connected companion version on `CompanionBye`.
+/// When `pid` is `Some` and does not match the currently connected companion's
+/// PID, the newer companion's record is preserved.
+pub fn clear_connected_version(pid: Option<u32>) -> bool {
+    CONNECTED_COMPANION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear(pid)
+}
+
+/// Version of the desktop companion currently connected over the LocalAPI, or
+/// `None` when no companion has checked in recently (headless host, tray quit,
+/// or hello TTL expired).
 ///
-/// This exists because the daemon and the companion update through different
-/// mechanisms on all three platforms (see [`refresh_if_stale`]), so a fleet
-/// "Update all" moving `agent_version` says nothing about the companion. The
-/// operator's report was exactly that: the daemon went forward and the desktop
-/// stayed behind, with nothing on screen to say so.
+/// Used by server heartbeats and `NodeStatus` — never reads a disk marker.
+pub fn connected_version() -> Option<String> {
+    connected_version_at(std::time::Instant::now())
+}
+
+/// Testable [`connected_version`] evaluated at an explicit `Instant`.
+pub(crate) fn connected_version_at(now: std::time::Instant) -> Option<String> {
+    CONNECTED_COMPANION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .version_at(now)
+}
+
+/// FR-27 — the version of the companion INSTALLED on disk on this host, or
+/// `None` when there is none / it cannot be read.
+///
+/// Reserved for internal disk/package update checks (`package_sync.rs`), NOT
+/// for server heartbeat reporting (which reports [`connected_version`], the
+/// companion actually connected over the LocalAPI).
 ///
 /// ⚠️ Deliberately does NOT run the companion binary. `--version` on a GUI
-/// binary is a process spawn on every heartbeat and, on Linux, a GTK-linked
+/// binary is a process spawn on every check and, on Linux, a GTK-linked
 /// executable started by a root daemon with no display; both are worse than a
 /// file read. Every arm reads metadata the installer already wrote.
 ///
 /// Cached for [`VERSION_TTL`]: the answer only changes when a package manager
-/// runs, and the heartbeat is every 30 s.
+/// runs.
 pub fn installed_version() -> Option<String> {
     use std::time::Instant;
 
@@ -503,6 +694,49 @@ mod version_tests {
             Some("scriptalert1script".into())
         );
         assert_eq!(sanitize_version(&"9".repeat(200)).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn connected_tracker_reports_hello_clears_on_bye_and_expires_after_ttl() {
+        use super::{CONNECTED_COMPANION_TTL, ConnectedTracker};
+        use std::time::{Duration, Instant};
+
+        let mut tracker = ConnectedTracker::default();
+        let t0 = Instant::now();
+
+        // No hello yet ⇒ None (never reads a disk marker).
+        assert_eq!(tracker.version_at(t0), None);
+
+        // Blank/invalid hello is rejected and leaves state as None.
+        assert!(!tracker.record_at("   \n", Some(100), t0));
+        assert_eq!(tracker.version_at(t0), None);
+
+        // Hello records sanitized version and stays live within TTL.
+        assert!(tracker.record_at(" 0.4.214\n", Some(100), t0));
+        assert_eq!(tracker.version_at(t0), Some("0.4.214".into()));
+        assert_eq!(
+            tracker.version_at(t0 + CONNECTED_COMPANION_TTL - Duration::from_secs(1)),
+            Some("0.4.214".into())
+        );
+
+        // At/past TTL, version expires back to None.
+        assert_eq!(tracker.version_at(t0 + CONNECTED_COMPANION_TTL), None);
+
+        // Handover race: newer companion (PID 200) checks in; delayed bye from
+        // older companion (PID 100) must NOT clobber PID 200's live version.
+        let t1 = t0 + Duration::from_secs(5);
+        assert!(tracker.record_at("0.4.215", Some(200), t1));
+        assert!(!tracker.clear(Some(100)));
+        assert_eq!(tracker.version_at(t1), Some("0.4.215".into()));
+
+        // Matching PID bye clears immediately.
+        assert!(tracker.clear(Some(200)));
+        assert_eq!(tracker.version_at(t1), None);
+
+        // Wildcard bye (`pid: None`) clears any live entry.
+        assert!(tracker.record_at("0.4.216", Some(300), t1));
+        assert!(tracker.clear(None));
+        assert_eq!(tracker.version_at(t1), None);
     }
 }
 

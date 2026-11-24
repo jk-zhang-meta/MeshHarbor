@@ -29,6 +29,9 @@ pub mod apps_config;
 /// FR-84 D6 — the companion's login-start registration (Run value, XDG
 /// entry), shared so the daemon and the companion spell it identically.
 pub mod companion_autostart;
+/// Desktop companion singleton version handover (semver comparison, handover
+/// decision table, and per-user instance state persistence).
+pub mod companion_handover;
 pub mod config;
 pub mod config_surface;
 pub mod crash_recorder;

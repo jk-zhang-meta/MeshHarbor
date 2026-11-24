@@ -5199,9 +5199,24 @@ async fn run_cmd(
             if !scm_owns_companion {
                 meshharbord::post_install::await_windows_update_receipt().await;
                 let _ = tokio::task::spawn_blocking(move || {
-                    meshharbord::companion::sync_user_autostart_logged(companion_autostart);
+                    let is_machine = std::env::current_exe().ok().is_some_and(|exe| {
+                        meshharbor_node_core::companion_autostart::windows_scope_for_exe(
+                            &exe,
+                            &meshharbor_node_core::companion_autostart::program_files_dirs(),
+                        ) == meshharbor_node_core::companion_autostart::InstallScope::Machine
+                    });
+                    if is_machine {
+                        meshharbord::companion::retire_stale_per_user_companion_logged();
+                    } else {
+                        meshharbord::companion::sync_user_autostart_logged(companion_autostart);
+                    }
                     // After the refresh above, so it opens the new companion.
                     meshharbord::companion::reopen_after_update(respawn_ctx, companion_autostart);
+                })
+                .await;
+            } else {
+                let _ = tokio::task::spawn_blocking(|| {
+                    meshharbord::companion::retire_stale_per_user_companion_logged();
                 })
                 .await;
             }
@@ -6589,6 +6604,7 @@ fn service_install_as_service() -> Result<()> {
     meshharbord::companion::sync_machine_autostart_logged(
         meshharbord::companion::scm_companion_autostart(),
     );
+    meshharbord::companion::retire_stale_per_user_companion_logged();
     Ok(())
 }
 

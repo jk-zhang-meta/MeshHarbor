@@ -251,7 +251,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             });
         }
         "quit" => {
-            app.exit(0);
+            crate::companion_hello::notify_bye_and_exit(app);
         }
         LOGIN_ITEM_ID => start_login(app),
         JOIN_ITEM_ID => show_window(app, "/onboarding"),

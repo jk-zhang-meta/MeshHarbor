@@ -36,6 +36,7 @@
 
 mod account_window;
 mod commands;
+mod companion_hello;
 mod desktop_log;
 mod editor;
 mod first_run;
@@ -43,6 +44,7 @@ mod globe_url;
 mod panels;
 #[cfg(target_os = "linux")]
 mod pin;
+mod singleton;
 mod tray;
 mod tray_i18n;
 mod user_account;
@@ -103,9 +105,28 @@ fn main() {
     };
     first_run::set_launch_view(show_view.clone());
 
+    // T11 — replace an older running companion (or stale per-user tray when
+    // launching from Program Files) before single-instance lock acquisition.
+    singleton::prepare_takeover(env!("CARGO_PKG_VERSION"));
+
     tauri::Builder::default()
         .manage(account_window::CenterPolicy::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // T11 — graceful version handover: if a strictly newer companion
+            // forwarded `--handover-version=<ver>`, release our instance record,
+            // send CompanionBye, and exit immediately so it can take over.
+            if meshharbor_node_core::companion_handover::should_yield_to_handover_arg(
+                env!("CARGO_PKG_VERSION"),
+                &args,
+            ) {
+                tracing::info!(
+                    own_version = env!("CARGO_PKG_VERSION"),
+                    ?args,
+                    "yielding to newer companion version via single-instance handover"
+                );
+                companion_hello::notify_bye_and_exit(app);
+                return;
+            }
             // Second invocation: focus the existing window instead
             // of starting a new tray. Prevents "10 trays running"
             // when an operator double-clicks the launcher.
@@ -237,6 +258,12 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // We own the single-instance lock now: record our PID/version/exe
+            // for future version handover checks and begin sending live
+            // CompanionHello heartbeats to the daemon over the LocalAPI.
+            singleton::record_own_instance(env!("CARGO_PKG_VERSION"));
+            tauri::async_runtime::spawn(companion_hello::run_loop());
+
             // Install the tray icon + menu. The main window starts
             // hidden (visible:false in tauri.conf.json); operator
             // opens it from the tray menu.
@@ -274,11 +301,18 @@ fn main() {
             {
                 let quit_handle = app.handle().clone();
                 tauri::async_runtime::spawn(quit_sentinel_watch_loop(quit_handle));
+                let handover_handle = app.handle().clone();
+                tauri::async_runtime::spawn(singleton::handover_watch_loop(handover_handle));
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running meshharbor-desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building meshharbor-desktop")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                singleton::clear_own_instance_record();
+            }
+        });
 }
 
 /// Ask the daemon (over the LocalAPI) which sessions await consent; when a NEW
@@ -390,7 +424,7 @@ async fn quit_sentinel_watch_loop(app: tauri::AppHandle) {
             && sentinel_requests_pid(&contents, own_pid)
         {
             tracing::info!(pid = own_pid, path = %sentinel.display(), "meshharbor-desktop observed quit sentinel; exiting");
-            app.exit(0);
+            companion_hello::notify_bye_and_exit(&app);
             return;
         }
     }

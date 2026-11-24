@@ -13,6 +13,7 @@
 //! a free loopback port for userspace mode.
 
 use meshharbor_node_core::companion_autostart::{AUTOSTART_ARG, FIRST_RUN_ARG};
+use meshharbor_node_core::companion_handover::{HANDOVER_VERSION_ARG_PREFIX, parse_semver};
 use meshharbor_node_core::desktop_state;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -27,6 +28,8 @@ pub struct LaunchArgs {
     pub autostart: bool,
     /// `--first-run`: the daemon's one-shot post-install launch.
     pub first_run: bool,
+    /// `--handover-version=<ver>`: internal singleton handover version signal.
+    pub handover_version: Option<String>,
 }
 
 /// Parse the companion's own arguments (`args[0]` is the program).
@@ -42,6 +45,11 @@ pub fn parse_launch_args<S: AsRef<str>>(args: &[S]) -> LaunchArgs {
             && view.chars().all(|c| c.is_ascii_alphanumeric())
         {
             out.view = Some(view.to_string());
+        } else if let Some(ver) = arg.strip_prefix(HANDOVER_VERSION_ARG_PREFIX) {
+            let ver = ver.trim();
+            if parse_semver(ver).is_some() {
+                out.handover_version = Some(ver.to_string());
+            }
         }
     }
     out
@@ -105,7 +113,7 @@ pub fn decide_second_instance(args: &LaunchArgs, first_run_done: bool) -> Second
         };
         return SecondLaunch::ShowView(view.to_string());
     }
-    if args.autostart {
+    if args.autostart || args.handover_version.is_some() {
         return SecondLaunch::Ignore;
     }
     SecondLaunch::Show
@@ -273,7 +281,7 @@ pub async fn startup_checks<R: tauri::Runtime>(
     let device = device_autostart_switch().await;
     if autostart && device == Some(false) {
         tracing::info!("login start on a device whose companion_autostart is off — leaving");
-        app.exit(0);
+        crate::companion_hello::notify_bye_and_exit(&app);
         return;
     }
     if !first_run_done && device != Some(false) {
@@ -669,6 +677,11 @@ mod tests {
         );
         // A plain second launch (a double-click) shows the window where it is.
         assert_eq!(decide_second_instance(&a(&[]), true), Show);
+        // A handover-version probe that did not trigger an exit never pops the window.
+        assert_eq!(
+            decide_second_instance(&a(&["--handover-version=0.4.213"]), true),
+            Ignore
+        );
     }
 
     #[test]

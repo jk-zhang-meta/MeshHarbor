@@ -216,6 +216,9 @@ pub fn with_machine_network(mut own: NodeStatus, machine: &NodeStatus) -> NodeSt
     if own.egress.is_none() && machine.egress.is_some() {
         own.egress = machine.egress.clone();
     }
+    if own.companion_version.is_none() && machine.companion_version.is_some() {
+        own.companion_version = machine.companion_version.clone();
+    }
     own
 }
 

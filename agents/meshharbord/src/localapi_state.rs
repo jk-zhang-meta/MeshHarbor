@@ -918,7 +918,16 @@ impl LocalApiState for DaemonState {
                 }
             },
             egress: crate::egress_probe::current_status(),
+            companion_version: crate::companion::connected_version(),
         }
+    }
+
+    fn companion_hello(&self, version: &str, pid: Option<u32>) -> bool {
+        crate::companion::record_connected_version(version, pid)
+    }
+
+    fn companion_bye(&self, pid: Option<u32>) -> bool {
+        crate::companion::clear_connected_version(pid)
     }
 
     fn encoder_caps(&self) -> Option<tunnel_core::localapi::EncoderCapsSummary> {
@@ -3821,5 +3830,36 @@ mod tests {
         );
 
         crate::overlay_supervision::clear_org_state(tenant);
+    }
+
+    #[tokio::test]
+    async fn daemon_state_companion_hello_and_bye_drive_status_companion_version() {
+        let (_tx, rx) = watch::channel(view());
+        let st = DaemonState::new(
+            "aid".into(),
+            "host".into(),
+            DaemonMode::Service,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            rx,
+            consent_broker("companion-ver"),
+            None,
+            crate::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            empty_rtt_cache(),
+        );
+        // Clean baseline.
+        let _ = st.companion_bye(None);
+        assert_eq!(st.status().companion_version, None);
+
+        assert!(st.companion_hello("0.4.214", Some(4242)));
+        assert_eq!(st.status().companion_version.as_deref(), Some("0.4.214"));
+
+        // Mismatched PID bye must not clear live companion.
+        assert!(!st.companion_bye(Some(9999)));
+        assert_eq!(st.status().companion_version.as_deref(), Some("0.4.214"));
+
+        // Matching PID bye clears live companion back to None.
+        assert!(st.companion_bye(Some(4242)));
+        assert_eq!(st.status().companion_version, None);
     }
 }

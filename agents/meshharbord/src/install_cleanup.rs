@@ -160,6 +160,15 @@ pub fn run_cleanup(target: TargetFlavour, dry_run: bool) -> Result<CleanupReport
         // the installer actually reaches.
         cleanup_vacated_install_dir(target, &mut report, dry_run);
 
+        // T11: retire stale per-user companion autostart (`HKCU`/`HKU` Run)
+        // and Start-menu `.lnk` shortcuts BEFORE the same-flavour fast path so
+        // BOTH fresh perMachine installs AND perMachine→perMachine MSI upgrades
+        // (`CleanupLegacyPerUser`) retire stale per-user trays without touching
+        // any user data under `%LOCALAPPDATA%\meshharbor\...`.
+        if target == TargetFlavour::PerMachine {
+            retire_stale_per_user_companion(&mut report, dry_run);
+        }
+
         // Same-flavour fast path: the new install matches what's
         // already on disk → no cross-flavour cleanup needed.
         let current = crate::updater::current_install_flavour();
@@ -293,6 +302,107 @@ fn cleanup_vacated_install_dir(target: TargetFlavour, report: &mut CleanupReport
             "vacated dir {} left in place (non-product files or locks): {e}",
             dir.display()
         )),
+    }
+}
+
+/// Retire stale per-user companion Run values (`HKCU` + loaded `HKU\<SID>`) and
+/// user Start-menu `.lnk` shortcuts whose target points inside
+/// `%LOCALAPPDATA%\Programs\MeshHarbor\...`.
+///
+/// Runs BEFORE the same-flavour fast path on `TargetFlavour::PerMachine` so
+/// every perMachine MSI install and upgrade (`CleanupLegacyPerUser`) retires
+/// stale per-user companions while NEVER deleting user data under
+/// `%LOCALAPPDATA%\meshharbor\...` or `%APPDATA%\meshharbor\...`.
+#[cfg(target_os = "windows")]
+fn retire_stale_per_user_companion(report: &mut CleanupReport, dry_run: bool) {
+    use meshharbor_node_core::companion_autostart::{
+        WINDOWS_RUN_SUBKEY, WINDOWS_RUN_VALUE_NAME, retire_stale_user_start_menu_shortcuts,
+        should_retire_hkcu_run_value,
+        registry::{
+            Hive, find_per_user_run_values_in_loaded_hku, read_value,
+            retire_per_user_run_value_in_hkcu, retire_per_user_run_values_in_loaded_hku,
+        },
+    };
+
+    let own_local = (!crate::win_identity::process_is_local_system())
+        .then(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .flatten();
+
+    if dry_run {
+        match read_value(Hive::CurrentUser, WINDOWS_RUN_SUBKEY, WINDOWS_RUN_VALUE_NAME) {
+            Ok(val) if should_retire_hkcu_run_value(val.as_deref(), own_local.as_deref()) => {
+                report.removed.push(format!(
+                    "[dry-run] retire stale per-user HKCU\\{WINDOWS_RUN_SUBKEY}\\{WINDOWS_RUN_VALUE_NAME}"
+                ));
+            }
+            Ok(_) => {
+                report
+                    .skipped
+                    .push("stale per-user companion HKCU Run value not present".to_string());
+            }
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("read HKCU Run value for per-user companion: {e}"));
+            }
+        }
+        let hku_matches = find_per_user_run_values_in_loaded_hku(WINDOWS_RUN_SUBKEY);
+        if hku_matches.is_empty() {
+            report
+                .skipped
+                .push("stale per-user companion HKU Run values not present".to_string());
+        } else {
+            for entry in hku_matches {
+                report
+                    .removed
+                    .push(format!("[dry-run] retire stale per-user {entry}"));
+            }
+        }
+    } else {
+        match retire_per_user_run_value_in_hkcu(WINDOWS_RUN_SUBKEY, own_local.as_deref()) {
+            Ok(true) => report.removed.push(format!(
+                "stale per-user HKCU\\{WINDOWS_RUN_SUBKEY}\\{WINDOWS_RUN_VALUE_NAME}"
+            )),
+            Ok(false) => report
+                .skipped
+                .push("stale per-user companion HKCU Run value not present".to_string()),
+            Err(e) => report
+                .errors
+                .push(format!("retire HKCU Run value for per-user companion: {e}")),
+        }
+        let retired_hku = retire_per_user_run_values_in_loaded_hku(WINDOWS_RUN_SUBKEY);
+        if retired_hku.is_empty() {
+            report
+                .skipped
+                .push("stale per-user companion HKU Run values not present".to_string());
+        } else {
+            for entry in retired_hku {
+                report.removed.push(format!("stale per-user {entry}"));
+            }
+        }
+    }
+
+    let mut shortcut_count = 0usize;
+    for (roaming, local) in crate::companion::discover_user_app_data_roots() {
+        for lnk in retire_stale_user_start_menu_shortcuts(&roaming, local.as_deref(), dry_run) {
+            shortcut_count += 1;
+            if dry_run {
+                report.removed.push(format!(
+                    "[dry-run] retire stale per-user Start-menu shortcut {}",
+                    lnk.display()
+                ));
+            } else {
+                report.removed.push(format!(
+                    "stale per-user Start-menu shortcut {}",
+                    lnk.display()
+                ));
+            }
+        }
+    }
+    if shortcut_count == 0 {
+        report
+            .skipped
+            .push("stale per-user companion Start-menu shortcut not present".to_string());
     }
 }
 
@@ -673,6 +783,21 @@ mod tests {
                 .iter()
                 .any(|s| s.contains("same-flavour install")),
             "fast path missing from report: {}",
+            report.summary()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dry_run_per_machine_cleanup_reports_per_user_companion_retirement() {
+        let report = run_cleanup(TargetFlavour::PerMachine, true).unwrap();
+        assert!(
+            report
+                .removed
+                .iter()
+                .chain(report.skipped.iter())
+                .any(|s| s.contains("per-user companion")),
+            "per-user companion retirement missing from report: {}",
             report.summary()
         );
     }

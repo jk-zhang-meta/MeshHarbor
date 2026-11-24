@@ -2971,9 +2971,10 @@ async fn connect_once(
                     sys: Some(sys),
                     srflx_count,
                     warm_relay,
-                    // FR-27 — cached for 10 min inside, so this is a map lookup
-                    // on all but one heartbeat in twenty.
-                    companion_version: crate::companion::installed_version(),
+                    // Live companion version reported by the companion itself
+                    // over the LocalAPI (`CompanionHello`), or `None` when no
+                    // companion is connected (never read from a file on disk).
+                    companion_version: crate::companion::connected_version(),
                     caps,
                     // FR-92 P5b — where keep busy runs, for the device list.
                     keep_busy: crate::keep_busy::brief(),

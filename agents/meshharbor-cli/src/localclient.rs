@@ -2539,6 +2539,10 @@ fn print_status(s: &NodeStatus) {
     println!("{} {}", up_glyph(s.connected), s.name);
     println!("  node id     {}", short_id(&s.node_id));
     println!("  version     {}", s.version);
+    println!(
+        "  companion   {}",
+        s.companion_version.as_deref().unwrap_or("none")
+    );
     println!("  mode        {mode}");
     // FR-51 — only when true: a permanent device's output stays byte-stable.
     if s.ephemeral {

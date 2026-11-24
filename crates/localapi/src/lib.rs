@@ -449,6 +449,11 @@ pub struct NodeStatus {
     /// Additive; absent from older daemons or before the first probe/check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<EgressProbeStatus>,
+    /// Version of the desktop companion currently connected over the LocalAPI
+    /// (`CompanionHello`), or `None` when no companion is connected. Additive;
+    /// absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_version: Option<String>,
 }
 
 /// FR-138 — live physical-path probe & current egress summary surfaced in `mh status`.
@@ -1687,6 +1692,20 @@ pub enum Request {
     ConnectStatus {
         id: u64,
     },
+    /// Desktop companion liveness hello: reports the running companion's own
+    /// version (and PID) so the daemon advertises the LIVE connected companion
+    /// version rather than reading a file on disk.
+    CompanionHello {
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+    },
+    /// Desktop companion clean-exit goodbye: clears the daemon's live
+    /// connected companion version immediately on tray quit or version handover.
+    CompanionBye {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+    },
 }
 
 /// FR-90 P3-9-2b — what `mh connect` asks for: the arguments a
@@ -2088,6 +2107,10 @@ pub enum Response {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<u16>,
+    },
+    /// Answer to [`Request::CompanionHello`] and [`Request::CompanionBye`].
+    CompanionAck {
+        ok: bool,
     },
 }
 
@@ -3145,6 +3168,16 @@ pub trait LocalApiState: Send + Sync {
     fn encoder_caps(&self) -> Option<EncoderCapsSummary> {
         None
     }
+    /// Record a live desktop companion hello (version + optional PID).
+    /// Default: no-op `true` so read-only mocks remain undisturbed.
+    fn companion_hello(&self, _version: &str, _pid: Option<u32>) -> bool {
+        true
+    }
+    /// Clear the live desktop companion record on clean exit.
+    /// Default: no-op `true`.
+    fn companion_bye(&self, _pid: Option<u32>) -> bool {
+        true
+    }
 }
 
 /// FR-85 — the refusal a non-console caller gets for a recording verb.
@@ -3256,7 +3289,11 @@ pub fn person_may(req: &Request) -> bool {
         // The cost, accepted by the operator (2026-11-21): whoever sits at the
         // screen reaches the devices the machine's owner may reach by SSH —
         // the same seat this socket already trusts with consent answers.
-        | Request::SshSession { .. } => true,
+        | Request::SshSession { .. }
+        // Desktop companion liveness hello/bye: the companion on a Linux
+        // system install or macOS root half connects to the person socket.
+        | Request::CompanionHello { .. }
+        | Request::CompanionBye { .. } => true,
         Request::Flows
         | Request::Ping { .. }
         | Request::CreateForward { .. }
@@ -3357,6 +3394,12 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
             None => Response::Error {
                 message: "encoder capabilities are not reported on this node".into(),
             },
+        },
+        Request::CompanionHello { version, pid } => Response::CompanionAck {
+            ok: state.companion_hello(version, *pid),
+        },
+        Request::CompanionBye { pid } => Response::CompanionAck {
+            ok: state.companion_bye(*pid),
         },
         // `Ping` / `Create*` / the mutating `Route*` verbs are async —
         // intercepted in `serve_connection` before this sync dispatch runs.
@@ -5382,6 +5425,33 @@ impl Client {
             other => Err(unexpected_response(other)),
         }
     }
+
+    /// Report this running desktop companion's version and optional PID to the
+    /// daemon. An older daemon answers with an unknown-variant `Response::Error`,
+    /// surfaced as `Err` so the companion can ignore it silently.
+    pub async fn companion_hello(
+        &mut self,
+        version: &str,
+        pid: Option<u32>,
+    ) -> std::io::Result<bool> {
+        let req = Request::CompanionHello {
+            version: version.to_string(),
+            pid,
+        };
+        match self.request(&req).await? {
+            Response::CompanionAck { ok } => Ok(ok),
+            other => Err(unexpected_response(other)),
+        }
+    }
+
+    /// Notify the daemon that this desktop companion is exiting cleanly.
+    pub async fn companion_bye(&mut self, pid: Option<u32>) -> std::io::Result<bool> {
+        let req = Request::CompanionBye { pid };
+        match self.request(&req).await? {
+            Response::CompanionAck { ok } => Ok(ok),
+            other => Err(unexpected_response(other)),
+        }
+    }
 }
 
 /// FR-84 D3 — what a daemon said to [`Request::RestartDaemon`], classified
@@ -5897,6 +5967,7 @@ mod tests {
                 files_dir: None,
                 management_path: None,
                 egress: None,
+                companion_version: None,
                 derp_inbound_drops: None,
                 netcheck: None,
                 pid: None,
@@ -7829,6 +7900,9 @@ mod tests {
             r#"{"t":"peers"}"#,
             // `mh ssh` / `scp` / `sftp` without sudo: the server's SSH gates decide.
             r#"{"t":"ssh_session","d":{"node":"winhost-a","public_key":"ssh-ed25519 AAAA x"}}"#,
+            // Desktop companion liveness hello/bye from the console user's tray.
+            r#"{"t":"companion_hello","d":{"version":"0.4.214","pid":1234}}"#,
+            r#"{"t":"companion_bye","d":{"pid":1234}}"#,
         ];
         for j in allowed {
             let req: Request = serde_json::from_str(j).unwrap();
@@ -9539,5 +9613,105 @@ mod personal_system_status_tests {
             person_view(Response::Status(Box::new(decoded.clone()))),
             Response::Status(Box::new(decoded))
         );
+    }
+
+    #[tokio::test]
+    async fn companion_hello_and_bye_round_trip_over_full_and_person_scopes() {
+        #[derive(Default)]
+        struct CompanionMock {
+            live: std::sync::Mutex<Option<(String, Option<u32>)>>,
+        }
+        #[async_trait]
+        impl LocalApiState for CompanionMock {
+            fn status(&self) -> NodeStatus {
+                let mut s: NodeStatus = serde_json::from_value(serde_json::json!({
+                    "node_id": "n1",
+                    "name": "devbox",
+                    "version": "0.4.214",
+                    "mode": "service",
+                    "connected": true
+                }))
+                .unwrap();
+                s.companion_version = self
+                    .live
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|(v, _)| v.clone());
+                s
+            }
+            fn peers(&self) -> Vec<PeerInfo> {
+                Vec::new()
+            }
+            fn flows(&self) -> Vec<FlowInfo> {
+                Vec::new()
+            }
+            fn companion_hello(&self, version: &str, pid: Option<u32>) -> bool {
+                *self.live.lock().unwrap() = Some((version.to_string(), pid));
+                true
+            }
+            fn companion_bye(&self, pid: Option<u32>) -> bool {
+                let mut g = self.live.lock().unwrap();
+                if g.as_ref()
+                    .is_some_and(|(_, live_pid)| pid.is_some() && *live_pid != pid)
+                {
+                    return false;
+                }
+                *g = None;
+                true
+            }
+        }
+
+        // Wire format check.
+        assert_eq!(
+            serde_json::to_string(&Request::CompanionHello {
+                version: "0.4.214".into(),
+                pid: Some(42),
+            })
+            .unwrap(),
+            r#"{"t":"companion_hello","d":{"version":"0.4.214","pid":42}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Request::CompanionBye { pid: None }).unwrap(),
+            r#"{"t":"companion_bye","d":{}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::CompanionAck { ok: true }).unwrap(),
+            r#"{"t":"companion_ack","d":{"ok":true}}"#
+        );
+
+        for scope in [Scope::Full, Scope::Person] {
+            let state = Arc::new(CompanionMock::default());
+            let (client_end, server_end) = tokio::io::duplex(16 * 1024);
+            let st = Arc::clone(&state);
+            let srv = tokio::spawn(async move {
+                serve_connection_scoped(server_end, &*st, ClientPeer::UNKNOWN, scope).await
+            });
+            let mut client = Client::new(Box::new(client_end));
+
+            // Before hello: companion_version is absent (and omitted on wire).
+            let st0 = client.status().await.unwrap();
+            assert_eq!(st0.companion_version, None);
+            assert!(!serde_json::to_string(&st0).unwrap().contains("companion_version"));
+
+            // Hello updates live companion_version.
+            assert!(client.companion_hello("0.4.214", Some(777)).await.unwrap());
+            let st1 = client.status().await.unwrap();
+            assert_eq!(st1.companion_version.as_deref(), Some("0.4.214"));
+
+            // Mismatched PID bye leaves live version intact.
+            assert!(!client.companion_bye(Some(888)).await.unwrap());
+            assert_eq!(
+                client.status().await.unwrap().companion_version.as_deref(),
+                Some("0.4.214")
+            );
+
+            // Matching PID bye clears it back to None.
+            assert!(client.companion_bye(Some(777)).await.unwrap());
+            assert_eq!(client.status().await.unwrap().companion_version, None);
+
+            drop(client);
+            srv.await.unwrap().unwrap();
+        }
     }
 }
