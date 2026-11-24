@@ -3,6 +3,7 @@
 <template>
   <v-app class="app-layout-root">
     <v-navigation-drawer
+      v-if="!embedChromeHidden"
       v-model="drawer"
       :rail="!mobile && rail"
       :permanent="!mobile"
@@ -443,7 +444,7 @@
     <!-- FR-125 — the remote viewer on a phone held sideways takes the whole
          page; its own pull-tab brings its toolbar back, and leaving the mode
          (or the page) brings this bar back. -->
-    <v-app-bar density="compact" flat :model-value="!immersiveViewer">
+    <v-app-bar v-if="!embedChromeHidden" density="compact" flat :model-value="!immersiveViewer">
       <template #prepend>
         <!-- The drawer is closed on a phone, so what it signals has to reach
              the bar: the dot says another org has unread activity (the
@@ -674,11 +675,15 @@
       </template>
     </v-app-bar>
 
-    <v-main ref="mainRef" class="app-main-no-scroll">
+    <v-main
+      ref="mainRef"
+      class="app-main-no-scroll"
+      :class="{ 'app-main--embed': embedChromeHidden }"
+    >
       <!-- Inside <v-main>, under the bar: before it, the bar (absolute) covered the
            banner and it only pushed the page down. -->
       <v-alert
-        v-if="wsStore.status === 'connecting'"
+        v-if="!embedChromeHidden && wsStore.status === 'connecting'"
         type="warning"
         density="compact"
         variant="tonal"
@@ -688,7 +693,7 @@
         {{ t('mh.layout.connecting') }}
       </v-alert>
       <v-alert
-        v-else-if="wsStore.status === 'disconnected'"
+        v-else-if="!embedChromeHidden && wsStore.status === 'disconnected'"
         type="error"
         density="compact"
         variant="tonal"
@@ -706,7 +711,7 @@
          than in each page because a tour is STARTED from somewhere else (the
          Tutorial, via `?tour=`), and a component cannot mount itself into a
          page it is navigating to. -->
-    <spotlight-tour />
+    <spotlight-tour v-if="!embedChromeHidden" />
 
     <!-- Global search dialog -->
     <search-dialog v-model="showSearch" />
@@ -793,6 +798,7 @@ import SearchDialog from '@/components/layout/SearchDialog.vue'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useValidation } from '@/composables/useValidation'
 import { immersiveViewer } from '@/composables/useImmersiveViewer'
+import { isEmbedChromeHidden } from '@/views/network/globeEmbedParams'
 import {
   hasSeenTour,
   markTourSeen,
@@ -848,6 +854,7 @@ const theme = useTheme()
 const { logo: brandLogo } = useBrand()
 
 const isOnCallPage = computed(() => route.name === 'room-call')
+const embedChromeHidden = computed(() => isEmbedChromeHidden(route))
 
 // Active calls across all rooms (excluding the one the user is currently in)
 const activeCallRooms = computed(() =>
@@ -1128,6 +1135,7 @@ watch(
 let tourChecked = false
 async function maybeAutoOpenTour() {
   if (tourChecked) return
+  if (embedChromeHidden.value) return
   const tid = tenantId.value
   const uid = auth.user?.id
   if (!tid || !uid) return
@@ -1175,6 +1183,7 @@ const pageTitle = computed(() => {
   if (name === 'account-approval') return t('mh.nav.accountApprovals')
   if (name === 'room-chat') return t('mh.layout.titleChat')
   if (name === 'room-call') return t('mh.layout.titleCall')
+  if (name === 'network-globe') return t('mh.globeV2.deviceNetworkTitle')
   return (route.meta.title as string) || PRODUCT_TITLE
 })
 
@@ -1278,14 +1287,16 @@ async function onWsReconnected() {
 
 onMounted(async () => {
   await tenantStore.fetchTenants()
-  notificationStore.fetchUnreadCount()
-  orgBadges.fetchSummary()
+  if (!embedChromeHidden.value) {
+    notificationStore.fetchUnreadCount()
+    orgBadges.fetchSummary()
+  }
   window.addEventListener('room:call_started', onCallStarted)
   window.addEventListener('keydown', onSearchShortcut)
   window.addEventListener('ws:reconnected', onWsReconnected)
   // Fetch rooms and unread counts for current tenant — the chat module's;
   // skipped where the server does not mount it (FR-69 P9).
-  if (tenantId.value && caps.has('chat')) {
+  if (!embedChromeHidden.value && tenantId.value && caps.has('chat')) {
     await roomStore.fetchRooms(tenantId.value)
     roomStore.fetchAllUnreadCounts(tenantId.value)
   }
@@ -1384,6 +1395,13 @@ onUnmounted(() => {
   min-height: 0 !important;
   display: flex !important;
   flex-direction: column !important;
+}
+.app-main--embed {
+  padding: 0 !important;
+  overflow: hidden !important;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .ws-status-banner {

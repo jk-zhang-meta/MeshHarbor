@@ -45,14 +45,16 @@ const i18n = createI18n({
 )
 ;(i18n.global.locale as unknown as { value: string }).value = initialLocale()
 
-/** Switch the interface language and remember it on this browser. */
-export function setLocale(code: LocaleCode) {
+/** Switch the interface language. Pass `{ persist: false }` for transient views (e.g. `?embed=1&lang=...`). */
+export function setLocale(code: LocaleCode, options?: { persist?: boolean }) {
   if (!isLocale(code)) return
   ;(i18n.global.locale as unknown as { value: string }).value = code
-  try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, code)
-  } catch {
-    /* the choice still applies to this page */
+  if (options?.persist !== false) {
+    try {
+      globalThis.localStorage?.setItem(STORAGE_KEY, code)
+    } catch {
+      /* the choice still applies to this page */
+    }
   }
   if (typeof document !== 'undefined') document.documentElement.lang = code
 }

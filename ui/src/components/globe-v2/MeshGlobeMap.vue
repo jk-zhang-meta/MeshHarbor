@@ -17,22 +17,28 @@
     6. Calm resting links (1–1.5 px, 0.45 opacity, majority-carrier solid) vs full-strength patterned ego/hover links + mixed mark & breakdown.
 -->
 <template>
-  <div ref="placeholderEl" class="mh-gv2-placeholder" :style="placeholderStyle">
-    <Teleport to="body" :disabled="!fullPage.isFull.value">
+  <div
+    ref="placeholderEl"
+    class="mh-gv2-placeholder"
+    :class="{ 'mh-gv2-placeholder--standalone': standaloneFullPage }"
+    :style="placeholderStyle"
+  >
+    <Teleport to="body" :disabled="standaloneFullPage || !fullPage.isFull.value">
       <div
         ref="shellEl"
         class="mh-gv2-shell"
         :class="[
           `mh-gv2-shell--${themeMode}`,
           {
-            'mh-gv2-shell--full': fullPage.isFull.value,
+            'mh-gv2-shell--full': !standaloneFullPage && fullPage.isFull.value,
+            'mh-gv2-shell--standalone': standaloneFullPage,
             'mh-gv2-shell--mobile': isMobile,
             'mh-gv2-shell--tablet': isTablet,
           },
         ]"
         :style="shellStyle"
         data-testid="globe-v2-shell"
-        :data-full-page="fullPage.isFull.value ? '1' : '0'"
+        :data-full-page="isFullLayout ? '1' : '0'"
       >
         <div
           ref="mapHostEl"
@@ -102,7 +108,7 @@
 
         <!-- Mobile Full-Page 48px Top Bar (S10) -->
         <header
-          v-if="isMobile && fullPage.isFull.value"
+          v-if="isMobile && isFullLayout"
           class="mh-gv2-mobile-topbar"
           data-testid="globe-v2-mobile-topbar"
         >
@@ -150,6 +156,7 @@
               </svg>
             </button>
             <button
+              v-if="!standaloneFullPage"
               type="button"
               class="mh-gv2-icon-btn"
               :aria-label="$t('mh.globeV2.exitFullPage')"
@@ -165,7 +172,7 @@
 
         <!-- Desktop Full-Page Top-Left Title & Filters (S9 / S5 R4) -->
         <div
-          v-if="!isMobile && fullPage.isFull.value"
+          v-if="!isMobile && isFullLayout"
           class="mh-gv2-full-left"
           data-testid="globe-v2-full-toolbar"
         >
@@ -204,7 +211,7 @@
 
         <!-- Top-right quick controls (embedded mobile card shows ONLY full-page button per S10!) -->
         <div
-          v-if="!(isMobile && fullPage.isFull.value)"
+          v-if="!(isMobile && isFullLayout)"
           class="mh-gv2-top-actions"
           data-testid="globe-v2-actions"
         >
@@ -245,7 +252,7 @@
               </svg>
             </button>
             <button
-              v-if="fullPage.isFull.value && fullPage.fullscreenSupported.value"
+              v-if="isFullLayout && fullPage.fullscreenSupported.value"
               type="button"
               class="mh-gv2-icon-btn mh-gv2-icon-btn--wide"
               :aria-label="$t('mh.globeV2.browserFullscreen')"
@@ -277,6 +284,7 @@
           </button>
 
           <button
+            v-if="!standaloneFullPage"
             ref="fullTriggerEl"
             type="button"
             class="mh-gv2-icon-btn mh-gv2-icon-btn--wide"
@@ -299,7 +307,7 @@
         <div
           v-if="settingsOpen"
           class="mh-gv2-settings-popover"
-          :class="{ 'mh-gv2-settings-popover--mobile-full': isMobile && fullPage.isFull.value }"
+          :class="{ 'mh-gv2-settings-popover--mobile-full': isMobile && isFullLayout }"
           role="dialog"
           :aria-label="$t('mh.globeV2.displaySettings')"
           data-testid="globe-v2-settings-popover"
@@ -361,7 +369,7 @@
           :class="{
             'mh-gv2-legend--collapsed': legendCollapsed,
             'mh-gv2-legend--mobile': isMobile,
-            'mh-gv2-legend--above-sheet': isMobile && fullPage.isFull.value && mobileSheetOpen,
+            'mh-gv2-legend--above-sheet': isMobile && isFullLayout && mobileSheetOpen,
           }"
           data-testid="globe-v2-legend"
           @click.stop
@@ -482,7 +490,7 @@
 
         <!-- Non-modal detail / list / mobile 3-snap bottom sheet panel (S8 / S10) -->
         <aside
-          v-if="showDetailPanel && (panelOpen || (isMobile && fullPage.isFull.value && mobileSheetOpen))"
+          v-if="showDetailPanel && (panelOpen || (isMobile && isFullLayout && mobileSheetOpen))"
           ref="panelEl"
           class="mh-gv2-panel"
           :class="{
@@ -515,7 +523,7 @@
 
           <!-- Mobile full-page 3 tabs: Details / Filters / List (S10) -->
           <div
-            v-if="isMobile && fullPage.isFull.value"
+            v-if="isMobile && isFullLayout"
             class="mh-gv2-sheet-tabs"
             role="tablist"
             data-testid="globe-v2-mobile-tabs"
@@ -566,7 +574,7 @@
 
           <!-- Mobile Filters Tab Content -->
           <div
-            v-if="isMobile && fullPage.isFull.value && mobileTab === 'filters'"
+            v-if="isMobile && isFullLayout && mobileTab === 'filters'"
             class="mh-gv2-panel__body"
             data-testid="globe-v2-mobile-filters-body"
           >
@@ -613,7 +621,7 @@
 
           <!-- Mobile List Tab Content -->
           <div
-            v-else-if="isMobile && fullPage.isFull.value && mobileTab === 'list'"
+            v-else-if="isMobile && isFullLayout && mobileTab === 'list'"
             class="mh-gv2-panel__body"
             data-testid="globe-v2-mobile-list-body"
           >
@@ -644,7 +652,7 @@
 
           <!-- Details / Selected Content (Desktop always; Mobile when tab === 'details') -->
           <template v-else>
-            <div v-if="!(isMobile && fullPage.isFull.value)" class="mh-gv2-panel__head">
+            <div v-if="!(isMobile && isFullLayout)" class="mh-gv2-panel__head">
               <div class="mh-gv2-panel__title-row">
                 <span
                   v-if="selectedNode"
@@ -1046,6 +1054,8 @@ const props = withDefaults(
     ariaLabel?: string
     datasetTag?: string
     syncUrl?: boolean
+    /** Render permanently in full-page layout filling the parent viewport (no expand/exit toggle, no body teleport). */
+    standaloneFullPage?: boolean
   }>(),
   {
     center: null,
@@ -1064,6 +1074,7 @@ const props = withDefaults(
     ariaLabel: '',
     datasetTag: 'real',
     syncUrl: false,
+    standaloneFullPage: false,
   },
 )
 
@@ -1177,8 +1188,8 @@ let lastMarkerLayoutSig = ''
 let lastGlobeRadiusPx = 0
 
 // Interactive state — start legend collapsed on card (both desktop & mobile) so it never covers the globe;
-// desktop full-page opens it automatically via the fullPage.isFull watcher below.
-const legendCollapsed = ref(true)
+// desktop full-page (and standaloneFullPage on desktop) opens it automatically.
+const legendCollapsed = ref(isMobile.value || !props.standaloneFullPage)
 const settingsOpen = ref(false)
 const maxZoomSetting = ref<number>(readStoredMaxZoom())
 const currentCenterLat = ref<number>(DEFAULT_GLOBE_CENTER[1])
@@ -1248,7 +1259,8 @@ const fullPage = useFullPage({
   triggerRef: fullTriggerEl,
   router: injectedRouter,
   route: injectedRoute,
-  syncQuery: props.syncUrl,
+  syncQuery: props.syncUrl && !props.standaloneFullPage,
+  standalone: props.standaloneFullPage,
   onToggle(full) {
     settingsOpen.value = false
     emit('full-page-change', full)
@@ -1274,16 +1286,22 @@ const fullPage = useFullPage({
   },
 })
 
+const isFullLayout = computed(() => props.standaloneFullPage || fullPage.isFull.value)
+
 const effectiveCooperativeGestures = computed(
-  () => !fullPage.isFull.value && props.cooperativeGestures,
+  () => !isFullLayout.value && props.cooperativeGestures,
 )
 
-const placeholderStyle = computed(() => ({
-  minHeight: isMobile.value ? 'min(56vh, 420px)' : `${props.height}px`,
-}))
+const placeholderStyle = computed(() =>
+  props.standaloneFullPage
+    ? {}
+    : {
+        minHeight: isMobile.value ? 'min(56vh, 420px)' : `${props.height}px`,
+      },
+)
 
 const shellStyle = computed(() =>
-  fullPage.isFull.value
+  isFullLayout.value
     ? {}
     : {
         height: isMobile.value ? 'min(56vh, 420px)' : `${props.height}px`,
@@ -1660,7 +1678,7 @@ function getStageDimensions(): { width: number; height: number } {
     return { width: rect.width, height: rect.height }
   }
   const fallbackW = isMobile.value ? Math.max(300, viewportWidth.value - 24) : 1080
-  const fallbackH = fullPage.isFull.value
+  const fallbackH = isFullLayout.value
     ? typeof window !== 'undefined'
       ? window.innerHeight
       : 800
@@ -1694,7 +1712,7 @@ function fitGlobeToContainer(animate = false, center?: [number, number]): void {
 function computeDesiredPadding(): { top: number; right: number; bottom: number; left: number } {
   if (!props.showDetailPanel) return { top: 0, right: 0, bottom: 0, left: 0 }
   if (isMobile.value) {
-    if (fullPage.isFull.value) {
+    if (isFullLayout.value) {
       const sheetH = mobileSheetOpen.value ? currentMobileSheetHeightPx() : 0
       return { top: 48, right: 0, bottom: sheetH, left: 0 }
     }
@@ -2184,7 +2202,7 @@ async function openSpiderfyForCluster(cluster: DisplayCluster): Promise<void> {
     showingAllDevicesList.value = false
     selectedCluster.value = cluster
     listPage.value = 1
-    if (isMobile.value && fullPage.isFull.value) {
+    if (isMobile.value && isFullLayout.value) {
       mobileSheetOpen.value = true
       mobileTab.value = 'details'
       mobileSnap.value = 'peek'
@@ -2237,7 +2255,7 @@ function onSelectSpiderfyNode(node: GlobeNode): void {
   showingAllDevicesList.value = false
   selectedCluster.value = null
   sameCityPage.value = 1
-  if (isMobile.value && fullPage.isFull.value) {
+  if (isMobile.value && isFullLayout.value) {
     mobileSheetOpen.value = true
     mobileTab.value = 'details'
     mobileSnap.value = 'peek'
@@ -2262,7 +2280,7 @@ function selectAggregatedLink(link: AggregatedLink): void {
   selectedCluster.value = null
   showingUnknownList.value = false
   showingAllDevicesList.value = false
-  if (isMobile.value && fullPage.isFull.value) {
+  if (isMobile.value && isFullLayout.value) {
     mobileSheetOpen.value = true
     mobileTab.value = 'details'
     mobileSnap.value = 'peek'
@@ -2282,7 +2300,7 @@ function selectNodeFromList(node: GlobeNode): void {
   showingAllDevicesList.value = false
   selectedCluster.value = null
   sameCityPage.value = 1
-  if (isMobile.value && fullPage.isFull.value) {
+  if (isMobile.value && isFullLayout.value) {
     mobileSheetOpen.value = true
     mobileTab.value = 'details'
     mobileSnap.value = 'peek'
@@ -2335,7 +2353,7 @@ function openUnknownList(): void {
   showingAllDevicesList.value = false
   showingUnknownList.value = true
   listPage.value = 1
-  if (isMobile.value && fullPage.isFull.value) {
+  if (isMobile.value && isFullLayout.value) {
     mobileSheetOpen.value = true
     mobileTab.value = 'details'
     mobileSnap.value = 'mid'
@@ -2457,7 +2475,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
         showingAllDevicesList.value = false
         selectedCluster.value = hitCluster
         listPage.value = 1
-        if (isMobile.value && fullPage.isFull.value) {
+        if (isMobile.value && isFullLayout.value) {
           mobileSheetOpen.value = true
           mobileTab.value = 'details'
           mobileSnap.value = 'peek'
@@ -2481,7 +2499,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
       showingUnknownList.value = false
       showingAllDevicesList.value = false
       sameCityPage.value = 1
-      if (isMobile.value && fullPage.isFull.value) {
+      if (isMobile.value && isFullLayout.value) {
         mobileSheetOpen.value = true
         mobileTab.value = 'details'
         mobileSnap.value = 'peek'
@@ -2502,7 +2520,7 @@ function handleMapClick(e: maplibregl.MapMouseEvent): void {
       showingAllDevicesList.value = false
       selectedCluster.value = hitCluster
       listPage.value = 1
-      if (isMobile.value && fullPage.isFull.value) {
+      if (isMobile.value && isFullLayout.value) {
         mobileSheetOpen.value = true
         mobileTab.value = 'details'
         mobileSnap.value = 'peek'
@@ -2618,7 +2636,7 @@ function handleKeyDown(e: KeyboardEvent): void {
       closePanel()
       return
     }
-    if (fullPage.isFull.value) {
+    if (!props.standaloneFullPage && fullPage.isFull.value) {
       void fullPage.exitFullPage(false)
     }
   }
@@ -2850,7 +2868,7 @@ watch(isMobile, (mobile) => {
 
 // Desktop card keeps legend collapsed by default; desktop full-page opens it cleanly
 watch(
-  () => fullPage.isFull.value,
+  isFullLayout,
   (isFull) => {
     if (isMobile.value) {
       legendCollapsed.value = true
@@ -3115,7 +3133,7 @@ function getDebugState() {
     webglContextLost: webglContextLostCount.value,
     styleReloads: styleReloadCount.value,
     cooperativeGesturesEnabled: Boolean(map?.cooperativeGestures?.isEnabled()),
-    isFullPage: fullPage.isFull.value,
+    isFullPage: isFullLayout.value,
     activeSpiderfyMode: activeSpiderfy.value?.layout.mode ?? null,
     activeSpiderfyFeet: activeSpiderfy.value?.layout.feet.length ?? 0,
     panelOpen: panelOpen.value,
@@ -3154,6 +3172,12 @@ defineExpose({
   width: 100%;
   position: relative;
 }
+.mh-gv2-placeholder--standalone {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 0;
+}
 .mh-gv2-shell {
   position: relative;
   width: 100%;
@@ -3162,6 +3186,12 @@ defineExpose({
   border: 1px solid var(--mh-hairline, rgba(128, 128, 128, 0.2));
   background: #060b13;
   font-family: var(--mh-font-sans, system-ui, sans-serif);
+}
+.mh-gv2-shell--standalone {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  border: 0;
 }
 .mh-gv2-shell--light {
   background: #f5f7fa;

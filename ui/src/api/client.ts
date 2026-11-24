@@ -37,6 +37,14 @@ class ApiError extends Error {
  * one (the credential was already refused), so there is nothing left to revoke.
  */
 function endSessionLocally(): void {
+  const current = router.currentRoute?.value
+  if (current?.meta?.auth && current.fullPath && current.fullPath !== '/') {
+    try {
+      sessionStorage.setItem('pending_redirect', current.fullPath)
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
   clearSignedIn()
   router.push({ name: 'login' })
 }

@@ -19,6 +19,7 @@ export interface UseFullPageOptions {
   router?: Router | null
   route?: RouteLocationNormalizedLoaded | null
   syncQuery?: boolean
+  standalone?: boolean
   onToggle?: (full: boolean) => void
 }
 
@@ -140,7 +141,7 @@ export function useFullPage(options: UseFullPageOptions) {
       }
       return
     }
-    if (!isFull.value) {
+    if (!options.standalone && !isFull.value) {
       await enterFullPage(false)
     }
     const el = options.containerRef.value

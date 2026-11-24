@@ -25,6 +25,8 @@ declare module 'vue-router' {
      *  new URL. Absent = today's reuse, which the views that rewrite
      *  `route.query` in place depend on — do not key by fullPath. */
     remountOn?: string
+    /** T8b — route may render chrome-less (`100vw × 100dvh`) when opened with `?embed=1`. */
+    allowEmbed?: boolean
   }
 }
 
@@ -300,6 +302,15 @@ const routes: RouteRecordRaw[] = [
             name: 'hive-copies',
             component: () => import('@/views/hive/HiveCopiesView.vue'),
             meta: { module: 'hive' },
+          },
+          {
+            // T8b — full-page interactive 3D device globe; supports `?embed=1&lang=&theme=`
+            // for the desktop companion (no app bar / no nav drawer) and normal full-page browsing.
+            path: 'network/globe',
+            name: 'network-globe',
+            props: true,
+            component: () => import('@/views/network/NetworkGlobeView.vue'),
+            meta: { module: 'network', allowEmbed: true },
           },
           {
             // S4 pivot — the overlay/tunnel network group, promoted out
