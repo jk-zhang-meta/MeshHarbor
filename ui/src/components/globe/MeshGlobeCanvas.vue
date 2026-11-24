@@ -170,6 +170,19 @@ const MAX_DIST = 4.6
 const DEFAULT_DIST_LANDSCAPE = 3.38
 const ARC_SEGMENTS = 36
 
+// Marker sizes, in globe radii at the default camera distance.
+const NODE_CORE_R = 0.0105
+const NODE_RING_IN = 0.013
+const NODE_RING_OUT = 0.0195
+const NODE_CORE_LIFT = 0.012
+const NODE_RING_LIFT = 0.008
+const CENTRE_BEACON_R = 0.02
+const CENTRE_RING_IN = 0.026
+const CENTRE_RING_OUT = 0.034
+// How much a marker still grows on screen as the camera zooms in: 0 keeps its screen size,
+// 1 grows it with the globe (the old behaviour, where a dot covered a whole region up close).
+const MARKER_ZOOM_GROWTH = 0.15
+
 function computeDefaultDist(w: number, h: number): number {
   const aspect = w / Math.max(1, h)
   // On portrait phones (aspect < 1), pull back cleanly so the entire glowing
@@ -238,6 +251,13 @@ let hasInitialFocus = false
 const zoomSpreadBucket = ref(0)
 function distToZoomLevel(d: number): number {
   return Math.max(0, Math.min(1, (defaultDist - d) / Math.max(0.1, defaultDist - MIN_DIST)))
+}
+
+/** World-size factor for markers at camera distance `d`: it follows the camera's height above the
+ *  surface, so a marker keeps about its screen size, plus {@link MARKER_ZOOM_GROWTH}. */
+function markerScaleFor(d: number): number {
+  const h = Math.max(0.05, d - 1) / Math.max(0.05, defaultDist - 1)
+  return Math.min(1.25, Math.pow(h, 1 - MARKER_ZOOM_GROWTH))
 }
 
 // Selection & hover state
@@ -405,6 +425,17 @@ let arcMaterial: ShaderMaterial | null = null
 let nodeCoreMesh: InstancedMesh | null = null
 let nodeRingMesh: InstancedMesh | null = null
 let centreGroup: Group | null = null
+let centreBeacon: Mesh | null = null
+let centreRing: Mesh | null = null
+/** Per-instance marker data, so a zoom rewrites the matrices without rebuilding the meshes. */
+interface MarkerInstance {
+  normal: Vector3
+  quat: Quaternion
+  core: number
+  ring: number
+}
+let markerInstances: MarkerInstance[] = []
+let markerScale = 1
 let rafId = 0
 let resizeObs: ResizeObserver | null = null
 let disposed = false
@@ -630,6 +661,9 @@ function rebuildNodesAndCentre() {
     centreGroup.parent?.remove(centreGroup)
     centreGroup = null
   }
+  centreBeacon = null
+  centreRing = null
+  markerInstances = []
 
   cachedNodePositions = new Map()
   const list = placedNodes.value
@@ -637,11 +671,11 @@ function rebuildNodesAndCentre() {
 
   // Instanced device node beacons (1 draw call for cores + 1 for tangent halo rings)
   if (list.length > 0) {
-    const coreGeo = new SphereGeometry(0.0155, 16, 16)
+    const coreGeo = new SphereGeometry(NODE_CORE_R, 16, 16)
     const coreMat = new MeshBasicMaterial({ color: 0xffffff })
     nodeCoreMesh = new InstancedMesh(coreGeo, coreMat, list.length)
 
-    const ringGeo = new RingGeometry(0.019, 0.0285, 24)
+    const ringGeo = new RingGeometry(NODE_RING_IN, NODE_RING_OUT, 24)
     const ringMat = new MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
@@ -651,41 +685,35 @@ function rebuildNodesAndCentre() {
     })
     nodeRingMesh = new InstancedMesh(ringGeo, ringMat, list.length)
 
-    const mtx = new Matrix4()
-    const ringMtx = new Matrix4()
-    const quat = new Quaternion()
     const zAxis = new Vector3(0, 0, 1)
-    const scaleVec = new Vector3()
+    markerInstances = []
 
     list.forEach((n, idx) => {
-      const p = latLonToVec3(n.lat, n.lon, 1.012)
+      const p = latLonToVec3(n.lat, n.lon, 1 + NODE_CORE_LIFT)
       const vec = new Vector3(p.x, p.y, p.z)
       cachedNodePositions.set(n.id, vec)
 
       const isActive = selectedNodeId.value === n.id || hoveredNodeId.value === n.id || n.pending
       const coreScale = isActive ? 1.48 : n.isGateway || n.isEntry ? 1.24 : n.online ? 1.0 : 0.82
-      mtx.makeTranslation(vec.x, vec.y, vec.z)
-      mtx.scale(scaleVec.set(coreScale, coreScale, coreScale))
-      nodeCoreMesh!.setMatrixAt(idx, mtx)
-
       const col = new Color(nodeDotColor(n))
       nodeCoreMesh!.setColorAt(idx, col)
 
-      // Align tangent halo ring to outward sphere normal
+      // The halo ring lies tangent to the sphere, facing out along the normal.
       const normal = vec.clone().normalize()
-      quat.setFromUnitVectors(zAxis, normal)
       const ringScale = isActive ? 1.65 : n.isGateway || n.isEntry ? 1.38 : n.online ? 1.02 : 0.65
-      ringMtx.compose(normal.multiplyScalar(1.008), quat, scaleVec.set(ringScale, ringScale, 1))
-      nodeRingMesh!.setMatrixAt(idx, ringMtx)
+      markerInstances.push({
+        normal,
+        quat: new Quaternion().setFromUnitVectors(zAxis, normal),
+        core: coreScale,
+        ring: ringScale,
+      })
       nodeRingMesh!.setColorAt(
         idx,
         new Color(isActive ? pal.centreRing : n.isGateway ? pal.centreRing : nodeDotColor(n)),
       )
     })
 
-    nodeCoreMesh.instanceMatrix.needsUpdate = true
     if (nodeCoreMesh.instanceColor) nodeCoreMesh.instanceColor.needsUpdate = true
-    nodeRingMesh.instanceMatrix.needsUpdate = true
     if (nodeRingMesh.instanceColor) nodeRingMesh.instanceColor.needsUpdate = true
     globeGroup.add(nodeRingMesh)
     globeGroup.add(nodeCoreMesh)
@@ -705,13 +733,14 @@ function rebuildNodesAndCentre() {
     const quat = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), normal)
 
     const beacon = new Mesh(
-      new OctahedronGeometry(0.028, 0),
+      new OctahedronGeometry(CENTRE_BEACON_R, 0),
       new MeshBasicMaterial({ color: new Color(pal.centreColor) }),
     )
     centreGroup.add(beacon)
+    centreBeacon = beacon
 
     const outerRing = new Mesh(
-      new RingGeometry(0.036, 0.048, 32),
+      new RingGeometry(CENTRE_RING_IN, CENTRE_RING_OUT, 32),
       new MeshBasicMaterial({
         color: new Color(pal.centreRing),
         transparent: true,
@@ -722,6 +751,7 @@ function rebuildNodesAndCentre() {
     )
     outerRing.quaternion.copy(quat)
     centreGroup.add(outerRing)
+    centreRing = outerRing
 
     // Subtle vertical tether from Earth surface up to orbital centre hub
     if (c.orbital) {
@@ -745,6 +775,8 @@ function rebuildNodesAndCentre() {
     globeGroup.add(centreGroup)
   }
 
+  applyMarkerScale(markerScaleFor(currentDist))
+
   // Orient initial camera toward the fleet centroid once on first data arrival
   if (!hasInitialFocus && (list.length > 0 || placedCenter.value)) {
     const focus = placedCenter.value ?? list[0]!
@@ -754,6 +786,30 @@ function rebuildNodesAndCentre() {
     currentLat = targetLat
     hasInitialFocus = true
   }
+}
+
+/** Size every marker for world-size factor `m` ({@link markerScaleFor}); also lowers the lift, so
+ *  a small marker up close still sits on its place rather than floating above it. */
+function applyMarkerScale(m: number) {
+  markerScale = m
+  if (nodeCoreMesh && nodeRingMesh) {
+    const mtx = new Matrix4()
+    const pos = new Vector3()
+    const scale = new Vector3()
+    const noTurn = new Quaternion()
+    markerInstances.forEach((inst, idx) => {
+      pos.copy(inst.normal).multiplyScalar(1 + NODE_CORE_LIFT * m)
+      mtx.compose(pos, noTurn, scale.setScalar(inst.core * m))
+      nodeCoreMesh!.setMatrixAt(idx, mtx)
+      pos.copy(inst.normal).multiplyScalar(1 + Math.max(0.0015, NODE_RING_LIFT * m))
+      mtx.compose(pos, inst.quat, scale.set(inst.ring * m, inst.ring * m, 1))
+      nodeRingMesh!.setMatrixAt(idx, mtx)
+    })
+    nodeCoreMesh.instanceMatrix.needsUpdate = true
+    nodeRingMesh.instanceMatrix.needsUpdate = true
+  }
+  centreBeacon?.scale.setScalar(m)
+  centreRing?.scale.setScalar(m)
 }
 
 function rebuildArcs() {
@@ -1360,6 +1416,9 @@ function animate(ts: number) {
   currentLon += (targetLon - currentLon) * damp
   currentLat += (targetLat - currentLat) * damp
   currentDist += (targetDist - currentDist) * damp
+
+  const nextMarkerScale = markerScaleFor(currentDist)
+  if (Math.abs(nextMarkerScale - markerScale) > markerScale * 0.01) applyMarkerScale(nextMarkerScale)
 
   // Update zoom-aware cluster spread when crossing 10% zoom steps
   const nextBucket = Math.round(distToZoomLevel(currentDist) * 10) / 10
