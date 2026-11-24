@@ -1176,8 +1176,9 @@ let userManuallyZoomed = false
 let lastMarkerLayoutSig = ''
 let lastGlobeRadiusPx = 0
 
-// Interactive state — Fix #4: collapsed by default on mobile (<600px)
-const legendCollapsed = ref(viewportWidth.value < 600)
+// Interactive state — start legend collapsed on card (both desktop & mobile) so it never covers the globe;
+// desktop full-page opens it automatically via the fullPage.isFull watcher below.
+const legendCollapsed = ref(true)
 const settingsOpen = ref(false)
 const maxZoomSetting = ref<number>(readStoredMaxZoom())
 const currentCenterLat = ref<number>(DEFAULT_GLOBE_CENTER[1])
@@ -2846,6 +2847,18 @@ watch(isMobile, (mobile) => {
   if (mobile) legendCollapsed.value = true
   applyCameraPadding(false)
 })
+
+// Desktop card keeps legend collapsed by default; desktop full-page opens it cleanly
+watch(
+  () => fullPage.isFull.value,
+  (isFull) => {
+    if (isMobile.value) {
+      legendCollapsed.value = true
+    } else {
+      legendCollapsed.value = !isFull
+    }
+  },
+)
 
 // Live updates with ZERO setStyle() reload (S6 / AC10)
 watch(
