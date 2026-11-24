@@ -2137,6 +2137,88 @@ message (upstream fixed the flag later, in its FR-17 `8f5ea492e`, not ported: it
 opt-in only). So on the ordered channel R1's gate closes on the gaps our receiver flags;
 `rcDecodeRecovery.spec.ts` drives the eviction path.
 
+### 11.11 A session outlives its control socket (FR-130)
+
+A server restart, pod roll, or zone-gateway wobble (FR-128) used to end every live remote-control
+session because the device tore down its WebRTC peers the instant its control WebSocket dropped,
+even though the pixels and input never cross the server
+([FR-130](fr/FR-130-the-session-outlives-its-control-socket.md), ported from upstream FR-138).
+With FR-130 enabled, a live `Active` session on a direct or TURN carrier survives a transient
+control-socket loss on both ends and re-attaches under the **same `session_id`** with no new
+consent prompt.
+
+#### Detach and resume sequence
+
+```mermaid
+sequenceDiagram
+    participant V as Viewer (Browser)
+    participant S as API / Hub + MongoDB
+    participant A as Agent (meshharbord)
+
+    Note over V,A: Active WebRTC session (pixels & input stay peer-to-peer)
+    A--xS: Control WS drops (API restart / pod roll / transient drop)
+    S->>S: detach_agent_sessions → detached_at, resume_by, attach_seq
+    S-->>V: rc:session.detached {session_id, resume_secs} (or V's own WS drops)
+    Note over A: SessionTable keeps peer alive until min(window, 120s)
+    Note over V: createSessionHold holds PC & measures paint gap (rc-paint-gap)
+    A->>S: Reconnect WS → rc:agent.hello {caps: ["rc-resume"], kept_sessions: [sid]}
+    S->>S: resume_gate + fenced CAS on attach_seq → rebuild or re-attach hub entry
+    S-->>A: rc:session.resumed {session_id}
+    V->>S: Reconnect WS → rc:session.rejoin {session_id}
+    S-->>V: rc:session.resumed {session_id}
+    Note over V,A: Same session_id, same WebRTC peer, audit records detach + resume
+```
+
+#### Device-side session state machine
+
+The org loop owns `SessionTable` (`agents/meshharbord/src/session_table.rs:618`) and lends it to
+each connection. Whether a socket loss keeps live peers or closes them depends on `ConnExit::kind`
+(`agents/meshharbord/src/session_table.rs:207`): **12 transient exits** (including the 3 net-change
+exits, which watch the peer's ICE state every 250 ms) detach and keep peers while a window is open;
+**4 terminal exits** (`Shutdown`, `ResumeFromSuspend`, `Goodbye`, `KeyRotated`) and a 401
+`token_refused` always close every peer immediately.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Attached: SDP answer sent
+    Attached --> Kept: transient ConnExit while window open
+    Kept --> Attached: server sends rc:session.resumed
+    Attached --> Closed: terminate, re-offer, device end, terminal exit, or dead peer at exit
+    Kept --> Closed: window deadline (<= 120 s), terminate, terminal exit, or token refused
+    Kept --> Closed: host Disconnect or idle limit (sends rc:ended peer-to-peer)
+    Kept --> Closed: peer dies, or leaves Connected after a net change
+    Kept --> Closed: rc:session.resumed arrives after peer died
+    Closed --> [*]
+```
+
+#### Three-gate activation and old-meets-new compatibility
+
+Nothing changes until **all three gates** align:
+
+| Gate | Default | Where |
+|---|---|---|
+| Server window `rc.session_resume_secs` (`MESHHARBOR__RC__SESSION_RESUME_SECS`) | **0 (off)**, capped at 120 s | `crates/config/src/settings.rs:1116`; `MAX_WINDOW_SECS`, `crates/modules/fleet/src/resume_scope.rs:377` |
+| Resume scope (`GET`/`PUT /api/admin/rc-resume-scope`: `all`, `org`, or `device`) | empty (no device covered) | `reannounce`, `crates/modules/fleet/src/resume_scope.rs:255` |
+| Device switch `rc_sessions_survive_reattach` (`MESHHARBORD_RC_SESSIONS_SURVIVE_REATTACH`, device-owned, never pushable via remote config) | **on** (acts only when the server announces a window > 0) | `survive_enabled`, `agents/meshharbord/src/session_table.rs:105`; `window_open`, `:1281`; `crates/agent-core/src/config_surface.rs:811` |
+
+| Server | Agent | Behaviour |
+|---|---|---|
+| Window `0` or device out of scope | Any | No `rc:agent.resume_window`, no `resume_secs` on `SessionCreated`; byte-identical to pre-FR-130 (`p4_0_*` tests). |
+| Window > 0, device in scope | Older agent (no `rc-resume` verb) | Server never announces a window; disconnects terminate sessions immediately as before. |
+| Window > 0, device in scope | FR-130 agent (`rc_sessions_survive_reattach=on`) | Server announces `rc:agent.resume_window {secs}` (capped at `WINDOW_CAP` = 120 s, `agents/meshharbord/src/session_table.rs:75`); sessions detach, hold, claim, and resume. |
+| Window > 0, device in scope | FR-130 agent (`rc_sessions_survive_reattach=off`) | Agent omits `rc-resume` (`apply_resume_word`, `:122`); server treats it like an older agent. |
+
+#### Server, viewer, and MeshHarbor-specific details
+
+| Piece | What it guarantees | Anchors |
+|---|---|---|
+| Detach & fencing | `detach_agent_sessions` writes `detached_at` / `resume_by` and leaves `attach_seq` fenced; `claim` commits via compare-and-set on `attach_seq` before rebuilding or re-attaching (`resume_claimed`, `confirm_resumed`, `refuse_claim`). Overdue detached rows are closed by `run_sweep`. | `crates/modules/fleet/src/hub/resume.rs:268`, `:582`, `:685`, `:749`; `crates/modules/remote/src/resume.rs:137`; `crates/modules/remote/src/sweep.rs:94` |
+| Re-authorization | `resume_gate` checks holder permissions, live/non-quarantined device, non-archived org, and member allowlists on every claim and viewer `rejoin`. A kick, device removal, or permission revoke during the gap refuses the claim with `rc:terminate`. Resume never bypasses FR-129 2FA or FR-127 protected-device checks because it only continues an already-admitted session. | `crates/modules/remote/src/controller.rs:1455`; `crates/modules/remote/src/rejoin.rs:214` |
+| File child transports & zone routes | A **re-attached** session on the same pod keeps its file-child bookkeeping and zone route. A **rebuilt** session (after pod restart) computes its route from `zone_route_for(agent_id, None)` (never falling open to `ZoneRoute::Open` under a strict zone policy) and revokes file child transports fail-closed (`rc:file.child.revoke` sent right after `rc:session.resumed`, leaving the session's own file channel intact). | `crates/modules/fleet/src/hub/resume.rs:582`, `:685` |
+| External & share sessions | FR-52 external sessions and device-share sessions (`share_grant_id`) set `external = true`, carry no `resume_secs`, build without a session link on the device, and terminate immediately on either agent or controller disconnect (`held_for_viewer` returns `false`). | `crates/modules/fleet/src/hub/hold.rs:60`; `agents/meshharbord/src/session_table.rs:1518` |
+| Supervised Mac delegation (P2b) | On a supervised Mac, the root daemon holds records of keepable delegated sessions (`SessionParams.keepable`) and sends lifecycle orders (`Detached`, `Resumed`, `Close`, `Ended`) over a dedicated `OrdersLane` to the GUI worker's `DelegatedSide` table; `WORKER_ENV_FORWARD` forwards `RC_SESSIONS_SURVIVE_REATTACH` from the root daemon to the worker. | `agents/meshharbord/src/delegate.rs:330`, `:1495`; `agents/meshharbord/src/delegate_worker.rs:241`; `agents/meshharbord/src/macos_supervisor.rs:272`; `agents/meshharbord/src/session_table.rs:788`, `:991` |
+| Viewer hold & paint-gap telemetry | `createSessionHold` holds the WebRTC peer while rejoining (`rc:session.rejoin`), sends `replaces` if the deadline forces a redial, and honours peer-to-peer `rc:ended` on the control channel (`onDeviceEnded`). `createPaintGapMark` measures `gap_ms` across `<video>` and all three decode workers (`rc-webcodecs-worker.ts`, `rc-hevc-worker.ts`, `rc-vp9-444-worker.ts`) and uploads `rc.resume` via `createResumeRecordUploader`. | `ui/src/composables/rcSessionHold.ts:62`, `:167`, `:333`; `ui/src/composables/rcResumeRecord.ts:158`; `ui/src/workers/rc-paint-gap.ts:48`; `ui/src/composables/useRemoteControl.ts:5610`, `:5706` |
+
 ## 12. Performance targets & budget
 
 | Stage | Target (LAN) | Target (WAN, RTT 30 ms) |

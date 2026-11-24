@@ -179,10 +179,24 @@ bounded passive staleness; (4) pod-alive → advisory only.
 
 | Entity | Owner-pod death | Blast radius |
 |---|---|---|
-| Agent WS | socket breaks ⇒ agent redials; LWW re-register | that pod's rc sessions end (P2P media freezes → controller reconnect); listing stale ≤90 s |
+| Agent WS | socket breaks ⇒ agent redials; LWW re-register | that pod's rc sessions end (P2P media freezes → controller reconnect), except those FR-130 keeps: a live direct/TURN session whose device is in the resume scope with its switch on keeps running peer to peer and is claimed back on whichever pod the redial reaches ([below](#a-live-rc-session-through-its-pods-death-fr-130)); listing stale ≤90 s |
 | Tunnel session | **data plane survives outright** (P2P); new opens rehome | bookkeeping blip only |
 | DERP peer | reconnect loop; LB re-hashes deterministically | seconds of WG loss; corp pairs re-handshake |
 | Media room | claim gone (graceful: zero window; crash: ≤30 s TTL) ⇒ rejoin claims a live pod | one conference, ≤30 s gap on crash |
+
+### A live RC session through its pod's death (FR-130)
+
+The rc hub remains pod-local and nothing in a dying pod's memory is handed off. What survives is
+the session's `remote_sessions` row (`detached_at`, `resume_by`, `attach_seq`). When the device
+reconnects to any pod with `kept_sessions` in `rc:agent.hello`, `claim`
+(`crates/modules/remote/src/resume.rs:137`) commits a fenced compare-and-set on `attach_seq`,
+re-runs `resume_gate`, and rebuilds the hub entry (`resume_claimed`,
+`crates/modules/fleet/src/hub/resume.rs:582`) under the current zone route with file child
+transports revoked fail-closed. The viewer's `rc:session.rejoin`
+(`crates/modules/remote/src/rejoin.rs:214`) binds its new socket to the owning pod (via the cluster
+bus when on another pod), and overdue unclaimed rows are closed by `run_sweep`
+(`crates/modules/remote/src/sweep.rs:94`). See
+[remote-control.md §11.11](remote-control.md#1111-a-session-outlives-its-control-socket-fr-130).
 
 **Redis-down degradation (hard requirement)**: directory ops fail soft to
 "no record" ⇒ rc/tunnel answer pod-local (= today), rehome/nudge

@@ -436,6 +436,31 @@ on DERP. The tells:
 whole range, so a carve-out silently breaks every media transport that lands on a
 carved port. That is the zero-media failure class above, one port at a time.
 
+## A roll and a live remote session (FR-130)
+
+Before FR-130, an API restart or pod roll ended every live remote-control session because the
+device closed its WebRTC peers when its control socket dropped. With FR-130, a live `Active`
+direct/TURN session outlives the restart and re-attaches under the same `session_id`
+([remote-control.md §11.11](remote-control.md#1111-a-session-outlives-its-control-socket-fr-130),
+[FR-130](fr/FR-130-the-session-outlives-its-control-socket.md)). Three switches decide, and nothing
+is kept unless all three are on:
+
+| Switch | Where it lives | Default | Fast off |
+|---|---|---|---|
+| **Window:** `rc.session_resume_secs` (`MESHHARBOR__RC__SESSION_RESUME_SECS`), in seconds | Server config, read at boot (`crates/config/src/settings.rs:1116`), capped at 120 s (`MAX_WINDOW_SECS`, `crates/modules/fleet/src/resume_scope.rs:377`) | **0 (off)** — scope is not read | Set `0` (takes effect on next restart; scope below is instant) |
+| **Resume scope:** `GET` / `PUT /api/admin/rc-resume-scope` (`entries` of kind `all`, `org`, or `device`) | `rc_resume_scope` collection | empty | `PUT` with `{"entries": []}` — every pod immediately pushes `rc:agent.resume_window {secs: 0}` to live agents (`reannounce`, `crates/modules/fleet/src/resume_scope.rs:255`) |
+| **Device switch:** `rc_sessions_survive_reattach` (`MESHHARBORD_RC_SESSIONS_SURVIVE_REATTACH`) | Device config (`crates/agent-core/src/config_surface.rs:811`), read per connection (`survive_enabled`, `agents/meshharbord/src/session_table.rs:105`); never pushable via remote config | **on** (acts only when the server announces a window > 0) | On one device: `mh config set rc_sessions_survive_reattach off` and restart |
+
+Recommended staged rollout: set `MESHHARBOR__RC__SESSION_RESUME_SECS=60` on the API server,
+start with test device IDs in `PUT /api/admin/rc-resume-scope`, verify a live session across an API
+restart, then widen to `{"entries": [{"kind": "all"}]}`.
+
+⚠️ **Rollback floor:** `AuditKind::SessionDetached` and `AuditKind::SessionResumed`
+(`crates/remote_control/src/audit.rs:247`) are written to `rc_audit` once a window > 0 is enabled.
+Rolling the server image back below FR-130 after those rows exist will fail to deserialize those
+audit entries on read paths that decode `AuditKind`. Turn the scope off (`entries: []`) rather than
+downgrading the binary once enabled.
+
 ## Release pipelines (native fleet)
 
 Tag-triggered GitHub workflows build, sign, and publish the native artifacts;
