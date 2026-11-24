@@ -3408,6 +3408,74 @@
       "callName": "通话 - {when}",
       "explore": "发现"
     },
+    "mesh": {
+      "empty": "此组织还没有设备",
+      "svgTitle": "覆盖网格：设备、控制平面链路与对等载体",
+      "globeAria": "可交互的 3D 覆盖网格地球",
+      "offlineDevices": "离线设备（{n}）",
+      "controlPlane": "控制平面",
+      "viewModeAria": "网格视图模式",
+      "viewGlobe": "3D 地球",
+      "viewRing": "2D 环形图",
+      "webglFallbackHint": "当前环境不支持 WebGL2，已切换为 2D 环形图",
+      "attribution": "地图数据：Natural Earth",
+      "legendSummary": "显示 {nodes} 台设备 · {edges} 条链路",
+      "legendAsymmetric": "{n} 条不对称链路",
+      "legendTwoColor": "双色 = 两端各自的传输方式",
+      "stalled": "已停滞",
+      "asymmetricTag": "不对称",
+      "oneSidedTip": "单端报告：仅一端上报",
+      "homePrefix": "归属中继 {region}",
+      "carriers": {
+        "direct": "直连",
+        "relay": "TURN 中继",
+        "derp": "DERP",
+        "tunnel": "隧道",
+        "blocked": "已阻止"
+      },
+      "status": {
+        "online": "在线",
+        "stale": "心跳延迟",
+        "offline": "离线"
+      },
+      "role": {
+        "centre": "中心节点",
+        "gateway": "网关",
+        "entry": "入口"
+      },
+      "controls": {
+        "toolbarAria": "地球视图控制",
+        "zoomIn": "放大",
+        "zoomOut": "缩小",
+        "reset": "重置视角",
+        "pauseRotate": "暂停自动旋转",
+        "resumeRotate": "恢复自动旋转"
+      },
+      "panel": {
+        "close": "关闭详情",
+        "system": "系统",
+        "lastSeen": "最近在线",
+        "location": "位置",
+        "locationUnknown": "未知",
+        "publicIp": "公网 IP",
+        "overlayIp": "网格 IP",
+        "relayHome": "归属中继",
+        "pathToCentre": "至中心路径",
+        "directToCentre": "直连中心",
+        "viaGateway": "经由网关 {name}",
+        "viaGatewayGeneric": "经由分区网关",
+        "lastResortDirect": "直连（兜底回退）",
+        "peers": "对等节点（{n}）",
+        "openDevice": "查看设备",
+        "carrier": "传输方式",
+        "rtt": "延迟",
+        "reports": "上报",
+        "oneSided": "单端上报（1/2）",
+        "reportsCount": "双端上报（{n}）",
+        "deviceDetailsAria": "{name} 详情",
+        "linkDetailsAria": "{a} 与 {b} 链路详情"
+      }
+    },
     "profile": {
       "edit": "编辑个人资料",
       "displayName": "显示名称",

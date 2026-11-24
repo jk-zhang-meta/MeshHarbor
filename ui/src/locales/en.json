@@ -3408,6 +3408,74 @@
       "callName": "Call - {when}",
       "explore": "Explore"
     },
+    "mesh": {
+      "empty": "No devices in this organization yet",
+      "svgTitle": "Overlay mesh: devices, their control-plane links and peer carriers",
+      "globeAria": "Interactive 3D overlay mesh globe",
+      "offlineDevices": "Offline devices ({n})",
+      "controlPlane": "Control plane",
+      "viewModeAria": "Mesh visualization mode",
+      "viewGlobe": "3D Globe",
+      "viewRing": "2D Ring",
+      "webglFallbackHint": "WebGL2 unavailable — showing 2D ring",
+      "attribution": "Map data: Natural Earth",
+      "legendSummary": "{nodes} devices · {edges} links shown",
+      "legendAsymmetric": "{n} asymmetric",
+      "legendTwoColor": "two-colour = each side's own carrier",
+      "stalled": "stalled",
+      "asymmetricTag": "Asymmetric",
+      "oneSidedTip": "one-sided — only one end reported",
+      "homePrefix": "home {region}",
+      "carriers": {
+        "direct": "Direct",
+        "relay": "TURN relay",
+        "derp": "DERP",
+        "tunnel": "Tunnel",
+        "blocked": "Blocked"
+      },
+      "status": {
+        "online": "Online",
+        "stale": "Stale",
+        "offline": "Offline"
+      },
+      "role": {
+        "centre": "Centre",
+        "gateway": "Gateway",
+        "entry": "Entry"
+      },
+      "controls": {
+        "toolbarAria": "Globe view controls",
+        "zoomIn": "Zoom in",
+        "zoomOut": "Zoom out",
+        "reset": "Reset view",
+        "pauseRotate": "Pause rotation",
+        "resumeRotate": "Resume rotation"
+      },
+      "panel": {
+        "close": "Close details",
+        "system": "System",
+        "lastSeen": "Last seen",
+        "location": "Location",
+        "locationUnknown": "Unknown",
+        "publicIp": "Public IP",
+        "overlayIp": "Overlay IP",
+        "relayHome": "Relay home",
+        "pathToCentre": "Path to centre",
+        "directToCentre": "Direct to centre",
+        "viaGateway": "Via {name}",
+        "viaGatewayGeneric": "Via zone gateway",
+        "lastResortDirect": "Direct (last resort)",
+        "peers": "Peers ({n})",
+        "openDevice": "Open device",
+        "carrier": "Carrier",
+        "rtt": "Latency",
+        "reports": "Reports",
+        "oneSided": "One-sided (1/2)",
+        "reportsCount": "{n} ends reported",
+        "deviceDetailsAria": "Details for {name}",
+        "linkDetailsAria": "Link details between {a} and {b}"
+      }
+    },
     "profile": {
       "edit": "Edit Profile",
       "displayName": "Display Name",

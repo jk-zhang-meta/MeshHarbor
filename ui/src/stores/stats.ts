@@ -167,7 +167,7 @@ export interface OrgsPayload {
 
 export interface MeshPayload {
   enabled: boolean
-  center?: { id: string; name: string }
+  center?: { id: string; name: string; country_code?: string | null }
   /** overlay nodes — edges are keyed by these ids */
   nodes?: Array<{
     id: string
@@ -176,6 +176,7 @@ export interface MeshPayload {
     overlay_ip?: string
     relay_home?: string | null
     status?: string
+    last_seen_at?: string | null
   }>
   /** agent rows carry presence + version, joined by hex id */
   agents?: Array<{
@@ -187,6 +188,12 @@ export interface MeshPayload {
     agent_version?: string
     relay_home?: string | null
     os?: string
+    /** Optional FR-134 path-to-centre field when reported by newer servers. */
+    management_path?: {
+      mode: string
+      gateway_name?: string | null
+      entries?: string[]
+    } | null
   }>
   edges?: Array<{
     kind: string

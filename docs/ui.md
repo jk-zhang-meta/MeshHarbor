@@ -123,10 +123,29 @@ flowchart TB
 
 ## Observability components
 
-`ui/src/components/stats/`: `MeshGraph` (d3 force graph of overlay edges +
-carrier types), `TimeSeriesChart`, `UptimeStrip`, `UsagePanel`, `UsageTable`,
-`UsageTimeline`, `RangePicker` — fed by the `stats` store from
-`/api/tenant/{tid}/stats/*` and `/api/admin/stats/*`.
+`ui/src/components/stats/`: `MeshGraph` (FR-136 interactive 3D WebGL2 mesh globe backed by the shared
+`ui/src/components/globe/` module, with the preserved d3 radial ring SVG as its automatic WebGL2
+fallback and 2D toggle), `TimeSeriesChart`, `UptimeStrip`, `UsagePanel`, `UsageTable`,
+`UsageTimeline`, `RangePicker` — fed by the `stats` store from `/api/tenant/{tid}/stats/*` and
+`/api/admin/stats/*`.
+
+### Shared 3D globe (`ui/src/components/globe/`, FR-136)
+
+One lazy-loaded Three.js WebGL2 globe module powers the organization mesh dashboard (`MeshGraph.vue`,
+T6) and is structured to host the zone/server backbone editor (`ServerTopologySection.vue`, T7):
+
+- `MeshGlobe.vue` probes `isWebGL2Supported()` (`webgl.ts`), dynamically imports `MeshGlobeCanvas.vue`
+  so Three.js and Natural Earth 1:50m (`world-atlas/countries-50m.json`) never enter the main entry
+  bundle, and renders `#fallback` automatically whenever WebGL2 is unavailable.
+- `geoLayout.ts` places nodes from the server's already-returned location fields (explicit coords →
+  city/region → ISO-2 country centroid → `relay_home` hint → unlocated staging arc — never inventing
+  backend location collection), expands co-located clusters deterministically as the user zooms in,
+  generates exact spherical-SLERP great-circle arcs, and dims unrelated arcs on hover/select.
+- `earthTexture.ts` paints a self-hosted Natural Earth 1:50m canvas texture plus 3D vector coastline
+  and border `LineSegments` matched to the light and dark Vuetify themes (zero external CDNs).
+- `GlobeDetailPanel.vue` presents pinned device/link facts as a desktop floating card or mobile
+  (`< 600 px`) bottom sheet (`Esc` to close), omitting absent fields and displaying `public_ip` only
+  where fleet visibility already populates `agentStore`.
 
 ## Admin components (`ui/src/components/admin/`)
 

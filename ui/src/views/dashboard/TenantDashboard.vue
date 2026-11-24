@@ -127,6 +127,7 @@
             :nodes="meshNodes"
             :edges="meshEdges"
             :center-name="centerName"
+            :center-country-code="centerCountryCode"
             @select="onMeshSelect"
           />
         </v-card-text>
@@ -300,27 +301,63 @@ usePolling(async () => {
   await statsStore.fetchMesh(tenantId.value)
 }, 60_000)
 
-// The mesh payload keys edges by OVERLAY node id while presence and
-// version live on the agent row — join them here so the graph gets one
-// flat node list. A device with no overlay node simply isn't in the mesh.
+// The mesh payload keys edges by OVERLAY node id while presence, version, and
+// (for fleet-visible members) GeoIP/zone metadata live on the agent row — join
+// them here without adding any new backend requests or location collection.
 const meshNodes = computed<MeshNode[]>(() => {
   const m = statsStore.mesh
   if (!m?.nodes) return []
-  const agentById = new Map((m.agents ?? []).map((a) => [a.id, a]))
+  const meshAgentById = new Map((m.agents ?? []).map((a) => [a.id, a]))
+  const fleetAgentById = new Map(agentStore.agents.map((a) => [a.id, a]))
   return m.nodes.map((n) => {
-    const agent = n.agent_id_hex ? agentById.get(n.agent_id_hex) : undefined
+    const meshAgent = n.agent_id_hex ? meshAgentById.get(n.agent_id_hex) : undefined
+    const fleetAgent = n.agent_id_hex ? fleetAgentById.get(n.agent_id_hex) : undefined
+    const presence =
+      fleetAgent?.presence ??
+      (meshAgent?.last_presence === 'online'
+        ? 'online'
+        : meshAgent?.last_presence === 'stale'
+          ? 'stale'
+          : 'offline')
+    const mp = meshAgent?.management_path
     return {
       id: n.id,
+      agent_id: n.agent_id_hex ?? null,
       // FR-11: the operator's display name wins when set.
-      name: agent?.display_name || agent?.name || n.name || n.overlay_ip || n.id.slice(-6),
-      online: agent?.last_presence === 'online',
-      relay_home: agent?.relay_home ?? n.relay_home ?? null,
-      version: agent?.agent_version ?? null,
+      name:
+        fleetAgent?.display_name ||
+        meshAgent?.display_name ||
+        fleetAgent?.name ||
+        meshAgent?.name ||
+        n.name ||
+        n.overlay_ip ||
+        n.id.slice(-6),
+      online: fleetAgent ? fleetAgent.is_online : meshAgent?.last_presence === 'online',
+      presence,
+      relay_home: fleetAgent?.relay_home ?? meshAgent?.relay_home ?? n.relay_home ?? null,
+      version: fleetAgent?.agent_version ?? meshAgent?.agent_version ?? null,
+      os: fleetAgent?.os ?? meshAgent?.os ?? null,
+      last_seen_at: fleetAgent?.last_seen_at ?? n.last_seen_at ?? null,
+      overlay_ip: n.overlay_ip ?? null,
+      // Public IP ONLY when the caller already has fleet visibility (agentStore loaded it).
+      public_ip: showFleet.value ? (fleetAgent?.public_ip ?? null) : null,
+      country_code: fleetAgent?.country_code ?? null,
+      country: fleetAgent?.country ?? null,
+      region: fleetAgent?.region ?? null,
+      city: fleetAgent?.city ?? null,
+      zone_id: fleetAgent?.effective_zone_id ?? fleetAgent?.pinned_zone_id ?? null,
+      zone_name: fleetAgent?.effective_zone_name ?? null,
+      zone_pinned: Boolean(fleetAgent?.pinned_zone_id),
+      is_gateway: Boolean(fleetAgent?.peer_relay_policy?.serve),
+      management_path: mp
+        ? { mode: mp.mode, gatewayName: mp.gateway_name ?? null, entries: mp.entries }
+        : null,
     }
   })
 })
 const meshEdges = computed(() => statsStore.mesh?.edges ?? [])
 const centerName = computed(() => statsStore.mesh?.center?.name ?? 'meshharbor.itachi.fans')
+const centerCountryCode = computed(() => statsStore.mesh?.center?.country_code ?? null)
 
 function onMeshSelect(nodeId: string) {
   // Clicking a device jumps to the fleet page it belongs to — the graph
