@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { frameRateAnswerOf } from '@/composables/frameRate'
 
 // Pure helpers exported for testing. We can't import the full composable
@@ -138,6 +138,9 @@ import {
   LOCAL_RELAY_PROBE_PORTS,
   clipboardBridgeUrl,
   storedDecodePref,
+  storedDecodeRecover,
+  DECODE_RECOVER_STORAGE_KEY,
+  mediaAdvanced,
   storedCtxMode,
   storedPerFrameMsg,
   storedFlowParams,
@@ -4672,6 +4675,59 @@ describe('rcfix 2026-11-04: the watchdog judges the transport, not frame novelty
       ),
     ).toBe(70)
     expect(transportBytesReceived(report([]))).toBe(0)
+  })
+})
+
+describe('FR-131 P2 (upstream FR-135 R1) — the kill switch and what the watchdog counts', () => {
+  afterEach(() => {
+    localStorage.removeItem(DECODE_RECOVER_STORAGE_KEY)
+  })
+
+  it('is the key the spec names, on unless it says 0', () => {
+    expect(DECODE_RECOVER_STORAGE_KEY).toBe('meshharbor-rc-decode-recover')
+    expect(storedDecodeRecover()).toBe(true)
+    for (const raw of ['1', 'on', 'off', '']) {
+      localStorage.setItem(DECODE_RECOVER_STORAGE_KEY, raw)
+      expect(storedDecodeRecover(), raw).toBe(true)
+    }
+    for (const raw of ['0', ' 0 ']) {
+      localStorage.setItem(DECODE_RECOVER_STORAGE_KEY, raw)
+      expect(storedDecodeRecover(), raw).toBe(false)
+    }
+  })
+
+  it('stays on when storage cannot be read', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    expect(storedDecodeRecover()).toBe(true)
+    spy.mockRestore()
+  })
+
+  const at = (rtpBytes: number, vp9Frames = 0, hevcFrames = 0) => ({ rtpBytes, vp9Frames, hevcFrames })
+
+  it('counts frames on a data-channel session, and RTP bytes no longer hold off the re-create', () => {
+    expect(mediaAdvanced(at(0, 10), at(0, 11), true)).toBe(true)
+    expect(mediaAdvanced(at(0, 0, 10), at(0, 0, 11), true)).toBe(true)
+    expect(mediaAdvanced(at(100, 10), at(200, 10), true)).toBe(false)
+    expect(mediaAdvanced(at(100, 0, 10), at(200, 0, 10), true)).toBe(false)
+  })
+
+  it('still counts RTP bytes before a first data-channel frame: an agent that ignores the channel sends RTP', () => {
+    expect(mediaAdvanced(at(100), at(200), true)).toBe(true)
+    expect(mediaAdvanced(at(100), at(100), true)).toBe(false)
+  })
+
+  it('judges a <video> fallback on RTP again once the path is down', () => {
+    // stopVp9_444Path zeroes the counter.
+    expect(mediaAdvanced(at(100, 10), at(200, 0), true)).toBe(true)
+    expect(mediaAdvanced(at(100, 10), at(100, 0), true)).toBe(false)
+  })
+
+  it('is the old rule under the kill switch', () => {
+    expect(mediaAdvanced(at(100, 10), at(200, 10), false)).toBe(true)
+    expect(mediaAdvanced(at(100, 10), at(100, 11), false)).toBe(true)
+    expect(mediaAdvanced(at(100, 10), at(100, 10), false)).toBe(false)
   })
 })
 

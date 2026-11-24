@@ -704,6 +704,31 @@ export function nextStallTicks(prev: number, advanced: boolean, agentSaidNoPixel
   return advanced || agentSaidNoPixels ? 0 : prev + 1
 }
 
+/** The counters one media-watchdog tick compares. */
+export interface MediaProgress {
+  rtpBytes: number
+  vp9Frames: number
+  hevcFrames: number
+}
+
+/**
+ * FR-131 P2 (upstream FR-135 R1) — did media advance since the last tick, on
+ * the transport this session actually uses? Pure so the rule is testable.
+ *
+ * A data-channel path that has decoded a frame IS the session's transport, so
+ * its RTP counter says nothing about the picture: bytes on a silent video
+ * m-section must not hold off a re-create while the canvas is frozen. Before
+ * that first frame RTP still counts, because the viewer opens its channel
+ * speculatively and an agent that ignores it sends RTP instead. A path taken
+ * down reads zero frames, so a `<video>` fallback is judged on RTP again.
+ * `transportOnly` false is the old rule, any of the three, for the kill switch.
+ */
+export function mediaAdvanced(prev: MediaProgress, cur: MediaProgress, transportOnly: boolean): boolean {
+  if (cur.vp9Frames > prev.vp9Frames || cur.hevcFrames > prev.hevcFrames) return true
+  const onDataChannel = transportOnly && (cur.vp9Frames > 0 || cur.hevcFrames > 0)
+  return !onDataChannel && cur.rtpBytes > prev.rtpBytes
+}
+
 /**
  * FR-93 — is a session that is ending "dead air" (it reached `connected`
  * and never delivered a frame)? Not when the agent said why there are no
@@ -4842,6 +4867,24 @@ export function storedUnorderedVideo(): boolean {
   }
 }
 
+/** FR-131 P2 (upstream FR-135 R1) — the per-browser kill switch for recovering
+ *  a decode error in place. `localStorage.setItem('meshharbor-rc-decode-recover',
+ *  '0')`, then reconnect: a decoder that fails after its first frame stops the
+ *  path again, and the media watchdog re-creates the session about 10 s later
+ *  (the old path). Anything else, or no value, leaves recovery on, and so does
+ *  storage that cannot be read. Read once per connect, like every
+ *  `meshharbor-rc-*` knob. Pure + exported for tests. */
+export const DECODE_RECOVER_STORAGE_KEY = 'meshharbor-rc-decode-recover'
+
+export function storedDecodeRecover(): boolean {
+  try {
+    const raw = globalThis.localStorage?.getItem(DECODE_RECOVER_STORAGE_KEY)
+    return (raw ?? '').trim() !== '0'
+  } catch {
+    return true
+  }
+}
+
 /** Short codec name to pass into `new RTCRtpScriptTransform(worker,
  *  { codec })`. Reads the first negotiated codec off
  *  `RTCRtpReceiver.getParameters().codecs` and maps it back to our
@@ -5482,7 +5525,7 @@ export function useRemoteControl(
   let stallTicks = 0
   /** rcfix 2026-11-04 — ticks with no inbound progress of any kind. */
   let deadTicks = 0
-  let lastMediaProgress = { rtpBytes: 0, vp9Frames: 0, hevcFrames: 0 }
+  let lastMediaProgress: MediaProgress = { rtpBytes: 0, vp9Frames: 0, hevcFrames: 0 }
   let lastTransportBytes = 0
 
   function clearPcDisconnectedTimer() {
@@ -5567,10 +5610,7 @@ export function useRemoteControl(
       // No hasMedia special-case: a session that reached 'connected'
       // but never produced a track/frame is just as dead as one that
       // stalled mid-flight — both count ticks toward probe/reconnect.
-      const advanced =
-        cur.rtpBytes > lastMediaProgress.rtpBytes
-        || cur.vp9Frames > lastMediaProgress.vp9Frames
-        || cur.hevcFrames > lastMediaProgress.hevcFrames
+      const advanced = mediaAdvanced(lastMediaProgress, cur, sessionDecodeRecover)
       lastMediaProgress = cur
       // Media actually moving is the ONLY proof this pair has a working
       // path — reaching `connected` is not. Reset the ladders here rather
@@ -5886,6 +5926,12 @@ export function useRemoteControl(
    *  been sent — an unframed stream parsed as framed is garbage, not a
    *  degraded picture, so the two must move together. */
   let sessionChunkFraming = false
+  /** FR-131 P2 (upstream FR-135 R1) — true when THIS session recovers a decode
+   *  error in place (`workers/rc-decode-recovery.ts`), which is all of them
+   *  unless this browser set `meshharbor-rc-decode-recover=0`. Resolved beside
+   *  `sessionChunkFraming`; the data-channel workers get it in `init-canvas`,
+   *  and the media watchdog reads it for what counts as progress. */
+  let sessionDecodeRecover = false
   /** FR-16 L4 — how THIS session times input to photon, if at all:
    *  `probe` when the knob `meshharbor-rc-bench=1` is set AND the agent
    *  advertised `bench` in `AgentCaps.video`; `target` when the knob says
@@ -8323,6 +8369,12 @@ export function useRemoteControl(
           console.warn(`[rc] ${failedTransport} banned for this page (decoder failed before first frame) - reconnecting on the next-best transport`)
           if (lastConnectArgs) scheduleReconnect()
         }
+      } else if (msg.type === 'decode-recovering') {
+        // FR-131 P2 (upstream FR-135 R1) — the worker replaced the decoder
+        // and waits for the key frame it asked for. The path stays up.
+        console.warn('[rc] vp9-444 decoder failed:', msg.error, '- recovering in place, attempt', msg.attempt)
+      } else if (msg.type === 'decode-recovered') {
+        console.info('[rc] vp9-444 decode recovered in', msg.ms, 'ms, attempts', msg.attempts)
       } else if (msg.type === 'frame-rejected') {
         console.warn('[rc] vp9-444 frame rejected', msg)
       } else if (msg.type === 'awaiting-keyframe') {
@@ -8433,6 +8485,9 @@ export function useRemoteControl(
           chunkFraming: sessionChunkFraming,
           // FR-16 L4 — resolved per session; see `sessionBench`.
           bench: sessionBench,
+          // FR-131 P2 — resolved per session; see `sessionDecodeRecover`.
+          decodeRecover: sessionDecodeRecover,
+          unorderedVideo: videoDcOptions(sessionChunkFraming, storedUnorderedVideo()).ordered === false,
           // P7 — FSR knobs (sticky across the visible-canvas re-init).
           sharpen: sharpenMode.value,
           sharpness: storedSharpness(),
@@ -8605,6 +8660,11 @@ export function useRemoteControl(
           console.warn('[rc] data-channel-hevc banned for this page (decoder failed before first frame) - reconnecting on the next-best transport')
           if (lastConnectArgs) scheduleReconnect()
         }
+      } else if (msg.type === 'decode-recovering') {
+        // FR-131 P2 — see the vp9-444 handler.
+        console.warn('[rc] hevc decoder failed:', msg.error, '- recovering in place, attempt', msg.attempt)
+      } else if (msg.type === 'decode-recovered') {
+        console.info('[rc] hevc decode recovered in', msg.ms, 'ms, attempts', msg.attempts)
       } else if (msg.type === 'frame-rejected') {
         console.warn('[rc] hevc frame rejected', msg)
       } else if (msg.type === 'awaiting-keyframe') {
@@ -8689,6 +8749,9 @@ export function useRemoteControl(
           chunkFraming: sessionChunkFraming,
           // FR-16 L4 — resolved per session; see `sessionBench`.
           bench: sessionBench,
+          // FR-131 P2 — resolved per session; see `sessionDecodeRecover`.
+          decodeRecover: sessionDecodeRecover,
+          unorderedVideo: videoDcOptions(sessionChunkFraming, storedUnorderedVideo()).ordered === false,
           // P7 — FSR knobs (sticky across the visible-canvas re-init).
           sharpen: sharpenMode.value,
           sharpness: storedSharpness(),
@@ -11497,6 +11560,12 @@ export function useRemoteControl(
     // will answer it, decided before any worker is told.
     sessionBenchMode = benchSessionMode(storedBenchMode(), agent?.value?.capabilities?.video)
     sessionBench = sessionBenchMode !== null
+    // FR-131 P2 (upstream FR-135 R1) — on every session, off only under this
+    // browser's kill switch.
+    sessionDecodeRecover = storedDecodeRecover()
+    if (!sessionDecodeRecover) {
+      console.info('[rc] decode recovery: off this session (meshharbor-rc-decode-recover=0) - a decode error stops the path and the watchdog re-creates the session (FR-131 P2)')
+    }
     if (sessionBenchMode === 'probe') {
       console.info('[rc] bench mode: the agent advertised `bench`; probing once the input channel opens (FR-16 L4)')
     } else if (sessionBenchMode === 'target') {

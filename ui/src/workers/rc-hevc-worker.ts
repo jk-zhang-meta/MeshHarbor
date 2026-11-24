@@ -62,6 +62,7 @@ import {
   stripChunkPrefix,
 } from './rc-chunk-framing'
 import { createBenchSampler } from './rc-bench-sampler'
+import { createDecodeRecovery } from './rc-decode-recovery'
 
 type InitCanvasMessage = {
   type: 'init-canvas'
@@ -100,6 +101,15 @@ type InitCanvasMessage = {
    *  Set only when the knob is on AND the agent advertised `bench`; sticks
    *  across the idempotent visible-canvas re-init, like `ctxMode`. */
   bench?: boolean
+  /** FR-131 P2 (upstream FR-135 R1) — replace a decoder that fails after its
+   *  first frame, in place (`rc-decode-recovery.ts`). Resolved per session by
+   *  the composable (`sessionDecodeRecover`, off under
+   *  `meshharbor-rc-decode-recover=0`). Absent/false reports the failure as
+   *  before, and it sticks across the idempotent visible-canvas re-init. */
+  decodeRecover?: boolean
+  /** FR-131 P2 — this session's video channel is unordered (`videoDcOptions`),
+   *  so a chunk gap is routine and keeps the deltas moving. Sticks the same way. */
+  unorderedVideo?: boolean
 }
 type ChunkMessage = {
   type: 'chunk'
@@ -151,6 +161,9 @@ const workerScope = self as unknown as {
 
 /** FR-16 L4 — reads the bench probe off painted frames, only while armed. */
 const bench = createBenchSampler({ post: (m) => workerScope.postMessage(m), now: epochNowMs })
+
+/** FR-131 P2 (upstream FR-135 R1) — whether a failed decoder is replaced in place. */
+const decodeRecovery = createDecodeRecovery()
 
 let canvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
@@ -413,6 +426,9 @@ workerScope.onmessage = (e) => {
     if (msg.sharpen !== undefined) sharpenMode = normalizeSharpenMode(msg.sharpen)
     if (msg.sharpness !== undefined) sharpness = normalizeSharpness(msg.sharpness)
     if (typeof msg.bench === 'boolean') bench.setEnabled(msg.bench)
+    // FR-131 P2 — sticky across the visible-canvas re-init, which omits it.
+    if (typeof msg.decodeRecover === 'boolean') decodeRecovery.setEnabled(msg.decodeRecover)
+    if (typeof msg.unorderedVideo === 'boolean') decodeRecovery.setUnorderedChannel(msg.unorderedVideo)
     ctx = canvas.getContext('2d', ctxOptionsFor(ctxMode))
     if (typeof msg.codec === 'string' && msg.codec.length > 0) {
       activeCodec = msg.codec
@@ -452,6 +468,12 @@ workerScope.onmessage = (e) => {
       const { payload, gap } = stripChunkPrefix(framingState, u8)
       if (gap) {
         resetAssembler()
+        // FR-131 P2 (upstream FR-135 R1) — the deltas behind the gap reference
+        // the frame it lost, so they wait at the gate for the IDR asked for
+        // below. Decoded, they paint garbage until it lands, or fail the
+        // decoder. Not where a gap is routine, or with the switch off
+        // (`gapClosesGate`).
+        if (decodeRecovery.gapClosesGate()) sawKeyframe = false
         workerScope.postMessage({
           type: 'frame-rejected',
           reason: 'chunk-gap',
@@ -467,6 +489,44 @@ workerScope.onmessage = (e) => {
   } else if (msg.type === 'close') {
     teardown()
   }
+}
+
+/** FR-131 P2 (upstream FR-135 R1) — an error closes a VideoDecoder, so start a
+ *  new one and wait for a key frame as after configure() (the leading-delta
+ *  gate drops the deltas meanwhile and keeps asking for one). */
+function rebuildDecoder(): void {
+  try {
+    decoder?.close()
+  } catch {
+    /* already closed by its error */
+  }
+  decoder = null
+  configured = false
+  sawKeyframe = false
+  framesSkippedAwaitingKey = 0
+  // The failed decoder's submissions will never come out.
+  pendingDecodeAt.clear()
+  pendingArrivalUs.clear()
+  initDecoder()
+  // Ask for the key frame at once, past `requestKeyframeResync`'s debounce:
+  // rebuilds are few (a budget of DECODE_RECOVER_MAX_ATTEMPTS), and early in a
+  // worker's life the debounce swallows a request.
+  lastKeyframeReqMs = performance.now()
+  workerScope.postMessage({ type: 'request-keyframe' })
+}
+
+/** FR-131 P2 — the decoder failed: its error callback (`decoder-error`) or
+ *  `decode()` throwing (`decode-error`). `rc-decode-recovery.ts` decides whether
+ *  this session replaces the decoder in place. If not, the composable hears the
+ *  error as before and takes the path down. */
+function onDecoderFailure(type: 'decoder-error' | 'decode-error', err: unknown): void {
+  const error = extractErrorMessage(err)
+  if (decodeRecovery.onFailure(framesDecoded, performance.now())) {
+    workerScope.postMessage({ type: 'decode-recovering', error, attempt: decodeRecovery.attempts })
+    rebuildDecoder()
+    return
+  }
+  workerScope.postMessage({ type, error })
 }
 
 function initDecoder() {
@@ -558,6 +618,11 @@ function initDecoder() {
       paintFrame(render, renderW, renderH)
       paintStats.add(performance.now() - paintT0)
       if (benchClone) bench.settle(benchClone, epochNowMs())
+      // FR-131 P2 — this paint ends an outage, if one is open.
+      const recovered = decodeRecovery.onOutput(performance.now())
+      if (recovered) {
+        workerScope.postMessage({ type: 'decode-recovered', ms: Math.round(recovered.ms), attempts: recovered.attempts })
+      }
       // Age at paint on the agent's clock (mapped via the rc:clock probe):
       // framing → send queue → network → decode → paint, end to end.
       const arrivalUs = epochNowUs()
@@ -587,10 +652,7 @@ function initDecoder() {
       maybeEmitStats()
     },
     error: (err) => {
-      workerScope.postMessage({
-        type: 'decoder-error',
-        error: extractErrorMessage(err),
-      })
+      onDecoderFailure('decoder-error', err)
     },
   })
   // Configure. HEVC WebCodecs support is HW-only in Chromium today —
@@ -761,10 +823,7 @@ function emitFrame(): void {
     pendingArrivalUs.set(ts, epochNowUs())
     decoder.decode(chunk)
   } catch (err) {
-    workerScope.postMessage({
-      type: 'decode-error',
-      error: extractErrorMessage(err),
-    })
+    onDecoderFailure('decode-error', err)
   }
 }
 
