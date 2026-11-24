@@ -440,7 +440,10 @@
       </template>
     </v-navigation-drawer>
 
-    <v-app-bar density="compact" flat>
+    <!-- FR-125 — the remote viewer on a phone held sideways takes the whole
+         page; its own pull-tab brings its toolbar back, and leaving the mode
+         (or the page) brings this bar back. -->
+    <v-app-bar density="compact" flat :model-value="!immersiveViewer">
       <template #prepend>
         <!-- The drawer is closed on a phone, so what it signals has to reach
              the bar: the dot says another org has unread activity (the
@@ -789,6 +792,7 @@ import MiniConference from '@/components/conference/MiniConference.vue'
 import SearchDialog from '@/components/layout/SearchDialog.vue'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useValidation } from '@/composables/useValidation'
+import { immersiveViewer } from '@/composables/useImmersiveViewer'
 import {
   hasSeenTour,
   markTourSeen,

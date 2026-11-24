@@ -80,7 +80,14 @@
       "forceTitle": "强制控制（紧急接管）",
       "forceBody": "这会在不经设备同意的情况下开始会话。只有组织管理员可以使用，并会记入审计日志。请填写原因：",
       "forceReason": "原因（必填）",
-      "cancel": "取消"
+      "cancel": "取消",
+      "immersive": {
+        "showToolbar": "显示工具栏",
+        "notNow": "暂不",
+        "fullScreen": "全屏",
+        "setting": "手机横屏时全屏显示",
+        "settingHint": "横屏时工具栏自动收起，远程桌面占满整个屏幕；点顶部的小标签可以把工具栏拉回来"
+      }
     }
   },
   "auth": {

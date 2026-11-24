@@ -232,6 +232,68 @@ export const ORG_PRESET_PREFIX = 'org:'
  *  `mine:<id>`. */
 export const MINE_PRESET_PREFIX = 'mine:'
 
+/** FR-125 P2 — a button's height and the gap between stacked buttons
+ *  (`TouchControls.vue`'s `.tc-btn` and `.tc-row`), and the smallest a d-pad
+ *  or a stick shrinks to. */
+export const TC_BUTTON_HEIGHT = 44
+export const TC_BUTTON_GAP = 6
+export const TC_PAD_MIN = 96
+/** How close to the stage's top edge a shrunk pad may come. */
+const TC_FIT_MARGIN = 8
+
+/** The top and bottom of a control's box, measured from the stage's top edge,
+ *  for a column of `n` buttons or a pad of `size`. A control with no vertical
+ *  edge is centred (`placeStyle`). */
+function verticalSpan(at: ControlPlace, height: number, stageHeight: number): [number, number] {
+  const top =
+    at.bottom !== undefined
+      ? stageHeight - at.bottom - height
+      : at.top !== undefined
+        ? at.top
+        : (stageHeight - height) / 2
+  return [top, top + height]
+}
+
+/** FR-125 P2 — fit a preset to a stage shorter than it was designed for. A
+ *  column that would cross the stage's top or bottom edge becomes a row at the
+ *  same corner, and a d-pad or a stick that would cross shrinks until it fits,
+ *  down to {@link TC_PAD_MIN}; buttons keep their height (FR-120's D1). A
+ *  stage with room gets the same array back, so it renders exactly as before.
+ *  Measured before it: on a phone held sideways WASD's Fire / Aim / Jump
+ *  column needs a 326 px stage, Arrows' keys 260 px. */
+export function fitControls(controls: readonly TouchControl[], stageHeight: number): readonly TouchControl[] {
+  if (!(stageHeight > 0)) return controls
+  let changed = false
+  const fitted = controls.map((c): TouchControl => {
+    if (c.kind === 'row' && c.dir === 'column') {
+      const n = c.buttons.length
+      const height = n * TC_BUTTON_HEIGHT + Math.max(0, n - 1) * TC_BUTTON_GAP
+      const [top, bottom] = verticalSpan(c.at, height, stageHeight)
+      if (top < 0 || bottom > stageHeight) {
+        changed = true
+        return { ...c, dir: 'row' }
+      }
+      return c
+    }
+    if (c.kind === 'dpad' || c.kind === 'stick') {
+      const [top, bottom] = verticalSpan(c.at, c.size, stageHeight)
+      if (top < 0 || bottom > stageHeight) {
+        const edge = c.at.bottom ?? c.at.top
+        const room =
+          edge !== undefined ? stageHeight - edge - TC_FIT_MARGIN : stageHeight - 2 * TC_FIT_MARGIN
+        const size = Math.max(TC_PAD_MIN, Math.min(c.size, Math.floor(room)))
+        if (size !== c.size) {
+          changed = true
+          return { ...c, size }
+        }
+      }
+      return c
+    }
+    return c
+  })
+  return changed ? fitted : controls
+}
+
 /** A built-in by its id, or one of `extra` (the org's presets, P4). */
 export function presetById(id: string | null, extra: readonly TouchPreset[] = []): TouchPreset | null {
   if (!id) return null

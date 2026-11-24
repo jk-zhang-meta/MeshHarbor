@@ -7,7 +7,11 @@ import {
   controlLabel,
   createControlsDriver,
   dpadKeys,
+  fitControls,
   HID,
+  TC_BUTTON_GAP,
+  TC_BUTTON_HEIGHT,
+  TC_PAD_MIN,
   hidLabel,
   MACRO_STEP_MAX_MS,
   modsOf,
@@ -465,5 +469,64 @@ describe('FR-111 P4 the org presets', () => {
     expect(readControlsPreset(storage, 'dev1')).toBe(`${ORG_PRESET_PREFIX}a1`)
     store.set(`${CONTROLS_STORAGE_PREFIX}dev1`, ORG_PRESET_PREFIX)
     expect(readControlsPreset(storage, 'dev1')).toBeNull()
+  })
+})
+
+describe('fitControls — a preset on a stage shorter than it was designed for (FR-125 P2)', () => {
+  const wasd = presetById('wasd')!.controls
+  const arrows = presetById('arrows')!.controls
+  const column = (n: number) => n * TC_BUTTON_HEIGHT + (n - 1) * TC_BUTTON_GAP
+
+  it('the arithmetic FR-125 §2.2 measured: WASD needs a 326 px stage, Arrows 260', () => {
+    const act = wasd.find((c) => c.id === 'act')!
+    const keys = arrows.find((c) => c.id === 'keys')!
+    expect(act.kind === 'row' && act.at.bottom! + column(act.buttons.length)).toBe(326)
+    expect(keys.kind === 'row' && keys.at.bottom! + column(keys.buttons.length)).toBe(260)
+  })
+
+  it('a stage with room gets the same array back: the preset renders as designed', () => {
+    for (const p of BUILTIN_PRESETS) {
+      expect(fitControls(p.controls, 412)).toBe(p.controls)
+      expect(fitControls(p.controls, 900)).toBe(p.controls)
+    }
+  })
+
+  it('no stage height yet (not measured): unchanged', () => {
+    expect(fitControls(wasd, 0)).toBe(wasd)
+  })
+
+  it("the smallest phone page held sideways (304 px): WASD's Fire / Aim / Jump column becomes a row at its corner", () => {
+    const fitted = fitControls(wasd, 304)
+    expect(fitted).not.toBe(wasd)
+    const act = fitted.find((c) => c.id === 'act')!
+    expect(act.kind === 'row' && act.dir).toBe('row')
+    expect(act.kind === 'row' && act.at).toEqual({ right: 16, bottom: 182 })
+    // Nothing else moved: the d-pad and the stick fit (16 + 150 = 166 ≤ 304).
+    for (const id of ['move', 'look', 'keys']) {
+      expect(fitted.find((c) => c.id === id)).toBe(wasd.find((c) => c.id === id))
+    }
+  })
+
+  it('a 250 px stage: Arrows\' five keys become a row; the 150 px d-pad still fits', () => {
+    const fitted = fitControls(arrows, 250)
+    const keys = fitted.find((c) => c.id === 'keys')!
+    expect(keys.kind === 'row' && keys.dir).toBe('row')
+    const pad = fitted.find((c) => c.id === 'arrows')!
+    expect(pad.kind === 'dpad' && pad.size).toBe(150)
+  })
+
+  it('a stage too short for a 150 px pad: it shrinks to fit, never below the floor', () => {
+    const at150 = fitControls(wasd, 150)
+    const move = at150.find((c) => c.id === 'move')!
+    // Anchored 16 px from the bottom, kept 8 px from the top: 150 − 16 − 8.
+    expect(move.kind === 'dpad' && move.size).toBe(126)
+    const at80 = fitControls(wasd, 80)
+    const look = at80.find((c) => c.id === 'look')!
+    expect(look.kind === 'stick' && look.size).toBe(TC_PAD_MIN)
+  })
+
+  it('the office row never changes: one row of buttons fits any phone page', () => {
+    const office = presetById('office')!.controls
+    expect(fitControls(office, 120)).toBe(office)
   })
 })

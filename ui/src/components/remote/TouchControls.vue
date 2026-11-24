@@ -9,12 +9,13 @@
 -->
 <template>
   <div
+    ref="root"
     class="touch-controls"
     data-testid="rc-touch-controls"
     :data-preset="preset.id"
     :style="{ transform: `translate(${scrollX ?? 0}px, ${scrollY ?? 0}px)` }"
   >
-    <template v-for="c in preset.controls" :key="c.id">
+    <template v-for="c in controls" :key="c.id">
       <div
         v-if="c.kind === 'row'"
         class="tc-row"
@@ -85,10 +86,11 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   controlLabel,
   createControlsDriver,
+  fitControls,
   hidLabel,
   placeStyle,
   type ButtonControl,
@@ -111,6 +113,13 @@ const props = defineProps<{
 }>()
 
 const driver = createControlsDriver(props.sink)
+
+/** FR-125 P2 — the overlay's own height (the stage's), and the preset fitted
+ *  to it: a stage with room renders the preset as designed. */
+const root = ref<HTMLElement | null>(null)
+const stageHeight = ref(0)
+const controls = computed(() => fitControls(props.preset.controls, stageHeight.value))
+let resizeObserver: ResizeObserver | null = null
 
 /** What is lit: `control/button` for a held button. */
 const lit = reactive(new Set<string>())
@@ -258,10 +267,20 @@ watch(() => props.preset.id, releaseAll)
 onMounted(() => {
   window.addEventListener('blur', releaseAll)
   document.addEventListener('visibilitychange', onVisibility)
+  if (root.value) {
+    stageHeight.value = root.value.clientHeight
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        if (root.value) stageHeight.value = root.value.clientHeight
+      })
+      resizeObserver.observe(root.value)
+    }
+  }
 })
 onBeforeUnmount(() => {
   window.removeEventListener('blur', releaseAll)
   document.removeEventListener('visibilitychange', onVisibility)
+  resizeObserver?.disconnect()
   releaseAll()
 })
 </script>
