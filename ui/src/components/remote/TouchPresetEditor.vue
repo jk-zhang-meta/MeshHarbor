@@ -11,29 +11,29 @@
 <template>
   <v-card class="tpe" data-testid="rc-tpe">
     <v-card-title class="d-flex align-center">
-      <span>On-screen layouts</span>
+      <span>{{ t('remote.viewer.tpe.title') }}</span>
       <v-spacer />
-      <v-btn icon variant="text" size="small" aria-label="Close" data-testid="rc-tpe-close" @click="emit('close')">
+      <v-btn icon variant="text" size="small" :aria-label="t('remote.viewer.common.close')" data-testid="rc-tpe-close" @click="emit('close')">
         <v-icon>mdi-close</v-icon>
       </v-btn>
     </v-card-title>
     <v-card-text class="tpe-body">
       <div class="tpe-list">
         <v-btn block variant="tonal" size="small" class="mb-2" data-testid="rc-tpe-new" @click="startNew">
-          New layout
+          {{ t('remote.viewer.tpe.new') }}
         </v-btn>
         <v-list density="compact" nav>
-          <v-list-subheader>Built-in</v-list-subheader>
+          <v-list-subheader>{{ t('remote.viewer.tpe.builtin') }}</v-list-subheader>
           <v-list-item
             v-for="p in builtins"
             :key="p.id"
-            :title="p.name"
+            :title="presetName(p)"
             :active="current?.id === p.id"
             :data-testid="`rc-tpe-item-${p.id}`"
             @click="select(p, 'builtin')"
           />
           <template v-if="mine.length">
-            <v-list-subheader>This browser</v-list-subheader>
+            <v-list-subheader>{{ t('remote.viewer.touch.thisBrowser') }}</v-list-subheader>
             <v-list-item
               v-for="p in mine"
               :key="p.id"
@@ -44,7 +44,7 @@
             />
           </template>
           <template v-if="org.length">
-            <v-list-subheader>Your organization</v-list-subheader>
+            <v-list-subheader>{{ t('remote.viewer.touch.yourOrg') }}</v-list-subheader>
             <v-list-item
               v-for="p in org"
               :key="p.id"
@@ -59,15 +59,15 @@
 
       <div v-if="draft" class="tpe-edit">
         <v-alert v-if="readOnly" density="compact" type="info" variant="tonal" class="mb-2" data-testid="rc-tpe-readonly">
-          {{ source === 'builtin' ? 'A built-in layout is copied before it is changed.' : 'Only an organization administrator changes this layout. Copy it to make your own.' }}
+          {{ source === 'builtin' ? t('remote.viewer.tpe.builtinReadOnly') : t('remote.viewer.tpe.orgReadOnly') }}
           <template #append>
-            <v-btn size="small" variant="text" data-testid="rc-tpe-copy" @click="copyCurrent">Copy</v-btn>
+            <v-btn size="small" variant="text" data-testid="rc-tpe-copy" @click="copyCurrent">{{ t('remote.viewer.tpe.copy') }}</v-btn>
           </template>
         </v-alert>
         <fieldset class="tpe-fields" :disabled="readOnly">
           <v-text-field
             v-model="draft.name"
-            label="Name"
+            :label="t('remote.viewer.tpe.name')"
             density="compact"
             variant="outlined"
             :maxlength="LIMITS.name"
@@ -77,25 +77,25 @@
 
           <div v-for="(c, ci) in draft.controls" :key="c.id" class="tpe-control" :data-testid="`rc-tpe-control-${ci}`">
             <div class="d-flex align-center mb-1">
-              <strong class="text-body-2">{{ c.kind === 'row' ? 'Buttons' : c.kind === 'dpad' ? 'D-pad' : 'Mouse stick' }}</strong>
+              <strong class="text-body-2">{{ c.kind === 'row' ? t('remote.viewer.tpe.buttons') : c.kind === 'dpad' ? t('remote.viewer.tpe.dpad') : t('remote.viewer.tpe.stick') }}</strong>
               <v-spacer />
               <v-btn size="x-small" variant="text" :data-testid="`rc-tpe-remove-${ci}`" @click="removeControl(ci)">
-                Remove
+                {{ t('remote.viewer.tpe.remove') }}
               </v-btn>
             </div>
 
             <!-- Where it sits: an edge per direction, or centred. -->
             <div class="tpe-place">
-              <span class="text-caption">Across</span>
+              <span class="text-caption">{{ t('remote.viewer.tpe.across') }}</span>
               <v-btn-toggle
                 :model-value="hEdge(c.at)"
                 density="compact"
                 mandatory
                 @update:model-value="setH(c, $event)"
               >
-                <v-btn value="left" size="x-small">Left</v-btn>
-                <v-btn value="center" size="x-small">Centre</v-btn>
-                <v-btn value="right" size="x-small">Right</v-btn>
+                <v-btn value="left" size="x-small">{{ t('remote.viewer.tpe.left') }}</v-btn>
+                <v-btn value="center" size="x-small">{{ t('remote.viewer.tpe.centre') }}</v-btn>
+                <v-btn value="right" size="x-small">{{ t('remote.viewer.tpe.right') }}</v-btn>
               </v-btn-toggle>
               <input
                 v-if="hEdge(c.at) !== 'center'"
@@ -104,19 +104,19 @@
                 min="0"
                 :max="LIMITS.placePx"
                 :value="hEdge(c.at) === 'left' ? c.at.left : c.at.right"
-                aria-label="Pixels from that edge"
+                :aria-label="t('remote.viewer.tpe.edgePx')"
                 @change="setHPx(c, $event)"
               />
-              <span class="text-caption ml-2">Down</span>
+              <span class="text-caption ml-2">{{ t('remote.viewer.tpe.down') }}</span>
               <v-btn-toggle
                 :model-value="vEdge(c.at)"
                 density="compact"
                 mandatory
                 @update:model-value="setV(c, $event)"
               >
-                <v-btn value="top" size="x-small">Top</v-btn>
-                <v-btn value="center" size="x-small">Centre</v-btn>
-                <v-btn value="bottom" size="x-small">Bottom</v-btn>
+                <v-btn value="top" size="x-small">{{ t('remote.viewer.tpe.top') }}</v-btn>
+                <v-btn value="center" size="x-small">{{ t('remote.viewer.tpe.centre') }}</v-btn>
+                <v-btn value="bottom" size="x-small">{{ t('remote.viewer.tpe.bottom') }}</v-btn>
               </v-btn-toggle>
               <input
                 v-if="vEdge(c.at) !== 'center'"
@@ -125,7 +125,7 @@
                 min="0"
                 :max="LIMITS.placePx"
                 :value="vEdge(c.at) === 'top' ? c.at.top : c.at.bottom"
-                aria-label="Pixels from that edge"
+                :aria-label="t('remote.viewer.tpe.edgePx')"
                 @change="setVPx(c, $event)"
               />
             </div>
@@ -133,14 +133,14 @@
             <template v-if="c.kind === 'row'">
               <label class="text-caption d-flex align-center">
                 <input type="checkbox" :checked="c.dir === 'column'" @change="c.dir = ($event.target as HTMLInputElement).checked ? 'column' : undefined" />
-                <span class="ml-1">Stack the buttons</span>
+                <span class="ml-1">{{ t('remote.viewer.tpe.stack') }}</span>
               </label>
               <div v-for="(b, bi) in c.buttons" :key="b.id" class="tpe-button">
                 <input
                   v-model="b.label"
                   class="tpe-text"
                   :maxlength="LIMITS.label"
-                  aria-label="Button label"
+                  :aria-label="t('remote.viewer.tpe.buttonLabel')"
                   :data-testid="`rc-tpe-btn-label-${ci}-${bi}`"
                 />
                 <v-btn-toggle
@@ -150,9 +150,9 @@
                   :data-testid="`rc-tpe-btn-kind-${ci}-${bi}`"
                   @update:model-value="setActionKind(b, $event)"
                 >
-                  <v-btn value="keys" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-keys`">Keys</v-btn>
-                  <v-btn value="mouse" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-mouse`">Mouse</v-btn>
-                  <v-btn value="macro" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-macro`">Macro</v-btn>
+                  <v-btn value="keys" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-keys`">{{ t('remote.viewer.tpe.keys') }}</v-btn>
+                  <v-btn value="mouse" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-mouse`">{{ t('remote.viewer.tpe.mouse') }}</v-btn>
+                  <v-btn value="macro" size="x-small" :data-testid="`rc-tpe-btn-kind-${ci}-${bi}-macro`">{{ t('remote.viewer.tpe.macro') }}</v-btn>
                 </v-btn-toggle>
                 <template v-if="b.action.kind === 'keys'">
                   <v-btn
@@ -161,14 +161,14 @@
                     :data-testid="`rc-tpe-capture-${ci}-${bi}`"
                     @click="captureChord(`${ci}/${bi}`, b)"
                   >
-                    {{ capturing?.id === `${ci}/${bi}` ? 'Press the keys…' : chordName(b.action.keys) || 'Set keys' }}
+                    {{ capturing?.id === `${ci}/${bi}` ? t('remote.viewer.tpe.pressKeys') : chordName(b.action.keys) || t('remote.viewer.tpe.setKeys') }}
                   </v-btn>
                 </template>
                 <template v-else-if="b.action.kind === 'mouse'">
                   <v-btn-toggle v-model="b.action.btn" density="compact" mandatory>
-                    <v-btn value="left" size="x-small">Left</v-btn>
-                    <v-btn value="right" size="x-small">Right</v-btn>
-                    <v-btn value="middle" size="x-small">Middle</v-btn>
+                    <v-btn value="left" size="x-small">{{ t('remote.viewer.tpe.left') }}</v-btn>
+                    <v-btn value="right" size="x-small">{{ t('remote.viewer.tpe.right') }}</v-btn>
+                    <v-btn value="middle" size="x-small">{{ t('remote.viewer.tpe.middle') }}</v-btn>
                   </v-btn-toggle>
                 </template>
                 <v-btn size="x-small" variant="text" :data-testid="`rc-tpe-btn-remove-${ci}-${bi}`" @click="c.buttons.splice(bi, 1)">
@@ -178,9 +178,9 @@
                 <div v-if="b.action.kind === 'macro'" class="tpe-steps">
                   <div v-for="(s, si) in b.action.steps" :key="si" class="tpe-step" :data-testid="`rc-tpe-step-${ci}-${bi}-${si}`">
                     <v-btn-toggle v-model="s.op" density="compact" mandatory>
-                      <v-btn value="press" size="x-small">Press</v-btn>
-                      <v-btn value="release" size="x-small">Release</v-btn>
-                      <v-btn value="tap" size="x-small">Tap</v-btn>
+                      <v-btn value="press" size="x-small">{{ t('remote.viewer.tpe.press') }}</v-btn>
+                      <v-btn value="release" size="x-small">{{ t('remote.viewer.tpe.release') }}</v-btn>
+                      <v-btn value="tap" size="x-small">{{ t('remote.viewer.tpe.tap') }}</v-btn>
                     </v-btn-toggle>
                     <v-btn
                       size="x-small"
@@ -188,15 +188,15 @@
                       :data-testid="`rc-tpe-step-target-${ci}-${bi}-${si}`"
                       @click="captureStep(`${ci}/${bi}/${si}`, s)"
                     >
-                      {{ capturing?.id === `${ci}/${bi}/${si}` ? 'Press a key…' : stepTarget(s) }}
+                      {{ capturing?.id === `${ci}/${bi}/${si}` ? t('remote.viewer.tpe.pressAKey') : stepTarget(s) }}
                     </v-btn>
                     <v-btn-toggle
                       :model-value="s.btn ?? null"
                       density="compact"
                       @update:model-value="setStepButton(s, $event)"
                     >
-                      <v-btn value="left" size="x-small" title="Left mouse button">L</v-btn>
-                      <v-btn value="right" size="x-small" title="Right mouse button">R</v-btn>
+                      <v-btn value="left" size="x-small" :title="t('remote.viewer.tpe.leftMouse')">L</v-btn>
+                      <v-btn value="right" size="x-small" :title="t('remote.viewer.tpe.rightMouse')">R</v-btn>
                     </v-btn-toggle>
                     <input
                       class="tpe-num"
@@ -205,8 +205,8 @@
                       :max="LIMITS.stepWaitMs"
                       step="50"
                       :value="s.wait_ms ?? 0"
-                      aria-label="Then wait (ms)"
-                      title="Then wait (ms)"
+                      :aria-label="t('remote.viewer.tpe.wait')"
+                      :title="t('remote.viewer.tpe.wait')"
                       @change="s.wait_ms = clampInt(($event.target as HTMLInputElement).value, 0, LIMITS.stepWaitMs)"
                     />
                     <v-btn size="x-small" variant="text" @click="b.action.steps.splice(si, 1)">
@@ -219,30 +219,30 @@
                     :data-testid="`rc-tpe-step-add-${ci}-${bi}`"
                     @click="b.action.steps.push({ op: 'tap', key: 0x2c, wait_ms: 0 })"
                   >
-                    Add a step
+                    {{ t('remote.viewer.tpe.addStep') }}
                   </v-btn>
                 </div>
               </div>
               <v-btn size="x-small" variant="text" :data-testid="`rc-tpe-btn-add-${ci}`" @click="c.buttons.push(newButton(draft!.controls, c.id))">
-                Add a button
+                {{ t('remote.viewer.tpe.addButton') }}
               </v-btn>
             </template>
 
             <template v-else>
               <div class="tpe-place">
-                <input v-model="c.label" class="tpe-text" :maxlength="LIMITS.label" aria-label="Label" />
-                <span class="text-caption">Size</span>
+                <input v-model="c.label" class="tpe-text" :maxlength="LIMITS.label" :aria-label="t('remote.viewer.tpe.label')" />
+                <span class="text-caption">{{ t('remote.viewer.tpe.size') }}</span>
                 <input
                   class="tpe-num"
                   type="number"
                   :min="LIMITS.sizeMin"
                   :max="LIMITS.sizeMax"
                   :value="c.size"
-                  aria-label="Size (px)"
+                  :aria-label="t('remote.viewer.tpe.sizePx')"
                   @change="c.size = clampInt(($event.target as HTMLInputElement).value, LIMITS.sizeMin, LIMITS.sizeMax)"
                 />
                 <template v-if="c.kind === 'stick'">
-                  <span class="text-caption">Speed</span>
+                  <span class="text-caption">{{ t('remote.viewer.tpe.speed') }}</span>
                   <input
                     class="tpe-num"
                     type="number"
@@ -250,7 +250,7 @@
                     :max="LIMITS.speedMax"
                     step="0.1"
                     :value="c.speed"
-                    aria-label="Speed"
+                    :aria-label="t('remote.viewer.tpe.speed')"
                     @change="c.speed = clampNum(($event.target as HTMLInputElement).value, LIMITS.speedMin, LIMITS.speedMax)"
                   />
                 </template>
@@ -264,29 +264,29 @@
                   :data-testid="`rc-tpe-pad-${ci}-${dir}`"
                   @click="capturePad(`${ci}/${dir}`, c, dir)"
                 >
-                  {{ dir }}: {{ capturing?.id === `${ci}/${dir}` ? '…' : keyName(c[dir]) }}
+                  {{ t(`remote.viewer.tpe.dir.${dir}`) }}: {{ capturing?.id === `${ci}/${dir}` ? '…' : keyName(c[dir]) }}
                 </v-btn>
               </div>
             </template>
           </div>
 
           <div class="d-flex flex-wrap mt-2" style="gap: 4px">
-            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-row" @click="addControl('row')">Add buttons</v-btn>
-            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-dpad" @click="addControl('dpad')">Add a d-pad</v-btn>
-            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-stick" @click="addControl('stick')">Add a mouse stick</v-btn>
+            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-row" @click="addControl('row')">{{ t('remote.viewer.tpe.addRow') }}</v-btn>
+            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-dpad" @click="addControl('dpad')">{{ t('remote.viewer.tpe.addDpad') }}</v-btn>
+            <v-btn size="small" variant="tonal" data-testid="rc-tpe-add-stick" @click="addControl('stick')">{{ t('remote.viewer.tpe.addStick') }}</v-btn>
           </div>
         </fieldset>
 
         <div v-if="capturing" class="tpe-capturing" data-testid="rc-tpe-capturing">
-          Press the keys on your keyboard ({{ capturing.single ? 'one key' : `up to ${LIMITS.chordKeys}, in order` }}).
-          <v-btn size="x-small" variant="text" data-testid="rc-tpe-capture-done" @click="capturing = null">Done</v-btn>
+          {{ capturing.single ? t('remote.viewer.tpe.captureOne') : t('remote.viewer.tpe.captureMany', { n: LIMITS.chordKeys }) }}
+          <v-btn size="x-small" variant="text" data-testid="rc-tpe-capture-done" @click="capturing = null">{{ t('remote.viewer.tpe.done') }}</v-btn>
         </div>
 
         <v-alert v-if="problem" density="compact" type="warning" variant="tonal" class="mt-2" data-testid="rc-tpe-error">
           {{ problem }}
         </v-alert>
 
-        <div class="tpe-preview" data-testid="rc-tpe-preview" aria-label="Preview">
+        <div class="tpe-preview" data-testid="rc-tpe-preview" :aria-label="t('remote.viewer.tpe.preview')">
           <TouchControls :preset="draft" :sink="previewSink" :ctrl-is-cmd="ctrlIsCmd" />
         </div>
       </div>
@@ -300,7 +300,7 @@
         data-testid="rc-tpe-delete"
         @click="deleteCurrent"
       >
-        Delete
+        {{ t('remote.viewer.tpe.delete') }}
       </v-btn>
       <v-btn
         v-else-if="source === 'org' && canPublish"
@@ -311,7 +311,7 @@
         data-testid="rc-tpe-delete"
         @click="deleteCurrent"
       >
-        Delete from the organization
+        {{ t('remote.viewer.tpe.deleteOrg') }}
       </v-btn>
       <v-spacer />
       <v-btn
@@ -321,7 +321,7 @@
         data-testid="rc-tpe-save-mine"
         @click="saveMine"
       >
-        Save in this browser
+        {{ t('remote.viewer.tpe.saveMine') }}
       </v-btn>
       <v-btn
         v-if="canPublish"
@@ -333,7 +333,7 @@
         data-testid="rc-tpe-publish"
         @click="publishCurrent"
       >
-        {{ source === 'org' ? 'Save for the organization' : 'Publish to the organization' }}
+        {{ source === 'org' ? t('remote.viewer.tpe.saveOrg') : t('remote.viewer.tpe.publish') }}
       </v-btn>
     </v-card-actions>
   </v-card>
@@ -341,9 +341,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import TouchControls from '@/components/remote/TouchControls.vue'
 import {
   ORG_PRESET_PREFIX,
+  builtinPresetNameKey,
   type ButtonControl,
   type ControlPlace,
   type ControlsSink,
@@ -384,6 +386,12 @@ const props = defineProps<{
   ctrlIsCmd?: boolean
 }>()
 
+const { t } = useI18n()
+/** FR-131 P3 — a built-in's name in the reader's language; one someone named, as written. */
+function presetName(p: TouchPreset): string {
+  const k = builtinPresetNameKey(p)
+  return k ? t(k) : p.name
+}
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'save-mine', preset: TouchPreset): void
@@ -426,13 +434,13 @@ function select(p: TouchPreset, from: Source) {
 function startNew() {
   const controls: TouchControl[] = []
   controls.push(newRow(controls))
-  select({ id: newMineId(), name: 'My layout', controls }, 'new')
+  select({ id: newMineId(), name: t('remote.viewer.tpe.myLayout'), controls }, 'new')
   current.value = null
 }
 
 function copyCurrent() {
   if (!draft.value) return
-  const name = `Copy of ${draft.value.name}`
+  const name = t('remote.viewer.tpe.copyOf', { name: presetName(draft.value) })
   select(copyForEdit(draft.value, name), 'new')
   current.value = null
 }
@@ -454,7 +462,7 @@ function setActionKind(b: ButtonControl, kind: unknown) {
 }
 
 function stepTarget(s: MacroStep): string {
-  return s.btn ? `${s.btn} button` : s.key !== undefined ? keyName(s.key) : 'Set a key'
+  return s.btn ? t(`remote.viewer.tpe.mouseBtn.${s.btn}`) : s.key !== undefined ? keyName(s.key) : t('remote.viewer.tpe.setAKey')
 }
 
 function setStepButton(s: MacroStep, btn: unknown) {

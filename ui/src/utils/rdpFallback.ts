@@ -6,15 +6,23 @@
  * desktop bridge detection/invocation.
  */
 
-export const RDP_SCREEN_LOCK_WARNING = 'RDP 会话会锁定远端电脑的本地屏幕'
+import i18n from '@/plugins/i18n'
 
-export const RDP_UNPINNED_CERT_MSTSC_NOTICE =
-  '被控端未上报证书指纹，由 mstsc 自行校验证书'
+/** FR-131 P3 — the card's words go through the app's i18n, in the reader's
+ *  language (`remote.viewer.rdp.*`). */
+export function rdpScreenLockWarning(): string {
+  return i18n.global.t('remote.viewer.rdp.lockWarning')
+}
+
+export function rdpUnpinnedCertNotice(): string {
+  return i18n.global.t('remote.viewer.rdp.unpinned')
+}
 
 /** Shown instead of the RDP actions when the target has an RDP server but no
  *  path to it over the mesh (`rdp_mesh_reachable` not true). */
-export const RDP_MESH_DISABLED_HINT =
-  '需在目标设备上开启 RDP over mesh（rdp_over_mesh = true）'
+export function rdpMeshDisabledHint(): string {
+  return i18n.global.t('remote.viewer.rdp.meshHint')
+}
 
 export const RDP_AUTO_FALLBACK_STORAGE_PREFIX = 'meshharbor:rdp-auto-fallback:v1:'
 
@@ -639,7 +647,7 @@ export async function invokeDesktopOpenRdp(
 ): Promise<void> {
   const target = params.target?.trim()
   if (!target) {
-    throw new Error('缺少目标设备标识')
+    throw new Error(i18n.global.t('remote.viewer.rdp.noTarget'))
   }
   const w = (win ?? {}) as DesktopBridgeWindow
   const cleanOrg = params.org?.trim() || undefined
@@ -670,7 +678,7 @@ export async function invokeDesktopOpenRdp(
     })
     return
   }
-  throw new Error('当前环境无桌面应用桥接，请在桌面应用中打开或使用 mh rdp 命令')
+  throw new Error(i18n.global.t('remote.viewer.rdp.noBridgeError'))
 }
 
 /**

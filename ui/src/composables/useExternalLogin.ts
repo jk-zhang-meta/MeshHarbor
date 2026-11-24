@@ -18,6 +18,7 @@
  * page must not retry a login on its own: every retry is a guess.
  */
 import { useWsStore } from '@/stores/ws'
+import i18n from '@/plugins/i18n'
 import { KEY_STRETCHING, deriveAppKey, fromBase64Url } from '@/utils/extauth'
 import type { ExternalSessionAuth } from './useRemoteControl'
 
@@ -94,29 +95,30 @@ function refusal(raw: unknown): ExtauthRefusal {
  */
 export function friendlyExtauthRefusal(reason: unknown, retryAfterSecs?: unknown): string {
   switch (reason) {
+    // FR-131 P3 — in the reader's language (`remote.viewer.ext.*`).
     case 'wrong_password':
-      return 'That password did not work. Attempts are limited, so check it before trying again.'
+      return i18n.global.t('remote.viewer.ext.wrong_password')
     case 'throttled':
       return typeof retryAfterSecs === 'number'
-        ? `Too many attempts on this device. Try again in ${Math.ceil(retryAfterSecs)} seconds.`
-        : 'Too many attempts on this device. Try again later.'
+        ? i18n.global.t('remote.viewer.ext.throttledFor', { s: Math.ceil(retryAfterSecs) })
+        : i18n.global.t('remote.viewer.ext.throttled')
     case 'rate_limited':
-      return 'Too many attempts from your account. Wait a minute and try again.'
+      return i18n.global.t('remote.viewer.ext.rate_limited')
     case 'busy':
-      return 'The device is busy. Try again in a moment.'
+      return i18n.global.t('remote.viewer.ext.busy')
     case 'unknown_attempt':
-      return 'This login has expired or was already used. Connect again.'
+      return i18n.global.t('remote.viewer.ext.unknown_attempt')
     case 'no_answer':
-      return 'The device did not answer. It may be offline.'
+      return i18n.global.t('remote.viewer.ext.no_answer')
     case 'malformed':
-      return 'The request could not be read. Reload the page and try again.'
+      return i18n.global.t('remote.viewer.ext.malformed')
     case 'unavailable':
-      return 'This device is not available for outside access. Check the code, or ask the device owner.'
+      return i18n.global.t('remote.viewer.ext.unavailable')
     case 'session_limit':
       // The server's own words name who holds the slot; this is the fallback.
-      return 'Your organization already runs as many remote sessions as its plan allows. End one, or connect for another organization.'
+      return i18n.global.t('remote.viewer.ext.session_limit')
     default:
-      return 'The device refused the request.'
+      return i18n.global.t('remote.viewer.ext.other')
   }
 }
 

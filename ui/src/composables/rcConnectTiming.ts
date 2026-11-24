@@ -24,6 +24,7 @@
  * two-attempt connect look like one fast one — which is exactly the
  * measurement error that would hide the defect being hunted.
  */
+import i18n from '@/plugins/i18n'
 
 /** The ordered waits a connect passes through. Each name says what is
  *  being WAITED ON, not which code assigns it, because the diagnostic
@@ -215,19 +216,22 @@ export function formatConnectTiming(t: RcConnectTiming): string {
  * "ICE" or "SCTP" tells them nothing. The short technical name still
  * rides along in the message tail so a reported snackbar is traceable
  * back to a mark without asking the operator to open devtools.
+ *
+ * FR-131 P3 — the words live in `remote.viewer.timing.wait.*`, in both
+ * languages; this is a Record so a new mark cannot go unnamed.
  */
 const WAIT_LABEL: Record<RcConnectMark, string> = {
-  ws_ready: 'connecting to the signalling server',
-  turn_ready: 'fetching relay credentials',
-  probes_ready: 'checking what this browser can decode',
-  request_sent: 'sending the request',
-  session_created: 'the server accepting the session',
-  ready: 'someone at the device approving the session',
-  offer_sent: 'preparing the video offer',
-  answer: 'the device answering',
-  pc_connected: 'opening a network path to the device',
-  dc_open: 'opening the video channel',
-  first_frame: 'the first video frame arriving',
+  ws_ready: 'remote.viewer.timing.wait.ws_ready',
+  turn_ready: 'remote.viewer.timing.wait.turn_ready',
+  probes_ready: 'remote.viewer.timing.wait.probes_ready',
+  request_sent: 'remote.viewer.timing.wait.request_sent',
+  session_created: 'remote.viewer.timing.wait.session_created',
+  ready: 'remote.viewer.timing.wait.ready',
+  offer_sent: 'remote.viewer.timing.wait.offer_sent',
+  answer: 'remote.viewer.timing.wait.answer',
+  pc_connected: 'remote.viewer.timing.wait.pc_connected',
+  dc_open: 'remote.viewer.timing.wait.dc_open',
+  first_frame: 'remote.viewer.timing.wait.first_frame',
 }
 
 /**
@@ -263,6 +267,11 @@ export interface RcConnectVerdict {
   notable: boolean
 }
 
+/** FR-131 P3 — a wait, in the reader's language. */
+function waitLabel(m: RcConnectMark): string {
+  return i18n.global.t(WAIT_LABEL[m])
+}
+
 function secs(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`
 }
@@ -283,10 +292,9 @@ export function describeConnectTiming(t: RcConnectTiming): RcConnectVerdict {
   // never completed IS the finding, so lead with it.
   if (total === undefined) {
     const stalled = firstMissingMark(t)
-    const what = stalled ? WAIT_LABEL[stalled] : 'connecting'
+    const what = stalled ? waitLabel(stalled) : i18n.global.t('remote.viewer.timing.connecting')
     return {
-      text: `Reconnecting - the session stalled while waiting for ${what}. `
-        + `Retrying automatically. (stalled at ${stalled ?? 'unknown'})`,
+      text: i18n.global.t('remote.viewer.timing.stalled', { what, at: stalled ?? 'unknown' }),
       color: 'warning',
       notable: true,
     }
@@ -315,7 +323,7 @@ export function describeConnectTiming(t: RcConnectTiming): RcConnectVerdict {
   // are indistinguishable to everyone except someone reading devtools.
   if (t.attempt > 1) {
     const n = t.attempt - 1
-    const tries = `${n} failed attempt${n > 1 ? 's' : ''}`
+    const tries = i18n.global.t('remote.viewer.timing.tries', n)
     // ⚠️ State only what the marks establish. A retry has (at least) two
     // causes that look identical in the attempt counter: a request that
     // was never answered, and a session that WORKED and then dropped.
@@ -323,29 +331,27 @@ export function describeConnectTiming(t: RcConnectTiming): RcConnectVerdict {
     // the wrong one sends the reader after the wrong bug.
     return {
       text: t.afterDrop
-        ? `Reconnected in ${secs(total)} after ${tries}. The session `
-          + `dropped and was restored automatically.`
-        : `Connected in ${secs(total)} after ${tries}.`,
+        ? i18n.global.t('remote.viewer.timing.reconnectedAfter', { s: secs(total), tries })
+        : i18n.global.t('remote.viewer.timing.connectedAfter', { s: secs(total), tries }),
       color: 'warning',
       notable: true,
     }
   }
 
   if (total <= CONNECT_SLOW_MS) {
-    return { text: `Connected in ${secs(total)}.`, color: 'info', notable: false }
+    return { text: i18n.global.t('remote.viewer.timing.connected', { s: secs(total) }), color: 'info', notable: false }
   }
 
   if (!worst) {
     return {
-      text: `Connected in ${secs(total)} - slower than usual.`,
+      text: i18n.global.t('remote.viewer.timing.slow', { s: secs(total) }),
       color: 'warning',
       notable: true,
     }
   }
 
   return {
-    text: `Connected in ${secs(total)} - slower than usual. Most of the wait `
-      + `was ${WAIT_LABEL[worst]} (${secs(worstMs)}).`,
+    text: i18n.global.t('remote.viewer.timing.slowMost', { s: secs(total), what: waitLabel(worst), ws: secs(worstMs) }),
     color: 'warning',
     notable: true,
   }

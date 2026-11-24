@@ -16,6 +16,7 @@
  * the length prefixes, the field order, the encodings. The tests pin the same
  * known answer, and verify a signature made outside both implementations.
  */
+import i18n from '@/plugins/i18n'
 import { framed, fromBase64Url, sdpFingerprint, toBase64Url } from '@/utils/extauth'
 
 /** The label every peer-auth signature is scoped by. Part of the wire. */
@@ -320,30 +321,26 @@ export function peerAuthBadge(
   switch (judged.verdict.kind) {
     case 'first-use':
       return {
-        label: 'Verified',
+        label: i18n.global.t('remote.viewer.peer.verified'),
         color: 'success',
         icon: 'mdi-shield-check-outline',
-        title:
-          `This device proved its identity key${fp}. This browser had not met it before ` +
-          'and now remembers it: a different key next time stops the session.',
+        title: i18n.global.t('remote.viewer.peer.firstUse', { fp }),
       }
     case 'pinned':
       return {
-        label: 'Verified',
+        label: i18n.global.t('remote.viewer.peer.verified'),
         color: 'success',
         icon: 'mdi-shield-check',
-        title: `This device proved the identity key this browser knows for it${fp}.`,
+        title: i18n.global.t('remote.viewer.peer.pinned', { fp }),
       }
     case 'unsigned':
       return {
-        label: 'Unverified',
+        label: i18n.global.t('remote.viewer.peer.unverified'),
         color: 'warning',
         icon: 'mdi-shield-alert-outline',
         title: judged.verdict.pinned
-          ? 'This device has proved its identity key to this browser before, but this answer was ' +
-            'not signed. The session runs; if this keeps happening, check the device.'
-          : 'The device did not sign its answer, so nothing vouches that this session reaches it. ' +
-            'The session runs.',
+          ? i18n.global.t('remote.viewer.peer.unsignedPinned')
+          : i18n.global.t('remote.viewer.peer.unsigned'),
       }
     default:
       return null

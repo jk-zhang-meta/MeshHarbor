@@ -19,6 +19,7 @@
  * Pure functions only, so the parsing and the rules are unit-tested without a
  * session.
  */
+import i18n from '@/plugins/i18n'
 import { asSentence } from '@/utils/sentence'
 
 /** The features an agent can mark, by their wire names (`Unavailable::KEYS`). */
@@ -75,7 +76,7 @@ export function hostReason(
 ): string | null {
   const u = hostUnavailable(caps, feature)
   if (!u) return null
-  return asSentence(u.reason) || `Not available on this device (${u.code}).`
+  return asSentence(u.reason) || i18n.global.t('remote.viewer.host.unavailable', { code: u.code })
 }
 
 /**

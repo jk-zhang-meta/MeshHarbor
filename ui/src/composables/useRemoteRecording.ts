@@ -14,6 +14,7 @@
  * protocol code with no browser save dialog and no PeerConnection.
  */
 import { ref } from 'vue'
+import i18n from '@/plugins/i18n'
 
 export type RecordState =
   | 'idle'
@@ -133,7 +134,8 @@ export const RECORD_REASONS: Record<string, string> = {
 
 export function describeRecordReason(code: string | null | undefined): string {
   if (!code) return ''
-  return RECORD_REASONS[code] ?? code
+  // FR-131 P3 — in the reader's language; the table above is the English.
+  return code in RECORD_REASONS ? i18n.global.t(`remote.viewer.rec.reason.${code}`) : code
 }
 
 /**

@@ -12,6 +12,7 @@
  *
  * Pure on purpose — no Vue, no channel — so all of it is unit-tested.
  */
+import i18n from '@/plugins/i18n'
 
 /** The device's answer to the latest request. */
 export interface DisplayMatchState {
@@ -39,17 +40,17 @@ export function parseDisplayMatchState(obj: Record<string, unknown>): DisplayMat
 export function describeDisplayMatchRefusal(word: string): string {
   switch (word) {
     case 'attended':
-      return 'someone is using this computer'
+      return i18n.global.t('remote.viewer.match.refused.attended')
     case 'locked':
-      return 'the computer is locked; it switches once unlocked'
+      return i18n.global.t('remote.viewer.match.refused.locked')
     case 'disabled_on_device':
-      return "this device's owner turned display match off"
+      return i18n.global.t('remote.viewer.match.refused.disabled_on_device')
     case 'no_fitting_mode':
-      return 'no display mode fits this window'
+      return i18n.global.t('remote.viewer.match.refused.no_fitting_mode')
     case 'switch_failed':
-      return 'the display could not be switched'
+      return i18n.global.t('remote.viewer.match.refused.switch_failed')
     case 'unsupported':
-      return "this device can't switch its display"
+      return i18n.global.t('remote.viewer.match.refused.unsupported')
     default:
       return word
   }
@@ -59,7 +60,7 @@ export function describeDisplayMatchRefusal(word: string): string {
  *  none (an older agent, or no request yet this session). */
 export function displayMatchSummary(state: DisplayMatchState | null): string | null {
   if (!state) return null
-  if (state.on && state.mode) return `the host runs at ${state.mode.w}×${state.mode.h} for this session`
-  if (state.refused) return `not now: ${describeDisplayMatchRefusal(state.refused)}`
-  return 'off for this session'
+  if (state.on && state.mode) return i18n.global.t('remote.viewer.match.runsAt', { w: state.mode.w, h: state.mode.h })
+  if (state.refused) return i18n.global.t('remote.viewer.match.notNow', { why: describeDisplayMatchRefusal(state.refused) })
+  return i18n.global.t('remote.viewer.match.offThisSession')
 }

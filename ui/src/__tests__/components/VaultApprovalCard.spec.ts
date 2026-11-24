@@ -85,6 +85,7 @@ describe('VaultApprovalCard (FR-90 P3-4e-3)', () => {
     expect(byTestId(w, 'vault-approval-deadline').exists()).toBe(true)
     const approve = byTestId(w, 'vault-approval-approve')
     expect(approve.attributes('disabled')).toBeUndefined()
+    expect(byTestId(w, 'vault-approval-why').exists()).toBe(false)
 
     hoisted.apiPost.mockResolvedValue(
       approval({ status: 'approved', may_answer: false, may_approve: false }),
@@ -102,6 +103,8 @@ describe('VaultApprovalCard (FR-90 P3-4e-3)', () => {
     const approve = byTestId(w, 'vault-approval-approve')
     expect(approve.attributes('disabled')).toBeDefined()
     expect(approve.attributes('title')).toBe(en.vault.approval.notAccepted)
+    // FR-120 P1b — and says so as text: a disabled button's title reaches no one.
+    expect(byTestId(w, 'vault-approval-why').text()).toBe(en.vault.approval.notAccepted)
     expect(byTestId(w, 'vault-approval-deny').attributes('disabled')).toBeUndefined()
 
     hoisted.apiPost.mockResolvedValue(approval({ status: 'denied', may_answer: false }))
@@ -116,6 +119,7 @@ describe('VaultApprovalCard (FR-90 P3-4e-3)', () => {
     expect(byTestId(w, 'vault-approval-status').text()).toBe('Waiting for a driver')
     expect(byTestId(w, 'vault-approval-approve').exists()).toBe(false)
     expect(byTestId(w, 'vault-approval-deny').exists()).toBe(false)
+    expect(byTestId(w, 'vault-approval-why').exists()).toBe(false)
   })
 
   it('shows a refusal in the server’s words, and reads the approval again', async () => {

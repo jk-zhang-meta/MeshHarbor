@@ -15,6 +15,7 @@
  * code with no PeerConnection.
  */
 import { ref } from 'vue'
+import i18n from '@/plugins/i18n'
 
 /** The part of an `RTCDataChannel` this uses. */
 export interface PrivacyChannel {
@@ -46,7 +47,8 @@ export const PRIVACY_REASONS: Record<string, string> = {
 
 export function describePrivacyReason(code: string | null | undefined): string {
   if (!code) return ''
-  return PRIVACY_REASONS[code] ?? code
+  // FR-131 P3 — in the reader's language; the table above is the English.
+  return code in PRIVACY_REASONS ? i18n.global.t(`remote.viewer.privacy.reason.${code}`) : code
 }
 
 /**

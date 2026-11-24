@@ -12,6 +12,7 @@
  *
  * No DOM, so vitest drives it directly.
  */
+import i18n from '@/plugins/i18n'
 import { MINE_PRESET_PREFIX } from './touchControls'
 import type { ButtonControl, ControlPlace, MacroStep, TouchControl, TouchPreset } from './touchControls'
 
@@ -136,52 +137,57 @@ export function validatePreset(p: { name: string; controls: TouchControl[] }): s
   return null
 }
 
+/** FR-131 P3 — the refusal in the reader's language (`remote.viewer.tpe.refused.*`). */
+function tr(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
+
 /** What the editor says for a refusal code, the server's or its own. */
 export function describeRefusal(code: string): string {
   switch (code) {
     case 'name_empty':
-      return 'Give the layout a name.'
+      return tr('remote.viewer.tpe.refused.name_empty')
     case 'name_invalid':
-      return `A name is at most ${LIMITS.name} characters, on one line.`
+      return tr('remote.viewer.tpe.refused.name_invalid', { n: LIMITS.name })
     case 'no_controls':
-      return 'Add at least one control.'
+      return tr('remote.viewer.tpe.refused.no_controls')
     case 'too_many_controls':
-      return `A layout has at most ${LIMITS.controls} controls.`
+      return tr('remote.viewer.tpe.refused.too_many_controls', { n: LIMITS.controls })
     case 'id_invalid':
     case 'id_duplicate':
-      return 'Two controls share an id; remove one and add it again.'
+      return tr('remote.viewer.tpe.refused.id_duplicate')
     case 'label_invalid':
-      return `Every control and button needs a label of at most ${LIMITS.label} characters.`
+      return tr('remote.viewer.tpe.refused.label_invalid', { n: LIMITS.label })
     case 'row_buttons':
-      return `A row has between 1 and ${LIMITS.rowButtons} buttons.`
+      return tr('remote.viewer.tpe.refused.row_buttons', { n: LIMITS.rowButtons })
     case 'chord_keys':
-      return `A key button presses between 1 and ${LIMITS.chordKeys} keys.`
+      return tr('remote.viewer.tpe.refused.chord_keys', { n: LIMITS.chordKeys })
     case 'key_invalid':
-      return 'A key cannot be sent from the keyboard; capture it again.'
+      return tr('remote.viewer.tpe.refused.key_invalid')
     case 'size_invalid':
-      return `A size is between ${LIMITS.sizeMin} and ${LIMITS.sizeMax} pixels.`
+      return tr('remote.viewer.tpe.refused.size_invalid', { min: LIMITS.sizeMin, max: LIMITS.sizeMax })
     case 'speed_invalid':
-      return `A stick's speed is between ${LIMITS.speedMin} and ${LIMITS.speedMax}.`
+      return tr('remote.viewer.tpe.refused.speed_invalid', { min: LIMITS.speedMin, max: LIMITS.speedMax })
     case 'place_both_edges':
-      return 'Place a control from one edge per direction, not both.'
+      return tr('remote.viewer.tpe.refused.place_both_edges')
     case 'place_invalid':
-      return `An edge distance is between 0 and ${LIMITS.placePx} pixels.`
+      return tr('remote.viewer.tpe.refused.place_invalid', { n: LIMITS.placePx })
     case 'macro_steps':
-      return `A macro has between 1 and ${LIMITS.macroSteps} steps.`
+      return tr('remote.viewer.tpe.refused.macro_steps', { n: LIMITS.macroSteps })
     case 'step_key_or_button':
-      return 'Each macro step presses either a key or a mouse button.'
+      return tr('remote.viewer.tpe.refused.step_key_or_button')
     case 'step_wait':
-      return `A wait is at most ${LIMITS.stepWaitMs / 1000} s.`
+      return tr('remote.viewer.tpe.refused.step_wait', { n: LIMITS.stepWaitMs / 1000 })
     case 'macro_too_long':
-      return `A macro lasts at most ${LIMITS.macroMs / 1000} s in all.`
+      return tr('remote.viewer.tpe.refused.macro_too_long', { n: LIMITS.macroMs / 1000 })
     case 'name_taken':
-      return 'The organization already has a layout of that name.'
+      return tr('remote.viewer.tpe.refused.name_taken')
     case 'too_many_presets':
-      return `The organization keeps at most ${LIMITS.mine} layouts.`
+      return tr('remote.viewer.tpe.refused.too_many_presets', { n: LIMITS.mine })
     case 'invalid_json':
-      return 'The server did not take the layout. Reload the page, then try again.'
+      return tr('remote.viewer.tpe.refused.invalid_json')
     default:
-      return 'The layout could not be saved.'
+      return tr('remote.viewer.tpe.refused.other')
   }
 }
 

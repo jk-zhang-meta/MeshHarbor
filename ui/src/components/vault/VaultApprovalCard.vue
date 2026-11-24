@@ -53,6 +53,15 @@
       >
         {{ $t('vault.approval.approve') }}
       </v-btn>
+      <!-- FR-120 P1b — a greyed Approve says why, as text: its `title`
+           reached no one, a disabled button taking no pointer events. -->
+      <span
+        v-if="!approval.may_approve"
+        class="text-caption text-medium-emphasis w-100 text-right"
+        data-testid="vault-approval-why"
+      >
+        {{ $t('vault.approval.notAccepted') }}
+      </span>
     </template>
     <v-alert
       v-if="refusal"

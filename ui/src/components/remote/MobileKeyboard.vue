@@ -20,7 +20,7 @@
       autocomplete="off"
       spellcheck="false"
       enterkeyhint="enter"
-      aria-label="Remote keyboard input"
+      :aria-label="t('remote.viewer.kbd.input')"
       @input="onInput"
       @compositionstart="onCompositionStart"
       @compositionend="onCompositionEnd"
@@ -33,7 +33,7 @@
       themselves from popping the keyboard down on iOS when tapped
       via accidental focus shifts.
     -->
-    <div class="mobile-keyboard-toolbar" role="toolbar" aria-label="Special keys">
+    <div class="mobile-keyboard-toolbar" role="toolbar" :aria-label="t('remote.viewer.kbd.special')">
       <button
         v-for="key in specialKeys"
         :key="key.label"
@@ -48,7 +48,7 @@
       <button
         type="button"
         class="mkb-btn mkb-btn-close"
-        title="Hide keyboard"
+        :title="t('remote.viewer.tb.hideKeyboard')"
         @pointerdown.prevent="$emit('close')"
       >
         ▾
@@ -81,6 +81,9 @@
  * design — per-keystroke composition deferred to a follow-up.
  */
 import { ref, watch, nextTick, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   open: boolean
@@ -138,13 +141,13 @@ type SpecialKey =
 const specialKeys = computed<SpecialKey[]>(() => [
   { kind: 'key', label: 'Esc', title: 'Escape', hid: HID.Escape },
   { kind: 'key', label: 'Tab', title: 'Tab', hid: HID.Tab },
-  { kind: 'mod', label: 'Ctrl', title: 'Sticky Ctrl', mod: 'ctrl' },
-  { kind: 'mod', label: 'Alt', title: 'Sticky Alt', mod: 'alt' },
-  { kind: 'mod', label: 'Win', title: 'Sticky Win/Cmd', mod: 'meta' },
-  { kind: 'key', label: '←', title: 'Left arrow', hid: HID.ArrowLeft },
-  { kind: 'key', label: '↑', title: 'Up arrow', hid: HID.ArrowUp },
-  { kind: 'key', label: '↓', title: 'Down arrow', hid: HID.ArrowDown },
-  { kind: 'key', label: '→', title: 'Right arrow', hid: HID.ArrowRight },
+  { kind: 'mod', label: 'Ctrl', title: t('remote.viewer.kbd.sticky', { key: 'Ctrl' }), mod: 'ctrl' },
+  { kind: 'mod', label: 'Alt', title: t('remote.viewer.kbd.sticky', { key: 'Alt' }), mod: 'alt' },
+  { kind: 'mod', label: 'Win', title: t('remote.viewer.kbd.sticky', { key: 'Win/Cmd' }), mod: 'meta' },
+  { kind: 'key', label: '←', title: t('remote.viewer.kbd.left'), hid: HID.ArrowLeft },
+  { kind: 'key', label: '↑', title: t('remote.viewer.kbd.up'), hid: HID.ArrowUp },
+  { kind: 'key', label: '↓', title: t('remote.viewer.kbd.down'), hid: HID.ArrowDown },
+  { kind: 'key', label: '→', title: t('remote.viewer.kbd.right'), hid: HID.ArrowRight },
   { kind: 'key', label: 'Home', title: 'Home', hid: HID.Home },
   { kind: 'key', label: 'End', title: 'End', hid: HID.End },
   { kind: 'key', label: 'Del', title: 'Delete', hid: HID.Delete },

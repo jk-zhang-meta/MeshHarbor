@@ -27,7 +27,7 @@
         variant="text"
         class="rc-tb-back"
         :to="isExternal ? { name: 'connect' } : { name: 'devices', params: { tenantId } }"
-        :aria-label="isExternal ? 'Back to Connect' : 'Back to Agents'"
+        :aria-label="isExternal ? t('remote.viewer.tb.backToConnect') : t('remote.viewer.tb.backToDevices')"
       />
       <v-toolbar-title class="d-flex align-center text-truncate">
         <v-icon :color="statusColor" size="small" class="mr-2 flex-shrink-0">
@@ -40,8 +40,8 @@
              with the Devices grid (Settings › Display carries it here). -->
         <!-- FR-52 P4e — an outsider knows the device by its connect code
              only; its name and OS are its organization's to show. -->
-        <span v-if="isExternal" class="text-truncate">{{ externalCode || 'Device' }}</span>
-        <span v-else class="text-truncate">{{ agent?.display_name || agent?.name || 'Agent' }}</span>
+        <span v-if="isExternal" class="text-truncate">{{ externalCode || t('remote.viewer.tb.device') }}</span>
+        <span v-else class="text-truncate">{{ agent?.display_name || agent?.name || t('remote.viewer.tb.device') }}</span>
         <!-- OS + version subtitle hidden on phone-sized viewports;
              they're useful context on a desktop but on mobile they
              push Connect/Disconnect off the right edge. -->
@@ -61,7 +61,7 @@
         class="mr-2 rc-tb-status"
       >
         <template v-if="rc.phase.value === 'reconnecting'">
-          Reconnecting (attempt {{ rc.reconnectAttempt.value }})…
+          {{ t('remote.viewer.tb.reconnecting', { n: rc.reconnectAttempt.value }) }}
         </template>
         <!-- S3 honest badge: connected-but-degraded gets a warning
              chip naming the problem instead of a dishonest solid
@@ -69,7 +69,7 @@
         <template v-else-if="rc.phase.value === 'connected' && rc.degraded.value">
           {{ degradedLabel }}
         </template>
-        <template v-else>{{ rc.phase.value }}</template>
+        <template v-else>{{ t(`remote.viewer.phase.${rc.phase.value}`) }}</template>
       </v-chip>
       <!-- FR-100 P2a — the device proved the identity key this browser knows
            for it, or one it met for the first time and now remembers. An
@@ -107,7 +107,7 @@
         class="mr-2 rc-tb-status"
         :title="hostLockedChipTitle(rc.hostLockedInput.value)"
       >
-        Host locked
+        {{ t('remote.viewer.tb.hostLocked') }}
       </v-chip>
       <!-- Secondary chip for the SYSTEM-context worker's input-desktop
            name (agents 0.3.0+). 'Default' = normal user desktop, no chip
@@ -124,9 +124,9 @@
         variant="flat"
         prepend-icon="mdi-shield-account"
         class="mr-2"
-        :title="`Agent thread is bound to ${rc.currentDesktop.value} — type the host's password to unlock`"
+        :title="t('remote.viewer.tb.desktopTitle', { desktop: rc.currentDesktop.value })"
       >
-        On {{ rc.currentDesktop.value }}
+        {{ t('remote.viewer.tb.onDesktop', { desktop: rc.currentDesktop.value }) }}
       </v-chip>
       <!-- rc.227 — remote keyboard-layout chip. Self-gating: old agents /
            non-Windows hosts never send rc:layout, so remoteLayout stays
@@ -138,7 +138,7 @@
         variant="tonal"
         prepend-icon="mdi-keyboard-settings-outline"
         class="mr-2 d-none d-sm-inline-flex"
-        :title="`Remote keyboard layout: ${remoteLayoutLabel(rc.remoteLayout.value.activeTag)}. Typing auto-switches it when needed; pick manually in Settings.`"
+        :title="t('remote.viewer.tb.layoutTitle', { layout: remoteLayoutLabel(rc.remoteLayout.value.activeTag) })"
       >
         {{ rc.remoteLayout.value.activeTag }}
       </v-chip>
@@ -159,17 +159,17 @@
             variant="tonal"
             prepend-icon="mdi-account-multiple"
             class="mr-2"
-            :title="`${multiUserState.participants.length} viewers on this device (input: ${multiUserState.mode})`"
+            :title="t('remote.viewer.viewers.title', { n: multiUserState.participants.length, mode: t(`remote.viewer.viewers.mode.${multiUserState.mode}`) })"
           >
             {{ multiUserState.participants.length }}
           </v-chip>
         </template>
         <v-list density="compact">
-          <v-list-subheader>Viewers · input {{ multiUserState.mode }}</v-list-subheader>
+          <v-list-subheader>{{ t('remote.viewer.viewers.header', { mode: t(`remote.viewer.viewers.mode.${multiUserState.mode}`) }) }}</v-list-subheader>
           <v-list-item
             v-for="p in multiUserState.participants"
             :key="p.session"
-            :title="p.name || 'Viewer'"
+            :title="p.name || t('remote.viewer.viewers.viewer')"
             :prepend-icon="p.input ? 'mdi-keyboard' : 'mdi-eye'"
           >
             <template #append>
@@ -177,7 +177,7 @@
                 v-if="multiUserState.holder === p.session"
                 size="small"
                 color="warning"
-                title="Holds input control"
+                :title="t('remote.viewer.viewers.holds')"
               >
                 mdi-star
               </v-icon>
@@ -186,13 +186,13 @@
           <v-divider />
           <v-list-item
             v-if="multiUserState.mode === 'free'"
-            title="Switch to exclusive input"
+            :title="t('remote.viewer.viewers.toExclusive')"
             prepend-icon="mdi-account-key"
             @click="rc.setInputMode('exclusive')"
           />
           <v-list-item
             v-else
-            title="Switch to free-for-all input"
+            :title="t('remote.viewer.viewers.toFree')"
             prepend-icon="mdi-account-group"
             @click="rc.setInputMode('free')"
           />
@@ -208,7 +208,7 @@
         class="d-flex align-center mr-2"
       >
         <v-chip size="small" color="warning" variant="tonal" prepend-icon="mdi-hand-back-right">
-          {{ floorRequester.name || 'A viewer' }} wants control
+          {{ t('remote.viewer.viewers.wantsControl', { name: floorRequester.name || t('remote.viewer.viewers.aViewer') }) }}
         </v-chip>
         <v-btn
           size="small"
@@ -217,9 +217,9 @@
           class="ml-1"
           @click="rc.grantControl(floorRequester.session)"
         >
-          Grant
+          {{ t('remote.viewer.viewers.grant') }}
         </v-btn>
-        <v-btn size="small" variant="text" @click="rc.dismissControlRequest()">Ignore</v-btn>
+        <v-btn size="small" variant="text" @click="rc.dismissControlRequest()">{{ t('remote.viewer.viewers.ignore') }}</v-btn>
       </div>
       <!-- P6 — exclusive mode + someone else holds the floor: one-click
            request. Auto-granted when the holder has been idle ≥2 s.
@@ -234,12 +234,12 @@
         class="mr-2"
         :title="
           iAmWaitingForTheFloor
-            ? 'Waiting for the current holder — granted automatically once they go idle. Click to withdraw.'
-            : 'Request input control (auto-granted when the current holder is idle)'
+            ? t('remote.viewer.viewers.waitingTitle')
+            : t('remote.viewer.viewers.requestTitle')
         "
         @click="iAmWaitingForTheFloor ? rc.dismissControlRequest() : rc.requestControl()"
       >
-        {{ iAmWaitingForTheFloor ? 'Waiting…' : 'Request control' }}
+        {{ iAmWaitingForTheFloor ? t('remote.viewer.viewers.waiting') : t('remote.viewer.viewers.request') }}
       </v-btn>
       <!-- Live stats (codec · bitrate · fps · resolution). Relocated here
            from over the video (2026-07-21) so it never hides a maximized
@@ -288,8 +288,8 @@
         variant="text"
         size="small"
         class="mr-1"
-        aria-label="Transfer files"
-        :title="filesRefusal ?? 'Files — upload to and download from this device'"
+        :aria-label="t('remote.viewer.tb.files')"
+        :title="filesRefusal ?? t('remote.viewer.tb.filesTitle')"
         :disabled="!!filesRefusal"
         data-testid="rc-files-toolbar"
         @click="agentSupportsBrowse ? (filesDrawer = true) : fileInput?.click()"
@@ -303,8 +303,8 @@
         variant="text"
         size="small"
         class="mr-1"
-        aria-label="Open viewer settings"
-        title="Viewer settings"
+        :aria-label="t('remote.viewer.tb.openSettings')"
+        :title="t('remote.viewer.settings.title')"
         @click="settingsOpen = true"
       />
       <!-- Soft-keyboard toggle: mounts the MobileKeyboard component
@@ -322,8 +322,8 @@
         size="small"
         class="mr-1"
         :color="mobileKeyboardOpen ? 'primary' : undefined"
-        :aria-label="mobileKeyboardOpen ? 'Hide soft keyboard' : 'Show soft keyboard'"
-        :title="mobileKeyboardOpen ? 'Hide keyboard' : 'Show keyboard'"
+        :aria-label="mobileKeyboardOpen ? t('remote.viewer.tb.hideKeyboard') : t('remote.viewer.tb.showKeyboard')"
+        :title="mobileKeyboardOpen ? t('remote.viewer.tb.hideKeyboard') : t('remote.viewer.tb.showKeyboard')"
         @click="mobileKeyboardOpen = !mobileKeyboardOpen"
       >
         <v-icon>mdi-keyboard</v-icon>
@@ -342,7 +342,7 @@
         variant="text"
         size="small"
         class="mr-1"
-        aria-label="Send Ctrl+Alt+Del to remote"
+        :aria-label="t('remote.viewer.tb.sendCad')"
         :title="sasTitle"
         data-testid="rc-ctrl-alt-del"
         @click="rc.sendCtrlAltDel()"
@@ -359,8 +359,8 @@
         size="small"
         class="mr-1"
         :color="rc.relativeMouse.value ? 'primary' : undefined"
-        aria-label="Relative mouse for 3D apps and games"
-        title="Relative mouse: for 3D apps and games that capture the pointer. Esc releases the mouse."
+        :aria-label="t('remote.viewer.tb.relativeMouse')"
+        :title="t('remote.viewer.tb.relativeMouseTitle')"
         data-testid="rc-relative-mouse"
         @click="onRelativeMouse"
       >
@@ -376,12 +376,10 @@
         size="small"
         class="mr-1"
         :color="rc.touchMode.value === 'trackpad' ? 'primary' : undefined"
-        :aria-label="rc.touchMode.value === 'trackpad' ? 'Touch: trackpad (tap to use direct touch)' : 'Touch: direct (tap to use a trackpad)'"
-        :title="rc.touchMode.value === 'trackpad'
-          ? 'Trackpad: a finger moves the pointer; tap to click, hold then move to drag. Tap for direct touch.'
-          : 'Direct touch: the finger is the pointer. Tap to use the screen as a trackpad.'"
+        :aria-label="rc.touchMode.value === 'trackpad' ? t('remote.viewer.touch.ariaTrackpad') : t('remote.viewer.touch.ariaDirect')"
+        :title="rc.touchMode.value === 'trackpad' ? t('remote.viewer.touch.titleTrackpad') : t('remote.viewer.touch.titleDirect')"
         data-testid="rc-touch-mode"
-        @click="rc.setTouchMode(rc.touchMode.value === 'trackpad' ? 'direct' : 'trackpad')"
+        @click="toggleTouchMode"
       >
         <v-icon>{{ rc.touchMode.value === 'trackpad' ? 'mdi-gesture-swipe' : 'mdi-gesture-tap' }}</v-icon>
       </v-btn>
@@ -396,8 +394,8 @@
             size="small"
             class="mr-1"
             :color="touchControlsPreset ? 'primary' : undefined"
-            :aria-label="touchControlsPreset ? `On-screen controls: ${touchControlsPreset.name}` : 'On-screen controls: off'"
-            :title="touchControlsPreset ? `On-screen controls: ${touchControlsPreset.name}` : 'On-screen controls'"
+            :aria-label="touchControlsPreset ? t('remote.viewer.touch.controlsNamed', { name: presetName(touchControlsPreset) }) : t('remote.viewer.touch.controlsOff')"
+            :title="touchControlsPreset ? t('remote.viewer.touch.controlsNamed', { name: presetName(touchControlsPreset) }) : t('remote.viewer.touch.controls')"
             data-testid="rc-touch-controls-menu"
           >
             <v-icon>mdi-gamepad-variant-outline</v-icon>
@@ -406,7 +404,7 @@
         <v-list density="compact">
           <v-list-item
             :active="!touchControlsPreset"
-            title="Off"
+            :title="t('remote.viewer.common.off')"
             data-testid="rc-touch-controls-off"
             @click="setTouchControls(null)"
           />
@@ -414,13 +412,13 @@
             v-for="p in BUILTIN_PRESETS"
             :key="p.id"
             :active="touchControlsPreset?.id === p.id"
-            :title="p.name"
+            :title="presetName(p)"
             :data-testid="`rc-touch-controls-${p.id}`"
             @click="setTouchControls(p.id)"
           />
           <!-- FR-111 P4 — the org's own presets, under their own heading. -->
           <template v-if="orgTouchList.length">
-            <v-list-subheader>Your organization</v-list-subheader>
+            <v-list-subheader>{{ t('remote.viewer.touch.yourOrg') }}</v-list-subheader>
             <v-list-item
               v-for="p in orgTouchList"
               :key="p.id"
@@ -432,7 +430,7 @@
           </template>
           <!-- FR-111 P4b-2 — this member's own, kept in this browser. -->
           <template v-if="myTouchPresets.length">
-            <v-list-subheader>This browser</v-list-subheader>
+            <v-list-subheader>{{ t('remote.viewer.touch.thisBrowser') }}</v-list-subheader>
             <v-list-item
               v-for="p in myTouchPresets"
               :key="p.id"
@@ -444,7 +442,7 @@
           </template>
           <v-divider />
           <v-list-item
-            title="Edit layouts…"
+            :title="t('remote.viewer.touch.editLayouts')"
             prepend-icon="mdi-pencil-outline"
             data-testid="rc-touch-controls-edit"
             @click="touchEditorOpen = true"
@@ -474,36 +472,50 @@
            every viewport. Relocated here from the retired Row 2.
            Absent when the grant has no CLIPBOARD: the channel they need
            was closed at `rc:session.created` (dropClipboardChannel). -->
-      <v-btn
+      <!-- FR-120 P1b — refused, each greys out and says why on a tap (the
+           span takes the tap a disabled button does not). -->
+      <span
         v-if="rc.phase.value === 'connected' && rc.clipboardGranted.value"
-        icon
-        variant="text"
-        size="small"
-        class="mr-1"
-        :loading="clipboardBusy"
-        :disabled="!!clipboardRefusal"
-        aria-label="Send my clipboard to the remote host"
-        :title="clipboardRefusal ?? 'Send my clipboard → remote'"
-        data-testid="rc-clipboard-send"
-        @click="onSendClipboard"
+        class="d-inline-flex"
+        data-testid="rc-clipboard-send-wrap"
+        @click="clipboardRefusal && explainRefusal(clipboardRefusal)"
       >
-        <v-icon>mdi-content-paste</v-icon>
-      </v-btn>
-      <v-btn
+        <v-btn
+          icon
+          variant="text"
+          size="small"
+          class="mr-1"
+          :loading="clipboardBusy"
+          :disabled="!!clipboardRefusal"
+          :aria-label="t('remote.viewer.clip.sendAria')"
+          :title="clipboardRefusal ?? t('remote.viewer.clip.send')"
+          data-testid="rc-clipboard-send"
+          @click="onSendClipboard"
+        >
+          <v-icon>mdi-content-paste</v-icon>
+        </v-btn>
+      </span>
+      <span
         v-if="rc.phase.value === 'connected' && rc.clipboardGranted.value"
-        icon
-        variant="text"
-        size="small"
-        class="mr-1"
-        :loading="clipboardBusy"
-        :disabled="!!clipboardRefusal"
-        aria-label="Get the remote host's clipboard"
-        :title="clipboardRefusal ?? 'Get remote clipboard → me'"
-        data-testid="rc-clipboard-get"
-        @click="onGetClipboard"
+        class="d-inline-flex"
+        data-testid="rc-clipboard-get-wrap"
+        @click="clipboardRefusal && explainRefusal(clipboardRefusal)"
       >
-        <v-icon>mdi-content-copy</v-icon>
-      </v-btn>
+        <v-btn
+          icon
+          variant="text"
+          size="small"
+          class="mr-1"
+          :loading="clipboardBusy"
+          :disabled="!!clipboardRefusal"
+          :aria-label="t('remote.viewer.clip.getAria')"
+          :title="clipboardRefusal ?? t('remote.viewer.clip.get')"
+          data-testid="rc-clipboard-get"
+          @click="onGetClipboard"
+        >
+          <v-icon>mdi-content-copy</v-icon>
+        </v-btn>
+      </span>
       <!-- FR-85 P3c — record the remote screen. The recording is made and kept
            on the device (a banner shows there while it runs); the menu starts
            and stops it and downloads what this controller recorded. Offered
@@ -528,11 +540,11 @@
         size="small"
         variant="flat"
         class="mr-1"
-        title="The device goes on recording for up to a minute while this session reconnects."
+        :title="t('remote.viewer.rec.reconnectingTitle')"
         data-testid="rc-rec-reconnecting"
       >
         <v-icon start size="x-small">mdi-record</v-icon>
-        REC · reconnecting
+        {{ t('remote.viewer.rec.reconnectingChip') }}
       </v-chip>
       <!-- FR-92 — keep busy. The device owns the state; the menu renders
            `rc:keep-busy.state` and asks for changes. -->
@@ -557,8 +569,8 @@
             size="small"
             class="mr-1"
             :color="recRunning ? 'error' : undefined"
-            aria-label="Record this screen"
-            title="Record this screen"
+            :aria-label="t('remote.viewer.rec.title')"
+            :title="t('remote.viewer.rec.title')"
             data-testid="rc-record-btn"
             @click="rec.list()"
           >
@@ -566,10 +578,10 @@
           </v-btn>
         </template>
         <v-card min-width="320" max-width="440" data-testid="rc-record-menu">
-          <v-card-title class="text-subtitle-1">Record this screen</v-card-title>
+          <v-card-title class="text-subtitle-1">{{ t('remote.viewer.rec.title') }}</v-card-title>
           <v-card-text>
             <p class="text-caption mb-3">
-              The recording is saved on the device, and a banner shows there while it runs.
+              {{ t('remote.viewer.rec.intro') }}
             </p>
             <div v-if="recRunning" class="d-flex align-center ga-2">
               <v-chip color="error" size="small" variant="flat">
@@ -577,11 +589,11 @@
                 {{ fmtClock(rec.durationMs.value) }} · {{ formatFileSize(rec.bytes.value) }}
               </v-chip>
               <v-btn size="small" color="error" data-testid="rc-record-stop" @click="rec.stop()">
-                Stop
+                {{ t('remote.viewer.rec.stop') }}
               </v-btn>
             </div>
             <div v-else-if="rec.state.value === 'pending_consent'" class="text-body-2">
-              Waiting for the person at the device to allow it…
+              {{ t('remote.viewer.rec.pendingConsent') }}
             </div>
             <div v-else>
               <!-- #1760 — where the device says computer audio cannot go into
@@ -591,7 +603,7 @@
                    field says nothing, and the box is offered as before. -->
               <v-checkbox
                 v-model="recAudio"
-                label="Include what the computer plays"
+                :label="t('remote.viewer.rec.includeAudio')"
                 density="compact"
                 hide-details
                 :disabled="!!rec.audioUnavailable.value"
@@ -611,7 +623,7 @@
                 data-testid="rc-record-start"
                 @click="rec.start(recAudio)"
               >
-                Start recording
+                {{ t('remote.viewer.rec.start') }}
               </v-btn>
             </div>
             <p
@@ -619,7 +631,7 @@
               class="text-caption mt-2"
               data-testid="rc-record-reason"
             >
-              {{ rec.state.value === 'stopped' ? 'Stopped: ' : 'Not recording: ' }}{{ describeRecordReason(rec.reason.value) }}
+              {{ t(rec.state.value === 'stopped' ? 'remote.viewer.rec.stoppedBecause' : 'remote.viewer.rec.notRecordingBecause', { reason: describeRecordReason(rec.reason.value) }) }}
               <!-- #1760 — the device's own words, when it sent them. The
                    code's sentence alone read "the recorder could not start"
                    where the device had said why. -->
@@ -630,7 +642,7 @@
               >{{ rec.detail.value }}</span>
             </p>
             <v-divider class="my-3" />
-            <div class="text-subtitle-2 mb-1">Your recordings on this device</div>
+            <div class="text-subtitle-2 mb-1">{{ t('remote.viewer.rec.yours') }}</div>
             <v-list v-if="rec.items.value.length" density="compact" class="py-0">
               <v-list-item
                 v-for="it in rec.items.value"
@@ -643,7 +655,7 @@
                     icon
                     size="small"
                     variant="text"
-                    :aria-label="`Download ${it.name}`"
+                    :aria-label="t('remote.viewer.files.downloadNamed', { name: it.name })"
                     :disabled="rec.download.value?.status === 'active'"
                     @click="onDownloadRecording(it)"
                   >
@@ -652,7 +664,7 @@
                 </template>
               </v-list-item>
             </v-list>
-            <p v-else class="text-caption">None yet.</p>
+            <p v-else class="text-caption">{{ t('remote.viewer.rec.noneYet') }}</p>
             <div v-if="rec.download.value" class="mt-2" data-testid="rc-record-download">
               <v-progress-linear
                 :model-value="
@@ -667,16 +679,16 @@
               <div class="text-caption mt-1">
                 {{ rec.download.value.name }} · {{ formatFileSize(rec.download.value.received) }}
                 <template v-if="rec.download.value.size">
-                  of {{ formatFileSize(rec.download.value.size) }}
+                  {{ t('remote.viewer.rec.ofSize', { size: formatFileSize(rec.download.value.size) }) }}
                 </template>
                 ·
                 <template v-if="rec.download.value.status === 'done'">
-                  saved{{ rec.download.value.verified ? ', checksum verified' : '' }}
+                  {{ rec.download.value.verified ? t('remote.viewer.rec.savedVerified') : t('remote.viewer.rec.saved') }}
                 </template>
                 <template v-else-if="rec.download.value.status === 'paused'">
-                  paused — it resumes when the session reconnects
+                  {{ t('remote.viewer.rec.paused') }}
                 </template>
-                <template v-else-if="rec.download.value.status === 'active'">downloading…</template>
+                <template v-else-if="rec.download.value.status === 'active'">{{ t('remote.viewer.rec.downloading') }}</template>
                 <template v-else>{{ describeRecordReason(rec.download.value.error) }}</template>
               </div>
               <div
@@ -684,7 +696,7 @@
                 class="text-caption text-medium-emphasis"
                 style="word-break: break-all"
               >
-                SHA-256 on the device: {{ rec.download.value.sha256 }}
+                {{ t('remote.viewer.rec.sha', { sha: rec.download.value.sha256 }) }}
               </div>
               <v-btn
                 v-if="rec.download.value.status === 'active' || rec.download.value.status === 'paused'"
@@ -693,7 +705,7 @@
                 class="mt-1"
                 @click="rec.cancelDownload()"
               >
-                Cancel
+                {{ t('remote.viewer.cancel') }}
               </v-btn>
             </div>
           </v-card-text>
@@ -701,10 +713,11 @@
       </v-menu>
       <span
         v-else-if="rc.phase.value === 'connected' && showsRecordRefusal(rc.recordRefused.value)"
-        :title="`Recording unavailable: ${describeRecordReason(rc.recordRefused.value)}`"
+        :title="t('remote.viewer.rec.unavailableWhy', { reason: describeRecordReason(rc.recordRefused.value) })"
         data-testid="rc-record-refused"
+        @click="explainRefusal(t('remote.viewer.rec.unavailableWhy', { reason: describeRecordReason(rc.recordRefused.value) }))"
       >
-        <v-btn icon variant="text" size="small" class="mr-1" disabled aria-label="Recording unavailable">
+        <v-btn icon variant="text" size="small" class="mr-1" disabled :aria-label="t('remote.viewer.rec.unavailable')">
           <v-icon>mdi-record-circle-outline</v-icon>
         </v-btn>
       </span>
@@ -712,29 +725,37 @@
            the device puts the curtain up after its own gates and says why
            when it does not. A disabled control explains the server's strip
            reason; nothing shows where no curtain could ever be. -->
-      <v-btn
+      <!-- FR-120 P1b — not ready, it greys out and says why on a tap. -->
+      <span
         v-if="rc.phase.value === 'connected' && rc.privacyGranted.value"
-        icon
-        variant="text"
-        size="small"
-        class="mr-1"
-        :color="rc.privacy.on.value ? 'primary' : undefined"
-        :loading="rc.privacy.pending.value"
-        :disabled="!rc.privacy.ready.value"
-        :aria-pressed="rc.privacy.on.value"
-        :aria-label="rc.privacy.on.value ? 'Uncover the device screen' : 'Cover the device screen'"
-        :title="privacyTitle"
-        data-testid="rc-privacy-btn"
-        @click="rc.privacy.set(!rc.privacy.on.value)"
+        class="d-inline-flex"
+        data-testid="rc-privacy-wrap"
+        @click="!rc.privacy.ready.value && explainRefusal(privacyTitle)"
       >
-        <v-icon>{{ rc.privacy.on.value ? 'mdi-eye-off' : 'mdi-eye-off-outline' }}</v-icon>
-      </v-btn>
+        <v-btn
+          icon
+          variant="text"
+          size="small"
+          class="mr-1"
+          :color="rc.privacy.on.value ? 'primary' : undefined"
+          :loading="rc.privacy.pending.value"
+          :disabled="!rc.privacy.ready.value"
+          :aria-pressed="rc.privacy.on.value"
+          :aria-label="rc.privacy.on.value ? t('remote.viewer.privacy.uncover') : t('remote.viewer.privacy.cover')"
+          :title="privacyTitle"
+          data-testid="rc-privacy-btn"
+          @click="rc.privacy.set(!rc.privacy.on.value)"
+        >
+          <v-icon>{{ rc.privacy.on.value ? 'mdi-eye-off' : 'mdi-eye-off-outline' }}</v-icon>
+        </v-btn>
+      </span>
       <span
         v-else-if="rc.phase.value === 'connected' && showsPrivacyRefusal(rc.privacyRefused.value)"
-        :title="`Privacy mode unavailable: ${describePrivacyReason(rc.privacyRefused.value)}`"
+        :title="t('remote.viewer.privacy.unavailableWhy', { reason: describePrivacyReason(rc.privacyRefused.value) })"
         data-testid="rc-privacy-refused"
+        @click="explainRefusal(t('remote.viewer.privacy.unavailableWhy', { reason: describePrivacyReason(rc.privacyRefused.value) }))"
       >
-        <v-btn icon variant="text" size="small" class="mr-1" disabled aria-label="Privacy mode unavailable">
+        <v-btn icon variant="text" size="small" class="mr-1" disabled :aria-label="t('remote.viewer.privacy.unavailable')">
           <v-icon>mdi-eye-off-outline</v-icon>
         </v-btn>
       </span>
@@ -755,8 +776,8 @@
             variant="text"
             size="small"
             class="mr-1"
-            :aria-label="`${transfersInFlightCount} transfer(s) in progress`"
-            :title="`Transfers (${transfersInFlightCount} active, ${rc.transfers.value.length} total)`"
+            :aria-label="t('remote.viewer.xfer.inProgress', { n: transfersInFlightCount })"
+            :title="t('remote.viewer.xfer.title', { active: transfersInFlightCount, total: rc.transfers.value.length })"
           >
             <v-badge
               v-if="transfersInFlightCount > 0"
@@ -775,32 +796,39 @@
         <v-card min-width="min(380px, calc(100vw - 24px))" max-width="460">
           <v-toolbar density="compact" color="primary">
             <v-icon class="ml-3">mdi-swap-vertical-circle-outline</v-icon>
-            <v-toolbar-title>Transfers</v-toolbar-title>
+            <v-toolbar-title>{{ t('remote.viewer.xfer.header') }}</v-toolbar-title>
           </v-toolbar>
           <v-list density="compact" class="pa-0" max-height="400" style="overflow-y: auto">
             <v-list-item
-              v-for="t in transfersOrdered"
-              :key="t.id"
-              :class="`transfer-row transfer-${t.status}`"
+              v-for="xfer in transfersOrdered"
+              :key="xfer.id"
+              :class="`transfer-row transfer-${xfer.status}`"
             >
               <template #prepend>
-                <v-icon :color="transferStatusColor(t)">
-                  {{ t.kind === 'upload' ? 'mdi-upload' : 'mdi-download' }}
+                <v-icon :color="transferStatusColor(xfer)">
+                  {{ xfer.kind === 'upload' ? 'mdi-upload' : 'mdi-download' }}
                 </v-icon>
               </template>
-              <v-list-item-title class="text-body-2 transfer-name" :title="t.name">
-                {{ t.name }}
+              <v-list-item-title class="text-body-2 transfer-name" :title="xfer.name">
+                {{ xfer.name }}
               </v-list-item-title>
               <v-list-item-subtitle>
-                <span class="text-caption">{{ transferStatusLabel(t) }}</span>
+                <span class="text-caption">{{ transferStatusLabel(xfer) }}</span>
+                <!-- FR-120 P1b — a failed transfer says why, as text: the
+                     error was only its icon's `title`. -->
+                <span
+                  v-if="xfer.status === 'error' && xfer.error"
+                  class="d-block text-caption text-error text-wrap"
+                  data-testid="rc-transfer-error"
+                >{{ xfer.error }}</span>
                 <v-progress-linear
                   v-if="
-                    t.status === 'running' ||
-                    t.status === 'queued' ||
-                    t.status === 'reconnecting'
+                    xfer.status === 'running' ||
+                    xfer.status === 'queued' ||
+                    xfer.status === 'reconnecting'
                   "
-                  :model-value="transferProgressPct(t)"
-                  :indeterminate="t.total === null"
+                  :model-value="transferProgressPct(xfer)"
+                  :indeterminate="xfer.total === null"
                   color="primary"
                   height="4"
                   class="mt-1"
@@ -809,25 +837,25 @@
               <template #append>
                 <v-btn
                   v-if="
-                    t.status === 'running' ||
-                    t.status === 'queued' ||
-                    t.status === 'reconnecting'
+                    xfer.status === 'running' ||
+                    xfer.status === 'queued' ||
+                    xfer.status === 'reconnecting'
                   "
                   icon
                   size="x-small"
                   variant="text"
-                  title="Cancel"
-                  @click="rc.cancelTransfer(t.id)"
+                  :title="t('remote.viewer.cancel')"
+                  @click="rc.cancelTransfer(xfer.id)"
                 >
                   <v-icon>mdi-close-circle-outline</v-icon>
                 </v-btn>
-                <v-icon v-else-if="t.status === 'complete'" color="success">
+                <v-icon v-else-if="xfer.status === 'complete'" color="success">
                   mdi-check-circle
                 </v-icon>
-                <v-icon v-else-if="t.status === 'error'" color="error" :title="t.error">
+                <v-icon v-else-if="xfer.status === 'error'" color="error" :title="xfer.error">
                   mdi-alert-circle
                 </v-icon>
-                <v-icon v-else-if="t.status === 'cancelled'" color="grey">
+                <v-icon v-else-if="xfer.status === 'cancelled'" color="grey">
                   mdi-cancel
                 </v-icon>
               </template>
@@ -846,11 +874,11 @@
         size="small"
         class="mr-1"
         prepend-icon="mdi-volume-off"
-        aria-label="Unmute host audio (autoplay was blocked)"
-        title="Click to hear the host's audio — the browser blocked autoplay"
+        :aria-label="t('remote.viewer.audio.unmuteAria')"
+        :title="t('remote.viewer.audio.unmuteTitle')"
         @click="onUnmuteAudio"
       >
-        Unmute
+        {{ t('remote.viewer.audio.unmute') }}
       </v-btn>
       <v-btn
         v-if="rc.phase.value === 'idle' || rc.phase.value === 'closed' || rc.phase.value === 'error'"
@@ -888,8 +916,8 @@
         variant="text"
         size="small"
         class="ml-1 rc-tb-fullscreen"
-        :aria-label="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"
-        :title="isFullscreen ? 'Exit fullscreen (hold Esc)' : fullscreenButtonTooltip"
+        :aria-label="isFullscreen ? t('remote.viewer.fs.exit') : t('remote.viewer.fs.enter')"
+        :title="isFullscreen ? t('remote.viewer.fs.exitTitle') : fullscreenButtonTooltip"
         @click="toggleFullscreen"
       >
         <v-icon>{{ isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-fullscreen' }}</v-icon>
@@ -969,7 +997,7 @@
         closable
         @click:close="rc.error.value = null"
       >
-        {{ rc.error.value }}
+        {{ rcSays(rc.error.value, t) }}
       </v-alert>
 
       <!-- PR-1 rehome: non-terminal progress notice (e.g. rerouting to
@@ -982,7 +1010,7 @@
         density="comfortable"
         class="ma-4"
       >
-        {{ rc.notice.value }}
+        {{ rcSays(rc.notice.value, t) }}
       </v-alert>
 
       <!-- FR-93 P1 — the agent says this session's mouse and keyboard will not
@@ -1005,8 +1033,8 @@
         @click:close="dismissedInputReach = rc.inputReach.value"
       >
         <strong>{{ rc.inputReach.value.reach === 'xwayland_only'
-          ? 'Your mouse and keyboard reach only some apps on this device.'
-          : 'Your mouse and keyboard do not reach this device’s desktop.' }}</strong>
+          ? t('remote.viewer.stage.inputSomeApps')
+          : t('remote.viewer.stage.inputNone') }}</strong>
         {{ asSentence(rc.inputReach.value.reason) }}
       </v-alert>
 
@@ -1022,9 +1050,8 @@
         class="ma-4"
         data-testid="rc-idle-warning"
       >
-        <strong>No activity for a while.</strong>
-        This session ends in {{ idleLeft }} s. Move the mouse or press a key over the remote
-        screen to keep it.
+        <strong>{{ t('remote.viewer.stage.idleTitle') }}</strong>
+        {{ t('remote.viewer.stage.idleBody', { s: idleLeft }) }}
       </v-alert>
       </div>
 
@@ -1147,12 +1174,12 @@
         </p>
         <p class="text-caption text-medium-emphasis mt-2">
           <template v-if="rc.phase.value === 'reconnecting'">
-            Reconnecting by itself once it is back (attempt {{ rc.reconnectAttempt.value }})…
+            {{ t('remote.viewer.stage.redialAsleep', { n: rc.reconnectAttempt.value }) }}
           </template>
           <template v-else>{{ phaseLabel }}</template>
         </p>
         <v-btn variant="tonal" size="small" class="mt-3" @click="leave()">
-          Cancel
+          {{ t('remote.viewer.cancel') }}
         </v-btn>
       </div>
 
@@ -1169,26 +1196,24 @@
       <div v-else-if="rc.phase.value === 'reconnecting'" class="empty-state">
         <v-progress-circular indeterminate size="64" color="warning" />
         <p class="text-body-1 mt-4">
-          Connection lost — reconnecting (attempt {{ rc.reconnectAttempt.value }})…
+          {{ t('remote.viewer.stage.lost', { n: rc.reconnectAttempt.value }) }}
         </p>
         <p class="text-caption text-medium-emphasis">
-          The session re-creates itself automatically. This can take a few
-          seconds while the device comes back.
+          {{ t('remote.viewer.stage.lostBody') }}
         </p>
         <p v-if="agent && !agent.is_online" class="text-caption text-warning">
-          The device currently reports offline — retries continue until it
-          returns.
+          {{ t('remote.viewer.stage.lostOffline') }}
         </p>
         <v-btn variant="tonal" size="small" class="mt-3" @click="leave()">
-          Cancel
+          {{ t('remote.viewer.cancel') }}
         </v-btn>
       </div>
 
       <div v-else-if="rc.phase.value === 'error'" class="empty-state">
         <v-icon size="96" color="error">mdi-connection</v-icon>
-        <p class="text-body-1 mt-2">The session could not continue.</p>
+        <p class="text-body-1 mt-2">{{ t('remote.viewer.stage.failed') }}</p>
         <p v-if="rc.error.value" class="text-caption text-medium-emphasis">
-          {{ rc.error.value }}
+          {{ rcSays(rc.error.value, t) }}
         </p>
         <!-- FR-102 P9b — a failed attempt of 30 s or more is worth asking
              about too ("couldn't connect" is a chip). The other branch of the
@@ -1209,7 +1234,7 @@
           :disabled="!canConnect"
           @click="startSession"
         >
-          Try again
+          {{ t('remote.viewer.stage.tryAgain') }}
         </v-btn>
         <!-- FR-100 P2a — the device answered with another key than the one
              this browser knows. Trusting it is the person's call, made here
@@ -1226,12 +1251,12 @@
           data-testid="rc-peer-auth-trust"
           @click="trustNewKeyAndConnect"
         >
-          Trust the new key and connect
+          {{ t('remote.viewer.stage.trustKey') }}
         </v-btn>
         <RdpFallbackCard
           :phase="rc.phase.value"
           :error-code="rc.errorCode.value"
-          :error-message="rc.error.value"
+          :error-message="rcSays(rc.error.value, t)"
           :media-unavailable-reason="rc.mediaUnavailable.value?.code ?? null"
           :media-unavailable-hint="rc.mediaUnavailable.value?.hint ?? null"
           :rdp-available="agent?.capabilities?.rdp_available ?? false"
@@ -1248,6 +1273,7 @@
         v-else-if="rc.phase.value === 'connected'"
         ref="stageEl"
         class="video-frame"
+        :data-drop-label="t('remote.viewer.files.dropToUpload')"
         :class="[`scale-${rc.scaleMode.value}`, { 'drag-over': isDragOver }]"
         :style="{ cursor: stageCursorCss, touchAction: stageTouchActionCss }"
         tabindex="0"
@@ -1353,22 +1379,22 @@
         </v-alert>
         <div v-if="rc.mediaUnavailable.value" class="no-media-overlay">
           <v-icon size="72" color="warning">mdi-monitor-off</v-icon>
-          <p class="text-body-1 mt-3">This device cannot capture its screen.</p>
+          <p class="text-body-1 mt-3">{{ t('remote.viewer.stage.noCapture') }}</p>
           <p v-if="rc.mediaUnavailable.value.hint" class="text-body-2 text-medium-emphasis mt-2 mx-auto no-media-hint">
             {{ rc.mediaUnavailable.value.hint }}
           </p>
           <p class="text-caption text-medium-emphasis mt-2">
-            Reported by the device as
+            {{ t('remote.viewer.stage.reportedAs') }}
             <code>{{ rc.mediaUnavailable.value.code }}</code>.
             <span v-if="rc.mediaUnavailable.value.detail">{{ rc.mediaUnavailable.value.detail }}</span>
           </p>
           <p class="text-caption text-medium-emphasis mt-1">
-            Remote shell, file transfer and the other channels are unaffected.
+            {{ t('remote.viewer.stage.otherChannelsFine') }}
           </p>
           <RdpFallbackCard
             :phase="rc.phase.value"
             :error-code="rc.errorCode.value"
-            :error-message="rc.error.value"
+            :error-message="rcSays(rc.error.value, t)"
             :media-unavailable-reason="rc.mediaUnavailable.value.code"
             :media-unavailable-hint="rc.mediaUnavailable.value.hint"
             :rdp-available="agent?.capabilities?.rdp_available ?? false"
@@ -1390,7 +1416,7 @@
           data-testid="rc-locked-rdp"
         >
           <v-icon size="72" color="warning">mdi-lock</v-icon>
-          <p class="text-body-1 mt-3">This device is on its lock screen.</p>
+          <p class="text-body-1 mt-3">{{ t('remote.viewer.stage.lockScreen') }}</p>
           <RdpFallbackCard
             :phase="rc.phase.value"
             :host-locked-blocked="true"
@@ -1416,16 +1442,14 @@
             {{ rc.mediaWaiting.value.hint }}
           </p>
           <p v-if="mediaWaitingCopy(rc.mediaWaiting.value.for).showsDeadline" class="text-caption text-medium-emphasis mt-2">
-            If nobody answers, the request ends at {{ mediaWaitingEnds }}.
+            {{ t('remote.viewer.stage.requestEnds', { at: mediaWaitingEnds }) }}
           </p>
         </div>
         <div v-else-if="!rc.hasMedia.value" class="no-media-overlay">
           <v-icon size="72" color="grey-lighten-1">mdi-video-off</v-icon>
-          <p class="text-body-1 mt-3">Connected — waiting for agent to publish a video track.</p>
+          <p class="text-body-1 mt-3">{{ t('remote.viewer.stage.noTrack') }}</p>
           <p class="text-caption text-medium-emphasis mt-1">
-            The agent needs to be built with the media feature
-            (<code>--features media</code>) to send video.
-            Input events flow as soon as the input channel is open.
+            {{ t('remote.viewer.stage.noTrackBody') }}
           </p>
         </div>
         <!-- Remote cursor overlay: canvas painted with the real OS
@@ -1486,16 +1510,15 @@
              none so they never eat clicks meant for the remote. -->
         <div v-if="shortcutOverlayVisible" class="kb-lock-toast">
           <v-icon size="small" class="mr-2">mdi-keyboard-variant</v-icon>
-          Shortcuts now go to the remote host — hold Esc to exit fullscreen.
-          Ctrl+Alt+End sends Ctrl+Alt+Del.
+          {{ t('remote.viewer.kb.toast') }}
         </div>
         <div
           v-else-if="isFullscreen && rc.keyboardLockActive.value"
           class="kb-lock-pill"
-          title="System shortcuts (Alt+Tab, Win, Ctrl+W) go to the remote host. Hold Esc to exit fullscreen."
+          :title="t('remote.viewer.kb.pillTitle')"
         >
           <v-icon size="x-small" class="mr-1">mdi-keyboard-variant</v-icon>
-          <span>remote keys</span>
+          <span>{{ t('remote.viewer.kb.pill') }}</span>
         </div>
         <!-- FR-109 — relative mode is on and the pointer is hidden: say how
              to get it back. Under Keyboard Lock Esc reaches the host, so the
@@ -1506,8 +1529,9 @@
           data-testid="rc-relative-mouse-hint"
         >
           <v-icon size="x-small" class="mr-1">mdi-cursor-move</v-icon>
-          <span>{{ (rc.relativeMouseAuto.value ? 'The host hid its cursor, so the mouse is relative' : 'Relative mouse')
-            + (rc.keyboardLockActive.value ? ': hold Esc to release it' : ': Esc releases it') }}</span>
+          <span>{{ t(rc.keyboardLockActive.value ? 'remote.viewer.relMouse.holdEsc' : 'remote.viewer.relMouse.esc', {
+            what: rc.relativeMouseAuto.value ? t('remote.viewer.relMouse.auto') : t('remote.viewer.relMouse.manual'),
+          }) }}</span>
         </div>
         <!-- FR-111 decision 4 — two fingers are panning a zoomed picture, so
              say why the host did not scroll. -->
@@ -1517,7 +1541,7 @@
           data-testid="rc-touch-pan-hint"
         >
           <v-icon size="x-small" class="mr-1">mdi-gesture-swipe</v-icon>
-          <span>Two fingers move the zoomed picture; zoom out to scroll the host</span>
+          <span>{{ t('remote.viewer.touch.panHint') }}</span>
         </div>
       </div>
     </div>
@@ -1527,7 +1551,7 @@
          rc:resolution {mode:'custom'} message on confirm. -->
     <v-dialog v-model="customResolutionDialog" max-width="480">
       <v-card>
-        <v-card-title>Custom remote resolution</v-card-title>
+        <v-card-title>{{ t('remote.viewer.res.customTitle') }}</v-card-title>
         <v-card-text>
           <!-- rc.35 — native-source hint. Surfaces the agent's actual
                panel resolution so the operator knows the upper bound
@@ -1536,14 +1560,11 @@
                explanation instead. -->
           <div class="text-caption text-medium-emphasis mb-3">
             <template v-if="nativeSourceLabel">
-              Agent native source: <strong>{{ nativeSourceLabel }}</strong>.
-              Values above this are capped to native — the capture
-              backend cannot upscale.
+              {{ t('remote.viewer.res.nativeSource') }} <strong>{{ nativeSourceLabel }}</strong>.
+              {{ t('remote.viewer.res.nativeCap') }}
             </template>
             <template v-else>
-              Agent's native dimensions haven't been observed yet — they
-              show up after the first decoded frame. Values larger than
-              the agent's panel resolution will be silently capped.
+              {{ t('remote.viewer.res.nativeUnknown') }}
             </template>
           </div>
           <div class="d-flex align-center mb-3">
@@ -1556,7 +1577,7 @@
               density="compact"
               hide-details
               variant="outlined"
-              label="Width"
+              :label="t('remote.viewer.res.width')"
               class="mr-2"
             />
             <span class="text-medium-emphasis mr-2">×</span>
@@ -1569,7 +1590,7 @@
               density="compact"
               hide-details
               variant="outlined"
-              label="Height"
+              :label="t('remote.viewer.res.height')"
             />
           </div>
           <!-- rc.35 — presets that exceed the agent native source get
@@ -1586,7 +1607,7 @@
               :prepend-icon="presetExceedsNative(p.w, p.h) ? 'mdi-alert-circle-outline' : undefined"
               @click="pickCustomResolutionPreset(p.w, p.h)"
             >
-              {{ p.w }} × {{ p.h }}{{ p.note ? ` — ${p.note}` : '' }}{{ presetExceedsNative(p.w, p.h) ? ' (capped)' : '' }}
+              {{ p.w }} × {{ p.h }}{{ p.note ? ` — ${p.note}` : '' }}{{ presetExceedsNative(p.w, p.h) ? ` ${t('remote.viewer.res.capped')}` : '' }}
             </v-chip>
           </v-chip-group>
           <!-- Live warning when the operator types dims exceeding the
@@ -1599,21 +1620,19 @@
             style="color: rgb(var(--v-theme-warning));"
           >
             <v-icon size="small" class="mr-1">mdi-alert-circle-outline</v-icon>
-            {{ customResolutionW }} × {{ customResolutionH }} exceeds native
-            {{ nativeSourceLabel }}. The agent will cap at native — applying
-            this value is equivalent to picking "Original resolution".
+            {{ t('remote.viewer.res.exceeds', { w: customResolutionW, h: customResolutionH, native: nativeSourceLabel }) }}
           </div>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="customResolutionDialog = false">Cancel</v-btn>
+          <v-btn variant="text" @click="customResolutionDialog = false">{{ t('remote.viewer.cancel') }}</v-btn>
           <v-btn
             color="primary"
             variant="flat"
             :disabled="!customResolutionValid"
             @click="confirmCustomResolution"
           >
-            Apply
+            {{ t('remote.viewer.res.apply') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -1632,9 +1651,9 @@
       <v-card class="rc-settings-card">
         <v-toolbar density="comfortable" color="surface">
           <v-icon class="ml-3">mdi-tune-variant</v-icon>
-          <v-toolbar-title>Viewer settings</v-toolbar-title>
+          <v-toolbar-title>{{ t('remote.viewer.settings.title') }}</v-toolbar-title>
           <v-spacer />
-          <v-btn icon variant="text" title="Close" aria-label="Close settings" @click="settingsOpen = false">
+          <v-btn icon variant="text" :title="t('remote.viewer.common.close')" :aria-label="t('remote.viewer.settings.close')" @click="settingsOpen = false">
             <v-icon>mdi-close</v-icon>
           </v-btn>
         </v-toolbar>
@@ -1645,10 +1664,10 @@
              asked, and four icon tabs need ~480 px — the Session tab sat 6 px
              into view on a 360 px phone. -->
         <v-tabs v-model="settingsTab" density="comfortable" color="primary" grow show-arrows>
-          <v-tab value="video" prepend-icon="mdi-video-outline">Video</v-tab>
-          <v-tab value="display" prepend-icon="mdi-monitor-screenshot">Display</v-tab>
-          <v-tab value="metrics" prepend-icon="mdi-speedometer">Metrics</v-tab>
-          <v-tab value="session" prepend-icon="mdi-tools">Session</v-tab>
+          <v-tab value="video" prepend-icon="mdi-video-outline">{{ t('remote.viewer.settings.video') }}</v-tab>
+          <v-tab value="display" prepend-icon="mdi-monitor-screenshot">{{ t('remote.viewer.settings.display') }}</v-tab>
+          <v-tab value="metrics" prepend-icon="mdi-speedometer">{{ t('remote.viewer.settings.metrics') }}</v-tab>
+          <v-tab value="session" prepend-icon="mdi-tools">{{ t('remote.viewer.settings.session') }}</v-tab>
         </v-tabs>
         <v-divider />
         <v-card-text class="pa-3 pa-md-4">
@@ -1657,8 +1676,8 @@
           <!-- A. VIDEO — host-side capture/encode; applies on next Connect -->
           <div class="d-flex align-center ga-2 mb-3">
             <v-icon size="small" color="primary">mdi-video-outline</v-icon>
-            <span class="text-subtitle-2 font-weight-medium">Video</span>
-            <v-chip size="x-small" variant="tonal" color="info" label>applies on next Connect</v-chip>
+            <span class="text-subtitle-2 font-weight-medium">{{ t('remote.viewer.settings.video') }}</span>
+            <v-chip size="x-small" variant="tonal" color="info" label>{{ t('remote.codec.appliesNext') }}</v-chip>
           </div>
           <!-- FR-77 — the codec picker is TWO independent axes, codec × colour
                detail (chroma format). Validity is a matrix: an entry that cannot
@@ -1699,12 +1718,12 @@
             variant="outlined"
             hide-details="auto"
             prepend-inner-icon="mdi-monitor-screenshot"
-            label="Resolution"
+            :label="t('remote.viewer.settings.resolution')"
             :hint="resolutionSettingHint"
             persistent-hint
             class="mb-4"
           />
-          <div class="text-caption text-medium-emphasis mb-1 ml-1">Priority</div>
+          <div class="text-caption text-medium-emphasis mb-1 ml-1">{{ t('remote.viewer.settings.priority') }}</div>
           <v-btn-toggle
             v-model="priority"
             mandatory
@@ -1714,9 +1733,9 @@
             density="comfortable"
             class="mb-1 d-flex w-100"
           >
-            <v-btn value="balanced" size="small" class="flex-grow-1">Balanced</v-btn>
-            <v-btn value="sharper" size="small" class="flex-grow-1">Sharper</v-btn>
-            <v-btn value="smoother" size="small" class="flex-grow-1">Smoother</v-btn>
+            <v-btn value="balanced" size="small" class="flex-grow-1">{{ t('remote.viewer.settings.balanced') }}</v-btn>
+            <v-btn value="sharper" size="small" class="flex-grow-1">{{ t('remote.viewer.settings.sharper') }}</v-btn>
+            <v-btn value="smoother" size="small" class="flex-grow-1">{{ t('remote.viewer.settings.smoother') }}</v-btn>
           </v-btn-toggle>
           <div class="text-caption text-medium-emphasis mb-2 ml-1">{{ priorityHint }}</div>
           <!-- FR-119 P1 — the frame rate, offered only by an agent that can be
@@ -1732,7 +1751,7 @@
             variant="outlined"
             hide-details="auto"
             prepend-inner-icon="mdi-speedometer"
-            label="Frame rate"
+            :label="t('remote.viewer.settings.frameRate')"
             :hint="frameRateHint"
             persistent-hint
             class="mt-3 mb-2"
@@ -1745,8 +1764,8 @@
           <!-- B. DISPLAY — viewer-side scaling + sharpening; live -->
           <div class="d-flex align-center ga-2 mb-3">
             <v-icon size="small" color="primary">mdi-fit-to-screen-outline</v-icon>
-            <span class="text-subtitle-2 font-weight-medium">Display</span>
-            <v-chip size="x-small" variant="tonal" color="success" label>live</v-chip>
+            <span class="text-subtitle-2 font-weight-medium">{{ t('remote.viewer.settings.display') }}</span>
+            <v-chip size="x-small" variant="tonal" color="success" label>{{ t('remote.viewer.settings.live') }}</v-chip>
           </div>
           <v-select
             v-model="scaleMode"
@@ -1755,7 +1774,7 @@
             variant="outlined"
             hide-details="auto"
             prepend-inner-icon="mdi-image-size-select-actual"
-            label="Fit in my window"
+            :label="t('remote.viewer.settings.fit')"
             :hint="displayScaleSettingHint"
             persistent-hint
             class="mb-4"
@@ -1771,7 +1790,7 @@
             variant="outlined"
             hide-details
             suffix="%"
-            label="Custom zoom"
+            :label="t('remote.viewer.settings.customZoom')"
             class="mb-4"
           />
           <v-btn
@@ -1783,8 +1802,19 @@
             :title="displayMatchTooltip"
             @click="toggleDisplayMatch"
           >
-            1:1 Match host display — {{ displayMatchOn ? 'ON' : 'OFF' }}
+            {{ t('remote.viewer.settings.matchDisplay', { state: displayMatchOn ? t('remote.viewer.common.onCaps') : t('remote.viewer.common.offCaps') }) }}
           </v-btn>
+          <!-- FR-120 P1b — a disabled control says why, as text: a disabled
+               v-btn takes no pointer events, so its `title` reached no one
+               (and a finger never). The same caption follows every disabled
+               control in this panel. -->
+          <div
+            v-if="!agentSupportsDisplayMatch"
+            class="text-caption text-medium-emphasis mt-1 ml-1"
+            data-testid="rc-display-match-why"
+          >
+            {{ displayMatchTooltip }}
+          </div>
           <div
             v-if="displayMatchSaid"
             class="text-caption text-medium-emphasis mt-1 ml-1"
@@ -1792,7 +1822,7 @@
           >
             {{ displayMatchSaid }}
           </div>
-          <div class="text-caption text-medium-emphasis mb-1 ml-1 mt-4">Text sharpening (FSR)</div>
+          <div class="text-caption text-medium-emphasis mb-1 ml-1 mt-4">{{ t('remote.viewer.settings.sharpen') }}</div>
           <v-btn-toggle
             v-model="sharpen"
             mandatory
@@ -1802,9 +1832,9 @@
             density="comfortable"
             class="mb-1 d-flex w-100"
           >
-            <v-btn value="auto" size="small" class="flex-grow-1">Auto</v-btn>
-            <v-btn value="on" size="small" class="flex-grow-1">On</v-btn>
-            <v-btn value="off" size="small" class="flex-grow-1">Off</v-btn>
+            <v-btn value="auto" size="small" class="flex-grow-1">{{ t('remote.viewer.common.auto') }}</v-btn>
+            <v-btn value="on" size="small" class="flex-grow-1">{{ t('remote.viewer.common.on') }}</v-btn>
+            <v-btn value="off" size="small" class="flex-grow-1">{{ t('remote.viewer.common.off') }}</v-btn>
           </v-btn-toggle>
           <div class="text-caption text-medium-emphasis mb-2 ml-1">{{ sharpenHint }}</div>
           <v-checkbox
@@ -1812,8 +1842,8 @@
             density="compact"
             hide-details="auto"
             class="mt-2"
-            label="Hide device name when a display name is set"
-            messages="The same setting as on the Devices page"
+            :label="t('mh.dev.hideName')"
+            :messages="t('remote.viewer.settings.hideNameHint')"
           />
           <!-- FR-125 — the mode's kill switch, offered where a finger is the
                pointer; remembered per browser. -->
@@ -1836,62 +1866,61 @@
                ask while chasing an fps ceiling. -->
           <div class="d-flex align-center ga-2 mb-1">
             <v-icon size="small" color="primary">mdi-speedometer</v-icon>
-            <span class="text-subtitle-2 font-weight-medium">Quality metrics</span>
+            <span class="text-subtitle-2 font-weight-medium">{{ t('remote.viewer.metrics.title') }}</span>
           </div>
           <!-- The toolbar readout is md and up (d-none d-md-flex), so on a phone
                the values under each item below are the only readout. -->
           <div class="text-caption text-medium-emphasis mb-2 ml-1">
-            Shown in the toolbar while a session is connected, on wider screens;
-            the live value is under each item here.
+            {{ t('remote.viewer.metrics.intro') }}
           </div>
           <v-checkbox
             v-model="metrics.codec"
             density="compact"
             hide-details="auto"
-            label="Codec, transport and decoder"
-            :messages="statsCodecLabel || 'e.g. AV1 4:2:0 HW (av1_qsv) · direct · dec HW · FSR'"
+            :label="t('remote.viewer.metrics.codec')"
+            :messages="statsCodecLabel || t('remote.viewer.metrics.eg', { v: 'AV1 4:2:0 HW (av1_qsv) · direct · dec HW · FSR' })"
           />
           <v-checkbox
             v-model="metrics.bitrate"
             density="compact"
             hide-details="auto"
-            label="Bitrate"
-            :messages="statsBitrateLabel || 'e.g. 1.8 Mbps'"
+            :label="t('remote.viewer.metrics.bitrate')"
+            :messages="statsBitrateLabel || t('remote.viewer.metrics.eg', { v: '1.8 Mbps' })"
           />
           <v-checkbox
             v-model="metrics.fps"
             density="compact"
             hide-details="auto"
-            label="Frame rate"
-            :messages="statsFpsLabel || 'e.g. 13 fps'"
+            :label="t('remote.viewer.settings.frameRate')"
+            :messages="statsFpsLabel || t('remote.viewer.metrics.eg', { v: '13 fps' })"
           />
           <v-checkbox
             v-model="metrics.resolution"
             density="compact"
             hide-details="auto"
-            label="Resolution"
-            :messages="statsResolutionLabel || 'e.g. 2880×1800'"
+            :label="t('remote.viewer.settings.resolution')"
+            :messages="statsResolutionLabel || t('remote.viewer.metrics.eg', { v: '2880×1800' })"
           />
           <v-checkbox
             v-model="metrics.scale"
             density="compact"
             hide-details="auto"
-            label="Display scale (1:1 check)"
-            :messages="statsScaleLabel || 'e.g. shown at 1.05× — 1:1 pixels when the host renders at your window size'"
+            :label="t('remote.viewer.metrics.scale')"
+            :messages="statsScaleLabel || t('remote.viewer.metrics.scaleEg')"
           />
           <v-checkbox
             v-model="metrics.age"
             density="compact"
             hide-details="auto"
-            label="Frame age (end to end)"
-            :messages="statsAgeLabel || 'e.g. ~4 ms — needs agent 0.4.9+'"
+            :label="t('remote.viewer.metrics.age')"
+            :messages="statsAgeLabel || t('remote.viewer.metrics.ageEg')"
           />
           <v-checkbox
             v-model="metrics.paint"
             density="compact"
             hide-details="auto"
-            label="Pipeline diagnostics"
-            messages="paint / forward / decode milliseconds — for chasing an fps ceiling"
+            :label="t('remote.viewer.metrics.pipeline')"
+            :messages="t('remote.viewer.metrics.pipelineHint')"
           />
           </v-tabs-window-item>
 
@@ -1899,7 +1928,7 @@
           <!-- C. SESSION — host audio + connected-only tools -->
           <div class="d-flex align-center ga-2 mb-3">
             <v-icon size="small" color="primary">mdi-cog-outline</v-icon>
-            <span class="text-subtitle-2 font-weight-medium">Session</span>
+            <span class="text-subtitle-2 font-weight-medium">{{ t('remote.viewer.settings.session') }}</span>
           </div>
           <v-btn
             block
@@ -1911,8 +1940,15 @@
             class="mb-2"
             @click="toggleAudio"
           >
-            Receive host audio — {{ audioOn ? 'ON' : 'OFF' }}
+            {{ t('remote.viewer.session.audio', { state: audioOn ? t('remote.viewer.common.onCaps') : t('remote.viewer.common.offCaps') }) }}
           </v-btn>
+          <div
+            v-if="sessionLive || !agentSupportsAudio"
+            class="text-caption text-medium-emphasis mt-n1 mb-2 ml-1"
+            data-testid="rc-audio-why"
+          >
+            {{ audioTooltip }}
+          </div>
           <!-- loopback-TURN corp-relay assist (browser half; default-OFF).
                Surfaces the localStorage opt-in as a one-click toggle so the
                UDP-blocked-corp field test doesn't need DevTools. The agent
@@ -1928,8 +1964,15 @@
             class="mb-2"
             @click="toggleLocalRelay"
           >
-            Corp relay assist — {{ localRelayOn ? 'ON' : 'OFF' }}
+            {{ t('remote.viewer.session.relay', { state: localRelayOn ? t('remote.viewer.common.onCaps') : t('remote.viewer.common.offCaps') }) }}
           </v-btn>
+          <div
+            v-if="sessionLive"
+            class="text-caption text-medium-emphasis mt-n1 mb-2 ml-1"
+            data-testid="rc-local-relay-why"
+          >
+            {{ localRelayTooltip }}
+          </div>
           <!-- Clipboard auto-sync (v2). Live-effective (not gated on
                sessionLive) — the composable subscribes/unsubscribes on
                flip. Old agents: local→remote still auto-pushes; the
@@ -1950,8 +1993,15 @@
             data-testid="rc-clipboard-autosync"
             @click="toggleClipboardAutoSync"
           >
-            Clipboard auto-sync — {{ clipboardAutoSyncOn ? 'ON' : 'OFF' }}
+            {{ t('remote.viewer.session.clipSync', { state: clipboardAutoSyncOn ? t('remote.viewer.common.onCaps') : t('remote.viewer.common.offCaps') }) }}
           </v-btn>
+          <div
+            v-if="rc.clipboardGranted.value && clipboardRefusal"
+            class="text-caption text-medium-emphasis mt-n1 mb-2 ml-1"
+            data-testid="rc-clipboard-autosync-why"
+          >
+            {{ clipboardRefusal }}
+          </div>
           <!-- FR-13 (#789): mac hosts only — Ctrl chords translate to Cmd
                (copy/paste work); switch OFF to send literal Ctrl for
                terminal work (SIGINT etc). -->
@@ -1961,11 +2011,11 @@
             variant="tonal"
             :color="rc.ctrlAsCmd.value ? 'primary' : undefined"
             prepend-icon="mdi-apple-keyboard-command"
-            title="ON: your Ctrl acts as the Mac's Cmd (Ctrl+C copies). OFF: literal Ctrl reaches the host (Ctrl+C is SIGINT in a terminal)."
+            :title="t('remote.viewer.session.ctrlCmdTitle')"
             class="mb-2"
             @click="rc.ctrlAsCmd.value = !rc.ctrlAsCmd.value"
           >
-            Ctrl acts as Cmd — {{ rc.ctrlAsCmd.value ? 'ON' : 'OFF' }}
+            {{ t('remote.viewer.session.ctrlCmd', { state: rc.ctrlAsCmd.value ? t('remote.viewer.common.onCaps') : t('remote.viewer.common.offCaps') }) }}
           </v-btn>
           <!-- rc.227 — manual remote-layout picker. Caps-gated ('set') AND
                self-gated on a received rc:layout (needs the installed
@@ -1981,8 +2031,8 @@
             variant="outlined"
             hide-details="auto"
             prepend-inner-icon="mdi-keyboard-settings-outline"
-            label="Remote keyboard layout"
-            hint="Switches the HOST's active layout (like pressing Alt+Shift there). Typing usually auto-switches; use this if an app doesn't follow."
+            :label="t('remote.viewer.session.layout')"
+            :hint="t('remote.viewer.session.layoutHint')"
             persistent-hint
             class="mb-2"
             @update:model-value="onRemoteLayoutPick"
@@ -1999,7 +2049,7 @@
               data-testid="rc-files-upload"
               @click="fileInput?.click()"
             >
-              Upload file → remote
+              {{ t('remote.viewer.files.uploadToRemote') }}
             </v-btn>
             <v-btn
               block
@@ -2009,17 +2059,24 @@
               :title="
                 filesRefusal ??
                 (agentSupportsBrowse
-                  ? 'Browse remote files (download)'
+                  ? t('remote.viewer.files.browseTitle')
                   : isLegacyFileDc
-                    ? 'Browse needs agent 0.3.0+ — upgrade host agent'
-                    : 'Browse disabled by host config')
+                    ? t('remote.viewer.files.browseNeedsAgent')
+                    : t('remote.viewer.files.browseDisabled'))
               "
               class="mb-2"
               data-testid="rc-files-browse"
               @click="filesDrawer = true; settingsOpen = false"
             >
-              Browse remote files
+              {{ t('remote.viewer.files.browse') }}
             </v-btn>
+            <div
+              v-if="filesWhy"
+              class="text-caption text-medium-emphasis mt-n1 mb-2 ml-1"
+              data-testid="rc-files-why"
+            >
+              {{ filesWhy }}
+            </div>
             <!-- FR-56 AC10 — never disabled: a host that cannot serve the
                  feature says WHY in the dialog (`unavailable.reason`), and a
                  greyed button with no tooltip was the one place that reason
@@ -2033,13 +2090,13 @@
               prepend-icon="mdi-apps"
               :title="
                 agentAppsCaps.includes('list')
-                  ? 'List, focus or launch apps on the controlled host'
-                  : 'Remote apps were not available when this agent announced itself — open to see why'
+                  ? t('remote.viewer.apps.buttonTitle')
+                  : t('remote.viewer.apps.buttonUnavailable')
               "
               class="mb-2"
               @click="openAppsDialog(); settingsOpen = false"
             >
-              Remote apps
+              {{ t('remote.viewer.apps.button') }}
             </v-btn>
             <v-btn
               block
@@ -2048,7 +2105,7 @@
               class="mb-2"
               @click="openAgentLogDialog(); settingsOpen = false"
             >
-              Agent logs
+              {{ t('remote.viewer.log.button') }}
             </v-btn>
           </template>
           </v-tabs-window-item>
@@ -2071,18 +2128,19 @@
       <v-card>
         <v-toolbar density="compact" color="primary">
           <v-icon class="ml-3">mdi-apps</v-icon>
-          <v-toolbar-title class="text-body-1">Apps</v-toolbar-title>
+          <v-toolbar-title class="text-body-1">{{ t('remote.viewer.apps.title') }}</v-toolbar-title>
           <v-spacer />
           <v-btn
             icon
             size="small"
             :loading="rc.appsLoading.value"
-            title="Refresh"
+            :title="t('remote.viewer.common.refresh')"
+            :aria-label="t('remote.viewer.common.refresh')"
             @click="refreshAppsSafe"
           >
             <v-icon>mdi-refresh</v-icon>
           </v-btn>
-          <v-btn icon size="small" title="Close" @click="appsDialog = false">
+          <v-btn icon size="small" :title="t('remote.viewer.common.close')" :aria-label="t('remote.viewer.common.close')" @click="appsDialog = false">
             <v-icon>mdi-close</v-icon>
           </v-btn>
         </v-toolbar>
@@ -2093,10 +2151,10 @@
           variant="tonal"
           class="ma-2"
         >
-          {{ rc.appsError.value }}
+          {{ rcSays(rc.appsError.value, t) }}
         </v-alert>
         <v-list density="compact" max-height="420" class="overflow-y-auto">
-          <v-list-subheader>Open windows</v-list-subheader>
+          <v-list-subheader>{{ t('remote.viewer.apps.openWindows') }}</v-list-subheader>
           <v-list-item
             v-for="w in rc.remoteWindows.value"
             :key="w.window_id"
@@ -2110,7 +2168,7 @@
             <v-list-item-subtitle v-if="w.session">tmux: {{ w.session }}</v-list-item-subtitle>
             <template #append>
               <v-chip v-if="w.focused" size="x-small" color="primary" variant="flat">
-                focused
+                {{ t('remote.viewer.apps.focused') }}
               </v-chip>
             </template>
           </v-list-item>
@@ -2124,7 +2182,7 @@
               rc.appsSupported.value !== false
             "
             class="text-medium-emphasis"
-            title="No windows reported"
+            :title="t('remote.viewer.apps.noWindows')"
           />
           <!-- FR-56 P2 — say what this list could NOT see. On a Wayland host
                the agent enumerates Xwayland windows and is blind to native
@@ -2139,7 +2197,7 @@
               variant="tonal"
               class="text-caption"
             >
-              Not listed — {{ rc.appsCoverage.value.unlisted }}
+              {{ t('remote.viewer.apps.notListed', { why: rc.appsCoverage.value.unlisted }) }}
             </v-alert>
           </v-list-item>
           <!-- FR-56 P5 — a reachable desktop does not make the buttons work.
@@ -2158,17 +2216,16 @@
               class="text-caption"
             >
               <div
-                v-for="t in rc.appsCoverage.value.missing_tools"
-                :key="t.tool"
+                v-for="tool in rc.appsCoverage.value.missing_tools"
+                :key="tool.tool"
               >
-                <strong>{{ t.tool }}</strong> is not installed on the agent
-                host — {{ t.blocks }} ({{ t.install }})
+                <strong>{{ tool.tool }}</strong> {{ t('remote.viewer.apps.missingTool', { blocks: tool.blocks, install: tool.install }) }}
               </div>
             </v-alert>
           </v-list-item>
           <template v-if="rc.launchableApps.value.length">
             <v-divider />
-            <v-list-subheader>Launch new</v-list-subheader>
+            <v-list-subheader>{{ t('remote.viewer.apps.launchNew') }}</v-list-subheader>
             <v-list-item
               v-for="a in rc.launchableApps.value"
               :key="a.key"
@@ -2189,7 +2246,7 @@
         <v-toolbar density="compact" color="primary">
           <v-icon class="ml-4">mdi-file-document-outline</v-icon>
           <v-toolbar-title>
-            Agent log
+            {{ t('remote.viewer.log.title') }}
             <span
               v-if="rc.agentLogs.value?.path"
               class="ml-2 text-caption text-truncate"
@@ -2207,14 +2264,14 @@
             variant="outlined"
             class="ml-2"
             style="max-width: 120px;"
-            label="Lines"
+            :label="t('remote.viewer.log.lines')"
             @update:model-value="refreshAgentLog"
           />
           <v-btn
             icon
             variant="text"
             :loading="rc.agentLogsLoading.value"
-            title="Refresh"
+            :title="t('remote.viewer.common.refresh')"
             @click="refreshAgentLog"
           >
             <v-icon>mdi-refresh</v-icon>
@@ -2222,7 +2279,7 @@
           <v-btn
             icon
             variant="text"
-            title="Copy to clipboard"
+            :title="t('remote.viewer.log.copy')"
             :disabled="!rc.agentLogs.value?.lines?.length"
             @click="copyAgentLog"
           >
@@ -2231,7 +2288,7 @@
           <v-btn
             icon
             variant="text"
-            title="Close"
+            :title="t('remote.viewer.common.close')"
             @click="agentLogDialog = false"
           >
             <v-icon>mdi-close</v-icon>
@@ -2248,7 +2305,7 @@
             v-else-if="!rc.agentLogs.value?.lines?.length && !rc.agentLogsLoading.value"
             class="pa-3 text-medium-emphasis text-caption"
           >
-            No log lines yet. Click Refresh to fetch.
+            {{ t('remote.viewer.log.empty') }}
           </div>
           <pre
             v-else
@@ -2259,8 +2316,7 @@
             v-if="rc.agentLogs.value?.truncated"
             class="pa-2 text-caption text-medium-emphasis"
           >
-            Showing the last {{ rc.agentLogs.value?.lines?.length || 0 }} lines —
-            older entries omitted. Increase line count to see more.
+            {{ t('remote.viewer.log.truncated', { n: rc.agentLogs.value?.lines?.length || 0 }) }}
           </div>
         </v-card-text>
       </v-card>
@@ -2277,6 +2333,7 @@
       :width="xs ? displayWidth : 420"
       temporary
       class="files-drawer"
+      :data-drop-label="t('remote.viewer.files.dropHere')"
       :class="{ 'drawer-drag-over': isDrawerDragOver }"
       tabindex="0"
       @dragenter.prevent.stop="onDrawerDragEnter"
@@ -2286,12 +2343,14 @@
     >
       <v-toolbar density="compact" color="primary">
         <v-icon class="ml-4">mdi-folder-open</v-icon>
-        <v-toolbar-title>Remote files</v-toolbar-title>
+        <v-toolbar-title>{{ t('remote.viewer.files.title') }}</v-toolbar-title>
         <v-spacer />
-        <v-btn icon variant="text" :disabled="dirLoading" title="Refresh" @click="navigateTo(currentDirPath)">
+        <!-- FR-120 P1b — every icon button here is named (`aria-label`), not
+             only titled: a title is a mouse's, and a screen reader's last resort. -->
+        <v-btn icon variant="text" :disabled="dirLoading" :title="t('remote.viewer.common.refresh')" :aria-label="t('remote.viewer.common.refresh')" @click="navigateTo(currentDirPath)">
           <v-icon>mdi-refresh</v-icon>
         </v-btn>
-        <v-btn icon variant="text" title="Close" @click="filesDrawer = false">
+        <v-btn icon variant="text" :title="t('remote.viewer.common.close')" :aria-label="t('remote.viewer.common.close')" @click="filesDrawer = false">
           <v-icon>mdi-close</v-icon>
         </v-btn>
       </v-toolbar>
@@ -2301,7 +2360,8 @@
           variant="text"
           size="small"
           :disabled="isRootsView || dirLoading"
-          title="Parent directory"
+          :title="t('remote.viewer.files.parent')"
+          :aria-label="t('remote.viewer.files.parent')"
           @click="navigateTo(currentParent || '')"
         >
           <v-icon>mdi-arrow-up</v-icon>
@@ -2311,7 +2371,8 @@
           variant="text"
           size="small"
           :disabled="dirLoading"
-          title="Upload staging folder (rc.22 ESET-evasive staging — partials live here mid-upload)"
+          :title="t('remote.viewer.files.stagingTitle')"
+          :aria-label="t('remote.viewer.files.staging')"
           @click="navigateTo(STAGING_PATH)"
         >
           <v-icon>mdi-package-variant-closed</v-icon>
@@ -2321,7 +2382,8 @@
           variant="text"
           size="small"
           :disabled="dirLoading"
-          title="Drives / roots"
+          :title="t('remote.viewer.files.roots')"
+          :aria-label="t('remote.viewer.files.roots')"
           @click="navigateTo('')"
         >
           <v-icon>mdi-monitor</v-icon>
@@ -2335,8 +2397,8 @@
           variant="text"
           size="small"
           :disabled="dirLoading || drawerUploadDestPath() === undefined"
-          title="Upload here"
-          aria-label="Upload here"
+          :title="t('remote.viewer.files.uploadHere')"
+          :aria-label="t('remote.viewer.files.uploadHere')"
           data-testid="files-upload-here"
           @click="drawerFileInput?.click()"
         >
@@ -2348,7 +2410,7 @@
           density="compact"
           hide-details
           variant="outlined"
-          placeholder="Path (Enter to go)"
+          :placeholder="t('remote.viewer.files.pathPlaceholder')"
           @keyup.enter="navigateTo(dirPathInput)"
         />
       </div>
@@ -2383,8 +2445,8 @@
               icon
               size="x-small"
               variant="text"
-              :title="`Open ${entry.name}`"
-              :aria-label="`Open ${entry.name}`"
+              :title="t('remote.viewer.files.openNamed', { name: entry.name })"
+              :aria-label="t('remote.viewer.files.openNamed', { name: entry.name })"
               data-testid="files-open-folder"
               @click.stop="onEntryDblClick(entry)"
             >
@@ -2395,15 +2457,8 @@
               size="x-small"
               variant="text"
               :disabled="entry.is_dir ? !agentSupportsFolderDownload : !agentSupportsDownload"
-              :title="
-                entry.is_dir
-                  ? agentSupportsFolderDownload
-                    ? `Download ${entry.name} as zip (Chrome/Edge only)`
-                    : 'Folder download needs agent 0.3.0+'
-                  : agentSupportsDownload
-                    ? `Download ${entry.name}`
-                    : 'Download needs agent 0.3.0+'
-              "
+              :title="downloadLabel(entry)"
+              :aria-label="downloadLabel(entry)"
               @click.stop="downloadEntry(entry)"
             >
               <v-icon>{{ entry.is_dir ? 'mdi-folder-zip' : 'mdi-download' }}</v-icon>
@@ -2412,7 +2467,7 @@
         </v-list-item>
         <v-list-item v-if="!dirLoading && dirEntries.length === 0 && !dirError">
           <v-list-item-subtitle class="text-disabled">
-            (empty directory)
+            {{ t('remote.viewer.files.empty') }}
           </v-list-item-subtitle>
         </v-list-item>
       </v-list>
@@ -2559,6 +2614,7 @@ import { pictureOverflows, stageTouchAction } from '@/composables/touchInput'
 import {
   BUILTIN_PRESETS,
   CONTROLS_STORAGE_PREFIX,
+  builtinPresetNameKey,
   orgPresets,
   presetById,
   readControlsPreset,
@@ -2574,6 +2630,7 @@ import {
   writeImmersiveSetting,
 } from '@/composables/useImmersiveViewer'
 import { secondaryDeviceName, useHideDeviceName } from '@/composables/useHideDeviceName'
+import { rcSays } from '@/composables/rcSays'
 import { asSentence } from '@/utils/sentence'
 import { hostOffers, hostReason, hostSpeaks } from '@/utils/hostUnavailable'
 import { useCapabilitiesStore } from '@/stores/capabilities'
@@ -2633,6 +2690,12 @@ const rc = useRemoteControl(agent, {
 })
 const { t } = useI18n()
 const { showSuccess, showError, showSnackbar } = useSnackbar()
+/** FR-120 P1b — a greyed toolbar control's reason, on a tap. A disabled v-btn takes no
+ *  pointer events, so the tap lands on the span around it, which says why: its `title`
+ *  reached a mouse only. */
+function explainRefusal(why: string | null | undefined): void {
+  if (why) showSnackbar(why, 'info', 6000)
+}
 // rc.199 — Vuetify viewport helper; drives the Settings dialog's
 // fullscreen-on-phone behaviour so one panel serves every viewport.
 const { mobile, xs, width: displayWidth, height: displayHeight } = useDisplay()
@@ -2753,16 +2816,16 @@ const privacyTitle = computed(() => {
     // FR-99 P4 — what the curtain did to the device's speakers, when it says.
     const sound =
       rc.privacy.hostMuted.value === true
-        ? ' Its speakers are muted too.'
+        ? t('remote.viewer.privacy.mutedToo')
         : rc.privacy.hostMuted.value === false
-          ? " Its speakers couldn't be muted."
+          ? t('remote.viewer.privacy.notMuted')
           : ''
-    return `Privacy mode is on: the person at the device sees a notice instead of the screen.${sound} Click to turn it off.`
+    return t('remote.viewer.privacy.onTitle', { sound })
   }
   const why = describePrivacyReason(rc.privacy.reason.value)
   return why
-    ? `Privacy mode is off: ${why}`
-    : "Privacy mode: cover the device's screen while you work"
+    ? t('remote.viewer.privacy.offBecause', { why })
+    : t('remote.viewer.privacy.offTitle')
 })
 // A refusal, or the curtain coming down unasked (the owner switched privacy
 // mode off), is said out loud: the icon alone changes too quietly.
@@ -2770,7 +2833,7 @@ watch(
   () => [rc.privacy.reason.value, rc.privacy.on.value] as const,
   ([why, on]) => {
     if (why && !on && why !== 'session_ended') {
-      showError(`Privacy mode: ${describePrivacyReason(why)}`)
+      showError(t('remote.viewer.privacy.said', { why: describePrivacyReason(why) }))
     }
   },
 )
@@ -2793,9 +2856,9 @@ const audioRefusal = computed(() => featureRefusal(rc.featuresRefused.value, 'au
 // attention sequence advertises `sas`, and the button sends that instead.
 const sasOffered = computed(() => hostOffers(agent.value?.capabilities, 'sas'))
 const sasTitle = computed(() => {
-  const base = 'Send Ctrl+Alt+Del (Ctrl+Alt+End over the viewer does the same).'
+  const base = t('remote.viewer.sas.base')
   if (agentSendsSas(agent.value?.capabilities?.input)) {
-    return `${base} The host sends the real one, which reaches the Windows lock and sign-in screens.`
+    return `${base} ${t('remote.viewer.sas.real')}`
   }
   const why = hostReason(agent.value?.capabilities, 'sas')
   return why ? `${base} ${why}` : base
@@ -2813,7 +2876,7 @@ watch(
 watch(
   () => rc.audioUnavailable.value,
   (reason) => {
-    if (reason) showSnackbar(reason.hint || 'This host sends no sound in this session.', 'warning', 10000)
+    if (reason) showSnackbar(reason.hint || t('remote.viewer.audio.noSound'), 'warning', 10000)
   },
 )
 // FR-85 P3b-3 — a deliberate Disconnect ends a recording first: to the device
@@ -2838,7 +2901,7 @@ async function onDownloadRecording(it: RemoteRecordingItem) {
     const code = e instanceof Error ? e.message : String(e)
     // Closing the save dialog is a choice, not an error to report.
     if (/abort/i.test(code)) return
-    showError(`Download failed: ${describeRecordReason(code)}`)
+    showError(t('remote.viewer.files.downloadFailed', { why: describeRecordReason(code) }))
   }
 }
 
@@ -2858,9 +2921,9 @@ async function onSendClipboard() {
   try {
     const ok = await rc.sendClipboardToAgent()
     if (ok) {
-      showSuccess('Clipboard sent to remote')
+      showSuccess(t('remote.viewer.clip.sent'))
     } else {
-      showError('Could not read your clipboard (permission denied?)')
+      showError(t('remote.viewer.clip.readFailed'))
     }
   } finally {
     clipboardBusy.value = false
@@ -2888,7 +2951,7 @@ async function onGetClipboard() {
         // html/text alternates if the bridge write fails.
         const ok = await rc.writeLocalNativeClipboard(content)
         if (ok) {
-          showSuccess('Copied remote clipboard (full fidelity — RTF with images)')
+          showSuccess(t('remote.viewer.clip.copiedNative'))
         } else if (content.html) {
           await globalThis.navigator.clipboard.write([
             new ClipboardItem({
@@ -2896,16 +2959,16 @@ async function onGetClipboard() {
               'text/plain': new Blob([content.text], { type: 'text/plain' }),
             }),
           ])
-          showSuccess(`Copied remote clipboard (formatted, ${content.text.length} chars)`)
+          showSuccess(t('remote.viewer.clip.copiedFormatted', { n: content.text.length }))
         } else {
           await globalThis.navigator.clipboard.writeText(content.text)
-          showSuccess(`Copied remote clipboard (${content.text.length} chars)`)
+          showSuccess(t('remote.viewer.clip.copiedText', { n: content.text.length }))
         }
       } else if (content.kind === 'image') {
         await globalThis.navigator.clipboard.write([
           new ClipboardItem({ 'image/png': content.blob }),
         ])
-        showSuccess(`Copied remote image (${content.w}×${content.h})`)
+        showSuccess(t('remote.viewer.clip.copiedImage', { w: content.w, h: content.h }))
       } else if (content.kind === 'html') {
         // v2.1 — both formats: rich paste targets take the html,
         // plain editors the text alt.
@@ -2915,20 +2978,20 @@ async function onGetClipboard() {
             'text/plain': new Blob([content.text], { type: 'text/plain' }),
           }),
         ])
-        showSuccess(`Copied remote clipboard (formatted, ${content.text.length} chars)`)
+        showSuccess(t('remote.viewer.clip.copiedFormatted', { n: content.text.length }))
       } else {
         await globalThis.navigator.clipboard.writeText(content.text)
         showSuccess(
           content.text.length > 0
-            ? `Copied remote clipboard (${content.text.length} chars)`
-            : 'Remote clipboard is empty',
+            ? t('remote.viewer.clip.copiedText', { n: content.text.length })
+            : t('remote.viewer.clip.empty'),
         )
       }
     } catch (e) {
-      showError(`Could not write to your clipboard: ${(e as Error).message}`)
+      showError(t('remote.viewer.clip.writeFailed', { why: (e as Error).message }))
     }
   } catch (e) {
-    showError(`Remote clipboard read failed: ${(e as Error).message}`)
+    showError(t('remote.viewer.clip.remoteReadFailed', { why: (e as Error).message }))
   } finally {
     clipboardBusy.value = false
   }
@@ -3042,7 +3105,7 @@ async function onStageDrop(ev: DragEvent) {
       const walked = await Promise.all(folderWalks)
       for (const folder of walked) uploadList.push(...folder)
     } catch (e) {
-      showError(`Folder walk failed: ${(e as Error).message}`)
+      showError(t('remote.viewer.files.walkFailed', { why: (e as Error).message }))
     }
   }
   if (uploadList.length > 0) void uploadMany(uploadList)
@@ -3112,7 +3175,7 @@ const appsDialog = ref(false)
 function refreshAppsSafe() {
   void rc
     .refreshApps()
-    .catch((e) => showError(`Apps: ${e instanceof Error ? e.message : String(e)}`))
+    .catch((e) => showError(t('remote.viewer.apps.failed', { why: e instanceof Error ? e.message : String(e) })))
 }
 function openAppsDialog() {
   appsDialog.value = true
@@ -3121,22 +3184,22 @@ function openAppsDialog() {
 async function onFocusWindow(w: { window_id: string }) {
   try {
     const r = await rc.focusWindow(w.window_id)
-    if (!r.ok) showError(r.error ?? 'Focus failed')
+    if (!r.ok) showError(r.error ?? t('remote.viewer.apps.focusFailed'))
   } catch (e) {
-    showError(`Focus failed: ${e instanceof Error ? e.message : String(e)}`)
+    showError(t('remote.viewer.apps.focusFailedWhy', { why: e instanceof Error ? e.message : String(e) }))
   }
 }
 async function onLaunchApp(a: { key: string; label: string }) {
   try {
     const r = await rc.launchApp(a.key)
     if (r.ok) {
-      showSuccess(`Launched ${a.label}`)
+      showSuccess(t('remote.viewer.apps.launched', { name: a.label }))
       void rc.refreshApps().catch(() => {})
     } else {
-      showError(r.error ?? 'Launch failed')
+      showError(r.error ?? t('remote.viewer.apps.launchFailed'))
     }
   } catch (e) {
-    showError(`Launch failed: ${e instanceof Error ? e.message : String(e)}`)
+    showError(t('remote.viewer.apps.launchFailedWhy', { why: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -3161,7 +3224,7 @@ async function refreshAgentLog() {
     await nextTick()
     scrollAgentLogToBottom()
   } catch (e) {
-    showError(`Failed to fetch agent log: ${e instanceof Error ? e.message : String(e)}`)
+    showError(t('remote.viewer.log.fetchFailed', { why: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -3175,9 +3238,9 @@ async function copyAgentLog() {
   if (!lines || lines.length === 0) return
   try {
     await navigator.clipboard.writeText(lines.join('\n'))
-    showSuccess('Agent log copied to clipboard')
+    showSuccess(t('remote.viewer.log.copied'))
   } catch (e) {
-    showError(`Copy failed: ${e instanceof Error ? e.message : String(e)}`)
+    showError(t('remote.viewer.log.copyFailed', { why: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -3279,6 +3342,17 @@ function formatFileSize(bytes: number | null): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+/** A row's download button, named (title and `aria-label` both): what it downloads, or
+ *  why it cannot (FR-120 P1b — an icon button with only a `title` had no name). */
+function downloadLabel(entry: { name: string; is_dir: boolean }): string {
+  if (entry.is_dir) {
+    return agentSupportsFolderDownload.value
+      ? t('remote.viewer.files.downloadZip', { name: entry.name })
+      : t('remote.viewer.files.folderNeedsAgent')
+  }
+  return agentSupportsDownload.value ? t('remote.viewer.files.downloadNamed', { name: entry.name }) : t('remote.viewer.files.downloadNeedsAgent')
+}
+
 async function downloadEntry(entry: { name: string; is_dir: boolean }) {
   // Reuse `nextDirPath`'s separator logic via a small wrapper:
   // for file entries the helper returns null (it's "next dir to
@@ -3295,13 +3369,13 @@ async function downloadEntry(entry: { name: string; is_dir: boolean }) {
   try {
     if (entry.is_dir) {
       const r = await rc.downloadFolder(fullPath, `${entry.name}.zip`)
-      showSuccess(`Downloaded ${r.name} (${formatFileSize(r.bytes)})`)
+      showSuccess(t('remote.viewer.files.downloaded', { name: r.name, size: formatFileSize(r.bytes) }))
     } else {
       const r = await rc.downloadFile(fullPath, entry.name)
-      showSuccess(`Downloaded ${r.name} (${formatFileSize(r.bytes)})`)
+      showSuccess(t('remote.viewer.files.downloaded', { name: r.name, size: formatFileSize(r.bytes) }))
     }
   } catch (e) {
-    showError(`Download failed: ${(e as Error).message}`)
+    showError(t('remote.viewer.files.downloadFailed', { why: (e as Error).message }))
   }
 }
 
@@ -3442,7 +3516,7 @@ async function onDrawerDrop(ev: DragEvent) {
       const walked = await Promise.all(folderWalks)
       for (const folder of walked) uploadList.push(...folder)
     } catch (e) {
-      showError(`Folder walk failed: ${(e as Error).message}`)
+      showError(t('remote.viewer.files.walkFailed', { why: (e as Error).message }))
     }
   }
   if (uploadList.length > 0) void uploadMany(uploadList, drawerUploadDestPath())
@@ -3493,11 +3567,11 @@ async function downloadEntries(
   }
   if (entries.length > 1) {
     if (failed === 0) {
-      showSuccess(`Downloaded ${success} entries`)
+      showSuccess(t('remote.viewer.files.downloadedMany', { n: success }))
     } else if (success === 0) {
-      showError(`All ${failed} downloads failed`)
+      showError(t('remote.viewer.files.downloadsAllFailed', { n: failed }))
     } else {
-      showError(`Downloaded ${success}/${entries.length} — ${failed} failed`)
+      showError(t('remote.viewer.files.downloadsSomeFailed', { ok: success, total: entries.length, failed }))
     }
   }
 }
@@ -3515,20 +3589,20 @@ async function uploadMany(
     if (failed.length === 0) {
       showSuccess(
         ok === 1
-          ? `Uploaded ${results[0].name}`
-          : `Uploaded ${ok} files`
+          ? t('remote.viewer.files.uploadedOne', { name: results[0].name })
+          : t('remote.viewer.files.uploadedMany', { n: ok })
       )
     } else if (ok === 0) {
       const first = failed[0] as { name: string; error: string }
       showError(
         failed.length === 1
-          ? `Upload failed: ${first.error}`
-          : `${failed.length} uploads failed (first: ${first.name} — ${first.error})`
+          ? t('remote.viewer.files.uploadFailed', { why: first.error })
+          : t('remote.viewer.files.uploadsAllFailed', { n: failed.length, name: first.name, why: first.error })
       )
     } else {
       const first = failed[0] as { name: string; error: string }
       showError(
-        `Uploaded ${ok}/${items.length} — ${failed.length} failed (e.g. ${first.name}: ${first.error})`
+        t('remote.viewer.files.uploadsSomeFailed', { ok, total: items.length, failed: failed.length, name: first.name, why: first.error })
       )
     }
   } finally {
@@ -3543,11 +3617,11 @@ async function uploadMany(
 // restored preference without an extra effect.
 // Scale mode + custom percent. Proxy through a computed so the
 // composable stays the source of truth (persists across reloads).
-const scaleOptions = [
-  { title: 'Adaptive', value: 'adaptive' },
-  { title: 'Original', value: 'original' },
-  { title: 'Custom…', value: 'custom' },
-] as const
+const scaleOptions = computed(() => [
+  { title: t('remote.viewer.scale.adaptive'), value: 'adaptive' },
+  { title: t('remote.viewer.scale.original'), value: 'original' },
+  { title: t('remote.viewer.res.customEdit'), value: 'custom' },
+])
 const scaleMode = computed<RcScaleMode>({
   get: () => rc.scaleMode.value,
   set: (v: RcScaleMode) => rc.setScaleMode(v),
@@ -3622,7 +3696,7 @@ const audioTooltip = computed<string>(() => {
   // FR-97 P3c-1 — the device's own word on this session's silence.
   const silent = rc.audioUnavailable.value
   if (sessionLive.value && silent) {
-    const said = silent.hint || 'This host sends no sound in this session.'
+    const said = silent.hint || t('remote.viewer.audio.noSound')
     return silent.detail ? `${said} (${silent.detail})` : said
   }
   if (!agentSupportsAudio.value) {
@@ -3630,17 +3704,17 @@ const audioTooltip = computed<string>(() => {
     // its OS); an older agent leaves only the build to blame.
     return (
       hostReason(agent.value?.capabilities, 'audio') ??
-      'This agent does not advertise audio support (needs an agent built with the audio feature) — receive-audio unavailable'
+      t('remote.viewer.audio.noSupport')
     )
   }
   if (sessionLive.value) {
     return audioOn.value
-      ? 'Host audio ON — disconnect to change (takes effect on next Connect)'
-      : 'Host audio OFF — disconnect to change (takes effect on next Connect)'
+      ? t('remote.viewer.audio.liveOn')
+      : t('remote.viewer.audio.liveOff')
   }
   return audioOn.value
-    ? 'Receive host audio ON — the host\'s system/desktop audio plays here. Takes effect on next Connect.'
-    : 'Receive host audio OFF — click to hear the host\'s system/desktop audio on next Connect.'
+    ? t('remote.viewer.audio.idleOn')
+    : t('remote.viewer.audio.idleOff')
 })
 function toggleAudio() {
   rc.setAudioEnabled(!audioOn.value)
@@ -3654,11 +3728,11 @@ function toggleAudio() {
 const localRelayOn = computed<boolean>(() => rc.localRelayEnabled.value)
 const localRelayTooltip = computed<string>(() => {
   if (sessionLive.value) {
-    return 'Corp relay assist — disconnect to change (takes effect on next Connect)'
+    return t('remote.viewer.relay.live')
   }
   return localRelayOn.value
-    ? 'Corp relay assist ON — when a direct path can\'t form (UDP-blocked corporate network), relay through this device\'s local agent over the overlay instead of the capped far relay. Takes effect on next Connect.'
-    : 'Corp relay assist OFF — click to relay through this device\'s local agent when direct fails (needs an enrolled agent with an overlay on this machine). Takes effect on next Connect.'
+    ? t('remote.viewer.relay.on')
+    : t('remote.viewer.relay.off')
 })
 function toggleLocalRelay() {
   rc.setLocalRelayEnabled(!localRelayOn.value)
@@ -3670,18 +3744,17 @@ function toggleLocalRelay() {
 const clipboardAutoSyncOn = computed<boolean>(() => rc.clipboardAutoSyncEnabled.value)
 const clipboardAutoSyncTooltip = computed<string>(() => {
   if (!clipboardAutoSyncOn.value) {
-    return 'Clipboard auto-sync OFF — use the toolbar buttons to send/get the clipboard manually.'
+    return t('remote.viewer.clip.syncOff')
   }
   // FR-97 P0c — a host whose watcher does not report copied images says so,
   // so the tooltip stops promising them.
   const images = hostReason(agent.value?.capabilities, 'clipboard-image-events')
   const base = images
-    ? `Clipboard auto-sync ON — text you copy on either side, and images you copy here, sync automatically while this tab is focused. ${images} Turn off to use the manual toolbar buttons only.`
-    : 'Clipboard auto-sync ON — text and images you copy on either side sync automatically while this tab is focused. Turn off to use the manual toolbar buttons only.'
+    ? t('remote.viewer.clip.syncOnTextOnly', { why: images })
+    : t('remote.viewer.clip.syncOn')
   return rc.supportsClipboardEvents.value
     ? base
-    : base +
-        ' This agent is older — remote→local auto-sync needs an agent upgrade; local→remote still syncs.'
+    : `${base} ${t('remote.viewer.clip.syncOldAgent')}`
 })
 function toggleClipboardAutoSync() {
   rc.setClipboardAutoSyncEnabled(!clipboardAutoSyncOn.value)
@@ -3694,7 +3767,7 @@ watch(
   (blocked) => {
     if (blocked) {
       showError(
-        'Clipboard auto-sync needs clipboard permission — click the clipboard icon in Chrome\'s address bar, or use the manual toolbar buttons.',
+        t('remote.viewer.clip.syncBlocked'),
       )
     }
   },
@@ -3748,6 +3821,18 @@ const touchModeOffered = (() => {
     return false
   }
 })()
+/** FR-120 P1b — a tap switches the touch mode and says how the new one works: the
+ *  gestures were only the button's `title`, which a finger never sees, and a finger is
+ *  the one thing this control is offered to. */
+const TOUCH_MODE_HELP = {
+  trackpad: 'remote.viewer.touch.helpTrackpad',
+  direct: 'remote.viewer.touch.helpDirect',
+} as const
+function toggleTouchMode(): void {
+  const next = rc.touchMode.value === 'trackpad' ? 'direct' : 'trackpad'
+  rc.setTouchMode(next)
+  showSnackbar(t(TOUCH_MODE_HELP[next]), 'info', 5000)
+}
 /** FR-111 P3 — the on-screen controls: off, or a built-in preset, chosen per
  *  device and remembered in this browser. Offered where the touch mode is. */
 const touchControlsId = ref<string | null>(null)
@@ -3792,6 +3877,12 @@ const extraTouchPresets = computed(() => [...orgTouchList.value, ...myTouchPrese
 const touchControlsPreset = computed(() =>
   touchModeOffered ? presetById(touchControlsId.value, extraTouchPresets.value) : null,
 )
+/** FR-131 P3 — a built-in preset's name in the reader's language; one someone
+ *  named, as written. */
+function presetName(p: Pick<TouchPreset, 'id' | 'name'>): string {
+  const k = builtinPresetNameKey(p)
+  return k ? t(k) : p.name
+}
 function setTouchControls(id: string | null) {
   touchControlsId.value = presetById(id, extraTouchPresets.value)?.id ?? null
   try {
@@ -4028,28 +4119,17 @@ const frameRatePick = computed<FrameRate>({
 const frameRateHint = computed(
   () =>
     frameRateSummary(rc.frameRateAnswer.value) ??
-    'Above 60 only where this device has shown it can sustain it',
+    t('remote.viewer.fps.hint'),
 )
-const priorityOptions = [
-  {
-    title: 'Balanced',
-    value: 'balanced',
-    props: { subtitle: 'Default — caps resolution on slow / relay links to stay smooth' },
-  },
-  {
-    title: 'Sharper',
-    value: 'sharper',
-    props: { subtitle: 'Full resolution even on a relay (crisp text; may stutter on a weak link)' },
-  },
-  {
-    title: 'Smoother',
-    value: 'smoother',
-    props: { subtitle: 'Fewer pixels for higher frame-rate + lower latency' },
-  },
-] as const
-const priorityHint = computed<string>(
-  () => priorityOptions.find((o) => o.value === priority.value)?.props.subtitle ?? '',
-)
+const PRIORITY_HINT_KEYS: Record<string, string> = {
+  balanced: 'remote.viewer.settings.balancedHint',
+  sharper: 'remote.viewer.settings.sharperHint',
+  smoother: 'remote.viewer.settings.smootherHint',
+}
+const priorityHint = computed<string>(() => {
+  const k = PRIORITY_HINT_KEYS[priority.value]
+  return k ? t(k) : ''
+})
 
 // P7 — FSR text sharpening (viewer-side, live; see rc-fsr-render.ts). Auto
 // engages the EASU+RCAS upscale only when the decoded stream is smaller
@@ -4062,11 +4142,11 @@ const sharpen = computed<'auto' | 'on' | 'off'>({
 const sharpenHint = computed<string>(() => {
   switch (sharpen.value) {
     case 'on':
-      return 'Always sharpen (AMD FSR), even at 1:1 — maximum text crispness'
+      return t('remote.viewer.settings.sharpenOn')
     case 'off':
-      return 'Plain browser scaling (pre-P7 behaviour)'
+      return t('remote.viewer.settings.sharpenOff')
     default:
-      return 'Sharpen (AMD FSR) only when the stream is smaller than your window'
+      return t('remote.viewer.settings.sharpenAuto')
   }
 })
 // Native-source hint for the Resolution select (reused from the retired
@@ -4074,16 +4154,16 @@ const sharpenHint = computed<string>(() => {
 // doesn't change anything, and surfaces the agent's native dims.
 const resolutionSettingHint = computed<string>(() => {
   const native = nativeSourceLabel.value
-  if (!native) return 'Native dimensions surface after the first decoded frame'
+  if (!native) return t('remote.viewer.res.nativeLater')
   // FR-70 P1 — an overridden choice is never silent: when the agent caps
   // the stream below what was asked, the setting says what, why and what
   // lifts it, ahead of the native-dims note.
   const { w, h } = decodedDims.value
   const override = resolutionOverrideHint(rc.videoInfo.value, w, h)
-  if (override) return `${override} Agent native ${native}.`
+  if (override) return `${override} ${t('remote.viewer.res.nativeIs', { native })}.`
   return customTargetExceedsNative.value
-    ? `Agent native ${native} — custom target exceeds this; capped at native`
-    : `Agent native ${native}`
+    ? t('remote.viewer.res.nativeExceeded', { native })
+    : t('remote.viewer.res.nativeIs', { native })
 })
 
 /** Bind callback for the webcodecs canvas ref. Vue calls this with
@@ -4173,8 +4253,8 @@ const isFullscreen = ref(false)
 // the plain label (fullscreen still works, shortcuts stay local).
 const fullscreenButtonTooltip = computed<string>(() =>
   isKeyboardLockSupported()
-    ? 'Fullscreen — system shortcuts (Alt+Tab, Win, Ctrl+W) go to the remote'
-    : 'Fullscreen',
+    ? t('remote.viewer.fs.lockTitle')
+    : t('remote.viewer.fs.title'),
 )
 function toggleFullscreen() {
   const el = stageEl.value
@@ -4246,8 +4326,8 @@ const videoScaleStyle = computed<Record<string, string> | undefined>(() => {
 // operator can edit dims.
 const resolutionOptions = computed(() => {
   const opts: { title: string; value: string }[] = [
-    { title: 'Original resolution', value: 'original' },
-    { title: 'Fit to local viewport', value: 'fit' },
+    { title: t('remote.viewer.res.original'), value: 'original' },
+    { title: t('remote.viewer.res.fit'), value: 'fit' },
   ]
   if (rc.resolution.value.mode === 'custom') {
     const w = rc.resolution.value.width ?? 0
@@ -4255,10 +4335,10 @@ const resolutionOptions = computed(() => {
     // rc.35 — annotate when the operator-picked custom dims exceed
     // the agent's native source (apply_target_resolution refuses to
     // upscale; would just look the same as 'original').
-    const suffix = presetExceedsNative(w, h) ? ' (capped at native)' : ''
-    opts.push({ title: `Custom: ${w} × ${h}${suffix}`, value: 'custom-current' })
+    const suffix = presetExceedsNative(w, h) ? ` ${t('remote.viewer.res.cappedNative')}` : ''
+    opts.push({ title: `${t('remote.viewer.res.customNow', { w, h })}${suffix}`, value: 'custom-current' })
   }
-  opts.push({ title: 'Custom…', value: 'custom-edit' })
+  opts.push({ title: t('remote.viewer.res.customEdit'), value: 'custom-edit' })
   return opts
 })
 
@@ -4450,17 +4530,17 @@ const displayMatchSaid = computed<string | null>(() =>
 const displayMatchTooltip = computed<string>(() => {
   if (!agentSupportsDisplayMatch.value) {
     return displayMatchUnavailable.value
-      ? `Match remote display — ${displayMatchUnavailable.value}`
-      : 'Match remote display — this agent is too old to say whether its display can be switched'
+      ? t('remote.viewer.match.unavailable', { why: displayMatchUnavailable.value })
+      : t('remote.viewer.match.tooOld')
   }
   // FR-108 — the device decides (its owner's setting, and whether someone is
   // using the screen); say what it answered when it has.
   if (displayMatchSaid.value) {
-    return `Match remote display ON — ${displayMatchSaid.value}. Click to turn it off.`
+    return t('remote.viewer.match.onSaid', { said: displayMatchSaid.value })
   }
   return displayMatchOn.value
-    ? 'Match remote display ON — the host switched its display mode to fit this window (restored on disconnect). Sharpest text.'
-    : 'Match remote display OFF — click to switch the HOST\'s display mode to fit this window (1:1 pixels, sharpest text). Restored on disconnect.'
+    ? t('remote.viewer.match.on')
+    : t('remote.viewer.match.off')
 })
 function readStoredDisplayMatch(agentId: string): boolean {
   // 2026-08-02 operator default: ON for agents without a stored choice
@@ -4608,10 +4688,10 @@ const statsCodecLabel = computed(() => {
     const path =
       vi.transport === 'relay'
         ? vi.transport_reason === 'lan-captured'
-          ? " · relay · VPN captures the host's LAN"
-          : ' · relay'
+          ? ` · ${t('remote.viewer.stats.relayVpn')}`
+          : ` · ${t('remote.viewer.stats.relay')}`
         : vi.transport === 'direct'
-          ? ' · direct'
+          ? ` · ${t('remote.viewer.stats.direct')}`
           : ''
     // rc.190 — the VIEWER half of the HW×HW story: whether THIS browser
     // decodes the session's codec on fixed-function silicon
@@ -4627,7 +4707,7 @@ const statsCodecLabel = computed(() => {
     // P5 — the agent's shared-floor pipeline: >1 viewers on this encoded
     // stream means rate/dials are floor-merged across them, so a lower
     // fps/resolution than expected is explainable from the badge.
-    const shared = (vi.viewers ?? 1) > 1 ? ` · shared ×${vi.viewers}` : ''
+    const shared = (vi.viewers ?? 1) > 1 ? ` · ${t('remote.viewer.stats.shared', { n: vi.viewers })}` : ''
     // P7 — flag the active FSR sharpening pass (exact mode + backing size
     // live in the diag HUD; the pill stays binary for glanceability).
     const fsr = rc.renderInfo.value && rc.renderInfo.value.mode !== '2d' ? ' · FSR' : ''
@@ -4768,7 +4848,7 @@ const displayScaleSettingHint = computed<string>(() => {
   if (rc.phase.value === 'connected' && statsScale.value.scale !== null) {
     return `${statsScaleLabel.value} — ${statsScaleHint.value}`
   }
-  return 'Adaptive fits the frame to this window; Original is 1:1 in CSS pixels (not on a scaled display); Custom sets the zoom'
+  return t('remote.viewer.scale.hint')
 })
 
 // Remote cursor overlay (1E.3). Requires both a position and a
@@ -4958,7 +5038,7 @@ const ghostCursors = computed(() => {
     .filter(([, g]) => now - g.ts < 5000)
     .map(([sid, g]) => ({
       sid,
-      name: g.name || 'Viewer',
+      name: g.name || t('remote.viewer.viewers.viewer'),
       left: m.offsetX + g.x * srcW * m.sx,
       top: m.offsetY + g.y * srcH * m.sy,
     }))
@@ -5080,24 +5160,24 @@ const degradedLabel = computed(() => {
   // "video stalled". The stall is the symptom; the agent sent the cause, and
   // an operator reading "video stalled" has no idea the fix is a permission
   // on the far machine.
-  if (rc.mediaUnavailable.value) return 'connected · no screen capture'
+  if (rc.mediaUnavailable.value) return t('remote.viewer.degraded.noCapture')
   // FR-93 P2d-2 — not "video stalled": the host said why there is no video yet
   // (P5b: in its own words, a dialog or a locked screen).
-  if (rc.mediaWaiting.value) return `connected · ${mediaWaitingCopy(rc.mediaWaiting.value.for).status}`
+  if (rc.mediaWaiting.value) return t('remote.viewer.degraded.waiting', { status: mediaWaitingCopy(rc.mediaWaiting.value.for).status })
   switch (rc.degraded.value) {
-    case 'transport_unstable': return 'connected · unstable link'
-    case 'media_stalled': return 'connected · video stalled'
-    case 'signalling_offline': return 'connected · server link down'
-    default: return 'connected'
+    case 'transport_unstable': return t('remote.viewer.degraded.unstable')
+    case 'media_stalled': return t('remote.viewer.degraded.stalled')
+    case 'signalling_offline': return t('remote.viewer.degraded.serverDown')
+    default: return t('remote.viewer.phase.connected')
   }
 })
 const phaseLabel = computed(() => {
   switch (rc.phase.value) {
-    case 'requesting': return 'Requesting session…'
+    case 'requesting': return t('remote.viewer.phaseLabel.requesting')
     case 'awaiting_consent': return rc.hostLocked.value
-      ? 'That device is locked. Someone needs to unlock it on the machine, then approve the request there — you have 5 minutes.'
-      : 'Waiting for the agent to allow the connection…'
-    case 'negotiating': return 'Negotiating the peer connection…'
+      ? t('remote.viewer.phaseLabel.consentLocked')
+      : t('remote.viewer.phaseLabel.consent')
+    case 'negotiating': return t('remote.viewer.phaseLabel.negotiating')
     default: return ''
   }
 })
@@ -5139,27 +5219,30 @@ function transferStatusColor(t: { status: string }): string {
   if (t.status === 'cancelled') return 'grey'
   return 'grey'
 }
-function transferStatusLabel(t: {
+function transferStatusLabel(x: {
   status: string
   bytes: number
   total: number | null
   error?: string
 }): string {
-  if (t.status === 'queued') return 'Queued'
-  if (t.status === 'reconnecting') {
+  if (x.status === 'queued') return t('remote.viewer.xfer.queued')
+  if (x.status === 'reconnecting') {
     // rc.19: error field carries "attempt N/6" text from the
     // resume wrapper. Falls back to a generic label if missing.
-    const detail = t.error ?? 'waiting for reconnect'
-    return `Reconnecting — ${detail}`
+    const attempt = /^attempt (\d+)$/.exec(x.error ?? '')
+    const detail = attempt
+      ? t('remote.viewer.xfer.attempt', { n: attempt[1] })
+      : x.error ?? t('remote.viewer.xfer.waitingReconnect')
+    return t('remote.viewer.xfer.reconnecting', { detail })
   }
-  if (t.status === 'running') {
-    if (t.total === null) return `${formatFileSize(t.bytes)} (streaming)`
-    const pct = t.total > 0 ? Math.round((t.bytes / t.total) * 100) : 0
-    return `${pct}% — ${formatFileSize(t.bytes)} / ${formatFileSize(t.total)}`
+  if (x.status === 'running') {
+    if (x.total === null) return t('remote.viewer.xfer.streaming', { size: formatFileSize(x.bytes) })
+    const pct = x.total > 0 ? Math.round((x.bytes / x.total) * 100) : 0
+    return `${pct}% — ${formatFileSize(x.bytes)} / ${formatFileSize(x.total)}`
   }
-  if (t.status === 'complete') return `${formatFileSize(t.bytes)} — done`
-  if (t.status === 'cancelled') return 'Cancelled'
-  if (t.status === 'error') return t.error ? `Error: ${t.error}` : 'Error'
+  if (x.status === 'complete') return t('remote.viewer.xfer.done', { size: formatFileSize(x.bytes) })
+  if (x.status === 'cancelled') return t('remote.viewer.xfer.cancelled')
+  if (x.status === 'error') return x.error ? t('remote.viewer.xfer.errorWhy', { why: x.error }) : t('remote.viewer.xfer.error')
   return ''
 }
 function transferProgressPct(t: { bytes: number; total: number | null }): number {
@@ -5198,6 +5281,13 @@ const agentSupportsFolderDownload = computed(() =>
 // to render a "agent doesn't support download — upgrade to 0.3.0+"
 // hint when the operator opens the drawer.
 const isLegacyFileDc = computed(() => agentFilesCaps.value.length === 0)
+/** FR-120 P1b — why Upload and Browse are greyed, said under them: the session's refusal
+ *  covers both; else Browse's own reason. Null when both work. */
+const filesWhy = computed<string | null>(() => {
+  if (filesRefusal.value) return filesRefusal.value
+  if (agentSupportsBrowse.value) return null
+  return isLegacyFileDc.value ? t('remote.viewer.files.browseNeedsAgent') : t('remote.viewer.files.browseDisabled')
+})
 
 // #1631 — the device this view is for, wherever it lives: the cached page
 // (the nav's live view over the store) first, else the single-device GET,
@@ -5508,8 +5598,8 @@ watch(
           if (files.length === 0) return
           showSuccess(
             files.length === 1
-              ? `Uploading ${files[0].name}…`
-              : `Uploading ${files.length} files…`
+              ? t('remote.viewer.files.uploadingOne', { name: files[0].name })
+              : t('remote.viewer.files.uploadingMany', { n: files.length })
           )
           void uploadMany(files)
         },
@@ -5528,7 +5618,7 @@ watch(
         onClipboardMirrored: (text, ok) => {
           if (!ok && text) {
             showError(
-              `Remote clipboard: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — browser blocked auto-paste`
+              t('remote.viewer.clip.pasteBlocked', { text: `${text.slice(0, 60)}${text.length > 60 ? '…' : ''}` })
             )
           }
         },
@@ -5817,7 +5907,7 @@ onBeforeUnmount(() => {
   cursor: none;
 }
 .video-frame.drag-over::after {
-  content: 'Drop file to upload';
+  content: attr(data-drop-label);
   position: absolute;
   inset: 0;
   display: flex;
@@ -5841,7 +5931,7 @@ onBeforeUnmount(() => {
    sees the drawer's current dir is the upload target — distinct
    from a viewer-level drop which goes to Downloads/. */
 .files-drawer.drawer-drag-over::before {
-  content: 'Drop to upload here';
+  content: attr(data-drop-label);
   position: absolute;
   inset: 0;
   display: flex;

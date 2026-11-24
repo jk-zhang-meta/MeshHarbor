@@ -13,6 +13,7 @@
  *
  * Pure on purpose (no Vue, no channel), so all of it is unit-tested.
  */
+import i18n from '@/plugins/i18n'
 
 /** The capability verb in `AgentCaps.video`. ⚠️ A wire spelling, matched by
  *  equality on both ends. */
@@ -46,9 +47,9 @@ export function frameRateOptions(
   const high = agentOffersHighRefresh(video)
   return FRAME_RATES.map((fps) => {
     if (fps === 60) return { fps, enabled: true, why: null }
-    if (!high) return { fps, enabled: false, why: "this device's agent streams at most 60 fps" }
+    if (!high) return { fps, enabled: false, why: i18n.global.t('remote.viewer.fps.max60') }
     if (hostRefreshHz !== null && hostRefreshHz > 0 && hostRefreshHz < fps) {
-      return { fps, enabled: false, why: `the host's screen refreshes at ${hostRefreshHz} Hz` }
+      return { fps, enabled: false, why: i18n.global.t('remote.viewer.fps.hostHz', { hz: hostRefreshHz }) }
     }
     return { fps, enabled: true, why: null }
   })
@@ -113,15 +114,15 @@ export function hostRefreshHzOf(info: { refresh_hz?: number } | null | undefined
 export function describeFrameRateReason(word: string): string {
   switch (word) {
     case 'unproven':
-      return "this host hasn't shown it can sustain that rate yet"
+      return i18n.global.t('remote.viewer.fps.reason.unproven')
     case 'constrained':
-      return 'the connection is relayed, and a relay stays at its current rate'
+      return i18n.global.t('remote.viewer.fps.reason.constrained')
     case 'refresh':
-      return "the host's screen refreshes slower than that"
+      return i18n.global.t('remote.viewer.fps.reason.refresh')
     case 'denied':
-      return "this device's owner has turned that rate off for its encoder"
+      return i18n.global.t('remote.viewer.fps.reason.denied')
     case 'pipe':
-      return "the connection hasn't shown it can carry what that rate needs"
+      return i18n.global.t('remote.viewer.fps.reason.pipe')
     default:
       return word
   }
@@ -132,10 +133,10 @@ export function describeFrameRateReason(word: string): string {
 export function frameRateSummary(answer: FrameRateAnswer | null): string | null {
   if (!answer) return null
   if (answer.asked !== null && answer.reason !== null) {
-    return `${answer.fps} fps (${answer.asked} fps not granted: ${describeFrameRateReason(answer.reason)})`
+    return i18n.global.t('remote.viewer.fps.notGranted', { fps: answer.fps, asked: answer.asked, why: describeFrameRateReason(answer.reason) })
   }
   if (answer.trial) {
-    return `${answer.fps} fps, on trial until this host has shown it can keep up`
+    return i18n.global.t('remote.viewer.fps.trial', { fps: answer.fps })
   }
   return `${answer.fps} fps`
 }

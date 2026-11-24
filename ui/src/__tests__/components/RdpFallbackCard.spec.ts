@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import RdpFallbackCard from '@/components/remote/RdpFallbackCard.vue'
+import { setLocale } from '@/plugins/i18n'
 import {
   RC_ERROR_CODE_TABLE,
-  RDP_MESH_DISABLED_HINT,
-  RDP_SCREEN_LOCK_WARNING,
-  RDP_UNPINNED_CERT_MSTSC_NOTICE,
+  rdpMeshDisabledHint,
+  rdpScreenLockWarning,
+  rdpUnpinnedCertNotice,
   formatMhRdpCommand,
   RDP_FALLBACK_RETRY_WINDOW_MS,
   getDeviceAutoRdpFallback,
@@ -26,8 +27,10 @@ import {
   shouldShowRdpFallbackCard,
 } from '@/utils/rdpFallback'
 
-// The desktop companion (devices.js) is English; the web UI keeps its own
-// strings in utils/rdpFallback.ts.
+// The desktop companion (devices.js) is English. The web card speaks the
+// reader's language (FR-131 P3: `remote.viewer.rdp.*`); these cases read it in
+// Chinese, the language it was first written in, so its assertions hold the
+// Chinese words, and the English ones are the desktop's.
 const DESKTOP_RDP_SCREEN_LOCK_WARNING = 'An RDP session locks the remote computer’s local screen.'
 const DESKTOP_RDP_UNPINNED_NOTICE =
   'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
@@ -57,12 +60,14 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
   beforeEach(() => {
     resetAutoRcRetries()
     window.localStorage.clear()
+    setLocale('zh-CN')
     delete (window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__
     delete (window as unknown as Record<string, unknown>).__TAURI__
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
   })
 
   afterEach(() => {
+    setLocale('en')
     window.localStorage.clear()
     delete (window as unknown as Record<string, unknown>).__MESHHARBOR_DESKTOP_BRIDGE__
     delete (window as unknown as Record<string, unknown>).__TAURI__
@@ -100,7 +105,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
         expect(card.exists()).toBe(entry.showRdpCard)
         if (entry.showRdpCard) {
           expect(wrapper.find('[data-test="rdp-screen-lock-warning"]').text()).toContain(
-            RDP_SCREEN_LOCK_WARNING,
+            rdpScreenLockWarning(),
           )
           expect(wrapper.find('[data-test="rdp-fallback-retry-btn"]').exists()).toBe(true)
         }
@@ -180,7 +185,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
       expect(wrapper.find('[data-test="rdp-auto-confirm-prompt"]').exists()).toBe(false)
       expect(wrapper.find('[data-test="rdp-screen-lock-warning"]').text()).toContain(
-        RDP_SCREEN_LOCK_WARNING,
+        rdpScreenLockWarning(),
       )
 
       // The opt-out is per device and per viewer: this device only.
@@ -263,7 +268,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
 
       const notice = wrapper.find('[data-test="rdp-unpinned-cert-notice"]')
       expect(notice.exists()).toBe(true)
-      expect(notice.text()).toBe(RDP_UNPINNED_CERT_MSTSC_NOTICE)
+      expect(notice.text()).toBe(rdpUnpinnedCertNotice())
 
       // The automatic launch ran and failed: its error shows, and the buttons
       // come back as the recovery.
@@ -476,7 +481,7 @@ describe('RC/RDP Phase C — RdpFallbackCard & rdpFallback rules', () => {
       })
       await nextTick()
       expect(wrapper.find('[data-test="rdp-fallback-card"]').exists()).toBe(true)
-      expect(wrapper.find('[data-test="rdp-mesh-hint"]').text()).toBe(RDP_MESH_DISABLED_HINT)
+      expect(wrapper.find('[data-test="rdp-mesh-hint"]').text()).toBe(rdpMeshDisabledHint())
       expect(wrapper.find('[data-test="rdp-fallback-connect-btn"]').exists()).toBe(false)
       expect(wrapper.find('[data-test="rdp-auto-toggle"]').exists()).toBe(false)
       expect(openRdpSpy).not.toHaveBeenCalled()

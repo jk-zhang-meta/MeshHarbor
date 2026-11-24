@@ -32,8 +32,8 @@
         variant="text"
         size="small"
         class="mr-1"
-        aria-label="Keep busy"
-        title="Keep busy"
+        :aria-label="t('keepBusy.menu.title')"
+        :title="t('keepBusy.menu.title')"
         data-testid="rc-keep-busy-btn"
       >
         <v-icon>mdi-cursor-default-gesture-outline</v-icon>
@@ -41,7 +41,7 @@
     </template>
     <v-card min-width="340" max-width="420" data-testid="rc-keep-busy-menu">
       <v-card-title class="d-flex align-center text-subtitle-1">
-        Keep busy
+        {{ t('keepBusy.menu.title') }}
         <v-spacer />
         <v-switch
           :model-value="!!state?.on"
@@ -50,34 +50,30 @@
           density="compact"
           hide-details
           inset
-          aria-label="Keep busy on or off"
+          :aria-label="t('keepBusy.menu.switch')"
           data-testid="rc-keep-busy-switch"
           @update:model-value="onToggle"
         />
       </v-card-title>
       <v-card-text>
         <p class="text-caption mb-2">
-          Moves the pointer in a pattern so this computer stays active: no screensaver, idle
-          lock or "Away". Anyone using the computer pauses it at once, and it resumes after
-          they have been idle for a while. It stays on after you disconnect, until someone
-          turns it off.
+          {{ t('keepBusy.menu.intro') }}
         </p>
         <p class="text-body-2 mb-2" data-testid="rc-keep-busy-status">{{ statusLine }}</p>
         <p v-if="refusal" class="text-caption text-error mb-2" data-testid="rc-keep-busy-refused">
           {{ refusal }}
         </p>
         <p v-if="!canControl" class="text-caption text-medium-emphasis mb-2">
-          This session is view-only, so it can watch keep busy but not change it.
+          {{ t('keepBusy.menu.viewOnly') }}
         </p>
         <p
           v-if="state?.warn.includes('focus_follows_mouse')"
           class="text-caption text-warning mb-2"
           data-testid="rc-keep-busy-warn-focus"
         >
-          On this computer the keyboard focus follows the pointer. Choose Subtle to keep the
-          focus where it is.
+          {{ t('keepBusy.menu.focusFollows') }}
         </p>
-        <div class="kb-grid mb-3" role="radiogroup" aria-label="Pattern">
+        <div class="kb-grid mb-3" role="radiogroup" :aria-label="t('keepBusy.menu.pattern')">
           <button
             v-for="p in patterns"
             :key="p.id"
@@ -87,7 +83,7 @@
             :class="{ 'kb-tile--on': p.id === form.pattern }"
             :aria-checked="p.id === form.pattern"
             :disabled="!canEdit"
-            :title="p.label"
+            :title="patternLabel(p.id)"
             :data-testid="`rc-keep-busy-pattern-${p.id}`"
             @click="choose({ pattern: p.id })"
           >
@@ -100,7 +96,7 @@
                 stroke-linejoin="round"
               />
             </svg>
-            <span class="kb-label">{{ p.label }}</span>
+            <span class="kb-label">{{ patternLabel(p.id) }}</span>
           </button>
         </div>
         <div class="d-flex align-center ga-3 mb-3 flex-wrap">
@@ -110,12 +106,12 @@
             mandatory
             divided
             :disabled="!canEdit"
-            aria-label="Speed"
+            :aria-label="t('keepBusy.menu.speed')"
             @update:model-value="(v: KeepBusySpeed) => choose({ speed: v })"
           >
-            <v-btn value="slow" size="small">Slow</v-btn>
-            <v-btn value="normal" size="small">Normal</v-btn>
-            <v-btn value="fast" size="small">Fast</v-btn>
+            <v-btn value="slow" size="small">{{ t('keepBusy.menu.slow') }}</v-btn>
+            <v-btn value="normal" size="small">{{ t('keepBusy.menu.normal') }}</v-btn>
+            <v-btn value="fast" size="small">{{ t('keepBusy.menu.fast') }}</v-btn>
           </v-btn-toggle>
           <v-btn-toggle
             :model-value="form.size"
@@ -123,7 +119,7 @@
             mandatory
             divided
             :disabled="!canEdit"
-            aria-label="Size"
+            :aria-label="t('keepBusy.menu.size')"
             @update:model-value="(v: KeepBusySize) => choose({ size: v })"
           >
             <v-btn value="s" size="small">S</v-btn>
@@ -135,7 +131,7 @@
           <v-select
             :model-value="form.resumeAfterS"
             :items="resumeItems"
-            label="Resume after"
+            :label="t('keepBusy.menu.resumeAfter')"
             density="compact"
             hide-details
             :disabled="!canEdit"
@@ -144,7 +140,7 @@
           <v-select
             :model-value="form.autoOffMin"
             :items="autoOffItems"
-            label="Turn off after"
+            :label="t('keepBusy.menu.turnOffAfter')"
             density="compact"
             hide-details
             :disabled="!canEdit"
@@ -158,6 +154,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   KEEP_BUSY_AUTO_OFF_CHOICES,
   KEEP_BUSY_PATTERNS,
@@ -257,14 +254,19 @@ const previews = Object.fromEntries(
   KEEP_BUSY_PATTERNS.map((p) => [p.id, patternPreviewPath(p.id)]),
 ) as Record<KeepBusyPattern, string>
 
-const resumeItems = KEEP_BUSY_RESUME_CHOICES.map((s) => ({
-  title: s < 60 ? `${s} seconds` : `${s / 60} minute${s === 60 ? '' : 's'}`,
-  value: s,
-}))
-const autoOffItems = KEEP_BUSY_AUTO_OFF_CHOICES.map((m) => ({
-  title: m === 0 ? 'Never' : m < 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? '' : 's'}`,
-  value: m,
-}))
+const { t } = useI18n()
+const resumeItems = computed(() =>
+  KEEP_BUSY_RESUME_CHOICES.map((s) => ({
+    title: s < 60 ? t('keepBusy.dur.seconds', s) : t('keepBusy.dur.minutes', s / 60),
+    value: s,
+  })),
+)
+const autoOffItems = computed(() =>
+  KEEP_BUSY_AUTO_OFF_CHOICES.map((m) => ({
+    title: m === 0 ? t('keepBusy.dur.never') : m < 60 ? t('keepBusy.dur.minutes', m) : t('keepBusy.dur.hours', m / 60),
+    value: m,
+  })),
+)
 
 // A ticking clock for the pause countdown.
 const now = ref(Date.now())
@@ -282,20 +284,20 @@ const canToggle = computed(() => props.canControl && props.state?.available !== 
 const canEdit = computed(() => props.canControl && props.state?.available !== false)
 
 const statusLine = computed(() =>
-  props.state ? keepBusyStatusLine(props.state, now.value) : 'Off.',
+  props.state ? keepBusyStatusLine(props.state, now.value) : t('keepBusy.status.off'),
 )
 const refusal = computed(() => (props.state?.refused ? keepBusyRefusalText(props.state.refused) : null))
 
 const chipText = computed(() => {
   const s = props.state
-  if (!s?.on) return 'Keep busy'
-  if (s.phase === 'running') return `Keep busy · ${patternLabel(s.pattern).toLowerCase()}`
+  if (!s?.on) return t('keepBusy.menu.title')
+  if (s.phase === 'running') return t('keepBusy.chip.running', { pattern: patternLabel(s.pattern).toLowerCase() })
   if (s.phase === 'paused') {
     const left = keepBusyResumesInS(s, now.value)
-    return left ? `Keep busy · paused ${left}s` : 'Keep busy · paused'
+    return left ? t('keepBusy.chip.pausedFor', { s: left }) : t('keepBusy.chip.paused')
   }
-  if (s.phase === 'locked') return 'Keep busy · locked'
-  return `Keep busy · ${s.phase}`
+  if (s.phase === 'locked') return t('keepBusy.chip.locked')
+  return t('keepBusy.chip.other', { phase: s.phase })
 })
 
 function request(on: boolean): KeepBusyRequest {

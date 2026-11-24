@@ -152,6 +152,13 @@ import { modsOf, type ControlsSink, type MouseBtn } from './touchControls'
 import { parseFeaturesRefused } from './useSessionFeatures'
 import { ctrlAltDelFrames } from './ctrlAltDel'
 import { asTwoFactorRefusal, twoFactorRefusalText } from '@/utils/twoFactor'
+import i18n from '@/plugins/i18n'
+
+/** FR-131 P3 — the words this module's pure helpers return, in the reader's
+ *  language (`remote.viewer.*`); English unless they chose Chinese. */
+function rcT(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
 
 /**
  * Backoff ladder for the auto-reconnect path. The first three steps
@@ -822,13 +829,8 @@ export const EXTERNAL_SESSION_ENDED =
  * compare them with the device's own.
  */
 export function peerAuthKeyChangedMessage(was: string | null, now: string | null): string {
-  const keys = was && now ? ` (this browser knows ${was}; the answer came from ${now})` : ''
-  return (
-    `This device answered with a different identity key than the one this browser knows for it${keys}, ` +
-    'so the session was not started. Nothing was shown or sent. If the device was reinstalled, ' +
-    'you can trust its new key and connect again. Otherwise, someone between you and the device ' +
-    'may be impersonating it.'
-  )
+  const keys = was && now ? rcT('remote.viewer.err.keyChangedKeys', { was, now }) : ''
+  return rcT('remote.viewer.err.keyChanged', { keys })
 }
 /** FR-100 P2a — the device's signature does not verify over this session. */
 export const PEER_AUTH_BAD_SIGNATURE =
@@ -843,11 +845,11 @@ export const PEER_AUTH_BAD_SIGNATURE =
 export function friendlyRcError(code: unknown, serverMessage: unknown): string {
   switch (code) {
     case 'agent_on_other_pod':
-      return 'Your device is connected to a different server right now. Automatic retries could not reach it yet; try again in a moment.'
+      return rcT('remote.viewer.err.agent_on_other_pod')
     case 'agent_offline':
-      return 'This device is offline. Check that it is powered on and connected.'
+      return rcT('remote.viewer.err.agent_offline')
     case 'agent_busy':
-      return 'This device has reached its concurrent session limit. Try again in a moment.'
+      return rcT('remote.viewer.err.agent_busy')
     // FR-115 P3 — the org's plan cap on sessions at once. The server's
     // sentence names who holds the slot and on which device (our own
     // words, built from names, never internals), so it is shown as is.
@@ -855,12 +857,12 @@ export function friendlyRcError(code: unknown, serverMessage: unknown): string {
     case 'org_session_limit':
       return (
         (typeof serverMessage === 'string' && serverMessage)
-        || "Your organization's plan runs one remote session at a time, and one is open now. End it, or upgrade the plan for one remote session per user."
+        || rcT('remote.viewer.err.org_session_limit')
       )
     case 'forbidden':
-      return 'You do not have permission to control this device.'
+      return rcT('remote.viewer.err.forbidden')
     case 'invalid_token':
-      return 'Your session has expired. Refresh the page and sign in again.'
+      return rcT('remote.viewer.err.invalid_token')
     default:
       return (
         (typeof serverMessage === 'string' && serverMessage)
@@ -888,29 +890,29 @@ export function friendlyEndReason(reason: unknown, limit?: unknown): string | nu
   // `limit`). Said as such: "idle" would be the wrong story for someone who
   // was working the whole time.
   if (reason === 'idle_timeout' && limit === 'max_duration') {
-    return "The session reached your organization's maximum length. Connect again to start a new one."
+    return rcT('remote.viewer.end.maxDuration')
   }
   // P4b-2 — the device ended it after its idle limit: no input and no
   // change on the screen for that long. Whoever reads this was most likely
   // away, so it says what happened rather than staying silent.
   if (reason === 'idle_timeout' && limit === 'idle') {
-    return 'The session ended after a period with no activity. Connect again to start a new one.'
+    return rcT('remote.viewer.end.idle')
   }
   // #2251 - the device sends its picture on the WebRTC track in a codec this
   // browser did not offer, so no retry can work. Said once, with what would
   // help, where the viewer used to retry without a word.
   if (reason === 'error' && limit === 'no_common_codec') {
-    return "This browser can't decode the video this device sends. Try Chrome, Edge or Safari, or turn on the OpenH264 plugin in Firefox's add-ons."
+    return rcT('remote.viewer.end.noCommonCodec')
   }
   switch (reason) {
     case 'user_denied':
-      return 'Someone at that device declined the request.'
+      return rcT('remote.viewer.end.user_denied')
     case 'consent_timeout':
-      return 'Nobody answered the prompt on that device in time. Nothing was declined - try again, or ask the person there to approve it.'
+      return rcT('remote.viewer.end.consent_timeout')
     case 'no_prompt_surface':
-      return 'That device could not show a prompt to anyone - nobody is signed in at its screen, or the MeshHarbor desktop app is not running there. Start it on the device, or set this device to email/push consent.'
+      return rcT('remote.viewer.end.no_prompt_surface')
     case 'error':
-      return 'The session could not be established.'
+      return rcT('remote.viewer.end.error')
     default:
       // FR-129 - the device asked for a two-factor code, or refused the one
       // it got. In the interface language: the viewer asks for a code next to
@@ -1150,8 +1152,8 @@ export interface RcMediaWaitingCopy {
 export function mediaWaitingCopy(waitingFor: string): RcMediaWaitingCopy {
   if (waitingFor === 'screen_unlock') {
     return {
-      title: "Waiting for this computer's screen to be unlocked.",
-      status: 'waiting for the screen to be unlocked',
+      title: rcT('remote.viewer.waiting.screen_unlock.title'),
+      status: rcT('remote.viewer.waiting.screen_unlock.status'),
       showsDeadline: false,
     }
   }
@@ -1159,8 +1161,8 @@ export function mediaWaitingCopy(waitingFor: string): RcMediaWaitingCopy {
   // too when it controls the computer, and nothing ends on its own.
   if (waitingFor === 'display_wake') {
     return {
-      title: "This computer's display is asleep.",
-      status: 'waiting for the display to wake',
+      title: rcT('remote.viewer.waiting.display_wake.title'),
+      status: rcT('remote.viewer.waiting.display_wake.status'),
       showsDeadline: false,
     }
   }
@@ -1168,8 +1170,8 @@ export function mediaWaitingCopy(waitingFor: string): RcMediaWaitingCopy {
   // comes back when that session is on screen again, and nothing ends.
   if (waitingFor === 'session_away') {
     return {
-      title: 'This computer is showing another session.',
-      status: "waiting for this user's session to be on screen",
+      title: rcT('remote.viewer.waiting.session_away.title'),
+      status: rcT('remote.viewer.waiting.session_away.status'),
       showsDeadline: false,
     }
   }
@@ -1177,14 +1179,14 @@ export function mediaWaitingCopy(waitingFor: string): RcMediaWaitingCopy {
   // viewer reconnects by itself once it does, and nothing ends on its own.
   if (waitingFor === 'host_sleep') {
     return {
-      title: 'This computer is going to sleep.',
-      status: 'the computer is asleep',
+      title: rcT('remote.viewer.waiting.host_sleep.title'),
+      status: rcT('remote.viewer.waiting.host_sleep.status'),
       showsDeadline: false,
     }
   }
   return {
-    title: 'Waiting for the person at the screen to share it.',
-    status: 'waiting for the person at the screen',
+    title: rcT('remote.viewer.waiting.person.title'),
+    status: rcT('remote.viewer.waiting.person.status'),
     showsDeadline: true,
   }
 }
@@ -1268,7 +1270,7 @@ export function captureArmLabel(vi: RcVideoInfo | null | undefined): string {
           ? 'X11'
           : arm
   if (arm === 'x11') return name
-  return `${name} · ${vi?.attended ? 'allowed at the screen' : 'asks nobody'}`
+  return `${name} · ${vi?.attended ? rcT('remote.viewer.capture.attended') : rcT('remote.viewer.capture.asksNobody')}`
 }
 
 /** FR-70 P1 — the resolution pill's annotation for a stream encoded below
@@ -1313,15 +1315,15 @@ export function resolutionOverrideHint(vi: RcVideoInfo | null | undefined, w: nu
   const box = `${w}×${h}`
   switch (vi.cap_reason) {
     case 'slow-link-cap':
-      return `This session is capped at ${box}: the path was ${vi.cap_detail ?? 'remembered as slow'} when it opened (slow-link profile). It re-evaluates on the next session once the link has carried more.`
+      return rcT('remote.viewer.cap.slowLink', { box, detail: vi.cap_detail ?? rcT('remote.viewer.cap.rememberedSlow') })
     case 'priority-cap':
-      return `This session is capped at ${box} by the Priority dial — Sharper lifts it.`
+      return rcT('remote.viewer.cap.priority', { box })
     case 'soft-cap':
-      return `This session is capped at ${box}: the host's encoder cannot keep up at native (encode-bound).`
+      return rcT('remote.viewer.cap.soft', { box })
     case 'refined-cap':
-      return `This session is capped at ${box} by the crisp-at-rest refinement bound.`
+      return rcT('remote.viewer.cap.refined', { box })
     default:
-      return `This session is capped at ${box} by the agent (${vi.cap_reason}).`
+      return rcT('remote.viewer.cap.other', { box, reason: vi.cap_reason })
   }
 }
 
@@ -1360,7 +1362,7 @@ export function displayScale(args: {
   const { frameW, frameH, stageW, stageH, mode, customPct } = args
   const known = (n: number) => Number.isFinite(n) && n > 0
   if (!known(frameW) || !known(frameH) || !known(stageW) || !known(stageH)) {
-    return { scale: null, label: '', hint: 'Display scale surfaces after the first decoded frame' }
+    return { scale: null, label: '', hint: rcT('remote.viewer.dscale.later') }
   }
   const dpr = known(args.dpr) ? args.dpr : 1
   // The CSS box the frame is painted into, per scale mode (mirrors
@@ -1373,32 +1375,36 @@ export function displayScale(args: {
         : Math.min(stageW / frameW, stageH / frameH)
   const scale = cssFactor * dpr
   const exact = Math.abs(scale - 1) <= 0.001
-  const label = exact ? '1:1 pixels' : `shown at ${scale.toFixed(2)}×`
+  const label = exact ? rcT('remote.viewer.dscale.exactLabel') : rcT('remote.viewer.dscale.shownAt', { x: scale.toFixed(2) })
   const stageDevW = Math.round(stageW * dpr)
   const stageDevH = Math.round(stageH * dpr)
   const fits = frameW <= stageDevW && frameH <= stageDevH
   // The zoom that makes CSS × dpr land on exactly one screen pixel per
   // frame pixel; one decimal, because 150 % scaling needs 66.7 %.
   const onePct = Math.round((100 / dpr) * 10) / 10
-  const zoomNote = dpr !== 1 ? ` (your display scaling is ${dpr}×, so Original is ${dpr.toFixed(2)}× on screen)` : ''
-  const recipe =
-    `For 1:1 use Display → Custom zoom ${onePct} %${fits ? '' : ' (the frame is larger than your window and will scroll)'}` +
-    `, or Match remote display so the host renders at your window's ${stageDevW}×${stageDevH}${zoomNote}.`
+  const zoomNote = dpr !== 1 ? rcT('remote.viewer.dscale.zoomNote', { dpr, x: dpr.toFixed(2) }) : ''
+  const recipe = rcT('remote.viewer.dscale.recipe', {
+    pct: onePct,
+    scrolls: fits ? '' : rcT('remote.viewer.dscale.scrolls'),
+    w: stageDevW,
+    h: stageDevH,
+    zoomNote,
+  })
   if (exact) {
-    return { scale, label, hint: 'Pixel-exact: each remote pixel lands on exactly one screen pixel.' }
+    return { scale, label, hint: rcT('remote.viewer.dscale.exact') }
   }
   if (scale > 1) {
-    const fsr = args.sharpened ? ' — FSR sharpens the result' : ''
+    const fsr = args.sharpened ? rcT('remote.viewer.dscale.fsr') : ''
     return {
       scale,
       label,
-      hint: `Each remote pixel is spread over ${scale.toFixed(2)} screen pixels, so text is resampled after decoding${fsr}. ${recipe}`,
+      hint: rcT('remote.viewer.dscale.up', { x: scale.toFixed(2), fsr, recipe }),
     }
   }
   return {
     scale,
     label,
-    hint: `The ${frameW}×${frameH} frame is squeezed to ${scale.toFixed(2)} screen pixels per remote pixel, so fine detail is lost after decoding. ${recipe}`,
+    hint: rcT('remote.viewer.dscale.down', { w: frameW, h: frameH, x: scale.toFixed(2), recipe }),
   }
 }
 
@@ -1538,13 +1544,13 @@ export type HostLockedInput = 'passes' | 'unknown' | 'blocked' | 'suppressed'
 export function hostLockedChipTitle(input: HostLockedInput): string {
   switch (input) {
     case 'passes':
-      return 'The remote host is on its lock screen. Your input reaches it, so you can type the password to unlock.'
+      return rcT('remote.viewer.locked.passes')
     case 'unknown':
-      return 'The remote host is on its lock screen.'
+      return rcT('remote.viewer.locked.unknown')
     case 'blocked':
-      return 'The remote host is on its lock screen, which remote control cannot show or control on this device.'
+      return rcT('remote.viewer.locked.blocked')
     case 'suppressed':
-      return 'The remote host is on the lock screen — input is suppressed.'
+      return rcT('remote.viewer.locked.suppressed')
   }
 }
 

@@ -225,6 +225,33 @@ export const BUILTIN_PRESETS: readonly TouchPreset[] = [
   },
 ]
 
+/** FR-131 P3 — the built-ins' words, as i18n keys under `remote.viewer.touch`:
+ *  a built-in preset's name by its id, and the few labels that are words rather
+ *  than key legends (Esc, Ctrl+C and the like stay as the keyboard prints them).
+ *  A preset someone named, or a label someone typed, has no key and shows as
+ *  written. */
+const BUILTIN_PRESET_NAME_KEYS: Readonly<Record<string, string>> = {
+  office: 'preset.office',
+  arrows: 'preset.arrows',
+  wasd: 'preset.wasd',
+}
+const BUILTIN_WORD_KEYS: Readonly<Record<string, string>> = {
+  'Arrow keys': 'word.arrowKeys',
+  'Mouse look': 'word.mouseLook',
+  Fire: 'word.fire',
+  Aim: 'word.aim',
+  Jump: 'word.jump',
+}
+export function builtinPresetNameKey(p: Pick<TouchPreset, 'id' | 'name'>): string | null {
+  const k = BUILTIN_PRESET_NAME_KEYS[p.id]
+  const builtin = BUILTIN_PRESETS.find((b) => b.id === p.id)
+  return k && builtin && builtin.name === p.name ? `remote.viewer.touch.${k}` : null
+}
+export function builtinWordKey(label: string): string | null {
+  const k = BUILTIN_WORD_KEYS[label]
+  return k ? `remote.viewer.touch.${k}` : null
+}
+
 /** FR-111 P4 — an org's preset is offered under `org:<its server id>`, so it
  *  can never take a built-in's id. */
 export const ORG_PRESET_PREFIX = 'org:'

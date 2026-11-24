@@ -4,31 +4,31 @@
     class="rc-rdp-fallback-card"
     data-test="rdp-fallback-card"
     role="region"
-    aria-label="改用 RDP"
+    :aria-label="t('remote.viewer.rdp.switch')"
   >
-    <div class="rc-rdp-fallback-title">{{ autoLaunched ? '已自动改用 RDP' : '改用 RDP' }}</div>
+    <div class="rc-rdp-fallback-title">{{ autoLaunched ? t('remote.viewer.rdp.switchedAuto') : t('remote.viewer.rdp.switch') }}</div>
     <p class="rc-rdp-fallback-reason" data-test="rdp-fallback-reason">
       {{ displayReason }}
     </p>
     <div class="rc-rdp-fallback-warning" data-test="rdp-screen-lock-warning" role="alert">
-      {{ RDP_SCREEN_LOCK_WARNING }}
+      {{ rdpScreenLockWarning() }}
     </div>
     <p v-if="!meshReachable" class="rc-rdp-mesh-hint" data-test="rdp-mesh-hint">
-      {{ RDP_MESH_DISABLED_HINT }}
+      {{ rdpMeshDisabledHint() }}
     </p>
     <p
       v-if="hasBridge && meshReachable && !hasPinnedCert"
       class="rc-rdp-unpinned-note"
       data-test="rdp-unpinned-cert-notice"
     >
-      {{ RDP_UNPINNED_CERT_MSTSC_NOTICE }}
+      {{ rdpUnpinnedCertNotice() }}
     </p>
 
     <p v-if="autoLaunched" class="rc-rdp-auto-status" data-test="rdp-auto-status">
-      远控无法显示这台设备的画面，已自动用 RDP 打开。Windows 账户只在第一次询问，保存在这台电脑上。
+      {{ t('remote.viewer.rdp.autoOpened') }}
     </p>
     <p v-if="autoRetrying" class="rc-rdp-auto-status" data-test="rdp-auto-retry-status">
-      远控连接中断，正在自动重试一次；仍然失败才会改用 RDP。
+      {{ t('remote.viewer.rdp.autoRetrying') }}
     </p>
     <button
       v-if="autoLaunched && hasBridge && meshReachable"
@@ -38,7 +38,7 @@
       :disabled="busy"
       @click="onClickResetCredential"
     >
-      Windows 密码改了，或想换账户？重新输入
+      {{ t('remote.viewer.rdp.resetCredential') }}
     </button>
     <div v-if="showManualActions" class="rc-rdp-fallback-actions">
       <button
@@ -49,7 +49,7 @@
         :disabled="busy"
         @click="onClickConnectRdp"
       >
-        用 RDP 连接
+        {{ t('remote.viewer.rdp.connect') }}
       </button>
       <button
         type="button"
@@ -58,7 +58,7 @@
         :disabled="busy"
         @click="emit('retry-rc')"
       >
-        重试远控
+        {{ t('remote.viewer.rdp.retryRc') }}
       </button>
     </div>
 
@@ -67,9 +67,9 @@
       class="rc-rdp-no-bridge"
       data-test="rdp-fallback-no-bridge"
     >
-      <div class="rc-rdp-no-bridge-title">在桌面应用中打开</div>
+      <div class="rc-rdp-no-bridge-title">{{ t('remote.viewer.rdp.openInDesktop') }}</div>
       <p class="rc-rdp-no-bridge-desc">
-        当前浏览器环境无桌面应用桥接。请在 MeshHarbor 桌面应用中打开以直接拉起系统 RDP 客户端，或在终端运行以下命令：
+        {{ t('remote.viewer.rdp.noBridge') }}
       </p>
       <div class="rc-rdp-cmd-row">
         <code class="rc-rdp-cmd-code" data-test="rdp-fallback-cli-cmd">{{ cliCommand }}</code>
@@ -79,7 +79,7 @@
           data-test="rdp-fallback-copy-btn"
           @click="onCopyCliCommand"
         >
-          {{ copied ? '已复制' : '复制命令' }}
+          {{ copied ? t('remote.viewer.rdp.copied') : t('remote.viewer.rdp.copyCommand') }}
         </button>
       </div>
     </div>
@@ -92,10 +92,11 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
-  RDP_SCREEN_LOCK_WARNING,
-  RDP_MESH_DISABLED_HINT,
-  RDP_UNPINNED_CERT_MSTSC_NOTICE,
+  rdpScreenLockWarning,
+  rdpMeshDisabledHint,
+  rdpUnpinnedCertNotice,
   formatMhRdpCommand,
   getDeviceAutoRdpFallback,
   getLastAutoRcRetry,
@@ -140,6 +141,7 @@ const props = withDefaults(
   },
 )
 
+const { t } = useI18n()
 const emit = defineEmits<{
   (e: 'retry-rc'): void
   (e: 'switch-to-rdp', payload: { auto: boolean }): void
@@ -184,7 +186,7 @@ const showManualActions = computed(
 
 const displayReason = computed(() => {
   if (props.hostLockedBlocked && !props.mediaUnavailableReason) {
-    return '这台设备停在 Windows 锁屏界面，它的远控在这种安装方式下无法显示或操作锁屏。'
+    return t('remote.viewer.rdp.lockedBlocked')
   }
   if (props.mediaUnavailableHint?.trim()) {
     return props.mediaUnavailableHint.trim()
@@ -193,12 +195,12 @@ const displayReason = computed(() => {
     return props.errorMessage.trim()
   }
   if (props.mediaUnavailableReason?.trim()) {
-    return `远控画面不可用（${props.mediaUnavailableReason.trim()}）`
+    return t('remote.viewer.rdp.noPicture', { code: props.mediaUnavailableReason.trim() })
   }
   if (props.errorCode?.trim()) {
-    return `远控连接失败（${props.errorCode.trim()}）`
+    return t('remote.viewer.rdp.failedCode', { code: props.errorCode.trim() })
   }
-  return '远控连接失败'
+  return t('remote.viewer.rdp.failed')
 })
 
 const cliCommand = computed(() =>

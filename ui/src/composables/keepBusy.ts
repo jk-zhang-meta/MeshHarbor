@@ -10,8 +10,15 @@
  * display-match): a reconnecting tab must not undo the host's Stop or
  * another controller's choice.
  *
- * Pure on purpose — no Vue, no channel — so all of it is unit-tested.
+ * Pure on purpose — no Vue, no channel — so all of it is unit-tested. The
+ * words go through the app's i18n (FR-131 P3), English unless the reader
+ * chose Chinese; the device's own sentences are shown as it sent them.
  */
+import i18n from '@/plugins/i18n'
+
+function tr(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
 
 export type KeepBusyPattern =
   | 'circle'
@@ -168,7 +175,8 @@ export function keepBusySetMessage(req: KeepBusyRequest): Record<string, unknown
 }
 
 export function patternLabel(p: KeepBusyPattern): string {
-  return KEEP_BUSY_PATTERNS.find((x) => x.id === p)?.label ?? p
+  const known = KEEP_BUSY_PATTERNS.find((x) => x.id === p)
+  return known ? tr(`keepBusy.pattern.${known.id}`) : p
 }
 
 /** FR-92 P5b — the device list's tooltip for a device's keep-busy brief (the
@@ -179,28 +187,28 @@ export function keepBusyBriefTitle(
   if (!b?.on) return ''
   // A string, not a `KeepBusyPattern`: a newer agent may draw a pattern this
   // dashboard has never heard of, and it is printed as the agent named it.
-  const label = b.pattern ? (KEEP_BUSY_PATTERNS.find((x) => x.id === b.pattern)?.label ?? b.pattern) : null
-  const what = label ? label.toLowerCase() : 'a pattern'
-  const who = b.set_by ? `, turned on by ${b.set_by}` : ''
+  const label = b.pattern ? (isKeepBusyPattern(b.pattern) ? patternLabel(b.pattern) : b.pattern) : null
+  const what = label ? label.toLowerCase() : tr('keepBusy.status.aPattern')
+  const who = b.set_by ? tr('keepBusy.status.turnedOnBy', { who: b.set_by }) : ''
   const why = b.reason ? ` (${b.reason.replace(/_/g, ' ')})` : ''
-  return `Keep busy is on: ${what}${who}. Now ${b.phase}${why}, as the device reports it.`
+  return tr('keepBusy.status.brief', { what, who, phase: b.phase, why })
 }
 
 /** What the viewer says about a refusal of its own request. */
 export function keepBusyRefusalText(code: string): string {
   switch (code) {
     case 'no_input_permission':
-      return 'This session is view-only, so it cannot change keep busy.'
+      return tr('keepBusy.refused.no_input_permission')
     case 'not_floor_holder':
-      return 'Another viewer has control. Ask for control to change keep busy.'
+      return tr('keepBusy.refused.not_floor_holder')
     case 'org_denied':
-      return 'Your organization does not allow keep busy.'
+      return tr('keepBusy.refused.org_denied')
     case 'unsupported':
-      return 'Keep busy is not available on this computer.'
+      return tr('keepBusy.refused.unsupported')
     case 'bad_request':
-      return 'The device did not understand the request. Its agent may need an update.'
+      return tr('keepBusy.refused.bad_request')
     default:
-      return 'The device did not apply the change.'
+      return tr('keepBusy.refused.other')
   }
 }
 
@@ -216,23 +224,28 @@ export function keepBusyStatusLine(s: KeepBusyState, now: number = Date.now()): 
   if (!s.on) {
     // "Turned off at this computer" is worth saying; a plain off is not.
     if (s.sentence && s.reason && s.reason !== 'stopped_by_controller') return s.sentence
-    return 'Off.'
+    return tr('keepBusy.status.off')
   }
   switch (s.phase) {
     case 'running':
-      return `Running: ${patternLabel(s.pattern).toLowerCase()}${s.setBy ? `, turned on by ${s.setBy}` : ''}.`
+      return tr('keepBusy.status.running', {
+        pattern: patternLabel(s.pattern).toLowerCase(),
+        who: s.setBy ? tr('keepBusy.status.turnedOnBy', { who: s.setBy }) : '',
+      })
     case 'calibrating':
-      return 'Starting…'
+      return tr('keepBusy.status.starting')
     case 'paused': {
-      const base = s.sentence ?? 'Paused.'
+      const base = s.sentence ?? tr('keepBusy.status.paused')
       if (s.reason !== 'user_active' && s.reason !== 'cursor_contended') return base
       const left = keepBusyResumesInS(s, now)
       if (left == null) return base
-      return left > 0 ? `${base} Resumes in ${left} s if nothing else happens.` : `${base} Resumes once they stop.`
+      return left > 0
+        ? `${base} ${tr('keepBusy.status.resumesIn', { s: left })}`
+        : `${base} ${tr('keepBusy.status.resumesOnceStopped')}`
     }
     case 'locked':
     case 'unavailable':
-      return s.sentence ?? 'Paused.'
+      return s.sentence ?? tr('keepBusy.status.paused')
     default:
       return s.sentence ?? ''
   }

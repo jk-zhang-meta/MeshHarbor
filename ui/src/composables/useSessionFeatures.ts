@@ -12,6 +12,7 @@
  * Pure functions only, so the words and the parsing are unit-tested without
  * a session.
  */
+import i18n from '@/plugins/i18n'
 
 /** The three features a session policy covers, by their wire names. */
 export type SessionFeature = 'clipboard' | 'files' | 'audio'
@@ -20,9 +21,15 @@ export const SESSION_FEATURES: readonly SessionFeature[] = ['clipboard', 'files'
 
 /** How each feature is named in a sentence (start of a sentence / inside one). */
 const FEATURE_WORDS: Record<SessionFeature, { start: string; inline: string }> = {
-  clipboard: { start: 'Clipboard', inline: 'the clipboard' },
-  files: { start: 'File transfer', inline: 'file transfer' },
-  audio: { start: 'Host audio', inline: 'host audio' },
+  get clipboard() {
+    return { start: i18n.global.t('remote.viewer.feature.clipboard.start'), inline: i18n.global.t('remote.viewer.feature.clipboard.inline') }
+  },
+  get files() {
+    return { start: i18n.global.t('remote.viewer.feature.files.start'), inline: i18n.global.t('remote.viewer.feature.files.inline') }
+  },
+  get audio() {
+    return { start: i18n.global.t('remote.viewer.feature.audio.start'), inline: i18n.global.t('remote.viewer.feature.audio.inline') }
+  },
 }
 
 /** Every reason the hub can give, for tests and for callers that branch. */
@@ -54,17 +61,17 @@ export function describeFeatureReason(feature: SessionFeature, code: string): st
   const w = FEATURE_WORDS[feature]
   switch (code) {
     case 'org_policy_off':
-      return `Your organization has turned off ${w.inline} for remote sessions.`
+      return i18n.global.t('remote.viewer.feature.reason.org_policy_off', { what: w.inline })
     case 'device_policy_off':
-      return `This device's owner has turned off ${w.inline} for remote sessions.`
+      return i18n.global.t('remote.viewer.feature.reason.device_policy_off', { what: w.inline })
     case 'needs_consent':
-      return `${w.start} needs the approval of the person at the device, and this session does not ask them.`
+      return i18n.global.t('remote.viewer.feature.reason.needs_consent', { what: w.start })
     case 'device_cannot_ask':
-      return `${w.start} needs the person at the device to approve it, and this device's agent is too old to ask. Updating the device fixes it.`
+      return i18n.global.t('remote.viewer.feature.reason.device_cannot_ask', { what: w.start })
     case 'policy_unavailable':
-      return `Your organization's session policy could not be read, so ${w.inline} is off for this session. Reconnect to try again.`
+      return i18n.global.t('remote.viewer.feature.reason.policy_unavailable', { what: w.inline })
     default:
-      return `${w.start} is not available in this session (${code}).`
+      return i18n.global.t('remote.viewer.feature.reason.other', { what: w.start, code })
   }
 }
 
@@ -86,6 +93,8 @@ export function summarizeRefusals(refused: Record<string, string>): string | nul
   const off = SESSION_FEATURES.filter((f) => refused[f]).map((f) => FEATURE_WORDS[f].inline)
   if (off.length === 0) return null
   const list =
-    off.length === 1 ? off[0] : `${off.slice(0, -1).join(', ')} and ${off[off.length - 1]}`
-  return `Off for this session: ${list}. Hover a greyed control to see why.`
+    off.length === 1
+      ? off[0]
+      : i18n.global.t('remote.viewer.feature.list', { first: off.slice(0, -1).join(i18n.global.t('remote.viewer.feature.sep')), last: off[off.length - 1] })
+  return i18n.global.t('remote.viewer.feature.summary', { list })
 }

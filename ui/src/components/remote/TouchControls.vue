@@ -29,7 +29,7 @@
           class="tc-btn"
           :class="{ 'tc-held': lit.has(`${c.id}/${b.id}`) || macroLit.has(`${c.id}/${b.id}`) }"
           :data-testid="`rc-tc-${c.id}-${b.id}`"
-          :aria-label="controlLabel(b.label, !!ctrlIsCmd)"
+          :aria-label="controlLabel(word(b.label), !!ctrlIsCmd)"
           @pointerdown.stop.prevent="onButtonDown($event, c, b)"
           @pointermove.stop
           @pointerrawupdate.stop
@@ -38,14 +38,14 @@
           @lostpointercapture.stop="onUp($event)"
           @contextmenu.stop.prevent
         >
-          {{ controlLabel(b.label, !!ctrlIsCmd) }}
+          {{ controlLabel(word(b.label), !!ctrlIsCmd) }}
         </button>
       </div>
       <div
         v-else-if="c.kind === 'dpad'"
         class="tc-pad"
         role="button"
-        :aria-label="c.label"
+        :aria-label="word(c.label)"
         :data-testid="`rc-tc-${c.id}`"
         :style="{ ...placeStyle(c.at), width: `${c.size}px`, height: `${c.size}px` }"
         @pointerdown.stop.prevent="onPadDown($event, c)"
@@ -67,7 +67,7 @@
         v-else
         class="tc-pad"
         role="button"
-        :aria-label="c.label"
+        :aria-label="word(c.label)"
         :data-testid="`rc-tc-${c.id}`"
         :style="{ ...placeStyle(c.at), width: `${c.size}px`, height: `${c.size}px` }"
         @pointerdown.stop.prevent="onStickDown($event, c)"
@@ -78,7 +78,7 @@
         @lostpointercapture.stop="onUp($event)"
         @contextmenu.stop.prevent
       >
-        <span class="tc-stick-label">{{ c.label }}</span>
+        <span class="tc-stick-label">{{ word(c.label) }}</span>
         <span class="tc-knob" :class="{ 'tc-held': knobs.has(c.id) }" :style="knobStyle(c)" />
       </div>
     </template>
@@ -87,7 +87,9 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
+  builtinWordKey,
   controlLabel,
   createControlsDriver,
   fitControls,
@@ -113,6 +115,14 @@ const props = defineProps<{
 }>()
 
 const driver = createControlsDriver(props.sink)
+
+/** FR-131 P3 — a built-in's words in the reader's language; a label someone
+ *  typed, and every key legend, as written. */
+const { t } = useI18n()
+function word(label: string): string {
+  const k = builtinWordKey(label)
+  return k ? t(k) : label
+}
 
 /** FR-125 P2 — the overlay's own height (the stage's), and the preset fitted
  *  to it: a stage with room renders the preset as designed. */
