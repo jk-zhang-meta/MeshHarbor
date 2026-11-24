@@ -2940,6 +2940,9 @@
         "label": "Control plane",
         "caption": "meshharbor.itachi.fans only coordinates: keys, ACLs, presence. Your traffic never flows through our servers."
       }
+    },
+    "video": {
+      "caption": "Self-hosted TeamViewer alternative: MeshHarbor on Windows, Mac and Linux"
     }
   }
 }

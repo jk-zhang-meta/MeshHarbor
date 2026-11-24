@@ -2940,6 +2940,9 @@
         "label": "控制平面",
         "caption": "meshharbor.itachi.fans 只负责协调：密钥、访问控制和在线状态。你的流量从不经过我们的服务器。"
       }
+    },
+    "video": {
+      "caption": "自建的 TeamViewer 替代方案：MeshHarbor 在 Windows、Mac 和 Linux 上（英文视频）"
     }
   }
 }

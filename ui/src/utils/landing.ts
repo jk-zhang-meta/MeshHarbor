@@ -261,8 +261,8 @@ const EN: LandingCopy = { HERO, VIDEO_TOUR, CAPABILITIES, PILLARS, DOWNLOAD, PRI
 
 const ZH: LandingCopy = {
   HERO: {
-    titleLead: '你的每一台设备，',
-    titleAccent: '连成一张安全的网络',
+    titleLead: '你的所有设备，',
+    titleAccent: '一张安全的网络',
     lead: '在任何浏览器里远程桌面，设备之间组成类似 WireGuard 的私有网络，团队聊天和视频会议也一并包含。',
   },
   VIDEO_TOUR: {
@@ -370,14 +370,14 @@ const PLAN_FEATURES_ZH: Record<string, string> = {
   '1 remote session at a time': '同时 1 个远程会话',
   'Meetings up to 60 minutes, 10 people': '会议最长 60 分钟，最多 10 人',
   'Unlimited chat, 1 GB storage': '聊天不限量，1 GB 存储',
-  'Everything in Free, priced per user': '包含免费版的全部功能，按用户计费',
+  'Everything in Free, priced per user': '免费版全部功能，按人计费',
   '1,000 devices': '1,000 台设备',
   '1 remote session at a time per user': '每位用户同时 1 个远程会话',
   'Exit nodes': '出口节点',
   'Meetings with 50 people, no time limit': '会议最多 50 人，不限时长',
   '25 GB of relay traffic per user each month': '每位用户每月 25 GB 中继流量',
   '10 GB storage per user': '每位用户 10 GB 存储',
-  'Everything in Pro': '包含专业版的全部功能',
+  'Everything in Pro': '专业版全部功能',
   '5,000 devices': '5,000 台设备',
   'Unlimited remote sessions': '远程会话不限数量',
   'Meetings with 100 people, and recordings': '会议最多 100 人，可录制',

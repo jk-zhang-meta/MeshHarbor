@@ -30,11 +30,12 @@
         class="landing-locale"
         @click="setLocale(otherLocale.code)"
       >
-        {{ otherLocale.label }}
+        {{ otherLocale.short }}
       </v-btn>
       <v-btn variant="outlined" color="primary" :to="{ name: 'login' }" class="mx-2 d-none d-sm-inline-flex">{{ t('landing.nav.login') }}</v-btn>
-      <v-btn color="primary" :to="{ name: 'register' }" class="d-none d-sm-inline-flex">{{ t('landing.nav.getStarted') }}</v-btn>
-      <v-btn color="primary" :to="{ name: 'register' }" class="d-sm-none" size="small">{{ t('landing.nav.signUp') }}</v-btn>
+      <!-- A toolbar makes its buttons `text` by default; the one call to action is solid. -->
+      <v-btn color="primary" variant="flat" :to="{ name: 'register' }" class="d-none d-sm-inline-flex me-md-2">{{ t('landing.nav.getStarted') }}</v-btn>
+      <v-btn color="primary" variant="flat" :to="{ name: 'register' }" class="d-sm-none" size="small">{{ t('landing.nav.signUp') }}</v-btn>
       <v-menu location="bottom end">
         <template #activator="{ props: menuProps }">
           <v-btn
@@ -92,7 +93,12 @@
       <v-container style="max-width: 920px">
         <h2 class="text-h4 text-md-h3 text-center font-weight-bold mb-2">{{ copy.VIDEO_TOUR.title }}</h2>
         <p class="text-center text-body-1 landing-muted mb-6">{{ copy.VIDEO_TOUR.lead }}</p>
-        <VideoFacade :video-id="FEATURED_VIDEO_ID" :poster="videoTourPoster" />
+        <!-- The video speaks English; in Chinese its caption says what it is, and that. -->
+        <VideoFacade
+          :video-id="FEATURED_VIDEO_ID"
+          :poster="videoTourPoster"
+          :caption="locale.startsWith('zh') ? t('landing.video.caption') : undefined"
+        />
       </v-container>
     </section>
 
@@ -175,11 +181,11 @@
               </v-chip>
               <div class="my-4">
                 <span class="text-h3 font-weight-bold">${{ plan.price_cents / 100 }}</span>
-                <span v-if="plan.price_cents > 0" class="text-body-2 landing-muted">
+                <span v-if="plan.price_cents > 0" class="text-body-2 landing-muted ms-1">
                   <!-- FR-115 — the euro figure only once EUR is on sale (`stripe.currencies`) -->
                   <template v-if="(plan.prices || []).some((p) => p.currency === 'eur')">/ €{{ plan.price_cents / 100 }} </template>{{ t('landing.pricing.perUserMonth') }}
                 </span>
-                <span v-else class="text-body-2 landing-muted">{{ t('landing.pricing.forever') }}</span>
+                <span v-else class="text-body-2 landing-muted ms-1">{{ t('landing.pricing.forever') }}</span>
                 <div v-if="annualLine(plan, locale)" class="text-body-2 landing-muted">{{ annualLine(plan, locale) }}</div>
               </div>
               <v-divider class="mb-4" />
@@ -293,7 +299,11 @@ const { xs } = useDisplay()
 // the interface language, English or Chinese.
 const { t, locale } = useI18n()
 const copy = computed(() => landingCopy(locale.value))
-const otherLocale = computed(() => LOCALES.find((l) => l.code !== locale.value) ?? LOCALES[0])
+const SHORT_LABEL: Record<string, string> = { en: 'English', 'zh-CN': '中文' }
+const otherLocale = computed(() => {
+  const l = LOCALES.find((x) => x.code !== locale.value) ?? LOCALES[0]
+  return { code: l.code, short: SHORT_LABEL[l.code] ?? l.label }
+})
 
 // One-line installs — same vitest-locked template source the in-app
 // enrollment dialog uses (token placeholder until they have one), and the
@@ -387,6 +397,10 @@ onMounted(async () => {
 .hero-graphic {
   position: relative;
   z-index: 1;
+}
+/* Even lines instead of one orphaned word (or one Chinese character). */
+.hero-copy h1 {
+  text-wrap: balance;
 }
 
 @keyframes float {
