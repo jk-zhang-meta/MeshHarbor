@@ -30,9 +30,11 @@
       </div>
 
       <!-- A card per entry below 600 px (table-stack-xs): the result and the
-           command or detail sat about three screens to the right. Compact
-           (labels beside short values), 20 cards at a time, and a long
-           command clamped until tapped: 100 full cards were 43,398 px. -->
+           command or detail sat about three screens to the right. 20 cards at
+           a time (100 full cards were 43,398 px), and FR-120 P4: a card shows
+           what decides (the device, when, the result, the command's first two
+           lines) and opens on a tap for who, how and the whole command. Six
+           labelled lines a card made the page 3.3× its desktop height. -->
       <template v-else>
         <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
@@ -46,30 +48,45 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="e in visible" :key="e.request_id">
-              <td :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-              <td :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
-              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap">{{ userName(e.user_id) }}</td>
-              <td :data-label="t('mh.audit.col.via')">
+            <tr
+              v-for="e in visible"
+              :key="e.request_id"
+              :class="{ 'stack-open': isOpen(e.request_id) }"
+            >
+              <td v-if="xs">
+                <button
+                  type="button"
+                  class="stack-toggle"
+                  :aria-expanded="isOpen(e.request_id)"
+                  data-testid="audit-row-toggle"
+                  @click="toggle(e.request_id)"
+                >
+                  <span class="stack-toggle__text">
+                    <span class="font-weight-medium">{{ deviceName(e.agent_id) }}</span>
+                    <span class="text-caption text-medium-emphasis"> · {{ fmtWhen(e.at) }}</span>
+                  </span>
+                  <v-chip size="x-small" :color="resultColor(e)" variant="flat" class="flex-shrink-0">
+                    {{ resultLabel(e) }}
+                  </v-chip>
+                  <v-icon size="small" class="flex-shrink-0" aria-hidden="true">
+                    {{ isOpen(e.request_id) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                  </v-icon>
+                </button>
+              </td>
+              <td v-if="!xs" :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
+              <td v-if="!xs" :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
+              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap stack-detail">{{ userName(e.user_id) }}</td>
+              <td :data-label="t('mh.audit.col.via')" class="stack-detail">
                 <v-chip size="x-small" variant="tonal">{{ e.source }}</v-chip>
               </td>
               <td :data-label="t('mh.audit.col.command')" class="stack-block">
                 <code
                   class="audit-cmd"
-                  :class="{ 'audit-cmd--open': openCommands.has(e.request_id) }"
+                  :class="{ 'audit-cmd--open': isOpen(e.request_id) }"
                   :title="e.command"
                 >{{ e.command }}</code>
-                <button
-                  v-if="xs && isLongCommand(e.command)"
-                  type="button"
-                  class="audit-more text-caption"
-                  :aria-expanded="openCommands.has(e.request_id)"
-                  @click="toggleCommand(e.request_id)"
-                >
-                  {{ openCommands.has(e.request_id) ? t('mh.audit.showLess') : t('mh.audit.showAll') }}
-                </button>
               </td>
-              <td :data-label="t('mh.audit.col.result')" class="text-no-wrap">
+              <td v-if="!xs" :data-label="t('mh.audit.col.result')" class="text-no-wrap">
                 <v-chip size="x-small" :color="resultColor(e)" variant="flat">
                   {{ resultLabel(e) }}
                 </v-chip>
@@ -82,6 +99,11 @@
                 >
                   {{ ranAsLabel(e) }}
                 </v-chip>
+              </td>
+              <!-- The identity it ran as, spelled out: on a desktop that is
+                   the chip's title, which a finger never reaches. -->
+              <td v-if="xs && ranAsLabel(e)" :data-label="t('mh.audit.col.ranAs')" class="stack-detail">
+                {{ ranAsTitle(e) }}
               </td>
             </tr>
           </tbody>
@@ -101,6 +123,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useDisplay } from 'vuetify'
 import { useAgentStore, type ExecAuditEntry } from '@/stores/agents'
 import { deviceLabel } from '@/composables/useHideDeviceName'
+import { useOpenRows } from '@/composables/useOpenRows'
 import { usePhoneSlice } from '@/composables/usePhoneSlice'
 import { useI18n } from 'vue-i18n'
 
@@ -117,21 +140,13 @@ const entries = ref<ExecAuditEntry[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 
-// FR-116 P3d — a phone shows 20 cards at a time, each command clamped to
-// three lines until tapped (`title` is the desktop's way to the whole of it,
-// and a touch screen has no hover).
+// FR-116 P3d — a phone shows 20 cards at a time. FR-120 P4 — each card shows
+// what decides and opens on a tap for the rest, the whole command included
+// (`title` is the desktop's way to the whole of it, and a touch screen has no
+// hover).
 const { xs } = useDisplay()
 const { visible, remaining, nextCount, showMore } = usePhoneSlice(entries)
-const openCommands = ref(new Set<string>())
-function isLongCommand(cmd: string): boolean {
-  return cmd.length > 120 || cmd.includes('\n')
-}
-function toggleCommand(id: string) {
-  const next = new Set(openCommands.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  openCommands.value = next
-}
+const { isOpen, toggle } = useOpenRows<string>()
 
 /** Human wording for each refusal, so a reader learns WHICH gate said no.
  *  "Denied" alone would throw away the only useful part of the record. */
@@ -243,16 +258,16 @@ defineExpose({ load })
   vertical-align: bottom;
 }
 /* A phone stacks the row into a card (table-stack-xs), so the command has
-   the card's whole width and nothing to blow out. It shows three lines; a
-   longer one opens on "Show all" (`title`, above, is the desktop's way in,
-   and a touch screen has no hover). A script showed in full ran to
-   1,936 px in one card. */
+   the card's whole width and nothing to blow out. It shows two lines until
+   its card is opened (`title`, above, is the desktop's way in, and a touch
+   screen has no hover). A script showed in full ran to 1,936 px in one
+   card. */
 @media (max-width: 599.98px) {
   .audit-cmd {
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     max-width: 100%;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -262,18 +277,5 @@ defineExpose({ load })
     -webkit-line-clamp: unset;
     line-clamp: none;
   }
-}
-.audit-more {
-  display: block;
-  margin-top: 2px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: rgb(var(--v-theme-primary));
-  cursor: pointer;
-}
-.audit-more:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
 }
 </style>

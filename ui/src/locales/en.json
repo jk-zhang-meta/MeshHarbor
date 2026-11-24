@@ -1180,7 +1180,8 @@
       "copyKey": "Copy key",
       "enrollWith": "Enroll with:",
       "mint": "Mint",
-      "done": "Done"
+      "done": "Done",
+      "mintedLabel": "Minted"
     },
     "dev": {
       "updateAll": "Update all",
@@ -2347,7 +2348,9 @@
         "who": "Who",
         "via": "Via",
         "as": "As",
-        "command": "Command"
+        "command": "Command",
+        "ranAs": "Ran as",
+        "why": "Why"
       },
       "showMore": "Show {n} more",
       "showLess": "Show less",
@@ -2740,7 +2743,9 @@
       "uptimeBarAria": "{name}: presence over time. Tap, or use the arrow keys, to read a period",
       "uptimeHint": "Tap a bar to read a period.",
       "timelineBarAria": "{name}: viewing windows. Tap, or use the arrow keys, to read one",
-      "timelineHint": "Tap a bar to read a viewing window."
+      "timelineHint": "Tap a bar to read a viewing window.",
+      "fewerLimits": "Fewer limits",
+      "allLimits": "All nine limits"
     }
   },
   "tempDevices": {

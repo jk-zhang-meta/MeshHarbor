@@ -128,17 +128,35 @@
             </div>
           </div>
           <v-divider class="mb-4" />
+          <!-- FR-120 P4 — on a phone a plan shows the three limits that tell
+               the plans apart at a glance (users, devices, sessions at a time)
+               and opens the other six on a tap: three plans × nine open rows
+               made the page 2.2× its desktop height. -->
           <v-list density="compact" class="flex-grow-1 bg-transparent">
             <v-list-item title="Users" :subtitle="usersText(plan)" prepend-icon="mdi-account-group" />
             <v-list-item title="Devices" :subtitle="count(plan.limits.max_devices)" prepend-icon="mdi-monitor-multiple" />
             <v-list-item title="Remote sessions at a time" :subtitle="sessionsText(plan)" prepend-icon="mdi-monitor-eye" />
-            <v-list-item title="MagicDNS" :subtitle="plan.limits.magic_dns ? 'Yes' : 'No'" :prepend-icon="plan.limits.magic_dns ? 'mdi-check-circle' : 'mdi-close-circle'" />
-            <v-list-item title="Exit Nodes" :subtitle="plan.limits.exit_nodes ? 'Yes' : 'Not yet'" :prepend-icon="plan.limits.exit_nodes ? 'mdi-check-circle' : 'mdi-close-circle'" />
-            <v-list-item title="Relay at full speed" :subtitle="relayText(plan)" prepend-icon="mdi-swap-horizontal" />
-            <v-list-item title="Meetings" :subtitle="meetingsText(plan)" prepend-icon="mdi-video" />
-            <v-list-item title="Storage" :subtitle="storageText(plan)" prepend-icon="mdi-database" />
-            <v-list-item title="Recordings" :subtitle="plan.limits.recordings ? 'Yes' : 'No'" :prepend-icon="plan.limits.recordings ? 'mdi-check-circle' : 'mdi-close-circle'" />
+            <template v-if="!xs || isOpen(plan.id)">
+              <v-list-item title="MagicDNS" :subtitle="plan.limits.magic_dns ? 'Yes' : 'No'" :prepend-icon="plan.limits.magic_dns ? 'mdi-check-circle' : 'mdi-close-circle'" />
+              <v-list-item title="Exit Nodes" :subtitle="plan.limits.exit_nodes ? 'Yes' : 'Not yet'" :prepend-icon="plan.limits.exit_nodes ? 'mdi-check-circle' : 'mdi-close-circle'" />
+              <v-list-item title="Relay at full speed" :subtitle="relayText(plan)" prepend-icon="mdi-swap-horizontal" />
+              <v-list-item title="Meetings" :subtitle="meetingsText(plan)" prepend-icon="mdi-video" />
+              <v-list-item title="Storage" :subtitle="storageText(plan)" prepend-icon="mdi-database" />
+              <v-list-item title="Recordings" :subtitle="plan.limits.recordings ? 'Yes' : 'No'" :prepend-icon="plan.limits.recordings ? 'mdi-check-circle' : 'mdi-close-circle'" />
+            </template>
           </v-list>
+          <v-btn
+            v-if="xs"
+            variant="text"
+            size="small"
+            class="align-self-start"
+            :append-icon="isOpen(plan.id) ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+            :aria-expanded="isOpen(plan.id)"
+            :data-testid="`plan-limits-${plan.id}`"
+            @click="toggle(plan.id)"
+          >
+            {{ isOpen(plan.id) ? $t('mh.phone.fewerLimits') : $t('mh.phone.allLimits') }}
+          </v-btn>
           <v-btn
             v-if="isCurrent(plan)"
             color="primary"
@@ -196,8 +214,10 @@
 <script setup lang="ts">
 import { appOrigin } from '@/utils/deployment'
 import { ref, computed, onMounted, watch } from 'vue'
+import { useDisplay } from 'vuetify'
 import { useTenantStore } from '@/stores/tenant'
 import { api } from '@/api/client'
+import { useOpenRows } from '@/composables/useOpenRows'
 import {
   type Currency,
   annualOnSale as annualIn,
@@ -206,6 +226,9 @@ import {
 } from '@/utils/billingCurrency'
 
 const tenantStore = useTenantStore()
+// FR-120 P4 — on a phone a plan opens its other six limits on a tap.
+const { xs } = useDisplay()
+const { isOpen, toggle } = useOpenRows<string>()
 
 type Interval = 'month' | 'year'
 

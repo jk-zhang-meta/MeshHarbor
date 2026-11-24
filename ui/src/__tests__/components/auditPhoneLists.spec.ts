@@ -2,10 +2,14 @@
 // Copyright (C) 2026 G ROX EOOD
 //
 // FR-116 P3d — the audit lists on a phone. 100 entries as full cards were
-// 43,398 px at 360 px on production: a phone now shows 20 at a time and a long
-// command three lines until tapped. Wider screens keep every row. And a
-// refusal without a message must never also read "granted" (a v-else paired
-// with the wrong v-if, from P3a).
+// 43,398 px at 360 px on production: a phone now shows 20 at a time. Wider
+// screens keep every row. And a refusal without a message must never also read
+// "granted" (a v-else paired with the wrong v-if, from P3a).
+//
+// FR-120 P4 — a phone card shows what decides (the device, when, the result,
+// and an exec entry's command clamped to two lines) and opens on a tap for the
+// rest; six labelled lines a card made the audits 3.3–3.6× their desktop
+// height.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -113,44 +117,108 @@ describe('the SSH audit on a phone (FR-116 P3d)', () => {
   })
 
   it('never reads "granted" on a refusal, with or without its message', async () => {
-    serve([
+    const refusals = [
       sshEntry(0, { denied: 'no_permission' as SshAuditEntry['denied'], denied_message: null, account_mode: null }),
       sshEntry(1, { denied: 'no_permission' as SshAuditEntry['denied'], denied_message: 'You may not SSH here', account_mode: null }),
       sshEntry(2),
-    ])
-    const w = sshAt(360)
+    ]
+    // A phone: the card's summary carries the result, and the opened card the
+    // server's reason.
+    serve(refusals)
+    const phone = sshAt(360)
     await flushPromises()
-    const results = w.findAll('td[data-label="Result"]').map((td) => td.text())
+    const summaries = phone.findAll('[data-testid="audit-row-toggle"]').map((b) => b.text())
+    expect(summaries[0]).not.toContain('granted')
+    expect(summaries[1]).not.toContain('granted')
+    expect(summaries[2]).toContain('granted')
+    const why = phone.findAll('td[data-label="Why"]')
+    expect(why).toHaveLength(1)
+    expect(why[0].text()).toBe('You may not SSH here')
+    // A desktop: the Result column.
+    serve(refusals)
+    const desk = sshAt(1300)
+    await flushPromises()
+    const results = desk.findAll('td[data-label="Result"]').map((td) => td.text())
     expect(results[0]).not.toContain('granted')
     expect(results[1]).not.toContain('granted')
-    expect(results[1]).toContain('You may not SSH here')
     expect(results[2]).toContain('granted')
+  })
+
+  it('shows what decides on a phone, and opens a card on a tap for the rest (FR-120 P4)', async () => {
+    serve([sshEntry(0), sshEntry(1)])
+    const w = sshAt(360)
+    await flushPromises()
+    const rows = w.findAll('tbody tr')
+    // The summary is the device, when and the result; the When, Device and
+    // Result columns are not repeated below it.
+    expect(rows[0].find('[data-testid="audit-row-toggle"]').exists()).toBe(true)
+    expect(rows[0].find('td[data-label="When"]').exists()).toBe(false)
+    expect(rows[0].find('td[data-label="Result"]').exists()).toBe(false)
+    // Who, Via and As are details: closed until the card is tapped.
+    for (const label of ['Who', 'Via', 'As']) {
+      expect(rows[0].get(`td[data-label="${label}"]`).classes()).toContain('stack-detail')
+    }
+    expect(rows[0].classes()).not.toContain('stack-open')
+    await rows[0].get('[data-testid="audit-row-toggle"]').trigger('click')
+    const opened = w.findAll('tbody tr')
+    expect(opened[0].classes()).toContain('stack-open')
+    expect(opened[0].get('[data-testid="audit-row-toggle"]').attributes('aria-expanded')).toBe('true')
+    // Each card opens on its own.
+    expect(opened[1].classes()).not.toContain('stack-open')
+  })
+
+  it('keeps its columns on a wider screen, with no summary', async () => {
+    serve([sshEntry(0)])
+    const w = sshAt(1300)
+    await flushPromises()
+    expect(w.find('[data-testid="audit-row-toggle"]').exists()).toBe(false)
+    expect(w.findAll('tbody tr td').map((td) => td.attributes('data-label'))).toEqual(['When', 'Device', 'Who', 'Via', 'As', 'Result'])
   })
 })
 
 describe('the exec audit on a phone (FR-116 P3d)', () => {
   const long = Array.from({ length: 30 }, (_, i) => `step-${i} --flag value`).join(' && ')
 
-  it('clamps a long command until tapped, and only a long one offers to', async () => {
+  it('clamps a command until its card is tapped, which opens the rest too (FR-120 P4)', async () => {
     serve([], [execEntry(0, long), execEntry(1, 'uptime')])
     const w = execAt(360)
     await flushPromises()
-    const cells = w.findAll('td[data-label="Command"]')
-    const toggle = cells[0].get('button')
+    const rows = w.findAll('tbody tr')
+    const toggle = rows[0].get('[data-testid="audit-row-toggle"]')
     expect(toggle.attributes('aria-expanded')).toBe('false')
-    expect(cells[0].get('code').classes()).not.toContain('audit-cmd--open')
+    expect(toggle.text()).toContain('ok')
+    expect(rows[0].get('code').classes()).not.toContain('audit-cmd--open')
+    expect(rows[0].get('td[data-label="Who"]').classes()).toContain('stack-detail')
+    // The old per-command "Show all" is gone: the card's own toggle opens it.
+    expect(rows[0].get('td[data-label="Command"]').find('button').exists()).toBe(false)
     await toggle.trigger('click')
-    expect(cells[0].get('button').attributes('aria-expanded')).toBe('true')
-    expect(cells[0].get('code').classes()).toContain('audit-cmd--open')
-    expect(cells[1].find('button').exists()).toBe(false)
+    const opened = w.findAll('tbody tr')
+    expect(opened[0].classes()).toContain('stack-open')
+    expect(opened[0].get('[data-testid="audit-row-toggle"]').attributes('aria-expanded')).toBe('true')
+    expect(opened[0].get('code').classes()).toContain('audit-cmd--open')
+    expect(opened[1].get('code').classes()).not.toContain('audit-cmd--open')
+  })
+
+  it('spells out the identity a command ran as, which a desktop keeps in a title', async () => {
+    const entry = { ...execEntry(0, 'whoami'), ran_as: 'system' } as ExecAuditEntry
+    serve([], [entry])
+    const phone = execAt(360)
+    await flushPromises()
+    expect(phone.get('td[data-label="Ran as"]').text()).toBe("Ran as SYSTEM through the device's service")
+    serve([], [entry])
+    const desk = execAt(1300)
+    await flushPromises()
+    expect(desk.find('td[data-label="Ran as"]').exists()).toBe(false)
   })
 
   it('offers no toggle on a wider screen, where the whole command is in its title', async () => {
     serve([], [execEntry(0, long)])
     const w = execAt(1300)
     await flushPromises()
+    expect(w.find('[data-testid="audit-row-toggle"]').exists()).toBe(false)
     const cell = w.get('td[data-label="Command"]')
     expect(cell.find('button').exists()).toBe(false)
     expect(cell.get('code').attributes('title')).toBe(long)
+    expect(w.findAll('tbody tr td').map((td) => td.attributes('data-label'))).toEqual(['When', 'Device', 'Who', 'Via', 'Command', 'Result'])
   })
 })

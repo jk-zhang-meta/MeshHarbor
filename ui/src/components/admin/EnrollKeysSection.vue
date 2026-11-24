@@ -32,59 +32,91 @@
       </p>
 
       <!-- FR-116: `table-stack-xs` — on a phone each key is a block, with its
-           state and Revoke on screen (both sat past the edge). -->
-      <v-table v-if="keys.length" density="compact" class="table-stack-xs">
-        <thead>
-          <tr>
-            <th>{{ $t('mh.ek.col.label') }}</th>
-            <th>{{ $t('mh.ek.col.uses') }}</th>
-            <th>{{ $t('mh.ek.col.expires') }}</th>
-            <th>{{ $t('mh.ek.col.ttl') }}</th>
-            <th>{{ $t('mh.ek.col.state') }}</th>
-            <th class="text-right">{{ $t('mh.tp.col.actions') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="k in keys" :key="k.id">
-            <td>
-              <span class="font-weight-medium">{{ k.label || $t('mh.ek.unnamed') }}</span>
-              <div class="text-caption text-medium-emphasis">
-                {{ $t('mh.ek.minted', { when: fmtDate(k.created_at) }) }}
-              </div>
-            </td>
-            <td :data-label="$t('mh.ek.col.uses')">{{ k.uses }} / {{ k.max_uses }}</td>
-            <td :data-label="$t('mh.ek.col.expires')" :title="k.expires_at">{{ fmtDate(k.expires_at) }}</td>
-            <td :data-label="$t('mh.ek.col.ttl')">{{ k.ephemeral_ttl_secs ? `${k.ephemeral_ttl_secs}s` : $t('mh.ek.default') }}</td>
-            <td :data-label="$t('mh.ek.col.state')">
-              <v-chip v-if="k.revoked_at" size="x-small" color="error" variant="tonal">
-                {{ $t('mh.ek.state.revoked') }}
-              </v-chip>
-              <v-chip v-else-if="expired(k)" size="x-small" variant="tonal">{{ $t('mh.ek.state.expired') }}</v-chip>
-              <v-chip
-                v-else-if="k.uses >= k.max_uses"
-                size="x-small"
-                color="warning"
-                variant="tonal"
-              >
-                {{ $t('mh.ek.state.exhausted') }}
-              </v-chip>
-              <v-chip v-else size="x-small" color="success" variant="tonal">{{ $t('mh.ek.state.active') }}</v-chip>
-            </td>
-            <td class="text-right">
-              <v-btn
-                v-if="!k.revoked_at"
-                size="x-small"
-                variant="text"
-                color="error"
-                :aria-label="$t('mh.ek.revokeAria', { key: k.label || k.id })"
-                @click="revoke(k)"
-              >
-                {{ $t('mh.ek.revoke') }}
-              </v-btn>
-            </td>
-          </tr>
-        </tbody>
-      </v-table>
+           state and Revoke on screen (both sat past the edge). FR-120 P4: the
+           block is one line, the key's label, its state and Revoke, and opens
+           on a tap for its uses, expiry, device deadline and mint date; 20 at
+           a time. Six labelled blocks a key made the Devices page 2.5× its
+           desktop height even with every device folded. One <template v-if>
+           holds the table and its Show more, so the v-else below stays paired
+           with it. -->
+      <template v-if="keys.length">
+        <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
+          <thead>
+            <tr>
+              <th>{{ $t('mh.ek.col.label') }}</th>
+              <th>{{ $t('mh.ek.col.uses') }}</th>
+              <th>{{ $t('mh.ek.col.expires') }}</th>
+              <th>{{ $t('mh.ek.col.ttl') }}</th>
+              <th>{{ $t('mh.ek.col.state') }}</th>
+              <th class="text-right">{{ $t('mh.tp.col.actions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="k in visible" :key="k.id" :class="{ 'stack-open': isOpen(k.id) }">
+              <td v-if="xs">
+                <div class="d-flex align-center ga-2">
+                  <button
+                    type="button"
+                    class="stack-toggle"
+                    :aria-expanded="isOpen(k.id)"
+                    data-testid="key-row-toggle"
+                    @click="toggle(k.id)"
+                  >
+                    <span class="stack-toggle__text font-weight-medium">{{ k.label || $t('mh.ek.unnamed') }}</span>
+                    <v-chip size="x-small" :color="keyState(k).color" variant="tonal" class="flex-shrink-0">
+                      {{ keyState(k).text }}
+                    </v-chip>
+                    <v-icon size="small" class="flex-shrink-0" aria-hidden="true">
+                      {{ isOpen(k.id) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                    </v-icon>
+                  </button>
+                  <v-btn
+                    v-if="!k.revoked_at"
+                    size="x-small"
+                    variant="text"
+                    color="error"
+                    class="flex-shrink-0"
+                    :aria-label="$t('mh.ek.revokeAria', { key: k.label || k.id })"
+                    @click="revoke(k)"
+                  >
+                    {{ $t('mh.ek.revoke') }}
+                  </v-btn>
+                </div>
+              </td>
+              <td v-else>
+                <span class="font-weight-medium">{{ k.label || $t('mh.ek.unnamed') }}</span>
+                <div class="text-caption text-medium-emphasis">
+                  {{ $t('mh.ek.minted', { when: fmtDate(k.created_at) }) }}
+                </div>
+              </td>
+              <td v-if="xs" :data-label="$t('mh.ek.mintedLabel')" class="stack-detail">{{ fmtDate(k.created_at) }}</td>
+              <td :data-label="$t('mh.ek.col.uses')" class="stack-detail">{{ k.uses }} / {{ k.max_uses }}</td>
+              <td :data-label="$t('mh.ek.col.expires')" class="stack-detail" :title="k.expires_at">{{ fmtDate(k.expires_at) }}</td>
+              <td :data-label="$t('mh.ek.col.ttl')" class="stack-detail">{{ k.ephemeral_ttl_secs ? `${k.ephemeral_ttl_secs}s` : 'default' }}</td>
+              <td v-if="!xs" :data-label="$t('mh.ek.col.state')">
+                <v-chip size="x-small" :color="keyState(k).color" variant="tonal">{{ keyState(k).text }}</v-chip>
+              </td>
+              <td v-if="!xs" class="text-right">
+                <v-btn
+                  v-if="!k.revoked_at"
+                  size="x-small"
+                  variant="text"
+                  color="error"
+                  :aria-label="$t('mh.ek.revokeAria', { key: k.label || k.id })"
+                  @click="revoke(k)"
+                >
+                  {{ $t('mh.ek.revoke') }}
+                </v-btn>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+        <div v-if="remaining" class="text-center mt-2">
+          <v-btn variant="tonal" size="small" data-testid="keys-show-more" @click="showMore">
+            {{ $t('mh.audit.showMore', { n: nextCount }) }}
+          </v-btn>
+        </div>
+      </template>
       <div v-else class="text-center pa-4 text-medium-emphasis">
         {{ $t('mh.ek.empty') }}
       </div>
@@ -183,14 +215,23 @@
 <script setup lang="ts">
 import { appOrigin } from '@/utils/deployment'
 import { onMounted, reactive, ref, watch } from 'vue'
+import { useDisplay } from 'vuetify'
+import { useI18n } from 'vue-i18n'
 import { useAgentStore, type EnrollmentKeyRow } from '@/stores/agents'
+import { useOpenRows } from '@/composables/useOpenRows'
+import { usePhoneSlice } from '@/composables/usePhoneSlice'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 
 const props = defineProps<{ tenantId: string }>()
+const { t } = useI18n()
 const agentStore = useAgentStore()
 const { fullscreen } = useResponsiveDialog()
 
 const keys = ref<EnrollmentKeyRow[]>([])
+// FR-120 P4 — on a phone a key is one line until tapped, 20 at a time.
+const { xs } = useDisplay()
+const { visible, remaining, nextCount, showMore } = usePhoneSlice(keys)
+const { isOpen, toggle } = useOpenRows<string>()
 const error = ref<string | null>(null)
 const origin = appOrigin(window.location.origin)
 
@@ -213,6 +254,14 @@ function fmtDate(iso: string): string {
 function expired(k: EnrollmentKeyRow): boolean {
   const d = new Date(k.expires_at)
   return !isNaN(d.getTime()) && d.getTime() < Date.now()
+}
+/** A key's one state, in the order that decides it: revoked, expired,
+ *  exhausted, else active. One chip for the desktop column and the phone line. */
+function keyState(k: EnrollmentKeyRow): { text: string; color?: string } {
+  if (k.revoked_at) return { text: t('mh.ek.state.revoked'), color: 'error' }
+  if (expired(k)) return { text: t('mh.ek.state.expired') }
+  if (k.uses >= k.max_uses) return { text: t('mh.ek.state.exhausted'), color: 'warning' }
+  return { text: t('mh.ek.state.active'), color: 'success' }
 }
 
 async function refresh() {

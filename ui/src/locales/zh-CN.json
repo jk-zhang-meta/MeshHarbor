@@ -1180,7 +1180,8 @@
       "copyKey": "复制密钥",
       "enrollWith": "注册命令：",
       "mint": "生成",
-      "done": "完成"
+      "done": "完成",
+      "mintedLabel": "签发于"
     },
     "dev": {
       "updateAll": "全部更新",
@@ -2347,7 +2348,9 @@
         "who": "操作人",
         "via": "途径",
         "as": "身份",
-        "command": "命令"
+        "command": "命令",
+        "ranAs": "执行身份",
+        "why": "原因"
       },
       "showMore": "再显示 {n} 条",
       "showLess": "收起",
@@ -2740,7 +2743,9 @@
       "uptimeBarAria": "{name}：在线情况时间轴。点一下，或用左右方向键，查看某一时段",
       "uptimeHint": "点一下横条，查看对应时段。",
       "timelineBarAria": "{name}：查看时段。点一下，或用左右方向键，查看其中一段",
-      "timelineHint": "点一下横条，查看对应的查看时段。"
+      "timelineHint": "点一下横条，查看对应的查看时段。",
+      "fewerLimits": "收起其余限额",
+      "allLimits": "查看全部九项限额"
     }
   },
   "tempDevices": {

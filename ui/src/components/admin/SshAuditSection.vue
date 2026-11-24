@@ -39,8 +39,11 @@
       </div>
 
       <!-- A card per entry below 600 px (table-stack-xs): the result and the
-           command or detail sat about three screens to the right. Compact
-           (labels beside short values) and 20 cards at a time. -->
+           command or detail sat about three screens to the right. 20 cards at
+           a time, and FR-120 P4: a card shows what decides (the device, when,
+           the result) and opens on a tap for who, how, as which account and
+           why a refusal. Six labelled lines a card made the page 3.6× its
+           desktop height. -->
       <template v-else>
         <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
           <thead>
@@ -54,14 +57,43 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in visible" :key="e.id ?? `${e.at}-${i}`">
-              <td :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-              <td :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
-              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap">{{ userName(e.user_id) }}</td>
-              <td :data-label="t('mh.audit.col.via')">
+            <tr
+              v-for="(e, i) in visible"
+              :key="rowKey(e, i)"
+              :class="{ 'stack-open': isOpen(rowKey(e, i)) }"
+            >
+              <td v-if="xs">
+                <button
+                  type="button"
+                  class="stack-toggle"
+                  :aria-expanded="isOpen(rowKey(e, i))"
+                  data-testid="audit-row-toggle"
+                  @click="toggle(rowKey(e, i))"
+                >
+                  <span class="stack-toggle__text">
+                    <span class="font-weight-medium">{{ deviceName(e.agent_id) }}</span>
+                    <span class="text-caption text-medium-emphasis"> · {{ fmtWhen(e.at) }}</span>
+                  </span>
+                  <v-chip
+                    size="x-small"
+                    :color="e.denied ? 'error' : 'success'"
+                    variant="flat"
+                    class="flex-shrink-0"
+                  >
+                    {{ e.denied ? denyLabel(e) : t('mh.audit.granted') }}
+                  </v-chip>
+                  <v-icon size="small" class="flex-shrink-0" aria-hidden="true">
+                    {{ isOpen(rowKey(e, i)) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                  </v-icon>
+                </button>
+              </td>
+              <td v-if="!xs" :data-label="t('mh.audit.col.when')" class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
+              <td v-if="!xs" :data-label="t('mh.audit.col.device')" class="text-no-wrap">{{ deviceName(e.agent_id) }}</td>
+              <td :data-label="t('mh.audit.col.who')" class="text-no-wrap stack-detail">{{ userName(e.user_id) }}</td>
+              <td :data-label="t('mh.audit.col.via')" class="stack-detail">
                 <v-chip size="x-small" variant="tonal">{{ e.source }}</v-chip>
               </td>
-              <td :data-label="t('mh.audit.col.as')" class="text-no-wrap">
+              <td :data-label="t('mh.audit.col.as')" class="text-no-wrap stack-detail">
                 <v-chip
                   v-if="asChip(e)"
                   size="x-small"
@@ -72,26 +104,28 @@
                   {{ asChip(e)?.label }}
                 </v-chip>
                 <span v-else class="text-medium-emphasis">—</span>
+                <!-- The chip's title, spelled out: a finger never hovers. -->
+                <span v-if="xs && asChip(e)?.title" class="text-caption text-medium-emphasis">
+                  {{ asChip(e)?.title }}
+                </span>
               </td>
-              <td :data-label="t('mh.audit.col.result')" class="text-no-wrap">
-                <!-- One v-if / v-else pair around the whole refusal: the
-                     reason line must not sit between them, or a refusal
-                     without a message also showed "granted". -->
-                <template v-if="e.denied">
-                  <v-tooltip :text="e.denied_message ?? ''" location="top">
-                    <template #activator="{ props: tip }">
-                      <v-chip v-bind="tip" size="x-small" color="error" variant="flat">
-                        {{ denyLabel(e) }}
-                      </v-chip>
-                    </template>
-                  </v-tooltip>
-                  <!-- A touch screen never hovers: the server's own reason,
-                       spelled out on the phone card. -->
-                  <div v-if="e.denied_message" class="text-caption text-medium-emphasis d-sm-none">
-                    {{ e.denied_message }}
-                  </div>
-                </template>
+              <td v-if="!xs" :data-label="t('mh.audit.col.result')" class="text-no-wrap">
+                <!-- One v-if / v-else pair around the whole refusal: a
+                     refusal without a message must never also read
+                     "granted". -->
+                <v-tooltip v-if="e.denied" :text="e.denied_message ?? ''" location="top">
+                  <template #activator="{ props: tip }">
+                    <v-chip v-bind="tip" size="x-small" color="error" variant="flat">
+                      {{ denyLabel(e) }}
+                    </v-chip>
+                  </template>
+                </v-tooltip>
                 <v-chip v-else size="x-small" color="success" variant="flat">{{ t('mh.audit.granted') }}</v-chip>
+              </td>
+              <!-- A touch screen never hovers: the server's own reason for a
+                   refusal, spelled out in the opened card. -->
+              <td v-if="xs && e.denied && e.denied_message" :data-label="t('mh.audit.col.why')" class="stack-detail">
+                {{ e.denied_message }}
               </td>
             </tr>
           </tbody>
@@ -108,8 +142,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useDisplay } from 'vuetify'
 import { useAgentStore, type SshAuditEntry } from '@/stores/agents'
 import { deviceLabel } from '@/composables/useHideDeviceName'
+import { useOpenRows } from '@/composables/useOpenRows'
 import { usePhoneSlice } from '@/composables/usePhoneSlice'
 import { sshAsChip, type SshAsChip } from '@/utils/sshIdentity'
 import { useI18n } from 'vue-i18n'
@@ -124,8 +160,11 @@ const props = defineProps<{
 
 const agentStore = useAgentStore()
 const entries = ref<SshAuditEntry[]>([])
-// FR-116 P3d — a phone shows 20 cards at a time.
+// FR-116 P3d — a phone shows 20 cards at a time. FR-120 P4 — each shows what
+// decides and opens on a tap for the rest.
+const { xs } = useDisplay()
 const { visible, remaining, nextCount, showMore } = usePhoneSlice(entries)
+const { isOpen, toggle } = useOpenRows<string>()
 const loading = ref(false)
 const error = ref<string | null>(null)
 
@@ -191,6 +230,11 @@ function denyLabel(e: SshAuditEntry): string {
  *  worth a second's attention in a list of otherwise ordinary rows. */
 function asChip(e: SshAuditEntry): SshAsChip | null {
   return sshAsChip(e.account_mode, e.ran_as)
+}
+
+/** A row’s identity: its id, or (an older entry has none) when it happened. */
+function rowKey(e: SshAuditEntry, i: number): string {
+  return e.id ?? `${e.at}-${i}`
 }
 
 function fmtWhen(at: string): string {
