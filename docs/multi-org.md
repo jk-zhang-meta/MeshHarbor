@@ -58,6 +58,12 @@ The config's scalar identity stays the **primary** enrollment — a pre-multi-or
 binary keeps serving it and never reads the new table, which is what makes an
 MSI rollback safe. Additional enrollments live in an `[[orgs]]` array:
 
+> **Moving a device to another organization (FR-133):** When a non-member of the
+> primary org signs in on the tray and chooses **Move** (or runs
+> `mh login --replace` into another org), the primary enrollment rebinds while
+> secondary `[[orgs]]` entries stay untouched, and the old org's row is removed
+> through `POST /api/agent/self/move`. See [`device-move.md`](device-move.md).
+
 ```toml
 # primary (scalar, unchanged)
 server_url  = "https://meshharbor.itachi.fans"
