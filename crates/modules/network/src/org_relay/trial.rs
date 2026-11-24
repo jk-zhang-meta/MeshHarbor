@@ -1010,9 +1010,7 @@ async fn request_inner(
         else {
             return None;
         };
-        let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else {
-            return None;
-        };
+        let plan = plans.into_iter().find(|p| p.relay.id == Some(nodes[0]))?;
         epoch = auth_epoch;
         single_plan = Some(plan);
     }
@@ -1209,9 +1207,7 @@ async fn request_inner(
                 } else if matches!(existing.phase, Phase::Committing(_)) {
                     ServerMsg::OverlayPathTrialCommit { trial_id: id }
                 } else {
-                    let Some(index) = existing.session.member_index(req_id) else {
-                        return None;
-                    };
+                    let index = existing.session.member_index(req_id)?;
                     start_message(existing, index)
                 };
                 push_control(state, &requester.node_ref, message);
@@ -1220,9 +1216,7 @@ async fn request_inner(
             Admission::Created(id) => id,
         };
         let trial = &entries[&id];
-        let Some(delivery) = delivery else {
-            return None;
-        };
+        let delivery = delivery?;
         let mut sent = true;
         for (target, message) in delivery.relays.into_iter().chain(delivery.bridges) {
             if epoch != state.org_relay.eligibility_generation()
@@ -1995,10 +1989,11 @@ pub(super) async fn recheck_network_zone_trials(
                 notify_abort(state, &removed);
                 events.push(revoke_event(&removed, reason));
             }
-        } else if direct_forbidden && has_return {
-            if let Some(trial) = entries.get_mut(&id) {
-                cancel_return(state, trial);
-            }
+        } else if direct_forbidden
+            && has_return
+            && let Some(trial) = entries.get_mut(&id)
+        {
+            cancel_return(state, trial);
         }
     }
     if !events.is_empty() {

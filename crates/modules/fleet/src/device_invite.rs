@@ -1296,10 +1296,10 @@ async fn host_family(
         }
         let before = identities.len();
         for row in &rows {
-            if let Some(id) = row.agent_id {
-                if !identities.contains(&(id, row.tenant_id)) {
-                    identities.push((id, row.tenant_id));
-                }
+            if let Some(id) = row.agent_id
+                && !identities.contains(&(id, row.tenant_id))
+            {
+                identities.push((id, row.tenant_id));
             }
             for host in &row.hosts {
                 if !identities.contains(&(host.agent_id, host.tenant_id)) {

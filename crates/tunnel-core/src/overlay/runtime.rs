@@ -3540,13 +3540,12 @@ impl OverlayRuntime {
                     revision,
                     name,
                 }) => {
-                    if let Some(update) = SelfNameUpdate::parse(node_id, &revision, name) {
-                        if pending_self_name
+                    if let Some(update) = SelfNameUpdate::parse(node_id, &revision, name)
+                        && pending_self_name
                             .as_ref()
                             .is_none_or(|old| update.revision > old.revision)
-                        {
-                            pending_self_name = Some(update);
-                        }
+                    {
+                        pending_self_name = Some(update);
                     }
                     continue;
                 }

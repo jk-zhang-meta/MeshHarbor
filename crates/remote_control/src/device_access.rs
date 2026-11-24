@@ -44,7 +44,7 @@ impl DeviceAccessFeatures {
     }
 
     pub const fn valid(self) -> bool {
-        (!self.desktop_control || self.desktop_view) && (!self.clipboard || self.desktop_view)
+        self.desktop_view || (!self.desktop_control && !self.clipboard)
     }
 
     pub fn permits_session(self, requested: crate::permissions::Permissions) -> bool {

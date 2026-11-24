@@ -69,10 +69,8 @@ pub async fn load_cached_identity(server: String) {
         let due = BADGE.lock().is_ok_and(|v| {
             v.email.is_some() && v.checked_at.is_none_or(|t| t.elapsed().as_secs() >= 60)
         });
-        if due {
-            if let Ok(_operation) = SESSION_OP.try_lock() {
-                let _ = refreshed(&server).await;
-            }
+        if due && let Ok(_operation) = SESSION_OP.try_lock() {
+            let _ = refreshed(&server).await;
         }
         return;
     }
@@ -97,17 +95,17 @@ pub async fn save_login(server: String, session: NativeSession) -> Result<(), St
         .await
         .map_err(|_| "OS credential read task failed")?
         .map_err(|_| "Cannot read the previous account authorization")?;
-    if let Some(old) = old {
-        if old.refresh_token != session.refresh_token {
-            match user_session::refresh(&server, &old.refresh_token).await {
-                Ok(prior) => match user_session::revoke(&server, &prior.access_token).await {
-                    Ok(()) => {}
-                    Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
-                    Err(error) => return Err(error.to_string()),
-                },
+    if let Some(old) = old
+        && old.refresh_token != session.refresh_token
+    {
+        match user_session::refresh(&server, &old.refresh_token).await {
+            Ok(prior) => match user_session::revoke(&server, &prior.access_token).await {
+                Ok(()) => {}
                 Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
-                Err(_) => return Err("Cannot confirm revocation of the previous account session; authorization was not replaced".into()),
-            }
+                Err(error) => return Err(error.to_string()),
+            },
+            Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+            Err(_) => return Err("Cannot confirm revocation of the previous account session; authorization was not replaced".into()),
         }
     }
     let profile = session.user.clone();

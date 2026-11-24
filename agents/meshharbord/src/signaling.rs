@@ -5709,7 +5709,7 @@ async fn handle_server_msg(
             #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
             let has_derp_url = regions.iter().any(|r| r.derp_url.is_some());
             let outcome = crate::relay_probe::update_regions_versioned(
-                &relay_regions_slot,
+                relay_regions_slot,
                 regions,
                 rev,
                 policy_revision,

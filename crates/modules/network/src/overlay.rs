@@ -3449,15 +3449,15 @@ pub async fn sync_temporary_mark(
 }
 
 #[cfg(feature = "access-authority-test-support")]
-static ACCESS_PROJECTION_PAUSES: std::sync::LazyLock<
-    dashmap::DashMap<
-        (String, ObjectId),
-        (
-            std::sync::Arc<tokio::sync::Notify>,
-            std::sync::Arc<tokio::sync::Notify>,
-        ),
-    >,
-> = std::sync::LazyLock::new(dashmap::DashMap::new);
+type AccessProjectionPauseGates = (
+    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
+#[cfg(feature = "access-authority-test-support")]
+type AccessProjectionPauseMap = dashmap::DashMap<(String, ObjectId), AccessProjectionPauseGates>;
+#[cfg(feature = "access-authority-test-support")]
+static ACCESS_PROJECTION_PAUSES: std::sync::LazyLock<AccessProjectionPauseMap> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
 #[cfg(feature = "access-authority-test-support")]
 pub fn pause_next_access_projection(
     state: &NetworkState,
@@ -3710,9 +3710,10 @@ async fn wait_access_applied(
 }
 
 #[cfg(feature = "access-authority-test-support")]
-static ACCESS_REFRESH_FAULTS: std::sync::LazyLock<
-    dashmap::DashMap<(String, ObjectId), (&'static str, usize)>,
-> = std::sync::LazyLock::new(dashmap::DashMap::new);
+type AccessRefreshFaultMap = dashmap::DashMap<(String, ObjectId), (&'static str, usize)>;
+#[cfg(feature = "access-authority-test-support")]
+static ACCESS_REFRESH_FAULTS: std::sync::LazyLock<AccessRefreshFaultMap> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
 
 /// Deterministic, per-tenant one-shot fault injection; compiled only in tests.
 #[cfg(feature = "access-authority-test-support")]
@@ -3737,16 +3738,15 @@ fn access_refresh_checkpoint(
     if let Some(mut fault) = ACCESS_REFRESH_FAULTS
         .get_mut(&(state.pod.origin(), tenant_id))
         .or_else(|| ACCESS_REFRESH_FAULTS.get_mut(&(String::new(), tenant_id)))
+        && fault.0 == stage
     {
-        if fault.0 == stage {
-            if fault.1 > 0 {
-                fault.1 -= 1;
-            } else {
-                let key = fault.key().clone();
-                drop(fault);
-                ACCESS_REFRESH_FAULTS.remove(&key);
-                anyhow::bail!("injected capability refresh {stage} failure");
-            }
+        if fault.1 > 0 {
+            fault.1 -= 1;
+        } else {
+            let key = fault.key().clone();
+            drop(fault);
+            ACCESS_REFRESH_FAULTS.remove(&key);
+            anyhow::bail!("injected capability refresh {stage} failure");
         }
     }
     let _ = (state, tenant_id, stage);
@@ -3923,10 +3923,9 @@ pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Val
             .get("agent_id")
             .and_then(|v| v.as_str())
             .and_then(|v| ObjectId::parse_str(v).ok())
+            && let Err(error) = push_access_barrier_if_local(state, tid, aid, auth_revision).await
         {
-            if let Err(error) = push_access_barrier_if_local(state, tid, aid, auth_revision).await {
-                warn!(%tid,%error,"capability target apply barrier failed on receiving pod");
-            }
+            warn!(%tid,%error,"capability target apply barrier failed on receiving pod");
         }
     } else {
         refan_tenant_authority_local(state, tid, reason).await;
@@ -6375,6 +6374,7 @@ pub async fn on_tenant_zones_changed(state: &NetworkState, tenant_id: ObjectId) 
     repush_full_netmap_for_tenant(state, tenant_id).await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn repush_node_full_netmap(
     state: &NetworkState,
     network: &meshharbor_remote_control::models::OverlayNetwork,
@@ -6429,7 +6429,7 @@ async fn repush_node_full_netmap(
                     .map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
-                central_relay_denied: central_relay_denied_for(&self_node, &lines),
+                central_relay_denied: central_relay_denied_for(self_node, lines),
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision: network.auth_revision.max(1),

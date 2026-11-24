@@ -16,6 +16,7 @@ impl CenterPolicy {
             .map_err(|_| "Account centre policy unavailable")? = Some(base);
         Ok(())
     }
+    #[cfg(test)]
     fn allows(&self, url: &tauri::Url) -> bool {
         self.0
             .lock()
@@ -54,6 +55,7 @@ fn secure_server(server: &str) -> Result<tauri::Url, String> {
     }
     Ok(url)
 }
+#[cfg(test)]
 pub fn account_url(server: &str, section: &str) -> Result<tauri::Url, String> {
     let mut url = secure_server(server)?;
     let (path, query) = match section {

@@ -1525,6 +1525,7 @@ impl AgentDao {
 
     /// Only the current authenticated socket can acknowledge the CURRENT
     /// canonical name; a late failed ACK cannot downgrade a successful one.
+    #[allow(clippy::too_many_arguments)]
     pub async fn acknowledge_name(
         &self,
         tenant: ObjectId,

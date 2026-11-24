@@ -349,9 +349,9 @@ impl ReplyFlows {
         // invitation flow must never manufacture a bypass of that grant.
         if nh == 6
             && !m.contains_key(&key)
-            && !packet
+            && packet
                 .get(off + 13)
-                .is_some_and(|flags| flags & 0x12 == 0x02)
+                .is_none_or(|flags| flags & 0x12 != 0x02)
         {
             return;
         }

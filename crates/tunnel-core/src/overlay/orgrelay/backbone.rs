@@ -141,6 +141,7 @@ fn server_authorized_slot() -> &'static std::sync::RwLock<Option<LocalBackbonePo
     SERVER_AUTHORIZED_BACKBONE.get_or_init(|| std::sync::RwLock::new(None))
 }
 
+#[cfg(target_os = "linux")]
 fn has_manual_backbone_env_override() -> bool {
     [
         "RELAY_BACKBONE_ENABLED",

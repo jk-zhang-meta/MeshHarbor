@@ -2565,10 +2565,10 @@ async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) -> Resul
     }
     #[cfg(not(any(windows, unix)))]
     let _ = pid;
-    if let Err(error) = child.kill().await {
-        if !matches!(child.try_wait(), Ok(Some(_))) {
-            failure = Some(error.to_string());
-        }
+    if let Err(error) = child.kill().await
+        && !matches!(child.try_wait(), Ok(Some(_)))
+    {
+        failure = Some(error.to_string());
     }
     if let Err(error) = child.wait().await {
         failure = Some(error.to_string());

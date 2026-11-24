@@ -106,10 +106,10 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                     ..
                 },
             ) = serde_json::from_value(msg.clone())
+                && msg["agent_id"] == aid.to_hex()
+                && msg["tenant_id"] == tid.to_hex()
             {
-                if msg["agent_id"] == aid.to_hex() && msg["tenant_id"] == tid.to_hex() {
-                    let _ = hub.send_to_agent_in_tenant(aid, tid, message);
-                }
+                let _ = hub.send_to_agent_in_tenant(aid, tid, message);
             }
         }
         Some("keep_busy_policy") => {
@@ -217,7 +217,7 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                         .collect::<std::collections::HashSet<_>>()
                 })
                 .unwrap_or_default();
-            let (zone, zones) = crate::hub::AgentZoneIcePolicy::zone_from_json(&ctrl);
+            let (zone, zones) = crate::hub::AgentZoneIcePolicy::zone_from_json(ctrl);
             if hub.set_agent_zone_ice_policy(
                 aid,
                 crate::hub::AgentZoneIcePolicy {

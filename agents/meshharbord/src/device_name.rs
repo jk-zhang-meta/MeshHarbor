@@ -781,12 +781,15 @@ impl DeviceNames {
     ) -> Result<()> {
         let mut before = self.retry_state(cfg).await?;
         const DELAYS_MS: [u64; 4] = [250, 1000, 2000, 4000];
-        for attempt in 0..=DELAYS_MS.len() {
+        for delay_ms in DELAYS_MS.into_iter().map(Some).chain(std::iter::once(None)) {
             let error = match self.reconcile_once(cfg, token, tx).await {
                 Ok(()) => return Ok(()),
                 Err(error) => error,
             };
-            if attempt == DELAYS_MS.len() || !transient_http_error(&error) {
+            let Some(delay_ms) = delay_ms else {
+                return Err(error);
+            };
+            if !transient_http_error(&error) {
                 return Err(error);
             }
             let after = self.retry_state(cfg).await?;
@@ -798,7 +801,7 @@ impl DeviceNames {
             {
                 return Err(error);
             }
-            tokio::time::sleep(Duration::from_millis(DELAYS_MS[attempt])).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             if self.retry_state(cfg).await? != after {
                 return Err(error);
             }

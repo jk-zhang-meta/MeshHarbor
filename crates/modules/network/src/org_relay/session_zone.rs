@@ -225,22 +225,23 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             );
         }
         invalid |= relation_invalid(zones[zones.len() - 2], zones[zones.len() - 1], false);
-    } else if let Some((mode, topo)) = single_hop_ctx {
-        if !unknown && !invalid {
-            let permit = iso::permit_refs_with_lines(
-                state,
-                mode,
-                &topo,
-                session.tenant_id,
-                &session.members[0].party.node_ref,
-                &session.members[1].party.node_ref,
-            )
-            .await;
-            invalid = match zones[1] {
-                PartyZone::Known(relay) => !permit.relay_zones().contains(&relay),
-                _ => true,
-            };
-        }
+    } else if let Some((mode, topo)) = single_hop_ctx
+        && !unknown
+        && !invalid
+    {
+        let permit = iso::permit_refs_with_lines(
+            state,
+            mode,
+            &topo,
+            session.tenant_id,
+            &session.members[0].party.node_ref,
+            &session.members[1].party.node_ref,
+        )
+        .await;
+        invalid = match zones[1] {
+            PartyZone::Known(relay) => !permit.relay_zones().contains(&relay),
+            _ => true,
+        };
     }
     #[cfg(feature = "path-planner-test-support")]
     super::candidate_test_support::pause_session_zone_if_armed(&session.pair_key).await;

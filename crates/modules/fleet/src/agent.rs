@@ -334,18 +334,16 @@ pub async fn enroll_agent(
         }
     }
     let is_new = existing.is_none();
-    if personal_device {
-        if let Some(a) = &existing {
-            if a.owner_user_id != admin_uid
-                || crate::device_invite::grant_for_agent(&state, a.id.unwrap_or_default())
-                    .await?
-                    .is_some()
-            {
-                return Err(ApiError::Forbidden(
-                    "Personal login cannot take over another owner or temporary device".into(),
-                ));
-            }
-        }
+    if personal_device
+        && let Some(a) = &existing
+        && (a.owner_user_id != admin_uid
+            || crate::device_invite::grant_for_agent(&state, a.id.unwrap_or_default())
+                .await?
+                .is_some())
+    {
+        return Err(ApiError::Forbidden(
+            "Personal login cannot take over another owner or temporary device".into(),
+        ));
     }
     if existing.is_none() {
         let tenant = state.tenants.base.find_by_id(tid).await?;
@@ -451,41 +449,37 @@ pub async fn enroll_agent(
     } else {
         invite.as_ref().and_then(|i| i.features)
     };
-    if is_new {
-        if selected.is_some() {
-            let mut set = bson::doc! {
-                "ssh_policy.mode": "on",
-                "exec_policy.mode": "on",
-                "ssh_policy.can_originate": personal_device,
-                "exec_policy.can_originate": personal_device,
-                "ssh_policy.consent_mode": "auto", "exec_policy.consent_mode": "auto",
-            };
-            if personal_device {
-                set.insert("personal_access_owner_id", admin_uid);
-                set.insert("ssh_policy.allowed_user_ids", vec![admin_uid]);
-                set.insert("exec_policy.allowed_user_ids", vec![admin_uid]);
-                set.insert("ssh_policy.account_mode", "daemon");
-                set.insert("exec_policy.run_as", "system");
-            }
-            let initialized = state
-                .core
-                .db
-                .collection::<bson::Document>("agents")
-                .update_one(
-                    bson::doc! { "_id": agent_id, "owner_user_id": admin_uid },
-                    bson::doc! { "$set": set },
-                )
-                .await
-                .map_err(|_| {
-                    ApiError::ServiceUnavailable(
-                        "Could not initialize device access profile".into(),
-                    )
-                })?;
-            if initialized.matched_count != 1 {
-                return Err(ApiError::Conflict(
-                    "Device changed during profile initialization".into(),
-                ));
-            }
+    if is_new && selected.is_some() {
+        let mut set = bson::doc! {
+            "ssh_policy.mode": "on",
+            "exec_policy.mode": "on",
+            "ssh_policy.can_originate": personal_device,
+            "exec_policy.can_originate": personal_device,
+            "ssh_policy.consent_mode": "auto", "exec_policy.consent_mode": "auto",
+        };
+        if personal_device {
+            set.insert("personal_access_owner_id", admin_uid);
+            set.insert("ssh_policy.allowed_user_ids", vec![admin_uid]);
+            set.insert("exec_policy.allowed_user_ids", vec![admin_uid]);
+            set.insert("ssh_policy.account_mode", "daemon");
+            set.insert("exec_policy.run_as", "system");
+        }
+        let initialized = state
+            .core
+            .db
+            .collection::<bson::Document>("agents")
+            .update_one(
+                bson::doc! { "_id": agent_id, "owner_user_id": admin_uid },
+                bson::doc! { "$set": set },
+            )
+            .await
+            .map_err(|_| {
+                ApiError::ServiceUnavailable("Could not initialize device access profile".into())
+            })?;
+        if initialized.matched_count != 1 {
+            return Err(ApiError::Conflict(
+                "Device changed during profile initialization".into(),
+            ));
         }
     }
     if personal_device && !is_new {

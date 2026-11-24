@@ -408,6 +408,7 @@ fn watch_inner(
             );
             #[cfg(not(target_os = "windows"))]
             {
+                let _ = &installer_path;
                 outcome.status = InstallStatus::Timeout;
                 outcome.note = format!(
                     "installer did not exit within {}s",

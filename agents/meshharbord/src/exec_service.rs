@@ -243,6 +243,7 @@ pub enum DoorbellReply {
 /// A service close proof is usable only for this independently anchored host.
 /// Target invitation may be a proof-linked secondary org; the server, not a
 /// machine-id comparison on the user-writable config, establishes that link.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn validate_close_proof(
     anchor: &Anchor,
     invite_id: &str,
@@ -261,17 +262,20 @@ fn validate_close_proof(
 }
 
 #[derive(Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
 struct CloseEpoch {
     epoch: u64,
     frozen: bool,
     completed: bool,
 }
+#[cfg_attr(not(windows), allow(dead_code))]
 impl CloseEpoch {
     fn accepts(&self, epoch: u64) -> bool {
         self.epoch == epoch && (!self.frozen || self.completed)
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 static CLOSE_EPOCH: std::sync::Mutex<CloseEpoch> = std::sync::Mutex::new(CloseEpoch {
     epoch: 0,
     frozen: false,
@@ -280,6 +284,7 @@ static CLOSE_EPOCH: std::sync::Mutex<CloseEpoch> = std::sync::Mutex::new(CloseEp
 
 /// Called before a SYSTEM claim leaves the host, and again after its reply.
 /// A reply that predates a close can never resurrect an old command or grant.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn claim_close_epoch() -> Result<u64, String> {
     let state = CLOSE_EPOCH
         .lock()
@@ -290,6 +295,7 @@ pub(crate) fn claim_close_epoch() -> Result<u64, String> {
     Ok(state.epoch)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn accept_claim_epoch(epoch: u64) -> Result<(), String> {
     let mut state = CLOSE_EPOCH
         .lock()

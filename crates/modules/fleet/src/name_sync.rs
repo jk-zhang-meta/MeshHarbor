@@ -197,6 +197,7 @@ pub async fn reconcile(state: &FleetState, tenant: ObjectId, agent: ObjectId) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn acknowledge(
     state: &FleetState,
     tenant: ObjectId,
