@@ -295,6 +295,30 @@ diffs at 0 px while proving nothing (FR-116 P3c, recorded in its PR).
 ⚠️ `ChatView` and `ConferenceView` own their own custom-flex layout and
 **intentionally do not use `<v-container>`** — do not "fix" them to match.
 
+### Phone parity, the rest (FR-132)
+
+Ports of upstream FR-120 P1a, P3, P4a, P4b and P5 onto the flat theme. Same split of work as above: a phone
+row shows what decides, and everything else opens on a tap.
+
+```mermaid
+flowchart LR
+    ROW["a phone row<br/>name · state · one action"] -- tap --> OPEN["details, in place<br/>useOpenRows()"]
+    CHIP["a chip, a dot, a chart bar"] -- tap --> TIP["its meaning<br/>FactChip · detail line"]
+```
+
+| rule | where | why |
+|---|---|---|
+| **What a chip, dot or chart bar means is a tap away.** `FactChip` opens `explain` in a menu on a tap and keeps it as the hover `title`; `plain` renders the flat theme's presence word (dot + label) instead of a chip. A chip whose tap already acts (zone, relay, Device configuration) stays a `v-chip` | `components/common/FactChip.vue:14`, `AgentsSection.vue` (`fr120P1Facts.spec.ts` fails any titled `v-chip` without a tap of its own) | a `title` reaches a mouse only |
+| **A chart reads a datum on a tap, a mouse point or the arrow keys, into a line below it** | `UptimeStrip.vue:198`, `UsageTimeline.vue:259`, `MeshGraph.vue` (a 14 px hit line per carrier; a tap pins it) | 498 uptime segments explained by `title` alone |
+| **A phone list row is one line and opens in place**: `useOpenRows()` keeps which rows are open; a `table-stack-xs` row puts a `stack-toggle` summary cell first and marks the rest `stack-detail`; a `v-data-table` row is one `stack-row` cell | `composables/useOpenRows.ts:15`, `responsive.css:121`; Devices `AgentsSection.vue:622`; keys `EnrollKeysSection.vue:260`; audits `ExecAuditSection.vue:61`, `SshAuditSection.vue:70`; Members `:98`, Invites `:87`, Files `:79`; Billing `:155` | stacked rows made a page 2.2-3.7x its desktop height |
+| **A dialog that names a device or a member is full screen on a phone, wraps its question and has a named close** | Evict, update-all, delete, join-org, routes and roles dialogs; `GiphyPicker.vue:5` | the name clipped and a centred dialog left no way out |
+| **The tutorial scrolls `v-main`, not the window**; a page outside `AppLayout` carries `page-no-sideways` (`overflow-x: clip`) | `TutorialView.vue:318`, `responsive.css:169`, `AuthShell.vue:10` | `window.scrollTo` moved nothing; a `v-row`'s gutters overhung `pa-2` by 4 px |
+| **A long log or list pages**: 200 log lines at a time; a room search replaces the tree while it has text | `AgentLogsDialog.vue:213`, `RoomList.vue:127` | one scroll through every line / dozens of rooms |
+
+Every string these add is a vue-i18n key in both locales (`mh.phone.*`, `mh.ek.mintedLabel`,
+`mh.audit.col.ranAs` / `why`), and the rest reuse existing keys. Not ported: the viewer's own
+changes (`RemoteControl.vue`, `components/remote/KeepBusyMenu.vue`), which belong to the viewer's work.
+
 ## Build & test
 
 ```bash
