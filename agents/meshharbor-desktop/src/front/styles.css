@@ -870,23 +870,21 @@ textarea {
 .cols-moves { display: inline-flex; gap: 4px; }
 .cols-move { padding: 0 7px; }
 
-/* T8b — Network map (3D globe launcher card on Devices / Network page). */
-.globe-card-row {
+/* T12 — Inline MapLibre 3D network map card on Devices / Network page. */
+.globe-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
-}
-.globe-card-copy {
-  flex: 1 1 280px;
-  min-width: 0;
+  margin-bottom: 10px;
 }
 .globe-card-head {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-bottom: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .globe-card-head h3 {
   margin: 0;
@@ -895,25 +893,312 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--mh-radius-sm);
   background: var(--primary-tint);
   border: 1px solid var(--border);
   color: var(--primary);
   flex: 0 0 auto;
 }
-.globe-card-desc {
-  margin: 0;
-  line-height: 1.45;
+.globe-map-pill {
+  font-size: 11px;
+  padding: 2px 8px;
 }
 .globe-card-actions {
   display: flex;
   align-items: center;
+  gap: 8px;
   flex: 0 0 auto;
+}
+.globe-enlarge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 .globe-card-err {
   margin: 10px 0 0;
+}
+
+.nm-stage {
+  position: relative;
+  width: 100%;
+  height: 380px;
+  border-radius: var(--mh-radius-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: #F5F7FA;
+}
+.nm-stage.is-dark {
+  background: #060B13;
+}
+.nm-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+.nm-canvas .maplibregl-ctrl-attrib,
+.nm-canvas .maplibregl-ctrl-logo {
+  display: none !important;
+}
+.nm-fresnel {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+.nm-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.nm-ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.88);
+  color: #10212B;
+  backdrop-filter: blur(6px);
+}
+.nm-ctrl-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: #FFFFFF;
+}
+.nm-stage.is-dark .nm-ctrl-btn {
+  background: rgba(14, 21, 26, 0.84);
+  color: #E6EEF2;
+  border-color: rgba(230, 238, 242, 0.16);
+}
+.nm-stage.is-dark .nm-ctrl-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: rgba(20, 29, 35, 0.96);
+}
+.nm-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 4;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(16, 33, 43, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  color: #1F2937;
+  font-size: 11px;
+  font-weight: 500;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+.nm-stage.is-dark .nm-legend {
+  border-color: rgba(230, 238, 242, 0.12);
+  background: rgba(8, 19, 30, 0.80);
+  color: #D5E0EC;
+}
+.nm-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.nm-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.nm-swatch-self {
+  background: #0072B2;
+  box-shadow: 0 0 0 2px #0A8F86;
+}
+.nm-stage.is-dark .nm-swatch-self {
+  background: #56B4E9;
+  box-shadow: 0 0 0 2px #3CC7B9;
+}
+.nm-line {
+  display: inline-block;
+  width: 14px;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+}
+.nm-line-direct { border-top-color: #0072B2; }
+.nm-line-relay  { border-top-color: #A66300; border-top-style: dashed; }
+.nm-line-tunnel { border-top-color: #00785A; }
+.nm-stage.is-dark .nm-line-direct { border-top-color: #56B4E9; }
+.nm-stage.is-dark .nm-line-relay  { border-top-color: #E69F00; }
+.nm-stage.is-dark .nm-line-tunnel { border-top-color: #2BB58A; }
+
+.nm-status-pill {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  border: 1px solid var(--warn-border);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--warn);
+  max-width: calc(100% - 64px);
+}
+.nm-stage.is-dark .nm-status-pill {
+  background: rgba(14, 21, 26, 0.90);
+}
+
+.nm-tooltip {
+  position: absolute;
+  z-index: 5;
+  max-width: 260px;
+  padding: 8px 11px;
+  border-radius: var(--mh-radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: var(--overlay-shadow);
+  pointer-events: none;
+}
+.nm-tip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.nm-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.nm-tip-list {
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 5px 0 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.nm-tip-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.nm-tip-list-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nm-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+.nm-attr {
+  margin-left: auto;
+  opacity: 0.85;
+}
+
+/* WebGL2 unavailable fallback — clean plain device list */
+.nm-fallback {
+  border: 1px solid var(--border);
+  border-radius: var(--mh-radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.nm-fallback-notice {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border);
+}
+.nm-fallback-empty {
+  margin: 0;
+  padding: 16px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+.nm-fallback-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.nm-fallback-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.nm-fallback-item:last-child {
+  border-bottom: none;
+}
+.nm-fallback-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.nm-fallback-name {
+  font-weight: 600;
+  color: var(--fg);
+}
+.nm-fallback-loc {
+  color: var(--muted);
+  font-size: 12px;
+}
+.nm-fallback-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* The mesh graph (mesh.js). Colours come from the --mesh-* variables. */

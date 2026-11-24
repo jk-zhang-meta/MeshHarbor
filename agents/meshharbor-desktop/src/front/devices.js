@@ -123,11 +123,19 @@
     inFlight: 0,
     timer: null,
   };
+  const mapFeed = {
+    rows: null,
+    lastAskAt: 0,
+    seq: 0,
+    applied: 0,
+    inFlight: 0,
+  };
   // Last Ping outcome per target, so a result survives row patches.
   const pingResults = new Map();
 
   let grid = null;
   let graph = null;
+  let networkMap = null;
   let searchTimer = null;
 
   /* ── small helpers ──────────────────────────────────────────────── */
@@ -1353,6 +1361,59 @@
     if (document.activeElement !== sel && sel.value !== st.org) sel.value = st.org;
   }
 
+  async function refreshMapDevices(opts) {
+    if (!active() || !st.org || !networkMap) return;
+    const force = !!(opts && opts.force);
+    if (mapFeed.inFlight > 0 && !force) return;
+    const org = st.org;
+    const mine = ++mapFeed.seq;
+    mapFeed.inFlight += 1;
+    let page = null;
+    try {
+      page = await invoke('cmd_devices', {
+        org: orgArg(),
+        page: 1,
+        perPage: 100,
+        q: null,
+        sort: null,
+        dir: null,
+      });
+    } catch (_) {
+      /* map falls back to table page / legacy peers */
+    } finally {
+      mapFeed.inFlight -= 1;
+    }
+    if (org !== st.org || mine < mapFeed.applied) return;
+    mapFeed.applied = mine;
+    if (page && Array.isArray(page.items)) {
+      mapFeed.rows = page.items;
+      mapFeed.lastAskAt = Date.now();
+      networkMap.setDevices(mapFeed.rows);
+    }
+  }
+
+  function syncMapDevices(dv) {
+    if (!networkMap) return;
+    networkMap.setLiveContext(liveContext(), orgPeers(dv));
+    if (st.mode === 'server' && st.lastPage) {
+      const items = st.lastPage.items || [];
+      const total = Number(st.lastPage.total || 0);
+      if (!st.q.trim() && items.length >= total) {
+        mapFeed.rows = items;
+        mapFeed.lastAskAt = st.lastGoodAt || Date.now();
+        networkMap.setDevices(items);
+      } else if (mapFeed.rows) {
+        networkMap.setDevices(mapFeed.rows);
+        if (Date.now() - mapFeed.lastAskAt >= REFRESH_MS) void refreshMapDevices();
+      } else {
+        networkMap.setDevices(items);
+        void refreshMapDevices({ force: true });
+      }
+    } else if (st.mode === 'legacy' || st.error) {
+      networkMap.setDevices(legacyRows(dv));
+    }
+  }
+
   function paint() {
     const dv = get('deviceView');
     if (!dv) return;
@@ -1360,6 +1421,7 @@
       // The service is not running: the page has nothing to ask.
       show($('devices-unavailable'));
       hide($('devices-content'));
+      if (networkMap) networkMap.setActive(false);
       return;
     }
     hide($('devices-unavailable'));
@@ -1369,6 +1431,10 @@
     grid.render(v.rows);
     paintPager(v);
     paintNotes(v);
+    if (networkMap) {
+      networkMap.setActive(currentView() === 'devices');
+      syncMapDevices(dv);
+    }
   }
 
   /* ── the mesh ───────────────────────────────────────────────────── */
@@ -1451,6 +1517,7 @@
     note.hidden = !text;
     const meta = v && v.enabled && v.acl_mode ? 'ACL ' + v.acl_mode : '';
     setText($('dv-mesh-meta'), meta);
+    if (networkMap) networkMap.setMesh(v && v.enabled ? v : null);
   }
 
   /* ── controls ───────────────────────────────────────────────────── */
@@ -1464,10 +1531,13 @@
     st.failures = 0;
     st.mode = 'server';
     st.nextAt = 0;
+    mapFeed.rows = null;
+    mapFeed.lastAskAt = 0;
     mesh.view = null;
     mesh.error = null;
     mesh.failures = 0;
     if (grid) grid.setStorageKey(prefKey());
+    if (networkMap) networkMap.resetOrg();
     void refresh({ force: true, loading: true });
     void refreshMesh({ force: true });
   }
@@ -1517,6 +1587,9 @@
     $('dv-refresh').addEventListener('click', () => {
       void refresh({ force: true, loading: true });
       void refreshMesh({ force: true });
+      if (st.q.trim() || (st.lastPage && Number(st.lastPage.total || 0) > (st.lastPage.items || []).length)) {
+        void refreshMapDevices({ force: true });
+      }
     });
 
     const dialog = $('dv-cols-dialog');
@@ -1556,6 +1629,23 @@
       legend: $('dv-mesh-legend'),
       controls: $('dv-mesh-controls'),
     });
+    if (R.NetworkMap && $('dv-map-stage')) {
+      networkMap = R.NetworkMap.create({
+        stage: $('dv-map-stage'),
+        canvas: $('dv-map-canvas'),
+        fresnel: $('dv-map-fresnel'),
+        fallback: $('dv-map-fallback'),
+        summary: $('dv-map-summary'),
+        unlocated: $('dv-map-unlocated'),
+        foot: $('dv-map-foot'),
+        status: $('dv-map-status'),
+        tooltip: $('dv-map-tooltip'),
+        zoomIn: $('dv-map-zoom-in'),
+        zoomOut: $('dv-map-zoom-out'),
+        reset: $('dv-map-reset'),
+        invoke,
+      });
+    }
     wireControls();
     paintColsButton();
 
@@ -1570,6 +1660,7 @@
       paintOrgs(dv);
       grid.patchLive();
       paintNotes(currentRows(dv)); // keeps "N min ago" / "retrying in" current
+      if (networkMap) networkMap.setLiveContext(liveContext(), orgPeers(dv));
     });
 
     document.addEventListener('meshharbor:view', (ev) => {
@@ -1580,6 +1671,7 @@
       } else {
         clearTimeout(st.timer);
         clearTimeout(mesh.timer);
+        if (networkMap) networkMap.setActive(false);
       }
     });
 
@@ -1588,6 +1680,9 @@
       paint();
       paintMesh();
       if (graph && graph.rerender) graph.rerender();
+      if (networkMap) {
+        networkMap.setLang(window.MeshHarborI18n ? window.MeshHarborI18n.getLang() : 'en');
+      }
     });
 
     document.addEventListener('visibilitychange', () => {

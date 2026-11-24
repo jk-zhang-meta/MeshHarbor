@@ -44,6 +44,7 @@ mod globe_url;
 mod panels;
 #[cfg(target_os = "linux")]
 mod pin;
+mod pmtiles_proxy;
 mod singleton;
 mod tray;
 mod tray_i18n;
@@ -209,6 +210,7 @@ fn main() {
             commands::cmd_open_meshharbor,
             commands::cmd_open_account,
             commands::open_network_globe,
+            pmtiles_proxy::cmd_pmtiles_range,
             // FR-85 — the Recordings view.
             commands::cmd_recordings_view,
             commands::cmd_record_start,

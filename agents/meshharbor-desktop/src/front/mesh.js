@@ -475,12 +475,13 @@
     const btn = document.getElementById('dv-open-globe');
     const errEl = document.getElementById('dv-globe-error');
     if (!btn) return;
+    const labelEl = btn.querySelector('.globe-btn-label') || btn;
     let busy = false;
     btn.addEventListener('click', async () => {
       if (busy) return;
       busy = true;
       btn.disabled = true;
-      btn.textContent = t('dv.globe.opening', null, 'Opening…');
+      labelEl.textContent = t('dv.globe.opening', null, 'Opening…');
       if (errEl) {
         errEl.textContent = '';
         errEl.hidden = true;
@@ -496,11 +497,11 @@
       } finally {
         busy = false;
         btn.disabled = false;
-        btn.textContent = t('dv.globe.openBtn', null, 'Open globe');
+        labelEl.textContent = t('dv.globe.openBtn', null, 'Enlarge');
       }
     });
     document.addEventListener('meshharbor:lang', () => {
-      if (!busy) btn.textContent = t('dv.globe.openBtn', null, 'Open globe');
+      if (!busy) labelEl.textContent = t('dv.globe.openBtn', null, 'Enlarge');
       if (errEl && !errEl.hidden) {
         errEl.hidden = true;
         errEl.textContent = '';
