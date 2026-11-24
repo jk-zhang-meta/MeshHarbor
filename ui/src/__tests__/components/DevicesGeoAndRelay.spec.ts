@@ -103,7 +103,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
       allowed_user_ids: [],
       auto_terminate_idle_minutes: null,
     },
-    public_ip: '218.17.152.45',
+    public_ip: '203.0.113.45',
     country_code: 'CN',
     country: '中国',
     region: '广东省',
@@ -129,7 +129,7 @@ function makeDeviceRow(overrides: Partial<DeviceRow> = {}): DeviceRow {
     is_online: true,
     last_seen_at: '2026-11-16T04:00:00Z',
     created_at: '2026-10-01T00:00:00Z',
-    public_ip: '218.17.152.45',
+    public_ip: '203.0.113.45',
     country_code: 'CN',
     country: '中国',
     region: '广东省',
@@ -399,7 +399,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     const locBox = document.body.querySelector('[data-testid="zone-dialog-detected-location"]')
     expect(locBox?.textContent).toContain('CN')
     expect(locBox?.textContent).toContain('中国 · 广东省 · 深圳市')
-    expect(locBox?.textContent).toContain('218.17.152.45')
+    expect(locBox?.textContent).toContain('203.0.113.45')
 
     const pinCard = document.body.querySelector('[data-testid="zone-opt-pinned"]') as HTMLElement
     pinCard.click()
@@ -524,7 +524,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
           ...gzRelay,
           peer_relay_policy: {
             serve: true,
-            static_endpoints: ['120.79.10.20:3478'],
+            static_endpoints: ['198.51.100.20:3478'],
             approved_backbone_edges: [
               {
                 relay_agent_id: hkRelay.id,
@@ -555,7 +555,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
       `/tenant/${TID}/agent/${gzRelay.id}/peer-relay-policy`,
       {
         serve: true,
-        static_endpoints: ['120.79.10.20:3478'],
+        static_endpoints: ['198.51.100.20:3478'],
         approved_backbone_edges: [
           {
             relay_agent_id: hkRelay.id,
@@ -602,7 +602,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     const sgRelay = makeAgent({
       id: '66f000000000000000000088',
       name: 'sg-relay',
-      public_ip: '13.212.40.10',
+      public_ip: '192.0.2.10',
       country_code: 'SG',
       country: '新加坡',
       region: '新加坡',
@@ -624,7 +624,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
             makeDeviceRow({
               id: sgRelay.id,
               name: 'sg-relay',
-              public_ip: '13.212.40.10',
+              public_ip: '192.0.2.10',
               country_code: 'SG',
               country: '新加坡',
               region: '新加坡',
@@ -700,7 +700,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     expect(locCells.length).toBeGreaterThanOrEqual(2)
     expect(locCells[0]!.text()).toContain('CN')
     expect(locCells[0]!.text()).toContain('中国 · 广东省 · 深圳市')
-    expect(locCells[0]!.text()).toContain('218.17.152.45')
+    expect(locCells[0]!.text()).toContain('203.0.113.45')
     expect(locCells[1]!.text()).toContain('SG')
     expect(locCells[1]!.text()).toContain('新加坡')
     expect(locCells[1]!.text()).not.toContain('新加坡 · 新加坡')

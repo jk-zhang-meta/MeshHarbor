@@ -66,7 +66,7 @@ describe('personal devices and authoritative sharing record counts', () => {
         machine_name: 'siat45',
         os: 'linux',
         status: 'online',
-        public_ip: '218.17.152.45',
+        public_ip: '203.0.113.45',
         country_code: 'CN',
         country: '中国',
         region: '广东省',
@@ -82,7 +82,7 @@ describe('personal devices and authoritative sharing record counts', () => {
     const locCell = w.get('[data-testid="owned-device-location-cell"]')
     expect(locCell.find('.geo-code-pill').text()).toBe('CN')
     expect(locCell.text()).toContain('中国 · 广东省 · 深圳市')
-    expect(locCell.text()).toContain('218.17.152.45')
+    expect(locCell.text()).toContain('203.0.113.45')
     const zoneBadge = w.get('[data-testid="owned-device-zone-badge"]')
     expect(zoneBadge.text()).toBe('CN 区')
   })
