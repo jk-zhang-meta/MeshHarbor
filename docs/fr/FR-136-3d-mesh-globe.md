@@ -182,3 +182,41 @@ flowchart TB
 | When (UTC) | What | Result |
 |---|---|---|
 | 2026-11-24 | Top-2 headless Chromium prototype benchmark (30 nodes, 300 animated arcs) | Three.js `0.187.0` 44.5 FPS desktop / 53.2 FPS 4× mobile (130.1 KB gz engine) vs MapLibre `6.19.0` 12.2 / 12.5 FPS (452.0 KB gz engine); 0 external requests |
+
+---
+
+## MapLibre Globe Rebuild Phase (2026-11-24)
+
+Following the owner's fixed design decisions — **three-level global administrative boundaries (admin-0 / admin-1 / admin-2)** with de facto dashed disputed lines and neutral "country/region" (`国家/地区`) wording, **one-city-one-point** (zero geographic scatter, screen-space spiderfy), **small constant-screen-size markers**, **aggregated links (≤ 60 overview + ego network)**, **zero idle frames**, and **zero third-party runtime requests** — FR-136 enters a staged MapLibre GL JS `6.19.0` + self-hosted PMTiles `4.5.0` rebuild track. Existing Three.js (`ui/src/components/globe/`) stays intact until the P0 real-GPU gate passes (otherwise Plan F upgrades Three.js with the same information design).
+
+### Rebuild Phases (P0–P6)
+
+| Phase | Scope | Deliverables | Exit Gate / Kill Switch | Status |
+|---|---|---|---|---|
+| **P0 Prototype** | Hidden signed-in route (`/tenant/:tenantId/network/globe-proto`, excluded from sidebar nav). Fast P0 boundary PMTiles (`admin-0/1` to `z6` + China `CHN` CGAZ `ADM2` internal lines). Real tenant data + "Synthetic ×10" (~300 devices, ~3,000 links, clusters of 5/14/28). Variant L (native lines) vs Variant A (custom WebGL2 elevated 3D SLERP arcs `< z5`). Theme/lang/pixelRatio/cooperativeGestures/full-page toggles + 10 s deterministic Perf HUD (`Copy JSON`). | `scripts/globe/build-boundaries.sh`, `SOURCES.lock`, `SHA256SUMS`, `ui/src/components/globe-v2/`, `GlobeProtoView.vue`, Perf HUD JSON, `1440×900` & `390×844` screenshots paired against legacy Three.js | **G1** real-GPU p95 ≤ 33 ms phone / ≤ 16.7 ms desktop (SwiftShader excluded); **G2** CJK system fonts render with no missing glyphs across target browsers; **G3** production static server serves `.pmtiles` with HTTP 206 and no `Content-Encoding`; **G4** owner picks Variant L or A. Fallback: Plan F (keep Three.js). | in progress (P0 implemented, awaiting real-GPU G1–G4 sign-off) |
+| **P1 Data Pipeline** | Full global `mh-boundaries-v1.pmtiles` (to `z8`), `gazetteer-v1.json` (≤ 150 KB gz), name overrides & attribution | Size report; name-override unit tests | Archive ≤ 25 MB; AC6 spot-checks pass | planned |
+| **P2 Devices Core** | Production `MeshGlobeMap.vue`, tokens/style, icons, grouping (remove geo scatter), clusters, spiderfy, hover card, detail panel / mobile bottom sheet, full-page overlay, live theme/lang switch, honest location precision; keep `?globe=legacy` | Production devices globe | AC1–AC5, AC7, AC8, AC10–AC12, AC14, AC16 | planned |
+| **P3 Links** | Aggregation, 60-link cap, ego network, filters, asymmetric midpoint split, midpoint badges, and Variant A elevated arcs if chosen in G4 | Complete link visualization | AC9 | planned |
+| **P4 Backbone View** | Wire `ServerTopologySection.vue` onto the shared MapLibre globe with `devices \| backbone` switch and A→B editing | Shared backbone topology | S12 items verified | planned |
+| **P5 Polish & Cleanup** | Adaptive DPR degradation, keyboard navigator, reduced-motion, context-loss recovery; delete `three`, `world-atlas`, and `?globe=legacy`; update docs | Final release | AC13, AC15, AC17; full AC rerun | planned |
+| **P6 Backend Geo (Optional)** | Expose `lat`, `lon`, `accuracy_radius_km`, `geo_level` from MMDB on agent API; owner location override; 67% confidence accuracy circle | Backend release + accuracy circle | S7 `coords` precision active | planned |
+
+### Rebuild Acceptance Criteria (S13)
+
+- [ ] **R-AC1 (One city = one point).** Co-located devices share identical screen coordinates (0 px) at all zooms; zero geographic scatter in `globe-v2/`. *(P0 unit + Playwright verified for `globe-v2/`; production swap pending P2.)*
+- [ ] **R-AC2 (Constant screen-size markers).** Single device visible diameter 6±1 px at z1 and z9; city donut 16 / 20 / 24 px. *(P0 unit + screenshot verified; production pending P2.)*
+- [ ] **R-AC3 (Hit targets).** 24 px fine pointer / 44 px coarse touch hit box picks nearest feature. *(P0 verified in `globe-v2/`; production pending P2.)*
+- [ ] **R-AC4 (Spiderfy & list thresholds).** `n = 2–8` circle, `9–20` Archimedean spiral, `> 20` paginated list (50/page); foot spacing ≥ 28 / 44 px; all collapse triggers work. *(P0 verified in `globe-v2/`; production pending P2.)*
+- [ ] **R-AC5 (Camera bounds).** Zoom `0.6–9`, north-up locked (`pitch = 0`, `bearing = 0`). *(P0 verified; production pending P2.)*
+- [ ] **R-AC6 (3-level global boundaries).** Spot-checked CN, US, IN, DE, BR, JP, AU, RU, ZA, TW: z1 admin-0 only, z3.5 admin-1, z6.5 (CN 7.5) admin-2; CN-IN, IN-PK LoC, RU-UA dashed disputed lines. *(P0 sample verified to z6 + CHN ADM2; full world ADM2 pending P1.)*
+- [ ] **R-AC7 (Neutral naming & i18n parity).** Chinese field reads `国家/地区` (`Country/region`); TW/HK/MO read `台湾`/`香港`/`澳门` (`Taiwan`/`Hong Kong`/`Macau`) and are never labelled as countries; 100% `en`/`zh-CN` key parity. *(P0 verified; production pending P2.)*
+- [ ] **R-AC8 (Zero external requests).** 0 non-same-origin network requests during load and interaction. *(P0 Playwright verified; production pending P2.)*
+- [ ] **R-AC9 (Links).** Zero intra-city lines; overview capped at 60 with overflow count; ego network, filters, and asymmetric midpoint split verified. *(P0 unit + Playwright verified; production pending P3.)*
+- [ ] **R-AC10 (Live theme/lang & contrast).** Theme & language switch with 0 `setStyle()` reloads preserving camera/selection; all tokens (incl. light `zone5` `#8A7A00`) ≥ 3:1 WCAG contrast. *(P0 unit + Playwright verified; production pending P2.)*
+- [ ] **R-AC11 (Full-page & Fullscreen).** `<Teleport to="body">` fixed `100dvh` overlay works on iPhone Safari without WebGL context loss; Esc, ×, and Back exit restoring focus; panels/legend remain visible under Fullscreen API. *(Headless Playwright verified; real iPhone Safari pending G1–G2/P2.)*
+- [ ] **R-AC12 (Mobile UX).** 3-detent non-modal bottom sheet keeping selected point visible; embedded single-finger page scroll via `cooperativeGestures`. *(Real mobile pending P2.)*
+- [ ] **R-AC13 (Performance budget & zero idle frames).** Real-GPU p95 ≤ 16.7 ms desktop / ≤ 33 ms reference phone, `idleFramesAfter1s === 0`, 0 B main-entry growth. *(0 B main-entry & `idleFramesAfter1s === 0` verified in P0; real-GPU p95 pending G1.)*
+- [ ] **R-AC14 (Honest location precision).** Unlocated devices stay off-globe with `位置未知 N` / `Unknown location N` chip; region/country show `≈`; `relay_home` never used for placement. *(P0 verified; production pending P2.)*
+- [ ] **R-AC15 (Accessibility & reduced motion).** Keyboard navigator, WCAG 1.4.13 hover card, zero motion under `prefers-reduced-motion: reduce`. *(Pending P2/P5.)*
+- [ ] **R-AC16 (WebGL2 fallback).** Falls back to 2D radial ring when WebGL2 is unavailable. *(Preserved in production; P2 integration pending.)*
+- [ ] **R-AC17 (Docs).** `docs/ui.md`, `docs/README.md`, and `FR-136` updated with final architecture & `file:line` anchors. *(FR-136 P0 table updated; final P5 doc sweep pending.)*

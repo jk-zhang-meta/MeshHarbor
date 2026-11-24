@@ -329,6 +329,8 @@ const routes: RouteRecordRaw[] = [
               { path: 'forwards',       name: 'network-forwards',       props: true, component: () => import('@/components/admin/ManagedForwardSection.vue') },
               // Server topology: which servers connect, drawn on a world map.
               { path: 'servers',        name: 'network-servers',        props: true, component: () => import('@/components/admin/ServerTopologySection.vue') },
+              // FR-136 P0: hidden signed-in MapLibre globe prototype (intentionally absent from sidebar nav).
+              { path: 'globe-proto',    name: 'network-globe-proto',    props: true, component: () => import('@/views/network/GlobeProtoView.vue') },
             ],
           },
           {

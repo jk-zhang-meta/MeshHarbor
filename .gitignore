@@ -79,6 +79,11 @@ dist/
 files/geoip/*
 !files/geoip/README.md
 
+# FR-136 MapLibre boundary vector tiles: built reproducibly by
+# scripts/globe/build-boundaries.sh from SOURCES.lock, never committed to git.
+ui/public/geo/*.pmtiles
+ui/public/geo/*.pmtiles.sha256
+
 # Code-signing operator state + local key material (scripts/signing/).
 # The state file holds only public identifiers, but dev-cert/ holds a real
 # private key -- never commit either.

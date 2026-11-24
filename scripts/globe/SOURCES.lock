@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Pinned build-time boundary sources for mh-boundaries-v1.pmtiles (FR-136 P0/P1).
+# Format: <filename> <sha256> <url>
+# Build-time download ONLY; ZERO external requests at runtime.
+
+ne_50m_land.geojson e874b27a51d146452be360cafb3cc50c86001074a67d534113e6534682f9826b https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_land.geojson
+ne_10m_land.geojson 1ac90796408bc6ad6911d69448485d3c4dbf2190370080368a09976e1c9f7416 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_land.geojson
+ne_10m_admin_0_countries.geojson 239eec57ac17f100a11e2536cffc56752c318b50ae765b0918ff7aab4ce8f255 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_0_countries.geojson
+ne_10m_admin_0_boundary_lines_land.geojson 74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_0_boundary_lines_land.geojson
+ne_10m_admin_1_states_provinces.geojson 22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson
+ne_10m_populated_places.geojson 9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_populated_places.geojson
+geoBoundariesCGAZ_ADM2.zip 598f6c70893d60a35b96eb0dc31fd1c045e69177e4b8203407710306f6585de1 https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.zip
