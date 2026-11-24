@@ -195,17 +195,17 @@
               <!-- FR-51 — the vanishing must never be a surprise: this device
                    removes itself (reaped after silence; immediately on a clean
                    stop), and a later enrollment is a NEW device. -->
-              <v-chip
+              <FactChip
                 v-if="item.ephemeral"
                 size="x-small"
                 color="warning"
                 variant="tonal"
                 class="ml-2"
                 prepend-icon="mdi-clock-fast"
-                :title="$t('mh.dev.ephemeralTitle')"
+                :explain="$t('mh.dev.ephemeralTitle')"
               >
                 {{ $t('mh.dev.ephemeral') }}
-              </v-chip>
+              </FactChip>
               <v-chip
                 v-if="rowZone(item).hasZone"
                 size="x-small"
@@ -291,39 +291,41 @@
             </span>
           </template>
           <template #item.status="{ item }">
-            <span
+            <!-- FR-120 P1 — the status reads on a tap: a `title` reaches a mouse only. -->
+            <FactChip
+              plain
               class="mh-presence"
               :class="`mh-presence--${item.presence}`"
-              :title="rowPresenceTitle(item)"
+              :explain="rowPresenceTitle(item)"
             >
               <span class="mh-presence__dot" aria-hidden="true" />{{ rowStatusLabel(item) }}
-            </span>
+            </FactChip>
             <!-- FR-103 — only when the device's credential needs someone. -->
-            <v-chip
+            <FactChip
               v-if="item.kind === 'agent' && agentFor(item) && credentialChip(agentFor(item)!.token_expires_at)"
               size="x-small"
               variant="tonal"
               class="mt-1"
               prepend-icon="mdi-key-alert"
               :color="credentialChip(agentFor(item)!.token_expires_at)!.color"
-              :title="credentialChip(agentFor(item)!.token_expires_at)!.tooltip"
+              :explain="credentialChip(agentFor(item)!.token_expires_at)!.tooltip"
             >
               {{ credentialChip(agentFor(item)!.token_expires_at)!.text }}
-            </v-chip>
+            </FactChip>
             <!-- FR-106 — only when an online device has not installed a
                  release that has been out for a day. -->
-            <v-chip
+            <FactChip
               v-if="item.kind === 'agent' && agentFor(item) && stallChip(agentFor(item)!)"
               size="x-small"
               variant="tonal"
               class="mt-1"
               prepend-icon="mdi-update"
               :color="stallChip(agentFor(item)!)!.color"
-              :title="stallChip(agentFor(item)!)!.tooltip"
+              :explain="stallChip(agentFor(item)!)!.tooltip"
               data-testid="agent-update-stall-chip"
             >
               {{ stallChip(agentFor(item)!)!.text }}
-            </v-chip>
+            </FactChip>
             <v-chip
               v-if="item.kind === 'agent' && agentFor(item) && remoteConfigChip(agentFor(item)!)"
               size="x-small"
@@ -336,17 +338,17 @@
             >
               {{ remoteConfigChip(agentFor(item)!)!.text }}
             </v-chip>
-            <v-chip
+            <FactChip
               v-if="item.kind === 'agent' && agentFor(item) && keyRotationChip(agentFor(item)!)"
               size="x-small"
               variant="tonal"
               class="mt-1"
               :color="keyRotationChip(agentFor(item)!)!.color"
               :prepend-icon="keyRotationChip(agentFor(item)!)!.icon"
-              :title="keyRotationChip(agentFor(item)!)!.tooltip"
+              :explain="keyRotationChip(agentFor(item)!)!.tooltip"
             >
               {{ keyRotationChip(agentFor(item)!)!.text }}
-            </v-chip>
+            </FactChip>
           </template>
           <template #item.os="{ item }">
             <span class="d-inline-flex align-center ga-1 text-body-2 text-no-wrap">
@@ -424,14 +426,14 @@
               <v-chip v-for="t in item.tags.slice(0, 3)" :key="t" size="x-small" variant="tonal">
                 {{ t }}
               </v-chip>
-              <v-chip
+              <FactChip
                 v-if="item.tags.length > 3"
                 size="x-small"
                 variant="tonal"
-                :title="item.tags.slice(3).join(', ')"
+                :explain="item.tags.slice(3).join(', ')"
               >
                 +{{ item.tags.length - 3 }}
-              </v-chip>
+              </FactChip>
             </div>
             <span v-else class="text-caption text-medium-emphasis">—</span>
           </template>
@@ -472,49 +474,49 @@
             <template v-if="item.kind === 'agent' && agentFor(item)">
               <div v-if="codecChips(agentFor(item)!).length === 0" class="text-caption text-medium-emphasis">—</div>
               <div v-else-if="lgAndDown" class="d-flex flex-nowrap ga-1 align-center">
-                <v-chip
+                <FactChip
                   size="x-small"
                   :color="codecChips(agentFor(item)!)[0].color"
                   variant="tonal"
-                  :title="codecChips(agentFor(item)!).map(c => c.tooltip).join(', ')"
+                  :explain="codecChips(agentFor(item)!).map(c => c.tooltip).join(', ')"
                 >
                   {{ codecChips(agentFor(item)!)[0].label }}
-                </v-chip>
-                <v-chip
+                </FactChip>
+                <FactChip
                   v-if="codecChips(agentFor(item)!).length > 1"
                   size="x-small"
                   variant="tonal"
-                  :title="codecChips(agentFor(item)!).slice(1).map(c => c.tooltip).join(', ')"
+                  :explain="codecChips(agentFor(item)!).slice(1).map(c => c.tooltip).join(', ')"
                 >
                   +{{ codecChips(agentFor(item)!).length - 1 }}
-                </v-chip>
+                </FactChip>
               </div>
               <div v-else class="d-flex flex-nowrap ga-1">
-                <v-chip
+                <FactChip
                   v-for="codec in codecChips(agentFor(item)!)"
                   :key="codec.label"
                   size="x-small"
                   :color="codec.color"
                   variant="tonal"
-                  :title="codec.tooltip"
+                  :explain="codec.tooltip"
                 >
                   {{ codec.label }}
-                </v-chip>
+                </FactChip>
               </div>
               <!-- A device the OS has muzzled looks identical to a healthy one
                    until you connect and get a black screen, because macOS
                    reports success either way. Say it here instead. -->
               <div v-if="permissionWarnings(agentFor(item)!).length" class="d-flex flex-nowrap ga-1 mt-1">
-                <v-chip
+                <FactChip
                   v-for="w in permissionWarnings(agentFor(item)!)"
                   :key="w.label"
                   size="x-small"
                   color="warning"
                   variant="tonal"
-                  :title="w.tooltip"
+                  :explain="w.tooltip"
                 >
                   {{ w.label }}
-                </v-chip>
+                </FactChip>
               </div>
             </template>
             <span v-else class="text-caption text-medium-emphasis">—</span>
@@ -616,13 +618,14 @@
                     <span :title="fmtDate(item.last_seen_at)"> · {{ fmtRelative(item.last_seen_at) }}</span>
                   </div>
                 </div>
-                <span
+                <FactChip
+                  plain
                   class="mh-presence flex-shrink-0 mt-1"
                   :class="`mh-presence--${item.presence}`"
-                  :title="rowPresenceTitle(item)"
+                  :explain="rowPresenceTitle(item)"
                 >
                   <span class="mh-presence__dot" aria-hidden="true" />{{ rowStatusLabel(item) }}
-                </span>
+                </FactChip>
               </div>
               <!-- What needs a person, and the device's own labels: the chips
                    the grid shows (docs/ui.md "needs a person"), never a chip
@@ -637,16 +640,19 @@
                   {{ $t('mh.dev.kindTunnel') }}
                 </v-chip>
                 <!-- FR-51 — the vanishing must never be a surprise. -->
-                <v-chip
+                <!-- FR-120 P1 — every chip here opens its meaning on a tap
+                     (FactChip), but Device configuration's, whose tap opens
+                     the dialog that explains it. -->
+                <FactChip
                   v-if="item.ephemeral"
                   size="x-small"
                   color="warning"
                   variant="tonal"
                   prepend-icon="mdi-clock-fast"
-                  :title="$t('mh.dev.ephemeralTitle')"
+                  :explain="$t('mh.dev.ephemeralTitle')"
                 >
                   {{ $t('mh.dev.ephemeral') }}
-                </v-chip>
+                </FactChip>
                 <v-chip
                   v-if="rowZone(item).hasZone"
                   size="x-small"
@@ -678,28 +684,28 @@
                 </v-chip>
                 <template v-if="agentFor(item)">
                   <!-- FR-103 — only when the device's credential needs someone. -->
-                  <v-chip
+                  <FactChip
                     v-if="credentialChip(agentFor(item)!.token_expires_at)"
                     size="x-small"
                     variant="tonal"
                     prepend-icon="mdi-key-alert"
                     :color="credentialChip(agentFor(item)!.token_expires_at)!.color"
-                    :title="credentialChip(agentFor(item)!.token_expires_at)!.tooltip"
+                    :explain="credentialChip(agentFor(item)!.token_expires_at)!.tooltip"
                   >
                     {{ credentialChip(agentFor(item)!.token_expires_at)!.text }}
-                  </v-chip>
+                  </FactChip>
                   <!-- FR-106 — the same chip as the table view's. -->
-                  <v-chip
+                  <FactChip
                     v-if="stallChip(agentFor(item)!)"
                     size="x-small"
                     variant="tonal"
                     prepend-icon="mdi-update"
                     :color="stallChip(agentFor(item)!)!.color"
-                    :title="stallChip(agentFor(item)!)!.tooltip"
+                    :explain="stallChip(agentFor(item)!)!.tooltip"
                     data-testid="agent-update-stall-chip"
                   >
                     {{ stallChip(agentFor(item)!)!.text }}
-                  </v-chip>
+                  </FactChip>
                   <v-chip
                     v-if="remoteConfigChip(agentFor(item)!)"
                     size="x-small"
@@ -711,53 +717,53 @@
                   >
                     {{ remoteConfigChip(agentFor(item)!)!.text }}
                   </v-chip>
-                  <v-chip
+                  <FactChip
                     v-if="keyRotationChip(agentFor(item)!)"
                     size="x-small"
                     variant="tonal"
                     :color="keyRotationChip(agentFor(item)!)!.color"
                     :prepend-icon="keyRotationChip(agentFor(item)!)!.icon"
-                    :title="keyRotationChip(agentFor(item)!)!.tooltip"
+                    :explain="keyRotationChip(agentFor(item)!)!.tooltip"
                   >
                     {{ keyRotationChip(agentFor(item)!)!.text }}
-                  </v-chip>
+                  </FactChip>
                   <!-- FR-27 — only when the companion disagrees with the
                        daemon: the desktop is running code the daemon has
                        moved past. -->
-                  <v-chip
+                  <FactChip
                     v-if="companionSkew(item)"
                     size="x-small"
                     color="warning"
                     variant="tonal"
-                    :title="$t('mh.dev.skewTitle', { desktop: companionSkew(item), daemon: item.version })"
+                    :explain="$t('mh.dev.skewTitle', { desktop: companionSkew(item), daemon: item.version })"
                   >
                     {{ $t('mh.dev.desktopVersion', { v: companionSkew(item) }) }}
-                  </v-chip>
+                  </FactChip>
                   <!-- FR-92 P5b — keep busy, only while it is ON: the device's
                        claim, shown as such; off or unknown shows nothing. -->
-                  <v-chip
+                  <FactChip
                     v-if="agentFor(item)!.keep_busy?.on"
                     size="x-small"
                     color="info"
                     variant="tonal"
                     prepend-icon="mdi-cursor-default-gesture-outline"
-                    :title="keepBusyBriefTitle(agentFor(item)!.keep_busy)"
+                    :explain="keepBusyBriefTitle(agentFor(item)!.keep_busy)"
                     data-testid="agent-keep-busy-chip"
                   >
                     {{ $t('mh.dev.keepBusy') }} · {{ agentFor(item)!.keep_busy!.phase }}
-                  </v-chip>
+                  </FactChip>
                   <!-- A device the OS has muzzled looks identical to a healthy
                        one until you connect and get a black screen. -->
-                  <v-chip
+                  <FactChip
                     v-for="w in permissionWarnings(agentFor(item)!)"
                     :key="w.label"
                     size="x-small"
                     color="warning"
                     variant="tonal"
-                    :title="w.tooltip"
+                    :explain="w.tooltip"
                   >
                     {{ w.label }}
-                  </v-chip>
+                  </FactChip>
                 </template>
                 <v-chip
                   v-for="t in (item.tags ?? []).slice(0, 3)"
@@ -768,14 +774,14 @@
                 >
                   {{ t }}
                 </v-chip>
-                <v-chip
+                <FactChip
                   v-if="(item.tags?.length ?? 0) > 3"
                   size="x-small"
                   variant="outlined"
-                  :title="(item.tags ?? []).slice(3).join(', ')"
+                  :explain="(item.tags ?? []).slice(3).join(', ')"
                 >
                   +{{ (item.tags?.length ?? 0) - 3 }}
-                </v-chip>
+                </FactChip>
               </div>
               <!-- On demand: the policy (six controls that used to be open on
                    every card) and the technical facts. Each title says what is
@@ -894,16 +900,16 @@
                       <template v-if="agentFor(item) && codecChips(agentFor(item)!).length > 0">
                         <dt>{{ $t('mh.dev.col.codecs') }}</dt>
                         <dd class="d-flex flex-wrap ga-1">
-                          <v-chip
+                          <FactChip
                             v-for="codec in codecChips(agentFor(item)!)"
                             :key="codec.label"
                             size="x-small"
                             :color="codec.color"
                             variant="tonal"
-                            :title="codec.tooltip"
+                            :explain="codec.tooltip"
                           >
                             {{ codec.label }}
-                          </v-chip>
+                          </FactChip>
                         </dd>
                       </template>
                       <dt>{{ $t('mh.dev.col.lastSeen') }}</dt>
@@ -1516,6 +1522,7 @@ import { usePolling } from '@/composables/usePolling'
 import DeviceActionsMenu, { type DeviceAction } from './DeviceActionsMenu.vue'
 import DeviceAccessPolicyFields from './DeviceAccessPolicyFields.vue'
 import { policySummary } from './devicePolicy'
+import FactChip from '@/components/common/FactChip.vue'
 
 const props = defineProps<{ tenantId: string }>()
 

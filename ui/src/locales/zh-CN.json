@@ -2735,6 +2735,12 @@
       "factRemote": "在浏览器里控制电脑，控制端什么都不用装",
       "factMesh": "能直连就直连，连不上自动走中继",
       "factTeam": "会议、聊天、文件和设备在同一个组织里"
+    },
+    "phone": {
+      "uptimeBarAria": "{name}：在线情况时间轴。点一下，或用左右方向键，查看某一时段",
+      "uptimeHint": "点一下横条，查看对应时段。",
+      "timelineBarAria": "{name}：查看时段。点一下，或用左右方向键，查看其中一段",
+      "timelineHint": "点一下横条，查看对应的查看时段。"
     }
   },
   "tempDevices": {

@@ -2735,6 +2735,12 @@
       "factRemote": "Control a computer from the browser; nothing to install on your side",
       "factMesh": "Machines connect directly when they can, and through a relay when they cannot",
       "factTeam": "Meetings, chat and files live in the same organization as your devices"
+    },
+    "phone": {
+      "uptimeBarAria": "{name}: presence over time. Tap, or use the arrow keys, to read a period",
+      "uptimeHint": "Tap a bar to read a period.",
+      "timelineBarAria": "{name}: viewing windows. Tap, or use the arrow keys, to read one",
+      "timelineHint": "Tap a bar to read a viewing window."
     }
   },
   "tempDevices": {

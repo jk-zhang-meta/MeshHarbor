@@ -36,7 +36,7 @@ function win(over: Partial<ViewingWindow>): ViewingWindow {
 }
 
 describe('UsageTimeline — device names (FR-116 D4)', () => {
-  it("labels a lane by the friendly name, else the machine's, else the id's tail", () => {
+  it("labels a lane by the friendly name, else the machine's, else the id's tail", async () => {
     const w = mount(UsageTimeline, {
       props: {
         from: T0,
@@ -51,6 +51,61 @@ describe('UsageTimeline — device names (FR-116 D4)', () => {
     })
     const labels = w.findAll('.tl-label .text-body-2').map((l) => l.text())
     expect(labels).toEqual(['Build server', 'kiosk-03', 'aa0003'])
-    expect(w.find('.tl-bar').attributes('title')).toContain('Controlled Build server')
+    // FR-120 P1 — a window's own text is read by a tap, into the detail line.
+    await w.find('[data-testid="tl-track-aaaaaaaaaaaaaaaaaaaa0001"]').trigger('click')
+    expect(w.find('[data-testid="tl-detail"]').text()).toContain('Controlled Build server')
+  })
+})
+
+// FR-120 P1 — a viewing window's times, length and traffic were each bar's
+// `title`, which a tap never shows. The track reports the window under a tap,
+// a mouse pointing, or the arrow keys; no bar carries a hover-only title.
+describe('UsageTimeline — a window read by a tap (FR-120 P1)', () => {
+  const two = () =>
+    mount(UsageTimeline, {
+      props: {
+        from: T0,
+        to: T0 + 4 * HOUR,
+        windows: [
+          win({ agent_id: 'aaaaaaaaaaaaaaaaaaaa0001', agent_display_name: 'Build server', seconds: HOUR }),
+          win({
+            session_id: 's2',
+            agent_id: 'aaaaaaaaaaaaaaaaaaaa0001',
+            agent_display_name: 'Build server',
+            role: 'watcher',
+            started_at: T0 + 2 * HOUR,
+            ended_at: T0 + 3 * HOUR,
+            seconds: HOUR,
+          }),
+        ],
+      },
+      global: { plugins: [vuetify] },
+    })
+  const track = (w: ReturnType<typeof two>) => w.find('[data-testid="tl-track-aaaaaaaaaaaaaaaaaaaa0001"]')
+  const detail = (w: ReturnType<typeof two>) => w.find('[data-testid="tl-detail"]').text()
+
+  it('carries no hover-only title on a bar, and says how to read one', () => {
+    const w = two()
+    expect(w.findAll('.tl-bar').every((b) => b.attributes('title') === undefined)).toBe(true)
+    expect(detail(w)).toContain('Tap a bar')
+  })
+
+  it('steps through the windows with the arrow keys, and marks the one it reads', async () => {
+    const w = two()
+    await track(w).trigger('keydown', { key: 'ArrowRight' })
+    expect(detail(w)).toContain('Controlled Build server')
+    await track(w).trigger('keydown', { key: 'ArrowRight' })
+    expect(detail(w)).toContain('Watched Build server')
+    expect(w.findAll('.tl-bar')[1].classes()).toContain('tl-bar--shown')
+  })
+
+  it('previews under a mouse, never under a finger', async () => {
+    const w = two()
+    await track(w).trigger('pointermove', { pointerType: 'touch' })
+    expect(detail(w)).toContain('Tap a bar')
+    await track(w).trigger('pointermove', { pointerType: 'mouse' })
+    expect(detail(w)).toContain('Build server')
+    await track(w).trigger('pointerleave')
+    expect(detail(w)).toContain('Tap a bar')
   })
 })

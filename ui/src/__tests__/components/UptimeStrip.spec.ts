@@ -123,3 +123,66 @@ describe('UptimeStrip', () => {
     expect(w.text()).not.toContain('build-01')
   })
 })
+
+// FR-120 P1 — a period's state and times were each segment's `title`, which a
+// tap never shows (136 of them on Analytics at 360 px). The bar reports the
+// period under a tap, a mouse pointing, or the arrow keys, in the line below.
+describe('UptimeStrip — a period read by a tap (FR-120 P1)', () => {
+  const ID = 'aaaaaaaaaaaa111111111111'
+  const strip = () =>
+    mountStrip([
+      {
+        agent_id: ID,
+        name: 'alpha',
+        intervals: [
+          { from: T0, to: T0 + HOUR, presence: 'online' },
+          { from: T0 + HOUR, to: T0 + 2 * HOUR, presence: 'offline' },
+        ],
+      },
+    ])
+  const bar = (w: ReturnType<typeof strip>) => w.find(`[data-testid="uptime-bar-${ID}"]`)
+  const detail = (w: ReturnType<typeof strip>) => w.find('[data-testid="uptime-detail"]').text()
+
+  it('carries no hover-only title on a segment, and says how to read one', () => {
+    const w = strip()
+    expect(w.findAll('.uptime-seg').every((s) => s.attributes('title') === undefined)).toBe(true)
+    expect(detail(w)).toContain('Tap a bar')
+  })
+
+  it('reads the period a tap lands on, by where it lands', async () => {
+    const w = strip()
+    // Under jsdom a box has no size: give the bar 200 px, then tap each half.
+    ;(bar(w).element as HTMLElement).getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 200, height: 14, right: 200, bottom: 14, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    await bar(w).trigger('click', { clientX: 150 })
+    expect(detail(w)).toMatch(/^alpha · offline · /)
+    await bar(w).trigger('click', { clientX: 20 })
+    expect(detail(w)).toMatch(/^alpha · online · /)
+    expect(w.findAll('.uptime-seg')[0].classes()).toContain('uptime-seg--shown')
+  })
+
+  it('steps through the periods with the arrow keys', async () => {
+    const w = strip()
+    await bar(w).trigger('keydown', { key: 'ArrowRight' })
+    expect(detail(w)).toMatch(/^alpha · online · /)
+    await bar(w).trigger('keydown', { key: 'ArrowRight' })
+    expect(detail(w)).toMatch(/^alpha · offline · /)
+    await bar(w).trigger('keydown', { key: 'ArrowRight' })
+    expect(detail(w)).toMatch(/^alpha · offline · /)
+    await bar(w).trigger('keydown', { key: 'ArrowLeft' })
+    expect(detail(w)).toMatch(/^alpha · online · /)
+  })
+
+  it('previews under a mouse, never under a finger, and keeps what a tap picked', async () => {
+    const w = strip()
+    await bar(w).trigger('pointermove', { pointerType: 'touch' })
+    expect(detail(w)).toContain('Tap a bar')
+    await bar(w).trigger('pointermove', { pointerType: 'mouse' })
+    expect(detail(w)).toMatch(/^alpha · /)
+    await bar(w).trigger('pointerleave')
+    expect(detail(w)).toContain('Tap a bar')
+    await bar(w).trigger('keydown', { key: 'ArrowLeft' })
+    await bar(w).trigger('pointerleave')
+    expect(detail(w)).toMatch(/^alpha · offline · /)
+  })
+})

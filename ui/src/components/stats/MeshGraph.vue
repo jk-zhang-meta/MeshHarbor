@@ -41,7 +41,7 @@
         />
       </div>
 
-      <svg :width="size" :height="size" role="img" class="mesh-svg">
+      <svg :width="size" :height="size" role="img" class="mesh-svg" @click="pinnedEdge = null">
         <title>Overlay mesh: devices, their control-plane links and peer carriers</title>
         <defs>
           <!-- Asymmetric pairs: each half of the chord wears ITS end's
@@ -85,14 +85,31 @@
           <path
             v-for="e in visibleEdges"
             :key="e.key"
+            class="mesh-edge"
             :d="e.d"
             :stroke="e.stroke"
             :stroke-dasharray="e.stalled ? '4 3' : undefined"
             :stroke-width="e.hovered ? 3 : 1.6"
             :opacity="e.hovered ? 1 : 0.65"
             fill="none"
+          />
+          <!-- FR-120 P1 — each carrier's 14 px invisible hit line, over the
+               drawn ones: a 1.6 px stroke takes no finger, and its carrier and
+               round trip were hover-only. A tap or click pins its line in the
+               tooltip; a tap on the empty graph unpins it. -->
+          <path
+            v-for="e in visibleEdges"
+            :key="`hit-${e.key}`"
+            class="mesh-edge-hit"
+            :d="e.d"
+            stroke="transparent"
+            stroke-width="14"
+            pointer-events="stroke"
+            fill="none"
+            :data-testid="`mesh-edge-hit-${e.key}`"
             @mouseenter="hoverEdge = e.key"
             @mouseleave="hoverEdge = null"
+            @click.stop="pinnedEdge = pinnedEdge === e.key ? null : e.key"
           />
 
           <!-- Centre: the control plane -->
@@ -208,6 +225,9 @@ const showOffline = ref(true)
 const showControlPlane = ref(true)
 const hoverNode = ref<string | null>(null)
 const hoverEdge = ref<string | null>(null)
+/** FR-120 P1 — the carrier a tap or click pinned; a mouse's hover reads over it. */
+const pinnedEdge = ref<string | null>(null)
+const shownEdge = computed(() => hoverEdge.value ?? pinnedEdge.value)
 
 const theme = useTheme()
 function carrierColor(carrier: string): string {
@@ -230,16 +250,19 @@ function carrierColor(carrier: string): string {
 
 const wrap = ref<HTMLElement | null>(null)
 const size = ref(520)
+// FR-120 P1 — the graph follows its box down to 200 px: a 320 px floor was
+// wider than a 360 px phone's ~312 px column, so the card scrolled sideways.
+const MIN_SIZE = 200
 let ro: ResizeObserver | null = null
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && wrap.value) {
     ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect?.width
-      if (w && w > 200) size.value = Math.min(Math.max(w, 320), 720)
+      if (w && w > 200) size.value = Math.min(Math.max(w, MIN_SIZE), 720)
     })
     ro.observe(wrap.value)
   }
-  if (wrap.value?.clientWidth) size.value = Math.min(Math.max(wrap.value.clientWidth, 320), 720)
+  if (wrap.value?.clientWidth) size.value = Math.min(Math.max(wrap.value.clientWidth, MIN_SIZE), 720)
 })
 onBeforeUnmount(() => ro?.disconnect())
 
@@ -381,7 +404,7 @@ const visibleEdges = computed<DrawnEdge[]>(() => {
       grad,
       asymmetric: sides.asymmetric,
       stalled: !!e.stalled,
-      hovered: hoverEdge.value === key,
+      hovered: shownEdge.value === key,
       tip: lines.join('\n'),
     })
   }
@@ -394,8 +417,8 @@ const gradientDefs = computed<EdgeGradient[]>(() =>
 const asymmetricCount = computed(() => visibleEdges.value.filter((e) => e.asymmetric).length)
 
 const tooltip = computed(() => {
-  if (hoverEdge.value) {
-    return visibleEdges.value.find((e) => e.key === hoverEdge.value)?.tip ?? null
+  if (shownEdge.value) {
+    return visibleEdges.value.find((e) => e.key === shownEdge.value)?.tip ?? null
   }
   if (hoverNode.value) {
     const n = placed.value.find((x) => x.id === hoverNode.value)
@@ -456,6 +479,9 @@ const tooltip = computed(() => {
   font-size: 11px;
 }
 .mesh-node {
+  cursor: pointer;
+}
+.mesh-edge-hit {
   cursor: pointer;
 }
 .mesh-node-dot.is-online {

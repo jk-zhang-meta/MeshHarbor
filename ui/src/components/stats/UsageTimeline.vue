@@ -13,7 +13,22 @@
             {{ lane.sub }}
           </div>
         </div>
-        <div class="tl-track">
+        <!-- FR-120 P1 — a window's times, length and traffic were each bar's
+             `title`, which a tap never shows: the track now reports the window
+             under a tap or click (or a mouse pointing, or the arrow keys) in
+             the line below the lanes. -->
+        <div
+          class="tl-track"
+          role="button"
+          tabindex="0"
+          :aria-label="$t('mh.phone.timelineBarAria', { name: lane.label })"
+          :data-testid="`tl-track-${lane.key}`"
+          @click="pick(lane, $event)"
+          @pointermove="point(lane, $event)"
+          @pointerleave="pointed = null"
+          @keydown.left.prevent="step(lane, -1)"
+          @keydown.right.prevent="step(lane, 1)"
+        >
           <!-- Bars are absolutely positioned by percentage of the query
                window, so no measurement is needed and the component
                renders identically under jsdom. -->
@@ -21,14 +36,22 @@
             v-for="(bar, i) in lane.bars"
             :key="i"
             class="tl-bar"
-            :class="{ 'tl-bar--watcher': bar.role === 'watcher', 'tl-bar--open': bar.open }"
+            :class="{
+              'tl-bar--watcher': bar.role === 'watcher',
+              'tl-bar--open': bar.open,
+              'tl-bar--shown': isShown(lane, i),
+            }"
             :style="{ left: bar.left, width: bar.width, background: bar.color }"
-            :title="bar.title"
           />
         </div>
         <div class="tl-total text-caption" :title="`${lane.label}: ${lane.totalLabel}`">
           {{ lane.totalLabel }}
         </div>
+      </div>
+
+      <div class="tl-detail text-caption" aria-live="polite" data-testid="tl-detail">
+        <template v-if="detail">{{ detail }}</template>
+        <span v-else class="text-medium-emphasis">{{ $t('mh.phone.timelineHint') }}</span>
       </div>
 
       <div class="tl-axis text-caption text-medium-emphasis">
@@ -60,7 +83,7 @@
 // different facts: the controller drove the session, a watcher only saw it.
 // Bytes exist for controller windows only (the session's stats block counts
 // the peer connection once; splitting it across watchers would be invented).
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { scaleTime } from 'd3-scale'
 import { timeFormat } from 'd3-time-format'
 import { useDisplay, useTheme } from 'vuetify'
@@ -117,6 +140,9 @@ function pct(t: number): number {
 interface Bar {
   left: string
   width: string
+  /** The same position as numbers (percent of the window), to find a tap's window. */
+  leftPct: number
+  widthPct: number
   color: string
   title: string
   role: string
@@ -163,10 +189,13 @@ const lanes = computed<Lane[]>(() => {
             : ' · traffic not measured'
           : ''
       const orgNote = w.tenant_name ? ` · ${w.tenant_name}` : ''
+      // Floor the width so a 5-second session is still clickable.
+      const widthPct = Math.max(((e - s) / span.value) * 100, 0.35)
       bars.push({
         left: `${pct(s)}%`,
-        // Floor the width so a 5-second session is still clickable.
-        width: `${Math.max(((e - s) / span.value) * 100, 0.35)}%`,
+        width: `${widthPct}%`,
+        leftPct: pct(s),
+        widthPct,
         color: w.role === 'controller' ? controllerColor.value : watcherColor.value,
         role: w.role,
         open,
@@ -201,6 +230,59 @@ const ticks = computed(() => {
     label: fmt(d),
   }))
 })
+
+// FR-120 P1 — the window a tap or click picked stays in the detail line; a
+// mouse pointing at a track previews its window there, and leaving restores
+// the picked one.
+type Spot = { lane: string; bar: number }
+const picked = ref<Spot | null>(null)
+const pointed = ref<Spot | null>(null)
+const shown = computed(() => pointed.value ?? picked.value)
+
+/** The bar under the pointer, or the nearest one to it. */
+function barAt(lane: Lane, ev: MouseEvent): number {
+  const r = (ev.currentTarget as HTMLElement).getBoundingClientRect()
+  if (!r.width) return lane.bars.length ? 0 : -1
+  const x = ((ev.clientX - r.left) / r.width) * 100
+  let best = -1
+  let bestGap = Infinity
+  lane.bars.forEach((b, i) => {
+    const gap = x < b.leftPct ? b.leftPct - x : Math.max(x - (b.leftPct + b.widthPct), 0)
+    if (gap < bestGap) {
+      bestGap = gap
+      best = i
+    }
+  })
+  return best
+}
+
+function pick(lane: Lane, ev: MouseEvent): void {
+  const bar = barAt(lane, ev)
+  if (bar >= 0) picked.value = { lane: lane.key, bar }
+}
+
+function point(lane: Lane, ev: PointerEvent): void {
+  // A finger's moves are a scroll or the tap itself; only a mouse previews.
+  if (ev.pointerType !== 'mouse') return
+  const bar = barAt(lane, ev)
+  pointed.value = bar >= 0 ? { lane: lane.key, bar } : null
+}
+
+function step(lane: Lane, by: number): void {
+  if (!lane.bars.length) return
+  const cur = picked.value?.lane === lane.key ? picked.value.bar : by > 0 ? -1 : lane.bars.length
+  picked.value = { lane: lane.key, bar: Math.min(Math.max(cur + by, 0), lane.bars.length - 1) }
+}
+
+function isShown(lane: Lane, i: number): boolean {
+  return shown.value?.lane === lane.key && shown.value.bar === i
+}
+
+const detail = computed(() => {
+  const s = shown.value
+  const lane = s ? lanes.value.find((l) => l.key === s.lane) : undefined
+  return lane && s ? (lane.bars[s.bar]?.title ?? '') : ''
+})
 </script>
 
 <style scoped>
@@ -230,6 +312,21 @@ const ticks = computed(() => {
   border-radius: 3px;
   overflow: hidden;
   background: rgba(var(--v-theme-on-surface), 0.06);
+  cursor: pointer;
+}
+.tl-track:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+}
+/* The window the detail line reads, marked in its lane. */
+.tl-bar--shown {
+  box-shadow: inset 0 0 0 2px rgb(var(--v-theme-on-surface));
+}
+/* Its text keeps the window's three lines: who and where, when, how long. */
+.tl-detail {
+  white-space: pre-line;
+  min-height: 1.5em;
+  margin: 2px 70px 4px 158px;
 }
 .tl-bar {
   position: absolute;
@@ -308,6 +405,10 @@ const ticks = computed(() => {
   .tl-axis,
   .tl-legend {
     margin-left: 0;
+  }
+  .tl-detail {
+    margin-left: 0;
+    margin-right: 0;
   }
 }
 </style>
