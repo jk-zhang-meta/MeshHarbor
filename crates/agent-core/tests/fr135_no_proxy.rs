@@ -140,6 +140,7 @@ fn fr135_proxies_are_skipped_unless_the_device_opts_in() {
     let ws_echo = rt.block_on(async {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
+        // fr-134: allowed — loopback test WebSocket server for FR-135 no-proxy check.
         let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
         ws.send(Message::Text("ws-direct".into())).await.unwrap();
         match ws.next().await.unwrap().unwrap() {

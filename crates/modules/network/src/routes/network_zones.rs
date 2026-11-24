@@ -15,7 +15,8 @@ use bson::oid::ObjectId;
 use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::models::{
-    DeviceZoneResolution, NetworkZone, normalize_zone_slug, validate_and_normalize_network_zones,
+    DeviceZoneResolution, NetworkZone, first_zone_without_gateway, normalize_zone_slug,
+    validate_and_normalize_network_zones,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -102,6 +103,14 @@ pub async fn set_zones(
 
     let normalized =
         validate_and_normalize_network_zones(body.zones).map_err(ApiError::BadRequest)?;
+    // FR-134 — every zone reaches the centre and other zones through its gateways, so a zone
+    // with no gateway is refused at save.
+    if let Some(z) = first_zone_without_gateway(&normalized) {
+        return Err(ApiError::BadRequest(format!(
+            "Zone '{}' must name at least one gateway router",
+            z.id
+        )));
+    }
     let active_agents = state.fleet.agents.list_all_active_for_tenant(tid).await?;
 
     let approved_relays: HashSet<ObjectId> = active_agents
@@ -152,6 +161,8 @@ pub async fn set_zones(
         .await;
     crate::org_relay::recheck_tenant_zones(&state, tid, "network_zones_updated").await;
     crate::overlay::on_tenant_zones_changed(&state, tid).await;
+    // FR-134 — live push updated management paths and gateway entry keys/revocations.
+    meshharbor_mod_fleet::management_path::sync_tenant_management_paths(&state.fleet, tid).await;
 
     info!(
         tenant = %tid,
@@ -233,6 +244,8 @@ pub async fn set_zone_assignment(
     }
     crate::org_relay::recheck_zones(&state, aid, "zone_assignment").await;
     crate::overlay::on_agent_policy_changed(&state, tid, aid, "zone_policy").await;
+    // FR-134 — live push updated management path for the moved device (and tenant if gateway).
+    meshharbor_mod_fleet::management_path::sync_tenant_management_paths(&state.fleet, tid).await;
 
     let fresh_agent = state.fleet.agents.find_live_in_tenant(tid, aid).await.ok();
     let country_code = fresh_agent

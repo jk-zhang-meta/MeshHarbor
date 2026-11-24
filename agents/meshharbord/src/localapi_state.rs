@@ -886,6 +886,35 @@ impl LocalApiState for DaemonState {
             // refreshed off this thread — this is a sync read on the async
             // dispatch, and the honest answer needs the disk.
             files_dir: crate::files::effective_files_dir(),
+            management_path: {
+                use meshharbor_node_core::management_path as mp;
+                let listening_port = crate::mgmt_entry::listening_port();
+                match (mp::last_connected(), listening_port) {
+                    (Some((mp::Candidate::Entry(addr), _)), lp) => {
+                        Some(tunnel_core::localapi::ManagementPathStatus {
+                            mode: "entry".to_string(),
+                            entry: Some(addr.to_string()),
+                            last_resort: false,
+                            listening_port: lp,
+                        })
+                    }
+                    (Some((mp::Candidate::Direct, last_resort)), lp) => {
+                        Some(tunnel_core::localapi::ManagementPathStatus {
+                            mode: "direct".to_string(),
+                            entry: None,
+                            last_resort,
+                            listening_port: lp,
+                        })
+                    }
+                    (None, Some(lp)) => Some(tunnel_core::localapi::ManagementPathStatus {
+                        mode: "direct".to_string(),
+                        entry: None,
+                        last_resort: false,
+                        listening_port: Some(lp),
+                    }),
+                    (None, None) => None,
+                }
+            },
         }
     }
 

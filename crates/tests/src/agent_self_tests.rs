@@ -1283,6 +1283,18 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
     let mut us_ws = connect_from(&app, &us_tok, &[], Some("8.8.8.8")).await;
     join(&mut us_ws, 12).await;
 
+    // FR-134 requires each zone to name at least one approved gateway router.
+    let resp = app
+        .auth_put(
+            &tenant_url(&seeded, &format!("/agent/{us_id}/peer-relay-policy")),
+            admin,
+        )
+        .json(&json!({ "serve": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
     // Define Logical Network Zones and pin CN device to `"siat"`.
     let resp = app
         .auth_put(&tenant_url(&seeded, "/network-zones"), admin)
@@ -1293,7 +1305,7 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
                     "name": "Mainland China",
                     "auto_countries": ["CN"],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [us_id],
                     "cross_zone_mode": "router_only"
                 },
                 {
@@ -1301,7 +1313,7 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
                     "name": "SIAT Campus",
                     "auto_countries": [],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [us_id],
                     "cross_zone_mode": "router_only"
                 },
                 {
@@ -1309,7 +1321,7 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
                     "name": "Hong Kong",
                     "auto_countries": ["HK"],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [us_id],
                     "cross_zone_mode": "direct_preferred"
                 },
                 {
@@ -1317,7 +1329,7 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
                     "name": "Global",
                     "auto_countries": ["US"],
                     "is_default": true,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [us_id],
                     "cross_zone_mode": "direct_preferred"
                 }
             ]

@@ -760,10 +760,11 @@ pub struct AgentConfig {
     /// mars, where this exact confound nearly inverted E2E-3's result.
     #[serde(default)]
     pub relay_server_port: Option<u32>,
-    /// FR-128 — run a management entry on this TCP port: forward management connections from
-    /// this zone's devices to the centre (their TLS, unread) and attest the addresses they come
-    /// from. It serves only while the org admin has made this device a zone gateway: before
-    /// that the centre sends no key, and nobody is offered the port. `None` or `0` = off.
+    /// FR-128 / FR-134 — TCP port for this device's management entry: forwards management
+    /// connections from this zone's devices to the centre (their TLS, unread) and attests the
+    /// addresses they come from. Only listens while the org admin has made this device a zone
+    /// gateway: a non-gateway never binds the port. `None` = default port `18443` when gateway;
+    /// `Some(0)` = explicitly switched off by the owner; `Some(p)` = custom port `p`.
     /// Device-owned, absent from `DesiredConfig`; refused under `protected`.
     #[serde(default)]
     pub management_entry_port: Option<u16>,
@@ -2706,12 +2707,17 @@ impl AgentConfig {
     pub fn vault_allowed(&self) -> bool {
         self.vault_enabled && !self.protected
     }
-    /// FR-128 — the port this device's management entry listens on, when one may run here.
+    /// FR-128 / FR-134 — the port this device's management entry listens on when the centre
+    /// makes it a zone gateway. `None` = owner switched it off (`Some(0)`) or device is
+    /// `protected`. Unset (`None` in config) defaults to `18443`.
     pub fn management_entry_port_allowed(&self) -> Option<u16> {
         if self.protected {
-            None
-        } else {
-            self.management_entry_port.filter(|p| *p != 0)
+            return None;
+        }
+        match self.management_entry_port {
+            Some(0) => None,
+            Some(p) => Some(p),
+            None => Some(meshharbor_remote_control::management_entry::DEFAULT_MANAGEMENT_ENTRY_PORT),
         }
     }
     /// This device serves as an org relay (`None` = not decided locally).
@@ -3815,6 +3821,9 @@ fn try_load(path: &PathBuf) -> Result<AgentConfig> {
     // FR-135 — every reader parses through here, so the device's proxy opt-in reaches each
     // process's HTTP clients without a call at every entry point.
     crate::http_client::note_config(cfg.use_system_proxy);
+    // FR-134 — likewise remember the configured centre host and owner-local management entries
+    // so every native HTTP/WS client in this process follows the management path ladder.
+    crate::management_path::note_config(&cfg.server_url, &cfg.management_entries);
     // FR-101 P1b — TLS to the server whatever the file says, unless its owner
     // kept plaintext (`allow_plaintext_server`). Here, because every reader
     // parses through this function: the daemon, the probe, the recovery.
@@ -5290,5 +5299,31 @@ tenant_id = "tid2"
                 & 0o777;
             assert_eq!(mode, 0o600, "{} must end at 0600", final_path.display());
         }
+    }
+
+    #[test]
+    fn fr134_management_entry_port_defaults_to_18443_honours_opt_out_and_protected() {
+        let mut cfg = test_fixture();
+        assert_eq!(cfg.management_entry_port, None);
+        assert_eq!(
+            cfg.management_entry_port_allowed(),
+            Some(meshharbor_remote_control::management_entry::DEFAULT_MANAGEMENT_ENTRY_PORT),
+            "unset defaults to 18443 when this device is a zone gateway"
+        );
+        cfg.management_entry_port = Some(19443);
+        assert_eq!(cfg.management_entry_port_allowed(), Some(19443));
+        cfg.management_entry_port = Some(0);
+        assert_eq!(
+            cfg.management_entry_port_allowed(),
+            None,
+            "0 explicitly switches the management entry off"
+        );
+        cfg.management_entry_port = None;
+        cfg.protected = true;
+        assert_eq!(
+            cfg.management_entry_port_allowed(),
+            None,
+            "protected devices never serve a management entry"
+        );
     }
 }

@@ -31,20 +31,24 @@ const PER_ADDR_CONNECT: Duration = Duration::from_secs(10);
 /// or a name nothing knows, takes `connect_async`'s own path unchanged.
 pub async fn connect(url: &str) -> Result<(Ws, Response), tungstenite::Error> {
     let Some((host, port)) = host_port(url) else {
+        // fr-134: allowed — the WS dial helper itself.
         return connect_async(url).await;
     };
     if host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() {
+        // fr-134: allowed — the WS dial helper itself.
         return connect_async(url).await;
     }
     let hostport = tunnel_core::ctl_dns::hostport(&host, port);
     let addrs = tunnel_core::ctl_dns::resolve(&hostport).await;
     if addrs.is_empty() {
+        // fr-134: allowed — the WS dial helper itself.
         return connect_async(url).await;
     }
     let mut last = None;
     for addr in &addrs {
         match tokio::time::timeout(PER_ADDR_CONNECT, TcpStream::connect(addr)).await {
             Ok(Ok(stream)) => {
+                // fr-134: allowed — the WS dial helper itself.
                 let done = client_async_tls_with_config(url, stream, None, None).await;
                 // An HTTP answer (a 401, say) proves the address; anything else
                 // may be a server that moved, so look again behind the caller.
@@ -88,7 +92,32 @@ pub async fn connect_via(
             )));
         }
     };
+    // fr-134: allowed — the WS dial helper itself.
     client_async_tls_with_config(url, stream, None, None).await
+}
+
+/// FR-134 — dial a centre WebSocket (such as central `/derp`) along the management path ladder:
+/// the control socket's active entry first, then configured/pushed entries, and direct only when
+/// allowed or as a last resort when every entry fails.
+pub async fn connect_centre(url: &str) -> Result<(Ws, Response), tungstenite::Error> {
+    use meshharbor_node_core::management_path as mp;
+    let local = mp::local_entries();
+    let (order, _) = mp::candidates_for_url(url, &local);
+    let mut last: Option<tungstenite::Error> = None;
+    for candidate in order {
+        let res = match candidate {
+            mp::Candidate::Direct => connect(url).await,
+            mp::Candidate::Entry(entry) => connect_via(url, entry).await,
+        };
+        match res {
+            Ok(ok) => return Ok(ok),
+            Err(e @ tungstenite::Error::Http(_)) => return Err(e),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        tungstenite::Error::Io(std::io::Error::other("no management path candidate"))
+    }))
 }
 
 /// Host and port of a `ws(s)://` URL, the scheme's default port when it has none.

@@ -436,6 +436,28 @@ pub struct NodeStatus {
     /// "Change…" / "Use default".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_dir: Option<String>,
+    /// FR-134 — how this daemon currently reaches the centre (`direct`, `entry`, or `direct` as
+    /// a last resort when every zone entry was unreachable) and whether it serves as a zone
+    /// management entry. Additive; absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_path: Option<ManagementPathStatus>,
+}
+
+/// FR-134 — live management-plane path to the centre and local management-entry listener state.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ManagementPathStatus {
+    /// `"direct"` or `"entry"`.
+    pub mode: String,
+    /// When `mode == "entry"`, the gateway entry `ip:port` carrying the control socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// True when the zone forbids direct, every entry was unreachable, and this device dialed
+    /// the centre directly as a last resort while probing entries to move back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub last_resort: bool,
+    /// When this device itself serves as a zone management entry, the TCP port it listens on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening_port: Option<u16>,
 }
 
 /// FR-19 — the org-relay probe responder's live state (see
@@ -5840,6 +5862,7 @@ mod tests {
                 legacy_env_uses: Some(Vec::new()),
                 retired_env_present: Some(Vec::new()),
                 files_dir: None,
+                management_path: None,
                 derp_inbound_drops: None,
                 netcheck: None,
                 pid: None,

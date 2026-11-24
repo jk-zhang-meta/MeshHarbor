@@ -343,6 +343,10 @@ pub async fn set_policy(
         .await;
     if zones_configured {
         crate::org_relay::recheck_tenant_zones(&state, tid, "peer_relay_policy").await;
+        // FR-134 — gateway approval/revocation or static endpoint changes affect management
+        // entry keys and zone management paths live.
+        meshharbor_mod_fleet::management_path::sync_tenant_management_paths(&state.fleet, tid)
+            .await;
     }
     for event in revoked {
         let _ = tokio::time::timeout(

@@ -152,6 +152,52 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(tenant = %tid, agent = %aid, serve, ?revision, "rc ctrl: peer-relay serve applied from another pod");
             }
         }
+        Some("management_path") => {
+            let (Some(tid), Some(aid), Some(direct)) = (
+                ctrl.get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("direct").and_then(|v| v.as_bool()),
+            ) else {
+                return;
+            };
+            let entries = ctrl
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if hub.push_management_path(tid, aid, direct, entries) {
+                info!(tenant = %tid, agent = %aid, direct, "rc ctrl: management path applied from another pod");
+            }
+        }
+        Some("management_entry_key") => {
+            let (Some(tid), Some(aid), Some(key)) = (
+                ctrl.get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("key").and_then(|v| v.as_str()),
+            ) else {
+                return;
+            };
+            let revoking = key.is_empty();
+            if hub.push_management_entry_key(
+                tid,
+                aid,
+                meshharbor_remote_control::management_entry::EntryKey(key.to_string()),
+            ) {
+                info!(tenant = %tid, agent = %aid, revoking, "rc ctrl: management entry key applied from another pod");
+            }
+        }
         Some("zone_policy") => {
             let (Some(aid), Some(policy_revision), Some(strict)) = (
                 ctrl.get("agent_id")

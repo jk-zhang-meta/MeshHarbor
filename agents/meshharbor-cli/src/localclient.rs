@@ -2527,6 +2527,19 @@ fn print_status(s: &NodeStatus) {
             "disconnected"
         }
     );
+    // FR-134 — how the daemon reaches the centre right now, and whether it serves as a zone
+    // management entry. Printed only when reported by the daemon.
+    if let Some(mp) = &s.management_path {
+        let path_desc = match (mp.mode.as_str(), mp.entry.as_deref(), mp.last_resort) {
+            ("entry", Some(addr), _) => format!("entry {addr}"),
+            (_, _, true) => "direct (last resort — zone entries unreachable; retrying)".to_string(),
+            _ => "direct".to_string(),
+        };
+        println!("  centre path {path_desc}");
+        if let Some(port) = mp.listening_port {
+            println!("  mgmt entry  listening on tcp/:{port}");
+        }
+    }
     // FR-103 — the primary enrollment's credential. Printed only when the
     // daemon reports it, so an older daemon's output is unchanged.
     if let Some(exp) = s

@@ -1138,6 +1138,32 @@ The centre's country is its public origin (`app.frontend_url`) geolocated by the
 (`fleet` boot); an origin that does not resolve to one known country is outside every strict zone.
 Only `MANAGE_AGENTS` moves a device between zones — never the device's owner.
 
+### Every centre connection follows the zones (FR-134)
+
+Once an organization configures logical zones, every zone names at least one gateway router, and
+the centre itself is a zone (`is_centre = true`, pin-only). Every non-gateway device in any zone
+(whether `router_only` or `direct_preferred`) routes **every** connection to the centre through
+its zone's gateway management entries (default TCP `18443`, started live on gateways without
+per-device configuration; `0` opts out; non-gateways never listen):
+
+```mermaid
+flowchart LR
+    DEV["zone member<br/>(non-gateway)"] --> P{"zone gateway entry<br/>reachable?"}
+    P -->|"yes"| E["zone gateway entry<br/>(tcp/:18443 opaque TLS)"] --> C["centre<br/>/ws · /api/* · /derp"]
+    P -->|"all entries down<br/>(never stranded)"| D["direct to centre<br/>(last resort, shown in mh status;<br/>re-probes entries to move back)"] --> C
+```
+
+| Connection | How it follows the management path | Anchor |
+|---|---|---|
+| Control WS (`meshharbord`) | `dial_centre` tries entries first (with `MHE1` IP attestation), falling back to last-resort direct and re-probing entries (`entry_retry_after` + immediate probe on fresh push) | `agents/meshharbord/src/signaling.rs:1648`, `agents/meshharbord/src/mgmt_entry.rs:106-170` |
+| Central `/derp` WS | `ws_connect::connect_centre` follows the active/kept path ladder and reconnects whenever the control route generation changes; regional PoP DERP relays stay direct to their own hosts | `agents/meshharbord/src/derp.rs:243-253`, `agents/meshharbord/src/ws_connect.rs:102` |
+| Tunnel-client & shared-SSH WS (`mh`) | `connect_ws_via_management_path` uses persisted `management-path.json` + local `management_entries` before direct fallback | `agents/meshharbor-cli/src/forward.rs:46` |
+| Every native HTTP client | `http_client::builder()` installs `ManagementPathResolver` (dynamic live route in `meshharbord`; kept entries + last-resort direct in `mh`, companion, wizard, SYSTEM services); non-centre hosts stay direct | `crates/agent-core/src/http_client.rs:49`, `crates/agent-core/src/management_path.rs:354`, `:495` |
+| Guards & visibility | Source guards enforce both HTTP (`fr135_proxy_guard.rs`) and WS (`fr134_path_guard.rs`); `mh status` reports `centre path` and listening `mgmt entry` port | `crates/localapi/src/lib.rs:448`, `crates/agent-core/tests/fr134_path_guard.rs`, `crates/agent-core/tests/fr134_http_path.rs` |
+
+See [`business-isolation.md`](./business-isolation.md#management-through-a-zones-entry-fr-128--fr-134)
+for the full server policy, attestation rules, and kill switches.
+
 ### Native clients ignore proxy settings (FR-135)
 
 Proxy applications in "system proxy" mode set the OS proxy (WinINET/WinHTTP on Windows, System

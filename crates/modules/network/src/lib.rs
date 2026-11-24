@@ -366,6 +366,26 @@ impl Module for NetworkState {
             fleet,
             core,
         };
+        // FR-134 — legacy stored zones with no gateway keep running and warn at startup rather
+        // than breaking a server upgrade.
+        match state.overlay_networks.list_with_zones().await {
+            Ok(nets) => {
+                for net in nets {
+                    for z in net.zones.iter().filter(|z| z.gateway_relay_ids.is_empty()) {
+                        tracing::warn!(
+                            tenant_id = %net.tenant_id,
+                            zone_id = %z.id,
+                            zone_name = %z.name,
+                            "network zones: stored zone has no gateway_relay_ids — designate an \
+                             approved relay gateway before the next zone save (FR-134)"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "network zones: startup gateway audit failed (non-fatal)");
+            }
+        }
         // #1186 — apply cross-pod `overlay_removes` envelopes (the channel is
         // fed by the host's redis ctrl subscriber; with no Redis the sender
         // side never fires and this task just parks).

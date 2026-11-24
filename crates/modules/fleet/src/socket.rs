@@ -451,6 +451,16 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_relay_server_support(agent_id, caps.has_rpc(RpcCap::RelayServer));
+    state
+        .rc_hub
+        .set_agent_management_path_support(agent_id, crate::management_path::advertises(&caps));
+    state.rc_hub.set_agent_management_entry_support(
+        agent_id,
+        crate::management_path::advertises_entry(&caps),
+    );
+    state
+        .rc_hub
+        .set_agent_management_entry_port(agent_id, caps.management_entry_port);
     state.rc_hub.set_agent_hive_support(agent_id, runs_hive);
     state
         .rc_hub
@@ -604,11 +614,19 @@ pub async fn handle_agent_socket(
                     info!(%agent_id, direct, entries = entries.len(), "management path pushed");
                     let _ = registered_tx.try_send(ServerMsg::ManagementPath { direct, entries });
                 }
-                if caps.management_entry_port.is_some()
-                    && let Some(key) = entry_key
+                if let Some(key) = entry_key
+                    && (caps.management_entry_port.is_some()
+                        || crate::management_path::advertises_entry(&caps))
                 {
                     info!(%agent_id, "management entry: attestation key delivered");
                     let _ = registered_tx.try_send(ServerMsg::ManagementEntryKey { key });
+                } else if caps.management_entry_port.is_some()
+                    && crate::management_path::advertises_entry(&caps)
+                {
+                    info!(%agent_id, "management entry: no longer a gateway; revoking listener");
+                    let _ = registered_tx.try_send(ServerMsg::ManagementEntryKey {
+                        key: meshharbor_remote_control::management_entry::EntryKey(String::new()),
+                    });
                 }
                 if roamed_public_ip && has_net {
                     let countries_vec: Vec<String> =
@@ -1185,6 +1203,24 @@ pub async fn handle_agent_socket(
                                             agent_id,
                                             caps.has_rpc(RpcCap::RelayControl),
                                         );
+                                        state.rc_hub.set_agent_management_path_support(
+                                            agent_id,
+                                            crate::management_path::advertises(caps),
+                                        );
+                                        state.rc_hub.set_agent_management_entry_support(
+                                            agent_id,
+                                            crate::management_path::advertises_entry(caps),
+                                        );
+                                        if state.rc_hub.set_agent_management_entry_port(
+                                            agent_id,
+                                            caps.management_entry_port,
+                                        ) {
+                                            crate::management_path::sync_tenant_management_paths(
+                                                &state,
+                                                tenant_id,
+                                            )
+                                            .await;
+                                        }
                                         if state.rc_hub.set_agent_relay_server_support(
                                             agent_id,
                                             caps.has_rpc(RpcCap::RelayServer),
@@ -1822,7 +1858,7 @@ enum ConnectZoneSnapshot {
     Failed,
 }
 
-fn compute_ice_policy_from_snapshot(
+pub(crate) fn compute_ice_policy_from_snapshot(
     state: &FleetState,
     net: Option<&meshharbor_remote_control::models::OverlayNetwork>,
     agent: &meshharbor_remote_control::models::Agent,

@@ -220,6 +220,15 @@ pub struct ConnectedAgent {
     /// Current connection's `relay-server` capability word (updated on hello
     /// and heartbeat so org-relay eligibility sees runtime flips immediately).
     pub supports_relay_server: bool,
+    /// FR-128 — the agent advertises `management-path` in `AgentCaps.rpc`: it
+    /// parses `rc:agent.management_path`.
+    pub supports_management_path: bool,
+    /// FR-134 — the agent advertises `management-entry` in `AgentCaps.rpc`: it
+    /// can start/stop its management entry listener live on `rc:agent.management_entry`.
+    pub supports_management_entry: bool,
+    /// FR-128/FR-134 — the TCP port this connection's management entry is currently
+    /// listening on (`None` when not listening).
+    pub management_entry_port: Option<u16>,
     /// FR-90 — the agent advertises `hive`: it answers `rc:hive.start` with
     /// `rc:hive.start_ack` and reports sessions with `rc:hive.state`. Per
     /// CONNECTION, for [`Self::supports_ssh_grant_ack`]'s reason — a stored
@@ -1824,6 +1833,9 @@ impl Hub {
             supports_relay_control: false,
             supports_relay_regions: false,
             supports_relay_server: false,
+            supports_management_path: false,
+            supports_management_entry: false,
+            management_entry_port: None,
             // FR-90 — set by `set_agent_hive_support`; `false` = no session
             // frame is ever pushed to this connection.
             supports_hive: false,
@@ -3879,6 +3891,84 @@ impl Hub {
             return prev != supports;
         }
         false
+    }
+
+    pub fn set_agent_management_path_support(&self, agent_id: ObjectId, supports: bool) {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            entry.supports_management_path = supports;
+        }
+    }
+
+    pub fn set_agent_management_entry_support(&self, agent_id: ObjectId, supports: bool) {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            entry.supports_management_entry = supports;
+        }
+    }
+
+    /// Record the management entry port currently advertised by `agent_id`.
+    /// Returns `true` if the value changed.
+    pub fn set_agent_management_entry_port(
+        &self,
+        agent_id: ObjectId,
+        port: Option<u16>,
+    ) -> bool {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            let prev = entry.management_entry_port;
+            entry.management_entry_port = port;
+            return prev != port;
+        }
+        false
+    }
+
+    /// FR-134 — push `rc:agent.management_path` to a live agent on this pod when it
+    /// advertises `management-path`.
+    pub fn push_management_path(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        direct: bool,
+        entries: Vec<String>,
+    ) -> bool {
+        let eligible = self
+            .inner
+            .agents
+            .get(&agent_id)
+            .is_some_and(|a| a.tenant_id == tenant_id && a.supports_management_path);
+        if !eligible {
+            return false;
+        }
+        self.send_to_agent_in_tenant(
+            agent_id,
+            tenant_id,
+            ServerMsg::ManagementPath { direct, entries },
+        )
+        .is_ok()
+    }
+
+    /// FR-134 — push `rc:agent.management_entry` to a live agent on this pod.
+    /// A non-empty key goes to any agent advertising `management-entry` or an already-bound
+    /// `management_entry_port`; an empty key (stop/revoke) goes only to agents advertising
+    /// `management-entry` so pre-FR-134 agents are untouched.
+    pub fn push_management_entry_key(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        key: meshharbor_remote_control::management_entry::EntryKey,
+    ) -> bool {
+        let revoking = key.0.is_empty();
+        let eligible = self.inner.agents.get(&agent_id).is_some_and(|a| {
+            a.tenant_id == tenant_id
+                && if revoking {
+                    a.supports_management_entry
+                } else {
+                    a.supports_management_entry || a.management_entry_port.is_some()
+                }
+        });
+        if !eligible {
+            return false;
+        }
+        self.send_to_agent_in_tenant(agent_id, tenant_id, ServerMsg::ManagementEntryKey { key })
+            .is_ok()
     }
 
     pub fn agent_supports_relay_server(&self, agent_id: ObjectId) -> Option<bool> {

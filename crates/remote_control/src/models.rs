@@ -1325,6 +1325,11 @@ pub enum RpcCap {
     /// direct, or through its zone's gateways) and, when it runs a management entry
     /// ([`AgentCaps::management_entry_port`]), `rc:agent.management_entry`. Equality-matched.
     ManagementPath,
+    /// FR-134 — the agent can start and stop a management entry listener on demand when told via
+    /// `rc:agent.management_entry` (non-empty key starts on its default/configured port; empty
+    /// key stops). Absent on pre-FR-134 agents and on devices that opted out (`port = 0` or
+    /// `protected`). Equality-matched.
+    ManagementEntry,
     /// FR-129 — the agent parses `rc:agent.two_factor` (switch its two-factor on or off) and
     /// reads `two_factor_code` on the sessions it admits. Equality-matched.
     TwoFactor,
@@ -1350,6 +1355,7 @@ impl RpcCap {
             Self::RelayServer => "relay-server",
             Self::RelayControl => "relay-control",
             Self::ManagementPath => "management-path",
+            Self::ManagementEntry => "management-entry",
             Self::TwoFactor => "two-factor",
             Self::ManagedForward => "managed-forward",
             Self::ManagedForwardNft => "managed-forward-nft",
@@ -1392,7 +1398,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 49] = [
+    pub const ALL: [RpcCap; 50] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1441,6 +1447,7 @@ impl RpcCap {
         Self::ManagedForwardNft,
         Self::SharedFilesAsAccount,
         Self::ManagementPath,
+        Self::ManagementEntry,
         Self::TwoFactor,
     ];
 
@@ -7116,6 +7123,15 @@ pub struct NetworkZone {
     pub gateway_relay_ids: Vec<String>,
     #[serde(default)]
     pub cross_zone_mode: CrossZoneMode,
+    /// FR-134 — this zone is the centre's own. Its member is the centre's host device, which
+    /// an admin pins there and names as its gateway; a device in it dials the centre directly.
+    ///
+    /// ⚠️ Only a pin places a device here: [`validate_and_normalize_network_zones`] refuses
+    /// countries and `is_default` on it, and [`resolve_device_zone`] passes it over for both,
+    /// so stored data that predates the check cannot auto-assign either. Absent = `false`,
+    /// and left off the wire then: a zone saved before FR-134 reads and writes unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_centre: bool,
 }
 
 /// Deterministic zone resolution outcome for one device when evaluating
@@ -7224,6 +7240,7 @@ pub fn validate_and_normalize_network_zones(
     let mut seen_ids = std::collections::HashSet::with_capacity(zones.len());
     let mut seen_countries = std::collections::HashMap::<String, String>::new();
     let mut default_count = 0usize;
+    let mut centre_count = 0usize;
     let mut out = Vec::with_capacity(zones.len());
 
     for z in zones {
@@ -7242,6 +7259,18 @@ pub fn validate_and_normalize_network_zones(
             default_count += 1;
             if default_count > 1 {
                 return Err("at most one network zone may set is_default = true".to_string());
+            }
+        }
+        // FR-134 — the centre's zone holds only what an admin pins there.
+        if z.is_centre {
+            centre_count += 1;
+            if centre_count > 1 {
+                return Err("at most one network zone may be the centre's zone".to_string());
+            }
+            if z.is_default || !z.auto_countries.is_empty() {
+                return Err(format!(
+                    "zone '{id}' is the centre's zone: it takes no countries and cannot be the default zone (only a pin places a device in it)"
+                ));
             }
         }
         let mut auto_countries = Vec::with_capacity(z.auto_countries.len());
@@ -7271,9 +7300,19 @@ pub fn validate_and_normalize_network_zones(
             is_default: z.is_default,
             gateway_relay_ids,
             cross_zone_mode: z.cross_zone_mode,
+            is_centre: z.is_centre,
         });
     }
     Ok(out)
+}
+
+/// FR-134 — the first zone that names no gateway. A zone reaches the centre, and every other
+/// zone, through its gateways, so a save without one is refused
+/// (`PUT /api/tenant/{tid}/network-zones`). Kept apart from
+/// [`validate_and_normalize_network_zones`]: zones stored before the rule still load, and the
+/// server reports them instead of refusing to boot.
+pub fn first_zone_without_gateway(zones: &[NetworkZone]) -> Option<&NetworkZone> {
+    zones.iter().find(|z| z.gateway_relay_ids.is_empty())
 }
 
 /// Deterministically resolve a device's [`NetworkZone`]:
@@ -7281,6 +7320,9 @@ pub fn validate_and_normalize_network_zones(
 /// 2. `pinned_zone_id == Some(id)` -> exact match in `zones`, else [`DeviceZoneResolution::UnresolvedStrict`].
 /// 3. `pinned_zone_id == None` (Auto) -> match `observed_country` against `zones[].auto_countries`,
 ///    else `zones.iter().find(|z| z.is_default)`, else [`DeviceZoneResolution::UnresolvedStrict`].
+///
+/// FR-134 — step 3 never yields the centre's zone ([`NetworkZone::is_centre`]): geography and
+/// the default place no device there, whatever the stored zone says. Only step 2 (a pin) does.
 pub fn resolve_device_zone<'a>(
     zones: &'a [NetworkZone],
     pinned_zone_id: Option<&str>,
@@ -7298,13 +7340,13 @@ pub fn resolve_device_zone<'a>(
     }
     if let Some(cc) = observed_country.map(|c| c.trim().to_ascii_uppercase())
         && !cc.is_empty()
-        && let Some(z) = zones
-            .iter()
-            .find(|z| z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc)))
+        && let Some(z) = zones.iter().find(|z| {
+            !z.is_centre && z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc))
+        })
     {
         return DeviceZoneResolution::Resolved(z);
     }
-    match zones.iter().find(|z| z.is_default) {
+    match zones.iter().find(|z| z.is_default && !z.is_centre) {
         Some(z) => DeviceZoneResolution::Resolved(z),
         None => DeviceZoneResolution::UnresolvedStrict,
     }
@@ -10811,5 +10853,71 @@ mod backbone_policy_tests {
         let legacy_reader: LegacyAgentCapsReader = serde_json::from_str(&new_json).unwrap();
         assert_eq!(legacy_reader.codecs, vec!["h264".to_string()]);
         assert!(legacy_reader.has_input_permission);
+    }
+
+    #[test]
+    fn fr134_centre_zone_validation_gateway_check_and_resolution() {
+        let mk = |id: &str, cc: &[&str], def: bool, gw: &[&str], centre: bool| NetworkZone {
+            id: id.into(),
+            name: id.to_uppercase(),
+            auto_countries: cc.iter().map(|s| s.to_string()).collect(),
+            is_default: def,
+            gateway_relay_ids: gw.iter().map(|s| s.to_string()).collect(),
+            cross_zone_mode: CrossZoneMode::RouterOnly,
+            is_centre: centre,
+        };
+
+        let gw0 = "66f000000000000000000001";
+        let gw1 = "66f000000000000000000002";
+        let gw2 = "66f000000000000000000003";
+
+        // Valid centre zone + regular zones.
+        let valid = validate_and_normalize_network_zones(vec![
+            mk("centre", &[], false, &[gw0], true),
+            mk("cn", &["CN"], false, &[gw1], false),
+            mk("global", &[], true, &[gw2], false),
+        ])
+        .expect("valid zones");
+        assert!(first_zone_without_gateway(&valid).is_none());
+
+        // Zone without gateway is detected by `first_zone_without_gateway`.
+        let missing_gw = vec![
+            mk("cn", &["CN"], false, &[gw1], false),
+            mk("empty", &["JP"], false, &[], false),
+        ];
+        assert_eq!(
+            first_zone_without_gateway(&missing_gw).map(|z| z.id.as_str()),
+            Some("empty")
+        );
+
+        // Centre zone refuses countries, is_default, and duplicates.
+        assert!(validate_and_normalize_network_zones(vec![mk("c", &["HK"], false, &[gw0], true)]).is_err());
+        assert!(validate_and_normalize_network_zones(vec![mk("c", &[], true, &[gw0], true)]).is_err());
+        assert!(
+            validate_and_normalize_network_zones(vec![
+                mk("c1", &[], false, &[gw0], true),
+                mk("c2", &[], false, &[gw1], true),
+            ])
+            .is_err()
+        );
+
+        // Geography and default fallback NEVER assign to a centre zone — even on malformed stored
+        // data that predates validation. Only an explicit pin lands there.
+        let malformed = vec![
+            mk("centre", &["HK"], true, &[gw0], true),
+            mk("cn", &["CN"], false, &[gw1], false),
+        ];
+        assert_eq!(
+            resolve_device_zone(&malformed, None, Some("HK")),
+            DeviceZoneResolution::UnresolvedStrict
+        );
+        assert_eq!(
+            resolve_device_zone(&malformed, None, Some("US")),
+            DeviceZoneResolution::UnresolvedStrict
+        );
+        assert!(matches!(
+            resolve_device_zone(&malformed, Some("centre"), Some("HK")),
+            DeviceZoneResolution::Resolved(z) if z.id == "centre" && z.is_centre
+        ));
     }
 }

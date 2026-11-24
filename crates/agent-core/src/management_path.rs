@@ -10,10 +10,11 @@
 //! host to the entry, so SNI and the certificate check are exactly those of a direct request.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// `MESHHARBORD_MANAGEMENT_ENTRIES=0`: dial the centre directly, whatever it pushed.
@@ -246,11 +247,124 @@ pub fn entry_ips(local: &[String]) -> Vec<std::net::IpAddr> {
 
 /// The path the control socket is on: `(centre host, entry)`. `None` = direct.
 static ROUTE: RwLock<Option<(String, SocketAddr)>> = RwLock::new(None);
+/// Monotonic counter bumped whenever the active control route changes, so long-lived sockets
+/// (such as central `/derp`) know to re-dial along the new path.
+static ROUTE_GEN: AtomicU64 = AtomicU64::new(0);
 /// The way the last control socket connected, and whether that was direct as a last resort.
 static LAST: RwLock<Option<(Candidate, bool)>> = RwLock::new(None);
+/// The primary centre host parsed from device config (used to bound legacy file matching and
+/// local-entry routing strictly to the centre's host, never third-party hosts like GitHub).
+static CENTRE_HOST: RwLock<Option<String>> = RwLock::new(None);
+/// Owner-configured `management_entries` from the last parsed device config.
+static LOCAL_ENTRIES: RwLock<Vec<String>> = RwLock::new(Vec::new());
+/// In-memory copy of the freshest pushed path per centre host (supplements `management-path.json`
+/// when the log dir is not writable or during tests).
+static PUSHED_BY_CENTRE: RwLock<BTreeMap<String, Pushed>> = RwLock::new(BTreeMap::new());
 
 /// How many control sockets in a row fell to the direct path as a last resort.
 static LAST_RESORT_RUN: AtomicU32 = AtomicU32::new(0);
+
+/// Record the device config's centre URL and owner-configured local entries so every native
+/// HTTP/WS client in this process follows the management path ladder.
+pub fn note_config(server_url: &str, local: &[String]) {
+    let host = centre_host(server_url);
+    if !host.is_empty() {
+        *CENTRE_HOST.write().unwrap_or_else(|e| e.into_inner()) = Some(host);
+    }
+    *LOCAL_ENTRIES.write().unwrap_or_else(|e| e.into_inner()) = local.to_vec();
+}
+
+/// Owner-configured local `management_entries` from the last loaded config.
+pub fn local_entries() -> Vec<String> {
+    LOCAL_ENTRIES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Remember a freshly pushed path in memory alongside `management-path.json`.
+pub fn note_pushed(centre: &str, pushed: &Pushed) {
+    let key = centre.trim_matches(['[', ']']).to_ascii_lowercase();
+    if key.is_empty() {
+        return;
+    }
+    PUSHED_BY_CENTRE
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, pushed.clone());
+}
+
+/// Current route generation (bumped on every control-route transition).
+pub fn route_generation() -> u64 {
+    ROUTE_GEN.load(Ordering::Relaxed)
+}
+
+/// Effective pushed path for `host`: in-memory pushed map first, then persisted `management-path.json`.
+pub fn load_effective(host: &str) -> Pushed {
+    let key = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if let Some(p) = PUSHED_BY_CENTRE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+    {
+        return p.clone();
+    }
+    state_path()
+        .map(|p| load(&p, &key))
+        .unwrap_or_default()
+}
+
+fn is_known_centre(host: &str) -> bool {
+    let key = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    if key.is_empty() {
+        return false;
+    }
+    if ROUTE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|(h, _)| h == &key)
+    {
+        return true;
+    }
+    if CENTRE_HOST
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        == Some(key.as_str())
+    {
+        return true;
+    }
+    if PUSHED_BY_CENTRE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&key)
+    {
+        return true;
+    }
+    state_path().is_some_and(|p| match read_kept(&p) {
+        KeptFile::ByCentre(k) => k.by_centre.contains_key(&key),
+        _ => false,
+    })
+}
+
+/// FR-134 — ordered dial candidates `(order, last_resort)` for any centre URL (central `/derp`,
+/// tunnel-client WS, or HTTP), honouring the live control route first, then kept pushed entries
+/// and owner-configured local entries.
+pub fn candidates_for_url(url: &str, local: &[String]) -> (Vec<Candidate>, bool) {
+    if disabled() {
+        return (vec![Candidate::Direct], false);
+    }
+    let host = centre_host(url);
+    if host.is_empty() {
+        return (vec![Candidate::Direct], false);
+    }
+    let pushed = load_effective(&host);
+    let last_good = route_for(&host)
+        .map(Candidate::Entry)
+        .or_else(|| last_connected().map(|(c, _)| c));
+    plan(&pushed, local, last_good)
+}
 
 /// The control socket to the centre at `host` connected along `c`.
 pub fn note_connected(host: &str, c: Candidate, last_resort: bool) {
@@ -291,21 +405,47 @@ pub fn last_connected() -> Option<(Candidate, bool)> {
     *LAST.read().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A newly pushed path asks the live socket to move: it is on the direct path by choice (not as
-/// a last resort), and the zone now forbids direct while it has entries to use.
+/// A newly pushed path asks the live socket to move:
+/// - on direct by choice (not as a last resort), and the zone now forbids direct while it has
+///   entries to use; OR
+/// - on an entry, and the zone now allows direct (e.g. promoted to gateway, pinned to centre
+///   zone, or zones removed) or removed that entry from its plan.
 pub fn should_move(pushed: &Pushed, local: &[String]) -> bool {
     if disabled() {
         return false;
     }
-    let on_direct_by_choice = matches!(last_connected(), Some((Candidate::Direct, false)));
     let (order, last_resort) = plan(pushed, local, None);
-    on_direct_by_choice && last_resort && order.len() > 1
+    match last_connected() {
+        Some((Candidate::Direct, false)) => last_resort && order.len() > 1,
+        Some((Candidate::Entry(cur), _)) => {
+            !last_resort || !order.contains(&Candidate::Entry(cur))
+        }
+        _ => false,
+    }
+}
+
+/// FR-134 — while on last-resort direct, if a fresh push changed the zone's entry list and at
+/// least one usable entry is now present, probe immediately rather than waiting for the backoff
+/// timer (so promoting a zone's first gateway pulls its devices onto it right away).
+pub fn should_probe_entries_now(prev: &Pushed, next: &Pushed, local: &[String]) -> bool {
+    if disabled() || !matches!(last_connected(), Some((Candidate::Direct, true))) {
+        return false;
+    }
+    if prev.entries == next.entries {
+        return false;
+    }
+    let (order, last_resort) = plan(next, local, None);
+    last_resort && order.iter().any(|c| matches!(c, Candidate::Entry(_)))
 }
 
 /// The control socket connected to the centre at `host`, through `via` (`None` = directly).
 pub fn set_route(host: &str, via: Option<SocketAddr>) {
+    let next = via.map(|a| (host.to_ascii_lowercase(), a));
     let mut r = ROUTE.write().unwrap_or_else(|e| e.into_inner());
-    *r = via.map(|a| (host.to_ascii_lowercase(), a));
+    if *r != next {
+        *r = next;
+        ROUTE_GEN.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// The control socket's current route, `(centre host, entry)`; `None` = direct. A client built
@@ -320,7 +460,7 @@ pub fn entries_only(local: &[String], centre: &str) -> bool {
     if disabled() {
         return false;
     }
-    let pushed = state_path().map(|p| load(&p, centre)).unwrap_or_default();
+    let pushed = load_effective(centre);
     plan(&pushed, local, None).1
 }
 
@@ -341,6 +481,85 @@ pub fn route_http(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         Some((host, entry)) => builder.resolve(&host, entry),
         None => builder,
     }
+}
+
+/// FR-134 — dynamic DNS resolver attached to every native `reqwest::Client` built through
+/// [`crate::http_client::builder`]:
+/// - When the daemon's control socket is on an entry for `host`, resolves `host` to that entry
+///   (followed by any other configured/pushed entries) with zero direct DNS lookup or connection.
+/// - When no control socket has connected in this process (`mh`, setup, companion, Windows SYSTEM
+///   services, or daemon boot before connect) and `host` is a known centre whose zone forbids
+///   direct, returns the zone's entries first and direct DNS last as a last-resort fallback.
+/// - For every other host (GitHub Releases, third-party URLs, loopback), or when direct is
+///   active/allowed or the kill switch is on, delegates straight to the system resolver.
+pub(crate) struct ManagementPathResolver;
+
+impl reqwest::dns::Resolve for ManagementPathResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().trim_matches(['[', ']']).to_ascii_lowercase();
+        Box::pin(async move {
+            if !disabled() {
+                if let Some(active_entry) = route_for(&host) {
+                    let local = local_entries();
+                    let pushed = load_effective(&host);
+                    let (order, _) = plan(&pushed, &local, Some(Candidate::Entry(active_entry)));
+                    let mut addrs = Vec::with_capacity(order.len());
+                    addrs.push(active_entry);
+                    for c in order {
+                        if let Candidate::Entry(a) = c
+                            && !addrs.contains(&a)
+                        {
+                            addrs.push(a);
+                        }
+                    }
+                    let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+                    return Ok(iter);
+                }
+                if !matches!(last_connected(), Some((Candidate::Direct, _)))
+                    && is_known_centre(&host)
+                {
+                    let local = local_entries();
+                    let pushed = load_effective(&host);
+                    let (order, last_resort) = plan(&pushed, &local, None);
+                    let entries: Vec<SocketAddr> = order
+                        .iter()
+                        .filter_map(|c| match c {
+                            Candidate::Entry(a) => Some(*a),
+                            Candidate::Direct => None,
+                        })
+                        .collect();
+                    if last_resort && !entries.is_empty() {
+                        let mut addrs = entries;
+                        if let Ok(Ok(direct)) = tokio::time::timeout(
+                            Duration::from_millis(500),
+                            tokio::net::lookup_host((host.as_str(), 0u16)),
+                        )
+                        .await
+                        {
+                            for a in direct {
+                                if !addrs.contains(&a) {
+                                    addrs.push(a);
+                                }
+                            }
+                        }
+                        let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+                        return Ok(iter);
+                    }
+                }
+            }
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0u16))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                .collect();
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+/// Shared resolver instance installed by [`crate::http_client::builder_with`].
+pub(crate) fn resolver() -> Arc<ManagementPathResolver> {
+    Arc::new(ManagementPathResolver)
 }
 
 #[cfg(test)]
@@ -474,5 +693,37 @@ mod tests {
         );
         assert_eq!(centre_host("wss://[::1]:8443/ws"), "::1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fr134_should_move_and_immediate_probe_handle_all_transitions() {
+        // On direct by choice -> pushed strict entries asks to move.
+        note_connected("centre-move.invalid", Candidate::Direct, false);
+        assert!(should_move(&p(false, &["198.51.100.1:18443"]), &[]));
+        assert!(!should_move(&p(true, &["198.51.100.1:18443"]), &[]));
+
+        // On an entry -> stays when still in plan; moves when direct becomes allowed (promoted
+        // to gateway / pinned to centre zone) or when the current entry is removed.
+        let e1: SocketAddr = "198.51.100.1:18443".parse().unwrap();
+        note_connected("centre-move.invalid", Candidate::Entry(e1), false);
+        assert!(!should_move(&p(false, &["198.51.100.1:18443"]), &[]));
+        assert!(should_move(&p(true, &["198.51.100.1:18443"]), &[]));
+        assert!(should_move(&p(false, &["198.51.100.2:18443"]), &[]));
+
+        // On last-resort direct -> does not blindly disconnect, but triggers immediate probe
+        // when a fresh push brings new entries.
+        note_connected("centre-move.invalid", Candidate::Direct, true);
+        assert!(!should_move(&p(false, &["198.51.100.2:18443"]), &[]));
+        assert!(should_probe_entries_now(
+            &p(false, &[]),
+            &p(false, &["198.51.100.2:18443"]),
+            &[],
+        ));
+        assert!(!should_probe_entries_now(
+            &p(false, &["198.51.100.2:18443"]),
+            &p(false, &["198.51.100.2:18443"]),
+            &[],
+        ));
+        set_route("centre-move.invalid", None);
     }
 }

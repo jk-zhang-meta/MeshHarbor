@@ -96,19 +96,37 @@
             border
             rounded
             class="pa-3 h-100 d-flex flex-column ga-3 zone-card"
-            :class="{ 'zone-card--default': z.is_default }"
+            :class="{
+              'zone-card--default': z.is_default,
+              'zone-card--centre': z.is_centre,
+            }"
             :data-testid="`zone-card-${z.id || idx}`"
           >
             <div class="d-flex align-center flex-wrap ga-2">
               <v-icon
-                :icon="z.is_default ? 'mdi-shield-home-outline' : 'mdi-map-marker-radius-outline'"
-                :color="z.is_default ? 'primary' : 'secondary'"
+                :icon="
+                  z.is_centre
+                    ? 'mdi-hubspot'
+                    : z.is_default
+                      ? 'mdi-shield-home-outline'
+                      : 'mdi-map-marker-radius-outline'
+                "
+                :color="z.is_centre ? 'info' : z.is_default ? 'primary' : 'secondary'"
                 size="small"
               />
               <span class="font-weight-medium text-body-2">
                 {{ z.name.trim() || z.id.trim() || t('mh.zones.untitled') }}
               </span>
               <span v-if="z.id.trim()" class="zone-slug-pill text-mono">{{ z.id.trim() }}</span>
+              <v-chip
+                v-if="z.is_centre"
+                size="x-small"
+                color="info"
+                variant="tonal"
+                :data-testid="`zone-centre-badge-${idx}`"
+              >
+                {{ t('mh.zones.centreBadge') }}
+              </v-chip>
               <v-chip
                 v-if="z.is_default"
                 size="x-small"
@@ -119,7 +137,19 @@
               </v-chip>
               <v-spacer />
               <v-switch
+                :model-value="Boolean(z.is_centre)"
+                color="info"
+                density="compact"
+                hide-details
+                inset
+                :label="t('mh.zones.centreToggle')"
+                class="zone-default-switch mr-1"
+                :data-testid="`zone-centre-toggle-${idx}`"
+                @update:model-value="(v) => toggleCentre(idx, Boolean(v))"
+              />
+              <v-switch
                 :model-value="z.is_default"
+                :disabled="Boolean(z.is_centre)"
                 color="primary"
                 density="compact"
                 hide-details
@@ -171,12 +201,15 @@
             <v-combobox
               :model-value="z.auto_countries"
               :items="ISO_COUNTRY_CODES"
+              :disabled="Boolean(z.is_centre)"
               :label="t('mh.zones.fieldCountries')"
               :placeholder="t('mh.zones.countriesPlaceholder')"
               :hint="
-                z.is_default && z.auto_countries.length === 0
-                  ? t('mh.zones.countriesDefaultHint')
-                  : t('mh.zones.countriesHint')
+                z.is_centre
+                  ? t('mh.zones.countriesCentreHint')
+                  : z.is_default && z.auto_countries.length === 0
+                    ? t('mh.zones.countriesDefaultHint')
+                    : t('mh.zones.countriesHint')
               "
               persistent-hint
               multiple
@@ -372,22 +405,30 @@ function toDraft(z: NetworkZone, idTouched = true): DraftZone {
     _idTouched: idTouched,
     id: z.id,
     name: z.name,
-    auto_countries: [...z.auto_countries],
-    is_default: z.is_default,
+    auto_countries: z.is_centre ? [] : [...z.auto_countries],
+    is_default: z.is_centre ? false : z.is_default,
     gateway_relay_ids: [...z.gateway_relay_ids],
     cross_zone_mode: z.cross_zone_mode,
+    is_centre: Boolean(z.is_centre),
   }
 }
 
 function stripDraft(z: DraftZone): NetworkZone {
-  return {
+  const isCentre = Boolean(z.is_centre)
+  const out: NetworkZone = {
     id: z.id.trim().toLowerCase(),
     name: z.name.trim(),
-    auto_countries: z.auto_countries.map((c) => c.trim().toUpperCase()).filter(Boolean),
-    is_default: Boolean(z.is_default),
+    auto_countries: isCentre
+      ? []
+      : z.auto_countries.map((c) => c.trim().toUpperCase()).filter(Boolean),
+    is_default: isCentre ? false : Boolean(z.is_default),
     gateway_relay_ids: [...new Set(z.gateway_relay_ids.map((r) => r.trim()).filter(Boolean))],
     cross_zone_mode: z.cross_zone_mode === 'direct_preferred' ? 'direct_preferred' : 'router_only',
   }
+  if (isCentre) {
+    out.is_centre = true
+  }
+  return out
 }
 
 function syncDraftFromStore() {
@@ -500,11 +541,26 @@ function toggleDefault(idx: number, enabled: boolean) {
   const target = draftZones.value[idx]
   if (!target) return
   if (enabled) {
+    target.is_centre = false
     for (let i = 0; i < draftZones.value.length; i++) {
       draftZones.value[i]!.is_default = i === idx
     }
   } else {
     target.is_default = false
+  }
+}
+
+function toggleCentre(idx: number, enabled: boolean) {
+  const target = draftZones.value[idx]
+  if (!target) return
+  if (enabled) {
+    for (let i = 0; i < draftZones.value.length; i++) {
+      draftZones.value[i]!.is_centre = i === idx
+    }
+    target.is_default = false
+    target.auto_countries = []
+  } else {
+    target.is_centre = false
   }
 }
 
@@ -560,6 +616,7 @@ function validateZones(zones: NetworkZone[]): string | null {
   const seenIds = new Set<string>()
   const countryOwner = new Map<string, string>()
   let defaultCount = 0
+  let centreCount = 0
 
   for (const z of zones) {
     if (!z.name) {
@@ -572,7 +629,16 @@ function validateZones(zones: NetworkZone[]): string | null {
       return t('mh.zones.errDuplicateId', { id: z.id })
     }
     seenIds.add(z.id)
+    if (z.gateway_relay_ids.length === 0) {
+      return t('mh.zones.errMissingGateway', { name: z.name || z.id })
+    }
     if (z.is_default) defaultCount += 1
+    if (z.is_centre) {
+      centreCount += 1
+      if (z.is_default || z.auto_countries.length > 0) {
+        return t('mh.zones.errCentreNoAuto', { name: z.name || z.id })
+      }
+    }
     for (const c of z.auto_countries) {
       if (!/^[A-Z]{2}$/.test(c)) {
         return t('mh.zones.errInvalidCountry', { code: c })
@@ -586,6 +652,9 @@ function validateZones(zones: NetworkZone[]): string | null {
   }
   if (defaultCount > 1) {
     return t('mh.zones.errMultipleDefaults')
+  }
+  if (centreCount > 1) {
+    return t('mh.zones.errMultipleCentres')
   }
   return null
 }
@@ -715,6 +784,10 @@ watch(
 .zone-card--default {
   border-color: rgba(var(--v-theme-primary), 0.45) !important;
   background-color: rgba(var(--v-theme-primary), 0.025);
+}
+.zone-card--centre {
+  border-color: rgba(var(--v-theme-info), 0.45) !important;
+  background-color: rgba(var(--v-theme-info), 0.03);
 }
 .zone-empty-box {
   border-style: dashed !important;

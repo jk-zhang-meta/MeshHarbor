@@ -4742,10 +4742,9 @@ async fn run_cmd(
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     meshharbord::relay_server::maybe_start().await;
 
-    // FR-128 — this device as its zone's management entry: owner opt-in (`management_entry_port`),
-    // refused while protected, serving only once the centre sends a gateway's key. Every build:
-    // it is plain TCP forwarding, no overlay needed.
-    meshharbord::mgmt_entry::maybe_start(&cfg).await;
+    // FR-128 / FR-134 — management entry is started live on receipt of `rc:agent.management_entry`
+    // only while this device is an approved zone gateway; non-gateways never bind the port.
+    meshharbord::mgmt_entry::maybe_note_startup(&cfg);
 
     // Phase 3b: generate + persist this node's WireGuard identity on the
     // first overlay-enabled startup. The public key is what the netmap

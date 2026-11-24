@@ -15,6 +15,7 @@ export interface NetworkZone {
   is_default: boolean // fallback zone for unmatched Auto devices
   gateway_relay_ids: string[] // approved Relay agent IDs acting as this zone's routers
   cross_zone_mode: CrossZoneMode
+  is_centre?: boolean // FR-134: centre's own zone (explicit pin only; no auto countries / default)
 }
 
 export interface NetworkZonesResponse {
@@ -135,16 +136,21 @@ function normalizeZone(z: NetworkZone): NetworkZone {
       gateway_relay_ids.push(id)
     }
   }
-  return {
+  const is_centre = Boolean(z.is_centre)
+  const out: NetworkZone = {
     id: String(z.id ?? '')
       .trim()
       .toLowerCase(),
     name: String(z.name ?? '').trim(),
-    auto_countries,
-    is_default: Boolean(z.is_default),
+    auto_countries: is_centre ? [] : auto_countries,
+    is_default: is_centre ? false : Boolean(z.is_default),
     gateway_relay_ids,
     cross_zone_mode: z.cross_zone_mode === 'direct_preferred' ? 'direct_preferred' : 'router_only',
   }
+  if (is_centre) {
+    out.is_centre = true
+  }
+  return out
 }
 
 /**

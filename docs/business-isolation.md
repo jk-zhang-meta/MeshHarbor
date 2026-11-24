@@ -58,42 +58,52 @@ A device's own connection to the center (`www.itachi.fans`: enrollment, login, t
 agent WebSocket's hello, heartbeat, configuration and policy pushes, forward
 control) is management traffic. No gate here ever refuses it, whatever the zones:
 it is the connection the zone is observed on, and a mainland device must stay
-manageable. Its *path* does follow the zone since FR-128: a device whose zone may not
-reach the center directly reaches it through the zone's gateway
-([below](#management-through-a-zones-entry-fr-128)). What the center *brokers between two devices* is business traffic, even
+manageable. Its *path* does follow the zone since FR-128 and for **every** zone and
+message since FR-134: any non-gateway device in any zone reaches the center through its
+zone's gateway ([below](#management-through-a-zones-entry-fr-128--fr-134)). What the center *brokers between two devices* is business traffic, even
 though it starts on the same WebSocket: a tunnel whose bytes cross the center's TURN
 relay or `/derp` is gated like any overlay carrier. There is no line exception for
 it: a line is an overlay org-relay session, which a tunnel never rides.
 
-## Management through a zone's entry (FR-128)
+## Management through a zone's entry (FR-128 / FR-134)
 
-The center is a zone of its own. A device's management connection used to go straight to it
-from wherever the device was, the one connection the zones never routed; one blocked path
-took a device off the fleet, and a strict zone's devices each held a direct cross-border
-connection. Now a zone's **gateways** can be its **management entries**: they forward the
-device's TLS connection to the center, unread, and say which address the device came from.
+The center is a zone of its own (`NetworkZone.is_centre = true`). Once an organization defines
+zones, **every zone must name at least one gateway router**, and **every non-gateway device in
+every zone** reaches the center only through its own zone's gateways — for its control
+WebSocket, every native HTTP client (enrollment refresh, logs, crash reports, preflight,
+device view, remote config, exec/SSH service claims, updater manifest and downloads), central
+`/derp`, and tunnel-client WebSockets. Only a zone's approved gateways and devices explicitly
+pinned to the center zone (`is_centre = true`) dial the center directly — gateway to gateway,
+just like cross-zone traffic. Gateways forward the device's TLS unread and attest which
+address the device came from.
 
 ```mermaid
 flowchart LR
-  subgraph Z["strict zone (its countries do not hold the center)"]
-    D[device] -- "1 MHE1 attest nonce" --> E[gateway<br/>management entry]
-    E -- "2 token: device address, signed" --> D
-    D -- "3 TLS to the center (SNI, cert check unchanged)" --> E
+  subgraph Z["any logical zone (router_only or direct_preferred)"]
+    D["non-gateway device<br/>control WS · HTTP · central /derp · tunnel WS"] -- "1 MHE1 attest nonce<br/>(control WS only)" --> E["zone gateway<br/>management entry<br/>default tcp/:18443 (live)"]
+    E -- "2 signed token: device IP" --> D
+    D -- "3 TLS to center<br/>(SNI & cert unchanged)" --> E
   end
-  E -- "4 bytes copied, unread,<br/>only to its own center" --> C[(center)]
-  C -- "5 origin = attested address<br/>zone, public_ip as if direct" --> C
+  subgraph CZ["centre zone (is_centre = true, pin only)"]
+    CN["centre's own device"]
+  end
+  E -- "4 opaque TLS forward<br/>only to own server_url" --> C[(center)]
+  CN -- "direct" --> C
+  D -. "5 last resort only if<br/>every zone entry fails;<br/>probes back automatically" .-> C
+  C -- "6 origin = attested IP<br/>zone & public_ip preserved" --> C
 ```
 
 | | Rule | Where |
 |---|---|---|
-| who is an entry | an approved gateway of the zone (`gateway_relay_ids`, `peer_relay_policy.serve`) whose owner set `management_entry_port`; refused while `protected` | `is_gateway`, `entry_key` in [`management_path.rs`](../crates/modules/fleet/src/management_path.rs) (:43, :52); `maybe_start` in [`mgmt_entry.rs`](../agents/meshharbord/src/mgmt_entry.rs) (:59) |
-| may a device dial the center directly | the FR-124 verdict: not when its zone is `RouterOnly` and its countries do not hold the center; a zone's own gateway always may (it is the zone's line to the center); a device with no resolved zone keeps direct | `path_for` (:118) |
-| what the device is told | `rc:agent.management_path {direct, entries}` on every connect, to a device that advertises `management-path`; `entries` are the gateways' public addresses (static endpoints first) with the entry port, at most 8 | `socket.rs` (search `management path pushed`) |
-| the device's order | direct first when allowed, then its owner's `management_entries`, then the pushed ones; when direct is not allowed, the entries first and direct only as a last resort (logged), so a device stays manageable when every entry is down. A socket on the direct path by choice moves onto an entry when a push forbids direct | `plan`, `should_move` in [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs) (:67, :194); `dial_centre` in [`signaling.rs`](../agents/meshharbord/src/signaling.rs) (:1647) |
-| the device's HTTP requests | renewal, update check and download, crash upload, the device name follow the socket's path: the client resolves the center's host to the entry | `route_http` (:220) |
-| the device's address | the token names the address the entry saw; the center takes it only from a live entry of the **same org**, signed under that entry's key (derived from the server secret and its credential generation), at most 120 s old, on a connection that comes from that entry's own address | `resolve_origin`, `check_token` (:200, :285); `ConnectionOrigin::through_management_entry` in [`client_ip.rs`](../crates/core/src/client_ip.rs) (:238) |
+| centre zone & required gateways | `NetworkZone.is_centre` marks the centre's own zone (at most one; no `auto_countries`, never `is_default`; geography never places a device there — pin only). `PUT /network-zones` refuses any zone with empty `gateway_relay_ids`; legacy stored zones warn at startup without failing boot | `NetworkZone::is_centre`, `first_zone_without_gateway`, `resolve_device_zone` in [`models.rs`](../crates/remote_control/src/models.rs) (:7134, :7314, :7326); `set_zones` in [`network_zones.rs`](../crates/modules/network/src/routes/network_zones.rs) |
+| who is an entry | any approved gateway of a zone (`gateway_relay_ids`, `peer_relay_policy.serve`) serves by default on TCP `18443` (`management_entry_port` unset = `18443`, custom `1..=65535`, `0` = owner opt-out; refused while `protected`). Non-gateways never bind the port: the listener starts live on non-empty `rc:agent.management_entry` and stops live on empty key (or demotion / shutdown) | `is_gateway`, `entry_key` in [`management_path.rs`](../crates/modules/fleet/src/management_path.rs) (:49, :61); `management_entry_port_allowed` in [`config.rs`](../crates/agent-core/src/config.rs) (:2713); `ensure_started_with_key`, `stop` in [`mgmt_entry.rs`](../agents/meshharbord/src/mgmt_entry.rs) (:106, :161) |
+| may a device dial the center directly | inside a zone, **only** `is_own_gateway || zone.is_centre`; every other device in a zone gets `direct = false` regardless of `cross_zone_mode` (`router_only` or `direct_preferred`). An org without zones, an unresolved device, or `app.management_entries = false` keeps `direct = true, entries = []` | `path_for`, `sync_tenant_management_paths` in [`management_path.rs`](../crates/modules/fleet/src/management_path.rs) (:130, :196) |
+| what the device is told | `rc:agent.management_path {direct, entries}` on every connect and pushed live (local + cross-pod `rc ctrl`) when zones, pins, relay policies, or gateway entry ports change; `entries` are the zone gateways' public addresses (static endpoints, node endpoints, then `public_ip`) with their bound entry port, at most 8 | `socket.rs` (search `management path pushed`), `sync_tenant_management_paths` (:196) |
+| the device's order & never stranded | direct first when allowed, then owner's `management_entries`, then pushed entries; when direct is disallowed, entries first and direct only as a last resort (logged and surfaced in `mh status` via `NodeStatus.management_path`), with automatic re-probing (`entry_retry_after` and immediate probe when a fresh push brings entries online). A live socket moves when policy switches between direct and entries or drops its current entry | `plan`, `should_move` in [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs) (:70, :413); `dial_centre` in [`signaling.rs`](../agents/meshharbord/src/signaling.rs) (:1648); `ManagementPathStatus` in [`localapi`](../crates/localapi/src/lib.rs) (:448) |
+| every native HTTP & WS client | `http_client::builder()` installs `ManagementPathResolver` (dynamic live route in the daemon; kept `management-path.json` + local entries with direct last-resort fallback in `mh`, companion, setup, and SYSTEM services); central `/derp` dials via `ws_connect::connect_centre` and reconnects on route change; tunnel-client / shared-SSH WS dials via `connect_ws_via_management_path`. Source guards lock both HTTP and WS | `builder_with` in [`http_client.rs`](../crates/agent-core/src/http_client.rs) (:49); `ManagementPathResolver`, `candidates_for_url` in [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs) (:354, :495); `connect_centre` in [`ws_connect.rs`](../agents/meshharbord/src/ws_connect.rs) (:102); `connect_ws_via_management_path` in [`forward.rs`](../agents/meshharbor-cli/src/forward.rs) (:46); guards [`fr134_path_guard.rs`](../crates/agent-core/tests/fr134_path_guard.rs) & [`fr135_proxy_guard.rs`](../crates/agent-core/tests/fr135_proxy_guard.rs) |
+| the device's address | the token names the address the entry saw; the center takes it only from a live entry of the **same org**, signed under that entry's key (derived from the server secret and its credential generation), at most 120 s old, on a connection that comes from that entry's own address | `resolve_origin`, `check_token` (:339, :424); `ConnectionOrigin::through_management_entry` in [`client_ip.rs`](../crates/core/src/client_ip.rs) (:238) |
 | a device on the entry's private network | its attested address is private: the entry's address is the true one, and stays | `resolve_origin` |
-| no token from an entry's address | when the address is that of one of the **org's current entries** (an approved relay, a zone gateway, with the port), the connection gets **no** address (`unattested_entry`, :247): an entry must not lend its zone. Only current entries count: the port is the owner's setting, and an unapproved device or another org's must not strip the addresses of everyone behind a shared egress. A pin still applies. An approved relay is exempt: it may share a provider's egress with a gateway, and losing its zone would cost it its lines | `resolve_origin` |
+| no token from an entry's address | when the address is that of one of the **org's current entries** (an approved relay, a zone gateway, with a bound port), the connection gets **no** address (`unattested_entry`, :247): an entry must not lend its zone. Only current entries count: an unapproved device or another org's must not strip addresses behind a shared egress. A pin still applies. An approved relay is exempt: it may share a provider's egress with a gateway | `resolve_origin` |
 
 > ⚠️ **A device behind the same NAT as an entry, connecting directly, gets no zone**: the center
 > cannot tell it from a connection the entry forwarded. Give an entry an address of its own, or
@@ -103,10 +113,11 @@ flowchart LR
 > compromised entry can attest a wrong address for the devices that come through it. It cannot
 > read or forge their TLS, and it forwards only to the host of its own `server_url`.
 
-Kill switches: `MESHHARBORD_MANAGEMENT_ENTRIES=0` on a device (direct only, and the device
-stops advertising `management-path`); `management_entry_port` empty on an entry;
-`app.management_entries = false` on the center (every device is told direct with no entries,
-and tokens are ignored). The token format: [`management_entry.rs`](../crates/remote_control/src/management_entry.rs).
+Kill switches: `MESHHARBORD_MANAGEMENT_ENTRIES=0` on a device (direct only, stops advertising
+`management-path` and `management-entry`); `management_entry_port = 0` on a gateway (owner
+opt-out — never binds the entry port); `app.management_entries = false` on the center (every
+device is told direct with no entries, no keys delivered, and tokens ignored). The token format:
+[`management_entry.rs`](../crates/remote_control/src/management_entry.rs).
 
 ## Where a node's zone comes from
 

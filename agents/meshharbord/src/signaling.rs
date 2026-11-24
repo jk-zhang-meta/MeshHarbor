@@ -1907,7 +1907,11 @@ async fn connect_once(
     }
 
     // Say hello.
-    let mut hello_caps = stub_caps(cfg.overlay_multi_org, ctx.is_primary);
+    let mut hello_caps = stub_caps(
+        cfg.overlay_multi_org,
+        ctx.is_primary,
+        crate::mgmt_entry::allowed_port(cfg).is_some(),
+    );
     // FR-90 P2c-3 — copies are held for the primary organization only: a
     // secondary org's connection never offers them, so its placement never
     // picks this device.
@@ -1965,6 +1969,7 @@ async fn connect_once(
         hello_caps.rdp_mesh_reachable,
     );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
+    let mut last_announced_mgmt_entry_port = hello_caps.management_entry_port;
     // A session's verdict on the software VP9 4:4:4 cell, as the hello carried it.
     let mut last_announced_sw = hello_caps
         .video_cells
@@ -2336,6 +2341,7 @@ async fn connect_once(
     // working entry, and moves onto one once it answers (never ratchet: an entry that restarted
     // for an update is back a minute later).
     let entry_back = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut mgmt_entry_port_rx = crate::mgmt_entry::subscribe_port_changes();
     let _entry_probe = match meshharbor_node_core::management_path::entry_retry_after() {
         Some(after) if ctx.is_primary => {
             let found = entry_back.clone();
@@ -2365,6 +2371,21 @@ async fn connect_once(
                 return Err(ConnectError::Transient(anyhow::anyhow!(
                     "management path: moving back onto an entry"
                 )));
+            }
+            _ = crate::mgmt_entry::entry_back_notify().notified(), if ctx.is_primary => {
+                if matches!(
+                    meshharbor_node_core::management_path::last_connected(),
+                    Some((meshharbor_node_core::management_path::Candidate::Direct, true))
+                ) {
+                    return Err(ConnectError::Transient(anyhow::anyhow!(
+                        "management path: newly pushed entry answers, moving off last-resort direct"
+                    )));
+                }
+            }
+            Ok(()) = mgmt_entry_port_rx.changed(), if ctx.is_primary => {
+                // FR-134 — the management entry listener just started or stopped live; re-announce
+                // `caps.management_entry_port` on the heartbeat immediately.
+                heartbeat.reset_immediately();
             }
             _ = remote_cfg.names.changed.notified(), if ctx.is_primary => {
                 remote_cfg.names.reconcile(cfg.clone(), ctx.token.get(), outbound_tx.clone());
@@ -2406,6 +2427,9 @@ async fn connect_once(
                 let _stage = watchdog::enter(ctx.pump, "shutdown");
                 if *shutdown.borrow() {
                     info!("shutdown signalled; closing ws");
+                    if ctx.is_primary {
+                        crate::mgmt_entry::stop();
+                    }
                     close_all_peers(&mut peers, &indicator).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
                     // Terminal: a daemon shutdown must tear peers down, never
@@ -2699,8 +2723,14 @@ async fn connect_once(
                     (Some(r.available), r.port, r.cert_sha256, Some(reachable))
                 };
                 let relay_server_now = relay_server_ready();
+                let mgmt_entry_port_now = if ctx.is_primary {
+                    crate::mgmt_entry::listening_port()
+                } else {
+                    None
+                };
                 let sw_now = crate::encode::sw_capacity::libvpx_444_sustain_fps();
                 let caps = if relay_server_now == last_announced_relay_server
+                    && mgmt_entry_port_now == last_announced_mgmt_entry_port
                     && sw_now == last_announced_sw
                     && caps_now == last_announced_permissions
                     && record_now == last_announced_record
@@ -2716,6 +2746,7 @@ async fn connect_once(
                     None
                 } else {
                     last_announced_relay_server = relay_server_now;
+                    last_announced_mgmt_entry_port = mgmt_entry_port_now;
                     last_announced_permissions = caps_now.clone();
                     last_announced_record = record_now.clone();
                     last_announced_keep_busy = keep_busy_now;
@@ -2733,7 +2764,11 @@ async fn connect_once(
                     // worker's permissions substituted: codecs and encoders
                     // stay OURS, because we are the half that answers
                     // `rc:session.request` (the P2b-3 lesson).
-                    let mut c = stub_caps(cfg.overlay_multi_org, ctx.is_primary);
+                    let mut c = stub_caps(
+                        cfg.overlay_multi_org,
+                        ctx.is_primary,
+                        crate::mgmt_entry::allowed_port(cfg).is_some(),
+                    );
                     if !ctx.is_primary {
                         strip_replica_verbs(&mut c.rpc);
                     }
@@ -5862,6 +5897,8 @@ async fn handle_server_msg(
                     "management path received"
                 );
                 let centre = mp::centre_host(&agent_cfg.server_url);
+                let prev = mp::load_effective(&centre);
+                mp::note_pushed(&centre, &pushed);
                 if let Some(path) = mp::state_path()
                     && mp::load(&path, &centre) != pushed
                     && let Err(e) = mp::store(&path, &centre, &pushed)
@@ -5870,11 +5907,24 @@ async fn handle_server_msg(
                 }
                 if mp::should_move(&pushed, &agent_cfg.management_entries) {
                     info!(
-                        "management path: this zone reaches the centre through its entries; reconnecting through one"
+                        direct,
+                        entries = pushed.entries.len(),
+                        "management path: path policy changed; reconnecting along updated path"
                     );
                     return Err(ConnectError::Transient(anyhow::anyhow!(
-                        "management path: moving onto an entry"
+                        "management path: moving onto updated path"
                     )));
+                }
+                if mp::should_probe_entries_now(&prev, &pushed, &agent_cfg.management_entries) {
+                    let local = agent_cfg.management_entries.clone();
+                    tokio::spawn(async move {
+                        if let Some(entry) =
+                            crate::mgmt_entry::first_reachable_entry(&local, &centre).await
+                        {
+                            info!(%entry, "management path: newly pushed entry answers");
+                            crate::mgmt_entry::entry_back_notify().notify_one();
+                        }
+                    });
                 }
             }
         }
@@ -5958,15 +6008,23 @@ async fn handle_server_msg(
             }
             let _ = outbound_tx.send(answer).await;
         }
-        // FR-128 — this device is its zone's management entry: the key it attests with.
+        // FR-128 / FR-134 — this device is (or stopped being) its zone's management entry:
+        // non-empty key starts/refreshes the listener live; empty key stops it live.
         ServerMsg::ManagementEntryKey { key } => {
             if ctx.is_primary {
-                match key.bytes() {
-                    Some(k) => {
-                        crate::mgmt_entry::set_key(&agent_cfg.agent_id, k);
-                        info!("management entry: attestation key received");
+                if key.0.is_empty() {
+                    crate::mgmt_entry::stop();
+                } else {
+                    match key.bytes() {
+                        Some(k) => {
+                            if let Some(port) =
+                                crate::mgmt_entry::ensure_started_with_key(agent_cfg, k).await
+                            {
+                                info!(port, "management entry: attestation key active");
+                            }
+                        }
+                        None => warn!("management entry: unusable key received"),
                     }
-                    None => warn!("management entry: unusable key received"),
                 }
             }
         }
@@ -8243,7 +8301,7 @@ fn stub_displays() -> Vec<DisplayInfo> {
     crate::displays::enumerate()
 }
 
-fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
+fn stub_caps(multi_org_tun: bool, is_primary: bool, entry_eligible: bool) -> AgentCaps {
     // Real probe via encode::caps; replaces the empty-vec stub. The
     // resulting AgentCaps populates the rc:agent.hello payload, which
     // the server persists into the agents collection and surfaces in
@@ -8272,6 +8330,13 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
                     .wire()
                     .to_owned(),
             );
+            if entry_eligible {
+                caps.rpc.push(
+                    meshharbor_remote_control::models::RpcCap::ManagementEntry
+                        .wire()
+                        .to_owned(),
+                );
+            }
         }
         caps.management_entry_port = crate::mgmt_entry::listening_port();
     }

@@ -24,6 +24,9 @@ use std::net::IpAddr;
 /// The first bytes of an attestation request. A TLS ClientHello starts with `0x16`, so the two
 /// can never be confused.
 pub const PREFIX: &[u8] = b"MHE1 ";
+/// FR-134 — the default TCP port a zone gateway's management entry listens on when its owner did
+/// not pick another (or `0` to switch the entry off).
+pub const DEFAULT_MANAGEMENT_ENTRY_PORT: u16 = 18443;
 /// The longest line either side reads.
 pub const MAX_LINE: usize = 1024;
 /// How old a token may be when the centre checks it (also the bound for a clock running ahead).

@@ -700,10 +700,12 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "FR-128 - run a MANAGEMENT ENTRY on this TCP port (1-65535; empty = off): forward \
-         management connections from this zone's devices to the centre, their TLS unread, and \
-         attest the address each one comes from. Serves only while the org admin has made this \
-         device a zone gateway. Device-local, never server-pushable; refused while protected.",
+        description: "FR-128 / FR-134 - TCP port for this device's MANAGEMENT ENTRY \
+         (empty = default 18443 when this device is a zone gateway; 0 = off; 1-65535 = custom \
+         port): forwards management connections from this zone's devices to the centre, their \
+         TLS unread, and attests the address each one comes from. Only listens while the org \
+         admin has made this device a zone gateway. Device-local, never server-pushable; \
+         refused while protected.",
     },
     KeyMeta {
         key: "management_entries",
@@ -2595,9 +2597,9 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
                 None => None,
                 Some(v) => {
                     let n: u16 = v.parse().map_err(|_| {
-                        format!("management_entry_port must be 1-65535 (got {v:?})")
+                        format!("management_entry_port must be 0 (off) or 1-65535 (got {v:?})")
                     })?;
-                    if n == 0 { None } else { Some(n) }
+                    Some(n)
                 }
             }
         }
@@ -5798,6 +5800,25 @@ mod external_access_surface_tests {
         assert_eq!(
             cfg.external_max_permissions, None,
             "clears: defer to the org"
+        );
+    }
+
+    #[test]
+    fn fr134_management_entry_port_surface_preserves_zero_opt_out_vs_default() {
+        let mut cfg = crate::config::test_fixture();
+        apply(&mut cfg, "management_entry_port", Some("0")).unwrap();
+        assert_eq!(cfg.management_entry_port, Some(0));
+        assert_eq!(cfg.management_entry_port_allowed(), None);
+
+        apply(&mut cfg, "management_entry_port", Some("19443")).unwrap();
+        assert_eq!(cfg.management_entry_port, Some(19443));
+        assert_eq!(cfg.management_entry_port_allowed(), Some(19443));
+
+        apply(&mut cfg, "management_entry_port", Some("")).unwrap();
+        assert_eq!(cfg.management_entry_port, None);
+        assert_eq!(
+            cfg.management_entry_port_allowed(),
+            Some(meshharbor_remote_control::management_entry::DEFAULT_MANAGEMENT_ENTRY_PORT)
         );
     }
 }

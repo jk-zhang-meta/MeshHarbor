@@ -236,10 +236,10 @@ const predictedAutoZone = computed<NetworkZone | undefined>(() => {
   if (tenantZones.value.length === 0) return undefined
   const cc = loc.value.countryCode
   if (cc) {
-    const matched = tenantZones.value.find((z) => z.auto_countries.includes(cc))
+    const matched = tenantZones.value.find((z) => !z.is_centre && z.auto_countries.includes(cc))
     if (matched) return matched
   }
-  return tenantZones.value.find((z) => z.is_default)
+  return tenantZones.value.find((z) => z.is_default && !z.is_centre)
 })
 
 const zoneSelectItems = computed(() => {

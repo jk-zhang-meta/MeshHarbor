@@ -95,6 +95,14 @@ impl OverlayNetworkDao {
         self.base.find_one(doc! { "tenant_id": tenant_id }).await
     }
 
+    /// FR-134 — every overlay network that has at least one logical zone configured,
+    /// used at startup to warn about legacy zones that predate the non-empty gateway rule.
+    pub async fn list_with_zones(&self) -> DaoResult<Vec<OverlayNetwork>> {
+        self.base
+            .find_many(doc! { "zones.0": { "$exists": true } }, None)
+            .await
+    }
+
     /// Fetch the tenant's overlay network, creating it with the default
     /// CIDR/MTU on first use. Race-safe via the `(tenant_id)` unique
     /// index: a losing concurrent insert re-reads the winner's row.

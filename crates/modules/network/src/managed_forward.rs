@@ -1622,6 +1622,7 @@ mod tests {
             is_default: false,
             gateway_relay_ids: vec![],
             cross_zone_mode: CrossZoneMode::RouterOnly,
+            is_centre: false,
         };
         let hk_direct = NetworkZone {
             id: "hk".into(),
@@ -1630,6 +1631,7 @@ mod tests {
             is_default: false,
             gateway_relay_ids: vec![],
             cross_zone_mode: CrossZoneMode::DirectPreferred,
+            is_centre: false,
         };
         let us_direct = NetworkZone {
             id: "us".into(),
@@ -1638,6 +1640,7 @@ mod tests {
             is_default: true,
             gateway_relay_ids: vec![],
             cross_zone_mode: CrossZoneMode::DirectPreferred,
+            is_centre: false,
         };
 
         // 1. Same-zone (CN <-> CN) under business_isolation = Off: permitted!

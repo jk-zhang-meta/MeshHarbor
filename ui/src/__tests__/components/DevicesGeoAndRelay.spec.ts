@@ -247,11 +247,20 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     const idInput2 = wrapper.find('[data-testid="zone-id-input-2"] input')
     expect((idInput2.element as HTMLInputElement).value).toBe('siat-lab')
 
-    // 3. Save all zones in a single PUT /tenant/{tid}/network-zones call
+    // FR-134: saving a zone without any gateway router is refused before issuing PUT
+    await wrapper.find('[data-testid="zones-save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="zones-error-alert"]').text()).toContain('SIAT Lab')
+
+    // Assign a gateway router to SIAT Lab and save all zones in a single PUT
+    ;(wrapper.vm as unknown as { draftZones: Array<{ gateway_relay_ids: string[] }> }).draftZones[2]!.gateway_relay_ids = [
+      gzRelay.id,
+    ]
+    await flushPromises()
     await wrapper.find('[data-testid="zones-save-btn"]').trigger('click')
     await flushPromises()
 
-    console.log("BODY:", document.body.textContent?.slice(0, 500));
     expect(mockApi.put).toHaveBeenCalledWith(`/tenant/${TID}/network-zones`, {
       zones: [
         {
@@ -275,7 +284,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
           name: 'SIAT Lab',
           auto_countries: [],
           is_default: false,
-          gateway_relay_ids: [],
+          gateway_relay_ids: [gzRelay.id],
           cross_zone_mode: 'router_only',
         },
       ],
@@ -889,7 +898,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
               name: 'Site A',
               auto_countries: ['JP'],
               is_default: true,
-              gateway_relay_ids: [],
+              gateway_relay_ids: ['66f000000000000000000101'],
               cross_zone_mode: 'router_only',
             },
             {
@@ -897,7 +906,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
               name: 'Branch 1',
               auto_countries: [],
               is_default: false,
-              gateway_relay_ids: [],
+              gateway_relay_ids: ['66f000000000000000000102'],
               cross_zone_mode: 'router_only',
             },
           ],
@@ -1022,7 +1031,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
               name: 'Zone A',
               auto_countries: ['CN'],
               is_default: true,
-              gateway_relay_ids: [],
+              gateway_relay_ids: ['66f000000000000000000101'],
               cross_zone_mode: 'router_only',
             },
           ],
@@ -1037,7 +1046,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
               name: 'Zone B',
               auto_countries: ['US'],
               is_default: true,
-              gateway_relay_ids: [],
+              gateway_relay_ids: ['66f000000000000000000102'],
               cross_zone_mode: 'router_only',
             },
           ],
@@ -1166,7 +1175,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
                 name: 'CN Zone',
                 auto_countries: ['CN'],
                 is_default: true,
-                gateway_relay_ids: [],
+                gateway_relay_ids: ['66f000000000000000000101'],
                 cross_zone_mode: 'direct_preferred',
               },
             ],
@@ -1235,7 +1244,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
           name: 'CN Zone',
           auto_countries: ['CN'],
           is_default: true,
-          gateway_relay_ids: [],
+          gateway_relay_ids: ['66f000000000000000000101'],
           cross_zone_mode: 'router_only',
         },
       ],
@@ -1254,7 +1263,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
           name: 'CN Zone Renamed',
           auto_countries: ['CN'],
           is_default: true,
-          gateway_relay_ids: [],
+          gateway_relay_ids: ['66f000000000000000000101'],
           cross_zone_mode: 'router_only',
         },
       ],
@@ -1395,7 +1404,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
               name: 'CN v1',
               auto_countries: ['CN'],
               is_default: true,
-              gateway_relay_ids: [],
+              gateway_relay_ids: ['66f000000000000000000101'],
               cross_zone_mode: 'router_only',
             },
           ],
@@ -1916,5 +1925,134 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
         ],
       },
     )
+  })
+
+  it('FR-134: supports centre zone toggle (clears countries & default), refuses empty gateway_relay_ids, and skips centre zone in DeviceZoneDialog auto prediction', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const tenantStore = useTenantStore()
+    tenantStore.myPermissions = ADMINISTRATOR
+    vi.spyOn(tenantStore, 'ensureMyMembership').mockResolvedValue()
+
+    const gwA = '66f000000000000000000101'
+    const gwB = '66f000000000000000000102'
+
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === `/tenant/${TID}/network-zones`) {
+        return {
+          revision: 1,
+          zones: [
+            {
+              id: 'cn',
+              name: 'CN Zone',
+              auto_countries: ['CN'],
+              is_default: false,
+              gateway_relay_ids: [gwA],
+              cross_zone_mode: 'router_only',
+            },
+            {
+              id: 'centre',
+              name: 'Centre',
+              auto_countries: ['HK'],
+              is_default: true,
+              gateway_relay_ids: [gwB],
+              cross_zone_mode: 'router_only',
+            },
+          ],
+        }
+      }
+      if (url.endsWith('/peer-relay')) {
+        return {
+          mode: 'on',
+          relays: [
+            { id: gwA, name: 'gw-a', status: 'online', serving: true, static_endpoints: [] },
+            { id: gwB, name: 'gw-b', status: 'online', serving: true, static_endpoints: [] },
+          ],
+        }
+      }
+      return { items: [] }
+    })
+    mockApi.put.mockImplementation(async (_url: string, body: { zones: NetworkZone[] }) => ({
+      revision: 2,
+      zones: body.zones,
+    }))
+
+    wrapper = mount(NetworkZonesSection, {
+      props: { tenantId: TID },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    // Toggling centre on zone 1 clears its auto_countries and is_default and sends is_centre: true
+    const centreToggle1 = wrapper.find('[data-testid="zone-centre-toggle-1"] input')
+    await centreToggle1.setValue(true)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="zone-centre-badge-1"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="zones-save-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(mockApi.put).toHaveBeenCalledWith(`/tenant/${TID}/network-zones`, {
+      zones: [
+        {
+          id: 'cn',
+          name: 'CN Zone',
+          auto_countries: ['CN'],
+          is_default: false,
+          gateway_relay_ids: [gwA],
+          cross_zone_mode: 'router_only',
+        },
+        {
+          id: 'centre',
+          name: 'Centre',
+          auto_countries: [],
+          is_default: false,
+          gateway_relay_ids: [gwB],
+          cross_zone_mode: 'router_only',
+          is_centre: true,
+        },
+      ],
+    })
+
+    // DeviceZoneDialog predictedAutoZone skips the centre zone even if it carried country/default
+    const zonesStore = useNetworkZonesStore()
+    zonesStore.zones = [
+      {
+        id: 'centre',
+        name: 'Centre',
+        auto_countries: ['HK'],
+        is_default: true,
+        gateway_relay_ids: [gwB],
+        cross_zone_mode: 'router_only',
+        is_centre: true,
+      },
+      {
+        id: 'cn',
+        name: 'CN Zone',
+        auto_countries: ['CN'],
+        is_default: false,
+        gateway_relay_ids: [gwA],
+        cross_zone_mode: 'router_only',
+      },
+    ]
+    const hkAgent = makeAgent({
+      id: '66f000000000000000000201',
+      name: 'device-hk',
+      country_code: 'HK',
+      pinned_zone_id: null,
+      effective_zone_id: null,
+    })
+    const dlg = mount(DeviceZoneDialog, {
+      props: { modelValue: true, tenantId: TID, agent: hkAgent },
+      global: { plugins: [pinia, vuetify] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(
+      (dlg.vm as unknown as { predictedAutoZone?: NetworkZone }).predictedAutoZone,
+    ).toBeUndefined()
+    dlg.unmount()
   })
 })

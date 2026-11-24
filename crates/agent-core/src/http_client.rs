@@ -43,9 +43,12 @@ pub fn builder() -> reqwest::ClientBuilder {
 }
 
 /// [`builder`] with the choice made by the caller (tests, and a caller that already knows).
+/// Installs the FR-134 management-path resolver so every native HTTP request to the centre's
+/// host follows the active/kept management path automatically while leaving all other hosts
+/// direct.
 pub fn builder_with(system_proxy: bool) -> reqwest::ClientBuilder {
     // fr-135: allowed — the helper itself.
-    let builder = reqwest::Client::builder();
+    let builder = reqwest::Client::builder().dns_resolver(crate::management_path::resolver());
     if system_proxy {
         builder
     } else {
@@ -100,25 +103,36 @@ pub fn read_device_opt_in() {
     #[cfg(target_os = "macos")]
     paths.push(std::path::PathBuf::from("/etc/meshharbor/config.toml"));
     for p in paths {
-        if let Some(on) = opt_in_in(&p) {
-            note_config(on);
+        if let Some(meta) = startup_meta_in(&p) {
+            note_config(meta.use_system_proxy);
+            crate::management_path::note_config(&meta.server_url, &meta.management_entries);
             return;
         }
     }
 }
 
-/// The one key, read without the full loader (whose warnings are about the daemon's own run, not
-/// a `mh` invocation's). `None` = absent, unreadable or not a config.
-fn opt_in_in(path: &std::path::Path) -> Option<bool> {
-    #[derive(serde::Deserialize)]
-    struct OptIn {
-        #[serde(default)]
-        use_system_proxy: bool,
-    }
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+struct StartupConfigMeta {
+    #[serde(default)]
+    use_system_proxy: bool,
+    #[serde(default)]
+    server_url: String,
+    #[serde(default)]
+    management_entries: Vec<String>,
+}
+
+/// Read the minimal startup keys (`use_system_proxy`, `server_url`, `management_entries`)
+/// without running the full config loader (whose warnings belong to the daemon's own run).
+/// `None` = absent, unreadable or not a config.
+fn startup_meta_in(path: &std::path::Path) -> Option<StartupConfigMeta> {
     let raw = std::fs::read_to_string(path).ok()?;
-    toml::from_str::<OptIn>(&raw)
-        .ok()
-        .map(|c| c.use_system_proxy)
+    toml::from_str::<StartupConfigMeta>(&raw).ok()
+}
+
+/// The one key, read without the full loader. Kept as a thin helper for unit tests.
+#[cfg(test)]
+fn opt_in_in(path: &std::path::Path) -> Option<bool> {
+    startup_meta_in(path).map(|c| c.use_system_proxy)
 }
 
 #[cfg(test)]

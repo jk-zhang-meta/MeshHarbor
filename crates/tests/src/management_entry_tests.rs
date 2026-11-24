@@ -617,3 +617,361 @@ async fn a_device_in_a_strict_zone_without_the_centre_is_told_its_entries_and_no
         "the gateway's static endpoint IP at the entry port: {path}"
     );
 }
+
+#[tokio::test]
+async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_and_centre_zone_get_direct()
+{
+    let app = spawn(true).await;
+    let seeded = app.seed_tenant("fr134-paths").await;
+    let (gw_cn, gw_cn_tok) = enroll(&app, &seeded, "fr134-gw-cn").await;
+    let (gw_dp, gw_dp_tok) = enroll(&app, &seeded, "fr134-gw-dp").await;
+    let (gw_centre, gw_centre_tok) = enroll(&app, &seeded, "fr134-gw-centre").await;
+    let (dev_cn, dev_cn_tok) = enroll(&app, &seeded, "fr134-dev-cn").await;
+    let (dev_dp, dev_dp_tok) = enroll(&app, &seeded, "fr134-dev-dp").await;
+    let (dev_centre, dev_centre_tok) = enroll(&app, &seeded, "fr134-dev-centre").await;
+    let (_dev_unresolved, dev_unresolved_tok) =
+        enroll(&app, &seeded, "fr134-dev-unresolved").await;
+
+    set_mode(&app, &seeded, "on").await;
+    for gw in [&gw_cn, &gw_dp, &gw_centre] {
+        assert_eq!(approve(&app, &seeded, gw, true).await, 200);
+    }
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [
+                {
+                    "id": "cn",
+                    "name": "Zone A",
+                    "auto_countries": ["CN"],
+                    "is_default": false,
+                    "gateway_relay_ids": [gw_cn],
+                    "cross_zone_mode": "router_only",
+                },
+                {
+                    "id": "non-cn",
+                    "name": "Zone B",
+                    "auto_countries": ["SG"],
+                    "is_default": false,
+                    "gateway_relay_ids": [gw_dp],
+                    "cross_zone_mode": "direct_preferred",
+                },
+                {
+                    "id": "centre",
+                    "name": "Centre",
+                    "auto_countries": [],
+                    "is_default": false,
+                    "gateway_relay_ids": [gw_centre],
+                    "cross_zone_mode": "router_only",
+                    "is_centre": true,
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(s, 200, "PUT /network-zones: {body}");
+
+    for (aid, zone) in [
+        (&gw_cn, "cn"),
+        (&dev_cn, "cn"),
+        (&gw_dp, "non-cn"),
+        (&dev_dp, "non-cn"),
+        (&gw_centre, "centre"),
+        (&dev_centre, "centre"),
+    ] {
+        let (st, b) = put(
+            &app,
+            &tenant_url(&seeded, &format!("/agent/{aid}/zone-assignment")),
+            &seeded.admin.access_token,
+            json!({ "pinned_zone_id": zone }),
+        )
+        .await;
+        assert_eq!(st, 200, "pin {aid} to {zone}: {b}");
+    }
+
+    // Gateways connect advertising `management-entry` WITHOUT an already-bound entry port:
+    // FR-134 delivers their attestation key immediately so they can start tcp/:18443 live.
+    let gw_rpc = ["management-path", "management-entry"];
+    let mut gw_cn_ws = connect(&app, &gw_cn_tok, &gw_rpc, "203.0.113.10", None, None).await;
+    let mut gw_dp_ws = connect(&app, &gw_dp_tok, &gw_rpc, "203.0.113.20", None, None).await;
+    let mut gw_centre_ws = connect(&app, &gw_centre_tok, &gw_rpc, "203.0.113.30", None, None).await;
+
+    for (label, ws) in [
+        ("gw_cn", &mut gw_cn_ws),
+        ("gw_dp", &mut gw_dp_ws),
+        ("gw_centre", &mut gw_centre_ws),
+    ] {
+        let p = path_frame(ws, label).await;
+        assert_eq!(p["direct"], json!(true), "{label} must dial direct: {p}");
+        let k = recv_t(ws, "rc:agent.management_entry", WAIT)
+            .await
+            .unwrap_or_else(|| panic!("{label} must receive derived entry key without manual port"));
+        assert!(!k["key"].as_str().unwrap_or("").is_empty(), "{label}: {k}");
+    }
+
+    // Non-gateway devices connect BEFORE the gateways announce their bound port:
+    let dev_rpc = ["management-path", "management-entry"];
+    let mut dev_cn_ws = connect(&app, &dev_cn_tok, &dev_rpc, "198.51.100.11", None, None).await;
+    let mut dev_dp_ws = connect(&app, &dev_dp_tok, &dev_rpc, "198.51.100.21", None, None).await;
+    let mut dev_centre_ws =
+        connect(&app, &dev_centre_tok, &dev_rpc, "198.51.100.31", None, None).await;
+    let mut dev_unres_ws =
+        connect(&app, &dev_unresolved_tok, &dev_rpc, "198.51.100.41", None, None).await;
+
+    let p_cn_initial = path_frame(&mut dev_cn_ws, "dev_cn initial").await;
+    assert_eq!(p_cn_initial["direct"], json!(false), "cn non-gw: {p_cn_initial}");
+    let p_dp_initial = path_frame(&mut dev_dp_ws, "dev_dp initial").await;
+    assert_eq!(
+        p_dp_initial["direct"],
+        json!(false),
+        "FR-134: direct_preferred zone non-gateway must STILL get direct=false: {p_dp_initial}"
+    );
+    let p_centre = path_frame(&mut dev_centre_ws, "dev_centre").await;
+    assert_eq!(
+        p_centre["direct"],
+        json!(true),
+        "centre zone member must get direct=true: {p_centre}"
+    );
+    let p_unres = path_frame(&mut dev_unres_ws, "dev_unresolved").await;
+    assert_eq!(
+        p_unres["direct"],
+        json!(true),
+        "unresolved device must stay direct (never stranded): {p_unres}"
+    );
+    assert_eq!(p_unres["entries"], json!([]));
+
+    // Non-gateways must NOT receive an entry key even though they advertise `management-entry`.
+    let dev_cn_frames = collect(&mut dev_cn_ws, Duration::from_millis(400)).await;
+    assert!(
+        !has_t(&dev_cn_frames, "rc:agent.management_entry"),
+        "non-gateway must not receive entry key: {dev_cn_frames:?}"
+    );
+
+    // Gateways send their immediate heartbeat announcing tcp/:18443 bound -> server live-pushes
+    // updated `rc:agent.management_path` containing each gateway's public IP:18443!
+    let hb_with_port = json!({
+        "t": "rc:agent.heartbeat",
+        "rss_mb": 10,
+        "cpu_pct": 0.5,
+        "active_sessions": 0,
+        "caps": {
+            "hw_encoders": ["openh264"],
+            "codecs": ["h264"],
+            "has_input_permission": true,
+            "supports_clipboard": true,
+            "supports_file_transfer": true,
+            "max_simultaneous_sessions": 1,
+            "rpc": gw_rpc,
+            "management_entry_port": ENTRY_PORT,
+        }
+    });
+    gw_cn_ws
+        .send(Message::Text(hb_with_port.to_string().into()))
+        .await
+        .unwrap();
+    gw_dp_ws
+        .send(Message::Text(hb_with_port.to_string().into()))
+        .await
+        .unwrap();
+
+    // Receive live-pushed management paths on both non-gateway devices (filter until the entry
+    // appears, since the second heartbeat triggers a second sync).
+    let mut got_cn = false;
+    for _ in 0..4 {
+        let p = path_frame(&mut dev_cn_ws, "dev_cn live").await;
+        if p["entries"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "203.0.113.10:18443"))
+        {
+            assert_eq!(p["direct"], json!(false));
+            got_cn = true;
+            break;
+        }
+    }
+    assert!(got_cn, "dev_cn must receive live entry 203.0.113.10:18443");
+
+    let mut got_dp = false;
+    for _ in 0..4 {
+        let p = path_frame(&mut dev_dp_ws, "dev_dp live").await;
+        if p["entries"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "203.0.113.20:18443"))
+        {
+            assert_eq!(p["direct"], json!(false));
+            got_dp = true;
+            break;
+        }
+    }
+    assert!(got_dp, "dev_dp (direct_preferred zone) must receive live entry 203.0.113.20:18443");
+
+    drop((gw_cn_ws, gw_dp_ws, gw_centre_ws, dev_cn_ws, dev_dp_ws, dev_centre_ws, dev_unres_ws));
+}
+
+#[tokio::test]
+async fn fr134_zone_without_gateway_is_refused_and_centre_zone_rejects_auto_rules() {
+    let app = spawn(true).await;
+    let seeded = app.seed_tenant("fr134-val").await;
+    let (gw_id, _) = enroll(&app, &seeded, "fr134-val-gw").await;
+    set_mode(&app, &seeded, "on").await;
+    assert_eq!(approve(&app, &seeded, &gw_id, true).await, 200);
+
+    // 1. Zone with empty gateway_relay_ids -> 400 BadRequest (AC4).
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [{
+                "id": "cn",
+                "name": "Zone A",
+                "auto_countries": ["CN"],
+                "is_default": false,
+                "gateway_relay_ids": [],
+                "cross_zone_mode": "router_only",
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(s, 400, "empty gateway_relay_ids must be refused: {body}");
+
+    // 2. Centre zone with auto_countries -> 400.
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [{
+                "id": "centre",
+                "name": "Centre",
+                "auto_countries": ["HK"],
+                "is_default": false,
+                "gateway_relay_ids": [gw_id],
+                "cross_zone_mode": "router_only",
+                "is_centre": true,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(s, 400, "centre zone with countries must be refused: {body}");
+
+    // 3. Centre zone with is_default -> 400.
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [{
+                "id": "centre",
+                "name": "Centre",
+                "auto_countries": [],
+                "is_default": true,
+                "gateway_relay_ids": [gw_id],
+                "cross_zone_mode": "router_only",
+                "is_centre": true,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(s, 400, "centre zone with is_default must be refused: {body}");
+
+    // 4. Two centre zones -> 400.
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [
+                {
+                    "id": "c1",
+                    "name": "Centre 1",
+                    "auto_countries": [],
+                    "is_default": false,
+                    "gateway_relay_ids": [gw_id],
+                    "cross_zone_mode": "router_only",
+                    "is_centre": true,
+                },
+                {
+                    "id": "c2",
+                    "name": "Centre 2",
+                    "auto_countries": [],
+                    "is_default": false,
+                    "gateway_relay_ids": [gw_id],
+                    "cross_zone_mode": "router_only",
+                    "is_centre": true,
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(s, 400, "two centre zones must be refused: {body}");
+
+    // 5. Valid centre zone saves cleanly and round-trips `is_centre: true`.
+    let (s, body) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        &seeded.admin.access_token,
+        json!({
+            "zones": [{
+                "id": "centre",
+                "name": "Centre",
+                "auto_countries": [],
+                "is_default": false,
+                "gateway_relay_ids": [gw_id],
+                "cross_zone_mode": "router_only",
+                "is_centre": true,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(s, 200, "valid centre zone saves: {body}");
+    assert_eq!(body["zones"][0]["is_centre"], json!(true));
+}
+
+#[tokio::test]
+async fn fr134_live_gateway_demotion_revokes_entry_key_and_updates_zone_paths() {
+    let app = spawn(true).await;
+    let seeded = app.seed_tenant("fr134-demote").await;
+    let (gw_id, gw_tok) = enroll(&app, &seeded, "fr134-demote-gw").await;
+    let (dev_id, dev_tok) = enroll(&app, &seeded, "fr134-demote-dev").await;
+    zone_with_gateways(&app, &seeded, &[&gw_id]).await;
+    let (st, _) = put(
+        &app,
+        &tenant_url(&seeded, &format!("/agent/{dev_id}/zone-assignment")),
+        &seeded.admin.access_token,
+        json!({ "pinned_zone_id": "cn" }),
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    let rpc = ["management-path", "management-entry"];
+    let mut gw_ws = connect(&app, &gw_tok, &rpc, ENTRY_IP, Some(ENTRY_PORT), None).await;
+    let _ = path_frame(&mut gw_ws, "gw").await;
+    let k1 = recv_t(&mut gw_ws, "rc:agent.management_entry", WAIT)
+        .await
+        .expect("gateway receives initial entry key");
+    assert!(!k1["key"].as_str().unwrap_or("").is_empty());
+
+    let mut dev_ws = connect(&app, &dev_tok, &rpc, DIRECT_IP, None, None).await;
+    let p1 = path_frame(&mut dev_ws, "dev initial").await;
+    assert_eq!(p1["direct"], json!(false));
+    assert_eq!(p1["entries"], json!([format!("{ENTRY_IP}:{ENTRY_PORT}")]));
+
+    // Revoke gateway's relay approval -> live gateway receives empty revocation key, and zone
+    // device receives updated path without the demoted gateway.
+    assert_eq!(approve(&app, &seeded, &gw_id, false).await, 200);
+    let revoke = recv_t(&mut gw_ws, "rc:agent.management_entry", WAIT)
+        .await
+        .expect("demoted gateway must receive empty revocation key");
+    assert_eq!(revoke["key"], json!(""), "revocation key must be empty: {revoke}");
+
+    let p2 = path_frame(&mut dev_ws, "dev after demotion").await;
+    assert_eq!(p2["direct"], json!(false));
+    assert_eq!(
+        p2["entries"],
+        json!([]),
+        "demoted gateway must disappear from zone entries: {p2}"
+    );
+    drop((gw_ws, dev_ws));
+}

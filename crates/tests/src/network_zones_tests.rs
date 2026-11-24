@@ -331,7 +331,7 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
                     "name": "Global",
                     "auto_countries": ["HK", "US"],
                     "is_default": true,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [relay_id],
                     "cross_zone_mode": "direct_preferred"
                 }
             ]
@@ -545,6 +545,10 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
     grant_relay(&app, &seeded, &dual_node).await;
 
     // Configure 4 zones (NO `is_default: true` so `unk` resolves to `UnresolvedStrict`!).
+    // FR-134 requires a gateway at save time; approve a temporary US relay to save `"us"`, then
+    // revoke its approval so `"us"` has no active gateway when step 8 tests `siat -> us_a` refusal.
+    let (us_revoked_id, _) = enroll(&app, &seeded, "nz-us-revoked-gw").await;
+    assert_eq!(approve(&app, &seeded, &us_revoked_id, true).await, 200);
     let (s, body) = put(
         &app,
         &tenant_url(&seeded, "/network-zones"),
@@ -580,7 +584,7 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
                     "name": "United States",
                     "auto_countries": ["US"],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [us_revoked_id],
                     "cross_zone_mode": "direct_preferred"
                 }
             ]
@@ -588,6 +592,7 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
     )
     .await;
     assert_eq!(s, 200, "{body}");
+    assert_eq!(approve(&app, &seeded, &us_revoked_id, false).await, 200);
 
     // Drain the live full netmap pushed by `PUT /network-zones` to each online node.
     let _ = recv_t(&mut cn_a_ws, "rc:overlay.netmap", wait).await.unwrap();
@@ -2115,9 +2120,11 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
     let (pinned_id, pinned_tok) = enroll(&app, &seeded, "nz-pinned-hk").await;
     let (_hk_peer_id, hk_peer_tok) = enroll(&app, &seeded, "nz-roam-hk-peer").await;
     let (hk_relay_id, hk_relay_tok) = enroll(&app, &seeded, "nz-roam-hk-relay").await;
+    let (cn_gw_id, _) = enroll(&app, &seeded, "nz-roam-cn-gw").await;
 
     set_mode(&app, &seeded, "on").await;
     assert_eq!(approve(&app, &seeded, &hk_relay_id, true).await, 200);
+    assert_eq!(approve(&app, &seeded, &cn_gw_id, true).await, 200);
 
     let (s, _) = put(
         &app,
@@ -2130,7 +2137,7 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
                     "name": "Mainland",
                     "auto_countries": ["CN"],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [cn_gw_id],
                     "cross_zone_mode": "router_only"
                 },
                 {
@@ -2726,7 +2733,7 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
                         "name": "CN",
                         "auto_countries": ["CN"],
                         "is_default": false,
-                        "gateway_relay_ids": [],
+                        "gateway_relay_ids": [r_b_id],
                         "cross_zone_mode": "router_only"
                     },
                     {
@@ -2809,7 +2816,7 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
                     "name": format!("CN-{round}"),
                     "auto_countries": ["CN"],
                     "is_default": false,
-                    "gateway_relay_ids": [],
+                    "gateway_relay_ids": [r_b_id],
                     "cross_zone_mode": "router_only"
                 },
                 {
@@ -3410,15 +3417,17 @@ async fn a_strict_zone_rides_no_relay_outside_it_not_even_the_centres_derp() {
             before["network"]
         );
 
+        let (gw_id, _) = enroll(&app, &seeded, "fr124-gw").await;
+        assert_eq!(approve(&app, &seeded, &gw_id, true).await, 200);
         let (s, body) = put(
             &app,
             &tenant_url(&seeded, "/network-zones"),
             admin,
             json!({ "zones": [
                 { "id": "cn", "name": "Mainland China", "auto_countries": ["CN"],
-                  "is_default": false, "gateway_relay_ids": [], "cross_zone_mode": "router_only" },
+                  "is_default": false, "gateway_relay_ids": [gw_id], "cross_zone_mode": "router_only" },
                 { "id": "non-cn", "name": "Elsewhere", "auto_countries": [],
-                  "is_default": true, "gateway_relay_ids": [], "cross_zone_mode": "direct_preferred" }
+                  "is_default": true, "gateway_relay_ids": [gw_id], "cross_zone_mode": "direct_preferred" }
             ]}),
         )
         .await;

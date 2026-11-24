@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! FR-128 — the centre is a zone of its own: how each device may reach it, and what a
+//! FR-128 / FR-134 — the centre is a zone of its own: how each device may reach it, and what a
 //! management entry may say about the devices that come through it.
 //!
 //! Three things, all decided here and nowhere else:
 //!
-//! - [`path_for`]: on connect, whether the device may dial the centre directly (the FR-124
-//!   verdict: a strict zone whose countries do not hold the centre may not), and its zone's
-//!   entries: the zone's approved gateways that run a management entry, at their public
-//!   addresses.
+//! - [`path_for`]: whether the device may dial the centre directly (FR-134: only a zone's own
+//!   approved gateways and devices in the centre zone `is_centre = true`; every other device in a
+//!   zone uses its zone's entries regardless of `cross_zone_mode`), and its zone's entries: the
+//!   zone's approved gateways that run a management entry, at their public addresses.
 //! - [`entry_key`]: the key a gateway signs attestations with (derived, never stored).
 //! - [`resolve_origin`]: at the `/ws?role=agent` upgrade, the connection's origin. A valid
 //!   attestation from a current entry of the device's own org replaces the entry's address with
@@ -39,6 +39,12 @@ pub(crate) fn advertises(caps: &AgentCaps) -> bool {
     caps.has_rpc(RpcCap::ManagementPath)
 }
 
+/// FR-134 — can this device start/stop its management entry listener live on
+/// `rc:agent.management_entry`? Equality on the verb.
+pub(crate) fn advertises_entry(caps: &AgentCaps) -> bool {
+    caps.has_rpc(RpcCap::ManagementEntry)
+}
+
 /// Is `agent` an approved gateway of some zone of its org's network?
 pub(crate) fn is_gateway(net: Option<&OverlayNetwork>, agent: &Agent) -> bool {
     let (Some(net), Some(id)) = (net, agent.id) else {
@@ -48,14 +54,18 @@ pub(crate) fn is_gateway(net: Option<&OverlayNetwork>, agent: &Agent) -> bool {
     agent.peer_relay_policy.serve && net.zones.iter().any(|z| z.gateway_relay_ids.contains(&hex))
 }
 
-/// The key `agent` signs attestations with, while it is a gateway that runs an entry.
+/// The key `agent` signs attestations with, while it is a gateway that runs (or can start) an
+/// entry. Pre-FR-134 agents only receive a key when they already bound `management_entry_port`;
+/// FR-134 agents advertising `management-entry` receive a key as soon as they are a gateway and
+/// bind the listener live on receipt.
 pub(crate) fn entry_key(
     state: &FleetState,
     net: Option<&OverlayNetwork>,
     agent: &Agent,
 ) -> Option<me::EntryKey> {
     if !state.settings.app.management_entries
-        || agent.capabilities.management_entry_port.is_none()
+        || (agent.capabilities.management_entry_port.is_none()
+            && !advertises_entry(&agent.capabilities))
         || !is_gateway(net, agent)
     {
         return None;
@@ -109,12 +119,14 @@ fn node_endpoints(node: Option<&OverlayNode>) -> impl Iterator<Item = &String> {
     })
 }
 
-/// FR-128 — how `agent` may reach the centre: `(direct, entries)`.
+/// FR-128 / FR-134 — how `agent` may reach the centre: `(direct, entries)`.
 ///
 /// `policy` is the connect-time zone ICE policy (`compute_ice_policy_from_snapshot`). A device
 /// with no resolved zone (an org without zones, or unresolved) keeps direct and gets no entries:
-/// management must stay reachable, and an entry belongs to a zone. A gateway always dials
-/// directly: it IS its zone's line to the centre.
+/// management must stay reachable, and an entry belongs to a zone. Inside a zone, ONLY that
+/// zone's own approved gateways and members of the centre zone (`is_centre = true`) dial the
+/// centre directly — every other device reaches the centre through its zone's entries, whether
+/// the zone's `cross_zone_mode` is `router_only` or `direct_preferred`.
 pub(crate) fn path_for(
     state: &FleetState,
     net: Option<&OverlayNetwork>,
@@ -133,15 +145,11 @@ pub(crate) fn path_for(
         return (true, Vec::new());
     };
     let self_hex = agent.id.map(|id| id.to_hex());
-    let is_own_gateway = self_hex
-        .as_deref()
-        .is_some_and(|h| zone.gateway_relay_ids.iter().any(|g| g == h));
-    let direct = !policy.strict
-        || is_own_gateway
-        || state.rc_hub.url_matches_allowed_countries(
-            &state.settings.app.frontend_url,
-            &policy.allowed_countries,
-        );
+    let is_own_gateway = agent.peer_relay_policy.serve
+        && self_hex
+            .as_deref()
+            .is_some_and(|h| zone.gateway_relay_ids.iter().any(|g| g == h));
+    let direct = is_own_gateway || zone.is_centre;
     let mut entries = Vec::new();
     for gw_hex in &zone.gateway_relay_ids {
         if self_hex.as_deref() == Some(gw_hex.as_str()) {
@@ -156,11 +164,20 @@ pub(crate) fn path_for(
         let Some(port) = gw.capabilities.management_entry_port.filter(|p| *p != 0) else {
             continue;
         };
-        let addrs = entry_addrs(
+        let mut addrs = entry_addrs(
             &gw.peer_relay_policy.static_endpoints,
             node_endpoints(gateway_nodes.get(&gw_id)),
             port,
         );
+        if addrs.is_empty()
+            && let Some(ip) = gw
+                .public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<IpAddr>().ok())
+                .and_then(canonical_public_ip)
+        {
+            addrs.push(SocketAddr::new(ip, port).to_string());
+        }
         for a in addrs {
             if entries.len() >= MAX_ENTRIES {
                 break;
@@ -171,6 +188,128 @@ pub(crate) fn path_for(
         }
     }
     (direct, entries)
+}
+
+/// FR-134 — re-push `ManagementPath` and `ManagementEntryKey` (grant or empty revocation) to all
+/// live agents in `tenant_id` after a zone, assignment, relay-policy, or gateway entry-port
+/// change. Delivered locally on this pod and broadcast on `rc ctrl` for multi-pod deployments.
+pub async fn sync_tenant_management_paths(state: &FleetState, tenant_id: ObjectId) {
+    let net_dao = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+    let node_dao = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&state.core.db);
+    let mut snapshot = None;
+    for _ in 0..5 {
+        let Ok(net1) = net_dao.find_for_tenant(tenant_id).await else {
+            return;
+        };
+        let Ok(active_agents) = state.agents.list_all_active_for_tenant(tenant_id).await else {
+            return;
+        };
+        let approved_relays: Vec<Agent> = active_agents
+            .iter()
+            .filter(|a| a.peer_relay_policy.serve)
+            .cloned()
+            .collect();
+        let mut gateway_nodes = HashMap::new();
+        for gw in &approved_relays {
+            if gw.capabilities.management_entry_port.is_none() {
+                continue;
+            }
+            let Some(gw_id) = gw.id else { continue };
+            match node_dao
+                .find_live_by_tenant_and_machine(tenant_id, &gw.machine_id)
+                .await
+            {
+                Ok(Some(node)) => {
+                    gateway_nodes.insert(gw_id, node);
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+        let Ok(net2) = net_dao.find_for_tenant(tenant_id).await else {
+            return;
+        };
+        let consistent = match (&net1, &net2) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.zone_revision == b.zone_revision,
+            _ => false,
+        };
+        if consistent {
+            snapshot = Some((net1, active_agents, approved_relays, gateway_nodes));
+            break;
+        }
+    }
+    let Some((net, active_agents, approved_relays, gateway_nodes)) = snapshot else {
+        return;
+    };
+    let tid_hex = tenant_id.to_hex();
+    for agent in &active_agents {
+        let Some(aid) = agent.id else { continue };
+        let aid_hex = aid.to_hex();
+        let policy = crate::socket::compute_ice_policy_from_snapshot(
+            state,
+            net.as_ref(),
+            agent,
+            &approved_relays,
+        );
+        if advertises(&agent.capabilities) {
+            let (direct, entries) = path_for(
+                state,
+                net.as_ref(),
+                agent,
+                &policy,
+                &approved_relays,
+                &gateway_nodes,
+            );
+            state
+                .rc_hub
+                .push_management_path(tenant_id, aid, direct, entries.clone());
+            crate::ctrl::publish_rc_ctrl(
+                state,
+                "management_path",
+                serde_json::json!({
+                    "tenant_id": tid_hex,
+                    "agent_id": aid_hex,
+                    "direct": direct,
+                    "entries": entries,
+                }),
+            )
+            .await;
+        }
+        if let Some(key) = entry_key(state, net.as_ref(), agent) {
+            state
+                .rc_hub
+                .push_management_entry_key(tenant_id, aid, key.clone());
+            crate::ctrl::publish_rc_ctrl(
+                state,
+                "management_entry_key",
+                serde_json::json!({
+                    "tenant_id": tid_hex,
+                    "agent_id": aid_hex,
+                    "key": key.0,
+                }),
+            )
+            .await;
+        } else if advertises_entry(&agent.capabilities)
+            && agent.capabilities.management_entry_port.is_some()
+        {
+            // No longer a gateway (or management_entries disabled): tell the live agent to stop
+            // its entry listener.
+            state
+                .rc_hub
+                .push_management_entry_key(tenant_id, aid, me::EntryKey(String::new()));
+            crate::ctrl::publish_rc_ctrl(
+                state,
+                "management_entry_key",
+                serde_json::json!({
+                    "tenant_id": tid_hex,
+                    "agent_id": aid_hex,
+                    "key": "",
+                }),
+            )
+            .await;
+        }
+    }
 }
 
 /// The gateways of `agent`'s zone that run an entry: whose overlay nodes `path_for` needs.

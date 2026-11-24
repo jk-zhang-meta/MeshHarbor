@@ -32,7 +32,91 @@ use futures::{SinkExt, StreamExt};
 use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, client_async_tls_with_config, connect_async,
+    tungstenite::{self, Message, client::IntoClientRequest, handshake::client::Response},
+};
+
+type CliWs = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// FR-134 — dial a centre WebSocket (`role=tunnel-client` or shared SSH) along the management
+/// path ladder (persisted `management-path.json` + local `management_entries`), trying zone
+/// entries first when direct is disallowed and falling back to direct as a last resort so CLI
+/// tools are never stranded.
+async fn connect_ws_via_management_path(
+    url: &str,
+    bearer_auth: Option<&str>,
+    per_attempt_timeout: std::time::Duration,
+) -> Result<(CliWs, Response), tungstenite::Error> {
+    use meshharbor_node_core::management_path as mp;
+    let local = mp::local_entries();
+    let (order, _) = mp::candidates_for_url(url, &local);
+    let build_req = || -> Result<tungstenite::http::Request<()>, tungstenite::Error> {
+        let mut req = url.into_client_request()?;
+        if let Some(tok) = bearer_auth {
+            let val = format!("Bearer {tok}")
+                .parse()
+                .map_err(|e: tungstenite::http::header::InvalidHeaderValue| {
+                    tungstenite::Error::Io(std::io::Error::other(e.to_string()))
+                })?;
+            req.headers_mut().insert("Authorization", val);
+        }
+        Ok(req)
+    };
+    let mut last: Option<tungstenite::Error> = None;
+    for candidate in order {
+        let req = build_req()?;
+        let res = match candidate {
+            mp::Candidate::Direct => {
+                // fr-134: allowed — the CLI WS management-path dialer itself.
+                match tokio::time::timeout(per_attempt_timeout, connect_async(req)).await {
+                    Ok(r) => r,
+                    Err(_) => Err(tungstenite::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "direct WS connect timed out",
+                    ))),
+                }
+            }
+            mp::Candidate::Entry(entry) => {
+                let tcp = tokio::time::timeout(
+                    per_attempt_timeout,
+                    tokio::net::TcpStream::connect(entry),
+                )
+                .await;
+                match tcp {
+                    Ok(Ok(stream)) => {
+                        match tokio::time::timeout(
+                            per_attempt_timeout,
+                            // fr-134: allowed — the CLI WS management-path dialer itself.
+                            client_async_tls_with_config(req, stream, None, None),
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => Err(tungstenite::Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("WS handshake via entry {entry} timed out"),
+                            ))),
+                        }
+                    }
+                    Ok(Err(e)) => Err(tungstenite::Error::Io(e)),
+                    Err(_) => Err(tungstenite::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("TCP connect to entry {entry} timed out"),
+                    ))),
+                }
+            }
+        };
+        match res {
+            Ok(ok) => return Ok(ok),
+            Err(e @ tungstenite::Error::Http(_)) => return Err(e),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        tungstenite::Error::Io(std::io::Error::other("no management path candidate"))
+    }))
+}
 use tracing::{debug, info, warn};
 use tunnel_core::driver::{SessionOutcome, SessionParams, Target, run_tunnel_session};
 use tunnel_core::signaling_link::{TunnelSignalingSink, TunnelSignalingSource};
@@ -289,9 +373,13 @@ async fn run_session(
         urlencoding_lite(&cfg.tunnel_client_token)
     );
     info!(%ws_base, "connecting websocket");
-    let (ws_stream, _resp) = connect_async(&ws_url)
-        .await
-        .with_context(|| format!("WS connect to {ws_base}"))?;
+    let (ws_stream, _resp) = connect_ws_via_management_path(
+        &ws_url,
+        None,
+        std::time::Duration::from_secs(15),
+    )
+    .await
+    .with_context(|| format!("WS connect to {ws_base}"))?;
     info!("websocket connected");
     let (mut ws_sink, ws_source) = ws_stream.split();
 
@@ -573,7 +661,6 @@ pub async fn run_shared_ssh_transport(
     agent: ObjectId,
     ready: tunnel_core::driver::ListeningHook,
 ) -> Result<SessionOutcome> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let ws = derive_ws_url(&server)?;
     let base = ws
         .strip_suffix("/ws")
@@ -582,15 +669,13 @@ pub async fn run_shared_ssh_transport(
         "{base}/api/device-shares/{share}/ssh/ws?public_key={}&session_secs={session_secs}",
         urlencoding_lite(&public_key)
     );
-    let mut request = url.into_client_request()?;
-    request
-        .headers_mut()
-        .insert("Authorization", format!("Bearer {token}").parse()?);
-    let (socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(8), connect_async(request))
-            .await
-            .context("shared SSH WS connect timeout")?
-            .context("shared SSH WS authorization")?;
+    let (socket, _) = connect_ws_via_management_path(
+        &url,
+        Some(&token),
+        std::time::Duration::from_secs(8),
+    )
+    .await
+    .context("shared SSH WS authorization")?;
     let (mut writer, reader) = socket.split();
     let (tx, mut rx) = mpsc::channel::<ClientMsg>(64);
     struct AbortWriter(tokio::task::JoinHandle<()>);
@@ -660,5 +745,70 @@ mod shared_ssh_sink_tests {
             .is_err()
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn fr134_tunnel_ws_follows_management_entry_and_fails_over() {
+        use meshharbor_node_core::management_path as mp;
+
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        let entry = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let entry_addr = entry.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new((String::new(), String::new())));
+        let seen_srv = Arc::clone(&seen);
+        tokio::spawn(async move {
+            let (stream, _) = entry.accept().await.unwrap();
+            #[allow(clippy::result_large_err)]
+            let cb = |req: &tungstenite::handshake::server::Request,
+                      resp: tungstenite::handshake::server::Response| {
+                let host = req
+                    .headers()
+                    .get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                *seen_srv.lock().unwrap() = (host, auth);
+                Ok(resp)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, cb)
+                .await
+                .unwrap();
+            ws.send(Message::Text("entry-ok".into())).await.unwrap();
+        });
+
+        let centre = "centre-cli.fr134.invalid";
+        mp::note_config(
+            &format!("https://{centre}"),
+            &[dead_addr.to_string(), entry_addr.to_string()],
+        );
+        mp::note_pushed(
+            centre,
+            &mp::Pushed {
+                direct: false,
+                entries: Vec::new(),
+            },
+        );
+
+        let (mut ws, _) = connect_ws_via_management_path(
+            &format!("ws://{centre}/ws?role=tunnel-client"),
+            Some("secret-bearer"),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("tunnel WS fails over from dead entry to live entry");
+        let msg = ws.next().await.unwrap().unwrap();
+        assert_eq!(msg, Message::Text("entry-ok".into()));
+        let (host, auth) = seen.lock().unwrap().clone();
+        assert_eq!(host, centre);
+        assert_eq!(auth, "Bearer secret-bearer");
     }
 }

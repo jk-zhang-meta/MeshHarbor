@@ -35,9 +35,9 @@ showed the device offline — the failure the zone model exists to remove.
 
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
-| P1 | Server: centre zone kind, zones must name a gateway, `path_for` = direct only for gateways and the centre zone | `app.management_entries = false` (everything direct, as before) | planned |
-| P2 | Agent: a gateway serves the entry by default; every device→centre connection goes through the path ladder, DERP and the updater included; last-resort direct and its way back | device `MESHHARBORD_MANAGEMENT_ENTRIES=0` | planned |
-| P3 | Field: both zones' gateways serving entries, every Linux device on its zone's entries, the centre zone with the centre's device | — | planned |
+| P1 | Server: centre zone kind (`is_centre`), zones must name a gateway (legacy startup warning), `path_for` = direct only for gateways and the centre zone, live push on changes, UI support | `app.management_entries = false` (everything direct, as before) | built (tests green; field pending) |
+| P2 | Agent & CLI: gateways serve entry live by default on TCP `18443` (`0` opt-out; non-gateways never listen); every native HTTP/WS/central-DERP/tunnel-client connection follows the path ladder (source-guarded); last-resort direct surfaced in `mh status` and returns to entries automatically | device `MESHHARBORD_MANAGEMENT_ENTRIES=0` | built (tests green; field pending) |
+| P3 | Field: both zones' gateways serving entries, every Linux device on its zone's entries, the centre zone with the centre's device | — | pending field verification |
 
 ## Acceptance criteria
 
@@ -45,12 +45,14 @@ showed the device offline — the failure the zone model exists to remove.
   zone's gateways answers (field: socket table on each device, red on the current deploy first).
 - [ ] **AC2.** Every gateway of each zone serves the entry without a per-device setting (field).
 - [ ] **AC3.** All of a zone's gateways down → the device reaches the centre directly within the
-  ladder's bound and returns to a gateway when one answers (tests + field on a throwaway device).
-- [ ] **AC4.** A zone without a gateway is refused; geography never places a device in the centre
-  zone (tests).
-- [ ] **AC5.** An org without zones and `management_entries = false` behave exactly as before (tests).
-- [ ] **AC6 (docs).** `docs/business-isolation.md` and the overlay docs describe the rule (mermaid,
-  anchors) and a row in [docs/README.md](../README.md).
+  ladder's bound and returns to a gateway when one answers (automated tests green; field check on a
+  throwaway device pending).
+- [x] **AC4.** A zone without a gateway is refused; geography never places a device in the centre
+  zone (tests: `models.rs`, `management_entry_tests.rs`, `DevicesGeoAndRelay.spec.ts`).
+- [x] **AC5.** An org without zones and `management_entries = false` behave exactly as before
+  (tests: `management_entry_tests.rs`).
+- [x] **AC6 (docs).** `docs/business-isolation.md` and `docs/overlay-communication.md` describe the
+  rule (mermaid, verified anchors) and `docs/README.md` indexes it.
 
 ## Out of scope
 

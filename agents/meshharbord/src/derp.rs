@@ -152,6 +152,7 @@ pub fn spawn(
     let weak = Arc::downgrade(mux);
     tokio::spawn(run(
         "central".to_string(),
+        true,
         central_url_per_attempt(ws_url, token, tenant_id),
         reg_frame,
         weak,
@@ -184,6 +185,7 @@ pub fn spawn_regional(
     let weak = Arc::downgrade(mux);
     tokio::spawn(run(
         label,
+        false,
         Box::new(move || {
             let ticket = ticket_slot
                 .lock()
@@ -204,6 +206,7 @@ pub fn spawn_regional(
 
 async fn run(
     relay: String,
+    is_central: bool,
     url_for_attempt: Box<dyn Fn() -> Option<String> + Send>,
     reg_frame: Vec<u8>,
     mux: Weak<DerpMux>,
@@ -237,8 +240,17 @@ async fn run(
             backoff = (backoff * 2).min(DERP_BACKOFF_MAX);
             continue;
         };
-        // #2187 — the relay's address comes from `ctl_dns`, as the control WS's does.
-        match tokio::time::timeout(DERP_CONNECT_TIMEOUT, crate::ws_connect::connect(&url)).await {
+        // FR-134 — central `/derp` follows the management path ladder (entries first when the
+        // zone forbids direct, direct last resort); regional PoP DERP relays connect to their
+        // own host through `ctl_dns`.
+        let route_gen = meshharbor_node_core::management_path::route_generation();
+        let dial_res = if is_central {
+            tokio::time::timeout(DERP_CONNECT_TIMEOUT, crate::ws_connect::connect_centre(&url))
+                .await
+        } else {
+            tokio::time::timeout(DERP_CONNECT_TIMEOUT, crate::ws_connect::connect(&url)).await
+        };
+        match dial_res {
             Ok(Ok((ws, _))) => {
                 backoff = Duration::from_secs(1);
                 // FR-18 — bound the KERNEL's send buffer too. Shedding stale
@@ -293,6 +305,16 @@ async fn run(
                                     %relay,
                                     napped_s = (wall_gap - mono_gap).as_secs(),
                                     "overlay derp: suspend/resume detected — cycling the /derp WS"
+                                );
+                                break;
+                            }
+                            if is_central
+                                && meshharbor_node_core::management_path::route_generation()
+                                    != route_gen
+                            {
+                                info!(
+                                    %relay,
+                                    "overlay derp: management path changed — reconnecting along the active path"
                                 );
                                 break;
                             }
@@ -493,6 +515,7 @@ mod tests {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(run(
             "central".to_string(),
+            true,
             central_url_per_attempt(base, slot.clone(), "t1"),
             mux.registration_frame(),
             Arc::downgrade(mux),
