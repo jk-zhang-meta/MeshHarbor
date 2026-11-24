@@ -88,6 +88,14 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
+        // FR-136 — emit `.mjs` assets as `.js`. Production nginx maps only `js` to
+        // `application/javascript`, so a `.mjs` file (the MapLibre worker, loaded as a
+        // module worker) is served as `application/octet-stream`, and the browser's
+        // strict module MIME check refuses it: the globe never draws.
+        assetFileNames: (info) =>
+          (info.names?.[0] ?? info.name ?? '').endsWith('.mjs')
+            ? 'assets/[name]-[hash].js'
+            : 'assets/[name]-[hash][extname]',
         // FR-25 — function form, NOT the object form it replaced.
         //
         // The object form listed only `@tiptap/starter-kit` + `@tiptap/vue-3`,
