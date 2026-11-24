@@ -161,8 +161,9 @@ fn build_splice_request_target(
     } else {
         orig_host.clone()
     };
+    let base_path = base_url.path().trim_end_matches('/');
     let mut url = reqwest::Url::parse(&format!(
-        "{scheme}://{connect_host}:{}/api/agent/self/egress-probe",
+        "{scheme}://{connect_host}:{}{base_path}/api/agent/self/egress-probe",
         local_addr.port()
     ))
     .ok()?;
@@ -284,11 +285,9 @@ async fn run_probe(server_url: &str, token: &str, local_entries: &[String]) {
                 mp::Candidate::Entry(entry_addr) => {
                     // Obtain FR-134 attestation over the SAME physical-bound uplink so the
                     // gateway attests our physical egress IP, never the VPN IP.
-                    let entry_token = match connect_tcp_bound(entry_addr, uplink, PROBE_TIMEOUT)
-                        .await
-                    {
-                        Ok(attest_stream) => {
-                            match crate::mgmt_entry::request_attestation_over(
+                    let entry_token =
+                        match connect_tcp_bound(entry_addr, uplink, PROBE_TIMEOUT).await {
+                            Ok(attest_stream) => match crate::mgmt_entry::request_attestation_over(
                                 attest_stream,
                                 PROBE_TIMEOUT,
                             )
@@ -304,18 +303,17 @@ async fn run_probe(server_url: &str, token: &str, local_entries: &[String]) {
                                     );
                                     None
                                 }
+                            },
+                            Err(e) => {
+                                debug!(
+                                    uplink = %uplink.name,
+                                    %entry_addr,
+                                    %e,
+                                    "egress probe: bound connect to entry failed"
+                                );
+                                continue;
                             }
-                        }
-                        Err(e) => {
-                            debug!(
-                                uplink = %uplink.name,
-                                %entry_addr,
-                                %e,
-                                "egress probe: bound connect to entry failed"
-                            );
-                            continue;
-                        }
-                    };
+                        };
                     let Ok(http_stream) =
                         connect_tcp_bound(entry_addr, uplink, PROBE_TIMEOUT).await
                     else {
@@ -407,6 +405,97 @@ mod tests {
         assert_eq!(url.query(), Some("entry=tok%2B1%2F2"));
     }
 
+    #[test]
+    fn splice_target_preserves_base_path_for_direct_and_entry_candidates() {
+        let local: SocketAddr = "127.0.0.1:45678".parse().unwrap();
+
+        // Deployment under a reverse-proxy base path (both direct and entry).
+        let with_prefix = reqwest::Url::parse("https://centre.example.test/meshharbor").unwrap();
+        let (direct_url, direct_domain, direct_host) =
+            build_splice_request_target(&with_prefix, local, None).unwrap();
+        assert_eq!(direct_domain.as_deref(), Some("centre.example.test"));
+        assert_eq!(direct_host, "centre.example.test");
+        assert_eq!(direct_url.path(), "/meshharbor/api/agent/self/egress-probe");
+        assert_eq!(direct_url.query(), None);
+
+        let (entry_url, entry_domain, entry_host) =
+            build_splice_request_target(&with_prefix, local, Some("tok+1/2")).unwrap();
+        assert_eq!(entry_domain.as_deref(), Some("centre.example.test"));
+        assert_eq!(entry_host, "centre.example.test");
+        assert_eq!(entry_url.path(), "/meshharbor/api/agent/self/egress-probe");
+        assert_eq!(entry_url.query(), Some("entry=tok%2B1%2F2"));
+
+        // Trailing slash on the base path must not introduce a double slash.
+        let trailing = reqwest::Url::parse("https://centre.example.test/meshharbor/").unwrap();
+        let (trailing_url, _, _) = build_splice_request_target(&trailing, local, None).unwrap();
+        assert_eq!(
+            trailing_url.path(),
+            "/meshharbor/api/agent/self/egress-probe"
+        );
+        let (trailing_entry_url, _, _) =
+            build_splice_request_target(&trailing, local, Some("att")).unwrap();
+        assert_eq!(
+            trailing_entry_url.path(),
+            "/meshharbor/api/agent/self/egress-probe"
+        );
+        assert_eq!(trailing_entry_url.query(), Some("entry=att"));
+
+        // Root path (with and without explicit trailing slash).
+        for root in [
+            "https://centre.example.test",
+            "https://centre.example.test/",
+        ] {
+            let base = reqwest::Url::parse(root).unwrap();
+            let (url, _, _) = build_splice_request_target(&base, local, None).unwrap();
+            assert_eq!(url.path(), "/api/agent/self/egress-probe", "root={root}");
+        }
+    }
+
+    #[tokio::test]
+    async fn post_probe_over_stream_sends_base_path_on_wire_for_direct_and_entry() {
+        for (entry_token, expected_target) in [
+            (None, "/meshharbor/api/agent/self/egress-probe"),
+            (
+                Some("att-xyz"),
+                "/meshharbor/api/agent/self/egress-probe?entry=att-xyz",
+            ),
+        ] {
+            let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let server_addr = server.local_addr().unwrap();
+
+            let srv = tokio::spawn(async move {
+                let (mut sock, _) = server.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = r#"{"ok":true,"physical_public_ip":"198.51.100.10"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                let _ = sock.shutdown().await;
+                req
+            });
+
+            let bound_stream = TcpStream::connect(server_addr).await.unwrap();
+            let base_url =
+                reqwest::Url::parse("http://centre.example.test:8080/meshharbor/").unwrap();
+            let reply =
+                post_probe_over_stream(&base_url, "agent-tok-123", entry_token, bound_stream)
+                    .await
+                    .expect("probe reply");
+
+            let req_text = srv.await.unwrap();
+            assert!(
+                req_text.starts_with(&format!("POST {expected_target} HTTP/1.1\r\n")),
+                "unexpected request line: {req_text}"
+            );
+            assert!(reply.ok);
+        }
+    }
+
     #[tokio::test]
     async fn post_probe_over_stream_sends_bearer_and_parses_reply() {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -430,14 +519,25 @@ mod tests {
 
         let bound_stream = TcpStream::connect(server_addr).await.unwrap();
         let base_url = reqwest::Url::parse("http://centre.example.test:8080").unwrap();
-        let reply = post_probe_over_stream(&base_url, "agent-tok-123", Some("att-xyz"), bound_stream)
-            .await
-            .expect("probe reply");
+        let reply =
+            post_probe_over_stream(&base_url, "agent-tok-123", Some("att-xyz"), bound_stream)
+                .await
+                .expect("probe reply");
 
         let req_text = srv.await.unwrap();
-        assert!(req_text.starts_with("POST /api/agent/self/egress-probe?entry=att-xyz HTTP/1.1\r\n"));
-        assert!(req_text.to_ascii_lowercase().contains("authorization: bearer agent-tok-123"));
-        assert!(req_text.to_ascii_lowercase().contains("host: centre.example.test:8080"));
+        assert!(
+            req_text.starts_with("POST /api/agent/self/egress-probe?entry=att-xyz HTTP/1.1\r\n")
+        );
+        assert!(
+            req_text
+                .to_ascii_lowercase()
+                .contains("authorization: bearer agent-tok-123")
+        );
+        assert!(
+            req_text
+                .to_ascii_lowercase()
+                .contains("host: centre.example.test:8080")
+        );
         assert!(reply.ok);
         assert_eq!(reply.physical_public_ip.as_deref(), Some("198.51.100.10"));
         assert_eq!(reply.current_public_ip.as_deref(), Some("203.0.113.20"));

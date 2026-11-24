@@ -148,7 +148,14 @@ pub async fn run_checks(server_url: &str) -> Report {
 
     let dns_fut = check_dns(host.clone(), port);
     let tcp_fut = check_tcp(host.clone(), port);
-    let clock_fut = check_clock(scheme, host.clone(), port);
+    let clock_url = health_url(server_url).unwrap_or_else(|| {
+        if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
+            format!("{scheme}://{host}/health")
+        } else {
+            format!("{scheme}://{host}:{port}/health")
+        }
+    });
+    let clock_fut = check_clock(clock_url);
 
     let (dns, tcp, clock) = tokio::join!(dns_fut, tcp_fut, clock_fut);
 
@@ -234,13 +241,28 @@ async fn check_tcp(host: String, port: u16) -> Option<Finding> {
     }
 }
 
-async fn check_clock(scheme: &str, host: String, port: u16) -> Option<Finding> {
-    let url = if (scheme == "https" && port == 443) || (scheme == "http" && port == 80) {
-        format!("{scheme}://{host}/health")
-    } else {
-        format!("{scheme}://{host}:{port}/health")
-    };
-    let client = match meshharbor_node_core::http_client::builder().timeout(STEP_TIMEOUT).build() {
+/// Build the `/health` probe URL from `server_url`, preserving any deployment
+/// base path (e.g. `https://centre.example.test/meshharbor` →
+/// `https://centre.example.test/meshharbor/health`) while stripping query and
+/// fragment components.
+fn health_url(server_url: &str) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(server_url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    parsed.host_str()?;
+    let base_path = parsed.path().trim_end_matches('/').to_string();
+    parsed.set_path(&format!("{base_path}/health"));
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(parsed.into())
+}
+
+async fn check_clock(url: String) -> Option<Finding> {
+    let client = match meshharbor_node_core::http_client::builder()
+        .timeout(STEP_TIMEOUT)
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             return Some(Finding::HttpFailed {
@@ -322,6 +344,35 @@ mod tests {
     #[test]
     fn parse_rejects_unparseable_port() {
         assert_eq!(parse_host_port("https://host:abc"), None);
+    }
+
+    #[test]
+    fn health_url_preserves_base_path_and_normalizes_slashes() {
+        assert_eq!(
+            health_url("https://centre.example.test/meshharbor").as_deref(),
+            Some("https://centre.example.test/meshharbor/health")
+        );
+        assert_eq!(
+            health_url("https://centre.example.test/meshharbor/").as_deref(),
+            Some("https://centre.example.test/meshharbor/health")
+        );
+        assert_eq!(
+            health_url("https://centre.example.test").as_deref(),
+            Some("https://centre.example.test/health")
+        );
+        assert_eq!(
+            health_url("https://centre.example.test/").as_deref(),
+            Some("https://centre.example.test/health")
+        );
+        assert_eq!(
+            health_url("http://198.51.100.5:3000/meshharbor").as_deref(),
+            Some("http://198.51.100.5:3000/meshharbor/health")
+        );
+        assert_eq!(
+            health_url("https://centre.example.test:8443/meshharbor/?token=x#frag").as_deref(),
+            Some("https://centre.example.test:8443/meshharbor/health")
+        );
+        assert_eq!(health_url("file:///tmp/x"), None);
     }
 
     #[tokio::test]
