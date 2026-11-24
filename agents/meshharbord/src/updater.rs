@@ -1174,30 +1174,253 @@ pub fn pick_latest_release(mut releases: Vec<GithubRelease>) -> Option<GithubRel
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 const STAGING_DIR_PREFIX: &str = "meshharbord-update.";
 
-/// Where a just-downloaded installer is staged before it runs.
+/// Persistent on-disk temporary directory (FHS).
 ///
-/// ⚠️ Linux: a FRESH private directory per download (mkdtemp — a random name,
-/// created 0700 then relaxed to 0755, owned by the caller). NEVER the old fixed
-/// `/tmp/meshharbord-update/<asset>`: `/tmp` is sticky but a SUBDIRECTORY of it is
-/// not, so any local user could `mkdir /tmp/meshharbord-update` first (and own
-/// it), then — in the window between this download's in-memory signature check
-/// and the installer's own read of the PATH (`apt-get install <path>`,
-/// `tar -xzf <path>`) — `rename` an attacker package over the genuine one,
-/// making root install arbitrary code (dpkg maintainer scripts run as root).
-/// A directory nobody else owns closes it: a non-owner cannot create, rename
-/// or unlink inside it. 0755 (not 0700) so apt's `_apt` sandbox user can read
-/// the `.deb` — else apt warns and falls back to an unsandboxed-root install
-/// anyway, but the warning is noise we can avoid. FR-96 security review (#2055).
+/// On Debian 13, Fedora, Arch and similar Linux distributions `/tmp` is a
+/// memory-backed `tmpfs` (often capped at 50% of RAM). Staging a ~100 MB
+/// release archive and unpacking ~500 MB of binaries/libraries under
+/// `std::env::temp_dir()` (`/tmp`) exhausted RAM and hung a 1 GB VM
+/// (2026-11-23). `/var/tmp` is disk-backed, sticky (`1777`), traversable by
+/// apt's `_apt` sandbox user, and already granted in `meshharbor.service`
+/// (`ReadWritePaths=-/var/tmp`), so Linux staging prefers it unconditionally
+/// without depending on `TMPDIR`.
 #[cfg(target_os = "linux")]
-fn stage_dir() -> std::io::Result<PathBuf> {
+const LINUX_DISK_STAGING_BASE: &str = "/var/tmp";
+
+/// One candidate parent directory for Linux update staging and tarball unpack.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+struct LinuxStagingCandidate {
+    path: PathBuf,
+    /// Create the directory if missing (`true` for our own app-data fallback,
+    /// `false` for OS dirs like `/var/tmp` and `/tmp` which must keep their
+    /// system sticky permissions).
+    create_if_missing: bool,
+    /// Reject this candidate if it resolves to `/tmp` or a memory-backed
+    /// filesystem (`tmpfs` / `ramfs`).
+    reject_memory_fs: bool,
+}
+
+/// True when `path` resides on a memory-backed Linux filesystem (`tmpfs` or
+/// `ramfs`).
+#[cfg(target_os = "linux")]
+fn is_memory_backed_fs(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `cpath` is NUL-terminated; `statfs` initializes `buf` on success.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(cpath.as_ptr(), &mut buf) } != 0 {
+        return false;
+    }
+    /// Linux `uapi/linux/magic.h` `RAMFS_MAGIC` (not exported by `libc`).
+    const RAMFS_MAGIC: libc::c_long = 0x8584_58f6_u32 as libc::c_long;
+    #[allow(clippy::unnecessary_cast)]
+    let fs_type = buf.f_type as libc::c_long;
+    #[allow(clippy::unnecessary_cast)]
+    {
+        fs_type == libc::TMPFS_MAGIC as libc::c_long || fs_type == RAMFS_MAGIC
+    }
+}
+
+/// On-disk fallback staging parent under this process's local data directory
+/// (`~/.local/share/meshharbor/update-staging` or
+/// `/root/.local/share/meshharbor/update-staging`), used only when `/var/tmp`
+/// is missing, read-only (e.g. a pre-FR-96 P2a sandboxed user unit), or
+/// memory-backed.
+#[cfg(target_os = "linux")]
+fn linux_data_staging_base() -> Option<PathBuf> {
+    crate::appdirs::project_dirs().map(|d| d.data_local_dir().join("update-staging"))
+}
+
+/// Ordered Linux staging parent candidates:
+/// 1. `/var/tmp` (FHS persistent on-disk temp dir, sticky `1777`, `_apt`-traversable)
+/// 2. `<data_local_dir>/update-staging` (on-disk app data fallback)
+/// 3. `std::env::temp_dir()` (last resort when no disk base is usable)
+///
+/// Deliberately does NOT consult `TMPDIR` ahead of `/var/tmp`: an unset
+/// `TMPDIR` or `TMPDIR=/tmp` must never pull staging back onto `/tmp` tmpfs.
+#[cfg(target_os = "linux")]
+fn linux_staging_candidates() -> Vec<LinuxStagingCandidate> {
+    let mut out = vec![LinuxStagingCandidate {
+        path: PathBuf::from(LINUX_DISK_STAGING_BASE),
+        create_if_missing: false,
+        reject_memory_fs: true,
+    }];
+    if let Some(data_base) = linux_data_staging_base() {
+        out.push(LinuxStagingCandidate {
+            path: data_base,
+            create_if_missing: true,
+            reject_memory_fs: false,
+        });
+    }
+    out.push(LinuxStagingCandidate {
+        path: std::env::temp_dir(),
+        create_if_missing: false,
+        reject_memory_fs: false,
+    });
+    out
+}
+
+/// Prepare one candidate staging parent and return its canonical path if
+/// usable. For self-created fallback directories, refuses symlinks and
+/// foreign-owned directories; for `reject_memory_fs` candidates, refuses `/tmp`
+/// and `tmpfs`/`ramfs` mounts.
+#[cfg(target_os = "linux")]
+fn prepare_linux_staging_base(c: &LinuxStagingCandidate) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    if c.create_if_missing {
+        match c.path.symlink_metadata() {
+            Ok(meta) => {
+                // SAFETY: geteuid takes no arguments and cannot fail.
+                let uid = unsafe { libc::geteuid() };
+                if !meta.is_dir() || meta.uid() != uid {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "fallback staging parent is not a caller-owned directory",
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(&c.path)?;
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        let meta = std::fs::metadata(&c.path)?;
+        if !meta.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "staging parent is not a directory",
+            ));
+        }
+    }
+    let canon = std::fs::canonicalize(&c.path)?;
+    if c.reject_memory_fs && (canon == std::path::Path::new("/tmp") || is_memory_backed_fs(&canon))
+    {
+        return Err(std::io::Error::other(
+            "staging parent resolves to /tmp or a memory-backed filesystem",
+        ));
+    }
+    Ok(canon)
+}
+
+/// Create a fresh `0700` `TempDir` in the first usable candidate from
+/// `candidates`. Preserves #2055: every call gets an unpredictable,
+/// caller-owned directory created atomically via `mkdtemp`.
+#[cfg(target_os = "linux")]
+fn create_tempdir_in_candidates(
+    candidates: &[LinuxStagingCandidate],
+    prefix: &str,
+) -> std::io::Result<tempfile::TempDir> {
     use std::os::unix::fs::PermissionsExt;
-    let td = tempfile::Builder::new()
-        .prefix(STAGING_DIR_PREFIX)
-        .tempdir_in(std::env::temp_dir())?;
+    let mut last_err = None;
+    for c in candidates {
+        match prepare_linux_staging_base(c).and_then(|base| {
+            tempfile::Builder::new()
+                .prefix(prefix)
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(base)
+        }) {
+            Ok(td) => return Ok(td),
+            Err(e) => {
+                tracing::debug!(
+                    candidate = %c.path.display(),
+                    error = %e,
+                    "update: Linux staging base unavailable; trying next candidate"
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no usable Linux staging directory candidate",
+        )
+    }))
+}
+
+/// Create a fresh per-download staging directory in the first usable
+/// candidate and relax its mode from `0700` to `0755` so apt's `_apt` sandbox
+/// user can read the `.deb` while keeping write strictly owner-only.
+#[cfg(target_os = "linux")]
+fn stage_dir_in_candidates(candidates: &[LinuxStagingCandidate]) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let td = create_tempdir_in_candidates(candidates, STAGING_DIR_PREFIX)?;
     // mkdtemp created it 0700 and ours; relax to exactly 0755 with an explicit
     // chmod (bypassing umask) now that it exists and only we can reach it.
     std::fs::set_permissions(td.path(), std::fs::Permissions::from_mode(0o755))?;
     Ok(td.keep())
+}
+
+/// Shared on-disk `TMPDIR` for child package-manager and extraction processes
+/// (`apt-get`, `dpkg`, `dpkg-deb`, `tar`, `rpm`, `dnf`, `zypper`, `yum`).
+///
+/// Returns canonical `/var/tmp` when it is a usable on-disk directory — sticky
+/// `1777` so sandboxed helper users such as Debian's `_apt` can write there too
+/// without permission failures. Returns `None` if `/var/tmp` is unavailable or
+/// tmpfs so callers keep their default rather than pointing `_apt` at a
+/// caller-private directory it cannot traverse.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_shared_disk_tmpdir() -> Option<PathBuf> {
+    let primary = LinuxStagingCandidate {
+        path: PathBuf::from(LINUX_DISK_STAGING_BASE),
+        create_if_missing: false,
+        reject_memory_fs: true,
+    };
+    prepare_linux_staging_base(&primary).ok()
+}
+
+/// Every parent directory that may legitimately hold one of our Linux
+/// per-download staging dirs (`STAGING_DIR_PREFIX` + random suffix):
+/// `/var/tmp`, the on-disk app-data fallback, `std::env::temp_dir()`, and
+/// `/tmp` (for legacy leftovers when `TMPDIR` points elsewhere).
+#[cfg(target_os = "linux")]
+fn linux_known_staging_bases() -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+    let mut push_unique = |p: PathBuf| {
+        if !bases.contains(&p) {
+            bases.push(p);
+        }
+    };
+    let mut push_with_canon = |p: PathBuf| {
+        let canon = std::fs::canonicalize(&p).ok();
+        push_unique(p);
+        if let Some(c) = canon {
+            push_unique(c);
+        }
+    };
+    push_with_canon(PathBuf::from(LINUX_DISK_STAGING_BASE));
+    if let Some(data_base) = linux_data_staging_base() {
+        push_with_canon(data_base);
+    }
+    push_with_canon(std::env::temp_dir());
+    push_with_canon(PathBuf::from("/tmp"));
+    bases
+}
+
+/// Where a just-downloaded installer is staged before it runs.
+///
+/// ⚠️ Linux: a FRESH private directory per download (mkdtemp — a random name,
+/// created 0700 then relaxed to 0755, owned by the caller), placed on disk
+/// under `/var/tmp` (with fallback to `<data_local_dir>/update-staging`, then
+/// `std::env::temp_dir()`). Staging off `/tmp` avoids memory-backed `tmpfs`
+/// OOMs on small VMs without depending on `TMPDIR`, while `/var/tmp`'s sticky
+/// `1777` + per-download `mkdtemp` preserves the exact #2055 invariant:
+/// NEVER the old fixed `/tmp/meshharbord-update/<asset>` — sticky parents do
+/// not protect a pre-created subdirectory owned by another local user, who
+/// could `rename` an attacker package over the genuine one between in-memory
+/// signature check and the installer's read (`apt-get install <path>`,
+/// `tar -xzf <path>`). A directory nobody else owns closes it: a non-owner
+/// cannot create, rename or unlink inside it. 0755 (not 0700) so apt's `_apt`
+/// sandbox user can read the `.deb` — else apt warns and falls back to an
+/// unsandboxed-root install anyway, but the warning is noise we can avoid.
+/// FR-96 security review (#2055).
+#[cfg(target_os = "linux")]
+fn stage_dir() -> std::io::Result<PathBuf> {
+    stage_dir_in_candidates(&linux_staging_candidates())
 }
 
 /// Windows: a fresh, private staging directory per download — Linux's #2055
@@ -1425,12 +1648,31 @@ fn write_installer(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
 }
 
 /// Whether `dir` is one of our private staging directories, by name
-/// (`STAGING_DIR_PREFIX` + a random suffix) and location (directly in
-/// `temp_dir()`). Name-and-place only, on purpose: the guard's job is to stop a
-/// cleanup touching a path that is NOT ours — the old fixed `meshharbord-update`
-/// (no trailing dot, so excluded) from a pre-fix build, or a wizard-supplied
-/// installer elsewhere.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+/// (`STAGING_DIR_PREFIX` + a random suffix) and location (directly in one of
+/// our known staging parents: on Linux `/var/tmp`, the app-data fallback,
+/// `temp_dir()` or legacy `/tmp`; on Windows `temp_dir()`). Name-and-place
+/// only, on purpose: the guard's job is to stop a cleanup touching a path that
+/// is NOT ours — the old fixed `meshharbord-update` (no trailing dot, so
+/// excluded) from a pre-fix build, or a wizard-supplied installer elsewhere.
+#[cfg(target_os = "linux")]
+fn is_staging_dir(dir: &std::path::Path) -> bool {
+    let bases = linux_known_staging_bases();
+    is_staging_dir_in_bases(dir, &bases)
+}
+
+#[cfg(target_os = "linux")]
+fn is_staging_dir_in_bases(dir: &std::path::Path, bases: &[PathBuf]) -> bool {
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    bases.iter().any(|b| b.as_path() == parent)
+        && dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(STAGING_DIR_PREFIX))
+}
+
+#[cfg(target_os = "windows")]
 fn is_staging_dir(dir: &std::path::Path) -> bool {
     dir.parent() == Some(std::env::temp_dir().as_path())
         && dir
@@ -1471,8 +1713,9 @@ pub(crate) fn discard_staging(installer_path: &std::path::Path) {
 const STALE_DOWNLOAD_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// Linux: once at startup, before any update task runs, remove this account's
-/// download dirs that a previous process left in `temp_dir()`, and on a
-/// same-user install the update stages nothing needs any more
+/// download dirs that a previous process left in our staging bases (`/var/tmp`,
+/// the app-data fallback, `temp_dir()`, and legacy `/tmp`), and on a same-user
+/// install the update stages nothing needs any more
 /// (`updater_linux_user::prune_stages`). The stage pass runs again 15 minutes
 /// later: the transaction that started this process records `activated` only
 /// once it has seen this process answer, and only then is the stage before it
@@ -1486,7 +1729,8 @@ pub fn sweep_stale_update_staging_at_start() {
     // SAFETY: geteuid takes no arguments and cannot fail.
     let uid = unsafe { libc::geteuid() };
     let now = std::time::SystemTime::now();
-    let removed = sweep_stale_downloads_in(&std::env::temp_dir(), uid, now, STALE_DOWNLOAD_AGE);
+    let removed =
+        sweep_stale_downloads_in_bases(&linux_known_staging_bases(), uid, now, STALE_DOWNLOAD_AGE);
     if removed > 0 {
         tracing::info!(
             removed,
@@ -1502,6 +1746,21 @@ pub fn sweep_stale_update_staging_at_start() {
                 linux_user::prune_stages(std::time::SystemTime::now());
             });
     }
+}
+
+/// Run [`sweep_stale_downloads_in`] across every candidate staging parent,
+/// summing the removed count.
+#[cfg(target_os = "linux")]
+fn sweep_stale_downloads_in_bases(
+    bases: &[PathBuf],
+    uid: u32,
+    now: std::time::SystemTime,
+    min_age: Duration,
+) -> usize {
+    bases
+        .iter()
+        .map(|base| sweep_stale_downloads_in(base, uid, now, min_age))
+        .sum()
 }
 
 /// The download dirs in `base` that this sweep may remove: ours by name
@@ -1834,11 +2093,22 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
             "no digest field on asset; falling through to size floor only"
         );
     }
+    /// Discards the staged download on any early return or task cancellation
+    /// unless explicitly disarmed right before handing `path` to the caller.
+    struct DownloadCleanup<'a>(Option<&'a std::path::Path>);
+    impl Drop for DownloadCleanup<'_> {
+        fn drop(&mut self) {
+            if let Some(p) = self.0.take() {
+                discard_download(p);
+            }
+        }
+    }
+
     let dir = stage_dir().context("creating the staging dir")?;
     let path = dir.join(&asset.name);
+    let mut cleanup = DownloadCleanup(Some(&path));
     if let Err(e) = write_installer(&path, &bytes) {
         // A full disk stops here with a partial file that nothing else removes.
-        discard_download(&path);
         return Err(e).context("writing installer to disk");
     }
 
@@ -1913,7 +2183,6 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
                 );
             }
             Err(e) => {
-                discard_download(&path);
                 bail!(
                     "refusing to install {}: {e:#}. The download was discarded and this \
                      agent keeps its current version.",
@@ -1922,6 +2191,9 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
             }
         }
     }
+    // Release the ~100 MB in-memory archive buffer before spawning `dpkg-deb` /
+    // `tar` / `rpm` for the version check below (especially helpful on 1 GB VMs).
+    drop(bytes);
 
     // Version binding — the check above proves the bytes are OURS, this one
     // proves they are the RELEASE we were told to install. Both are needed:
@@ -1950,7 +2222,6 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
             tracing::info!(asset = %asset.name, reason = %e, "no artifact-version binding available");
         }
         Err(e) => {
-            discard_download(&path);
             bail!(
                 "refusing to install {}: {e}. The download was discarded and this \
                  agent keeps its current version.",
@@ -1959,6 +2230,8 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         }
     }
 
+    cleanup.0 = None;
+    drop(cleanup);
     Ok(path)
 }
 
@@ -2605,10 +2878,38 @@ const TARBALL_INSTALL_IF_ABSENT: &[&str] = &[
     "usr/share/doc/meshharbor/README.Debian",
 ];
 
+/// Create a private (`0700`) on-disk unpack directory for `install_tarball_linux`.
+///
+/// When `tarball` already sits inside one of our on-disk staging dirs, unpacks
+/// in a private `TempDir` inside it so both archive and extracted payload share
+/// one caller-owned directory (and one startup-sweep target if the process is
+/// killed). Otherwise (e.g. a tarball supplied from `/tmp` or an arbitrary
+/// directory), creates a `STAGING_DIR_PREFIX` `TempDir` using our on-disk
+/// candidate ladder so unpacking still stays off `/tmp` tmpfs.
+///
+/// Returning `tempfile::TempDir` guarantees the unpacked tree (~500 MB) is
+/// cleaned up automatically on both success and every early-return error path.
+#[cfg(target_os = "linux")]
+fn create_tarball_unpack_dir(tarball: &std::path::Path) -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(parent) = tarball.parent()
+        && is_staging_dir(parent)
+        && !is_memory_backed_fs(parent)
+        && parent.parent() != Some(std::path::Path::new("/tmp"))
+        && let Ok(td) = tempfile::Builder::new()
+            .prefix("unpack.")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+    {
+        return Ok(td);
+    }
+    create_tempdir_in_candidates(&linux_staging_candidates(), STAGING_DIR_PREFIX)
+}
+
 /// Install the universal tarball — the path for hosts with no dpkg/apt.
 ///
-/// Extract to a staging dir, verify the payload, then move each file into
-/// place. Replacing a RUNNING executable is safe on Linux when done by
+/// Extract to a private on-disk staging dir, verify the payload, then move each
+/// file into place. Replacing a RUNNING executable is safe on Linux when done by
 /// rename-over: the running process keeps its inode and only new execs see
 /// the new file. That is what dpkg does, and why the .deb path has always
 /// been able to replace a live `/usr/bin/meshharbord`.
@@ -2630,15 +2931,19 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
         );
     }
 
-    let stage = tarball.with_extension("stage");
-    let _ = std::fs::remove_dir_all(&stage);
-    std::fs::create_dir_all(&stage).context("creating the staging dir")?;
+    let stage = create_tarball_unpack_dir(tarball).context("creating the unpack dir")?;
 
-    let st = std::process::Command::new("tar")
+    let mut tar_cmd = std::process::Command::new("tar");
+    if let Some(tmpdir) =
+        linux_shared_disk_tmpdir().or_else(|| stage.path().parent().map(Path::to_path_buf))
+    {
+        tar_cmd.env("TMPDIR", tmpdir);
+    }
+    let st = tar_cmd
         .arg("-xzf")
         .arg(tarball)
         .arg("-C")
-        .arg(&stage)
+        .arg(stage.path())
         .status()
         .context("spawning tar (is it installed?)")?;
     if !st.success() {
@@ -2650,8 +2955,8 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
     }
 
     // The archive carries a single versioned prefix dir.
-    let prefix = std::fs::read_dir(&stage)
-        .context("reading the staging dir")?
+    let prefix = std::fs::read_dir(stage.path())
+        .context("reading the unpack dir")?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .find(|p| p.is_dir())
@@ -2732,7 +3037,9 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
         }
     }
 
-    let _ = std::fs::remove_dir_all(&stage);
+    if let Err(e) = stage.close() {
+        tracing::warn!(error = %e, "update: could not remove the tarball unpack dir");
+    }
     tracing::info!(
         installed,
         tarball = %tarball.display(),
@@ -2744,8 +3051,14 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
 #[cfg(target_os = "linux")]
 fn run_linux_install_candidates(euid: u32, path: &str) -> Result<u32> {
     let mut attempts: Vec<String> = Vec::new();
+    let child_tmpdir = linux_shared_disk_tmpdir();
     for (bin, args) in linux_install_candidates(euid, path) {
-        let mut child = match std::process::Command::new(bin).args(&args).spawn() {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(&args);
+        if let Some(ref tmpdir) = child_tmpdir {
+            cmd.env("TMPDIR", tmpdir);
+        }
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(bin, error = %e, "update install: candidate not spawnable");
@@ -2798,8 +3111,9 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         // read it, the tarball was extracted and placed), and on Linux no
         // watcher ever re-runs it (that path is Windows-only, post_install.rs).
         // Remove our private per-download staging dir — ours alone, guarded by
-        // the prefix so a wizard-supplied path outside temp_dir() is untouched.
-        // Without this a fresh mkdtemp dir per download would accrete in /tmp.
+        // the prefix and known staging parents so a wizard-supplied path
+        // elsewhere is untouched. Without this a fresh mkdtemp dir per download
+        // would accrete on disk in /var/tmp.
         discard_staging(installer_path);
         result
     }
@@ -3868,6 +4182,9 @@ pub async fn run_periodic(
             if matches!(outcome, CheckOutcome::UpdateReady { .. })
                 && !wait_for_agent_turns(&mut shutdown, "auto-updater").await
             {
+                if let CheckOutcome::UpdateReady { installer_path, .. } = outcome {
+                    discard_download(&installer_path);
+                }
                 return;
             }
             if act_on_outcome(outcome, &shutdown_tx) {
@@ -3936,6 +4253,9 @@ pub async fn run_periodic(
         if matches!(outcome, CheckOutcome::UpdateReady { .. })
             && !wait_for_agent_turns(&mut shutdown, "auto-updater").await
         {
+            if let CheckOutcome::UpdateReady { installer_path, .. } = outcome {
+                discard_download(&installer_path);
+            }
             return;
         }
         if act_on_outcome(outcome, &shutdown_tx) {
@@ -5508,7 +5828,8 @@ mod tests {
     }
 
     /// Cleanup removes our own staging dir whole, and refuses to touch anything
-    /// that is not ours (a wrong-prefix sibling, a path outside temp_dir()).
+    /// that is not ours (a wrong-prefix sibling in `/var/tmp` or `temp_dir()`,
+    /// or a path outside our staging bases).
     #[cfg(target_os = "linux")]
     #[test]
     fn discard_staging_removes_only_our_own_dir() {
@@ -5519,18 +5840,360 @@ mod tests {
         discard_staging(&installer);
         assert!(!ours.exists(), "our own staging dir is removed");
 
-        // A sibling in temp_dir() with a DIFFERENT prefix: left alone.
-        let not_ours = tempfile::Builder::new()
-            .prefix("not-ours.")
-            .tempdir_in(std::env::temp_dir())
-            .expect("not-ours dir");
-        let other = not_ours.path().join("foo.deb");
-        std::fs::write(&other, b"y").expect("write other");
-        discard_staging(&other);
-        assert!(other.exists(), "a dir that is not ours is left alone");
+        // A sibling in /var/tmp (when available) and in temp_dir() with a
+        // DIFFERENT prefix: left alone.
+        for base in [
+            linux_shared_disk_tmpdir().unwrap_or_else(std::env::temp_dir),
+            std::env::temp_dir(),
+        ] {
+            let not_ours = tempfile::Builder::new()
+                .prefix("not-ours.")
+                .tempdir_in(&base)
+                .expect("not-ours dir");
+            let other = not_ours.path().join("foo.deb");
+            std::fs::write(&other, b"y").expect("write other");
+            discard_staging(&other);
+            assert!(other.exists(), "a dir that is not ours is left alone");
+        }
+
+        // A matching prefix outside any known staging base: left alone.
+        let outside = tempfile::tempdir().expect("outside");
+        let decoy_dir = outside.path().join(format!("{STAGING_DIR_PREFIX}decoy"));
+        std::fs::create_dir(&decoy_dir).expect("mkdir decoy");
+        let decoy = decoy_dir.join("foo.deb");
+        std::fs::write(&decoy, b"z").expect("write decoy");
+        discard_staging(&decoy);
+        assert!(
+            decoy.exists(),
+            "a matching prefix outside known bases is left alone"
+        );
 
         // A path whose parent is not a staging dir at all: a no-op, no panic.
         discard_staging(std::path::Path::new("/usr/bin/meshharbord"));
+    }
+
+    /// Linux updater staging must stay off `/tmp` tmpfs on disk (`/var/tmp`)
+    /// regardless of whether `TMPDIR` is unset, points to `/tmp`, or points to
+    /// a subdirectory under `/tmp`. Uses child processes so `TMPDIR` is never
+    /// mutated in this parallel test runner.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn staging_dir_prefers_var_tmp_even_when_tmpdir_unset_or_slash_tmp() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        const CHILD: &str = "MESHHARBOR_UPDATER_STAGE_PROBE_CHILD";
+        let Some(expected_base) = linux_shared_disk_tmpdir() else {
+            return;
+        };
+        if std::env::var_os(CHILD).is_some() {
+            let staged = stage_dir().expect("stage_dir in child");
+            assert_eq!(
+                staged.parent(),
+                Some(expected_base.as_path()),
+                "stage_dir must land in {} even when TMPDIR={:?}, got {}",
+                expected_base.display(),
+                std::env::var_os("TMPDIR"),
+                staged.display()
+            );
+            assert!(
+                !staged.starts_with(std::path::Path::new("/tmp")),
+                "stage_dir must not land in /tmp: {}",
+                staged.display()
+            );
+            assert!(
+                is_staging_dir(&staged),
+                "stage_dir recognised by is_staging_dir"
+            );
+            assert!(
+                !is_staging_dir(&expected_base),
+                "base itself is not a staging dir"
+            );
+            let meta = std::fs::metadata(&staged).expect("stat staged");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+            // SAFETY: geteuid takes no arguments and cannot fail.
+            assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+            let pkg = staged.join("meshharbord-0.4.0-x86_64-unknown-linux-gnu.deb");
+            write_installer(&pkg, b"deb").expect("write_installer");
+            discard_staging(&pkg);
+            assert!(
+                !staged.exists(),
+                "discard_staging must remove staged dir in /var/tmp"
+            );
+            println!("LINUX_DISK_STAGE_OK");
+            return;
+        }
+        let tmp_sub = tempfile::Builder::new()
+            .prefix("mh-tmpdir-probe.")
+            .tempdir_in("/tmp")
+            .expect("tmp subdir");
+        let exe = std::env::current_exe().expect("test exe");
+        for (label, tmpdir) in [
+            ("unset", None),
+            ("slash-tmp", Some(std::ffi::OsStr::new("/tmp"))),
+            ("tmp-subdir", Some(tmp_sub.path().as_os_str())),
+        ] {
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.args([
+                "--exact",
+                "updater::tests::staging_dir_prefers_var_tmp_even_when_tmpdir_unset_or_slash_tmp",
+                "--nocapture",
+            ])
+            .env(CHILD, "1");
+            match tmpdir {
+                Some(v) => {
+                    cmd.env("TMPDIR", v);
+                }
+                None => {
+                    cmd.env_remove("TMPDIR");
+                }
+            }
+            let out = cmd.output().expect("spawn probe child");
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                out.status.success() && combined.contains("LINUX_DISK_STAGE_OK"),
+                "child ({label}) failed: {combined}"
+            );
+        }
+    }
+
+    /// When the primary disk staging base (`/var/tmp`) is missing, non-dir, or
+    /// resolves to `/tmp` (or memory-backed fs), staging falls back cleanly to
+    /// the next usable candidate and preserves `0755` + caller ownership.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn staging_dir_falls_back_when_primary_unavailable_or_tmp() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = tempfile::tempdir().expect("root");
+        let root_canon = root.path().canonicalize().expect("canon");
+
+        // 1. Primary missing (create_if_missing = false) -> creates & uses secondary.
+        let missing = root_canon.join("no-var-tmp");
+        let data_fallback = root_canon.join("app-data").join("update-staging");
+        let staged = stage_dir_in_candidates(&[
+            LinuxStagingCandidate {
+                path: missing.clone(),
+                create_if_missing: false,
+                reject_memory_fs: false,
+            },
+            LinuxStagingCandidate {
+                path: data_fallback.clone(),
+                create_if_missing: true,
+                reject_memory_fs: false,
+            },
+        ])
+        .expect("fallback succeeds");
+        assert!(!missing.exists(), "missing system base must not be created");
+        assert_eq!(staged.parent(), Some(data_fallback.as_path()));
+        let meta = std::fs::metadata(&staged).expect("stat");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+        let _ = std::fs::remove_dir_all(&staged);
+
+        // 2. Primary is a regular file (fails even as root), secondary is a
+        //    symlink (refused for create_if_missing = true) -> tertiary wins.
+        let blocker_file = root_canon.join("not-a-dir");
+        std::fs::write(&blocker_file, b"x").expect("blocker");
+        let real_target = root_canon.join("symlink-target");
+        std::fs::create_dir(&real_target).expect("mkdir target");
+        let symlink_fallback = root_canon.join("symlink-fallback");
+        std::os::unix::fs::symlink(&real_target, &symlink_fallback).expect("symlink");
+        let tertiary = root_canon.join("tertiary");
+        std::fs::create_dir(&tertiary).expect("mkdir tertiary");
+        let staged = stage_dir_in_candidates(&[
+            LinuxStagingCandidate {
+                path: blocker_file,
+                create_if_missing: false,
+                reject_memory_fs: false,
+            },
+            LinuxStagingCandidate {
+                path: symlink_fallback,
+                create_if_missing: true,
+                reject_memory_fs: false,
+            },
+            LinuxStagingCandidate {
+                path: tertiary.clone(),
+                create_if_missing: false,
+                reject_memory_fs: false,
+            },
+        ])
+        .expect("tertiary fallback succeeds");
+        assert_eq!(staged.parent(), Some(tertiary.as_path()));
+        let _ = std::fs::remove_dir_all(&staged);
+
+        // 3. `/tmp` (and a symlink to `/tmp`) rejected when reject_memory_fs=true.
+        let link_to_tmp = root_canon.join("var-tmp-to-tmp");
+        std::os::unix::fs::symlink("/tmp", &link_to_tmp).expect("symlink to /tmp");
+        let staged = stage_dir_in_candidates(&[
+            LinuxStagingCandidate {
+                path: PathBuf::from("/tmp"),
+                create_if_missing: false,
+                reject_memory_fs: true,
+            },
+            LinuxStagingCandidate {
+                path: link_to_tmp,
+                create_if_missing: false,
+                reject_memory_fs: true,
+            },
+            LinuxStagingCandidate {
+                path: tertiary.clone(),
+                create_if_missing: false,
+                reject_memory_fs: false,
+            },
+        ])
+        .expect("skips /tmp and symlink-to-/tmp");
+        assert_eq!(staged.parent(), Some(tertiary.as_path()));
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+
+    /// Multi-base recognition and startup sweep: both the primary disk base
+    /// and a legacy `/tmp` base are recognised and swept for stale staging dirs,
+    /// while young or unrelated entries in either base remain untouched.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn staging_bases_recognise_and_sweep_primary_and_legacy_dirs() {
+        use std::time::{Duration, SystemTime};
+        let root = tempfile::tempdir().expect("root");
+        let primary = root.path().join("var-tmp");
+        let legacy = root.path().join("legacy-tmp");
+        let elsewhere = root.path().join("elsewhere");
+        for d in [&primary, &legacy, &elsewhere] {
+            std::fs::create_dir(d).unwrap();
+        }
+        let bases = vec![primary.clone(), legacy.clone()];
+
+        let primary_old = primary.join(format!("{STAGING_DIR_PREFIX}pold"));
+        let primary_young = primary.join(format!("{STAGING_DIR_PREFIX}pyoung"));
+        let legacy_old = legacy.join(format!("{STAGING_DIR_PREFIX}lold"));
+        let elsewhere_old = elsewhere.join(format!("{STAGING_DIR_PREFIX}eold"));
+        for d in [&primary_old, &primary_young, &legacy_old, &elsewhere_old] {
+            std::fs::create_dir(d).unwrap();
+        }
+        assert!(is_staging_dir_in_bases(&primary_old, &bases));
+        assert!(is_staging_dir_in_bases(&legacy_old, &bases));
+        assert!(!is_staging_dir_in_bases(&elsewhere_old, &bases));
+        assert!(!is_staging_dir_in_bases(&primary, &bases));
+        assert!(!is_staging_dir_in_bases(
+            &primary.join("meshharbord-update"),
+            &bases
+        ));
+
+        let ancient = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        for d in [&primary_old, &legacy_old, &elsewhere_old] {
+            std::fs::File::open(d)
+                .unwrap()
+                .set_modified(ancient)
+                .unwrap();
+        }
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let removed = sweep_stale_downloads_in_bases(
+            &bases,
+            uid,
+            SystemTime::now(),
+            Duration::from_secs(24 * 3600),
+        );
+        assert_eq!(
+            removed, 2,
+            "sweeps stale dirs in both primary and legacy bases"
+        );
+        assert!(!primary_old.exists());
+        assert!(!legacy_old.exists());
+        assert!(primary_young.exists(), "young dir kept");
+        assert!(elsewhere_old.exists(), "unknown base untouched");
+    }
+
+    /// Tarball unpacking stays off `/tmp` tmpfs, uses a private `0700` dir, and
+    /// cleans up automatically on error paths (without touching `/usr`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tarball_unpack_stays_on_disk_is_private_and_cleans_up_on_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(disk_base) = linux_shared_disk_tmpdir() else {
+            return;
+        };
+
+        // 1. Tarball in our on-disk staging dir -> unpacks in a 0700 child
+        //    inside that same staging dir and disappears on drop.
+        let staged = stage_dir().expect("stage_dir");
+        let tarball = staged.join("meshharbord-0.4.0-x86_64-unknown-linux-gnu.tar.gz");
+        let unpack = create_tarball_unpack_dir(&tarball).expect("unpack in staged");
+        let unpack_path = unpack.path().to_path_buf();
+        assert_eq!(unpack_path.parent(), Some(staged.as_path()));
+        assert!(!unpack_path.starts_with(std::path::Path::new("/tmp")));
+        assert_eq!(
+            std::fs::metadata(&unpack_path)
+                .expect("stat unpack")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+            "unpack dir is strictly 0700"
+        );
+        drop(unpack);
+        assert!(!unpack_path.exists(), "unpack dir removed on drop");
+
+        // 2. Tarball outside our staging dir (e.g. under /tmp) -> still unpacks
+        //    on disk under /var/tmp, 0700, removed on drop.
+        let unpack_outside =
+            create_tarball_unpack_dir(std::path::Path::new("/tmp/manual-release.tar.gz"))
+                .expect("unpack outside");
+        let outside_path = unpack_outside.path().to_path_buf();
+        assert_eq!(outside_path.parent(), Some(disk_base.as_path()));
+        assert!(!outside_path.starts_with(std::path::Path::new("/tmp")));
+        assert_eq!(
+            std::fs::metadata(&outside_path)
+                .expect("stat outside unpack")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        drop(unpack_outside);
+        assert!(!outside_path.exists());
+
+        // 3. Real `install_tarball_linux` with an incomplete tarball fails the
+        //    required-member check BEFORE touching /usr and leaves no unpack dir.
+        let src_root = tempfile::tempdir().expect("tar src");
+        let payload_dir = src_root
+            .path()
+            .join("meshharbord-0.4.0-x86_64-unknown-linux-gnu");
+        std::fs::create_dir(&payload_dir).unwrap();
+        std::fs::write(payload_dir.join("README"), b"incomplete").unwrap();
+        let tar_ok = std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&tarball)
+            .args(["-C"])
+            .arg(src_root.path())
+            .arg("meshharbord-0.4.0-x86_64-unknown-linux-gnu")
+            .status()
+            .expect("create fixture tarball")
+            .success();
+        assert!(tar_ok, "fixture tarball created");
+
+        let err = install_tarball_linux(0, &tarball)
+            .expect_err("incomplete tarball must refuse before installing");
+        assert!(
+            err.to_string().contains("missing usr/bin/meshharbord"),
+            "unexpected error: {err:#}"
+        );
+        let leftover_unpacks = std::fs::read_dir(&staged)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("unpack."))
+            .count();
+        assert_eq!(
+            leftover_unpacks, 0,
+            "failed tarball install must clean up its unpack dir"
+        );
+        discard_staging(&tarball);
+        assert!(
+            !staged.exists(),
+            "discard_staging removes the whole staging dir"
+        );
     }
 
     /// The startup sweep removes our own old download dirs and nothing else:

@@ -367,14 +367,16 @@ fn tool_on_path(tool: &str) -> bool {
 fn run_bounded(tool: &str, args: &[String], limit: std::time::Duration) -> anyhow::Result<()> {
     use anyhow::{Context, bail};
     use std::process::{Command, Stdio};
-    let mut child = Command::new(tool)
-        .args(args)
+    let mut cmd = Command::new(tool);
+    cmd.args(args)
         .envs(INSTALL_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawning {tool}"))?;
+        .stderr(Stdio::piped());
+    if let Some(tmpdir) = crate::updater::linux_shared_disk_tmpdir() {
+        cmd.env("TMPDIR", tmpdir);
+    }
+    let mut child = cmd.spawn().with_context(|| format!("spawning {tool}"))?;
     // Drained on its own thread: a package manager that fills the pipe while
     // nobody reads it would block, and look like a hang.
     let stderr = child.stderr.take().map(|mut s| {

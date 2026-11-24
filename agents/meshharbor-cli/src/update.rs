@@ -579,25 +579,111 @@ fn deb_needs_root() -> Result<()> {
     bail!("a .deb installs only on Linux")
 }
 
+/// Persistent on-disk temp dir on Linux. `/tmp` is memory-backed `tmpfs` on
+/// Debian 13, Fedora, Arch, etc.; prefer `/var/tmp` so `.deb` staging and
+/// `dpkg`/`dpkg-deb` temp files stay off RAM without depending on `TMPDIR`.
+#[cfg(target_os = "linux")]
+const LINUX_DISK_STAGING_BASE: &str = "/var/tmp";
+
+#[cfg(target_os = "linux")]
+fn is_memory_backed_fs(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `cpath` is NUL-terminated; `statfs` initializes `buf` on success.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(cpath.as_ptr(), &mut buf) } != 0 {
+        return false;
+    }
+    /// Linux `uapi/linux/magic.h` `RAMFS_MAGIC` (not exported by `libc`).
+    const RAMFS_MAGIC: libc::c_long = 0x8584_58f6_u32 as libc::c_long;
+    #[allow(clippy::unnecessary_cast)]
+    let fs_type = buf.f_type as libc::c_long;
+    #[allow(clippy::unnecessary_cast)]
+    {
+        fs_type == libc::TMPFS_MAGIC as libc::c_long || fs_type == RAMFS_MAGIC
+    }
+}
+
+/// On-disk `TMPDIR` for Linux `dpkg` / `dpkg-deb` child processes: canonical
+/// `/var/tmp` when it is an existing non-tmpfs directory.
+#[cfg(target_os = "linux")]
+fn linux_deb_child_tmpdir() -> Option<std::path::PathBuf> {
+    let base = std::path::Path::new(LINUX_DISK_STAGING_BASE);
+    if !std::fs::metadata(base).is_ok_and(|m| m.is_dir()) {
+        return None;
+    }
+    let canon = std::fs::canonicalize(base).ok()?;
+    if canon == std::path::Path::new("/tmp") || is_memory_backed_fs(&canon) {
+        return None;
+    }
+    Some(canon)
+}
+
+/// Create a private (`0700`) staging `TempDir` for `.deb` installation in the
+/// first usable candidate: `/var/tmp` (on disk) on Linux, falling back to
+/// `std::env::temp_dir()` if unavailable.
+#[cfg(target_os = "linux")]
+fn create_deb_staging_dir_in(
+    primary: &std::path::Path,
+    fallback: &std::path::Path,
+) -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::metadata(primary).is_ok_and(|m| m.is_dir())
+        && let Ok(canon) = std::fs::canonicalize(primary)
+        && canon != std::path::Path::new("/tmp")
+        && !is_memory_backed_fs(&canon)
+        && let Ok(td) = tempfile::Builder::new()
+            .prefix("meshharbor-update-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(&canon)
+    {
+        return Ok(td);
+    }
+    tempfile::Builder::new()
+        .prefix("meshharbor-update-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(fallback)
+}
+
+#[cfg(unix)]
+fn create_deb_staging_dir() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "linux")]
+    {
+        create_deb_staging_dir_in(
+            std::path::Path::new(LINUX_DISK_STAGING_BASE),
+            &std::env::temp_dir(),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .prefix("meshharbor-update-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+    }
+}
+
 /// Install the verified `.deb` with `dpkg -i`, after checking its control
 /// `Version` is the version it was offered as. Root: dpkg needs it.
 #[cfg(unix)]
 fn install_deb(deb: &[u8], offered: &str) -> Result<()> {
     deb_needs_root()?;
-    // A private dir (0700, a fresh name): nothing else can swap the file
-    // between the check and dpkg reading it.
-    let dir = tempfile::Builder::new()
-        .prefix("meshharbor-update-")
-        .tempdir()
-        .context("create a private dir for the .deb")?;
+    // A private dir (0700, a fresh name, on disk under /var/tmp on Linux):
+    // nothing else can swap the file between the check and dpkg reading it,
+    // and `TempDir` removes it on both success and error.
+    let dir = create_deb_staging_dir().context("create a private dir for the .deb")?;
     let path = dir.path().join(format!("{DEB_PACKAGE}.deb"));
     std::fs::write(&path, deb).context("write the .deb")?;
-    let field = std::process::Command::new("dpkg-deb")
-        .arg("--field")
-        .arg(&path)
-        .arg("Version")
-        .output()
-        .context("run dpkg-deb")?;
+    let mut field_cmd = std::process::Command::new("dpkg-deb");
+    field_cmd.arg("--field").arg(&path).arg("Version");
+    #[cfg(target_os = "linux")]
+    if let Some(tmpdir) = linux_deb_child_tmpdir() {
+        field_cmd.env("TMPDIR", tmpdir);
+    }
+    let field = field_cmd.output().context("run dpkg-deb")?;
     let version = String::from_utf8_lossy(&field.stdout);
     if !field.status.success() || !deb_version_is(version.trim(), offered) {
         bail!(
@@ -605,11 +691,13 @@ fn install_deb(deb: &[u8], offered: &str) -> Result<()> {
             version.trim()
         );
     }
-    let st = std::process::Command::new("dpkg")
-        .arg("-i")
-        .arg(&path)
-        .status()
-        .context("run dpkg -i")?;
+    let mut dpkg_cmd = std::process::Command::new("dpkg");
+    dpkg_cmd.arg("-i").arg(&path);
+    #[cfg(target_os = "linux")]
+    if let Some(tmpdir) = linux_deb_child_tmpdir() {
+        dpkg_cmd.env("TMPDIR", tmpdir);
+    }
+    let st = dpkg_cmd.status().context("run dpkg -i")?;
     if !st.success() {
         bail!("dpkg -i exited {:?}", st.code());
     }
@@ -977,5 +1065,35 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(left, vec![std::ffi::OsString::from("meshharbor")]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deb_staging_dir_prefers_disk_base_is_0700_and_falls_back() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(expected_base) = linux_deb_child_tmpdir() {
+            let staged = create_deb_staging_dir().expect("deb staging dir");
+            let staged_path = staged.path().to_path_buf();
+            assert_eq!(staged_path.parent(), Some(expected_base.as_path()));
+            assert!(!staged_path.starts_with(std::path::Path::new("/tmp")));
+            assert_eq!(
+                std::fs::metadata(&staged_path)
+                    .expect("stat")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            drop(staged);
+            assert!(!staged_path.exists(), "TempDir removes staged dir on drop");
+        }
+
+        // Unavailable primary (missing, or `/tmp`) falls back to secondary.
+        let fallback = tempfile::tempdir().expect("fallback");
+        let missing = fallback.path().join("no-var-tmp");
+        for primary in [missing.as_path(), std::path::Path::new("/tmp")] {
+            let td = create_deb_staging_dir_in(primary, fallback.path()).expect("fallback dir");
+            assert_eq!(td.path().parent(), Some(fallback.path()));
+        }
     }
 }

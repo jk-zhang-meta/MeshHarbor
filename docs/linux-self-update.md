@@ -41,7 +41,7 @@ shared host had 7.8 GB of them when its disk filled.
 
 | Left behind | Removed |
 |---|---|
-| The download dir `/tmp/meshharbord-update.*` | As soon as `launch` returns (it copied the archive into its stage, or failed first); a failed write removes it at once (`download_asset`); the startup sweep removes this account's ones over a day old, on every Linux install |
+| The download dir `/var/tmp/meshharbord-update.*` (on disk, off `/tmp` tmpfs; falls back to `<data_local_dir>/update-staging` then `temp_dir()`) | As soon as `launch` or the install returns (it copied/installed the archive, or failed first); a failed download/verify removes it at once (`download_asset`); the startup sweep removes this account's ones over a day old across `/var/tmp`, the fallback dir, and legacy `/tmp`, on every Linux install |
 | A stage whose preparation failed before `systemd-run` | At once: nothing else knows it, and the daemon is untouched |
 | An older `activated` stage, a `rolled_back` one (also by `ROLLBACK.sh`), one with no `result.json` | By `prune_stages` once it is an hour old: at daemon start, 15 min later, and before each new update |
 | The newest `activated` stage, any `prepared` / `failed` / `recovery_required` one, any whose `transaction/lock` is held | Kept. The first is the way back from the running binary; the others hold what a manual recovery needs |

@@ -290,12 +290,12 @@ fn bind(
 fn verify_deb(path: &Path, claimed: &str) -> Result<String, VersionError> {
     let expected = release_version_for(claimed)
         .ok_or_else(|| VersionError::UnmappableClaim(claimed.to_string()))?;
-    let out = match std::process::Command::new("dpkg-deb")
-        .arg("--field")
-        .arg(path)
-        .arg("Version")
-        .output()
-    {
+    let mut cmd = std::process::Command::new("dpkg-deb");
+    cmd.arg("--field").arg(path).arg("Version");
+    if let Some(tmpdir) = crate::updater::linux_shared_disk_tmpdir() {
+        cmd.env("TMPDIR", tmpdir);
+    }
+    let out = match cmd.output() {
         Ok(out) => out,
         // Nothing proved either way, and the install itself would need dpkg:
         // not a refusal of its own.
@@ -345,11 +345,12 @@ fn rpm_upstream_version(v: &str) -> String {
 fn verify_rpm(path: &Path, claimed: &str) -> Result<String, VersionError> {
     let expected = release_version_for(claimed)
         .ok_or_else(|| VersionError::UnmappableClaim(claimed.to_string()))?;
-    let out = match std::process::Command::new("rpm")
-        .args(["-qp", "--qf", "%{VERSION}"])
-        .arg(path)
-        .output()
-    {
+    let mut cmd = std::process::Command::new("rpm");
+    cmd.args(["-qp", "--qf", "%{VERSION}"]).arg(path);
+    if let Some(tmpdir) = crate::updater::linux_shared_disk_tmpdir() {
+        cmd.env("TMPDIR", tmpdir);
+    }
+    let out = match cmd.output() {
         Ok(out) => out,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(VersionError::Unsupported(
@@ -388,9 +389,13 @@ fn verify_rpm(_path: &Path, _claimed: &str) -> Result<String, VersionError> {
 fn verify_tarball(path: &Path, claimed: &str) -> Result<String, VersionError> {
     let expected = release_version_for(claimed)
         .ok_or_else(|| VersionError::UnmappableClaim(claimed.to_string()))?;
-    let out = std::process::Command::new("tar")
-        .arg("-tzf")
-        .arg(path)
+    let mut cmd = std::process::Command::new("tar");
+    cmd.arg("-tzf").arg(path);
+    #[cfg(target_os = "linux")]
+    if let Some(tmpdir) = crate::updater::linux_shared_disk_tmpdir() {
+        cmd.env("TMPDIR", tmpdir);
+    }
+    let out = cmd
         .output()
         .map_err(|e| VersionError::Unreadable(format!("running tar: {e}")))?;
     if !out.status.success() {
