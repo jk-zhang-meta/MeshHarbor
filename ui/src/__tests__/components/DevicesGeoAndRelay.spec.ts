@@ -723,7 +723,7 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     expect(wrapper.findAll('[data-testid="device-zone-chip"]')).toHaveLength(2)
   })
 
-  it('lets an ordinary device owner (DEFAULT_MEMBER without MANAGE_AGENTS) fetch zones and open Zone Assignment ONLY on their own device while hiding NetworkZonesSection', async () => {
+  it('FR-124: hides NetworkZonesSection and Zone Assignment from ordinary device owners (DEFAULT_MEMBER without MANAGE_AGENTS) even on their own device while allowing zone catalog reads and MANAGE_AGENTS assignment', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const router = createRouter({
@@ -837,14 +837,15 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
       return { items: [] }
     })
 
-    // 2. networkZonesStore.fetchZones succeeds for DEFAULT_MEMBER!
+    // 2. networkZonesStore.fetchZones succeeds for DEFAULT_MEMBER (catalog is member-readable).
     const zonesStore = useNetworkZonesStore()
     const loaded = await zonesStore.fetchZones(TID)
     expect(loaded?.revision).toBe(2)
     expect(zonesStore.zones.map((z) => z.id)).toEqual(['cn', 'non-cn'])
 
-    // 3. Mount AgentsSection: own row's action menu shows `menu-zone-assignment` and opens DeviceZoneDialog;
-    //    colleague's row hides `menu-zone-assignment`!
+    // 3. Mount AgentsSection: per FR-124, a zone is the admin's boundary, so a DEFAULT_MEMBER
+    //    without MANAGE_AGENTS cannot open Zone Assignment on EITHER a colleague's device OR
+    //    their own device (server refuses owners with 403 too).
     wrapper = mount(AgentsSection, {
       props: { tenantId: TID },
       global: { plugins: [pinia, vuetify, router] },
@@ -863,12 +864,29 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
     await flushPromises()
     expect(document.body.querySelector('[data-testid="menu-zone-assignment"]')).toBeNull()
 
-    // Close menu and open own device's menu -> HAS menu-zone-assignment and opens dialog with selectable zones!
+    // Close colleague menu and open own device's menu -> ALSO NO menu-zone-assignment (FR-124)!
     await colleagueBtn.trigger('click')
     await flushPromises()
     const ownBtn = menuButtons.find((b) =>
       b.attributes('aria-label')?.includes('my-workstation'),
     )!
+    await ownBtn.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="menu-zone-assignment"]')).toBeNull()
+
+    // Clicking the own device's zone chip also must NOT open DeviceZoneDialog for DEFAULT_MEMBER!
+    await ownBtn.trigger('click')
+    await flushPromises()
+    const zoneChips = wrapper.findAll('[data-testid="device-zone-chip"]')
+    expect(zoneChips).toHaveLength(2)
+    await zoneChips[0]!.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="zone-opt-pinned"]')).toBeNull()
+
+    // 4. Granting MANAGE_AGENTS (DEFAULT_ADMIN, still without ADMINISTRATOR) reveals
+    //    menu-zone-assignment and opens DeviceZoneDialog with selectable zones!
+    tenantStore.myPermissions = DEFAULT_ADMIN
+    await flushPromises()
     await ownBtn.trigger('click')
     await flushPromises()
     const zoneMenuItem = document.body.querySelector(
