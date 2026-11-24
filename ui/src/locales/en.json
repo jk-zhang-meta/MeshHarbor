@@ -2745,7 +2745,22 @@
       "timelineBarAria": "{name}: viewing windows. Tap, or use the arrow keys, to read one",
       "timelineHint": "Tap a bar to read a viewing window.",
       "fewerLimits": "Fewer limits",
-      "allLimits": "All nine limits"
+      "allLimits": "All nine limits",
+      "unknownMember": "(unknown)",
+      "noRole": "no role",
+      "joinedOn": "Joined {when}",
+      "downloadFile": "Download {name}",
+      "deleteFile": "Delete {name}",
+      "noRoom": "no room",
+      "fileMeta": "{type} · uploaded {date}",
+      "copyInviteFor": "Copy the invite link for {who}",
+      "copyInviteCode": "Copy the invite link {code}",
+      "revokeInviteCode": "Revoke the invite {code}",
+      "inviteUsage": "Used {used} / {max} · made {date}",
+      "revoke": "Revoke",
+      "searchRooms": "Search rooms",
+      "noRoomMatches": "No room's name contains \"{q}\".",
+      "olderLines": "Show {n} older lines"
     }
   },
   "tempDevices": {

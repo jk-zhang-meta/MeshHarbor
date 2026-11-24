@@ -87,7 +87,9 @@
           <template v-if="(detail.calls ?? []).length">
             <v-divider class="my-4" />
             <div class="text-subtitle-1 mb-2">Calls</div>
-            <v-table density="compact">
+            <!-- FR-120 P4 — a card per row below 600 px (table-stack-xs): the
+                 duration and the traffic sat past the right edge. -->
+            <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
               <thead>
                 <tr>
                   <th>Room</th>
@@ -99,11 +101,11 @@
               </thead>
               <tbody>
                 <tr v-for="(c, i) in detail.calls" :key="i">
-                  <td>{{ c.room_name || c.room_id.slice(-6) }}</td>
-                  <td v-if="scope === 'platform'">{{ c.tenant_name || '—' }}</td>
-                  <td>{{ fmtTime(c.started_at) }}</td>
-                  <td>{{ c.ended_at ? fmtTime(c.ended_at) : 'still in call' }}</td>
-                  <td class="text-right">{{ fmtDuration(c.seconds) }}</td>
+                  <td class="font-weight-medium">{{ c.room_name || c.room_id.slice(-6) }}</td>
+                  <td v-if="scope === 'platform'" data-label="Org">{{ c.tenant_name || '—' }}</td>
+                  <td data-label="From">{{ fmtTime(c.started_at) }}</td>
+                  <td data-label="Until">{{ c.ended_at ? fmtTime(c.ended_at) : 'still in call' }}</td>
+                  <td data-label="Duration" class="text-right">{{ fmtDuration(c.seconds) }}</td>
                 </tr>
               </tbody>
             </v-table>
@@ -112,7 +114,7 @@
           <template v-if="(detail.tunnels ?? []).length">
             <v-divider class="my-4" />
             <div class="text-subtitle-1 mb-2">Tunnel sessions</div>
-            <v-table density="compact">
+            <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
               <thead>
                 <tr>
                   <th>Target device</th>
@@ -125,12 +127,12 @@
               </thead>
               <tbody>
                 <tr v-for="(t, i) in detail.tunnels" :key="i">
-                  <td>{{ t.agent_display_name || t.agent_name || t.agent_id?.slice(-6) || '—' }}</td>
-                  <td v-if="scope === 'platform'">{{ t.tenant_name || '—' }}</td>
-                  <td>{{ fmtTime(t.started_at) }}</td>
-                  <td>{{ fmtTime(t.ended_at) }}</td>
-                  <td class="text-right">{{ fmtDuration(t.seconds) }}</td>
-                  <td class="text-right" :class="{ 'text-medium-emphasis': !t.bytes_known }">
+                  <td class="font-weight-medium">{{ t.agent_display_name || t.agent_name || t.agent_id?.slice(-6) || '—' }}</td>
+                  <td v-if="scope === 'platform'" data-label="Org">{{ t.tenant_name || '—' }}</td>
+                  <td data-label="From">{{ fmtTime(t.started_at) }}</td>
+                  <td data-label="Until">{{ fmtTime(t.ended_at) }}</td>
+                  <td data-label="Duration" class="text-right">{{ fmtDuration(t.seconds) }}</td>
+                  <td data-label="Traffic" class="text-right" :class="{ 'text-medium-emphasis': !t.bytes_known }">
                     {{ t.bytes_known ? fmtBytes(t.bytes ?? 0) : '—' }}
                   </td>
                 </tr>

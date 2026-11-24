@@ -2745,7 +2745,22 @@
       "timelineBarAria": "{name}：查看时段。点一下，或用左右方向键，查看其中一段",
       "timelineHint": "点一下横条，查看对应的查看时段。",
       "fewerLimits": "收起其余限额",
-      "allLimits": "查看全部九项限额"
+      "allLimits": "查看全部九项限额",
+      "unknownMember": "（未知）",
+      "noRole": "无角色",
+      "joinedOn": "{when} 加入",
+      "downloadFile": "下载 {name}",
+      "deleteFile": "删除 {name}",
+      "noRoom": "无房间",
+      "fileMeta": "{type} · 上传于 {date}",
+      "copyInviteFor": "复制发给 {who} 的邀请链接",
+      "copyInviteCode": "复制邀请链接 {code}",
+      "revokeInviteCode": "撤销邀请 {code}",
+      "inviteUsage": "已用 {used} / {max} · 创建于 {date}",
+      "revoke": "撤销",
+      "searchRooms": "搜索房间",
+      "noRoomMatches": "没有名称含“{q}”的房间。",
+      "olderLines": "显示更早的 {n} 行"
     }
   },
   "tempDevices": {

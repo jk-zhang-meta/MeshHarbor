@@ -72,8 +72,8 @@
 
   /*
    * FR-120 P4 — a phone row shows what decides, and the rest opens on a tap.
-   * The row's first cell is a phone-only summary (`d-sm-none`) holding a
-   * `stack-toggle` button; a `stack-detail` cell shows only while its row is
+   * The row's first cell is a phone-only summary (rendered only on a phone,
+   * `v-if="xs"`) holding a `stack-toggle` button; a `stack-detail` cell shows only while its row is
    * open (`stack-open` on the `<tr>`, from `useOpenRows`). Above 600 px a
    * `stack-detail` cell is an ordinary column.
    */
@@ -109,6 +109,19 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/*
+ * FR-120 P4 — the phone row a `v-data-table(-server)` renders through its
+ * `#item` slot (Members, Invites, Files): one cell the width of the row. Its
+ * `<tr>` must not carry `v-data-table__tr--mobile`, whose cells are a
+ * two-column grid (label | value): that squeezed the line into half the
+ * width ("An/yo/ne") and set the opened details beside it.
+ */
+.v-data-table .stack-row {
+  height: auto !important;
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
 }
 
 /*

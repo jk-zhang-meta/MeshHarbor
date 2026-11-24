@@ -65,6 +65,66 @@
         :mobile="xs"
         @update:options="onGridOptions"
       >
+        <!-- FR-120 P4 — on a phone a file is one line: its name, its size and
+             Download, its one action. A tap opens its room, type, upload date
+             and Delete. Every column stacked made a file about 290 px. -->
+        <template v-if="xs" #item="{ item }">
+          <tr class="v-data-table__tr" :class="{ 'stack-open': isOpen(item.id) }">
+            <td class="v-data-table__td stack-row">
+              <div class="d-flex align-center ga-2">
+                <button
+                  type="button"
+                  class="stack-toggle"
+                  :aria-expanded="isOpen(item.id)"
+                  data-testid="file-row-toggle"
+                  @click="toggle(item.id)"
+                >
+                  <v-icon size="small" class="flex-shrink-0" aria-hidden="true">{{ fileIcon(item.content_type) }}</v-icon>
+                  <span class="stack-toggle__text">
+                    {{ item.filename }}
+                    <span class="text-caption text-medium-emphasis"> · {{ formatSize(item.size) }}</span>
+                  </span>
+                  <v-icon size="small" class="flex-shrink-0" aria-hidden="true">
+                    {{ isOpen(item.id) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                  </v-icon>
+                </button>
+                <v-btn
+                  icon="mdi-download"
+                  size="small"
+                  variant="text"
+                  class="flex-shrink-0"
+                  :href="fileStore.downloadUrl(tenantId, item.id)"
+                  :aria-label="$t('mh.phone.downloadFile', { name: item.filename })"
+                />
+              </div>
+              <div v-if="isOpen(item.id)" class="pb-2" data-testid="file-row-details">
+                <div class="text-body-2">
+                  <router-link
+                    v-if="item.room_id"
+                    :to="{ name: 'room-chat', params: { tenantId: tenantId, roomId: item.room_id } }"
+                    class="text-decoration-none"
+                  >
+                    {{ item.room_name || item.room_id }}
+                  </router-link>
+                  <span v-else class="text-medium-emphasis">{{ $t('mh.phone.noRoom') }}</span>
+                </div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ $t('mh.phone.fileMeta', { type: item.content_type, date: new Date(item.created_at).toLocaleDateString() }) }}
+                </div>
+                <v-btn
+                  size="small"
+                  variant="text"
+                  color="error"
+                  prepend-icon="mdi-delete"
+                  class="mt-1"
+                  @click="handleDelete(item.id)"
+                >
+                  {{ $t('files.delete') }}
+                </v-btn>
+              </div>
+            </td>
+          </tr>
+        </template>
         <template #item.filename="{ item }">
           <v-icon size="small" class="mr-2">{{ fileIcon(item.content_type) }}</v-icon>
           {{ item.filename }}
@@ -95,12 +155,14 @@
               size="small"
               variant="text"
               :href="fileStore.downloadUrl(tenantId, item.id)"
+              :aria-label="$t('mh.phone.downloadFile', { name: item.filename })"
             />
             <v-btn
               icon="mdi-delete"
               size="small"
               variant="text"
               color="error"
+              :aria-label="$t('mh.phone.deleteFile', { name: item.filename })"
               @click="handleDelete(item.id)"
             />
           </div>
@@ -137,6 +199,7 @@ import { useFileStore } from '@/stores/files'
 import { useRoomStore } from '@/stores/rooms'
 import { useAuthStore } from '@/stores/auth'
 import { useGridColumns } from '@/composables/useGridColumns'
+import { useOpenRows } from '@/composables/useOpenRows'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import { useI18n } from 'vue-i18n'
 
@@ -150,6 +213,8 @@ const auth = useAuthStore()
 // from the same headers): only the name fitted, and Download / Delete were
 // behind a sideways scroll inside the table.
 const { xs } = useDisplay()
+// FR-120 P4 — on a phone a file is one line until tapped.
+const { isOpen, toggle } = useOpenRows<string>()
 
 const tenantId = computed(() => route.params.tenantId as string)
 const currentRoomId = computed(() => roomStore.current?.id || roomStore.rooms[0]?.id || '')

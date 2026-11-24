@@ -72,6 +72,58 @@
         :mobile="xs"
         @update:options="onGridOptions"
       >
+            <!-- FR-120 P4 — on a phone an invite is one line: who it is for,
+                 its state and Copy link, its one action. A tap opens the code,
+                 its uses, when it was made and Revoke. Every column stacked
+                 made an invite about 290 px. -->
+            <template v-if="xs" #item="{ item }">
+              <tr class="v-data-table__tr" :class="{ 'stack-open': isOpen(item.id) }">
+                <td class="v-data-table__td stack-row">
+                  <div class="d-flex align-center ga-2">
+                    <button
+                      type="button"
+                      class="stack-toggle"
+                      :aria-expanded="isOpen(item.id)"
+                      data-testid="invite-row-toggle"
+                      @click="toggle(item.id)"
+                    >
+                      <span class="stack-toggle__text">{{ item.target_email || $t('mh.invite.anyone') }}</span>
+                      <v-chip :color="statusColor(item.status)" size="x-small" variant="tonal" class="flex-shrink-0">
+                        {{ statusOptions.includes(item.status) ? $t(`mh.invite.st.${item.status}`) : item.status }}
+                      </v-chip>
+                      <v-icon size="small" class="flex-shrink-0" aria-hidden="true">
+                        {{ isOpen(item.id) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}
+                      </v-icon>
+                    </button>
+                    <v-btn
+                      icon="mdi-content-copy"
+                      size="small"
+                      variant="text"
+                      class="flex-shrink-0"
+                      :aria-label="$t('mh.phone.copyInviteFor', { who: item.target_email || $t('mh.invite.anyone') })"
+                      @click="copyLink(item.code)"
+                    />
+                  </div>
+                  <div v-if="isOpen(item.id)" class="pb-2" data-testid="invite-row-details">
+                    <code class="text-body-2">{{ item.code }}</code>
+                    <div class="text-caption text-medium-emphasis">
+                      {{ $t('mh.phone.inviteUsage', { used: item.use_count, max: item.max_uses ?? $t('mh.invite.unlimited'), date: new Date(item.created_at).toLocaleDateString() }) }}
+                    </div>
+                    <v-btn
+                      v-if="item.status === 'active'"
+                      size="small"
+                      variant="text"
+                      color="error"
+                      prepend-icon="mdi-close-circle"
+                      class="mt-1"
+                      @click="handleRevoke(item.id)"
+                    >
+                      {{ $t('mh.phone.revoke') }}
+                    </v-btn>
+                  </div>
+                </td>
+              </tr>
+            </template>
             <template #item.code="{ item }">
               <div class="d-flex align-center">
                 <code class="text-body-2">{{ item.code }}</code>
@@ -79,6 +131,7 @@
                   icon
                   size="x-small"
                   variant="text"
+                  :aria-label="$t('mh.phone.copyInviteCode', { code: item.code })"
                   @click="copyLink(item.code)"
                 >
                   <v-icon size="16">mdi-content-copy</v-icon>
@@ -110,6 +163,7 @@
                 size="small"
                 variant="text"
                 color="error"
+                :aria-label="$t('mh.phone.revokeInviteCode', { code: item.code })"
                 @click="handleRevoke(item.id)"
               >
                 <v-icon>mdi-close-circle</v-icon>
@@ -190,6 +244,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useValidation } from '@/composables/useValidation'
 import { useGridColumns } from '@/composables/useGridColumns'
+import { useOpenRows } from '@/composables/useOpenRows'
 import GridColumnPickerDialog from '@/components/common/GridColumnPickerDialog.vue'
 import BatchInviteDialog from '@/components/invite/BatchInviteDialog.vue'
 import { useI18n } from 'vue-i18n'
@@ -204,6 +259,8 @@ const auth = useAuthStore()
 // from the same headers): Uses, Created and Revoke were behind a sideways
 // scroll inside the table.
 const { xs } = useDisplay()
+// FR-120 P4 — on a phone an invite is one line until tapped.
+const { isOpen, toggle } = useOpenRows<string>()
 const { showSuccess, showError } = useSnackbar()
 const { rules } = useValidation()
 

@@ -105,7 +105,7 @@
 
         <div v-else class="log-view">
           <div
-            v-for="(line, i) in filteredLines"
+            v-for="(line, i) in shownLines"
             :key="i"
             class="log-line"
             :class="`lvl-${line.level.toLowerCase()}`"
@@ -114,6 +114,11 @@
             <span class="log-level" :class="`chip-${line.level.toLowerCase()}`">{{ line.level }}</span>
             <span class="log-target">{{ shortTarget(line.target) }}</span>
             <span class="log-msg">{{ line.msg }}{{ fmtFields(line.fields) }}</span>
+          </div>
+          <div v-if="olderLines" class="text-center mt-2">
+            <v-btn variant="tonal" size="small" data-testid="agent-logs-older" @click="showOlder">
+              {{ t('mh.phone.olderLines', { n: nextOlder }) }}
+            </v-btn>
           </div>
         </div>
       </v-card-text>
@@ -133,6 +138,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { usePhoneSlice } from '@/composables/usePhoneSlice'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { useAgentStore, type AgentLogBatch, type AgentLogLine } from '@/stores/agents'
 
@@ -199,6 +205,13 @@ const filteredLines = computed<AgentLogLine[]>(() => {
     return true
   })
 })
+
+// FR-120 P4 — on a phone the log shows its newest 200 lines, then 200 more
+// on a tap: the whole log, every line of every batch, was one scroll. A new
+// filter starts over at the newest 200. Copy visible still copies every
+// line the filter keeps.
+const LOG_PAGE = 200
+const { visible: shownLines, remaining: olderLines, nextCount: nextOlder, showMore: showOlder } = usePhoneSlice(filteredLines, LOG_PAGE)
 
 const newestBatchAge = computed(() => {
   if (batches.value.length === 0) return '—'

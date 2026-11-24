@@ -35,11 +35,43 @@
       </v-btn>
     </v-card>
 
-    <v-list v-else>
-      <template v-for="room in roomStore.rootRooms" :key="room.id">
-        <room-tree-item :room="room" :tenant-id="tenantId" :depth="0" />
-      </template>
-    </v-list>
+    <template v-else>
+      <!-- FR-120 P4 — the room tree was shown whole, at every width: on a
+           phone, a room among dozens was a long scroll away. A search lists
+           the rooms whose name matches, each with the path to it, and an
+           empty search gives the tree back. -->
+      <v-text-field
+        v-model="roomQuery"
+        density="compact"
+        variant="outlined"
+        hide-details
+        clearable
+        prepend-inner-icon="mdi-magnify"
+        :placeholder="t('mh.phone.searchRooms')"
+        :aria-label="t('mh.phone.searchRooms')"
+        class="mb-2"
+        data-testid="room-search"
+      />
+      <v-list v-if="!roomNeedle">
+        <template v-for="room in roomStore.rootRooms" :key="room.id">
+          <room-tree-item :room="room" :tenant-id="tenantId" :depth="0" />
+        </template>
+      </v-list>
+      <v-list v-else data-testid="room-search-results">
+        <v-list-item
+          v-for="r in roomMatches"
+          :key="r.id"
+          :to="`/tenant/${tenantId}/room/${r.id}`"
+          :title="r.name"
+          :subtitle="roomPath(r)"
+          prepend-icon="mdi-pound"
+          density="compact"
+        />
+        <v-list-item v-if="!roomMatches.length" class="text-medium-emphasis">
+          {{ t('mh.phone.noRoomMatches', { q: roomQuery }) }}
+        </v-list-item>
+      </v-list>
+    </template>
 
     <!-- Create room dialog -->
     <v-dialog v-model="showCreate" max-width="500">
@@ -89,6 +121,28 @@ const { rules } = useValidation()
 
 const tenantId = computed(() => route.params.tenantId as string)
 const showCreate = ref(false)
+
+// FR-120 P4 — the room search: rooms whose name contains the query, by name,
+// each with the path of its parents.
+const roomQuery = ref<string | null>('')
+const roomNeedle = computed(() => (roomQuery.value ?? '').trim().toLowerCase())
+const roomMatches = computed(() =>
+  roomStore.rooms
+    .filter((r) => r.name.toLowerCase().includes(roomNeedle.value))
+    .sort((a, b) => a.name.localeCompare(b.name)),
+)
+const roomsById = computed(() => new Map(roomStore.rooms.map((r) => [r.id, r])))
+function roomPath(r: { parent_id?: string }): string {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (let id = r.parent_id; id && !seen.has(id); id = roomsById.value.get(id)?.parent_id) {
+    seen.add(id)
+    const parent = roomsById.value.get(id)
+    if (!parent) break
+    names.unshift(parent.name)
+  }
+  return names.join(' / ')
+}
 
 const newRoom = reactive({
   name: '',

@@ -47,7 +47,10 @@
       {{ t('keepBusy.history.empty') }}
     </div>
 
-    <v-table v-else density="compact">
+    <!-- FR-120 P4 — a card per entry below 600 px (table-stack-xs): the who
+         sat past the right edge. The source chip says what it means on a tap
+         (FactChip); its `title` reached a mouse only. -->
+    <v-table v-else density="compact" class="table-stack-xs table-stack-xs--compact">
       <thead>
         <tr>
           <th>{{ t('keepBusy.history.when') }}</th>
@@ -58,22 +61,33 @@
       </thead>
       <tbody>
         <tr v-for="e in entries" :key="e.id" data-testid="keep-busy-history-row">
-          <td class="text-no-wrap">{{ fmtWhen(e.at) }}</td>
-          <td class="text-no-wrap">{{ deviceLabel(e) }}</td>
-          <td>
+          <td class="text-no-wrap" :data-label="t('keepBusy.history.when')">{{ fmtWhen(e.at) }}</td>
+          <td class="text-no-wrap" :data-label="t('keepBusy.history.device')">{{ deviceLabel(e) }}</td>
+          <td :data-label="t('keepBusy.history.what')">
             <span>{{ whatLabel(e) }}</span>
-            <v-chip
+            <FactChip
+              v-if="sourceHint(e)"
               size="x-small"
               variant="tonal"
               class="ml-2"
               :color="e.source === 'server' ? 'primary' : undefined"
-              :title="sourceHint(e)"
+              :explain="sourceHint(e)"
+              :data-testid="`keep-busy-history-source-${e.source}`"
+            >
+              {{ sourceLabel(e) }}
+            </FactChip>
+            <v-chip
+              v-else
+              size="x-small"
+              variant="tonal"
+              class="ml-2"
+              :color="e.source === 'server' ? 'primary' : undefined"
               :data-testid="`keep-busy-history-source-${e.source}`"
             >
               {{ sourceLabel(e) }}
             </v-chip>
           </td>
-          <td class="text-no-wrap">{{ e.actor_name || '—' }}</td>
+          <td class="text-no-wrap" :data-label="t('keepBusy.history.who')">{{ e.actor_name || '—' }}</td>
         </tr>
       </tbody>
     </v-table>
@@ -97,6 +111,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAgentStore, type KeepBusyHistoryEntry } from '@/stores/agents'
 import { patternLabel, type KeepBusyPattern } from '@/composables/keepBusy'
+import FactChip from '@/components/common/FactChip.vue'
 
 const props = defineProps<{ tenantId: string }>()
 

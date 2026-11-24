@@ -58,6 +58,7 @@
             size="small"
             :color="showTranscript ? 'primary' : undefined"
             :title="$t('hive.viewer.toggle')"
+            :aria-label="$t('hive.viewer.toggle')"
             data-testid="hive-transcript-toggle"
             @click="showTranscript = !showTranscript"
           />
