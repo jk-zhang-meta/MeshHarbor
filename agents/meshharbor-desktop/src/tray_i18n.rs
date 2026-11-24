@@ -586,9 +586,8 @@ pub fn leave_invite(lang: Lang, who: &str, left: &str) -> String {
     }
 }
 
-// ─── FR-133 coordination ("Move this device?" dialog strings) ──────────────
+// ─── FR-133 ("Move this device?" dialog strings) ───────────────────────────
 
-#[allow(dead_code)]
 pub const fn move_title(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Move this device?",
@@ -596,7 +595,6 @@ pub const fn move_title(lang: Lang) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 pub const fn move_yes(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Move",
@@ -604,7 +602,6 @@ pub const fn move_yes(lang: Lang) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 pub const fn move_no(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Keep",
@@ -612,7 +609,6 @@ pub const fn move_no(lang: Lang) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 pub fn move_belongs_to(lang: Lang, org: &str) -> String {
     match lang {
         Lang::En => format!("This device belongs to {org}."),
@@ -620,11 +616,46 @@ pub fn move_belongs_to(lang: Lang, org: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
 pub fn move_question(lang: Lang, org: &str) -> String {
     match lang {
         Lang::En => format!("This device belongs to {org}. Move it to your organization?"),
         Lang::ZhCn => format!("此设备属于 {org}。要将其移动到你的组织吗？"),
+    }
+}
+
+pub fn move_open_link(lang: Lang, code: &str, url: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "Open this link to approve moving the device, and check that the page shows the code {code}:\n\n{url}"
+        ),
+        Lang::ZhCn => {
+            format!("请打开此链接批准移动此设备，并确认页面显示的验证码为 {code}：\n\n{url}")
+        }
+    }
+}
+
+pub const fn move_done_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "Device moved",
+        Lang::ZhCn => "设备已移动",
+    }
+}
+
+pub fn move_done_body(lang: Lang, org: &str, notice: Option<&str>) -> String {
+    match (lang, notice) {
+        (Lang::En, Some(n)) => format!("This device is now enrolled in your organization.\n\n{n}"),
+        (Lang::En, None) => {
+            format!("This device has been moved to your organization and removed from {org}.")
+        }
+        (Lang::ZhCn, Some(n)) => format!("此设备现已加入你的组织。\n\n{n}"),
+        (Lang::ZhCn, None) => format!("此设备已移动到你的组织，并已从 {org} 移除。"),
+    }
+}
+
+pub const fn move_failed_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::En => "The device was not moved",
+        Lang::ZhCn => "设备未移动",
     }
 }
 
@@ -965,6 +996,31 @@ mod tests {
                 "move_question",
                 move_question(Lang::En, "Acme"),
                 move_question(Lang::ZhCn, "Acme"),
+            ),
+            (
+                "move_open_link",
+                move_open_link(Lang::En, "ABCD-1234", "https://centre.example.test/login"),
+                move_open_link(Lang::ZhCn, "ABCD-1234", "https://centre.example.test/login"),
+            ),
+            (
+                "move_done_title",
+                move_done_title(Lang::En).into(),
+                move_done_title(Lang::ZhCn).into(),
+            ),
+            (
+                "move_done_body_clean",
+                move_done_body(Lang::En, "Acme", None),
+                move_done_body(Lang::ZhCn, "Acme", None),
+            ),
+            (
+                "move_done_body_notice",
+                move_done_body(Lang::En, "Acme", Some("Admin must remove old row.")),
+                move_done_body(Lang::ZhCn, "Acme", Some("Admin must remove old row.")),
+            ),
+            (
+                "move_failed_title",
+                move_failed_title(Lang::En).into(),
+                move_failed_title(Lang::ZhCn).into(),
             ),
             (
                 "move_cancelled",

@@ -1223,13 +1223,28 @@ async fn offer_move<R: Runtime>(app: &AppHandle<R>, name: String) {
     let Some(offer) = crate::commands::move_offer_after_sign_in().await else {
         return;
     };
-    const TITLE: &str = "Move this device?";
+    let lang = crate::tray_i18n::current_lang();
+    let title = crate::tray_i18n::move_title(lang);
+    let org_label = offer.org_label();
     if let Some(why) = &offer.refusal {
-        let text = format!("This device belongs to {}.\n\n{why}", offer.org_label());
-        message_box(app, TITLE, text, None).await;
+        let text = format!(
+            "{}\n\n{why}",
+            crate::tray_i18n::move_belongs_to(lang, &org_label)
+        );
+        message_box(app, title, text, None).await;
         return;
     }
-    if !message_box(app, TITLE, offer.question(), Some(("Move", "Keep"))).await {
+    if !message_box(
+        app,
+        title,
+        crate::tray_i18n::move_question(lang, &org_label),
+        Some((
+            crate::tray_i18n::move_yes(lang),
+            crate::tray_i18n::move_no(lang),
+        )),
+    )
+    .await
+    {
         tracing::info!("tray: kept the device in its organization");
         return;
     }
@@ -1245,12 +1260,8 @@ async fn offer_move<R: Runtime>(app: &AppHandle<R>, name: String) {
                 Some(started.user_code.clone());
             ACCOUNT_WATCH_WAKE.notify_one();
             if !started.opened {
-                let text = format!(
-                    "Open this link to approve moving the device, and check that the page shows \
-                     the code {}:\n\n{}",
-                    started.user_code, started.url
-                );
-                message_box(app, TITLE, text, None).await;
+                let text = crate::tray_i18n::move_open_link(lang, &started.user_code, &started.url);
+                message_box(app, title, text, None).await;
             }
             crate::commands::move_wait(name).await
         }
@@ -1265,14 +1276,25 @@ async fn offer_move<R: Runtime>(app: &AppHandle<R>, name: String) {
     match outcome {
         Ok(notice) => {
             tracing::info!(kept = notice.is_some(), "tray: device moved to the signed-in organization");
-            message_box(app, "Device moved", offer.done(notice.as_deref()), None).await;
+            let body = if matches!(lang, crate::tray_i18n::Lang::En) {
+                offer.done(notice.as_deref())
+            } else {
+                crate::tray_i18n::move_done_body(lang, &org_label, notice.as_deref())
+            };
+            message_box(app, crate::tray_i18n::move_done_title(lang), body, None).await;
         }
         Err(e) if e == meshharbor_node_core::device_login::CANCELLED_ERROR => {
             tracing::info!("tray: move cancelled");
         }
         Err(e) => {
             tracing::warn!(error = %e, "tray: move did not complete");
-            message_box(app, "The device was not moved", e.clone(), None).await;
+            message_box(
+                app,
+                crate::tray_i18n::move_failed_title(lang),
+                e.clone(),
+                None,
+            )
+            .await;
             LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).error =
                 Some((e, std::time::Instant::now()));
         }
