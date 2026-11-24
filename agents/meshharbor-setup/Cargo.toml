@@ -38,6 +38,8 @@ test = false
 # PATH/symlink integration, tunnel-enroll HTTP. The app owns the
 # Tauri surface + the agent/tunnel lib calls; core owns the mechanics.
 meshharbor-setup-core = { path = "../../crates/meshharbor-setup-core" }
+# FR-135 — the diagnostics POST builds its client through `http_client` (no proxy).
+meshharbor-node-core = { path = "../../crates/agent-core" }
 
 # Lib dep on the agent — the daemon orchestrator reuses `config::
 # {save, machine_global_config_path, default_config_path}`,

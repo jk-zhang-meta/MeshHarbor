@@ -112,7 +112,7 @@ pub async fn enroll(
         "client_version": client_version,
     });
 
-    let client = reqwest::Client::builder()
+    let client = meshharbor_node_core::http_client::builder()
         .user_agent(user_agent)
         .timeout(Duration::from_secs(30))
         .build()

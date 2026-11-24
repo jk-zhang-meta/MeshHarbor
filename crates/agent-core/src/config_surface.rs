@@ -1965,6 +1965,15 @@ const KEYS: &[KeyMeta] = &[
         description: "FR-101 - keep a plaintext http:// server URL as written (default off: a remote http:// URL is used as https://, so signalling, token renewal, updates and uploads go over TLS). Only for a lab whose server serves no TLS; loopback never needs it. Only the person at this device's console can change it. Device-only: never pushable through remote config.",
     },
     KeyMeta {
+        key: "use_system_proxy",
+        group: Group::Network,
+        tier: Tier::Advanced,
+        // The daemon's clients are built from the file it loaded; the next start follows.
+        live: false,
+        kind: "bool",
+        description: "FR-135 - honour the system and environment proxies (HTTPS_PROXY, the OS proxy setting) for this device's HTTP traffic. Default off: MeshHarbor connects directly, so a proxy app in system-proxy mode does not carry it (a TUN-mode VPN still does). Only for a network that reaches the internet through a proxy alone. Device-only: never pushable through remote config.",
+    },
+    KeyMeta {
         key: "forward_acl",
         group: Group::Tunnels,
         tier: Tier::Standard,
@@ -2276,6 +2285,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "rc_files" => Some(fmt_feature_policy(cfg.rc_files)),
         "rc_audio" => Some(fmt_feature_policy(cfg.rc_audio)),
         "allow_plaintext_server" => Some(fmt_bool(cfg.allow_plaintext_server)),
+        "use_system_proxy" => Some(fmt_bool(cfg.use_system_proxy)),
         "forward_acl" => serde_json::to_string(&cfg.forward_acl).ok(),
         "virtual_desktop_apps" => serde_json::to_string(&cfg.virtual_desktop_apps).ok(),
         _ => None,
@@ -2337,6 +2347,8 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "rc_audio" => cfg.rc_audio = parse_feature_policy("rc_audio", value)?,
         // FR-101 P1b — cleared means the default: TLS.
         "allow_plaintext_server" => cfg.allow_plaintext_server = parse_bool_or(value, false)?,
+        // FR-135 — cleared means the default: direct.
+        "use_system_proxy" => cfg.use_system_proxy = parse_bool_or(value, false)?,
         "macos_supervise_gui_worker" => {
             cfg.macos_supervise_gui_worker = parse_bool_or(value, false)?
         }

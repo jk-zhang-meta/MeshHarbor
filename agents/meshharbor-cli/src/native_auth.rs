@@ -40,12 +40,13 @@ pub(crate) fn legacy_server_base(raw: &str) -> Result<String> {
 }
 pub(crate) fn http_client(server: &str) -> Result<reqwest::Client> {
     let server = server_base(server)?;
-    let mut builder = reqwest::Client::builder()
+    // FR-135 — no proxy, unless the device opted in (`use_system_proxy`).
+    let mut builder = meshharbor_node_core::http_client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(6));
-    // A literal local HTTP request must not escape through HTTP_PROXY/ALL_PROXY.
-    // Do not change HTTPS operators' configured proxy behavior.
+    // A literal local HTTP request must not escape through HTTP_PROXY/ALL_PROXY,
+    // even on a device that opted into its proxies: the password is in plaintext.
     if server.starts_with("http://") {
         builder = builder.no_proxy();
     }
@@ -457,6 +458,7 @@ mod tests {
         let server = std::env::var("MH_NATIVE_AUTH_LOCAL_SERVER").unwrap();
         // Positive control: default reqwest really sees the child's hostile proxy.
         // It carries no credential. Patched login must use the actual local server.
+        // fr-135: allowed — the positive control must be reqwest's default, proxy-honouring client.
         let control = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()

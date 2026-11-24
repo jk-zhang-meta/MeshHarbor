@@ -102,6 +102,9 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 # requires), at the version tauri's GTK 3 stack pins: no new library.
 [target.'cfg(target_os = "linux")'.dependencies]
 gio = "0.18"
+# FR-135 — the web context's proxy mode (`web_proxy.rs`): the WebKitGTK binding tauri/wry
+# already link, at the same version; `v2_32` is the feature that setter needs.
+webkit2gtk = { version = "2.0", features = ["v2_32"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

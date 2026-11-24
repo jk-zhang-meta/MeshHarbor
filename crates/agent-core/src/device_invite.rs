@@ -88,7 +88,7 @@ impl std::fmt::Debug for Redeemed {
 }
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http_client::builder()
         .user_agent(concat!("meshharbor-join/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()

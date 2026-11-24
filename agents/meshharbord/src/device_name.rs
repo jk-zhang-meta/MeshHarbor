@@ -815,7 +815,7 @@ impl DeviceNames {
     ) -> Result<()> {
         let get_attempt = self.retry_state(cfg).await?;
         // FR-128 — to the centre along the control socket's path.
-        let client = meshharbor_node_core::management_path::route_http(reqwest::Client::builder())
+        let client = meshharbor_node_core::management_path::route_http(meshharbor_node_core::http_client::builder())
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;

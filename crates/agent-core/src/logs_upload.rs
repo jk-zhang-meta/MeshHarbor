@@ -258,7 +258,7 @@ pub async fn run_uploader(rx: mpsc::Receiver<LogLine>, config: UploadConfig) {
 
 async fn run_uploader_paced(mut rx: mpsc::Receiver<LogLine>, config: UploadConfig, pace: Pace) {
     let mut client_route = None;
-    let mut client = match reqwest::Client::builder()
+    let mut client = match crate::http_client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
     {
@@ -327,7 +327,7 @@ async fn run_uploader_paced(mut rx: mpsc::Receiver<LogLine>, config: UploadConfi
         // socket moved onto (or off) a management entry.
         let route = crate::management_path::current_route();
         if route != client_route
-            && let Ok(c) = crate::management_path::route_http(reqwest::Client::builder())
+            && let Ok(c) = crate::management_path::route_http(crate::http_client::builder())
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
         {

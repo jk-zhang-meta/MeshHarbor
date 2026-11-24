@@ -240,7 +240,7 @@ async fn check_clock(scheme: &str, host: String, port: u16) -> Option<Finding> {
     } else {
         format!("{scheme}://{host}:{port}/health")
     };
-    let client = match reqwest::Client::builder().timeout(STEP_TIMEOUT).build() {
+    let client = match meshharbor_node_core::http_client::builder().timeout(STEP_TIMEOUT).build() {
         Ok(c) => c,
         Err(e) => {
             return Some(Finding::HttpFailed {

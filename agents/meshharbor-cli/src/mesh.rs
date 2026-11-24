@@ -501,7 +501,7 @@ async fn fetch_roster(cfg: &TunnelConfig) -> Result<RosterData> {
         "{}/api/tunnel-client/agents",
         cfg.server_url.trim_end_matches('/')
     );
-    let resp = reqwest::Client::new()
+    let resp = meshharbor_node_core::http_client::client()
         .get(&url)
         .bearer_auth(&cfg.tunnel_client_token)
         .send()

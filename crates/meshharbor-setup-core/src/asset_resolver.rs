@@ -99,7 +99,7 @@ fn http_client(
     user_agent: &str,
     timeout: Duration,
 ) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    meshharbor_node_core::http_client::builder()
         .user_agent(user_agent)
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {

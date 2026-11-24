@@ -10018,6 +10018,9 @@ mod tests {
             // FR-101 P1b — keeping a plaintext server URL. A server that
             // could set it could talk a device down to plaintext.
             "allow_plaintext_server",
+            // FR-135 — honouring the host's proxies. A server that could set it could move every
+            // device's traffic onto whatever proxy the host is configured with.
+            "use_system_proxy",
             // FR-99 P3 — the device's own floor for locking its screen when a
             // session ends. A server may ask for stricter on a session (P3b),
             // never set the floor.
@@ -10053,9 +10056,16 @@ mod tests {
             "rdp_over_mesh": true,
             "local_restart_enabled": true,
             "protected": false,
+            "use_system_proxy": true,
         }))
         .expect("unknown keys are ignored, not fatal");
         assert_eq!(pushed.ssh_enabled, Some(true));
+        assert!(
+            !serde_json::to_string(&pushed)
+                .unwrap()
+                .contains("use_system_proxy"),
+            "FR-135: a pushed use_system_proxy survived a decode/encode round trip"
+        );
     }
 
     // ── #1630: an audit row must read back through the driver's own pair ───

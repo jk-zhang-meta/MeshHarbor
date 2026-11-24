@@ -216,15 +216,15 @@ pub struct SelfView {
 }
 
 /// The production HTTP client: the crash uploader's posture (system TLS
-/// roots, the platform's proxy settings) with this module's budgets.
+/// roots; no proxy unless the device opted in, FR-135) with this module's budgets.
 fn build_client() -> Result<reqwest::Client, String> {
-    build_client_from(reqwest::Client::builder())
+    build_client_from(meshharbor_node_core::http_client::builder())
 }
 
 /// FR-128 — the same client, pointed at the management entry the control socket is on.
 fn build_routed_client() -> Result<reqwest::Client, String> {
     build_client_from(meshharbor_node_core::management_path::route_http(
-        reqwest::Client::builder(),
+        meshharbor_node_core::http_client::builder(),
     ))
 }
 
@@ -1158,8 +1158,7 @@ mod tests {
     }
 
     fn test_client() -> Result<reqwest::Client, String> {
-        reqwest::Client::builder()
-            .no_proxy()
+        meshharbor_node_core::http_client::builder_with(false)
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
             .build()

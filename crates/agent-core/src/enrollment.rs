@@ -245,7 +245,7 @@ pub async fn enroll_with_existing_identity(
         "posting enrollment"
     );
 
-    let request = reqwest::Client::new().post(&url);
+    let request = crate::http_client::client().post(&url);
     let request = match existing_agent_token {
         Some(token) => request.bearer_auth(token),
         None => request,
@@ -517,6 +517,8 @@ pub async fn enroll_with_existing_identity(
         rc_audio: Default::default(),
         // FR-101 P1b — TLS to the server; a lab says otherwise on the device.
         allow_plaintext_server: false,
+        // FR-135 — direct, no proxy, until the device's owner opts in.
+        use_system_proxy: false,
         overlay_demote: None,
         overlay_upward_probe: None,
         rc_max_sessions: None,
@@ -568,7 +570,7 @@ pub async fn enroll_with_existing_identity(
 pub async fn self_unenroll(server_url: &str, agent_token: &str) -> Result<()> {
     let server_url = normalize_server_url(server_url);
     let url = format!("{server_url}/api/agent/self/unenroll");
-    let resp = reqwest::Client::new()
+    let resp = crate::http_client::client()
         .post(&url)
         .bearer_auth(agent_token)
         .timeout(std::time::Duration::from_secs(3))

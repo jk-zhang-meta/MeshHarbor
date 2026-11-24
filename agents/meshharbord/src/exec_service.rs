@@ -1149,7 +1149,7 @@ mod svc {
     /// wait for the doorbell's answer (30 s), so a slow server is reported to
     /// the worker rather than abandoned by it.
     fn client(total: Duration) -> Result<reqwest::Client, String> {
-        reqwest::Client::builder()
+        meshharbor_node_core::http_client::builder()
             .user_agent(concat!(
                 "meshharbord-exec-service/",
                 env!("CARGO_PKG_VERSION")
@@ -2107,7 +2107,7 @@ mod win {
             name: String,
             service_token: String,
         }
-        let resp = reqwest::Client::builder()
+        let resp = meshharbor_node_core::http_client::builder()
             .user_agent(concat!("meshharbord-anchor/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
             .build()?

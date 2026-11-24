@@ -99,7 +99,7 @@ fn endpoint(server: &str, route: &str) -> Result<reqwest::Url> {
 }
 
 fn http() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    Ok(crate::http_client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()?)

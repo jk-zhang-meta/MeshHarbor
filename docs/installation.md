@@ -682,6 +682,29 @@ material, and how to verify an artifact by hand. The installer proxies exist
 precisely so corporate networks can allow-list `meshharbor.itachi.fans` instead of
 `github.com`.
 
+## Proxy settings (FR-135)
+
+Every native MeshHarbor binary (`meshharbord`, `mh` / the shim, `meshharbor-desktop`,
+`meshharbor-setup`, and the updater) connects **without** any system or environment proxy by
+default (`crates/agent-core/src/http_client.rs:41-67`). A desktop proxy app in system-proxy mode
+(setting WinINET/macOS proxies or `HTTP(S)_PROXY` / `ALL_PROXY`) will not redirect MeshHarbor
+traffic; a TUN-mode VPN works below applications and continues to carry traffic as usual.
+
+For a corporate network that reaches the internet **only** through an HTTP(S) proxy, opt in on
+that device:
+
+- **Device config (daemon, companion, `mh`, setup wizard when config is readable):** set
+  `use_system_proxy = true` in `config.toml` (or `mh config set use_system_proxy true`;
+  `crates/agent-core/src/config.rs:1836`, `config_surface.rs:1968`). Restart the daemon for its
+  clients to pick it up. This key is device-owned and never settable through server remote
+  configuration (`crates/remote_control/src/models.rs:10023`).
+- **Environment override (tunnel-only hosts, fresh setup wizard runs, or non-root companion
+  against a root/SYSTEM config):** set `MESHHARBOR_USE_SYSTEM_PROXY=1` (`true`/`yes`/`on`).
+
+Details, platform web-view notes (WebView2, WebKitGTK, macOS WKWebView) and guard tests:
+[`overlay-communication.md`](overlay-communication.md#native-clients-ignore-proxy-settings-fr-135)
+and [`desktop-companion.md`](desktop-companion.md#proxy-settings-for-web-views-fr-135).
+
 ## Uninstall: every platform
 
 - **Windows**: uninstall the MSI (per-user or per-machine) from Apps, or run

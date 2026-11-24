@@ -142,7 +142,7 @@ fn new_verifier() -> String {
 }
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http_client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()

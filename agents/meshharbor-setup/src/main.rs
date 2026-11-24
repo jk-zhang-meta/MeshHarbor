@@ -44,6 +44,10 @@ use tauri::{Emitter, Manager};
 use wizard_app::{INSTALL_IN_PROGRESS, commands};
 
 fn main() {
+    // FR-135 — honour an existing readable device config's `use_system_proxy`
+    // (or `MESHHARBOR_USE_SYSTEM_PROXY=1`); otherwise every HTTP call skips proxies.
+    meshharbor_node_core::http_client::read_device_opt_in();
+
     // Stderr-only tracing. The wizard is a foreground EXE the
     // operator launches manually; persistent logging is the daemon's
     // job, not ours. Operators who want wizard-side logs run from a

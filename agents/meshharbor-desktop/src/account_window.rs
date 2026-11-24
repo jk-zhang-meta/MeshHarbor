@@ -113,7 +113,7 @@ fn open_destination<R:tauri::Runtime>(app:&tauri::AppHandle<R>,base:tauri::Url,u
     let handle = app.clone();
     // A data-only external-origin webview works on Windows, macOS and Linux.
     // Real desktop/file viewers still use the established Chromium/browser policy.
-    tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::External(url))
+    let win = tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::External(url))
         .title("MeshHarbor — My devices & sharing")
         .inner_size(1180.0, 820.0)
         .on_new_window(move |url, _| {
@@ -127,6 +127,10 @@ fn open_destination<R:tauri::Runtime>(app:&tauri::AppHandle<R>,base:tauri::Url,u
         })
         .build()
         .map_err(|_| "Cannot open the account window")?;
+    #[cfg(target_os = "linux")]
+    crate::web_proxy::on_main_window(&win);
+    #[cfg(not(target_os = "linux"))]
+    let _ = win;
     Ok(())
 }
 #[cfg(test)]

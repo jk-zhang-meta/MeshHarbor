@@ -102,4 +102,8 @@ optional = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# FR-135 — the local HTTP + WebSocket servers the no-proxy tests reach (`tests/fr135_no_proxy.rs`).
+axum = { workspace = true }
+futures = { workspace = true }
+tokio-tungstenite = { workspace = true }
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }

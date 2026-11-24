@@ -44,6 +44,7 @@ mod panels;
 mod pin;
 mod tray;
 mod user_account;
+mod web_proxy;
 
 use tauri::Manager;
 
@@ -53,6 +54,11 @@ fn main() {
     // the top of the screen there.
     #[cfg(target_os = "linux")]
     pin::prefer_x11();
+    // FR-135 — the device's proxy opt-in, where this user can read the device config; then the
+    // web views follow the same choice as the HTTP clients. Before any thread exists.
+    meshharbor_node_core::http_client::read_device_opt_in();
+    #[cfg(target_os = "windows")]
+    web_proxy::before_any_webview();
 
     // Lightweight logging (the agent has its own persistent rolling log;
     // this one is for companion-side issues — a failed enrollment HTTP call,
@@ -229,6 +235,11 @@ fn main() {
             // hidden (visible:false in tauri.conf.json); operator
             // opens it from the tray menu.
             tray::install(app.handle())?;
+            // FR-135 — the shared web context skips the proxy before any window loads the centre.
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                web_proxy::on_main_window(&window);
+            }
             // FR-84 D6 — a launch that asked for a view (the Welcome on a
             // first run, `--first-run`, `--view=`) shows the window at once;
             // the page routes itself from `cmd_launch_intent` when it loads.

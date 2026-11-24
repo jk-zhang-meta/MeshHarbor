@@ -177,7 +177,7 @@ fn signature_url(center: &reqwest::Url, raw: &str) -> Result<reqwest::Url> {
 pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
     let boundary = update_base(&cfg.server_url)?;
     let base = boundary.as_str().trim_end_matches('/');
-    let http = reqwest::Client::builder()
+    let http = meshharbor_node_core::http_client::builder()
         .user_agent(concat!("meshharbor-cli/", env!("CARGO_PKG_VERSION")))
         // Fail closed on redirects, including signature redirects to upstream.
         .redirect(reqwest::redirect::Policy::custom(|attempt| {

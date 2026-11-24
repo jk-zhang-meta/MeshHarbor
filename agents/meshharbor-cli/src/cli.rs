@@ -1100,6 +1100,9 @@ where
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
+    // FR-135 — the device's `use_system_proxy`, where this user can read the device config;
+    // otherwise `MESHHARBOR_USE_SYSTEM_PROXY=1`. Every client below is built after this.
+    meshharbor_node_core::http_client::read_device_opt_in();
 
     let cli = Cli::parse_from(args);
     match cli.command {
@@ -1525,7 +1528,7 @@ async fn enroll_cmd(
         "os": std::env::consts::OS,
         "client_version": env!("CARGO_PKG_VERSION"),
     });
-    let resp = reqwest::Client::new()
+    let resp = meshharbor_node_core::http_client::client()
         .post(&enroll_url)
         .json(&body)
         .send()

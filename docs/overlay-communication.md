@@ -1138,6 +1138,36 @@ The centre's country is its public origin (`app.frontend_url`) geolocated by the
 (`fleet` boot); an origin that does not resolve to one known country is outside every strict zone.
 Only `MANAGE_AGENTS` moves a device between zones — never the device's owner.
 
+### Native clients ignore proxy settings (FR-135)
+
+Proxy applications in "system proxy" mode set the OS proxy (WinINET/WinHTTP on Windows, System
+Configuration on macOS) and `HTTP(S)_PROXY` / `ALL_PROXY`. Sending MeshHarbor's traffic through
+that proxy makes the centre see the proxy's exit address (wrong country, wrong zone), adds latency,
+and breaks control connections under proxy rules. Every native client we ship (`meshharbord`,
+`mh` / the shim, `meshharbor-desktop`, `meshharbor-setup`, the updater) therefore ignores proxy
+settings by default. A **TUN-mode VPN** operates below every application and still carries traffic
+unchanged.
+
+```mermaid
+flowchart LR
+    C["native client HTTP / WS / WebView"] --> T{"protocol?"}
+    T -->|"WebSocket / DERP / overlay"| D1["direct TcpStream / UDP<br/>(no proxy support)"]
+    T -->|"HTTP (reqwest)"| O{"use_system_proxy = true<br/>or MESHHARBOR_USE_SYSTEM_PROXY=1?"}
+    O -->|"no (default)"| D2["http_client::builder()<br/>.no_proxy()"]
+    O -->|"yes (corporate proxy opt-in)"| P["honour env + OS system proxy"]
+    T -->|"companion WebView"| W{"OS + opt-in?"}
+    W -->|"Windows, default"| W1["WebView2 --no-proxy-server"]
+    W -->|"Linux, default"| W2["WebKitGTK NetworkProxyMode::NoProxy"]
+    W -->|"macOS / opted in"| W3["follows system proxy<br/>(WKWebView has no direct mode)"]
+```
+
+| Surface | Default | Opt-in (`use_system_proxy = true` or `MESHHARBOR_USE_SYSTEM_PROXY=1`) | Anchor |
+|---|---|---|---|
+| Native HTTP (`meshharbord`, `mh`, companion, wizard, updater) | `.no_proxy()` (ignores env + WinINET/macOS system proxy) | Honours env + OS proxy | `crates/agent-core/src/http_client.rs:41-67`, `:91-106`; `crates/agent-core/src/config.rs:1836`, `:3817` |
+| Control WS, DERP, tunnel WS | Direct TCP (`tokio-tungstenite`, never uses a proxy) | Unchanged (direct) | `agents/meshharbord/src/ws_connect.rs`, `agents/meshharbor-cli/src/forward.rs` |
+| Companion web views | Windows WebView2 `--no-proxy-server`; Linux WebKitGTK `NoProxy`; macOS WKWebView follows system proxy | Honours system proxy | `agents/meshharbor-desktop/src/web_proxy.rs:30-76`, `agents/meshharbor-desktop/src/main.rs:59-61`, `:240-242` |
+| Guard & remote-config boundary | Source guard forbids native `reqwest::Client::{new,builder}` outside the helper; Hive model sidecar (`sidecar.rs:283-292`) is explicitly exempt because its upstream is the model provider | `use_system_proxy` is device-owned and structurally absent from `DesiredConfig` | `crates/agent-core/tests/fr135_proxy_guard.rs`, `crates/agent-core/tests/fr135_no_proxy.rs`, `crates/remote_control/src/models.rs:10023-10068` |
+
 ---
 
 ## 10. Field-proof record

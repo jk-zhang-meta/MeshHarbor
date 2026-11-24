@@ -202,7 +202,7 @@ async fn started_with(
 }
 
 async fn call(url: &str, token: Option<&str>) -> reqwest::Response {
-    let mut req = reqwest::Client::new()
+    let mut req = meshharbor_node_core::http_client::client()
         .post(url)
         .header("anthropic-version", "2023-06-01")
         .header("anthropic-beta", "test-beta")
@@ -624,7 +624,7 @@ async fn a_session_token_opens_inference_and_token_counting_and_nothing_else() {
     assert_eq!(p.hits.load(Ordering::SeqCst), 1);
 
     // What the device's key would open besides: not with a session token.
-    let client = reqwest::Client::new();
+    let client = meshharbor_node_core::http_client::client();
     for (method, path) in [
         (reqwest::Method::POST, "/v1/files"),
         (reqwest::Method::GET, "/v1/files"),
@@ -728,7 +728,7 @@ async fn the_devices_workspace_travels_with_the_key_and_the_sessions_does_not() 
         std::fs::write(r.root.path().join("claude"), ENV_HARNESS).unwrap();
         let (sid, base, token) = started(&mut r).await;
         p.go.notify_one();
-        let mut req = reqwest::Client::new()
+        let mut req = meshharbor_node_core::http_client::client()
             .post(format!("{base}/v1/messages"))
             .header("x-api-key", &token)
             .header("anthropic-version", "2023-06-01")
@@ -783,7 +783,7 @@ async fn a_subscription_token_goes_as_a_bearer_token_under_the_oauth_beta() {
         p.go.notify_one();
         let resp = tokio::time::timeout(
             WAIT,
-            reqwest::Client::new()
+            meshharbor_node_core::http_client::client()
                 .post(format!("{base}/v1/messages"))
                 .header("x-api-key", &token)
                 .header("anthropic-version", "2023-06-01")

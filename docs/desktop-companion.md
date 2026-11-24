@@ -961,3 +961,15 @@ person socket (§6). Three pure decisions sit on top of it, each unit-tested:
 **Testing it.** `cargo test -p meshharbor-node-core --lib app_window` (the browser choice and the
 command line, both platforms, on any host); `node agents/meshharbor-desktop/tests/devices-viewer-note.cjs`
 (what the page says).
+
+### Proxy settings for web views (FR-135)
+
+The companion reads the device's `use_system_proxy` key (or `MESHHARBOR_USE_SYSTEM_PROXY=1`) at
+startup (`agents/meshharbor-desktop/src/main.rs:59`), before any thread or web view exists, and
+applies the same direct-by-default rule to its embedded web views (`agents/meshharbor-desktop/src/web_proxy.rs`):
+
+| Platform | Engine | Behaviour when `use_system_proxy` is off (default) | Anchor |
+|---|---|---|---|
+| Windows | WebView2 | Appends `--no-proxy-server` to `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` (keeping wry's default flags and any user args) so every WebView2 window in the process skips the system proxy | `web_proxy.rs:30-56`, `main.rs:60-61` |
+| Linux | WebKitGTK | Sets `NetworkProxyMode::NoProxy` on the window's `WebsiteDataManager` in `setup` and on newly created account windows | `web_proxy.rs:62-76`, `main.rs:240-242`, `account_window.rs:130-131` |
+| macOS | WKWebView | Not bypassed: WebKit's `proxyConfigurations` (macOS 14+) configures custom proxies and offers no "direct / ignore system proxy" mode, so WKWebView follows the macOS system proxy (the companion's own Rust HTTP calls still skip proxies via `http_client`) | `web_proxy.rs:11` |

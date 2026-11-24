@@ -39,6 +39,10 @@ tokio = { workspace = true }
 
 # HTTP: the asset-resolver download path + the tunnel-enroll POST.
 reqwest = { workspace = true }
+# FR-135 — every native HTTP client is built by `meshharbor_node_core::http_client`
+# (no proxy unless the device opted in). The daemon-free building-block crate,
+# not the daemon: the dep-hygiene rule above still holds.
+meshharbor-node-core = { path = "../agent-core" }
 # `futures::StreamExt::next` for the reqwest bytes_stream loop.
 futures = { workspace = true }
 

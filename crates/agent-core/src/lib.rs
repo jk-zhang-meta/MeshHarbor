@@ -42,6 +42,8 @@ pub mod enrollment;
 /// surface), placement (the SYSTEM/root-inside-the-active-profile rule) and
 /// writability, run by the daemon at set time and at every drop.
 pub mod files_dir;
+/// FR-135 — the one place a native HTTP client is built: no proxy unless the device opted in.
+pub mod http_client;
 pub mod logging;
 pub mod logs_upload;
 pub mod machine;

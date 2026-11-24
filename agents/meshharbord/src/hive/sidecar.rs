@@ -278,6 +278,9 @@ pub(crate) async fn bind() -> Result<(TcpListener, u16), String> {
 
 /// Serve the sidecar until the supervisor is gone.
 pub(crate) fn serve(listener: TcpListener, sup: Weak<Supervisor>) {
+    // FR-135 exception: the upstream is the model PROVIDER, not the centre, and it goes through
+    // the host's proxy on purpose (module doc; `docs/meshharbor-hive-design.md` §11.2).
+    // fr-135: allowed — the provider upstream, as above.
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .build()
@@ -285,6 +288,7 @@ pub(crate) fn serve(listener: TcpListener, sup: Weak<Supervisor>) {
         Ok(c) => c,
         Err(e) => {
             warn!(%e, "hive: the model sidecar has no HTTP client — every call will fail");
+            // fr-135: allowed — as above.
             reqwest::Client::new()
         }
     };

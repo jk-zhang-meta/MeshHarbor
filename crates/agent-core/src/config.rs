@@ -1824,6 +1824,16 @@ pub struct AgentConfig {
     /// talk a device down to plaintext.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_plaintext_server: bool,
+    /// FR-135 — honour the system and environment proxies for this device's HTTP traffic
+    /// (default off: every native client connects directly, so a proxy app in "system proxy"
+    /// mode does not carry MeshHarbor's traffic; a TUN-mode VPN still does, below us). For a
+    /// network that reaches the internet only through a proxy. Read by the process that parses
+    /// this file ([`crate::http_client`]); a client built afterwards follows it.
+    ///
+    /// ⚠️ Device-owned: structurally absent from `DesiredConfig`. A server that could set it
+    /// could move every device's traffic onto whatever proxy the host is configured with.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_system_proxy: bool,
     /// B2 — score-driven demotion of degraded-but-live direct carriers
     /// (`MESHHARBORD_OVERLAY_DEMOTE`): `off` | `shadow` (compute +
     /// count, never act — the built-in default) | `on` (voluntary MBB
@@ -3222,6 +3232,7 @@ pub fn test_fixture() -> AgentConfig {
         rc_files: Default::default(),
         rc_audio: Default::default(),
         allow_plaintext_server: false,
+        use_system_proxy: false,
         overlay_demote: None,
         overlay_upward_probe: None,
         rc_max_sessions: None,
@@ -3801,6 +3812,9 @@ fn try_load(path: &PathBuf) -> Result<AgentConfig> {
     }
     let mut cfg: AgentConfig =
         toml::from_str(&raw).with_context(|| format!("parsing config at {}", path.display()))?;
+    // FR-135 — every reader parses through here, so the device's proxy opt-in reaches each
+    // process's HTTP clients without a call at every entry point.
+    crate::http_client::note_config(cfg.use_system_proxy);
     // FR-101 P1b — TLS to the server whatever the file says, unless its owner
     // kept plaintext (`allow_plaintext_server`). Here, because every reader
     // parses through this function: the daemon, the probe, the recovery.

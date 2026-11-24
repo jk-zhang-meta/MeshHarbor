@@ -67,7 +67,7 @@ pub struct HttpSender;
 impl Sender for HttpSender {
     fn send(&self, url: String, record: SetupDiagnostic) {
         tauri::async_runtime::spawn(async move {
-            let client = match reqwest::Client::builder()
+            let client = match meshharbor_node_core::http_client::builder()
                 .user_agent(crate::proxy::USER_AGENT)
                 .timeout(SEND_TIMEOUT)
                 .build()
@@ -567,7 +567,7 @@ mod tests {
         // A reqwest::Error is only produced by reqwest itself; the public
         // surface that yields one without a network is an invalid URL on
         // the request builder. Wrapped the way `enroll` wraps its errors.
-        let err = reqwest::Client::new()
+        let err = meshharbor_node_core::http_client::client()
             .get("::not a url::")
             .build()
             .expect_err("an invalid URL is a reqwest::Error");
