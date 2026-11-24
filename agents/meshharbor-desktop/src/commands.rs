@@ -4561,8 +4561,8 @@ mod tests {
     // only; a member of the device's organization is never asked.
     #[test]
     fn a_move_is_offered_only_to_someone_outside_the_devices_org() {
-        let server = "https://meshharbor.itachi.fans";
         let st = grant_status(Some(true), Some(true), Some(T), "box");
+        let server = st.orgs[0].server_url.as_str();
         let offer = move_offer_from(&st, server, Some(false), Some("Org A".into()), false)
             .expect("a person from another org is asked");
         assert!(offer.question().contains("\u{ab}Org A\u{bb}"));

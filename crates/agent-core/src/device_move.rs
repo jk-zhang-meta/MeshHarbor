@@ -39,9 +39,9 @@ use crate::config::AgentConfig;
 /// sign-in, and the move has already happened locally either way.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Single construction point for this module's HTTP client.
+/// Single construction point for this module's HTTP client (FR-135 no-proxy).
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    Ok(crate::http_client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()?)
 }
