@@ -150,6 +150,13 @@ flowchart LR
   ([`touchControls.ts:343`](../ui/src/composables/touchControls.ts#L343) `stickVelocity`). An agent that
   advertises `mouse-rel` gets the motion as `mouse_rel`, so a game camera turns. An older agent gets
   absolute moves from where its pointer is, as in trackpad mode. Fire and Aim press the same two ways.
+- **A preset fits a short stage** (FR-131 P1, a port of roomler-ai FR-125 P2). On a phone held
+  sideways the stage is 304–412 px tall, so `fitControls` (`composables/touchControls.ts:291`) turns a
+  column that would cross the stage's top or bottom edge into a row at the same corner, and shrinks a
+  d-pad or a stick that would cross it (never below 96 px); buttons keep their 44 px. A stage with room
+  gets the same array back and renders as designed. The overlay measures its own height with a
+  `ResizeObserver` (`TouchControls.vue`). A built-in preset's name and its word labels (Fire, Aim, Jump,
+  Mouse look) show in the reader's language; key legends and anything someone typed show as written.
 - **Nothing stays held.** The overlay lets go of everything when the preset changes, the window blurs, the
   tab is hidden or the overlay closes
   ([`TouchControls.vue:241`](../ui/src/components/remote/TouchControls.vue#L241) `releaseAll`). The stage's

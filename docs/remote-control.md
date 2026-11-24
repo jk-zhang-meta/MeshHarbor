@@ -2090,6 +2090,53 @@ delegation channel connection-wide, so a worker's **own** session's last sample 
 device's — a pre-existing follow-up; a fix needs the terminate on the same queue, or a per-session
 delegation marker.
 
+### 11.10 A decode error recovers in place (FR-131 P2)
+
+A port of roomler-ai's FR-135 R1. A decoder can fail mid-session: the GPU process restarts, a driver
+faults, a frame is corrupt. WebCodecs closes a `VideoDecoder` when it errors. Before this the page answered
+by stopping the worker, and on a data-channel session nothing else carries pixels, so the picture froze
+until the media watchdog re-created the session about 10 s later (upstream measured 9.4–10.2 s). The worker
+now replaces its decoder and the session goes on. The bound is 500 ms from the error to the next paint
+([FR-131](fr/FR-131-the-viewer-on-a-phone-and-after-a-decode-error.md) AC2).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Decoding: first frame painted
+    Decoding --> Recovering: decoder error, or decode() threw
+    Recovering --> Decoding: first paint after a key frame
+    Recovering --> Recovering: the new decoder fails too, budget left
+    Decoding --> WatchdogPath: 4th failure inside 10 s
+    Recovering --> WatchdogPath: 4th failure inside 10 s
+    WatchdogPath --> [*]: path stopped, session re-created about 10 s later
+```
+
+| Piece | What it does | Where |
+|---|---|---|
+| the decision | Whether this failure recovers. Before the first frame it does not: the page bans the transport and renegotiates, because the browser's probe was wrong. Past 3 rebuilds in 10 s it does not: a stream this decoder cannot take fails again on every key frame | `createDecodeRecovery`, [`rc-decode-recovery.ts:77`](../ui/src/workers/rc-decode-recovery.ts#L77) |
+| the rebuild | Close the dead decoder, build one configured as the old one was, send one `request-keyframe` at once (past the 250 ms debounce). `reset()` is not an option: the error already closed the codec, and `reset()` then throws. The leading-delta gate drops deltas, and keeps asking, until the key frame lands | `rebuildDecoder`, [`rc-vp9-444-worker.ts:481`](../ui/src/workers/rc-vp9-444-worker.ts#L481), [`rc-hevc-worker.ts:497`](../ui/src/workers/rc-hevc-worker.ts#L497) |
+| both failure routes | The decoder's error callback and `decode()` throwing go through one function. Without recovery each still posts its old message (`decoder-error` / `decode-error`) | `onDecoderFailure`, [`rc-vp9-444-worker.ts:506`](../ui/src/workers/rc-vp9-444-worker.ts#L506), [`rc-hevc-worker.ts:522`](../ui/src/workers/rc-hevc-worker.ts#L522) |
+| the page | `decode-recovering` logs and leaves the path up; `decode-recovered` logs the outage: `[rc] vp9-444 decode recovered in N ms, attempts K` | [`useRemoteControl.ts:8378`](../ui/src/composables/useRemoteControl.ts#L8378), [`:8669`](../ui/src/composables/useRemoteControl.ts#L8669) |
+| a chunk gap | The deltas behind a gap reference the frame it lost, so on the default ordered channel the gap also re-arms the gate, on the same decoder. Before, they were decoded, painting garbage until the IDR landed, or failing the decoder. ⚠️ Not on the unordered opt-in (`meshharbor-rc-unordered-video=1`): a lost packet there kills its chunk, which is routine, and a gate waiting for a whole key frame would freeze a picture that today keeps moving. The switch below turns it off too (`gapClosesGate`) | [`rc-vp9-444-worker.ts:460`](../ui/src/workers/rc-vp9-444-worker.ts#L460), [`rc-hevc-worker.ts:476`](../ui/src/workers/rc-hevc-worker.ts#L476) |
+| the watchdog | Once a data-channel path has decoded a frame, only its frames count as progress: RTP bytes on the silent m-section must not hold off a re-create while the canvas is frozen. Before that frame RTP still counts, because the viewer opens its channel speculatively and an agent that ignores it sends RTP | `mediaAdvanced`, [`useRemoteControl.ts:733`](../ui/src/composables/useRemoteControl.ts#L733), read at [`:5619`](../ui/src/composables/useRemoteControl.ts#L5619) |
+
+**The switch.** `localStorage.setItem('meshharbor-rc-decode-recover', '0')` in a browser, then reconnect, is
+the old path in all of the above (`storedDecodeRecover`, [`useRemoteControl.ts:4885`](../ui/src/composables/useRemoteControl.ts#L4885);
+resolved once per connect at [`:11571`](../ui/src/composables/useRemoteControl.ts#L11571) and handed to both
+workers in `init-canvas`). Any other value, no value, or unreadable storage keeps recovery on. This changes
+the viewer only: an agent of any version answers the same `rc:keyframe` it always did, and clamps those asks
+to two a second, so an ask just after another can wait up to 500 ms.
+
+**What it does not cover.** The RTP transform worker (`rc-webcodecs-worker.ts`) keeps its fallback, because
+there `<video>` has real samples to show. A decoder that hangs without an error is still the watchdog's.
+Upstream also reports each decode error to the agent (`rc:decode-error`, its FR-132); that wire does not
+exist here and was not ported.
+
+⚠️ **The overtaken-frame gap.** Upstream's tests force a gap with a frame overtaken by a newer complete one.
+Our chunk-framing receiver counts that abandonment but raises `gap` only on an eviction or an unclassifiable
+message (upstream fixed the flag later, in its FR-17 `8f5ea492e`, not ported: it matters on the unordered
+opt-in only). So on the ordered channel R1's gate closes on the gaps our receiver flags;
+`rcDecodeRecovery.spec.ts` drives the eviction path.
+
 ## 12. Performance targets & budget
 
 | Stage | Target (LAN) | Target (WAN, RTT 30 ms) |
@@ -3109,6 +3156,16 @@ RustDesk's native client on the HW path. Details in
   `cursorMapping()`.
 - **Fullscreen** toggle: `requestFullscreen` on the stage element,
   `fullscreenchange` listener flips the icon, ESC exits natively.
+  Shown only where `document.fullscreenEnabled` (Android's Chrome, a
+  desktop) — never on iPhone Safari, which fullscreens only video.
+- **Immersive landscape on phones** (FR-131 P1, a port of roomler-ai
+  FR-125): on a phone held sideways in a session, the app bar and the
+  toolbar step aside and the stage takes the whole page — the one way to
+  give an iPhone's remote desktop more than ~180–250 px. The toolbar comes
+  back as an overlay behind a pull-tab, so the stage never resizes and
+  `fit` mode re-sends no `rc:resolution` for it. Where the browser can
+  fullscreen the stage, the mode offers it once with a chip, which also
+  hides the browser's own bar. Detail: [ui.md](ui.md) § Phones and tablets.
 - **Remote Resolution** (`rc:resolution` control-DC message): tells
   the agent to capture/encode at a specific size. Modes:
   `original` (native monitor), `fit` (match local stage ×

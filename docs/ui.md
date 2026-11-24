@@ -1,7 +1,8 @@
 # Frontend
 
 Vue 3 + Vuetify 3 SPA — Vite 7, TypeScript, Pinia (setup-store pattern),
-vue-router, vue-i18n (wired, but English-only today). *As of 0.3.0-rc.381.*
+vue-router, vue-i18n (English and Chinese: `locales/en.json`, `locales/zh-CN.json`, key parity
+held by `__tests__/plugins/i18n.spec.ts`). *As of 0.3.0-rc.381.*
 Plugin order in `main.ts`: i18n → vuetify → pinia → router.
 
 ```mermaid
@@ -206,6 +207,27 @@ that one param. Every other route stays unkeyed on purpose — several views rew
 
 **Stores** use the Pinia setup pattern: `defineStore('name', () => { … })`.
 
+**Every word a person reads goes through vue-i18n, in both languages.** The remote viewer
+holds no prose of its own (FR-131 P3): its templates, its components under
+`components/remote/`, and the helpers whose sentences it shows (`keepBusy.ts`, `frameRate.ts`,
+`useSessionFeatures.ts`, `displayMatch.ts`, `usePrivacyMode.ts`, `useRemoteRecording.ts`,
+`rcConnectTiming.ts`, `touchPresetEdit.ts`, `utils/peerAuth.ts`, `utils/rdpFallback.ts`, and the
+pure helpers at the top of `useRemoteControl.ts`) read `remote.viewer.*` / `keepBusy.*`. A helper
+outside a component calls `i18n.global.t` (as `utils/twoFactor.ts` does), so a test in English still
+reads English. Codec names, fps and key legends stay as written.
+⚠️ The few sentences `useRemoteControl`'s session machinery sets itself are translated where they are
+shown, by `rcSays` (`composables/rcSays.ts:74`); `rcSays.spec.ts` fails if one of its literals drifts
+from the composable's. The server's and the device's own words are shown as they came.
+Locked by `__tests__/views/remoteViewerI18n.spec.ts`: no English word in any viewer template, and
+every viewer key has Chinese in its Chinese reading.
+
+**A disabled control says why, as text** (FR-120 P1b, ported in FR-131 P3). A disabled `v-btn`
+takes no pointer events, so a reason kept only in its `title` reaches a mouse that hovers, never a
+finger. In the viewer each disabled Settings toggle is followed by a caption with its reason
+(`RemoteControl.vue:1814`, the first), a refused toolbar control sits in a span that takes the tap
+and shows the reason in the snackbar (`explainRefusal`, `RemoteControl.vue:2696`), and an icon
+button is named by `aria-label`, not only `title`.
+
 **Vuetify** runs light + dark themes with auto-import tree-shaking via
 `vite-plugin-vuetify`.
 
@@ -252,6 +274,7 @@ flowchart LR
 | **A drawer that can cover a phone takes the full width and carries its own close button** | `GrowthView.vue` (org timeline), the viewer's files drawer | a 440 px temporary drawer on a 390 px screen leaves no scrim to tap — no way out |
 | **A tab window over wide content takes `:touch="false"`; a tab row that can overflow takes `show-arrows`** | `GrowthView.vue`, `AnalyticsView.vue`, the viewer's Settings tabs | a sideways swipe across a wide table switched the **tab**; and below 1280 px Vuetify hides the arrows unless asked, so tabs past the edge gave no sign of themselves |
 | **A number or caption that must be read never sits at the end of a card title** on a phone — it moves into the card's text | `GrowthView.vue` (the weekly-active-orgs north star) | a title never wraps: at 360 px the caption pushed the number off the card |
+| **On a phone held sideways, a running session takes the whole screen** (FR-131 P1, a port of roomler-ai FR-125): with a coarse pointer, a page wider than tall and under 500 px tall (`isPhoneSideways`, `composables/useImmersiveViewer.ts:31`), the app bar hides (`AppLayout.vue:446`), the viewer's toolbar becomes an overlay out of view, and the stage card loses its margin, border and corners. A pull-tab at the stage's top edge slides the toolbar back down **over** the stage; it hides again after 4 s without a touch (an open menu or dialog keeps it up), or on a tap on the stage. A per-browser setting in Settings → Display turns the mode off; where the browser can fullscreen the stage, a one-time chip offers it | `useImmersiveViewer.ts`, `RemoteControl.vue` (`immersive`, `:2729`; the pull-tab, `:934`; `.rc-immersive`, `:5785`); `fitControls` (`touchControls.ts:291`) fits a touch preset to the short stage | upstream measured the bars taking 149 of a 340–412 px page, leaving the remote desktop 146–254 px, and every built-in touch preset ran off the stage's top |
 | **The remote viewer's toolbar keeps the device's name, its state and Disconnect first** below 960 px (flex `order`; the rest scrolls), and the stage's alerts overlay the stage | `RemoteControl.vue` (`rc-tb-*`, `.rc-stage-alerts`) | the title went to 0 px and Disconnect started off-screen; each alert's coming and going resized the frame, re-sent `rc:resolution` and rebuilt the agent's encoder |
 | **Text that cannot break still wraps** (`overflow-wrap: anywhere`) | message content (`MessageBubble.vue`), stacked table values | one long URL or email widened a whole list past the screen |
 | **Sign-in fields say what they are**: `autocapitalize="none"`, `autocorrect="off"`, `spellcheck="false"` on the username, `autocomplete` on every credential | `LoginView.vue`, `RegisterView.vue` | iOS capitalised the username, and the server matches it exactly |
@@ -278,6 +301,29 @@ flowchart TD
     Q3 -- no --> DONE["done"]
     Q3 -- yes --> DEMAND["show what decides —<br/>the rest opens on a tap"]
 ```
+
+The remote viewer on a phone held sideways (FR-131 P1) moves between three states. Revealing the
+toolbar never resizes the stage, because a resized stage re-sends `rc:resolution` (in the mode the
+toolbar is `position: absolute`, and revealing it changes only `transform` and `visibility`; locked by
+`useImmersiveViewer.spec.ts`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> Normal
+    Normal --> Immersive: session connected + coarse pointer + sideways + page under 500 px + setting on
+    Immersive --> Normal: held upright · session ends · setting off
+    Immersive --> Revealed: tap the pull-tab
+    Revealed --> Immersive: 4 s without a touch · tap on the stage
+    Revealed --> Normal: held upright · session ends
+    note right of Revealed
+        the toolbar slides down OVER the stage,
+        which keeps its size
+    end note
+```
+
+⚠️ Entering or leaving the mode does resize the stage once (the app bar and the toolbar leave the
+flow); only showing and hiding the toolbar inside it does not. Phone portrait, tablets (taller than
+500 px) and anything with a fine pointer never enter it.
 
 ⚠️ **A phone-only line never sits between a `v-if` and its `v-else`.** Vue pairs
 `v-else` with the nearest `v-if` sibling. P3a put the refusal's reason line (a
