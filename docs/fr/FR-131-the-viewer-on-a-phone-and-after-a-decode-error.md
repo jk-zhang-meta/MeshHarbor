@@ -1,7 +1,7 @@
 # FR-131: The viewer on a phone held sideways, and after a decode error
 
-> **Status:** P1–P3 built on `feat/fr-131-viewer-phone-decode` (2026-11-24), local checks green; field
-> verification owed (AC1's field half, AC2). Claimed 2026-11-24. Tracking issue: none (GitHub Issues are disabled on
+> **Status:** P1–P3 on production since 2026-11-24 ~03:10Z (master `c158a01c3`, a web-only cutover);
+> AC1–AC4 met, AC2 red then green on production (see the log); AC5 (docs) met. Claimed 2026-11-24. Tracking issue: none (GitHub Issues are disabled on
 > this repository); this spec and its registry row are the record. Ports of upstream roomler-ai's
 > FR-125 (immersive landscape on phones, `8aa77f8d2`), FR-135 R1 (a decode error recovers in place,
 > `b8c6d1b31`) and FR-120 P1b (a greyed viewer control says why, `dbfc603a2`).
@@ -91,13 +91,15 @@
 
 ## Acceptance criteria
 
-- [ ] **AC1.** On a 844×390 coarse-pointer viewport in a connected session the stage takes the full
+- [x] **AC1.** On a 844×390 coarse-pointer viewport in a connected session the stage takes the full
   height; toggling the bars sends no `rc:resolution` (tests + headless field run).
   - [x] Test half: `useImmersiveViewer.spec.ts` — 844×390 with a finger is immersive, and in the mode the
     toolbar is absolutely placed and its revealed state changes only `transform`/`visibility` (no box the
     stage could see), with no `v-if`/`v-show` on the bar.
-  - [ ] Field half: a live session on a phone held sideways (owed).
-- [ ] **AC2.** A forced decode error repaints within 500 ms on Chromium (field, Surface or MacBook as
+  - [x] Field half: production, a live session to a Windows host, coarse-pointer 844×390 emulation:
+    the stage is 390 of 390 px from the top; the pull-tab reveal and its auto-hide sent no
+    `rc:resolution` (2 in the whole run: the connect, and entering the mode). Log below.
+- [x] **AC2.** A forced decode error repaints within 500 ms on Chromium (field, Surface or MacBook as
   the host), red on the current deploy first.
 - [x] **AC3.** Phone portrait, tablets and desktops are unchanged (tests): `isPhoneSideways` is false
   upright, for tablets either way, at the 500 px boundary and for a fine pointer
@@ -127,3 +129,8 @@
 
 | When (UTC) | What | Result |
 |---|---|---|
+| 2026-11-24 ~03:00 | **AC2 red**, production before the cutover. Headless Chromium viewer → a Windows host, VP9 4:4:4 over the data channel (libvpx). A shim on the `rc-vp9-444` worker feeds the running decoder one random 2 KB chunk marked key, 8 s into the session | `decoder-error … auto-fallback to <video>`, then `media stalled 6 s`, `media stalled 16 s`: **no picture for the 23 s until the run disconnected** (worse than upstream's 9–11 s) |
+| 2026-11-24 ~03:10 | Web-only cutover of `c158a01c3` (no app restart, the hot-swap path) | `HOTSWAP … app not restarted`, health ready |
+| 2026-11-24 ~03:12 | **AC2 green**, same run on the new viewer | `decoder failed … recovering in place, attempt 1` → `keyframe acquired` → **`decode recovered in 90 ms, attempts 1`**; no fallback, no new session |
+| 2026-11-24 ~03:13 | Kill switch: the same run with `meshharbor-rc-decode-recover=0` | the old path: `auto-fallback to <video>`, `media stalled 6 s` |
+| 2026-11-24 ~03:14 | **AC1 field**, 844×390 touch emulation, live session to the same host | stage 390/390 px at top 0, immersive on, pull-tab shown; reveal and auto-hide: `rc:resolution` count unchanged at 2 |
