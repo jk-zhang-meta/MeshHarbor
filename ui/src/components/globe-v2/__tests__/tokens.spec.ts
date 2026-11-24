@@ -8,9 +8,11 @@ import {
   formatNeutralRegionName,
   LIGHT_TOKENS,
   REGION_NAME_OVERRIDES,
+  relativeLuminance,
 } from '../tokens'
+import { buildGlobeStyle } from '../style'
 
-describe('globe-v2 visual tokens — WCAG 1.4.11 non-text contrast (>= 3:1)', () => {
+describe('globe-v2 visual tokens — WCAG 1.4.11 non-text contrast (>= 3:1) & dark theme separation', () => {
   const statusAndLinkKeys = [
     'online',
     'direct',
@@ -35,6 +37,14 @@ describe('globe-v2 visual tokens — WCAG 1.4.11 non-text contrast (>= 3:1)', ()
       expect(contrastRatio(z, DARK_TOKENS.land), `dark.zone${idx + 1} vs land`).toBeGreaterThanOrEqual(3.0)
       expect(contrastRatio(z, DARK_TOKENS.ocean), `dark.zone${idx + 1} vs ocean`).toBeGreaterThanOrEqual(3.0)
     })
+  })
+
+  it('Fix #5: clearly separates dark land from dark ocean and gives crisp coastline luminance', () => {
+    const lOcean = relativeLuminance(DARK_TOKENS.ocean)
+    const lLand = relativeLuminance(DARK_TOKENS.land)
+    const lCoast = relativeLuminance(DARK_TOKENS.coast)
+    expect(lLand).toBeGreaterThan(lOcean * 2.0)
+    expect(lCoast).toBeGreaterThan(lLand * 2.5)
   })
 
   it('meets >= 3:1 contrast for all light-theme status, link, and zone colors (incl. zone5 #8A7A00) against land and ocean', () => {
@@ -62,5 +72,45 @@ describe('globe-v2 visual tokens — WCAG 1.4.11 non-text contrast (>= 3:1)', ()
     expect(BOUNDARY_ATTRIBUTION['zh-CN']).toContain('Natural Earth')
     expect(BOUNDARY_ATTRIBUTION['zh-CN']).toContain('geoBoundaries')
     expect(BOUNDARY_ATTRIBUTION.en).toContain('OpenStreetMap')
+  })
+
+  it('defines China 4-level boundaries (admin2-pref-chn z5, admin2-chn z8) and district labels (z9) below device labels', () => {
+    const style = buildGlobeStyle('dark', 'zh-CN', '/geo/mh-boundaries-v1.pmtiles', false)
+    const ids = style.layers.map((l) => l.id)
+    const prefLayer = style.layers.find((l) => l.id === 'admin2-pref-chn') as {
+      'source-layer'?: string
+      minzoom?: number
+    }
+    const chnLayer = style.layers.find((l) => l.id === 'admin2-chn') as {
+      'source-layer'?: string
+      minzoom?: number
+    }
+    const otherLayer = style.layers.find((l) => l.id === 'admin2-other') as {
+      'source-layer'?: string
+      minzoom?: number
+    }
+    const label2 = style.layers.find((l) => l.id === 'label-admin2') as {
+      'source-layer'?: string
+      minzoom?: number
+    }
+    const labelPlace = style.layers.find((l) => l.id === 'label-place') as {
+      'source-layer'?: string
+      maxzoom?: number
+    }
+    expect(prefLayer?.['source-layer']).toBe('admin2_pref')
+    expect(prefLayer?.minzoom).toBe(5)
+    expect(chnLayer?.['source-layer']).toBe('admin2')
+    expect(chnLayer?.minzoom).toBe(8)
+    expect(otherLayer?.['source-layer']).toBe('admin2')
+    expect(otherLayer?.minzoom).toBe(5)
+    expect(label2?.['source-layer']).toBe('label_admin2')
+    expect(label2?.minzoom).toBe(9)
+    expect(labelPlace?.['source-layer']).toBe('label_place')
+    expect(labelPlace?.maxzoom).toBe(8)
+
+    // District labels MUST be below blocker and device/cluster label layers so app labels win collision
+    expect(ids.indexOf('label-admin2')).toBeLessThan(ids.indexOf('mh-label-blockers'))
+    expect(ids.indexOf('mh-label-blockers')).toBeLessThan(ids.indexOf('mh-marker-labels-center'))
+    expect(ids.indexOf('mh-marker-labels-center')).toBeLessThan(ids.indexOf('mh-markers'))
   })
 })

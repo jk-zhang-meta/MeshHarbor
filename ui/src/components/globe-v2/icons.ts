@@ -337,12 +337,26 @@ export interface IconRegistryMap {
   addImage(id: string, image: IconImageData, options?: { pixelRatio?: number }): void
 }
 
-/** Register all fixed single-node & anchor icons for a given theme mode. */
+export const LABEL_BLOCKER_ICON_ID = 'mh-blocker-1px'
+
+/** Transparent 2x2 image used by `mh-label-blockers` to suppress basemap labels within ~44 px (Fix #2). */
+export function makeLabelBlockerImage(): IconImageData {
+  return {
+    width: 2,
+    height: 2,
+    data: new Uint8ClampedArray(2 * 2 * 4),
+  }
+}
+
+/** Register all fixed single-node, anchor, and collision-blocker icons for a given theme mode. */
 export function ensureStaticIcons(
   map: IconRegistryMap,
   mode: GlobeThemeMode,
   dpr: number,
 ): void {
+  if (!map.hasImage(LABEL_BLOCKER_ICON_ID)) {
+    map.addImage(LABEL_BLOCKER_ICON_ID, makeLabelBlockerImage(), { pixelRatio: 1 })
+  }
   const tokens = getGlobeTokens(mode)
   const presences: GlobePresence[] = ['online', 'stale', 'offline']
   for (const selected of [false, true]) {

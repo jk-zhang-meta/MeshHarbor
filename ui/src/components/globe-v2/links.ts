@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //
-// Pure link aggregation, priority cap, ego network, great-circle interpolation,
-// antimeridian unwrapping, and asymmetric midpoint splitting (S5 / AC9).
+// Pure link aggregation, majority-carrier coloring (Fix #6), priority cap, ego network,
+// great-circle interpolation, antimeridian unwrapping, and asymmetric midpoint splitting (S5 / AC9).
 
 import type { GlobeArc } from '@/components/globe/types'
 import { edgeSides } from '@/utils/mesh'
@@ -25,8 +25,14 @@ export interface AggregatedLink {
   fromLonLat: readonly [number, number]
   toLonLat: readonly [number, number]
   count: number
+  /** Dominant carrier class by link count (Fix #6); deterministic tie-breaker. */
+  majorityClass: LinkCarrierClass
+  /** Worst carrier class present (used for priority sorting & degradation triage). */
   worstClass: LinkCarrierClass
+  /** True when the bundle mixes >= 2 distinct carrier classes (or partial stall). */
+  isMixed: boolean
   anyStalled: boolean
+  stalledCount: number
   blockedOnly: boolean
   medianRtt: number | null
   maxRtt: number | null
@@ -47,7 +53,7 @@ export interface LinkAggregationResult {
   totalIntraCityLinks: number
 }
 
-/** Worst-class ranking per S5: derp > relay > tunnel > direct (stalled sorted above class). */
+/** Worst-class severity ranking per S5: derp > relay > tunnel > direct (stalled sorted above class). */
 export function carrierSeverityRank(cls: string): number {
   switch (cls) {
     case 'derp':
@@ -65,10 +71,38 @@ export function carrierSeverityRank(cls: string): number {
   }
 }
 
+/** Deterministic tie-breaker for majority carrier when counts are equal: direct < tunnel < relay < derp < blocked. */
+const MAJORITY_TIE_ORDER: readonly LinkCarrierClass[] = ['direct', 'tunnel', 'relay', 'derp', 'blocked']
+
 export function normalizeCarrierClass(raw: string | null | undefined): LinkCarrierClass {
   const c = (raw ?? '').toLowerCase()
   if (c === 'derp' || c === 'relay' || c === 'tunnel' || c === 'blocked') return c
   return 'direct'
+}
+
+/**
+ * Compute majority carrier class from a carrier histogram (Fix #6):
+ * - Highest count among non-blocked carriers wins (or `'blocked'` if `blockedOnly`).
+ * - Deterministic tie-breaker: among equal counts, higher-priority class in
+ *   `['direct', 'tunnel', 'relay', 'derp']` (`direct` preferred on exact 50/50 split with healthy,
+ *   wait: `direct > tunnel > relay > derp` keeps balanced pairs calm rather than flipping dashed!).
+ */
+export function pickMajorityCarrier(
+  histogram: Readonly<Record<string, number>>,
+  blockedOnly = false,
+): LinkCarrierClass {
+  if (blockedOnly) return 'blocked'
+  let bestCls: LinkCarrierClass = 'direct'
+  let bestCount = -1
+  for (const cls of MAJORITY_TIE_ORDER) {
+    if (cls === 'blocked') continue
+    const n = histogram[cls] ?? 0
+    if (n > bestCount) {
+      bestCount = n
+      bestCls = cls
+    }
+  }
+  return bestCount > 0 ? bestCls : 'direct'
 }
 
 function pairKey(a: string, b: string): [string, string, string] {
@@ -85,9 +119,10 @@ function computeMedian(values: number[]): number | null {
 }
 
 /**
- * Aggregate peer links at the current display level (S5 R1–R4):
+ * Aggregate peer links at the current display level (S5 R1–R4 + Fix #6 majority coloring):
  * - R1: Never draw intra-group or intra-display links; tally intra-group counts.
- * - R2: Aggregate per unordered pair of display clusters.
+ * - R2: Aggregate per unordered pair of display clusters, computing both `majorityClass`
+ *       (for calm resting coloring) and `worstClass` (for priority sorting) + `isMixed` + `stalledCount`.
  * - R3: Sort by `anyStalled > worstClass > count > key` and cap overview to 60.
  * - R4: Apply carrier, `onlyProblems`, and `minRttMs` filters.
  */
@@ -99,7 +134,8 @@ export function aggregateLinks(
   opts: LinkFilterOptions = {},
 ): LinkAggregationResult {
   const maxOverview = opts.maxOverviewLinks ?? 60
-  const showBlocked = opts.showBlocked ?? (opts.enabledCarriers ? opts.enabledCarriers.has('blocked') : false)
+  const showBlocked =
+    opts.showBlocked ?? (opts.enabledCarriers ? opts.enabledCarriers.has('blocked') : false)
   const onlyProblems = Boolean(opts.onlyProblems)
   const minRttMs = opts.minRttMs ?? 0
 
@@ -113,11 +149,12 @@ export function aggregateLinks(
     arcs: GlobeArc[]
     rtts: number[]
     histogram: Record<string, number>
+    fromHistogram: Record<string, number>
+    toHistogram: Record<string, number>
     anyStalled: boolean
+    stalledCount: number
     worstNonBlocked: LinkCarrierClass | null
     hasBlocked: boolean
-    fromWorst: LinkCarrierClass | null
-    toWorst: LinkCarrierClass | null
   }
 
   const buckets = new Map<string, Bucket>()
@@ -147,7 +184,13 @@ export function aggregateLinks(
     if (minRttMs > 0 && (rtt == null || rtt < minRttMs)) continue
 
     const isStalled = Boolean(arc.stalled || arc.ends?.some((e) => e.stalled))
-    if (onlyProblems && !isStalled && baseCls !== 'relay' && baseCls !== 'derp' && baseCls !== 'blocked') {
+    if (
+      onlyProblems &&
+      !isStalled &&
+      baseCls !== 'relay' &&
+      baseCls !== 'derp' &&
+      baseCls !== 'blocked'
+    ) {
       continue
     }
 
@@ -163,11 +206,12 @@ export function aggregateLinks(
         arcs: [],
         rtts: [],
         histogram: {},
+        fromHistogram: {},
+        toHistogram: {},
         anyStalled: false,
+        stalledCount: 0,
         worstNonBlocked: null,
         hasBlocked: false,
-        fromWorst: null,
-        toWorst: null,
       }
       buckets.set(key, bucket)
     }
@@ -175,7 +219,10 @@ export function aggregateLinks(
     bucket.arcs.push(arc)
     bucket.histogram[baseCls] = (bucket.histogram[baseCls] ?? 0) + 1
     if (rtt != null) bucket.rtts.push(rtt)
-    if (isStalled) bucket.anyStalled = true
+    if (isStalled) {
+      bucket.anyStalled = true
+      bucket.stalledCount++
+    }
 
     if (baseCls === 'blocked') {
       bucket.hasBlocked = true
@@ -186,18 +233,14 @@ export function aggregateLinks(
       bucket.worstNonBlocked = baseCls
     }
 
-    // Track per-side carrier for R8 asymmetric midpoint colouring
+    // Track per-side majority carrier for R8 asymmetric midpoint colouring
     const sides = edgeSides(arc.ends, arc.from, arc.to)
     const sideFromCls = normalizeCarrierClass(sides.from?.carrier ?? arc.carrier)
     const sideToCls = normalizeCarrierClass(sides.to?.carrier ?? arc.carrier)
     const aCls = flipped ? sideToCls : sideFromCls
     const bCls = flipped ? sideFromCls : sideToCls
-    if (!bucket.fromWorst || carrierSeverityRank(aCls) > carrierSeverityRank(bucket.fromWorst)) {
-      bucket.fromWorst = aCls
-    }
-    if (!bucket.toWorst || carrierSeverityRank(bCls) > carrierSeverityRank(bucket.toWorst)) {
-      bucket.toWorst = bCls
-    }
+    bucket.fromHistogram[aCls] = (bucket.fromHistogram[aCls] ?? 0) + 1
+    bucket.toHistogram[bCls] = (bucket.toHistogram[bCls] ?? 0) + 1
   }
 
   const allAggregated: AggregatedLink[] = []
@@ -207,9 +250,12 @@ export function aggregateLinks(
     if (!cFrom || !cTo) continue
     const blockedOnly = b.hasBlocked && !b.worstNonBlocked
     const worstClass: LinkCarrierClass = blockedOnly ? 'blocked' : (b.worstNonBlocked ?? 'direct')
-    const fromClass = b.fromWorst ?? worstClass
-    const toClass = b.toWorst ?? worstClass
+    const majorityClass = pickMajorityCarrier(b.histogram, blockedOnly)
+    const fromClass = pickMajorityCarrier(b.fromHistogram, blockedOnly)
+    const toClass = pickMajorityCarrier(b.toHistogram, blockedOnly)
     const asymmetric = fromClass !== toClass
+    const distinctCarriers = Object.values(b.histogram).filter((n) => n > 0).length
+    const isMixed = distinctCarriers > 1 || (b.stalledCount > 0 && b.stalledCount < b.arcs.length)
     const healthy = !b.anyStalled && (worstClass === 'direct' || worstClass === 'tunnel')
 
     allAggregated.push({
@@ -219,8 +265,11 @@ export function aggregateLinks(
       fromLonLat: [cFrom.lon, cFrom.lat],
       toLonLat: [cTo.lon, cTo.lat],
       count: b.arcs.length,
+      majorityClass,
       worstClass,
+      isMixed,
       anyStalled: b.anyStalled,
+      stalledCount: b.stalledCount,
       blockedOnly,
       medianRtt: computeMedian(b.rtts),
       maxRtt: b.rtts.length ? Math.round(Math.max(...b.rtts)) : null,
@@ -287,7 +336,15 @@ export function buildEgoNetwork(
   }).allAggregated
 }
 
-/** S3 stroke width in CSS px for an aggregated link count. */
+/** Fix #6: calm resting stroke width in CSS px (strictly 1.0–1.5 px). */
+export function restingLinkWidth(count: number): number {
+  if (count >= 15) return 1.5
+  if (count >= 5) return 1.35
+  if (count >= 2) return 1.2
+  return 1.0
+}
+
+/** S3 full-strength stroke width in CSS px for active/ego/selected links. */
 export function aggregatedLinkWidth(count: number): number {
   if (count >= 15) return 2.5
   if (count >= 5) return 2.0
@@ -295,9 +352,27 @@ export function aggregatedLinkWidth(count: number): number {
   return 1.0
 }
 
+/** Format deterministic per-carrier breakdown items for hover card & link detail panel (Fix #6). */
+export interface CarrierBreakdownItem {
+  key: LinkCarrierClass | 'stalled'
+  count: number
+}
+
+export function linkCarrierBreakdown(link: AggregatedLink): CarrierBreakdownItem[] {
+  const items: CarrierBreakdownItem[] = []
+  for (const cls of MAJORITY_TIE_ORDER) {
+    const n = link.carrierHistogram[cls] ?? 0
+    if (n > 0) items.push({ key: cls, count: n })
+  }
+  if (link.stalledCount > 0) {
+    items.push({ key: 'stalled', count: link.stalledCount })
+  }
+  return items
+}
+
 /**
  * Great-circle SLERP interpolation with antimeridian unwrapping (S5 R9).
- * Uses 12–24 segments scaled by angular distance (even count so exact midpoint exists).
+ * Uses 16–24 segments scaled by angular distance (even count so exact midpoint exists).
  */
 export function interpolateGreatCircle(
   fromLonLat: readonly [number, number],
@@ -413,7 +488,10 @@ export interface LinkSegmentFeatureProps {
   fromDisplayId: string
   toDisplayId: string
   carrier: LinkCarrierClass
+  majorityClass: LinkCarrierClass
   stalled: boolean
+  isMixed: boolean
+  active: boolean
   count: number
   width: number
   opacity: number
@@ -425,9 +503,16 @@ export interface LinkSegmentFeatureProps {
 export interface LinkBadgeFeatureProps {
   key: string
   badge: string
-  colorKind: 'stalled' | 'blocked' | 'rtt'
+  colorKind: 'stalled' | 'blocked' | 'rtt' | 'mixed'
 }
 
+/**
+ * Build GeoJSON for Variant L surface links + midpoint badges (S5 + Fix #6):
+ * - At rest (`active: false`): calm solid `1.0–1.5 px` lines at `0.45` opacity colored by
+ *   `majorityClass` (`0.15` when dimmed behind an active ego network).
+ * - On hover / selection / ego (`active: true`): full-strength width + `1.0` opacity +
+ *   carrier dash/double-line patterns + R8 asymmetric midpoint split.
+ */
 export function buildLinkGeoJson(
   overviewLinks: readonly AggregatedLink[],
   egoLinks: readonly AggregatedLink[],
@@ -435,6 +520,7 @@ export function buildLinkGeoJson(
     hoveredLinkKey?: string | null
     selectedLinkKey?: string | null
     hasEgoFocus?: boolean
+    dimAll?: boolean
   } = {},
 ): {
   lines: GeoJSON.FeatureCollection<GeoJSON.LineString, LinkSegmentFeatureProps>
@@ -451,18 +537,69 @@ export function buildLinkGeoJson(
     const { firstHalf, secondHalf, midpoint } = splitGreatCircleAtMidpoint(coords)
     const isHighlighted =
       opts.hoveredLinkKey === link.key || opts.selectedLinkKey === link.key
+    const isActive = isEgo || isHighlighted
 
+    // Wrap midpoint longitude back into [-180, 180] for symbol placement
+    let midLon = midpoint[0]
+    while (midLon > 180) midLon -= 360
+    while (midLon < -180) midLon += 360
+
+    if (!isActive) {
+      // Fix #6: Calm resting link — solid 1–1.5 px at 0.45 opacity, colored by majority carrier
+      const width = restingLinkWidth(link.count)
+      const opacity = opts.dimAll ? 0.15 : hasEgo ? 0.15 : 0.45
+      const allStalled = link.anyStalled && link.stalledCount === link.count
+
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: {
+          key: link.key,
+          fromDisplayId: link.fromDisplayId,
+          toDisplayId: link.toDisplayId,
+          carrier: link.majorityClass,
+          majorityClass: link.majorityClass,
+          stalled: allStalled,
+          isMixed: link.isMixed,
+          active: false,
+          count: link.count,
+          width,
+          opacity,
+          ego: false,
+          medianRtt: link.medianRtt,
+          asymmetric: link.asymmetric,
+        },
+      })
+
+      if (!hasEgo && !opts.dimAll) {
+        if (link.anyStalled) {
+          badgeFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [midLon, midpoint[1]] },
+            properties: { key: link.key, badge: '⚠', colorKind: 'stalled' },
+          })
+        } else if (link.blockedOnly) {
+          badgeFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [midLon, midpoint[1]] },
+            properties: { key: link.key, badge: '×', colorKind: 'blocked' },
+          })
+        } else if (link.isMixed) {
+          // Subtle midpoint diamond indicating a multi-carrier mixed bundle (Fix #6)
+          badgeFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [midLon, midpoint[1]] },
+            properties: { key: link.key, badge: '◆', colorKind: 'mixed' },
+          })
+        }
+      }
+      return
+    }
+
+    // Active (ego / hovered / selected): full strength width, opacity 1, carrier patterns & R8 split
     const baseWidth = isEgo ? 1.5 : aggregatedLinkWidth(link.count)
     const width = isHighlighted ? baseWidth + 1 : baseWidth
-    const opacity = isHighlighted
-      ? 1
-      : isEgo
-        ? 1
-        : hasEgo
-          ? 0.15
-          : link.healthy
-            ? 0.45
-            : 0.9
+    const opacity = 1
 
     if (link.asymmetric && !link.anyStalled && !link.blockedOnly) {
       features.push({
@@ -473,7 +610,10 @@ export function buildLinkGeoJson(
           fromDisplayId: link.fromDisplayId,
           toDisplayId: link.toDisplayId,
           carrier: link.fromClass,
+          majorityClass: link.majorityClass,
           stalled: false,
+          isMixed: link.isMixed,
+          active: true,
           count: link.count,
           width,
           opacity,
@@ -490,7 +630,10 @@ export function buildLinkGeoJson(
           fromDisplayId: link.fromDisplayId,
           toDisplayId: link.toDisplayId,
           carrier: link.toClass,
+          majorityClass: link.majorityClass,
           stalled: false,
+          isMixed: link.isMixed,
+          active: true,
           count: link.count,
           width,
           opacity,
@@ -507,8 +650,11 @@ export function buildLinkGeoJson(
           key: link.key,
           fromDisplayId: link.fromDisplayId,
           toDisplayId: link.toDisplayId,
-          carrier: link.worstClass,
+          carrier: link.majorityClass,
+          majorityClass: link.majorityClass,
           stalled: link.anyStalled,
+          isMixed: link.isMixed,
+          active: true,
           count: link.count,
           width,
           opacity,
@@ -519,16 +665,13 @@ export function buildLinkGeoJson(
       })
     }
 
-    // Wrap midpoint longitude back into [-180, 180] for symbol placement
-    let midLon = midpoint[0]
-    while (midLon > 180) midLon -= 360
-    while (midLon < -180) midLon += 360
-
     if (link.anyStalled) {
+      const label =
+        isHighlighted && link.medianRtt != null ? `⚠ ${link.medianRtt} ms` : '⚠'
       badgeFeatures.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [midLon, midpoint[1]] },
-        properties: { key: link.key, badge: '⚠', colorKind: 'stalled' },
+        properties: { key: link.key, badge: label, colorKind: 'stalled' },
       })
     } else if (link.blockedOnly) {
       badgeFeatures.push({
@@ -537,8 +680,11 @@ export function buildLinkGeoJson(
         properties: { key: link.key, badge: '×', colorKind: 'blocked' },
       })
     } else if ((isHighlighted || (isEgo && showAllEgoRtt)) && link.medianRtt != null) {
+      const mixedTag = link.isMixed ? ' ◆' : ''
       const label =
-        link.count > 1 ? `×${link.count} · ${link.medianRtt} ms` : `${link.medianRtt} ms`
+        link.count > 1
+          ? `×${link.count} · ${link.medianRtt} ms${mixedTag}`
+          : `${link.medianRtt} ms`
       badgeFeatures.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [midLon, midpoint[1]] },

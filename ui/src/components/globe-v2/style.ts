@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //
-// MapLibre GL JS v6 style builder and live theme/language updaters (S1/S2/S5/S6).
+// MapLibre GL JS v6 style builder and live theme/language updaters (S1/S2/S5/S6 + Fixes #2/#3/#5/#6).
+// - Variant L only (Variant A dropped per G4 decision).
 // - Omits `glyphs` completely (uses local system + CJK font stack; zero external URLs).
 // - Live theme and language switching mutate paint/layout/sky in place with ZERO setStyle().
+// - Fix #2: `mh-label-blockers` sits directly below app marker labels and above basemap labels
+//   with `icon-allow-overlap: true`, `icon-ignore-placement: false`, `icon-padding: 44`, natively
+//   suppressing any basemap label within ~44 px of a cluster or device!
+// - Fix #3: Edge-aware marker label layers (`extend-right`, `extend-left`, `extend-both`) ensure
+//   0 label pixels clip outside `[4, W-4]`, even on 390 px phones.
+// - Fix #5: Crisp coastline + raised dark land fill + `atmosphere-blend: 0` (replaced by a
+//   symmetrical 360° Fresnel rim halo synced to globe screen geometry).
+// - Fix #6: Calm resting solid links (`mh-links-rest`, 1–1.5 px, 0.45 opacity, majority carrier)
+//   vs full-strength carrier-patterned active/ego links (`mh-links-active-*`).
 
 import type { ExpressionSpecification, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
+import { LABEL_BLOCKER_ICON_ID } from './icons'
 import {
   getGlobeTokens,
   MAPLIBRE_LOCAL_TEXT_FONT,
@@ -15,17 +26,25 @@ import {
 } from './tokens'
 
 export const BOUNDARY_SOURCE_ID = 'mhb'
+export const ACCURACY_CIRCLES_SOURCE_ID = 'mh-accuracy-circles'
 export const LINKS_SOURCE_ID = 'mh-links'
 export const LINK_BADGES_SOURCE_ID = 'mh-link-badges'
 export const MARKERS_SOURCE_ID = 'mh-markers'
 
 export const SURFACE_LINK_LAYER_IDS = [
-  'mh-links-direct',
-  'mh-links-tunnel',
-  'mh-links-relay',
-  'mh-links-derp',
-  'mh-links-blocked',
-  'mh-links-stalled',
+  'mh-links-rest',
+  'mh-links-active-direct',
+  'mh-links-active-tunnel',
+  'mh-links-active-relay',
+  'mh-links-active-derp',
+  'mh-links-active-blocked',
+  'mh-links-active-stalled',
+] as const
+
+export const MARKER_LABEL_LAYER_IDS = [
+  'mh-marker-labels-right',
+  'mh-marker-labels-left',
+  'mh-marker-labels-center',
 ] as const
 
 export function buildSkySpec(tokens: GlobeTokens) {
@@ -33,7 +52,9 @@ export function buildSkySpec(tokens: GlobeTokens) {
     'sky-color': tokens.space,
     'horizon-color': tokens.horizon,
     'fog-color': tokens.ocean,
-    'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 4, 1, 6, 0] as ExpressionSpecification,
+    // Keep MapLibre's directional sun-lit atmosphere off so the globe has ZERO harsh top-left glare;
+    // a symmetrical 360° Fresnel rim glow SVG synced to the globe silhouette handles the limb halo (Fix #5).
+    'atmosphere-blend': 0,
   }
 }
 
@@ -51,6 +72,43 @@ export function buildSubLabelTextField(lang: GlobeLang): ExpressionSpecification
   return ['coalesce', ['get', 'name_en'], ['get', 'name_zh']]
 }
 
+function buildRestLinkColorExpr(t: GlobeTokens): ExpressionSpecification {
+  return [
+    'case',
+    ['==', ['get', 'stalled'], true],
+    t.stalled,
+    [
+      'match',
+      ['get', 'carrier'],
+      'direct',
+      t.direct,
+      'tunnel',
+      t.tunnel,
+      'relay',
+      t.relay,
+      'derp',
+      t.derp,
+      'blocked',
+      t.blocked,
+      t.direct,
+    ],
+  ]
+}
+
+function buildLinkBadgeColorExpr(t: GlobeTokens): ExpressionSpecification {
+  return [
+    'match',
+    ['get', 'colorKind'],
+    'stalled',
+    t.stalled,
+    'blocked',
+    t.blocked,
+    'mixed',
+    t.labelSecondary,
+    t.labelPrimary,
+  ]
+}
+
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] }
 
 export function buildGlobeStyle(
@@ -61,6 +119,7 @@ export function buildGlobeStyle(
 ): StyleSpecification {
   const t = getGlobeTokens(theme)
   const [op0, op1, op2] = t.borderOpacity
+  const coastOpacity = theme === 'dark' ? 0.82 : 0.85
 
   return {
     version: 8,
@@ -72,6 +131,10 @@ export function buildGlobeStyle(
       [BOUNDARY_SOURCE_ID]: {
         type: 'vector',
         url: `pmtiles://${pmtilesUrl}`,
+      },
+      [ACCURACY_CIRCLES_SOURCE_ID]: {
+        type: 'geojson',
+        data: EMPTY_FC,
       },
       [LINKS_SOURCE_ID]: {
         type: 'geojson',
@@ -116,7 +179,8 @@ export function buildGlobeStyle(
         maxzoom: 3,
         paint: {
           'line-color': t.coast,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.5, 4, 0.7, 9, 0.9],
+          'line-opacity': coastOpacity,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.75, 4, 0.9, 14, 1.1],
         },
       },
       {
@@ -127,10 +191,11 @@ export function buildGlobeStyle(
         minzoom: 3,
         paint: {
           'line-color': t.coast,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.5, 4, 0.7, 9, 0.9],
+          'line-opacity': coastOpacity,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.75, 4, 0.9, 14, 1.1],
         },
       },
-      // Admin-2 (non-China fades z5->6; China fades z6->7 per S6 top-level zoom expression rule)
+      // Admin-2 non-China (z5.5->6.5 fade, crisp overzoom to z14)
       {
         id: 'admin2-other',
         type: 'line',
@@ -140,21 +205,35 @@ export function buildGlobeStyle(
         filter: ['!=', ['get', 'cc'], 'CHN'],
         paint: {
           'line-color': t.border,
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 6, op2],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.35, 7, 0.5, 9, 0.7],
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 5.5, 0, 6.5, op2],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.35, 8, 0.55, 11, 0.75, 14, 0.9],
         },
       },
+      // China 4-level boundaries: district/county (区县界) fades in z8->9; thin overzoom to z14
       {
         id: 'admin2-chn',
         type: 'line',
         source: BOUNDARY_SOURCE_ID,
         'source-layer': 'admin2',
-        minzoom: 5,
+        minzoom: 8,
         filter: ['==', ['get', 'cc'], 'CHN'],
         paint: {
           'line-color': t.border,
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0, 7, op2],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.35, 7, 0.5, 9, 0.7],
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 9, op2],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.35, 10, 0.5, 12, 0.65, 14, 0.75],
+        },
+      },
+      // China 4-level boundaries: prefecture-level city (市界) fades in z5->6.5 above county lines
+      {
+        id: 'admin2-pref-chn',
+        type: 'line',
+        source: BOUNDARY_SOURCE_ID,
+        'source-layer': 'admin2_pref',
+        minzoom: 5,
+        paint: {
+          'line-color': t.border,
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0, 6.5, Math.min(1, op2 * 1.45)],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.45, 8, 0.65, 11, 0.85, 14, 1.0],
         },
       },
       // Admin-1 internal shared lines (z2->3 fade)
@@ -167,7 +246,7 @@ export function buildGlobeStyle(
         paint: {
           'line-color': t.border,
           'line-opacity': ['interpolate', ['linear'], ['zoom'], 2, 0, 3, op1],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 4, 0.6, 9, 0.9],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.4, 4, 0.6, 9, 0.9, 14, 1.1],
         },
       },
       // Admin-0 de facto international / disputed / limit lines (drawn above admin1 & admin2)
@@ -180,7 +259,7 @@ export function buildGlobeStyle(
         paint: {
           'line-color': t.border,
           'line-opacity': op0,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 4, 0.9, 9, 1.3],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 4, 0.9, 9, 1.3, 14, 1.6],
         },
       },
       {
@@ -192,7 +271,7 @@ export function buildGlobeStyle(
         paint: {
           'line-color': t.border,
           'line-opacity': op0,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 4, 0.9, 9, 1.3],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 4, 0.9, 9, 1.3, 14, 1.6],
           'line-dasharray': [3, 2],
         },
       },
@@ -207,16 +286,47 @@ export function buildGlobeStyle(
         paint: {
           'line-color': t.border,
           'line-opacity': op0 * 0.8,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.6, 9, 0.9],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.6, 9, 0.9, 14, 1.1],
           'line-dasharray': [0, 2],
         },
       },
-      // Application peer link layers (Variant L; hidden below z5 when Variant A elevated arcs are active)
+      // S7 coords accuracy circles (z >= 3, 1 px, 25% opacity dashed 64-gon)
       {
-        id: 'mh-links-direct',
+        id: 'mh-accuracy-circles',
+        type: 'line',
+        source: ACCURACY_CIRCLES_SOURCE_ID,
+        minzoom: 3,
+        paint: {
+          'line-color': t.online,
+          'line-width': 1,
+          'line-opacity': 0.25,
+          'line-dasharray': [3, 3],
+        },
+      },
+      // Fix #6: Calm resting peer links (1–1.5 px, ~0.45 opacity, solid, majority-carrier color)
+      {
+        id: 'mh-links-rest',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['all', ['==', ['get', 'carrier'], 'direct'], ['!', ['get', 'stalled']]],
+        filter: ['==', ['get', 'active'], false],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': buildRestLinkColorExpr(t),
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+        },
+      },
+      // Fix #6 / S5: Full-strength carrier-patterned layers for hover / selection / ego network ONLY
+      {
+        id: 'mh-links-active-direct',
+        type: 'line',
+        source: LINKS_SOURCE_ID,
+        filter: [
+          'all',
+          ['==', ['get', 'active'], true],
+          ['==', ['get', 'carrier'], 'direct'],
+          ['!', ['get', 'stalled']],
+        ],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.direct,
@@ -225,10 +335,15 @@ export function buildGlobeStyle(
         },
       },
       {
-        id: 'mh-links-tunnel',
+        id: 'mh-links-active-tunnel',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['all', ['==', ['get', 'carrier'], 'tunnel'], ['!', ['get', 'stalled']]],
+        filter: [
+          'all',
+          ['==', ['get', 'active'], true],
+          ['==', ['get', 'carrier'], 'tunnel'],
+          ['!', ['get', 'stalled']],
+        ],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.tunnel,
@@ -238,10 +353,15 @@ export function buildGlobeStyle(
         },
       },
       {
-        id: 'mh-links-relay',
+        id: 'mh-links-active-relay',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['all', ['==', ['get', 'carrier'], 'relay'], ['!', ['get', 'stalled']]],
+        filter: [
+          'all',
+          ['==', ['get', 'active'], true],
+          ['==', ['get', 'carrier'], 'relay'],
+          ['!', ['get', 'stalled']],
+        ],
         layout: { 'line-cap': 'butt', 'line-join': 'round' },
         paint: {
           'line-color': t.relay,
@@ -251,10 +371,15 @@ export function buildGlobeStyle(
         },
       },
       {
-        id: 'mh-links-derp',
+        id: 'mh-links-active-derp',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['all', ['==', ['get', 'carrier'], 'derp'], ['!', ['get', 'stalled']]],
+        filter: [
+          'all',
+          ['==', ['get', 'active'], true],
+          ['==', ['get', 'carrier'], 'derp'],
+          ['!', ['get', 'stalled']],
+        ],
         layout: { 'line-cap': 'butt', 'line-join': 'round' },
         paint: {
           'line-color': t.derp,
@@ -264,10 +389,15 @@ export function buildGlobeStyle(
         },
       },
       {
-        id: 'mh-links-blocked',
+        id: 'mh-links-active-blocked',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['all', ['==', ['get', 'carrier'], 'blocked'], ['!', ['get', 'stalled']]],
+        filter: [
+          'all',
+          ['==', ['get', 'active'], true],
+          ['==', ['get', 'carrier'], 'blocked'],
+          ['!', ['get', 'stalled']],
+        ],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.blocked,
@@ -277,10 +407,10 @@ export function buildGlobeStyle(
         },
       },
       {
-        id: 'mh-links-stalled',
+        id: 'mh-links-active-stalled',
         type: 'line',
         source: LINKS_SOURCE_ID,
-        filter: ['==', ['get', 'stalled'], true],
+        filter: ['all', ['==', ['get', 'active'], true], ['==', ['get', 'stalled'], true]],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': t.stalled,
@@ -289,19 +419,42 @@ export function buildGlobeStyle(
           'line-dasharray': [0, 2],
         },
       },
-      // Basemap labels (rendered below application markers so app labels win collision!)
+      // Basemap labels — rendered BELOW `mh-label-blockers` and `mh-marker-labels-*` so
+      // MapLibre's reverse-order collision engine gives cluster/device labels 100% priority (Fix #2).
+      // District/county names (z9-11+): lowest priority basemap symbol layer
+      {
+        id: 'label-admin2',
+        type: 'symbol',
+        source: BOUNDARY_SOURCE_ID,
+        'source-layer': 'label_admin2',
+        minzoom: 9,
+        layout: {
+          'text-field': buildSubLabelTextField(lang),
+          'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
+          'text-size': 10,
+          'text-padding': 6,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': t.labelMuted,
+          'text-halo-color': t.labelHalo,
+          'text-halo-width': 1.5,
+        },
+      },
+      // Place labels below z8 only so they never sit next to admin labels (e.g. "北京市" + "北京") at z8-10
       {
         id: 'label-place',
         type: 'symbol',
         source: BOUNDARY_SOURCE_ID,
         'source-layer': 'label_place',
         minzoom: isMobile ? 5 : 4,
+        maxzoom: 8,
         filter: ['<=', ['-', ['get', 'min_zoom'], 1], ['zoom']],
         layout: {
           'text-field': buildSubLabelTextField(lang),
           'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
           'text-size': 10,
-          'text-padding': 3,
+          'text-padding': 6,
           'symbol-sort-key': ['*', -1, ['coalesce', ['get', 'pop'], 0]],
         },
         paint: {
@@ -320,7 +473,7 @@ export function buildGlobeStyle(
           'text-field': buildSubLabelTextField(lang),
           'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
           'text-size': 10,
-          'text-padding': 3,
+          'text-padding': 6,
         },
         paint: {
           'text-color': t.labelMuted,
@@ -340,7 +493,7 @@ export function buildGlobeStyle(
           'text-field': buildAdmin0TextField(lang),
           'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
           'text-size': 11,
-          'text-padding': 3,
+          'text-padding': 6,
           'symbol-sort-key': ['*', -1, ['coalesce', ['get', 'pop'], 0]],
         },
         paint: {
@@ -349,7 +502,7 @@ export function buildGlobeStyle(
           'text-halo-width': 1.5,
         },
       },
-      // Link midpoint badges (⚠ stalled, × blocked, hover/ego RTT)
+      // Link midpoint badges (⚠ stalled, × blocked, ◆ mixed, hover/ego RTT)
       {
         id: 'mh-link-badges',
         type: 'symbol',
@@ -357,26 +510,130 @@ export function buildGlobeStyle(
         layout: {
           'text-field': ['get', 'badge'],
           'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
-          'text-size': 10,
+          'text-size': ['match', ['get', 'colorKind'], 'mixed', 8, 10],
           'text-padding': 4,
           'text-allow-overlap': false,
           'text-ignore-placement': false,
         },
         paint: {
-          'text-color': [
-            'match',
-            ['get', 'colorKind'],
-            'stalled',
-            t.stalled,
-            'blocked',
-            t.blocked,
-            t.labelPrimary,
-          ],
+          'text-color': buildLinkBadgeColorExpr(t),
+          'text-opacity': ['match', ['get', 'colorKind'], 'mixed', 0.65, 1],
           'text-halo-color': t.labelHalo,
           'text-halo-width': 1.5,
         },
       },
-      // Application markers & city group labels (highest priority, icons never collide-hidden)
+      // Fix #2: Invisible ±44 px collision reservation around EVERY cluster/device marker.
+      // Placed AFTER app marker labels in reverse-order placement, BEFORE basemap labels:
+      // never blocks app markers/labels, ALWAYS suppresses basemap labels within ~44 px!
+      {
+        id: 'mh-label-blockers',
+        type: 'symbol',
+        source: MARKERS_SOURCE_ID,
+        layout: {
+          'icon-image': LABEL_BLOCKER_ICON_ID,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': false,
+          'icon-padding': 44,
+        },
+        paint: {
+          'icon-opacity': 0,
+        },
+      },
+      // Fix #3: Edge-aware marker text label layers (never clip off left/right viewport edge).
+      {
+        id: 'mh-marker-labels-right',
+        type: 'symbol',
+        source: MARKERS_SOURCE_ID,
+        filter: ['all', ['==', ['get', 'edgePlacement'], 'extend-right'], ['!=', ['get', 'label'], '']],
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
+          'text-size': 11,
+          'text-variable-anchor': ['left', 'top-left', 'bottom-left'],
+          'text-radial-offset': 1.55,
+          'text-padding': 8,
+          'text-allow-overlap': false,
+          'text-optional': false,
+          'symbol-sort-key': ['get', 'sortKey'],
+        },
+        paint: {
+          'text-opacity': ['get', 'opacity'],
+          'text-color': t.labelPrimary,
+          'text-halo-color': t.labelHalo,
+          'text-halo-width': 1.6,
+        },
+      },
+      {
+        id: 'mh-marker-labels-left',
+        type: 'symbol',
+        source: MARKERS_SOURCE_ID,
+        filter: ['all', ['==', ['get', 'edgePlacement'], 'extend-left'], ['!=', ['get', 'label'], '']],
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
+          'text-size': 11,
+          'text-variable-anchor': ['right', 'top-right', 'bottom-right'],
+          'text-radial-offset': 1.55,
+          'text-padding': 8,
+          'text-allow-overlap': false,
+          'text-optional': false,
+          'symbol-sort-key': ['get', 'sortKey'],
+        },
+        paint: {
+          'text-opacity': ['get', 'opacity'],
+          'text-color': t.labelPrimary,
+          'text-halo-color': t.labelHalo,
+          'text-halo-width': 1.6,
+        },
+      },
+      {
+        id: 'mh-marker-labels-center',
+        type: 'symbol',
+        source: MARKERS_SOURCE_ID,
+        filter: ['all', ['==', ['get', 'edgePlacement'], 'extend-both'], ['!=', ['get', 'label'], '']],
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
+          'text-size': 11,
+          'text-variable-anchor': [
+            'left',
+            'right',
+            'top',
+            'bottom',
+            'top-left',
+            'top-right',
+            'bottom-left',
+            'bottom-right',
+          ],
+          'text-radial-offset': 1.55,
+          'text-padding': 8,
+          'text-allow-overlap': false,
+          'text-optional': false,
+          'symbol-sort-key': ['get', 'sortKey'],
+        },
+        paint: {
+          'text-opacity': ['get', 'opacity'],
+          'text-color': t.labelPrimary,
+          'text-halo-color': t.labelHalo,
+          'text-halo-width': 1.6,
+        },
+      },
+      // Tight ±12 px icon reservation ABOVE marker labels so labels flip cleanly around neighboring donuts!
+      {
+        id: 'mh-marker-icon-blockers',
+        type: 'symbol',
+        source: MARKERS_SOURCE_ID,
+        layout: {
+          'icon-image': LABEL_BLOCKER_ICON_ID,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': false,
+          'icon-padding': 11,
+        },
+        paint: {
+          'icon-opacity': 0,
+        },
+      },
+      // Application marker icons (topmost; never hidden by symbol collision per S3)
       {
         id: 'mh-markers',
         type: 'symbol',
@@ -385,21 +642,10 @@ export function buildGlobeStyle(
           'icon-image': ['get', 'icon'],
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
-          'text-field': ['get', 'label'],
-          'text-font': MAPLIBRE_LOCAL_TEXT_FONT,
-          'text-size': 11,
-          'text-variable-anchor': ['right', 'left', 'top', 'bottom'],
-          'text-radial-offset': 1.25,
-          'text-padding': 4,
-          'text-optional': true,
           'symbol-sort-key': ['get', 'sortKey'],
         },
         paint: {
           'icon-opacity': ['get', 'opacity'],
-          'text-opacity': ['get', 'opacity'],
-          'text-color': t.labelPrimary,
-          'text-halo-color': t.labelHalo,
-          'text-halo-width': 1.5,
         },
       },
     ],
@@ -412,18 +658,33 @@ export function buildGlobeStyle(
 export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
   const t = getGlobeTokens(theme)
   const [op0, op1, op2] = t.borderOpacity
+  const coastOpacity = theme === 'dark' ? 0.82 : 0.85
 
   map.setSky(buildSkySpec(t))
   map.setPaintProperty('background', 'background-color', t.ocean)
   map.setPaintProperty('land-low', 'fill-color', t.land)
   map.setPaintProperty('land-high', 'fill-color', t.land)
   map.setPaintProperty('coast-low', 'line-color', t.coast)
+  map.setPaintProperty('coast-low', 'line-opacity', coastOpacity)
   map.setPaintProperty('coast-high', 'line-color', t.coast)
+  map.setPaintProperty('coast-high', 'line-opacity', coastOpacity)
 
   map.setPaintProperty('admin2-other', 'line-color', t.border)
-  map.setPaintProperty('admin2-other', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 5, 0, 6, op2])
+  map.setPaintProperty('admin2-other', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 5.5, 0, 6.5, op2])
   map.setPaintProperty('admin2-chn', 'line-color', t.border)
-  map.setPaintProperty('admin2-chn', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 6, 0, 7, op2])
+  map.setPaintProperty('admin2-chn', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 8, 0, 9, op2])
+  if (map.getLayer('admin2-pref-chn')) {
+    map.setPaintProperty('admin2-pref-chn', 'line-color', t.border)
+    map.setPaintProperty('admin2-pref-chn', 'line-opacity', [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      5,
+      0,
+      6.5,
+      Math.min(1, op2 * 1.45),
+    ])
+  }
   map.setPaintProperty('admin1', 'line-color', t.border)
   map.setPaintProperty('admin1', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 2, 0, 3, op1])
   map.setPaintProperty('admin0-intl', 'line-color', t.border)
@@ -433,13 +694,22 @@ export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
   map.setPaintProperty('admin0-limit', 'line-color', t.border)
   map.setPaintProperty('admin0-limit', 'line-opacity', op0 * 0.8)
 
-  map.setPaintProperty('mh-links-direct', 'line-color', t.direct)
-  map.setPaintProperty('mh-links-tunnel', 'line-color', t.tunnel)
-  map.setPaintProperty('mh-links-relay', 'line-color', t.relay)
-  map.setPaintProperty('mh-links-derp', 'line-color', t.derp)
-  map.setPaintProperty('mh-links-blocked', 'line-color', t.blocked)
-  map.setPaintProperty('mh-links-stalled', 'line-color', t.stalled)
+  if (map.getLayer('mh-accuracy-circles')) {
+    map.setPaintProperty('mh-accuracy-circles', 'line-color', t.online)
+  }
 
+  map.setPaintProperty('mh-links-rest', 'line-color', buildRestLinkColorExpr(t))
+  map.setPaintProperty('mh-links-active-direct', 'line-color', t.direct)
+  map.setPaintProperty('mh-links-active-tunnel', 'line-color', t.tunnel)
+  map.setPaintProperty('mh-links-active-relay', 'line-color', t.relay)
+  map.setPaintProperty('mh-links-active-derp', 'line-color', t.derp)
+  map.setPaintProperty('mh-links-active-blocked', 'line-color', t.blocked)
+  map.setPaintProperty('mh-links-active-stalled', 'line-color', t.stalled)
+
+  if (map.getLayer('label-admin2')) {
+    map.setPaintProperty('label-admin2', 'text-color', t.labelMuted)
+    map.setPaintProperty('label-admin2', 'text-halo-color', t.labelHalo)
+  }
   map.setPaintProperty('label-place', 'text-color', t.labelMuted)
   map.setPaintProperty('label-place', 'text-halo-color', t.labelHalo)
   map.setPaintProperty('label-admin1', 'text-color', t.labelMuted)
@@ -447,19 +717,15 @@ export function applyThemeToMap(map: MapLibreMap, theme: GlobeThemeMode): void {
   map.setPaintProperty('label-admin0', 'text-color', t.labelSecondary)
   map.setPaintProperty('label-admin0', 'text-halo-color', t.labelHalo)
 
-  map.setPaintProperty('mh-link-badges', 'text-color', [
-    'match',
-    ['get', 'colorKind'],
-    'stalled',
-    t.stalled,
-    'blocked',
-    t.blocked,
-    t.labelPrimary,
-  ])
+  map.setPaintProperty('mh-link-badges', 'text-color', buildLinkBadgeColorExpr(t))
   map.setPaintProperty('mh-link-badges', 'text-halo-color', t.labelHalo)
 
-  map.setPaintProperty('mh-markers', 'text-color', t.labelPrimary)
-  map.setPaintProperty('mh-markers', 'text-halo-color', t.labelHalo)
+  for (const id of MARKER_LABEL_LAYER_IDS) {
+    if (map.getLayer(id)) {
+      map.setPaintProperty(id, 'text-color', t.labelPrimary)
+      map.setPaintProperty(id, 'text-halo-color', t.labelHalo)
+    }
+  }
 }
 
 /**
@@ -469,14 +735,7 @@ export function applyLangToMap(map: MapLibreMap, lang: GlobeLang): void {
   map.setLayoutProperty('label-admin0', 'text-field', buildAdmin0TextField(lang))
   map.setLayoutProperty('label-admin1', 'text-field', buildSubLabelTextField(lang))
   map.setLayoutProperty('label-place', 'text-field', buildSubLabelTextField(lang))
-}
-
-/** Toggle visibility of MapLibre native surface link layers (Variant L vs Variant A < z5). */
-export function setSurfaceLinksVisible(map: MapLibreMap, visible: boolean): void {
-  const v = visible ? 'visible' : 'none'
-  for (const id of SURFACE_LINK_LAYER_IDS) {
-    if (map.getLayer(id)) {
-      map.setLayoutProperty(id, 'visibility', v)
-    }
+  if (map.getLayer('label-admin2')) {
+    map.setLayoutProperty('label-admin2', 'text-field', buildSubLabelTextField(lang))
   }
 }

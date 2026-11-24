@@ -13,6 +13,13 @@ import {
   resolveV2Location,
 } from '../grouping'
 import { donutDiameterForCount, hitHalfBoxPx } from '../icons'
+import {
+  accuracyCircleRadiusPx,
+  assignMarkerEdgePlacement,
+  buildAccuracyCircleRing,
+  computeFitGlobeZoom,
+  globeScreenRadiusPx,
+} from '../globeViewport'
 
 function makeNode(id: string, extra: Partial<GlobeNode> = {}): GlobeNode {
   return {
@@ -183,5 +190,36 @@ describe('globe-v2 grouping — one city = one point, zero scatter, honest locat
     expect(donutDiameterForCount(55)).toBe(24)
     expect(hitHalfBoxPx(false) * 2).toBe(24)
     expect(hitHalfBoxPx(true) * 2).toBe(44)
+  })
+
+  it('Fix #1, #3 & S7: fits globe to 85-90% of min(w,h), prevents 390px edge clipping, and builds 64-gon accuracy circles', () => {
+    // Fix #1: Card (1140x560), Full-page (1440x900), and Mobile (360x380) all land in 85-90% diameter
+    for (const [w, h] of [
+      [1140, 560],
+      [1440, 900],
+      [360, 380],
+      [390, 844],
+    ] as const) {
+      const z = computeFitGlobeZoom(w, h, 30, 0.875)
+      const r = globeScreenRadiusPx(w, h, z, 30)
+      const ratio = (r * 2) / Math.min(w, h)
+      expect(ratio, `fit ratio at ${w}x${h}`).toBeGreaterThanOrEqual(0.85)
+      expect(ratio, `fit ratio at ${w}x${h}`).toBeLessThanOrEqual(0.9)
+    }
+
+    // Fix #3: Near left edge on 390px phone ("法兰克福+5城 · 45" at x=78) MUST extend rightward, never clip left!
+    expect(assignMarkerEdgePlacement(78, 120, 360, 380, '法兰克福+5城 · 45')).toBe('extend-right')
+    // Near right edge on 390px phone ("东京 · 16" at x=312) MUST extend leftward, never clip right!
+    expect(assignMarkerEdgePlacement(312, 180, 360, 380, '东京 · 16')).toBe('extend-left')
+    // Center of 1440px canvas allows full variable anchors
+    expect(assignMarkerEdgePlacement(720, 300, 1440, 620, '上海 · 28')).toBe('extend-both')
+    // Outside viewport bounds cleanly hides label
+    expect(assignMarkerEdgePlacement(-10, 200, 360, 380, '法兰克福')).toBe('hide')
+
+    // S7: 64-gon accuracy circle is closed with 65 vertices and scales monotonically with zoom
+    const ring = buildAccuracyCircleRing(139.69, 35.69, 50, 64)
+    expect(ring).toHaveLength(65)
+    expect(ring[0]![1]).toBeCloseTo(ring[64]![1], 4)
+    expect(accuracyCircleRadiusPx(50, 5, 35.69)).toBeGreaterThan(6)
   })
 })

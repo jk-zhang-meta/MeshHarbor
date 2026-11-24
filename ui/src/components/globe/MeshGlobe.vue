@@ -1,10 +1,45 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
+<!--
+  Production 3D MeshGlobe wrapper (FR-136 P2/P3):
+  - Default engine: lazily-loaded MapLibre GL JS v6 + self-hosted PMTiles (`MeshGlobeMap.vue`).
+  - Side-by-side comparison fallback: `?globe=legacy` (or `engine="legacy"`) lazily loads the
+    legacy Three.js `MeshGlobeCanvas.vue` (kept until P5 cleanup).
+  - Automatic WebGL2 fallback (AC16): renders `#fallback` slot (2D radial ring SVG) whenever
+    WebGL2 is unavailable, `forceFallback` is true, or lazy chunk load fails.
+  - Zero main-entry bundle growth (S11): both 3D engines are dynamic `defineAsyncComponent` chunks.
+-->
 <template>
-  <div class="mh-globe-root" data-testid="mesh-globe-root">
+  <div
+    class="mh-globe-root"
+    data-testid="mesh-globe-root"
+    :data-globe-engine="use3D ? resolvedEngine : 'fallback'"
+  >
     <component
-      :is="AsyncGlobeCanvas"
-      v-if="use3D"
+      :is="AsyncGlobeMapV2"
+      v-if="use3D && resolvedEngine === 'v2'"
+      :nodes="nodes"
+      :arcs="arcs"
+      :center="center"
+      :theme-mode="globeThemeMode"
+      :lang="globeLang"
+      :enabled-carriers="enabledCarriers"
+      :only-problems="onlyProblems"
+      :min-rtt-ms="minRttMs"
+      :show-control-plane="showControlPlane"
+      :show-detail-panel="showDetailPanel"
+      :show-open-device-action="showOpenDeviceAction"
+      :height="height || 560"
+      :aria-label="ariaLabel"
+      :sync-url="syncUrl"
+      @node-click="emit('node-click', $event)"
+      @arc-click="emit('arc-click', $event)"
+      @open-device="emit('open-device', $event)"
+      @webgl-error="onWebglError"
+    />
+    <component
+      :is="AsyncLegacyCanvas"
+      v-else-if="use3D && resolvedEngine === 'legacy'"
       :nodes="nodes"
       :arcs="arcs"
       :center="center"
@@ -23,7 +58,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, h, ref } from 'vue'
+import { computed, defineAsyncComponent, h, inject, ref } from 'vue'
+import { routeLocationKey, type RouteLocationNormalizedLoaded } from 'vue-router'
+import { useTheme } from 'vuetify'
+import { useI18n } from 'vue-i18n'
+import type { GlobeLang, GlobeThemeMode } from '@/components/globe-v2/tokens'
 import type { GlobeArc, GlobeCenter, GlobeNode } from './types'
 import { isWebGL2Supported } from './webgl'
 
@@ -35,19 +74,31 @@ const props = withDefaults(
     showControlPlane?: boolean
     showDetailPanel?: boolean
     showOpenDeviceAction?: boolean
+    enabledCarriers?: readonly string[]
+    onlyProblems?: boolean
+    minRttMs?: number
     height?: number
     ariaLabel?: string
     /** Explicit override (e.g. user picked 2D Ring or test forcing fallback). */
     forceFallback?: boolean
+    /** Optional explicit engine override; defaults to MapLibre v2 unless `?globe=legacy`. */
+    engine?: 'auto' | 'v2' | 'legacy'
+    /** Sync selection (`g_sel`) and full-page (`g_full=1`) to URL query. */
+    syncUrl?: boolean
   }>(),
   {
     center: null,
     showControlPlane: true,
     showDetailPanel: true,
     showOpenDeviceAction: true,
+    enabledCarriers: () => ['direct', 'relay', 'derp', 'tunnel', 'blocked'],
+    onlyProblems: false,
+    minRttMs: 0,
     height: 0,
     ariaLabel: '',
     forceFallback: false,
+    engine: 'auto',
+    syncUrl: true,
   },
 )
 
@@ -57,6 +108,44 @@ const emit = defineEmits<{
   (e: 'open-device', nodeId: string): void
   (e: 'fallback-active', reason: string): void
 }>()
+
+// Inject Vue Router route safely when installed (remains optional for isolated unit tests).
+const injectedRoute = inject<RouteLocationNormalizedLoaded | null>(routeLocationKey, null)
+
+// Safely read Vuetify theme and i18n locale for seamless live dark/light & zh-CN/en sync.
+let vuetifyTheme: ReturnType<typeof useTheme> | null = null
+try {
+  vuetifyTheme = useTheme()
+} catch {
+  vuetifyTheme = null
+}
+
+let i18nLocale: { value: unknown } | null = null
+try {
+  i18nLocale = useI18n().locale
+} catch {
+  i18nLocale = null
+}
+
+const globeThemeMode = computed<GlobeThemeMode>(() =>
+  vuetifyTheme?.global?.current?.value?.dark === false ? 'light' : 'dark',
+)
+
+const globeLang = computed<GlobeLang>(() =>
+  String(i18nLocale?.value ?? 'en') === 'zh-CN' ? 'zh-CN' : 'en',
+)
+
+const resolvedEngine = computed<'v2' | 'legacy'>(() => {
+  if (props.engine === 'legacy') return 'legacy'
+  if (props.engine === 'v2') return 'v2'
+  const routeVal = injectedRoute?.query?.globe
+  if (routeVal === 'legacy') return 'legacy'
+  if (typeof window !== 'undefined') {
+    const param = new URLSearchParams(window.location.search).get('globe')
+    if (param === 'legacy') return 'legacy'
+  }
+  return 'v2'
+})
 
 const webglFailed = ref(false)
 const webglAvailable = isWebGL2Supported()
@@ -72,16 +161,29 @@ function onWebglError(reason: string) {
   emit('fallback-active', reason)
 }
 
-// Lazy-loaded via dynamic import() so Three.js + Natural Earth 1:50m never enter
-// the main SPA entry bundle.
-const AsyncGlobeCanvas = defineAsyncComponent({
+const loadingStub = {
+  render() {
+    return h('div', { class: 'mh-globe-loading', 'data-testid': 'mesh-globe-loading' })
+  },
+}
+
+// Lazy-loaded via dynamic import() so MapLibre GL JS + PMTiles NEVER enter the main SPA entry bundle.
+const AsyncGlobeMapV2 = defineAsyncComponent({
+  loader: () => import('@/components/globe-v2/MeshGlobeMap.vue'),
+  delay: 120,
+  loadingComponent: loadingStub,
+  onError(_err, _retry, fail) {
+    webglFailed.value = true
+    emit('fallback-active', 'chunk-load-failed')
+    fail()
+  },
+})
+
+// Preserved until P5 for `?globe=legacy` side-by-side comparison.
+const AsyncLegacyCanvas = defineAsyncComponent({
   loader: () => import('./MeshGlobeCanvas.vue'),
   delay: 120,
-  loadingComponent: {
-    render() {
-      return h('div', { class: 'mh-globe-loading', 'data-testid': 'mesh-globe-loading' })
-    },
-  },
+  loadingComponent: loadingStub,
   onError(_err, _retry, fail) {
     webglFailed.value = true
     emit('fallback-active', 'chunk-load-failed')

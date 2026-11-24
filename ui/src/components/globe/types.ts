@@ -34,9 +34,13 @@ export interface GlobeNode {
   region?: string | null
   city?: string | null
   relayHome?: string | null
-  /** Optional explicit coordinates (e.g. centre override or future precision). */
+  /** Optional explicit coordinates (e.g. centre override or P6 precision). */
   lat?: number | null
   lon?: number | null
+  /** P6 optional 67%-confidence accuracy radius in km (rendered as 64-gon circle at z>=3). */
+  accuracyRadiusKm?: number | null
+  /** P6 optional explicit precision tier (`coords` | `city` | `region` | `country` | `unknown`). */
+  geoLevel?: 'coords' | 'city' | 'region' | 'country' | 'unknown' | null
   /** Machine facts — omitted in the detail panel whenever absent. */
   os?: string | null
   version?: string | null

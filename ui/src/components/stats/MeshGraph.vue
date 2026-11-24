@@ -70,11 +70,12 @@
         </div>
       </div>
 
-      <!-- 3D Interactive WebGL2 Globe (lazy-loaded) with automatic 2D Ring fallback -->
+      <!-- 3D Interactive WebGL2 Globe (lazy-loaded MapLibre v2; ?globe=legacy fallback) with automatic 2D Ring fallback -->
       <mesh-globe
         :nodes="globeNodes"
         :arcs="globeArcs"
         :center="globeCenter"
+        :enabled-carriers="shownCarriers"
         :show-control-plane="showControlPlane"
         :force-fallback="viewMode === 'ring'"
         @open-device="emit('select', $event)"
@@ -242,6 +243,11 @@ export interface MeshNode {
   country?: string | null
   region?: string | null
   city?: string | null
+  /** P6 optional coordinates & precision fields when provided by newer servers. */
+  lat?: number | null
+  lon?: number | null
+  accuracy_radius_km?: number | null
+  geo_level?: 'coords' | 'city' | 'region' | 'country' | 'unknown' | null
   zone_id?: string | null
   zone_name?: string | null
   zone_pinned?: boolean
@@ -520,6 +526,10 @@ const globeNodes = computed<GlobeNode[]>(() =>
     country: n.country,
     region: n.region,
     city: n.city,
+    lat: n.lat ?? null,
+    lon: n.lon ?? null,
+    accuracyRadiusKm: n.accuracy_radius_km ?? null,
+    geoLevel: n.geo_level ?? null,
     relayHome: n.relay_home,
     os: n.os,
     version: n.version,

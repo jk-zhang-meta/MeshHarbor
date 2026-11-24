@@ -427,6 +427,11 @@ export interface Agent {
   country?: string | null
   region?: string | null
   city?: string | null
+  /** Optional P6 coordinate precision fields when reported by newer servers. */
+  lat?: number | null
+  lon?: number | null
+  accuracy_radius_km?: number | null
+  geo_level?: 'coords' | 'city' | 'region' | 'country' | 'unknown' | null
   /** Per-device logical network zone assignment (`null`/absent = Auto, string = Pinned) & server-resolved zone. */
   pinned_zone_id?: string | null
   effective_zone_id?: string | null

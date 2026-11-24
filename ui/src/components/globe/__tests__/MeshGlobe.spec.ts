@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { routeLocationKey } from 'vue-router'
 import { createVuetify } from 'vuetify'
 import * as components from 'vuetify/components'
 import * as directives from 'vuetify/directives'
+
+vi.mock('@/components/globe-v2/MeshGlobeMap.vue', () => ({
+  default: { name: 'MeshGlobeMapStub', template: '<div data-testid="globe-v2-stub" />' },
+}))
+vi.mock('../MeshGlobeCanvas.vue', () => ({
+  default: { name: 'MeshGlobeCanvasStub', template: '<div data-testid="globe-legacy-stub" />' },
+}))
+
 import MeshGlobe from '../MeshGlobe.vue'
 import GlobeDetailPanel from '../GlobeDetailPanel.vue'
 import MeshGraph from '@/components/stats/MeshGraph.vue'
@@ -101,6 +110,38 @@ describe('MeshGlobe — WebGL2 unavailable fallback', () => {
     })
     expect(w.find('[data-testid="ring-slot"]').exists()).toBe(true)
     expect(w.emitted('fallback-active')?.[0]).toEqual(['webgl2-unavailable'])
+    expect(w.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('fallback')
+  })
+
+  it('defaults to MapLibre v2 when WebGL2 is available and honors ?globe=legacy', async () => {
+    vi.stubGlobal('WebGL2RenderingContext', class {})
+    const spy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((kind: string) =>
+      kind === 'webgl2'
+        ? ({ getExtension: () => null } as unknown as WebGL2RenderingContext)
+        : null) as typeof HTMLCanvasElement.prototype.getContext)
+    try {
+      const wDefault = mount(MeshGlobe, {
+        props: { nodes: sampleNodes, arcs: sampleArcs },
+        global: { plugins: [vuetify] },
+      })
+      expect(wDefault.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('v2')
+      wDefault.unmount()
+
+      const wLegacy = mount(MeshGlobe, {
+        props: { nodes: sampleNodes, arcs: sampleArcs },
+        global: {
+          plugins: [vuetify],
+          provide: {
+            [routeLocationKey as symbol]: { query: { globe: 'legacy' } },
+          },
+        },
+      })
+      expect(wLegacy.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('legacy')
+      wLegacy.unmount()
+    } finally {
+      spy.mockRestore()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('MeshGraph automatically falls back to the SVG radial ring when WebGL2 is unavailable', () => {
@@ -193,11 +234,17 @@ describe('i18n parity for mh.mesh', () => {
     )
   }
 
-  it('keeps 100% key parity between en.json and zh-CN.json under mh.mesh', () => {
+  it('keeps 100% key parity between en.json and zh-CN.json under mh.mesh and mh.globeV2', () => {
     const enMesh = leaves((en as unknown as { mh: { mesh: Tree } }).mh.mesh, 'mh.mesh.')
     const zhMesh = leaves((zhCN as unknown as { mh: { mesh: Tree } }).mh.mesh, 'mh.mesh.')
     expect(enMesh.length).toBeGreaterThan(30)
     expect(enMesh.filter((k) => !zhMesh.includes(k))).toEqual([])
     expect(zhMesh.filter((k) => !enMesh.includes(k))).toEqual([])
+
+    const enV2 = leaves((en as unknown as { mh: { globeV2: Tree } }).mh.globeV2, 'mh.globeV2.')
+    const zhV2 = leaves((zhCN as unknown as { mh: { globeV2: Tree } }).mh.globeV2, 'mh.globeV2.')
+    expect(enV2.length).toBeGreaterThan(35)
+    expect(enV2.filter((k) => !zhV2.includes(k))).toEqual([])
+    expect(zhV2.filter((k) => !enV2.includes(k))).toEqual([])
   })
 })

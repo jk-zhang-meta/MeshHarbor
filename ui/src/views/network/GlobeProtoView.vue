@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <!--
-  Hidden signed-in P0 Prototype route (/tenant/:tenantId/network/globe-proto).
-  NOT linked in the sidebar navigation. Evaluates MapLibre GL JS 6.19.0 +
-  self-hosted PMTiles (Variant L surface lines vs Variant A elevated 3D arcs)
+  Hidden signed-in MapLibre Globe diagnostic & Perf HUD route (/tenant/:tenantId/network/globe-proto).
+  NOT linked in the sidebar navigation. Evaluates production MapLibre GL JS 6.19.0 +
+  self-hosted PMTiles (Variant L surface lines — Variant A dropped per G4 decision)
   against real tenant mesh data or the deterministic Synthetic ×10 stress set,
   plus side-by-side comparison with the legacy Three.js globe on the same data.
 -->
@@ -29,20 +29,6 @@
         >
           <v-btn value="v2" size="x-small">MapLibre v2</v-btn>
           <v-btn value="legacy" size="x-small">{{ $t('mh.globeV2.legacyEngine') }}</v-btn>
-        </v-btn-toggle>
-
-        <!-- Variant L vs A -->
-        <v-btn-toggle
-          v-if="engineMode === 'v2'"
-          v-model="variant"
-          mandatory
-          density="compact"
-          variant="outlined"
-          class="mh-segmented"
-          data-testid="proto-variant-toggle"
-        >
-          <v-btn value="L" size="x-small">{{ $t('mh.globeV2.variantL') }}</v-btn>
-          <v-btn value="A" size="x-small">{{ $t('mh.globeV2.variantA') }}</v-btn>
         </v-btn-toggle>
 
         <!-- Dataset Real vs Synthetic x10 -->
@@ -166,14 +152,13 @@
       </div>
     </div>
 
-    <!-- Globe Stage -->
+    <!-- Globe Stage (Variant L only) -->
     <mesh-globe-map
       v-if="engineMode === 'v2'"
       ref="globeMapRef"
       :nodes="activeNodes"
       :arcs="activeArcs"
       :center="activeCenter"
-      :variant="variant"
       :theme-mode="globeTheme"
       :lang="globeLang"
       :pixel-ratio="pixelRatio"
@@ -186,6 +171,7 @@
 
     <mesh-globe
       v-else
+      engine="legacy"
       :nodes="activeNodes"
       :arcs="activeArcs"
       :center="activeCenter"
@@ -220,7 +206,6 @@ const tenantId = computed(() => String(route.params.tenantId ?? ''))
 
 const initialQuery = route.query
 const engineMode = ref<'v2' | 'legacy'>(initialQuery.engine === 'legacy' ? 'legacy' : 'v2')
-const variant = ref<'L' | 'A'>(initialQuery.variant === 'A' ? 'A' : 'L')
 const datasetMode = ref<'real' | 'synthetic10'>(
   initialQuery.dataset === 'synthetic10' ? 'synthetic10' : 'real',
 )
@@ -265,7 +250,7 @@ const liveMetrics = ref({
 
 const synthetic10 = buildSyntheticMesh(10)
 
-// Sync UI chrome theme & i18n locale when user flips prototype switches
+// Sync UI chrome theme & i18n locale when user flips diagnostic switches
 watch(
   globeTheme,
   (mode) => {
@@ -310,6 +295,10 @@ const realNodes = computed<GlobeNode[]>(() => {
       country: fa?.country ?? null,
       region: fa?.region ?? null,
       city: fa?.city ?? null,
+      lat: fa?.lat ?? null,
+      lon: fa?.lon ?? null,
+      accuracyRadiusKm: fa?.accuracy_radius_km ?? null,
+      geoLevel: fa?.geo_level ?? null,
       relayHome: fa?.relay_home ?? ma?.relay_home ?? n.relay_home ?? null,
       os: fa?.os ?? ma?.os ?? null,
       version: fa?.agent_version ?? ma?.agent_version ?? null,
@@ -395,17 +384,19 @@ onMounted(() => {
     void statsStore.fetchMesh(tenantId.value)
     void agentStore.fetchAgents(tenantId.value).catch(() => {})
   }
-  // Expose P0 debug handle on window for deterministic headless verification
+  // Expose diagnostic handle on window for deterministic headless verification
   ;(window as unknown as Record<string, unknown>).__GLOBE_P0_API__ = {
     runPerf: (ms = 10_000) => globeMapRef.value?.runPerfBenchmark(ms),
     getDebugState: () => globeMapRef.value?.getDebugState(),
     triggerClusterByName: (q: string) => globeMapRef.value?.triggerClusterByName(q),
+    selectNodeById: (id: string) => globeMapRef.value?.selectNodeById(id),
+    selectFirstLink: () => globeMapRef.value?.selectFirstLink(),
+    setMaxZoom: (v: number) => globeMapRef.value?.setMaxZoom(v),
     setCamera: (center: [number, number], zoom: number) => globeMapRef.value?.setCamera(center, zoom),
     toggleFullPage: () => globeMapRef.value?.toggleFullPage(),
     exitFullPage: () => globeMapRef.value?.exitFullPage(),
     collapseSpiderfy: () => globeMapRef.value?.collapseSpiderfy(),
     closePanel: () => globeMapRef.value?.closePanel(),
-    setVariant: (v: 'L' | 'A') => { variant.value = v },
     setTheme: (m: GlobeThemeMode) => { globeTheme.value = m },
     setLang: (l: GlobeLang) => { globeLang.value = l },
     setDataset: (d: 'real' | 'synthetic10') => { datasetMode.value = d },
