@@ -1018,13 +1018,14 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
                     // No browser could be opened: the window shows the link.
                     show_window(&app, "/onboarding");
                 }
-                crate::commands::cmd_login_wait(name).await.map(|_| ())
+                crate::commands::cmd_login_wait(name.clone()).await.map(|_| ())
             }
             Err(e) => Err(e),
         };
+        let signed_in = outcome.is_ok();
         {
             let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
-            ui.busy = false;
+            ui.busy = signed_in;
             ui.login_waiting = false;
             ui.code = None;
             match outcome {
@@ -1039,7 +1040,104 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
             }
         }
         ACCOUNT_WATCH_WAKE.notify_one();
+        if signed_in {
+            // FR-133 — a person from another organization: offer the move.
+            offer_move(&app, name).await;
+            LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy = false;
+            ACCOUNT_WATCH_WAKE.notify_one();
+        }
     });
+}
+
+/// A native message box, off the async runtime (it blocks until answered).
+/// `buttons` = `Some((yes, no))` asks and answers which; `None` only tells.
+async fn message_box<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    text: String,
+    buttons: Option<(&str, &str)>,
+) -> bool {
+    use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons, MessageDialogKind};
+    let app = app.clone();
+    let title = title.to_string();
+    let buttons = buttons.map(|(y, n)| (y.to_string(), n.to_string()));
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut d = app
+            .dialog()
+            .message(text)
+            .title(title)
+            .kind(MessageDialogKind::Info);
+        if let Some((yes, no)) = buttons {
+            d = d.buttons(MessageDialogButtons::OkCancelCustom(yes, no));
+        }
+        d.blocking_show()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// FR-133 — after a sign-in by someone who is not a member of this device's
+/// organization: ask "Move it to your organization?". Keep changes nothing
+/// (the sign-in stands, as today); Move runs a second, enrollment approval in
+/// the browser and rebinds the device's primary enrollment there.
+async fn offer_move<R: Runtime>(app: &AppHandle<R>, name: String) {
+    let Some(offer) = crate::commands::move_offer_after_sign_in().await else {
+        return;
+    };
+    const TITLE: &str = "Move this device?";
+    if let Some(why) = &offer.refusal {
+        let text = format!("This device belongs to {}.\n\n{why}", offer.org_label());
+        message_box(app, TITLE, text, None).await;
+        return;
+    }
+    if !message_box(app, TITLE, offer.question(), Some(("Move", "Keep"))).await {
+        tracing::info!("tray: kept the device in its organization");
+        return;
+    }
+    {
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        ui.login_waiting = true;
+        ui.error = None;
+    }
+    ACCOUNT_WATCH_WAKE.notify_one();
+    let outcome = match crate::commands::move_start(&offer, &name).await {
+        Ok(started) => {
+            LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).code =
+                Some(started.user_code.clone());
+            ACCOUNT_WATCH_WAKE.notify_one();
+            if !started.opened {
+                let text = format!(
+                    "Open this link to approve moving the device, and check that the page shows \
+                     the code {}:\n\n{}",
+                    started.user_code, started.url
+                );
+                message_box(app, TITLE, text, None).await;
+            }
+            crate::commands::move_wait(name).await
+        }
+        Err(e) => Err(e),
+    };
+    {
+        let mut ui = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner());
+        ui.login_waiting = false;
+        ui.code = None;
+    }
+    ACCOUNT_WATCH_WAKE.notify_one();
+    match outcome {
+        Ok(notice) => {
+            tracing::info!(kept = notice.is_some(), "tray: device moved to the signed-in organization");
+            message_box(app, "Device moved", offer.done(notice.as_deref()), None).await;
+        }
+        Err(e) if e == meshharbor_node_core::device_login::CANCELLED_ERROR => {
+            tracing::info!("tray: move cancelled");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "tray: move did not complete");
+            message_box(app, "The device was not moved", e.clone(), None).await;
+            LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).error =
+                Some((e, std::time::Instant::now()));
+        }
+    }
 }
 
 /// `Leave · <who>` in the Invitations menu: the daemon's `leave --invite`

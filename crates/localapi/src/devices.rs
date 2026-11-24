@@ -183,6 +183,10 @@ pub struct DevicesPage {
     /// This device's own overlay node id (hex), when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_node_id: Option<String>,
+    /// FR-133 — this enrollment's organization name, as its server tells the
+    /// device (absent from an older server, and for a temporary device).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_name: Option<String>,
 }
 
 /// The centre of the mesh graph — the control plane.
@@ -454,6 +458,7 @@ mod tests {
             overlay: "ok".into(),
             acl_mode: "enforce".into(),
             self_node_id: Some("aaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            org_name: None,
         }
     }
 

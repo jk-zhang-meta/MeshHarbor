@@ -699,6 +699,8 @@ impl LocalApiState for DaemonState {
             connected,
             // FR-51 P4 — the primary enrollment's nature, stamped at startup.
             ephemeral: self.ephemeral,
+            // FR-129 / FR-133 — whether two-factor is switched on locally.
+            two_factor: Some(meshharbor_node_core::two_factor::active()),
             // P5/S4 — exit-node routing status the overlay runtime published.
             exit_node: self.overlay.borrow().exit_node.clone(),
             // FR-97 P0b — why this node offers no routes it was configured to.

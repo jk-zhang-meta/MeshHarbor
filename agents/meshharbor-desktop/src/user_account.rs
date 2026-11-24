@@ -201,6 +201,16 @@ pub async fn mint_promotion_token(server: &str, tenant_id: &str) -> Result<Strin
         .map_err(|e| e.to_string())
 }
 
+/// FR-133 — whether the account signed in here belongs to `tenant_id`.
+pub async fn is_member_of(server: &str, tenant_id: &str) -> Result<bool, String> {
+    let _operation = SESSION_OP.lock().await;
+    let session = refreshed(server).await?;
+    user_session::member_tenant_ids(server, &session.access_token)
+        .await
+        .map(|ids| ids.iter().any(|id| id == tenant_id))
+        .map_err(|e| e.to_string())
+}
+
 pub async fn sign_out(server: &str) -> Result<(), String> {
     let _operation = SESSION_OP.lock().await;
     let load_scope = server.to_owned();

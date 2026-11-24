@@ -19,13 +19,19 @@ use std::path::{Path, PathBuf};
 /// failure into the caller's pre-created `status_file` before returning `Err`.
 pub async fn run_cli(request_file: &Path, status_file: &Path) -> Result<()> {
     let res = execute(request_file).await;
-    if let Err(ref err) = res {
-        personal_system::write_status_error(status_file, &format!("{err:#}"));
+    match &res {
+        Err(err) => personal_system::write_status_error(status_file, &format!("{err:#}")),
+        // FR-133 — a success can carry a notice (the old organization still
+        // lists a moved device). The status file is read for an error only
+        // when the helper FAILS, so on success the caller reads it as the
+        // notice (`personal_system::invoke_elevated_enroll_system_noticed`).
+        Ok(Some(notice)) => personal_system::write_status_notice(status_file, notice),
+        Ok(None) => {}
     }
-    res
+    res.map(|_| ())
 }
 
-async fn execute(request_file: &Path) -> Result<()> {
+async fn execute(request_file: &Path) -> Result<Option<String>> {
     if !personal_system::is_process_elevated() {
         bail!("enroll-personal-system must run with Administrator / root privileges");
     }
@@ -118,6 +124,20 @@ async fn execute(request_file: &Path) -> Result<()> {
             })
         });
 
+    // FR-133 — a replace into ANOTHER organization moves this device; a
+    // protected or two-factor device refuses that before the token is spent.
+    if let Some(cfg) = existing_sys.as_ref().or(seed_cfg.as_ref())
+        && meshharbor_node_core::device_move::is_cross_org_replace(
+            cfg,
+            &req.server_url,
+            &req.enrollment_token,
+            req.replace,
+        )
+        && let Some(why) = meshharbor_node_core::device_move::move_refusal(cfg, &target_path)
+    {
+        bail!("{why}");
+    }
+
     let fresh_cfg = crate::enrollment::enroll_with_existing_identity(
         crate::enrollment::EnrollInputs {
             server_url: &req.server_url,
@@ -147,6 +167,17 @@ async fn execute(request_file: &Path) -> Result<()> {
     merge_seed_invitation_history(&target_path, &seed_history)?;
 
     let enrolled_agent_id = fresh_cfg.agent_id.clone();
+    // FR-133 — the primary this rebind leaves behind (never a temporary one).
+    let leaving = if req.replace {
+        let markers = device_invite::read_markers(&target_path);
+        combined_existing.as_ref().and_then(|old| {
+            let temporary = markers.contains_key(&old.agent_id)
+                || markers.contains_key(device_invite::PRIMARY_KEY);
+            meshharbor_node_core::device_move::leaving_primary(old, &fresh_cfg, temporary)
+        })
+    } else {
+        None
+    };
     let (mut cfg, outcome) = merge_and_promote_personal_enrollment(
         &target_path,
         combined_existing,
@@ -176,7 +207,19 @@ async fn execute(request_file: &Path) -> Result<()> {
         tracing::warn!(error = %e, "invitation history link will retry when the system daemon connects");
     }
 
-    activate_platform_system_service(&req, &target_path, &enrolled_agent_id).await
+    // FR-133 — after the save and before the restart, so the daemon comes
+    // up in the new organization with the old row already gone.
+    let notice = match (&outcome, &leaving) {
+        (crate::enrollment::EnrollOutcome::ReplacedPrimary, Some(old)) => {
+            meshharbor_node_core::device_move::remove_old_row(old, &cfg.agent_token)
+                .await
+                .notice()
+        }
+        _ => None,
+    };
+
+    activate_platform_system_service(&req, &target_path, &enrolled_agent_id).await?;
+    Ok(notice)
 }
 
 #[cfg(not(windows))]

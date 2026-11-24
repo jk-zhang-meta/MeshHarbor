@@ -1431,6 +1431,21 @@ async fn login_cmd(
     println!("Waiting for approval…");
     let approved = pending.wait().await?;
 
+    // FR-133 — a move out of this config's organization: refused on a
+    // protected or two-factor device (the system helper and `enroll_cmd`
+    // check their own configs too).
+    if let Some(cfg) = config::read_if_present(config_path)
+        && meshharbor_node_core::device_move::is_cross_org_replace(
+            &cfg,
+            &pending.server_url,
+            &approved.enrollment_token,
+            replace,
+        )
+        && let Some(why) = meshharbor_node_core::device_move::move_refusal(&cfg, config_path)
+    {
+        bail!("{why}");
+    }
+
     if promote_system {
         println!("Approved. Configuring system service with Administrator / root privileges…");
         let exe = std::env::current_exe().context("locating meshharbord executable")?;
@@ -1443,8 +1458,16 @@ async fn login_cmd(
         )
         .context("reading existing user config before system promotion")?;
         let interactive_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-        personal_system::invoke_elevated_enroll_system(&exe, &req, interactive_tty)
-            .map_err(anyhow::Error::msg)?;
+        let notice = personal_system::invoke_elevated_enroll_system_noticed(
+            &exe,
+            &req,
+            interactive_tty,
+        )
+        .map_err(anyhow::Error::msg)?;
+        // FR-133 — a move whose old organization still lists this device.
+        if let Some(notice) = notice {
+            println!("{notice}");
+        }
         if !personal_system::is_process_elevated() {
             let _ = meshharbord::service::uninstall();
             personal_system::retire_migrated_user_config(config_path);
@@ -3667,6 +3690,21 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         }
     };
 
+    // FR-133 — a `--replace` into ANOTHER organization moves this device.
+    // A protected or two-factor device refuses that, before the single-use
+    // token is spent (`device_move::move_refusal`).
+    if let Some(cfg) = &existing
+        && meshharbor_node_core::device_move::is_cross_org_replace(
+            cfg,
+            server,
+            enrollment_token,
+            replace,
+        )
+        && let Some(why) = meshharbor_node_core::device_move::move_refusal(cfg, &target_path)
+    {
+        bail!("{why}");
+    }
+
     let fresh = enrollment::enroll_with_existing_identity(
         enrollment::EnrollInputs {
             server_url: server,
@@ -3687,6 +3725,19 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
     // (operator state preserved — rc.204 semantics); a NEW pair → APPEND a
     // secondary org (with its own freshly minted WG key); `--replace` →
     // legacy whole-primary rebind.
+    // FR-133 — the primary this rebind leaves behind, read before the merge
+    // consumes it. A temporary (invitation) primary is not moved: it leaves
+    // with `mh leave`.
+    let leaving = if replace {
+        let markers = meshharbor_node_core::device_invite::read_markers(&target_path);
+        existing.as_ref().and_then(|old| {
+            let temporary = markers.contains_key(&old.agent_id)
+                || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY);
+            meshharbor_node_core::device_move::leaving_primary(old, &fresh, temporary)
+        })
+    } else {
+        None
+    };
     let (mut cfg, outcome) = enrollment::apply_enrollment(existing, fresh, label, replace)?;
 
     // FR-51 P3 — the CREDENTIAL decided what was minted; say so when it
@@ -3795,6 +3846,13 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         }
         EnrollOutcome::ReplacedPrimary => {
             println!("Primary enrollment REPLACED (--replace). Agent id: {enrolled_agent_id}");
+            // FR-133 — after the save, so a failure here costs only an old
+            // row an admin must remove, never this device's enrollment.
+            if let Some(old) = &leaving {
+                let out =
+                    meshharbor_node_core::device_move::remove_old_row(old, &cfg.agent_token).await;
+                println!("{}", out.line());
+            }
         }
         EnrollOutcome::RefreshedOrg { label } => {
             println!("Org {label:?} enrollment refreshed. Agent id: {enrolled_agent_id}");

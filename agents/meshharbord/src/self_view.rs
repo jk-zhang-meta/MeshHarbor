@@ -755,6 +755,7 @@ pub(crate) fn devices_page_from_server(page: VisibleDevicesPage, org: &str) -> D
         overlay,
         acl_mode,
         self_node_id,
+        org_name,
     } = page;
     DevicesPage {
         org: org.to_string(),
@@ -766,6 +767,7 @@ pub(crate) fn devices_page_from_server(page: VisibleDevicesPage, org: &str) -> D
         overlay,
         acl_mode,
         self_node_id,
+        org_name,
     }
 }
 
@@ -952,8 +954,10 @@ mod tests {
             overlay: "ok".into(),
             acl_mode: "enforce".into(),
             self_node_id: Some("aaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            org_name: Some("Example Org".into()),
         };
         let lite = devices_page_from_server(page.clone(), "acme");
+        assert_eq!(lite.org_name.as_deref(), Some("Example Org"));
         assert_eq!(lite.org, "acme");
         let mut server = serde_json::to_value(&page).unwrap();
         server["org"] = serde_json::json!("acme");
@@ -1209,6 +1213,7 @@ mod tests {
             overlay: "ok".into(),
             acl_mode: "off".into(),
             self_node_id: Some("aaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            org_name: None,
         })
         .unwrap()
     }

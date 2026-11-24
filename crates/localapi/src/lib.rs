@@ -205,6 +205,10 @@ pub struct NodeStatus {
     /// an older CLI ignores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
+    /// FR-129 / FR-133 — whether two-factor is switched on on this device.
+    /// `None` from a daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub two_factor: Option<bool>,
     /// P5 exit-node routing status. `None` unless this node is configured as an
     /// exit-node CLIENT (`overlay_exit_node`). Backward-compatible (older CLIs
     /// ignore the extra field; a v4-only / non-exit daemon omits it).
@@ -5839,6 +5843,7 @@ mod tests {
                 overlay_socks5_port: None,
                 connected: true,
                 ephemeral: false,
+                two_factor: None,
                 exit_node: None,
                 route_offer_withheld: None,
                 host_firewall: None,
@@ -9491,13 +9496,16 @@ mod personal_system_status_tests {
         let json_none = serde_json::to_string(&s).unwrap();
         assert!(!json_none.contains("personal_enrolled"));
         assert!(!json_none.contains("system_privileged"));
+        assert!(!json_none.contains("two_factor"));
 
         s.personal_enrolled = Some(true);
         s.system_privileged = Some(true);
+        s.two_factor = Some(true);
         let json_some = serde_json::to_string(&s).unwrap();
         let decoded: NodeStatus = serde_json::from_str(&json_some).unwrap();
         assert_eq!(decoded.personal_enrolled, Some(true));
         assert_eq!(decoded.system_privileged, Some(true));
+        assert_eq!(decoded.two_factor, Some(true));
         assert_eq!(
             person_view(Response::Status(Box::new(decoded.clone()))),
             Response::Status(Box::new(decoded))

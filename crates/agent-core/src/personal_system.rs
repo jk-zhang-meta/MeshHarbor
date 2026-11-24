@@ -1078,29 +1078,66 @@ pub fn invoke_elevated_enroll_system(
     req: &SystemEnrollRequest,
     interactive_tty: bool,
 ) -> Result<(), String> {
+    invoke_elevated_enroll_system_noticed(daemon_exe, req, interactive_tty).map(|_| ())
+}
+
+/// [`invoke_elevated_enroll_system`], also answering the helper's NOTICE on
+/// success: a message the person must read although nothing failed (FR-133:
+/// a moved device's old organization still lists it). The helper leaves it
+/// in the same status file it leaves an error in on failure.
+pub fn invoke_elevated_enroll_system_noticed(
+    daemon_exe: &Path,
+    req: &SystemEnrollRequest,
+    interactive_tty: bool,
+) -> Result<Option<String>, String> {
     let dir = temp_base_dir()?;
     let temp = TempPromotionFiles::create_in(&dir, req)
         .map_err(|e| format!("preparing secure promotion files: {e}"))?;
+    elevated_run(daemon_exe, &temp, interactive_tty).map(|()| read_status_notice(&temp.status_path))
+}
 
+/// What marks a status-file message as a success NOTICE rather than an error
+/// left by an earlier, retried attempt.
+pub const STATUS_NOTICE_PREFIX: &str = "notice: ";
+
+/// Leave a success notice for the caller (see [`invoke_elevated_enroll_system_noticed`]).
+pub fn write_status_notice(status_file: &Path, notice: &str) {
+    write_status_error(status_file, &format!("{STATUS_NOTICE_PREFIX}{notice}"));
+}
+
+/// The notice a successful helper left, if any. An unmarked message is an
+/// earlier attempt's error, never shown as a notice.
+pub fn read_status_notice(status_file: &Path) -> Option<String> {
+    read_status_error(status_file)?
+        .strip_prefix(STATUS_NOTICE_PREFIX)
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+}
+
+fn elevated_run(
+    daemon_exe: &Path,
+    temp: &TempPromotionFiles,
+    interactive_tty: bool,
+) -> Result<(), String> {
     if is_process_elevated() {
         let _ = interactive_tty;
-        return run_direct_elevated(daemon_exe, &temp);
+        return run_direct_elevated(daemon_exe, temp);
     }
 
     #[cfg(windows)]
     {
         let _ = interactive_tty;
-        invoke_windows_runas(daemon_exe, &temp)
+        invoke_windows_runas(daemon_exe, temp)
     }
 
     #[cfg(target_os = "linux")]
     {
-        invoke_linux_elevated(daemon_exe, &temp, interactive_tty)
+        invoke_linux_elevated(daemon_exe, temp, interactive_tty)
     }
 
     #[cfg(target_os = "macos")]
     {
-        invoke_macos_elevated(daemon_exe, &temp, interactive_tty)
+        invoke_macos_elevated(daemon_exe, temp, interactive_tty)
     }
 }
 
@@ -1403,6 +1440,13 @@ mod tests {
             assert_eq!(
                 read_status_error(&st_path).as_deref(),
                 Some("anchor verification failed")
+            );
+            // FR-133 — an error is never read back as a success notice.
+            assert_eq!(read_status_notice(&st_path), None);
+            write_status_notice(&st_path, "old organization still lists it");
+            assert_eq!(
+                read_status_notice(&st_path).as_deref(),
+                Some("old organization still lists it")
             );
         }
         assert!(!req_path.exists(), "Drop must remove request file");

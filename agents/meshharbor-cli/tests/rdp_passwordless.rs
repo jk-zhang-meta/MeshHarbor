@@ -526,6 +526,7 @@ fn resolve_peer_scope_enforces_real_tenant_id_and_node_id_and_fails_closed() {
         overlay_socks5_port: Some(1080),
         connected: true,
         ephemeral: false,
+        two_factor: None,
         exit_node: None,
         route_offer_withheld: None,
         host_firewall: None,

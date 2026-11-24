@@ -862,11 +862,172 @@ pub async fn cmd_login_wait(device_name: String) -> Result<StatusReport, String>
     Ok(cmd_status().await)
 }
 
+// ─── FR-133: a device changes hands ─────────────────────────────────────
+
+pub(crate) use meshharbor_node_core::device_move::MoveOffer;
+
+/// The offer's decision, over what was read: `None` asks nothing. Pure, so
+/// "a member of the device's organization is never asked" is a unit test.
+pub(crate) fn move_offer_from(
+    live: &NodeStatus,
+    session_server: &str,
+    member: Option<bool>,
+    org_name: Option<String>,
+    protected: bool,
+) -> Option<MoveOffer> {
+    let primary = live.orgs.iter().find(|o| o.primary);
+    let has_primary_tenant = primary
+        .and_then(|o| o.tenant_id.as_deref())
+        .or(live.tenant_id.as_deref())
+        .is_some();
+    meshharbor_node_core::device_move::offer_for(meshharbor_node_core::device_move::MoveOfferInput {
+        personal_enrolled: live.personal_enrolled,
+        ephemeral: live.ephemeral,
+        primary_server: primary.map(|o| o.server_url.as_str()),
+        has_primary_tenant,
+        session_server,
+        is_member: member,
+        org_name,
+        protected,
+        two_factor: live.two_factor == Some(true),
+    })
+}
+
+/// After a sign-in: is there a move to offer? `None` when this is not a
+/// personal permanent device, the account is a member of the device's
+/// organization, or membership could not be read.
+pub(crate) async fn move_offer_after_sign_in() -> Option<MoveOffer> {
+    let live = daemon_node_status().await?;
+    if live.personal_enrolled != Some(true) || live.ephemeral {
+        return None;
+    }
+    let tenant = live
+        .orgs
+        .iter()
+        .find(|o| o.primary)
+        .and_then(|o| o.tenant_id.clone())
+        .or_else(|| live.tenant_id.clone())?;
+    let server = server_origin().await.ok()?;
+    let member = match crate::user_account::is_member_of(&server, &tenant).await {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::info!(error = %e, "fr-133: membership unknown; not offering a move");
+            None
+        }
+    };
+    if member != Some(false) {
+        return None;
+    }
+    let (org_name, protected) = match localapi::connect().await {
+        Ok(mut c) => {
+            let name = c
+                .devices("", &localapi::DevicesQuery { page: 1, per_page: 1, ..Default::default() })
+                .await
+                .ok()
+                .and_then(|p| p.org_name);
+            let protected = c.config_entries().await.ok().is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|e| e.key == "protected" && e.value.as_deref() == Some("true"))
+            });
+            (name, protected)
+        }
+        Err(_) => (None, false),
+    };
+    move_offer_from(&live, &server, member, org_name, protected)
+}
+
+/// Move: start an ENROLLMENT device login, so the person approves this device
+/// into one of their own organizations (`MANAGE_AGENTS` there). It shares the
+/// sign-in slot, so the tray's cancel ends it the same way.
+pub(crate) async fn move_start(offer: &MoveOffer, device_name: &str) -> Result<LoginStarted, String> {
+    let pending = meshharbor_node_core::device_login::start_with_purpose(
+        &offer.server,
+        device_name.trim(),
+        meshharbor_node_core::device_login::Purpose::Enrollment,
+    )
+    .await
+    .map_err(|e| format!("{e:#}"))?;
+    let opened = meshharbor_node_core::device_login::open_browser(&pending.verification_uri_complete);
+    let out = LoginStarted {
+        user_code: pending.user_code.clone(),
+        url: pending.verification_uri_complete.clone(),
+        opened,
+    };
+    *LOGIN.lock().await = Some(pending);
+    Ok(out)
+}
+
+/// Wait for the move's approval, then rebind the PRIMARY enrollment into the
+/// approved organization (`replace`) and remove the old organization's row
+/// (`device_move`, in the daemon's enroll path or here). Answers the notice
+/// when the old organization still lists the device.
+pub(crate) async fn move_wait(device_name: String) -> Result<Option<String>, String> {
+    let pending = LOGIN
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| "No move is in progress".to_string())?;
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    {
+        let mut slot = LOGIN_CANCEL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prev) = slot.replace(cancel_tx) {
+            let _ = prev.send(());
+        }
+    }
+    let approved = tokio::select! {
+        res = pending.wait() => res.map_err(|e| format!("{e:#}"))?,
+        _ = cancel_rx => {
+            return Err(meshharbor_node_core::device_login::CANCELLED_ERROR.to_string());
+        }
+    };
+    let _ = LOGIN_CANCEL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let can_elevate = tokio::task::spawn_blocking(
+        meshharbor_node_core::personal_system::can_current_user_elevate,
+    )
+    .await
+    .map_err(|e| format!("Privilege check task failed: {e}"))?;
+    if can_elevate {
+        promote_personal_device_to_system_with(
+            pending.server_url.clone(),
+            approved.enrollment_token,
+            device_name,
+            true,
+        )
+        .await
+    } else {
+        enroll_personal_device_user_mode_with(
+            pending.server_url.clone(),
+            approved.enrollment_token,
+            device_name,
+            true,
+        )
+        .await
+    }
+}
+
 async fn promote_personal_device_to_system(
     server: String,
     enrollment_token: String,
     device_name: String,
 ) -> Result<(), String> {
+    promote_personal_device_to_system_with(server, enrollment_token, device_name, false)
+        .await
+        .map(|_| ())
+}
+
+/// [`promote_personal_device_to_system`], with `replace` (FR-133: a move
+/// rebinds the PRIMARY enrollment), answering the helper's notice when the
+/// old organization still lists the device.
+async fn promote_personal_device_to_system_with(
+    server: String,
+    enrollment_token: String,
+    device_name: String,
+    replace: bool,
+) -> Result<Option<String>, String> {
     use meshharbor_node_core::personal_system;
     let trimmed_token = enrollment_token.trim().to_string();
     if trimmed_token.is_empty() {
@@ -890,18 +1051,33 @@ async fn promote_personal_device_to_system(
         .filter(|st| st.system_privileged.or(st.privileged) != Some(true))
         .and_then(|st| st.pid.map(|pid| (pid, st.started_at_ms)));
 
-    tokio::task::spawn_blocking(move || {
+    let notice = tokio::task::spawn_blocking(move || {
         let exe = agent_exe_path()?;
         let user_cfg = config::default_config_path().ok();
+        // FR-133 — check a per-user config and its sibling two-factor state
+        // before launching the elevated system helper (whose target_path is
+        // the system directory and would not see a user-mode two-factor.json).
+        if let Some(ref p) = user_cfg
+            && let Ok(cfg) = config::load(p)
+            && meshharbor_node_core::device_move::is_cross_org_replace(
+                &cfg,
+                &server,
+                &trimmed_token,
+                replace,
+            )
+            && let Some(why) = meshharbor_node_core::device_move::move_refusal(&cfg, p)
+        {
+            return Err(why);
+        }
         let req = personal_system::SystemEnrollRequest::from_user_config_path(
             server,
             trimmed_token,
             resolved_name,
-            false,
+            replace,
             user_cfg.as_deref(),
         )
         .map_err(|e| format!("reading existing user config before system promotion: {e}"))?;
-        personal_system::invoke_elevated_enroll_system(&exe, &req, false)?;
+        let notice = personal_system::invoke_elevated_enroll_system_noticed(&exe, &req, false)?;
         if !personal_system::is_process_elevated() {
             // Stop the per-user daemon of the USER config through its own stop event
             // (this process shares its session). The elevated side can only name the
@@ -924,7 +1100,7 @@ async fn promote_personal_device_to_system(
                 personal_system::retire_migrated_user_config(p);
             }
         }
-        Ok::<(), String>(())
+        Ok::<Option<String>, String>(notice)
     })
     .await
     .map_err(|e| format!("System promotion task failed: {e}"))??;
@@ -938,7 +1114,7 @@ async fn promote_personal_device_to_system(
                 if !st.node_id.is_empty()
                     && st.system_privileged.or(st.privileged) == Some(true) =>
             {
-                return Ok(());
+                return Ok(notice);
             }
             // Still the SAME unprivileged process (pid + start time) 20 s on: its
             // clean stop did not take, so end it. The match proves it is the
@@ -1077,6 +1253,19 @@ async fn enroll_personal_device_user_mode(
     enrollment_token: String,
     device_name: String,
 ) -> Result<(), String> {
+    enroll_personal_device_user_mode_with(server, enrollment_token, device_name, false)
+        .await
+        .map(|_| ())
+}
+
+/// [`enroll_personal_device_user_mode`] with `replace` (FR-133's move),
+/// answering the notice when the old organization still lists the device.
+async fn enroll_personal_device_user_mode_with(
+    server: String,
+    enrollment_token: String,
+    device_name: String,
+    replace: bool,
+) -> Result<Option<String>, String> {
     let resolved_name = {
         let t = device_name.trim();
         if t.is_empty() {
@@ -1085,7 +1274,8 @@ async fn enroll_personal_device_user_mode(
             t.to_string()
         }
     };
-    enroll_with_token(server, enrollment_token, resolved_name, true).await?;
+    let (_, notice) =
+        enroll_with_token_opts(server, enrollment_token, resolved_name, true, replace).await?;
     if localapi::connect().await.is_ok() {
         let restart = cmd_restart_daemon("personal account enrollment changed".into()).await?;
         if !restart.started {
@@ -1110,7 +1300,7 @@ async fn enroll_personal_device_user_mode(
             .map_err(|e| format!("Service start task: {e}"))?
             .map_err(|e| format!("Service start failed: {e}"))?;
     }
-    Ok(())
+    Ok(notice)
 }
 
 async fn enroll_with_token(
@@ -1119,6 +1309,21 @@ async fn enroll_with_token(
     device_name: String,
     personal_login: bool,
 ) -> Result<StatusReport, String> {
+    enroll_with_token_opts(server, token, device_name, personal_login, false)
+        .await
+        .map(|(report, _)| report)
+}
+
+/// [`enroll_with_token`] with `replace`: FR-133's move rebinds the PRIMARY
+/// enrollment, then asks the old organization to remove its row. Answers the
+/// notice when it is still listed there.
+async fn enroll_with_token_opts(
+    server: String,
+    token: String,
+    device_name: String,
+    personal_login: bool,
+    replace: bool,
+) -> Result<(StatusReport, Option<String>), String> {
     let trimmed_token = token.trim().to_string();
     let trimmed_name = device_name.trim().to_string();
     if trimmed_token.is_empty() {
@@ -1147,6 +1352,19 @@ async fn enroll_with_token(
         .as_ref()
         .map(|cfg| cfg.machine_id.clone())
         .unwrap_or_else(|| meshharbor_node_core::machine::derive_machine_id(&path));
+    // FR-133 — a move out of the primary's organization is refused on a
+    // protected or two-factor device, before the single-use token is spent.
+    if let Some(cfg) = &existing
+        && meshharbor_node_core::device_move::is_cross_org_replace(
+            cfg,
+            &server,
+            &trimmed_token,
+            replace,
+        )
+        && let Some(why) = meshharbor_node_core::device_move::move_refusal(cfg, &path)
+    {
+        return Err(why);
+    }
     let cfg = enrollment::enroll_with_existing_identity(
         EnrollInputs {
             server_url: &server,
@@ -1174,7 +1392,11 @@ async fn enroll_with_token(
         markers.contains_key(id)
             || markers.contains_key(meshharbor_node_core::device_invite::PRIMARY_KEY)
     });
-    let (mut cfg, outcome) = enrollment::apply_enrollment(existing, cfg, None, false)
+    // FR-133 — the primary a move leaves behind (never a temporary one).
+    let leaving = existing.as_ref().filter(|_| replace).and_then(|old| {
+        meshharbor_node_core::device_move::leaving_primary(old, &cfg, primary_was_invited)
+    });
+    let (mut cfg, outcome) = enrollment::apply_enrollment(existing, cfg, None, replace)
         .map_err(|e| format!("Merging enrollment: {e}"))?;
     if personal_login {
         match &outcome {
@@ -1228,7 +1450,17 @@ async fn enroll_with_token(
             tracing::warn!(error = %e, "signed in; invitation history link will retry when the daemon connects");
         }
     }
-    Ok(status_report())
+    // FR-133 — after the save: a failure costs an old row an admin must
+    // remove, never this device's enrollment.
+    let notice = match (&outcome, &leaving) {
+        (enrollment::EnrollOutcome::ReplacedPrimary, Some(old)) => {
+            meshharbor_node_core::device_move::remove_old_row(old, &cfg.agent_token)
+                .await
+                .notice()
+        }
+        _ => None,
+    };
+    Ok((status_report(), notice))
 }
 
 /// Refresh the token using an existing config. Mirrors the CLI's
@@ -4323,6 +4555,45 @@ mod tests {
                 "personal={personal:?} system={system:?}"
             );
         }
+    }
+
+    // FR-133 — the move is offered to a person from another organization
+    // only; a member of the device's organization is never asked.
+    #[test]
+    fn a_move_is_offered_only_to_someone_outside_the_devices_org() {
+        let server = "https://meshharbor.itachi.fans";
+        let st = grant_status(Some(true), Some(true), Some(T), "box");
+        let offer = move_offer_from(&st, server, Some(false), Some("Org A".into()), false)
+            .expect("a person from another org is asked");
+        assert!(offer.question().contains("\u{ab}Org A\u{bb}"));
+        assert!(offer.question().starts_with("This device belongs to"));
+        assert_eq!(offer.refusal, None);
+        // A member, or membership that could not be read: never asked.
+        assert_eq!(move_offer_from(&st, server, Some(true), None, false), None);
+        assert_eq!(move_offer_from(&st, server, None, None, false), None);
+        // Not a personal device, or the session is another server's.
+        let admin_enrolled = grant_status(Some(false), Some(true), Some(T), "box");
+        assert_eq!(move_offer_from(&admin_enrolled, server, Some(false), None, false), None);
+        assert_eq!(
+            move_offer_from(&st, "https://other.example", Some(false), None, false),
+            None
+        );
+        // A protected or two-factor device says why it will not move instead of asking.
+        let protected = move_offer_from(&st, server, Some(false), None, true).unwrap();
+        assert!(protected.refusal.as_deref().unwrap().contains("protected"));
+        assert_eq!(protected.org_label(), "another organization");
+        let mut two_factor_st = st.clone();
+        two_factor_st.two_factor = Some(true);
+        let tf = move_offer_from(&two_factor_st, server, Some(false), Some("Org A".into()), false)
+            .unwrap();
+        assert!(tf.refusal.as_deref().unwrap().contains("two-factor"));
+        // An ephemeral device is never offered a move.
+        let mut eph = st.clone();
+        eph.ephemeral = true;
+        assert_eq!(move_offer_from(&eph, server, Some(false), None, false), None);
+        // The result names the old org, or passes the kept-row notice through.
+        assert!(offer.done(None).contains("Org A"));
+        assert_eq!(offer.done(Some("an admin there must remove it")), "an admin there must remove it");
     }
 
     #[test]

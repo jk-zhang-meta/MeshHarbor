@@ -215,6 +215,34 @@ pub async fn mint_promotion_enrollment(
     Ok(minted.enrollment_token)
 }
 
+/// FR-133 — the ids of the organizations this user session belongs to
+/// (`GET /api/tenant`, archived ones included). The device asks so it can
+/// tell a member of its own organization (never asked to move it) from a
+/// person of another one.
+pub async fn member_tenant_ids(server: &str, access_token: &str) -> Result<Vec<String>> {
+    let reply = http()?
+        .get(endpoint(server, "/api/tenant")?)
+        .query(&[("include_archived", "true")])
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .context("account server is unavailable")?;
+    match reply.status().as_u16() {
+        401 => return Err(SessionDenied(401).into()),
+        s if !(200..300).contains(&s) => bail!("the server could not list your organizations (HTTP {s})"),
+        _ => {}
+    }
+    #[derive(Deserialize)]
+    struct Org {
+        id: String,
+    }
+    let orgs: Vec<Org> = reply
+        .json()
+        .await
+        .context("invalid organization list response")?;
+    Ok(orgs.into_iter().map(|o| o.id).collect())
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "purpose", rename_all = "snake_case")]
 pub enum WebTarget {
