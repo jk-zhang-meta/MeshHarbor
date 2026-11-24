@@ -78,6 +78,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     # The taskbar's light/dark setting, for the tray icon's colour.
     "Win32_System_Registry",
+    # OS UI language detection (`GetUserDefaultUILanguage`) for tray i18n.
+    "Win32_Globalization",
 ] }
 
 # FR-27 P9 — the session banner shown WITHOUT taking key status

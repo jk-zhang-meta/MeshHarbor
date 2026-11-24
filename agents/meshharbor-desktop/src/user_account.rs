@@ -35,11 +35,20 @@ pub fn has_identity(server: &str) -> bool {
         .ok()
         .is_some_and(|v| v.server == server && v.email.is_some())
 }
+#[cfg(test)]
 pub fn label(server: &str, connected: bool) -> (String, bool) {
-    let value = BADGE.lock().ok();
-    label_for(value.as_deref(), server, connected)
+    label_in(server, connected, crate::tray_i18n::Lang::En)
 }
-fn label_for(value: Option<&Badge>, server: &str, connected: bool) -> (String, bool) {
+pub fn label_in(server: &str, connected: bool, lang: crate::tray_i18n::Lang) -> (String, bool) {
+    let value = BADGE.lock().ok();
+    label_for(value.as_deref(), server, connected, lang)
+}
+fn label_for(
+    value: Option<&Badge>,
+    server: &str,
+    connected: bool,
+    lang: crate::tray_i18n::Lang,
+) -> (String, bool) {
     match value
         .filter(|v| v.server == server)
         .and_then(|v| v.email.as_ref().map(|email| (v, email)))
@@ -49,10 +58,10 @@ fn label_for(value: Option<&Badge>, server: &str, connected: bool) -> (String, b
                 && connected
                 && value.checked_at.is_some_and(|t| t.elapsed().as_secs() < 90) =>
         {
-            (format!("Signed in as {email}"), false)
+            (crate::tray_i18n::signed_in_as(lang, email), false)
         }
-        Some((_, email)) => (format!("{email} · offline / session unconfirmed"), true),
-        None => ("Sign in…".into(), true),
+        Some((_, email)) => (crate::tray_i18n::session_unconfirmed(lang, email), true),
+        None => (crate::tray_i18n::sign_in_ellipsis(lang).into(), true),
     }
 }
 pub async fn load_cached_identity(server: String) {
@@ -256,21 +265,54 @@ mod tests {
             checked_at: Some(std::time::Instant::now()),
         };
         assert_eq!(
-            super::label_for(Some(&badge), &badge.server, true),
+            super::label_for(Some(&badge), &badge.server, true, crate::tray_i18n::Lang::En),
             ("Signed in as person@example.com".into(), false)
         );
+        assert_eq!(
+            super::label_for(
+                Some(&badge),
+                &badge.server,
+                true,
+                crate::tray_i18n::Lang::ZhCn
+            ),
+            ("已登录：person@example.com".into(), false)
+        );
         assert!(
-            super::label_for(Some(&badge), &badge.server, false)
+            super::label_for(Some(&badge), &badge.server, false, crate::tray_i18n::Lang::En)
                 .0
                 .contains("session unconfirmed")
         );
+        assert!(
+            super::label_for(
+                Some(&badge),
+                &badge.server,
+                false,
+                crate::tray_i18n::Lang::ZhCn
+            )
+            .0
+            .contains("未确认")
+        );
         assert_eq!(
-            super::label_for(Some(&badge), "https://example.com/other", true),
+            super::label_for(
+                Some(&badge),
+                "https://example.com/other",
+                true,
+                crate::tray_i18n::Lang::En
+            ),
             ("Sign in…".into(), true)
+        );
+        assert_eq!(
+            super::label_for(
+                Some(&badge),
+                "https://example.com/other",
+                true,
+                crate::tray_i18n::Lang::ZhCn
+            ),
+            ("登录账号…".into(), true)
         );
         badge.checked_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(91));
         assert!(
-            super::label_for(Some(&badge), &badge.server, true)
+            super::label_for(Some(&badge), &badge.server, true, crate::tray_i18n::Lang::En)
                 .0
                 .contains("session unconfirmed")
         );

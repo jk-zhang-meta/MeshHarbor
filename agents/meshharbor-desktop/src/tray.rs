@@ -34,14 +34,63 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::tray_i18n::{self, Lang};
+
+/// Static tray menu items whose text updates immediately on language switch.
+struct TrayStaticItems<R: Runtime> {
+    sign_out: MenuItem<R>,
+    join: MenuItem<R>,
+    devices: Submenu<R>,
+    invites: Submenu<R>,
+    open_status: MenuItem<R>,
+    open_web: MenuItem<R>,
+    check_updates: MenuItem<R>,
+    open_logs: MenuItem<R>,
+    quit: MenuItem<R>,
+}
+
+static RECORD_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static KEEP_BUSY_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Refresh every tray label immediately after the user switches UI language.
+pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
+    let lang = tray_i18n::current_lang();
+    if let Some(items) = app.try_state::<TrayStaticItems<R>>() {
+        let _ = items.sign_out.set_text(tray_i18n::sign_out_account(lang));
+        let _ = items.join.set_text(tray_i18n::join_invite(lang));
+        let _ = items.devices.set_text(tray_i18n::network_devices(lang));
+        let _ = items.invites.set_text(tray_i18n::invitations(lang));
+        let _ = items.open_status.set_text(tray_i18n::open_meshharbor(lang));
+        let _ = items.open_web.set_text(tray_i18n::admin_console(lang));
+        let _ = items.check_updates.set_text(tray_i18n::check_updates(lang));
+        let _ = items.open_logs.set_text(tray_i18n::open_logs(lang));
+        let _ = items.quit.set_text(tray_i18n::quit(lang));
+    }
+    ACCOUNT_WATCH_WAKE.notify_one();
+    RECORD_WATCH_WAKE.notify_one();
+    KEEP_BUSY_WATCH_WAKE.notify_one();
+}
+
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let lang = tray_i18n::current_lang();
     // Build the menu. IDs are inspected in `on_menu_event` below.
     // Account rows first, as Tailscale has them: who/what this device is,
     // Log in…, and the network's devices. `spawn_account_watch` keeps them
     // current.
-    let account_status =
-        MenuItem::with_id(app, "account_status", "MeshHarbor", false, None::<&str>)?;
-    let login = MenuItem::with_id(app, LOGIN_ITEM_ID, "Log in…", false, None::<&str>)?;
+    let account_status = MenuItem::with_id(
+        app,
+        "account_status",
+        tray_i18n::app_name(lang),
+        false,
+        None::<&str>,
+    )?;
+    let login = MenuItem::with_id(
+        app,
+        LOGIN_ITEM_ID,
+        tray_i18n::login_ellipsis(lang),
+        false,
+        None::<&str>,
+    )?;
     // Unlike `tailscale logout`, this ends only the account session (shares,
     // permissions, the web hand-off): the device keeps its own credential, so
     // it stays on the network and its Devices list stays. Said in the label,
@@ -49,46 +98,93 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let sign_out = MenuItem::with_id(
         app,
         "user_sign_out",
-        "Sign out of account (device stays on the network)…",
+        tray_i18n::sign_out_account(lang),
         false,
         None::<&str>,
     )?;
     let join = MenuItem::with_id(
         app,
         JOIN_ITEM_ID,
-        "Join with an invite code…",
+        tray_i18n::join_invite(lang),
         false,
         None::<&str>,
     )?;
-    let devices = Submenu::with_id(app, "devices", "Network devices", true)?;
+    let devices = Submenu::with_id(app, "devices", tray_i18n::network_devices(lang), true)?;
     // Every invitation this machine holds, each with its own leave.
-    let invites = Submenu::with_id(app, "invites", "Invitations", false)?;
+    let invites = Submenu::with_id(app, "invites", tray_i18n::invitations(lang), false)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let open_status = MenuItem::with_id(app, "open_status", "Open MeshHarbor", true, None::<&str>)?;
+    let open_status = MenuItem::with_id(
+        app,
+        "open_status",
+        tray_i18n::open_meshharbor(lang),
+        true,
+        None::<&str>,
+    )?;
     // S7 — the embedded web-app window (WebView2 on Windows; browser
     // elsewhere). Distinct from the LOCAL status window above.
-    let open_web = MenuItem::with_id(app, "open_web", "Admin console…", true, None::<&str>)?;
+    let open_web = MenuItem::with_id(
+        app,
+        "open_web",
+        tray_i18n::admin_console(lang),
+        true,
+        None::<&str>,
+    )?;
     // FR-85 — disabled until the service says it has a recorder.
-    let record = MenuItem::with_id(app, RECORD_ITEM_ID, "Start recording", false, None::<&str>)?;
+    let record = MenuItem::with_id(
+        app,
+        RECORD_ITEM_ID,
+        tray_i18n::start_recording(lang),
+        false,
+        None::<&str>,
+    )?;
     // FR-92 — disabled until the service says what keep busy is doing.
     let keep_busy = MenuItem::with_id(
         app,
         KEEP_BUSY_ITEM_ID,
-        "Keep busy: off",
+        tray_i18n::keep_busy_off(lang),
         false,
         None::<&str>,
     )?;
-    let onboarding = MenuItem::with_id(app, "onboarding", "Onboarding…", true, None::<&str>)?;
-    let welcome = MenuItem::with_id(app, "welcome", "Welcome tour…", true, None::<&str>)?;
-    let check_updates_item = MenuItem::with_id(
+    let onboarding = MenuItem::with_id(
         app,
-        "check_updates",
-        "Check for Updates",
+        "onboarding",
+        tray_i18n::onboarding(lang),
         true,
         None::<&str>,
     )?;
-    let open_logs = MenuItem::with_id(app, "open_logs", "Open Logs Folder", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let welcome = MenuItem::with_id(
+        app,
+        "welcome",
+        tray_i18n::welcome_tour(lang),
+        true,
+        None::<&str>,
+    )?;
+    let check_updates_item = MenuItem::with_id(
+        app,
+        "check_updates",
+        tray_i18n::check_updates(lang),
+        true,
+        None::<&str>,
+    )?;
+    let open_logs = MenuItem::with_id(
+        app,
+        "open_logs",
+        tray_i18n::open_logs(lang),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", tray_i18n::quit(lang), true, None::<&str>)?;
+    app.manage(TrayStaticItems {
+        sign_out: sign_out.clone(),
+        join: join.clone(),
+        devices: devices.clone(),
+        invites: invites.clone(),
+        open_status: open_status.clone(),
+        open_web: open_web.clone(),
+        check_updates: check_updates_item.clone(),
+        open_logs: open_logs.clone(),
+        quit: quit.clone(),
+    });
     // `onboarding` / `welcome` stay reachable from the window; the tray keeps
     // to the account rows and the everyday actions.
     let _ = (&onboarding, &welcome);
@@ -247,21 +343,29 @@ const KEEP_BUSY_ITEM_ID: &str = "keep_busy_toggle";
 ///   permission, an unsupported desktop): disabled. The agent's reason is in
 ///   `mh keep-busy status`.
 /// - `None` (no service answered yet, or one older than FR-92): disabled.
+#[cfg(test)]
 fn keep_busy_labels(state: Option<&meshharbor_localapi::KeepBusyInfo>) -> (String, bool) {
+    keep_busy_labels_in(state, Lang::En)
+}
+
+fn keep_busy_labels_in(
+    state: Option<&meshharbor_localapi::KeepBusyInfo>,
+    lang: Lang,
+) -> (String, bool) {
     match state {
         Some(s) if s.on => {
             let pattern = {
                 let mut c = s.pattern.chars();
                 match c.next() {
                     Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    None => "Pattern".into(),
+                    None => tray_i18n::keep_busy_pattern_fallback(lang).into(),
                 }
             };
-            (format!("Stop keep busy ({pattern} · {})", s.phase), true)
+            (tray_i18n::stop_keep_busy(lang, &pattern, &s.phase), true)
         }
-        Some(s) if s.available => ("Start keep busy".into(), true),
-        Some(_) => ("Keep busy: unavailable".into(), false),
-        None => ("Keep busy: off".into(), false),
+        Some(s) if s.available => (tray_i18n::start_keep_busy(lang).into(), true),
+        Some(_) => (tray_i18n::keep_busy_unavailable(lang).into(), false),
+        None => (tray_i18n::keep_busy_off(lang).into(), false),
     }
 }
 
@@ -275,7 +379,7 @@ fn spawn_keep_busy_watch<R: Runtime>(item: MenuItem<R>) {
                 Ok(mut c) => c.keep_busy_status().await.ok(),
                 Err(_) => None,
             };
-            let labels = keep_busy_labels(answer.as_ref());
+            let labels = keep_busy_labels_in(answer.as_ref(), tray_i18n::current_lang());
             if shown.as_ref() != Some(&labels) {
                 let _ = item.set_text(&labels.0);
                 let _ = item.set_enabled(labels.1);
@@ -290,7 +394,10 @@ fn spawn_keep_busy_watch<R: Runtime>(item: MenuItem<R>) {
                 }
                 shown = Some(labels);
             }
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                _ = KEEP_BUSY_WATCH_WAKE.notified() => {}
+            }
         }
     });
 }
@@ -529,20 +636,36 @@ fn apply_red<R: Runtime>(app: &AppHandle<R>) {
 /// item is disabled; `None` (nothing has answered yet) is the tray as
 /// `install` builds it, the item disabled too. A controller's recording
 /// names them: the person at the device sees who is recording their screen.
+#[cfg(test)]
 fn record_labels(state: Option<&meshharbor_localapi::RecordingState>) -> (String, bool, String) {
+    record_labels_in(state, Lang::En)
+}
+
+fn record_labels_in(
+    state: Option<&meshharbor_localapi::RecordingState>,
+    lang: Lang,
+) -> (String, bool, String) {
     match state {
         Some(s) if s.active => {
             let secs = s.duration_ms / 1000;
             let t = format!("{}:{:02}", secs / 60, secs % 60);
             let tooltip = match s.remote_controller.as_deref() {
-                Some(who) => format!("MeshHarbor — {who} is recording, {t}"),
-                None => format!("MeshHarbor — recording {t}"),
+                Some(who) => tray_i18n::tooltip_remote_recording(lang, who, &t),
+                None => tray_i18n::tooltip_recording(lang, &t),
             };
-            (format!("Stop recording ({t})"), true, tooltip)
+            (tray_i18n::stop_recording(lang, &t), true, tooltip)
         }
         // Start only where the service says a recording can start at all.
-        Some(s) => ("Start recording".into(), s.available, "MeshHarbor".into()),
-        None => ("Start recording".into(), false, "MeshHarbor".into()),
+        Some(s) => (
+            tray_i18n::start_recording(lang).into(),
+            s.available,
+            tray_i18n::app_name(lang).into(),
+        ),
+        None => (
+            tray_i18n::start_recording(lang).into(),
+            false,
+            tray_i18n::app_name(lang).into(),
+        ),
     }
 }
 
@@ -553,6 +676,8 @@ fn record_labels(state: Option<&meshharbor_localapi::RecordingState>) -> (String
 fn spawn_recording_watch<R: Runtime>(app: AppHandle<R>, item: MenuItem<R>) {
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<(String, bool, String)> = None;
+        let mut last_answer: Option<Option<meshharbor_localapi::RecordingState>> = None;
+        let mut shown_gen = tray_i18n::language_generation();
         loop {
             // `Some(Some(state))` answered; `Some(None)` there is no service
             // at all; `None` the poll failed.
@@ -561,11 +686,17 @@ fn spawn_recording_watch<R: Runtime>(app: AppHandle<R>, item: MenuItem<R>) {
                 Err(e) if no_service(&e) => Some(None),
                 Err(_) => None,
             };
+            if answer.is_some() {
+                last_answer = answer.clone();
+            }
+            let cur_gen = tray_i18n::language_generation();
+            let effective = answer.as_ref().or(last_answer.as_ref());
             // Only an answer changes the tray, the words as well as the icon
             // (`recorder_running`), so the two never disagree. Until the
-            // first answer it stays as `install` built it: the item disabled.
-            if let Some(state) = answer.as_ref() {
-                let labels = record_labels(state.as_ref());
+            // first answer it stays as `install` built it: the item disabled,
+            // refreshed if the user switches language before any answer.
+            if let Some(state) = effective {
+                let labels = record_labels_in(state.as_ref(), tray_i18n::current_lang());
                 if shown.as_ref() != Some(&labels) {
                     let _ = item.set_text(&labels.0);
                     let _ = item.set_enabled(labels.1);
@@ -576,14 +707,22 @@ fn spawn_recording_watch<R: Runtime>(app: AppHandle<R>, item: MenuItem<R>) {
                     }
                     shown = Some(labels);
                 }
+            } else if cur_gen != shown_gen {
+                let labels = record_labels_in(None, tray_i18n::current_lang());
+                let _ = item.set_text(&labels.0);
+                let _ = item.set_enabled(labels.1);
             }
+            shown_gen = cur_gen;
             let was = RECORDER_RUNNING.load(Ordering::Acquire);
             RECORDER_RUNNING.store(
                 recorder_running(answer.as_ref().map(Option::as_ref), was),
                 Ordering::Release,
             );
             apply_red(&app);
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+                _ = RECORD_WATCH_WAKE.notified() => {}
+            }
         }
     });
 }
@@ -1191,12 +1330,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn who(g: &meshharbor_node_core::device_invite::GrantInfo) -> String {
+fn who(g: &meshharbor_node_core::device_invite::GrantInfo, lang: Lang) -> String {
     match (g.inviter.is_empty(), g.org.is_empty()) {
         (false, false) => format!("{} ({})", g.inviter, g.org),
         (false, true) => g.inviter.clone(),
         (true, false) => g.org.clone(),
-        (true, true) => "an organization".to_string(),
+        (true, true) => tray_i18n::an_organization(lang).to_string(),
     }
 }
 
@@ -1214,6 +1353,7 @@ fn resolve_tray_server(
         .unwrap_or(file_server)
 }
 
+#[cfg(test)]
 fn account_view_at(
     enrolled: bool,
     node: Option<&meshharbor_localapi::NodeStatus>,
@@ -1221,7 +1361,17 @@ fn account_view_at(
     invitations: Option<crate::commands::Invitations>,
     now_ms: i64,
 ) -> AccountView {
-    use meshharbor_node_core::device_invite::remaining_words;
+    account_view_at_in(enrolled, node, peers, invitations, now_ms, Lang::En)
+}
+
+fn account_view_at_in(
+    enrolled: bool,
+    node: Option<&meshharbor_localapi::NodeStatus>,
+    peers: &[meshharbor_localapi::PeerInfo],
+    invitations: Option<crate::commands::Invitations>,
+    now_ms: i64,
+    lang: Lang,
+) -> AccountView {
     let daemon_enrolled = node.is_some_and(|n| {
         !n.node_id.is_empty() && n.tenant_id.as_deref().is_some_and(|t| !t.is_empty())
     });
@@ -1244,22 +1394,22 @@ fn account_view_at(
         .map(|(e, _)| e.clone());
     let status = if ui.busy {
         match &ui.code {
-            Some(code) => format!("Approve in your browser — code {code}"),
-            None => "Working…".to_string(),
+            Some(code) => tray_i18n::approve_in_browser(lang, code),
+            None => tray_i18n::working(lang).to_string(),
         }
     } else if let Some(e) = recent_error {
         let mut e = e;
         e.truncate(80);
-        format!("Failed: {e}")
+        tray_i18n::failed(lang, &e)
     } else if !enrolled {
-        "Not signed in".to_string()
+        tray_i18n::not_signed_in(lang).to_string()
     } else if temporary && grants.len() == 1 {
         let g = &grants[0].1;
-        let left = remaining_words(g.access_until_ms, now_ms);
+        let left = tray_i18n::format_remaining(lang, g.access_until_ms, now_ms);
         if g.inviter.is_empty() {
-            format!("Temporary device · {left} left")
+            tray_i18n::temporary_device_left(lang, &left)
         } else {
-            format!("Managed by {} · {left} left", g.inviter)
+            tray_i18n::managed_by_left(lang, &g.inviter, &left)
         }
     } else if temporary {
         let next = grants
@@ -1267,37 +1417,37 @@ fn account_view_at(
             .map(|(_, g)| g.access_until_ms)
             .min()
             .unwrap_or(now_ms);
-        format!(
-            "{} invitations · next ends in {}",
-            grants.len(),
-            remaining_words(next, now_ms)
-        )
+        let left = tray_i18n::format_remaining(lang, next, now_ms);
+        tray_i18n::invitations_next_ends(lang, grants.len(), &left)
     } else {
         match node {
-            None => "MeshHarbor service is not running".to_string(),
+            None => tray_i18n::service_not_running(lang).to_string(),
             Some(n) => {
-                let ip = n.overlay_ip.as_deref().unwrap_or("no address yet");
+                let ip = n
+                    .overlay_ip
+                    .as_deref()
+                    .unwrap_or_else(|| tray_i18n::no_address_yet(lang));
                 if n.connected {
                     format!("{} · {ip}", n.name)
                 } else {
-                    format!("{} · {ip} (offline)", n.name)
+                    tray_i18n::device_status_offline(lang, &n.name, ip)
                 }
             }
         }
     };
     let (login_text, login_enabled) = if ui.login_waiting {
         let label = match &ui.code {
-            Some(c) => format!("Waiting ({c}) · click to cancel"),
-            None => "Waiting… · click to cancel".to_string(),
+            Some(c) => tray_i18n::waiting_code_cancel(lang, c),
+            None => tray_i18n::waiting_cancel(lang).to_string(),
         };
         (label, true)
     } else if ui.busy {
-        ("Working…".to_string(), false)
+        (tray_i18n::working(lang).to_string(), false)
     } else if enrolled && !temporary {
-        ("Signed in".to_string(), false)
+        (tray_i18n::signed_in(lang).to_string(), false)
     } else {
         // Signing in keeps every invitation this machine holds.
-        ("Log in…".to_string(), true)
+        (tray_i18n::login_ellipsis(lang).to_string(), true)
     };
     let shown_peers: &[meshharbor_localapi::PeerInfo] = if temporary { &[] } else { peers };
     let mut devices: Vec<String> = shown_peers
@@ -1314,10 +1464,10 @@ fn account_view_at(
         .map(|(_, g)| {
             (
                 g.invite_id.clone(),
-                format!(
-                    "Leave · {} · {} left",
-                    who(g),
-                    remaining_words(g.access_until_ms, now_ms)
+                tray_i18n::leave_invite(
+                    lang,
+                    &who(g, lang),
+                    &tray_i18n::format_remaining(lang, g.access_until_ms, now_ms),
                 ),
             )
         })
@@ -1346,7 +1496,9 @@ fn spawn_account_watch<R: Runtime>(
 ) {
     tauri::async_runtime::spawn(async move {
         let mut shown: Option<AccountView> = None;
+        let mut shown_lang: Option<Lang> = None;
         loop {
+            let lang = tray_i18n::current_lang();
             let (enrolled, active_invites, server) =
                 tokio::task::spawn_blocking(crate::commands::active_account_probe)
                     .await
@@ -1370,15 +1522,22 @@ fn spawn_account_watch<R: Runtime>(
                 Err(_) => (None, Vec::new()),
             };
             let server = resolve_tray_server(enrolled, server, node.as_ref());
-            let mut view =
-                account_view_at(enrolled, node.as_ref(), &peers, active_invites, now_ms());
+            let mut view = account_view_at_in(
+                enrolled,
+                node.as_ref(),
+                &peers,
+                active_invites,
+                now_ms(),
+                lang,
+            );
             let busy_now = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
             if !view.temporary {
                 crate::user_account::load_cached_identity(server.clone()).await;
                 if !busy_now {
-                    let (label, enabled) = crate::user_account::label(
+                    let (label, enabled) = crate::user_account::label_in(
                         &server,
                         node.as_ref().is_some_and(|n| n.connected),
+                        lang,
                     );
                     view.login_text = label;
                     view.login_enabled = enabled;
@@ -1386,7 +1545,8 @@ fn spawn_account_watch<R: Runtime>(
             }
             view.sign_out_enabled =
                 !busy_now && !view.temporary && crate::user_account::has_identity(&server);
-            if shown.as_ref() != Some(&view) {
+            let lang_changed = shown_lang != Some(lang);
+            if shown.as_ref() != Some(&view) || lang_changed {
                 let _ = status.set_text(&view.status);
                 let _ = login.set_text(&view.login_text);
                 let _ = login.set_enabled(view.login_enabled);
@@ -1395,7 +1555,8 @@ fn spawn_account_watch<R: Runtime>(
                 let _ = devices.set_enabled(!view.temporary);
                 let _ = admin.set_enabled(!view.temporary);
                 let _ = invites.set_enabled(!view.invitations.is_empty());
-                if shown.as_ref().map(|s| &s.invitations) != Some(&view.invitations) {
+                if shown.as_ref().map(|s| &s.invitations) != Some(&view.invitations) || lang_changed
+                {
                     if let Ok(items) = invites.items() {
                         for item in items {
                             let _ = invites.remove(&item);
@@ -1416,7 +1577,7 @@ fn spawn_account_watch<R: Runtime>(
                         && let Ok(item) = MenuItem::with_id(
                             &app,
                             "invite-features",
-                            "Choose exposed features…",
+                            tray_i18n::choose_exposed_features(lang),
                             true,
                             None::<&str>,
                         )
@@ -1424,7 +1585,7 @@ fn spawn_account_watch<R: Runtime>(
                         let _ = invites.append(&item);
                     }
                 }
-                if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) {
+                if shown.as_ref().map(|s| &s.devices) != Some(&view.devices) || lang_changed {
                     if let Ok(items) = devices.items() {
                         for item in items {
                             let _ = devices.remove(&item);
@@ -1434,7 +1595,7 @@ fn spawn_account_watch<R: Runtime>(
                         && let Ok(none) = MenuItem::with_id(
                             &app,
                             "dev:none",
-                            "No devices yet",
+                            tray_i18n::no_devices_yet(lang),
                             false,
                             None::<&str>,
                         )
@@ -1454,6 +1615,7 @@ fn spawn_account_watch<R: Runtime>(
                     }
                 }
                 shown = Some(view);
+                shown_lang = Some(lang);
             }
             let busy = LOGIN_UI.lock().unwrap_or_else(|e| e.into_inner()).busy;
             tokio::select! {
@@ -1623,5 +1785,50 @@ mod account_tests {
             ("Signed in", false)
         );
         assert!(!v.temporary && v.join_enabled && v.invitations.len() == 1);
+    }
+
+    #[test]
+    fn localized_zh_cn_tray_labels_cover_account_recording_and_keep_busy() {
+        let v = account_view_at_in(false, None, &[], None, 0, Lang::ZhCn);
+        assert_eq!(v.status, "未登录");
+        assert_eq!((v.login_text.as_str(), v.login_enabled), ("登录…", true));
+
+        let temp = crate::commands::Invitations {
+            own_account: false,
+            grants: vec![grant("aa", "Alex", 50 * 3_600_000)],
+        };
+        let vt = account_view_at_in(true, None, &[], Some(temp), 0, Lang::ZhCn);
+        assert_eq!(vt.status, "由 Alex 管理 · 剩余 2 天 2 小时");
+        assert_eq!(
+            vt.invitations,
+            vec![("aa".to_string(), "退出邀请 · Alex (Acme) · 剩余 2 天 2 小时".to_string())]
+        );
+
+        let rec = meshharbor_localapi::RecordingState {
+            available: true,
+            active: true,
+            duration_ms: 83_900,
+            ..Default::default()
+        };
+        assert_eq!(
+            record_labels_in(Some(&rec), Lang::ZhCn),
+            (
+                "停止录制 (1:23)".into(),
+                true,
+                "MeshHarbor — 正在录制 1:23".into()
+            )
+        );
+
+        let kb = meshharbor_localapi::KeepBusyInfo {
+            available: true,
+            on: true,
+            phase: "paused".into(),
+            pattern: "heart".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            keep_busy_labels_in(Some(&kb), Lang::ZhCn),
+            ("停止保持活跃（Heart · paused）".into(), true)
+        );
     }
 }

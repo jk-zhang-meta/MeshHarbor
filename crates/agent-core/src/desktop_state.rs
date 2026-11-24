@@ -31,6 +31,9 @@ pub struct DesktopState {
     /// The person turned "Start MeshHarbor at login" off for their account.
     #[serde(default)]
     pub autostart_opt_out: bool,
+    /// Preferred companion UI language (`"en"` or `"zh-CN"`). `None` follows the OS locale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_language: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -164,5 +167,20 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(raw["welcome_step"], 3);
         assert_eq!(raw["first_run_done"], true);
+    }
+
+    #[test]
+    fn ui_language_round_trips_and_omits_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let default_state = DesktopState::default();
+        save_to(&path, &default_state).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("ui_language"));
+
+        let mut zh = load_from(&path);
+        zh.ui_language = Some("zh-CN".to_string());
+        save_to(&path, &zh).unwrap();
+        assert_eq!(load_from(&path).ui_language.as_deref(), Some("zh-CN"));
     }
 }

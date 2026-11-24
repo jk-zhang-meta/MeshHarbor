@@ -43,6 +43,7 @@ mod panels;
 #[cfg(target_os = "linux")]
 mod pin;
 mod tray;
+mod tray_i18n;
 mod user_account;
 mod web_proxy;
 
@@ -212,6 +213,9 @@ fn main() {
             first_run::cmd_autostart_get,
             first_run::cmd_autostart_set,
             first_run::cmd_free_port,
+            // T8 — shared UI language (en + zh-CN) persisted for webviews + tray.
+            tray_i18n::get_ui_language,
+            tray_i18n::set_ui_language,
         ])
         .on_window_event(|window, event| {
             // Close-to-hide: the MAIN window is a view over a resident tray
