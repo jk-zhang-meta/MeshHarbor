@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Pinned build-time boundary sources for mh-boundaries-v1.pmtiles (FR-136 P0/P1).
+# Pinned build-time boundary & gazetteer sources for mh-boundaries-v1.pmtiles
+# and gazetteer-v1.json (FR-136 P1).
 # Format: <filename> <sha256> <url>
 # Build-time download ONLY; ZERO external requests at runtime.
 
@@ -9,4 +10,5 @@ ne_10m_admin_0_countries.geojson 239eec57ac17f100a11e2536cffc56752c318b50ae765b0
 ne_10m_admin_0_boundary_lines_land.geojson 74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_0_boundary_lines_land.geojson
 ne_10m_admin_1_states_provinces.geojson 22d0e3ad85eb3e27f17cabf8ba2d50e554fbc27a87796ff891d958185da62fb5 https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson
 ne_10m_populated_places.geojson 9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_populated_places.geojson
+geoBoundariesCGAZ_ADM1.zip 767ed22dfddf8a82d5c7d23149628378f8d2d95a2bb915401afaa65c5593e6f8 https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.zip
 geoBoundariesCGAZ_ADM2.zip 598f6c70893d60a35b96eb0dc31fd1c045e69177e4b8203407710306f6585de1 https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM2.zip

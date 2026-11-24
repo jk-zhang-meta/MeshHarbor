@@ -2,21 +2,28 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 G ROX EOOD
 #
-# Reproducibly build ui/public/geo/mh-boundaries-v1.pmtiles from pinned
-# Natural Earth 5.1.2 (public domain) + geoBoundaries CGAZ ADM2 (CC BY 4.0)
-# sources listed in scripts/globe/SOURCES.lock.
+# Reproducibly build:
+#   1) ui/public/geo/mh-boundaries-v1.pmtiles (z0..z8, <= 25 MB, gitignored)
+#   2) ui/src/components/globe-v2/data/gazetteer-v1.json (<= 150 KB gz)
+# from pinned Natural Earth 5.1.2 (public domain) + global geoBoundaries CGAZ
+# ADM1/ADM2 (CC BY 4.0 / ODbL) sources listed in scripts/globe/SOURCES.lock.
 #
-# Policy (FR-136 S1/S6):
+# Policy (FR-136 S1 / S4 / S6 / S11 / AC6 / AC7):
 # - Admin-0 de facto boundary lines come ONLY from Natural Earth
 #   (disputed segments flagged cls="disputed" for dashed [3,2], limits
-#   cls="limit" for dotted [0,2]; claim lines are NEVER included).
-# - Admin-1 internal shared lines come from NE 10m admin-1 (incl. HK/MO),
-#   clipped to NE world land mask so no country line is duplicated.
-# - Admin-2 (P0 sample: China CHN) uses geoBoundaries CGAZ internal shared
-#   lines ONLY (`-split shapeGroup -innerlines`, clipped to NE world mask;
-#   NEVER takes international borders from CGAZ).
+#   cls="limit" for dotted [0,2]; claim lines from disputed_areas are NEVER
+#   included; international borders are NEVER taken from CGAZ).
+# - Admin-1 internal shared lines come from global geoBoundaries CGAZ ADM1
+#   (`-simplify 5% weighted keep-shapes -split shapeGroup -innerlines`),
+#   clipped to NE world mask, with Hong Kong & Macau patched from NE 10m
+#   admin-1 internal lines.
+# - Admin-2 internal shared lines come from global geoBoundaries CGAZ ADM2
+#   (`-simplify 5% weighted keep-shapes -split shapeGroup -innerlines`),
+#   clipped to NE world mask, suppressing segments strictly coincident with
+#   admin-1, tagged with `cc` (ISO-3 uppercase for style.ts `cc == "CHN"`
+#   filter) and `iso_a2` (ISO-2 uppercase).
 # - Neutral region overrides: TWN -> 台湾/Taiwan, HKG -> 香港/Hong Kong,
-#   MAC -> 澳门/Macau.
+#   MAC -> 澳门/Macau (both override and primary fields sanitized).
 # - The output .pmtiles binary is gitignored and never committed to git.
 
 set -euo pipefail
@@ -30,14 +37,37 @@ SRC_DIR="$WORK_DIR/sources"
 STAGE_DIR="$WORK_DIR/stage"
 TILES_DIR="$WORK_DIR/tiles"
 OUT_FILE="${GLOBE_OUT_PMTILES:-$REPO_ROOT/ui/public/geo/mh-boundaries-v1.pmtiles}"
-MAX_ZOOM="${GLOBE_MAX_ZOOM:-6}"
+GAZETTEER_OUT="${GLOBE_OUT_GAZETTEER:-$REPO_ROOT/ui/src/components/globe-v2/data/gazetteer-v1.json}"
+MAX_ZOOM="${GLOBE_MAX_ZOOM:-8}"
+ADM1_SIMPLIFY="${GLOBE_ADM1_SIMPLIFY:-5%}"
+ADM2_SIMPLIFY="${GLOBE_ADM2_SIMPLIFY:-5%}"
+MAX_PMTILES_BYTES="${GLOBE_MAX_PMTILES_BYTES:-25000000}"
 
 MAPSHAPER_BIN="${MAPSHAPER_BIN:-$(command -v mapshaper || true)}"
+MAPSHAPER_XL_BIN="${MAPSHAPER_XL_BIN:-$(command -v mapshaper-xl || true)}"
 if [ -z "$MAPSHAPER_BIN" ]; then
   echo "error: mapshaper not found (set MAPSHAPER_BIN or add to PATH)" >&2
   exit 1
 fi
-for bin in curl python3 ogr2ogr tippecanoe tile-join sha256sum unzip; do
+if [ -z "$MAPSHAPER_XL_BIN" ]; then
+  # Sibling mapshaper-xl next to MAPSHAPER_BIN if present
+  cand="$(dirname "$MAPSHAPER_BIN")/mapshaper-xl"
+  if [ -x "$cand" ]; then
+    MAPSHAPER_XL_BIN="$cand"
+  fi
+fi
+
+run_mapshaper_xl() {
+  local mem="$1"
+  shift
+  if [ -n "$MAPSHAPER_XL_BIN" ] && [ -x "$MAPSHAPER_XL_BIN" ]; then
+    "$MAPSHAPER_XL_BIN" "$mem" "$@"
+  else
+    "$MAPSHAPER_BIN" "$@"
+  fi
+}
+
+for bin in curl python3 tippecanoe tile-join sha256sum unzip; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "error: required build tool '$bin' not found in PATH" >&2
     exit 1
@@ -46,7 +76,7 @@ done
 
 mkdir -p "$SRC_DIR" "$STAGE_DIR" "$TILES_DIR" "$(dirname "$OUT_FILE")"
 
-echo "[1/6] Fetching & verifying pinned sources from SOURCES.lock..."
+echo "[1/7] Fetching & verifying pinned sources from SOURCES.lock..."
 while read -r filename expected_sha url; do
   [[ -z "${filename:-}" || "$filename" == \#* ]] && continue
   dest="$SRC_DIR/$filename"
@@ -63,7 +93,7 @@ while read -r filename expected_sha url; do
   fi
 done < "$LOCK_FILE"
 
-echo "[2/6] Building NE land, coastline, world clip mask, and admin-0 de facto lines..."
+echo "[2/7] Building NE land, coastline, world clip mask, and admin-0 de facto lines..."
 "$MAPSHAPER_BIN" -i "$SRC_DIR/ne_50m_land.geojson" \
   -filter-fields "" \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/land_low.geojson"
@@ -87,12 +117,19 @@ echo "[2/6] Building NE land, coastline, world clip mask, and admin-0 de facto l
   -dissolve \
   -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/world_mask.geojson"
 
+"$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
+  -filter 'ADM0_A3 === "HKG" || ADM0_A3 === "MAC"' \
+  -dissolve \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/hkmo_mask.geojson"
+
 python3 - "$SRC_DIR/ne_10m_admin_0_boundary_lines_land.geojson" "$STAGE_DIR/admin0.geojson" <<'PY'
 import json, sys
+from collections import Counter
 
 src, dst = sys.argv[1], sys.argv[2]
 data = json.load(open(src, encoding='utf-8'))
 out_feats = []
+counts = Counter()
 
 def classify(fcla: str) -> str:
     s = (fcla or '').strip().lower()
@@ -105,6 +142,7 @@ def classify(fcla: str) -> str:
 for f in data['features']:
     p = f.get('properties') or {}
     cls = classify(p.get('FEATURECLA', ''))
+    counts[cls] += 1
     out_feats.append({
         'type': 'Feature',
         'geometry': f['geometry'],
@@ -115,41 +153,169 @@ for f in data['features']:
     })
 
 json.dump({'type': 'FeatureCollection', 'features': out_feats}, open(dst, 'w', encoding='utf-8'))
-print(f"  admin0 lines: {len(out_feats)} features")
+print(f"  admin0 lines: {len(out_feats)} features ({dict(counts)})")
+assert counts['disputed'] >= 60, f"expected >= 60 disputed segments, got {counts['disputed']}"
 PY
 
-echo "[3/6] Building NE admin-1 internal shared lines (incl. HK/MO) clipped to NE world mask..."
-"$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_1_states_provinces.geojson" \
-  -simplify 12% weighted keep-shapes \
-  -split adm0_a3 \
-  -innerlines \
-  -merge-layers target=* force \
-  -clip "$STAGE_DIR/world_mask.geojson" \
-  -filter-fields "" \
-  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1.geojson"
-
-echo "[4/6] Building geoBoundaries CGAZ China (CHN) ADM2 internal shared lines ONLY..."
-CGAZ_DIR="$WORK_DIR/cgaz_adm2"
-mkdir -p "$CGAZ_DIR"
-if [ ! -s "$CGAZ_DIR/geoBoundariesCGAZ_ADM2.shp" ]; then
-  unzip -q -o "$SRC_DIR/geoBoundariesCGAZ_ADM2.zip" -d "$CGAZ_DIR"
+echo "[3/7] Building global geoBoundaries CGAZ ADM1 internal lines + NE HK/MO patch..."
+CGAZ_ADM1_DIR="$WORK_DIR/cgaz_adm1"
+mkdir -p "$CGAZ_ADM1_DIR"
+if [ ! -s "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" ]; then
+  unzip -q -o "$SRC_DIR/geoBoundariesCGAZ_ADM1.zip" -d "$CGAZ_ADM1_DIR"
 fi
-rm -f "$STAGE_DIR/chn_adm2_poly.geojson"
-ogr2ogr -f GeoJSON -where "shapeGroup='CHN'" \
-  "$STAGE_DIR/chn_adm2_poly.geojson" \
-  "$CGAZ_DIR/geoBoundariesCGAZ_ADM2.shp"
 
-"$MAPSHAPER_BIN" -i "$STAGE_DIR/chn_adm2_poly.geojson" \
-  -simplify 8% weighted keep-shapes \
+run_mapshaper_xl 6gb -i "$CGAZ_ADM1_DIR/geoBoundariesCGAZ_ADM1.shp" \
+  -simplify "$ADM1_SIMPLIFY" weighted keep-shapes \
   -split shapeGroup \
-  -innerlines \
+  -innerlines target=* \
+  -each target=* 'cc = this.layer_name' \
   -merge-layers target=* force \
   -clip "$STAGE_DIR/world_mask.geojson" \
-  -each 'cc="CHN"' \
+  -erase "$STAGE_DIR/hkmo_mask.geojson" \
   -filter-fields cc \
-  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2.geojson"
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_cgaz.geojson"
 
-echo "[5/6] Building label point layers with neutral region overrides (TWN/HKG/MAC)..."
+"$MAPSHAPER_BIN" -i "$SRC_DIR/ne_10m_admin_1_states_provinces.geojson" \
+  -filter 'adm0_a3 === "HKG" || adm0_a3 === "MAC"' \
+  -split adm0_a3 \
+  -innerlines target=* \
+  -each target=* 'cc = this.layer_name' \
+  -merge-layers target=* force \
+  -clip "$STAGE_DIR/world_mask.geojson" \
+  -filter-fields cc \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_hkmo.geojson"
+
+"$MAPSHAPER_BIN" -i "$STAGE_DIR/admin1_cgaz.geojson" "$STAGE_DIR/admin1_hkmo.geojson" combine-files \
+  -merge-layers target=* force \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin1_raw.geojson"
+
+echo "[4/7] Building global geoBoundaries CGAZ ADM2 internal lines ($ADM2_SIMPLIFY)..."
+CGAZ_ADM2_DIR="$WORK_DIR/cgaz_adm2"
+mkdir -p "$CGAZ_ADM2_DIR"
+if [ ! -s "$CGAZ_ADM2_DIR/geoBoundariesCGAZ_ADM2.shp" ]; then
+  unzip -q -o "$SRC_DIR/geoBoundariesCGAZ_ADM2.zip" -d "$CGAZ_ADM2_DIR"
+fi
+
+run_mapshaper_xl 8gb -i "$CGAZ_ADM2_DIR/geoBoundariesCGAZ_ADM2.shp" \
+  -simplify "$ADM2_SIMPLIFY" weighted keep-shapes \
+  -split shapeGroup \
+  -innerlines target=* \
+  -each target=* 'cc = this.layer_name' \
+  -merge-layers target=* force \
+  -clip "$STAGE_DIR/world_mask.geojson" \
+  -filter-fields cc \
+  -o format=geojson geojson-type=FeatureCollection "$STAGE_DIR/admin2_raw.geojson"
+
+# Enrich admin1/admin2 with ISO-2 `iso_a2` (preserving ISO-3 `cc` for style.ts `cc == "CHN"`)
+# and suppress admin2 segments strictly coincident with admin1 on a 1e-3 deg (~100 m) grid.
+python3 - \
+  "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
+  "$STAGE_DIR/admin1_raw.geojson" \
+  "$STAGE_DIR/admin2_raw.geojson" \
+  "$STAGE_DIR/admin1.geojson" \
+  "$STAGE_DIR/admin2.geojson" <<'PY'
+import json, sys
+from collections import Counter
+
+a0_path, a1_in, a2_in, a1_out, a2_out = sys.argv[1:6]
+a0 = json.load(open(a0_path, encoding='utf-8'))
+
+a3_to_a2 = {
+    'TWN': 'TW', 'HKG': 'HK', 'MAC': 'MO', 'FRA': 'FR', 'NOR': 'NO',
+    'KOS': 'XK', 'XKX': 'XK',
+}
+for f in a0['features']:
+    p = f.get('properties') or {}
+    a3 = str(p.get('ADM0_A3') or p.get('ISO_A3') or '').strip().upper()
+    i2 = str(p.get('ISO_A2') or '').strip().upper()
+    eh = str(p.get('ISO_A2_EH') or '').strip().upper()
+    iso2 = i2 if (len(i2) == 2 and i2.isalpha()) else (eh if (len(eh) == 2 and eh.isalpha()) else '')
+    if a3 and iso2:
+        a3_to_a2.setdefault(a3, iso2)
+
+def seg_key(p1, p2):
+    q1 = (round(p1[0], 3), round(p1[1], 3))
+    q2 = (round(p2[0], 3), round(p2[1], 3))
+    if q1 == q2:
+        return None
+    return (q1, q2) if q1 < q2 else (q2, q1)
+
+a1_data = json.load(open(a1_in, encoding='utf-8'))
+a1_segs = set()
+a1_cc_counts = Counter()
+a1_feats = []
+for f in a1_data['features']:
+    g = f.get('geometry')
+    if not g:
+        continue
+    cc = str((f.get('properties') or {}).get('cc') or '').strip().upper()
+    props = {'cc': cc}
+    if cc in a3_to_a2:
+        props['iso_a2'] = a3_to_a2[cc]
+    a1_cc_counts[cc] += 1
+    a1_feats.append({'type': 'Feature', 'geometry': g, 'properties': props})
+    lines = [g['coordinates']] if g['type'] == 'LineString' else (g['coordinates'] if g['type'] == 'MultiLineString' else [])
+    for line in lines:
+        for i in range(len(line) - 1):
+            k = seg_key(line[i], line[i + 1])
+            if k is not None:
+                a1_segs.add(k)
+
+json.dump({'type': 'FeatureCollection', 'features': a1_feats}, open(a1_out, 'w', encoding='utf-8'))
+
+a2_data = json.load(open(a2_in, encoding='utf-8'))
+a2_feats = []
+a2_cc_counts = Counter()
+suppressed_segs = 0
+
+def strip_coincident(line):
+    global suppressed_segs
+    runs = []
+    cur = []
+    for i in range(len(line) - 1):
+        k = seg_key(line[i], line[i + 1])
+        if k is not None and k in a1_segs:
+            suppressed_segs += 1
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+        else:
+            if not cur:
+                cur = [line[i], line[i + 1]]
+            else:
+                cur.append(line[i + 1])
+    if len(cur) >= 2:
+        runs.append(cur)
+    return runs
+
+for f in a2_data['features']:
+    g = f.get('geometry')
+    if not g:
+        continue
+    cc = str((f.get('properties') or {}).get('cc') or '').strip().upper()
+    lines = [g['coordinates']] if g['type'] == 'LineString' else (g['coordinates'] if g['type'] == 'MultiLineString' else [])
+    kept_lines = []
+    for line in lines:
+        kept_lines.extend(strip_coincident(line))
+    if not kept_lines:
+        continue
+    props = {'cc': cc}
+    if cc in a3_to_a2:
+        props['iso_a2'] = a3_to_a2[cc]
+    geom = {'type': 'LineString', 'coordinates': kept_lines[0]} if len(kept_lines) == 1 else {'type': 'MultiLineString', 'coordinates': kept_lines}
+    a2_cc_counts[cc] += 1
+    a2_feats.append({'type': 'Feature', 'geometry': geom, 'properties': props})
+
+json.dump({'type': 'FeatureCollection', 'features': a2_feats}, open(a2_out, 'w', encoding='utf-8'))
+ac6 = ('CHN', 'USA', 'IND', 'DEU', 'BRA', 'JPN', 'AUS', 'RUS', 'ZAF', 'TWN')
+print(f"  admin1: {len(a1_feats)} features across {len(a1_cc_counts)} units; AC6={ {k: a1_cc_counts[k] for k in ac6} }")
+print(f"  admin2: {len(a2_feats)} features across {len(a2_cc_counts)} units (suppressed {suppressed_segs} ADM1-coincident segs); AC6={ {k: a2_cc_counts[k] for k in ac6} }")
+for k in ac6:
+    assert a1_cc_counts[k] > 0, f"AC6 country {k} missing from admin1"
+    assert a2_cc_counts[k] > 0, f"AC6 country {k} missing from admin2"
+PY
+
+echo "[5/7] Building label point layers with neutral region overrides (TWN/HKG/MAC)..."
 python3 - \
   "$SRC_DIR/ne_10m_admin_0_countries.geojson" \
   "$SRC_DIR/ne_10m_admin_1_states_provinces.geojson" \
@@ -173,23 +339,38 @@ SHORT_A0 = {
     'GBR': ('英国', 'United Kingdom'),
     'KOR': ('韩国', 'South Korea'),
     'PRK': ('朝鲜', 'North Korea'),
+    'ARE': ('阿联酋', 'United Arab Emirates'),
+    'TWN': ('台湾', 'Taiwan'),
+    'HKG': ('香港', 'Hong Kong'),
+    'MAC': ('澳门', 'Macau'),
 }
 
-TRAD_TO_SIMP = {
-    '臺北': '台北',
-    '澳門': '澳门',
-    '東京': '东京',
-    '首爾': '首尔',
-    '臺灣': '台湾',
-    '廣東': '广东',
-}
+TRAD_TO_SIMP = str.maketrans({
+    '臺': '台', '灣': '湾', '門': '门', '東': '东', '廣': '广', '爾': '尔',
+    '蘇': '苏', '慶': '庆', '漢': '汉', '陽': '阳', '長': '长', '鄭': '郑',
+    '濟': '济', '連': '连', '瀋': '沈', '濱': '滨', '寧': '宁', '廈': '厦',
+    '貴': '贵', '蘭': '兰', '烏': '乌', '魯': '鲁', '齊': '齐', '薩': '萨',
+    '陝': '陕', '遼': '辽', '龍': '龙', '華': '华', '國': '国', '區': '区',
+    '縣': '县', '島': '岛', '嶺': '岭', '紐': '纽', '約': '约', '舊': '旧',
+    '倫': '伦', '聖': '圣', '羅': '罗', '維': '维', '馬': '马', '亞': '亚',
+    '開': '开', '達': '达', '岡': '冈', '買': '买', '來': '来', '溫': '温',
+    '頓': '顿', '鳳': '凤', '茲': '兹', '圖': '图', '葉': '叶', '庫': '库',
+    '澤': '泽', '韓': '韩', '鮮': '鲜', '歐': '欧', '愛': '爱', '聯': '联',
+})
 
 def clean_zh(s: str) -> str:
     if not s:
         return ''
-    for k, v in TRAD_TO_SIMP.items():
-        s = s.replace(k, v)
-    return s.strip()
+    return s.translate(TRAD_TO_SIMP).strip()
+
+def pick_iso2(p: dict) -> str:
+    for k in ('ISO_A2', 'iso_a2', 'ISO_A2_EH'):
+        v = str(p.get(k) or '').strip().upper()
+        if len(v) == 2 and v.isalpha():
+            return v
+    return ''
+
+a3_to_a2 = {'TWN': 'TW', 'HKG': 'HK', 'MAC': 'MO', 'FRA': 'FR', 'NOR': 'NO', 'KOS': 'XK', 'XKX': 'XK'}
 
 # label_admin0
 a0 = json.load(open(a0_in, encoding='utf-8'))
@@ -199,15 +380,21 @@ for f in a0['features']:
     lx, ly = p.get('LABEL_X'), p.get('LABEL_Y')
     if lx is None or ly is None:
         continue
-    code = (p.get('ADM0_A3') or p.get('ISO_A3') or '').strip().upper()
-    name_en = (p.get('NAME') or p.get('NAME_EN') or '').strip()
+    code = str(p.get('ADM0_A3') or p.get('ISO_A3') or '').strip().upper()
+    iso2 = a3_to_a2.get(code) or pick_iso2(p)
+    if code and iso2:
+        a3_to_a2.setdefault(code, iso2)
+    name_en = str(p.get('NAME') or p.get('NAME_EN') or '').strip()
     name_zh = clean_zh(p.get('NAME_ZH') or name_en)
     props = {
         'code': code,
+        'iso_a2': iso2,
         'name_en': SHORT_A0[code][1] if code in SHORT_A0 else name_en,
         'name_zh': SHORT_A0[code][0] if code in SHORT_A0 else name_zh,
         'min_label': float(p.get('MIN_LABEL') or 2.0),
         'max_label': float(p.get('MAX_LABEL') or 7.0),
+        'labelrank': int(p.get('LABELRANK') if p.get('LABELRANK') is not None else 6),
+        'scalerank': int(p.get('scalerank') if p.get('scalerank') is not None else 3),
         'pop': int(p.get('POP_EST') or 0),
     }
     if code in OVERRIDES:
@@ -228,19 +415,22 @@ for f in a1['features']:
     lon, lat = p.get('longitude'), p.get('latitude')
     if lon is None or lat is None:
         continue
-    name_en = (p.get('name_en') or p.get('name') or '').strip()
+    name_en = str(p.get('name_en') or p.get('name') or '').strip()
     name_zh = clean_zh(p.get('name_zh') or name_en)
     if not name_en and not name_zh:
         continue
-    code = (p.get('adm0_a3') or '').strip().upper()
+    code = str(p.get('adm0_a3') or '').strip().upper()
+    iso2 = a3_to_a2.get(code) or pick_iso2(p)
     feats_a1.append({
         'type': 'Feature',
         'geometry': {'type': 'Point', 'coordinates': [float(lon), float(lat)]},
         'properties': {
             'cc': code,
+            'iso_a2': iso2,
             'name_en': name_en or name_zh,
             'name_zh': name_zh or name_en,
             'min_label': float(p.get('min_label') or 5.0),
+            'scalerank': int(p.get('scalerank') if p.get('scalerank') is not None else 6),
         },
     })
 json.dump({'type': 'FeatureCollection', 'features': feats_a1}, open(a1_out, 'w', encoding='utf-8'))
@@ -253,61 +443,81 @@ for f in pp['features']:
     g = f.get('geometry')
     if not g or g.get('type') != 'Point':
         continue
-    min_z = float(p.get('MIN_ZOOM') or 7.0)
-    # P0 z0..z6 focus: keep cities visible by z7+ overzoom
-    if min_z > 7.5:
+    min_z = float(p.get('MIN_ZOOM') if p.get('MIN_ZOOM') is not None else 7.0)
+    if min_z > 8.5:
         continue
-    name_en = (p.get('NAME_EN') or p.get('NAME') or '').strip()
+    name_en = str(p.get('NAME_EN') or p.get('NAME') or '').strip()
     name_zh = clean_zh(p.get('NAME_ZH') or name_en)
     if not name_en and not name_zh:
         continue
-    code = (p.get('ADM0_A3') or '').strip().upper()
-    props = {
-        'cc': code,
-        'name_en': name_en or name_zh,
-        'name_zh': name_zh or name_en,
-        'min_zoom': min_z,
-        'pop': int(p.get('POP_MAX') or 0),
-    }
+    code = str(p.get('ADM0_A3') or '').strip().upper()
+    iso2 = a3_to_a2.get(code) or pick_iso2(p)
     feats_pp.append({
         'type': 'Feature',
         'geometry': g,
-        'properties': props,
+        'properties': {
+            'cc': code,
+            'iso_a2': iso2,
+            'name_en': name_en or name_zh,
+            'name_zh': name_zh or name_en,
+            'min_zoom': min_z,
+            'scalerank': int(p.get('SCALERANK') if p.get('SCALERANK') is not None else 8),
+            'pop': int(p.get('POP_MAX') or 0),
+        },
     })
 json.dump({'type': 'FeatureCollection', 'features': feats_pp}, open(pp_out, 'w', encoding='utf-8'))
 print(f"  labels: admin0={len(feats_a0)}, admin1={len(feats_a1)}, place={len(feats_pp)}")
 PY
 
-echo "[6/6] Tiling layers with tippecanoe & joining into $OUT_FILE (maxzoom=$MAX_ZOOM)..."
+if [ "${GLOBE_SKIP_GAZETTEER:-0}" != "1" ]; then
+  echo "[6/7] Generating lazy gazetteer ($GAZETTEER_OUT)..."
+  python3 "$SCRIPT_DIR/build-gazetteer.py" \
+    --sources-dir "$SRC_DIR" \
+    --output "$GAZETTEER_OUT"
+else
+  echo "[6/7] Skipping gazetteer generation (GLOBE_SKIP_GAZETTEER=1)"
+fi
+
+echo "[7/7] Tiling layers with tippecanoe & joining into $OUT_FILE (maxzoom=$MAX_ZOOM)..."
 COMMON_FLAGS=(--force --no-feature-limit --no-tile-size-limit --detect-shared-borders)
 
-tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l land_low  -o "$TILES_DIR/land_low.pmtiles"  "$STAGE_DIR/land_low.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l land_high -o "$TILES_DIR/land_high.pmtiles" "$STAGE_DIR/land_high.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l coast_low  -o "$TILES_DIR/coast_low.pmtiles"  "$STAGE_DIR/coast_low.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l coast_high -o "$TILES_DIR/coast_high.pmtiles" "$STAGE_DIR/coast_high.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z"$MAX_ZOOM" -l admin0 -o "$TILES_DIR/admin0.pmtiles" "$STAGE_DIR/admin0.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z2 -z"$MAX_ZOOM" -l admin1 -o "$TILES_DIR/admin1.pmtiles" "$STAGE_DIR/admin1.geojson"
-tippecanoe "${COMMON_FLAGS[@]}" -Z5 -z"$MAX_ZOOM" -l admin2 -o "$TILES_DIR/admin2.pmtiles" "$STAGE_DIR/admin2.geojson"
-tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z0 -z"$MAX_ZOOM" -l label_admin0 -o "$TILES_DIR/label_admin0.pmtiles" "$STAGE_DIR/label_admin0.geojson"
-tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_admin1 -o "$TILES_DIR/label_admin1.pmtiles" "$STAGE_DIR/label_admin1.geojson"
-tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_place  -o "$TILES_DIR/label_place.pmtiles"  "$STAGE_DIR/label_place.geojson"
+# Run from WORK_DIR with relative paths so host paths never leak into PMTiles metadata
+(
+  cd "$WORK_DIR"
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l land_low   -o tiles/land_low.pmtiles   stage/land_low.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l land_high  -o tiles/land_high.pmtiles  stage/land_high.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z2 -l coast_low  -o tiles/coast_low.pmtiles  stage/coast_low.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z3 -z"$MAX_ZOOM" -l coast_high -o tiles/coast_high.pmtiles stage/coast_high.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z0 -z"$MAX_ZOOM" -l admin0     -o tiles/admin0.pmtiles     stage/admin0.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z2 -z"$MAX_ZOOM" -l admin1     -o tiles/admin1.pmtiles     stage/admin1.geojson
+  tippecanoe "${COMMON_FLAGS[@]}" -Z5 -z"$MAX_ZOOM" -l admin2     -o tiles/admin2.pmtiles     stage/admin2.geojson
+  tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z0 -z"$MAX_ZOOM" -l label_admin0 -o tiles/label_admin0.pmtiles stage/label_admin0.geojson
+  tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_admin1 -o tiles/label_admin1.pmtiles stage/label_admin1.geojson
+  tippecanoe --force --no-feature-limit --no-tile-size-limit -r1 -Z3 -z"$MAX_ZOOM" -l label_place  -o tiles/label_place.pmtiles  stage/label_place.geojson
 
-tile-join --force --no-tile-size-limit \
-  -n "mh-boundaries-v1" \
-  -N "MeshHarbor Neutral De Facto Boundaries (Natural Earth 5.1.2 + geoBoundaries CGAZ CHN ADM2)" \
-  -o "$OUT_FILE" \
-  "$TILES_DIR/land_low.pmtiles" \
-  "$TILES_DIR/land_high.pmtiles" \
-  "$TILES_DIR/coast_low.pmtiles" \
-  "$TILES_DIR/coast_high.pmtiles" \
-  "$TILES_DIR/admin0.pmtiles" \
-  "$TILES_DIR/admin1.pmtiles" \
-  "$TILES_DIR/admin2.pmtiles" \
-  "$TILES_DIR/label_admin0.pmtiles" \
-  "$TILES_DIR/label_admin1.pmtiles" \
-  "$TILES_DIR/label_place.pmtiles"
+  tile-join --force --no-tile-size-limit \
+    -n "mh-boundaries-v1" \
+    -N "MeshHarbor Neutral De Facto Boundaries (Natural Earth 5.1.2 + global geoBoundaries CGAZ ADM1/ADM2)" \
+    -o tiles/mh-boundaries-v1.pmtiles \
+    tiles/land_low.pmtiles \
+    tiles/land_high.pmtiles \
+    tiles/coast_low.pmtiles \
+    tiles/coast_high.pmtiles \
+    tiles/admin0.pmtiles \
+    tiles/admin1.pmtiles \
+    tiles/admin2.pmtiles \
+    tiles/label_admin0.pmtiles \
+    tiles/label_admin1.pmtiles \
+    tiles/label_place.pmtiles
+)
+
+cp -f "$TILES_DIR/mh-boundaries-v1.pmtiles" "$OUT_FILE"
 
 SHA="$(sha256sum "$OUT_FILE" | awk '{print $1}')"
 SIZE="$(stat -c%s "$OUT_FILE")"
+if [ "$SIZE" -gt "$MAX_PMTILES_BYTES" ]; then
+  echo "error: $OUT_FILE size $SIZE bytes exceeds budget $MAX_PMTILES_BYTES bytes" >&2
+  exit 1
+fi
 printf "%s  %s\n" "$SHA" "$(basename "$OUT_FILE")" > "${OUT_FILE}.sha256"
 echo "Built $OUT_FILE ($SIZE bytes, sha256=$SHA)"
