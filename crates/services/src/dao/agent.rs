@@ -108,9 +108,10 @@ impl AgentDao {
     }
 
     /// The one place a fresh device row is shaped — both `create` paths call
-    /// it, so a new `Agent` field is decided here exactly once.
+    /// it, so a new `Agent` field is decided here exactly once. Public so a
+    /// module's unit tests can shape a row the same way (FR-133).
     #[allow(clippy::too_many_arguments)]
-    fn new_row(
+    pub fn new_row(
         tenant_id: ObjectId,
         owner_user_id: ObjectId,
         name: String,

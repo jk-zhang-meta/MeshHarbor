@@ -294,16 +294,18 @@ pub async fn devices(
             }
         }
     }
+    // One read of the tenant: its MagicDNS domain for the rows, and (FR-133)
+    // its name for a permanent device, which may say whose device it is when
+    // a person from another org signs in on it. Never for a temporary guest.
+    let tenant = state.tenants.base.find_by_id(tid).await.ok();
+    let org_name = tenant
+        .as_ref()
+        .filter(|_| !temporary_caller)
+        .map(|t| t.name.clone());
     let dns_domain = if node_by_agent.is_empty() && node_by_client.is_empty() {
         None
     } else {
-        state
-            .tenants
-            .base
-            .find_by_id(tid)
-            .await
-            .ok()
-            .and_then(|t| t.settings.magic_dns_domain)
+        tenant.and_then(|t| t.settings.magic_dns_domain)
     };
 
     let agents = fleet.agents.list_all_active_for_tenant(tid).await?;
@@ -436,6 +438,7 @@ pub async fn devices(
         overlay: vis.overlay.to_string(),
         acl_mode: vis.acl_mode.to_string(),
         self_node_id: vis.self_node_id,
+        org_name,
     }))
 }
 

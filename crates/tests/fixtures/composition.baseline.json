@@ -249,6 +249,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/agent/self/move",
+      "methods": "POST"
+    },
+    {
       "path": "/api/agent/self/name",
       "methods": "GET,HEAD,POST"
     },
@@ -1742,6 +1746,11 @@
           },
           {
             "key": {
+              "enrollment_jti": 1
+            }
+          },
+          {
+            "key": {
               "client_hash": 1,
               "state": 1
             }
@@ -1751,6 +1760,23 @@
               "expires_at": 1
             },
             "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "device_move_audit",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "created_at": -1
+            }
+          },
+          {
+            "key": {
+              "agent_id": 1,
+              "created_at": -1
+            }
           }
         ]
       },
@@ -4279,6 +4305,11 @@
           },
           {
             "key": {
+              "enrollment_jti": 1
+            }
+          },
+          {
+            "key": {
               "client_hash": 1,
               "state": 1
             }
@@ -4288,6 +4319,23 @@
               "expires_at": 1
             },
             "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "device_move_audit",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "created_at": -1
+            }
+          },
+          {
+            "key": {
+              "agent_id": 1,
+              "created_at": -1
+            }
           }
         ]
       },

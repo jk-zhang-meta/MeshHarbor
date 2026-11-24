@@ -76,6 +76,8 @@ function iconFor(type: string): string {
     case 'call': return 'mdi-phone'
     // FR-90 — an agent session waits for a driver.
     case 'approval_request': return 'mdi-shield-key'
+    // FR-133 — one of the org's devices moved to another organization.
+    case 'device_moved': return 'mdi-laptop-off'
     default: return 'mdi-bell'
   }
 }

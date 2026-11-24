@@ -1179,6 +1179,15 @@ pub struct AuthSettings {
     /// the inviter, and is removed when the access period ends. Default off.
     #[serde(default)]
     pub native_device_invite_enabled: bool,
+    /// FR-133 — a personal device that a person from ANOTHER organization
+    /// signs in on, and moves there, may remove its old organization's row
+    /// itself (`POST /api/agent/self/move`), proving a fresh device-login
+    /// enrollment of the same machine elsewhere. Default on. Off answers that
+    /// route exactly as `self/unenroll` answers a permanent device today
+    /// (403), and the moved device then says its old organization's admin
+    /// must remove it.
+    #[serde(default = "default_true")]
+    pub native_device_move_enabled: bool,
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
@@ -1219,6 +1228,7 @@ impl Default for AuthSettings {
             native_share_ssh_authorization_enabled: false,
             native_device_login_enabled: false,
             native_device_invite_enabled: false,
+            native_device_move_enabled: default_true(),
             reconcile_managed_roles: default_true(),
         }
     }
@@ -1890,6 +1900,7 @@ impl Settings {
             .set_default("auth.native_share_ssh_authorization_enabled", false)?
             .set_default("auth.native_device_login_enabled", false)?
             .set_default("auth.native_device_invite_enabled", false)?
+            .set_default("auth.native_device_move_enabled", true)?
             .build()?;
 
         config.try_deserialize()

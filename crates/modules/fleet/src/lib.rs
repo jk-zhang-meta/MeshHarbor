@@ -68,6 +68,7 @@ pub mod consent_consumer;
 pub mod ctrl;
 pub mod device_invite;
 pub mod device_login;
+pub mod device_move;
 pub mod enroll_key;
 pub mod exec_service;
 pub mod external_access;
@@ -547,6 +548,9 @@ impl Module for FleetState {
             .route("/installer/{flavour}", get(agent_release::installer_proxy))
             .route("/crash", post(agent_crash::ingest))
             .route("/self/unenroll", post(agent::self_unenroll))
+            // FR-133 — a personal device that moved to another org removes its
+            // old row, proving the new enrollment (`device_move`).
+            .route("/self/move", post(device_move::self_move))
             .route(
                 "/self/name",
                 get(name_sync::get_self).post(name_sync::propose),
@@ -880,6 +884,17 @@ impl Module for FleetState {
                     index_ttl(bson::doc! { "at": 1 }, 90 * 24 * 60 * 60),
                 ],
             },
+            // FR-133 — device moves out of a tenant, and the refusals. No
+            // TTL: a device leaving an organization is its permanent record,
+            // like the tombstone it leaves.
+            IndexSet {
+                collection: device_move::AUDIT_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index(bson::doc! { "tenant_id": 1, "created_at": -1 }),
+                    index(bson::doc! { "agent_id": 1, "created_at": -1 }),
+                ],
+            },
             IndexSet {
                 collection: "agent_logs",
                 pre_ops: Vec::new(),
@@ -912,6 +927,7 @@ impl Module for FleetState {
                 indexes: vec![
                     index_unique(bson::doc! { "user_code_hash": 1 }),
                     index_unique(bson::doc! { "device_code_hash": 1 }),
+                    index(bson::doc! { "enrollment_jti": 1 }),
                     index(bson::doc! { "client_hash": 1, "state": 1 }),
                     index_ttl(bson::doc! { "expires_at": 1 }, 0),
                 ],

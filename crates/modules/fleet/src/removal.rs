@@ -107,14 +107,21 @@ pub async fn kick(state: &FleetState, aid: ObjectId, goodbye: bool) {
 /// #2267 — whether a removal tells the connected device it was removed.
 /// Not an ephemeral device that unenrolled itself: it is mid-shutdown, and a
 /// goodbye racing its graceful exit would turn its clean stop into exit 7.
-/// `enabled` is `rc.removal_goodbye`, the kill switch.
+/// Nor a device that moved itself to another organization (FR-133): it asked
+/// for the removal, and its daemon is about to restart into the new
+/// organization; a goodbye would stop it first. `enabled` is
+/// `rc.removal_goodbye`, the kill switch.
 pub fn tells_the_device(reason: &str, enabled: bool) -> bool {
-    enabled && reason != SELF_UNENROLL_REASON
+    enabled && reason != SELF_UNENROLL_REASON && reason != MOVED_REASON
 }
 
 /// The reason an ephemeral device's own unenroll removes it with
 /// (`agent::self_unenroll`).
 pub const SELF_UNENROLL_REASON: &str = "ephemeral_self_unenroll";
+
+/// FR-133 — the reason a device that moved to another organization removes
+/// its old row with (`device_move::self_move`).
+pub const MOVED_REASON: &str = "moved_to_other_org";
 
 /// The agent id the reaper and the routes log; kept next to the sequence so
 /// its callers do not each re-derive it.
@@ -131,6 +138,10 @@ mod tests {
         assert!(tells_the_device("agent_delete", true));
         assert!(tells_the_device("ephemeral_expired", true));
         assert!(!tells_the_device(SELF_UNENROLL_REASON, true));
+        assert!(
+            !tells_the_device(MOVED_REASON, true),
+            "a device that moved itself restarts into its new org; no goodbye"
+        );
         assert!(
             !tells_the_device("agent_delete", false),
             "rc.removal_goodbye = false is the kill switch"

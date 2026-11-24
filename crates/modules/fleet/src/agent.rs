@@ -775,6 +775,11 @@ pub async fn self_renew(
     }))
 }
 
+/// The 403 a permanent device hears when it asks to remove itself. Shared with
+/// FR-133's `self/move`, whose kill switch answers with exactly this.
+pub const PERMANENT_SELF_REMOVAL_REFUSAL: &str = "Only an ephemeral device may unenroll itself; \
+     removal of a permanent device is an admin action";
+
 /// POST /api/agent/self/unenroll — an EPHEMERAL device removes itself
 /// (FR-51 P3): the daemon calls this on SIGTERM/SIGINT so a clean stop
 /// reaps in seconds instead of on the inactivity deadline.
@@ -800,11 +805,7 @@ pub async fn self_unenroll(
         crate::device_invite::grant_for_agent(&state, agent.agent_id).await?
     };
     if !agent.agent.ephemeral && temporary.is_none() {
-        return Err(ApiError::Forbidden(
-            "Only an ephemeral device may unenroll itself; removal of a permanent \
-             device is an admin action"
-                .to_string(),
-        ));
+        return Err(ApiError::Forbidden(PERMANENT_SELF_REMOVAL_REFUSAL.to_string()));
     }
     // The reason is what keeps the removal's kick from telling a device that
     // is already leaving (#2267).

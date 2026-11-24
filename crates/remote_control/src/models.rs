@@ -3493,6 +3493,12 @@ pub struct VisibleDevicesPage {
     /// The caller's own overlay node id (hex), when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_node_id: Option<String>,
+    /// FR-133 — the name of the caller's OWN organization, so the device can
+    /// say "This device belongs to «…»" when a person from another org signs
+    /// in on it. Omitted for a temporary (invited) device and by older
+    /// servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -3575,6 +3581,7 @@ mod visible_device_tests {
             overlay: "ok".into(),
             acl_mode: "enforce".into(),
             self_node_id: Some("76543210fedcba9876543210".into()),
+            org_name: Some("Example Org".into()),
         };
         let text = serde_json::to_string(&page).unwrap();
         let back: VisibleDevicesPage = serde_json::from_str(&text).unwrap();
