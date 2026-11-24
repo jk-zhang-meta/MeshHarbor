@@ -245,6 +245,53 @@ mod rc_idle_limit_tests;
 mod rc_no_common_codec_tests;
 #[cfg(test)]
 mod rc_request_ceiling_tests;
+/// FR-130 P1b-1 — the device's half of the server's resume: the announce, the
+/// durable detach, the claim on either pod with the gate run again, fencing,
+/// the registration read's inferred ends, and off is today.
+#[cfg(test)]
+mod rc_resume_claim_tests;
+/// FR-130 — both halves real: the agent library's signalling loop against a
+/// real server, its control socket cut, the session claimed back and its
+/// viewer rejoined, with the file child transports revoked on the way.
+#[cfg(test)]
+mod rc_resume_e2e_tests;
+/// FR-130 — how a resumable session ends at the edges the reviews of P1b
+/// found: a session its viewer may not hold, a claim refused for no one's
+/// choice, two claims of one device racing, the device's own end after an
+/// inferred one, a hold nobody rejoins, and the first end over an inferred
+/// one.
+#[cfg(test)]
+mod rc_resume_ends_tests;
+/// FR-130 — the server's resume at the edges deferred to "PR D": a detached
+/// session's slot against a request on its own pod, a lost claim and the
+/// winner's lease, a displaced claim's detach written back, a detached
+/// lease's life, the external marker and D3 at the claim, an admin's end that
+/// cannot be written, and the rejoin's gate rate.
+#[cfg(test)]
+mod rc_resume_pd_tests;
+/// FR-130 P1b-2 — the viewer's half of the server's resume: the hold through
+/// the viewer's own socket loss, the rejoin on either pod with the gate run
+/// again, the slot a held session never costs its own viewer (`replaces`
+/// and the same-person orphan rule), the ends written to the row while no
+/// pod holds the session, a device's own end after its hello, and off is
+/// today.
+#[cfg(test)]
+mod rc_resume_rejoin_tests;
+/// FR-130 (D5 = A) — a redial's `replaces` of a session no hub on its pod
+/// holds: a detached row ends `agent_disconnect`, marked `end_source:
+/// redial`, which the device's own end after its hello replaces; an attached
+/// one stays `controller_hangup`.
+#[cfg(test)]
+mod rc_resume_replaces_tests;
+/// FR-130 P1b-2, part two — the rest of the server's resume: the sweep, the
+/// re-announce on a scope change, and the dead-row close.
+#[cfg(test)]
+mod rc_resume_sweep_tests;
+/// FR-130 P1a — the session-resume wire, row and scope, all inert: the scope
+/// is a platform admin's, an audit listing reads the new kinds and an unknown
+/// one, and at the window's default of 0 the new wire changes nothing.
+#[cfg(test)]
+mod rc_resume_tests;
 #[cfg(test)]
 mod rc_session_limits_tests;
 #[cfg(test)]
