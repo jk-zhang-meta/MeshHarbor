@@ -423,20 +423,20 @@ mod tests {
     /// {"iss":"meshharbor","token_type":"tunnel_enrollment","exp":9999999999}
     fn tunnel_enrollment_jwt() -> String {
         format!(
-            "{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwidG9rZW5fdHlwZSI6InR1bm5lbF9lbnJvbGxtZW50IiwiZXhwIjo5OTk5OTk5OTk5fQ.sig"
+            "{FAKE_HEADER}.eyJpc3MiOiJtZXNoaGFyYm9yIiwidG9rZW5fdHlwZSI6InR1bm5lbF9lbnJvbGxtZW50IiwiZXhwIjo5OTk5OTk5OTk5fQ.sig"
         )
     }
 
     /// {"iss":"meshharbor","token_type":"enrollment","exp":9999999999}
     fn agent_enrollment_jwt() -> String {
         format!(
-            "{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwidG9rZW5fdHlwZSI6ImVucm9sbG1lbnQiLCJleHAiOjk5OTk5OTk5OTl9.sig"
+            "{FAKE_HEADER}.eyJpc3MiOiJtZXNoaGFyYm9yIiwidG9rZW5fdHlwZSI6ImVucm9sbG1lbnQiLCJleHAiOjk5OTk5OTk5OTl9.sig"
         )
     }
 
     /// {"iss":"meshharbor","exp":1000000}
     fn expired_jwt() -> String {
-        format!("{FAKE_HEADER}.eyJpc3MiOiJyb29tbGVyLWFpIiwiZXhwIjoxMDAwMDAwfQ.sig")
+        format!("{FAKE_HEADER}.eyJpc3MiOiJtZXNoaGFyYm9yIiwiZXhwIjoxMDAwMDAwfQ.sig")
     }
 
     #[test]
@@ -561,6 +561,7 @@ mod tests {
         let v = cmd_validate_token(agent_enrollment_jwt(), Some(Role::TunnelClient)).unwrap();
         assert_eq!(v.audience_matches, Some(false));
         assert_eq!(v.token_type.as_deref(), Some("enrollment"));
+        assert_eq!(v.issuer.as_deref(), Some("meshharbor"));
     }
 
     #[test]
@@ -568,6 +569,7 @@ mod tests {
         let v = cmd_validate_token(expired_jwt(), None).unwrap();
         assert!(v.appears_expired);
         assert_eq!(v.expires_at_unix, Some(1_000_000));
+        assert_eq!(v.issuer.as_deref(), Some("meshharbor"));
     }
 
     #[test]
