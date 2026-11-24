@@ -334,27 +334,30 @@ pub(crate) fn zone_entry_gateways<'a>(
         .collect()
 }
 
-/// FR-128 — the origin of an agent connection, after the management-entry rules. Called by the
-/// upgrade before anything reads the origin (zone observation, `public_ip`).
+/// FR-128 / FR-137 — the origin of an agent connection after management-entry rules, plus the
+/// attesting gateway's `agent_id` whenever a valid management-entry attestation succeeded (for
+/// both public device IPs and private-network devices behind the entry; `None` for direct or
+/// unattested connections). Called by the upgrade before anything reads the origin (zone
+/// observation, `public_ip`).
 pub async fn resolve_origin(
     state: &FleetState,
     tenant_id: ObjectId,
     agent_id: ObjectId,
     entry: Option<&str>,
     origin: ConnectionOrigin,
-) -> ConnectionOrigin {
+) -> (ConnectionOrigin, Option<ObjectId>) {
     if !state.settings.app.management_entries {
-        return origin;
+        return (origin, None);
     }
     let Some(client) = origin.client_ip() else {
-        return origin;
+        return (origin, None);
     };
     if let Some(token) = entry.filter(|t| !t.is_empty()) {
         match check_token(state, tenant_id, token, client).await {
             Ok((entry_id, att)) => {
                 // A device on the entry's own private network has no public address of its own:
                 // it is where the entry is, so the entry's address is the true one.
-                return match canonical_public_ip(att.ip) {
+                let resolved = match canonical_public_ip(att.ip) {
                     Some(ip) => {
                         info!(%agent_id, entry = %entry_id, device_ip = %ip,
                             "management entry: connection attested, origin is the device's address");
@@ -366,6 +369,7 @@ pub async fn resolve_origin(
                         origin
                     }
                 };
+                return (resolved, Some(entry_id));
             }
             Err(reason) => {
                 warn!(%agent_id, reason, "management entry: attestation refused");
@@ -380,11 +384,11 @@ pub async fn resolve_origin(
         Ok(rows) => rows,
         Err(e) => {
             warn!(%agent_id, %e, "management entry: entry lookup failed, origin kept");
-            return origin;
+            return (origin, None);
         }
     };
     if entries.iter().all(|e| e.id == Some(agent_id)) {
-        return origin;
+        return (origin, None);
     }
     // Only a CURRENT entry (an approved gateway of one of the org's zones) withholds.
     let net =
@@ -395,7 +399,7 @@ pub async fn resolve_origin(
             Ok(n) => n,
             Err(e) => {
                 warn!(%agent_id, %e, "management entry: network read failed, origin kept");
-                return origin;
+                return (origin, None);
             }
         };
     let current = entries
@@ -411,13 +415,13 @@ pub async fn resolve_origin(
             {
                 info!(%agent_id, entry = ?e.id, %client,
                     "management entry: an approved relay shares an entry's address; origin kept");
-                return origin;
+                return (origin, None);
             }
             warn!(%agent_id, entry = ?e.id, %client,
                 "management entry: a connection from an entry's address without its attestation takes no address");
-            origin.unattested_entry()
+            (origin.unattested_entry(), None)
         }
-        None => origin,
+        None => (origin, None),
     }
 }
 

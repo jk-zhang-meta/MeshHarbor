@@ -3,20 +3,26 @@
 //! Logical Network Zones & per-device Zone Assignment endpoints:
 //! - `GET /api/tenant/{tenant_id}/network-zones`
 //! - `PUT /api/tenant/{tenant_id}/network-zones`
+//! - `GET /api/tenant/{tenant_id}/network-zones/backbone`
 //! - `PUT /api/tenant/{tenant_id}/agent/{agent_id}/zone-assignment`
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 
 use axum::{
     Json,
     extract::{Path, State},
 };
-use bson::oid::ObjectId;
-use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
+use futures::TryStreamExt;
+use meshharbor_core::{
+    ApiError, extractors::auth::AuthUser, guards::require_permission,
+    user_analytics::canonical_public_ip,
+};
 use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::models::{
-    DeviceZoneResolution, NetworkZone, first_zone_without_gateway, normalize_zone_slug,
-    validate_and_normalize_network_zones,
+    CrossZoneMode, DeviceZoneResolution, NetworkZone, OsKind, first_zone_without_gateway,
+    normalize_zone_slug, resolve_device_zone, validate_and_normalize_network_zones,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -289,4 +295,540 @@ pub async fn set_zone_assignment(
         effective_zone_id,
         effective_zone_name,
     }))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// FR-137: Read-only Zone Backbone view (`GET /network-zones/backbone`)
+// ────────────────────────────────────────────────────────────────────────────
+
+const BACKBONE_MESH_FRESH_SECS: i64 = 180;
+
+#[derive(Debug, Serialize)]
+pub struct BackboneZoneView {
+    pub id: String,
+    pub name: String,
+    pub is_centre: bool,
+    pub is_default: bool,
+    pub cross_zone_mode: CrossZoneMode,
+    pub auto_countries: Vec<String>,
+    pub gateway_relay_ids: Vec<String>,
+    pub device_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackboneGatewayView {
+    pub agent_id: String,
+    pub name: String,
+    pub online: bool,
+    pub os: OsKind,
+    pub agent_version: String,
+    pub last_seen_at: String,
+    pub country_code: Option<String>,
+    pub country: Option<String>,
+    pub region: Option<String>,
+    pub city: Option<String>,
+    pub relay_home: Option<String>,
+    pub public_ip: Option<String>,
+    pub zone_ids: Vec<String>,
+    pub is_centre: bool,
+    pub serving_relay: bool,
+    pub entry_listening: bool,
+    pub entry_port: Option<u16>,
+    pub entry_device_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackboneLinkEndView {
+    pub node: String,
+    pub carrier: String,
+    pub relay: Option<String>,
+    pub rtt_ms: Option<i64>,
+    pub stalled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackboneLinkView {
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub carrier: String,
+    pub rtt_ms: Option<i64>,
+    pub stalled: bool,
+    pub reports: u8,
+    pub cross_zone: bool,
+    pub ends: Vec<BackboneLinkEndView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ZoneBackboneResponse {
+    pub revision: u64,
+    pub zones: Vec<BackboneZoneView>,
+    pub gateways: Vec<BackboneGatewayView>,
+    pub links: Vec<BackboneLinkView>,
+}
+
+/// Pessimistic carrier ranking matching `GET /api/tenant/{tid}/stats/mesh`.
+fn carrier_rank(c: &str) -> u8 {
+    match c {
+        "direct" => 0,
+        "relay" => 1,
+        "derp" => 2,
+        "tunnel" => 3,
+        "blocked" => 4,
+        _ => 5,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RawMeshLink {
+    node: String,
+    carrier: String,
+    relay: Option<String>,
+    rtt_ms: Option<i64>,
+    stalled: bool,
+}
+
+fn bson_as_i64(v: Option<&Bson>) -> Option<i64> {
+    match v {
+        Some(Bson::Int64(n)) => Some(*n),
+        Some(Bson::Int32(n)) => Some(i64::from(*n)),
+        _ => None,
+    }
+}
+
+fn gateways_are_cross_zone(zones_a: &[String], zones_b: &[String]) -> bool {
+    !zones_a.iter().any(|z| zones_b.contains(z)) || zones_a != zones_b
+}
+
+fn merge_backbone_links(
+    snapshots: &[(String, Vec<RawMeshLink>)],
+    node_of_agent: &HashMap<String, String>,
+    agent_of_node: &HashMap<String, String>,
+    gateway_zones: &HashMap<String, Vec<String>>,
+) -> Vec<BackboneLinkView> {
+    #[derive(Default)]
+    struct Edge {
+        carrier: String,
+        rtt_ms: Option<i64>,
+        stalled: bool,
+        reports: u8,
+        ends: Vec<BackboneLinkEndView>,
+    }
+
+    let mut edges: HashMap<(String, String), Edge> = HashMap::new();
+    for (from_agent, links) in snapshots {
+        if !node_of_agent.contains_key(from_agent) || !gateway_zones.contains_key(from_agent) {
+            continue;
+        }
+        for l in links {
+            let Some(to_agent) = agent_of_node.get(&l.node) else {
+                continue;
+            };
+            if to_agent == from_agent || !gateway_zones.contains_key(to_agent) {
+                continue;
+            }
+            let key = if from_agent.as_str() <= to_agent.as_str() {
+                (from_agent.clone(), to_agent.clone())
+            } else {
+                (to_agent.clone(), from_agent.clone())
+            };
+            let e = edges.entry(key).or_default();
+            e.reports = e.reports.saturating_add(1);
+            e.stalled |= l.stalled;
+            e.ends.push(BackboneLinkEndView {
+                node: from_agent.clone(),
+                carrier: l.carrier.clone(),
+                relay: l.relay.clone(),
+                rtt_ms: l.rtt_ms,
+                stalled: l.stalled,
+            });
+            if e.carrier.is_empty() || carrier_rank(&l.carrier) > carrier_rank(&e.carrier) {
+                e.carrier = l.carrier.clone();
+            }
+            e.rtt_ms = match (e.rtt_ms, l.rtt_ms) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+    }
+
+    let mut out: Vec<BackboneLinkView> = edges
+        .into_iter()
+        .map(|((a, b), mut e)| {
+            e.ends.sort_by(|x, y| x.node.cmp(&y.node));
+            let cross_zone = match (gateway_zones.get(&a), gateway_zones.get(&b)) {
+                (Some(za), Some(zb)) => gateways_are_cross_zone(za, zb),
+                _ => true,
+            };
+            BackboneLinkView {
+                from_agent_id: a,
+                to_agent_id: b,
+                carrier: e.carrier,
+                rtt_ms: e.rtt_ms,
+                stalled: e.stalled,
+                reports: e.reports,
+                cross_zone,
+                ends: e.ends,
+            }
+        })
+        .collect();
+    out.sort_by(|x, y| {
+        x.from_agent_id
+            .cmp(&y.from_agent_id)
+            .then_with(|| x.to_agent_id.cmp(&y.to_agent_id))
+    });
+    out
+}
+
+/// `GET /api/tenant/{tenant_id}/network-zones/backbone` (`MANAGE_AGENTS`)
+///
+/// FR-137 — read-only Zone Backbone topology assembled strictly from data the
+/// server already holds: configured `OverlayNetwork.zones` (including `is_centre`),
+/// active approved gateway relays with live management-entry listener state and
+/// connected device counts, and live gateway↔gateway connections from `stats_mesh`.
+pub async fn get_backbone(
+    State(state): State<NetworkState>,
+    auth: AuthUser,
+    Path(tenant_id): Path<String>,
+) -> Result<Json<ZoneBackboneResponse>, ApiError> {
+    let tid = ObjectId::parse_str(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("Invalid tenant_id".to_string()))?;
+    require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
+
+    let (revision, raw_zones) = match state.overlay_networks.find_for_tenant(tid).await? {
+        Some(net) => (net.zone_revision, net.zones),
+        None => (0, Vec::new()),
+    };
+
+    if raw_zones.is_empty() {
+        return Ok(Json(ZoneBackboneResponse {
+            revision,
+            zones: Vec::new(),
+            gateways: Vec::new(),
+            links: Vec::new(),
+        }));
+    }
+
+    let active_agents = state.fleet.agents.list_all_active_for_tenant(tid).await?;
+
+    // Resolve each active device into its effective zone for per-zone device counts.
+    let mut zone_device_counts: HashMap<String, usize> = HashMap::new();
+    let mut agents_by_id: HashMap<ObjectId, &meshharbor_remote_control::models::Agent> =
+        HashMap::with_capacity(active_agents.len());
+    for a in &active_agents {
+        if let Some(aid) = a.id {
+            agents_by_id.insert(aid, a);
+        }
+        let cc = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, a);
+        if let DeviceZoneResolution::Resolved(z) =
+            resolve_device_zone(&raw_zones, a.pinned_zone_id.as_deref(), cc.as_deref())
+        {
+            *zone_device_counts.entry(z.id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Collect every zone each gateway is assigned to (preserving zone order).
+    let mut gw_zone_ids: HashMap<ObjectId, Vec<String>> = HashMap::new();
+    let mut gw_is_centre: HashMap<ObjectId, bool> = HashMap::new();
+    for z in &raw_zones {
+        for gw_hex in &z.gateway_relay_ids {
+            let Ok(gw_id) = ObjectId::parse_str(gw_hex) else {
+                continue;
+            };
+            let entry = gw_zone_ids.entry(gw_id).or_default();
+            if !entry.contains(&z.id) {
+                entry.push(z.id.clone());
+            }
+            if z.is_centre {
+                gw_is_centre.insert(gw_id, true);
+            }
+        }
+    }
+
+    let zones: Vec<BackboneZoneView> = raw_zones
+        .into_iter()
+        .map(|z| {
+            let device_count = zone_device_counts.get(&z.id).copied().unwrap_or(0);
+            BackboneZoneView {
+                id: z.id,
+                name: z.name,
+                is_centre: z.is_centre,
+                is_default: z.is_default,
+                cross_zone_mode: z.cross_zone_mode,
+                auto_countries: z.auto_countries,
+                gateway_relay_ids: z.gateway_relay_ids,
+                device_count,
+            }
+        })
+        .collect();
+
+    let entry_counts = state.fleet.rc_hub.management_entry_device_counts(tid);
+    let mut gateway_oids: Vec<ObjectId> = Vec::new();
+    let mut gateway_zones_hex: HashMap<String, Vec<String>> = HashMap::new();
+    let mut gateways: Vec<BackboneGatewayView> = Vec::new();
+
+    for (gw_id, zone_ids) in gw_zone_ids {
+        let Some(a) = agents_by_id.get(&gw_id).copied() else {
+            continue;
+        };
+        // FR-137 — include every active device named in any zone's `gateway_relay_ids`,
+        // even when `peer_relay_policy.serve == false` (e.g. a centre-zone host whose
+        // central reporting role is separate from relay/entry forwarding).
+        let serving_relay = a.peer_relay_policy.serve;
+        let aid_hex = gw_id.to_hex();
+        gateway_oids.push(gw_id);
+        gateway_zones_hex.insert(aid_hex.clone(), zone_ids.clone());
+
+        let online = state.fleet.rc_hub.is_agent_online(gw_id);
+        let entry_port = if online && serving_relay {
+            state.fleet.rc_hub.agent_management_entry_port(gw_id)
+        } else {
+            None
+        };
+        let entry_listening = entry_port.is_some();
+        let entry_device_count = if serving_relay {
+            entry_counts.get(&gw_id).copied().unwrap_or(0)
+        } else {
+            0
+        };
+
+        let effective_cc = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, a);
+        let public_ip = a
+            .public_ip
+            .as_deref()
+            .and_then(|s| s.parse::<IpAddr>().ok())
+            .and_then(canonical_public_ip)
+            .or_else(|| state.fleet.rc_hub.agent_live_public_ip(gw_id))
+            .map(|ip| ip.to_string());
+        let geo = public_ip
+            .as_deref()
+            .and_then(|s| s.parse::<IpAddr>().ok())
+            .map(|ip| state.core.geoip.lookup_location(ip))
+            .unwrap_or_default();
+
+        let display_name = a
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let name = display_name.unwrap_or(&a.name).to_string();
+
+        gateways.push(BackboneGatewayView {
+            agent_id: aid_hex,
+            name,
+            online,
+            os: a.os,
+            agent_version: a.agent_version.clone(),
+            last_seen_at: meshharbor_mod_fleet::agent::fmt_dt(a.last_seen_at),
+            country_code: effective_cc.or(geo.country_code),
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            relay_home: a.relay_home.clone(),
+            public_ip,
+            zone_ids,
+            is_centre: gw_is_centre.get(&gw_id).copied().unwrap_or(false),
+            serving_relay,
+            entry_listening,
+            entry_port,
+            entry_device_count,
+        });
+    }
+
+    gateways.sort_by(|a, b| {
+        b.is_centre
+            .cmp(&a.is_centre)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.agent_id.cmp(&b.agent_id))
+    });
+
+    if gateway_oids.is_empty() {
+        return Ok(Json(ZoneBackboneResponse {
+            revision,
+            zones,
+            gateways,
+            links: Vec::new(),
+        }));
+    }
+
+    // Map gateway agent_id <-> live overlay_nodes._id.
+    let mut node_of_agent: HashMap<String, String> = HashMap::new();
+    let mut agent_of_node: HashMap<String, String> = HashMap::new();
+    let node_cursor = state
+        .core
+        .db
+        .collection::<Document>("overlay_nodes")
+        .find(doc! {
+            "tenant_id": tid,
+            "deleted_at": Bson::Null,
+            "node_ref.kind": "agent",
+            "node_ref.id": { "$in": &gateway_oids },
+        })
+        .await
+        .map_err(|e| ApiError::Internal(format!("backbone overlay_nodes query failed: {e}")))?;
+    let node_docs: Vec<Document> = node_cursor
+        .try_collect()
+        .await
+        .map_err(|e| ApiError::Internal(format!("backbone overlay_nodes read failed: {e}")))?;
+    for doc in node_docs {
+        let Ok(node_oid) = doc.get_object_id("_id") else {
+            continue;
+        };
+        let Ok(node_ref) = doc.get_document("node_ref") else {
+            continue;
+        };
+        let Ok(agent_oid) = node_ref.get_object_id("id") else {
+            continue;
+        };
+        let n_hex = node_oid.to_hex();
+        let a_hex = agent_oid.to_hex();
+        node_of_agent.insert(a_hex.clone(), n_hex.clone());
+        agent_of_node.insert(n_hex, a_hex);
+    }
+
+    let fresh_floor =
+        DateTime::from_millis(DateTime::now().timestamp_millis() - BACKBONE_MESH_FRESH_SECS * 1000);
+    let snap_cursor = state
+        .core
+        .db
+        .collection::<Document>(meshharbor_services::dao::stats::STATS_MESH)
+        .find(doc! {
+            "tenant_id": tid,
+            "ts": { "$gte": fresh_floor },
+            "agent_id": { "$in": &gateway_oids },
+        })
+        .await
+        .map_err(|e| ApiError::Internal(format!("backbone stats_mesh query failed: {e}")))?;
+    let snap_docs: Vec<Document> = snap_cursor
+        .try_collect()
+        .await
+        .map_err(|e| ApiError::Internal(format!("backbone stats_mesh read failed: {e}")))?;
+
+    let mut snapshots: Vec<(String, Vec<RawMeshLink>)> = Vec::with_capacity(snap_docs.len());
+    for doc in snap_docs {
+        let Ok(agent_oid) = doc.get_object_id("agent_id") else {
+            continue;
+        };
+        let Ok(raw_links) = doc.get_array("links") else {
+            continue;
+        };
+        let mut parsed = Vec::with_capacity(raw_links.len());
+        for item in raw_links {
+            let Some(ldoc) = item.as_document() else {
+                continue;
+            };
+            let (Ok(node), Ok(carrier)) = (ldoc.get_str("node"), ldoc.get_str("carrier")) else {
+                continue;
+            };
+            parsed.push(RawMeshLink {
+                node: node.to_string(),
+                carrier: carrier.to_string(),
+                relay: ldoc.get_str("relay").ok().map(str::to_string),
+                rtt_ms: bson_as_i64(ldoc.get("rtt_ms")),
+                stalled: ldoc.get_bool("stalled").unwrap_or(false),
+            });
+        }
+        snapshots.push((agent_oid.to_hex(), parsed));
+    }
+
+    let links = merge_backbone_links(
+        &snapshots,
+        &node_of_agent,
+        &agent_of_node,
+        &gateway_zones_hex,
+    );
+
+    Ok(Json(ZoneBackboneResponse {
+        revision,
+        zones,
+        gateways,
+        links,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_backbone_links_pessimistically_merges_gateway_pairs_and_ignores_non_gateways() {
+        let mut node_of_agent = HashMap::new();
+        let mut agent_of_node = HashMap::new();
+        for (a, n) in [("gw-a", "node-a"), ("gw-b", "node-b"), ("gw-c", "node-c")] {
+            node_of_agent.insert(a.to_string(), n.to_string());
+            agent_of_node.insert(n.to_string(), a.to_string());
+        }
+        let mut gw_zones = HashMap::new();
+        gw_zones.insert("gw-a".to_string(), vec!["cn".to_string()]);
+        gw_zones.insert("gw-b".to_string(), vec!["centre".to_string()]);
+        gw_zones.insert("gw-c".to_string(), vec!["cn".to_string()]);
+
+        let snapshots = vec![
+            (
+                "gw-a".to_string(),
+                vec![
+                    RawMeshLink {
+                        node: "node-b".to_string(),
+                        carrier: "direct".to_string(),
+                        relay: None,
+                        rtt_ms: Some(32),
+                        stalled: false,
+                    },
+                    RawMeshLink {
+                        node: "node-c".to_string(),
+                        carrier: "direct".to_string(),
+                        relay: None,
+                        rtt_ms: Some(4),
+                        stalled: false,
+                    },
+                    // Non-gateway peer must be ignored.
+                    RawMeshLink {
+                        node: "node-client".to_string(),
+                        carrier: "direct".to_string(),
+                        relay: None,
+                        rtt_ms: Some(2),
+                        stalled: false,
+                    },
+                ],
+            ),
+            (
+                "gw-b".to_string(),
+                vec![RawMeshLink {
+                    node: "node-a".to_string(),
+                    carrier: "relay".to_string(),
+                    relay: Some("org_relay".to_string()),
+                    rtt_ms: Some(41),
+                    stalled: true,
+                }],
+            ),
+        ];
+
+        let links = merge_backbone_links(&snapshots, &node_of_agent, &agent_of_node, &gw_zones);
+        assert_eq!(links.len(), 2);
+
+        let ab = &links[0];
+        assert_eq!(ab.from_agent_id, "gw-a");
+        assert_eq!(ab.to_agent_id, "gw-b");
+        assert_eq!(ab.carrier, "relay");
+        assert_eq!(ab.rtt_ms, Some(32));
+        assert!(ab.stalled);
+        assert_eq!(ab.reports, 2);
+        assert!(ab.cross_zone);
+        assert_eq!(ab.ends.len(), 2);
+        assert_eq!(ab.ends[0].node, "gw-a");
+        assert_eq!(ab.ends[1].node, "gw-b");
+        assert_eq!(ab.ends[1].relay.as_deref(), Some("org_relay"));
+
+        let ac = &links[1];
+        assert_eq!(ac.from_agent_id, "gw-a");
+        assert_eq!(ac.to_agent_id, "gw-c");
+        assert!(!ac.cross_zone);
+        assert_eq!(ac.reports, 1);
+    }
 }

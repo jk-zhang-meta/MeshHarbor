@@ -905,6 +905,10 @@
       "methods": "GET,HEAD,PUT"
     },
     {
+      "path": "/api/tenant/{tenant_id}/network-zones/backbone",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/overlay-acl",
       "methods": "GET,HEAD,POST"
     },

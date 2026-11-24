@@ -631,10 +631,12 @@ impl Module for NetworkState {
             "/",
             get(routes::peer_relay::get_settings).put(routes::peer_relay::set_mode),
         );
-        let network_zones = Router::new().route(
-            "/",
-            get(routes::network_zones::get_zones).put(routes::network_zones::set_zones),
-        );
+        let network_zones = Router::new()
+            .route(
+                "/",
+                get(routes::network_zones::get_zones).put(routes::network_zones::set_zones),
+            )
+            .route("/backbone", get(routes::network_zones::get_backbone));
         let peer_relay_audit = Router::new().route("/", get(routes::peer_relay::audit));
         let ssh_audit = Router::new().route("/", get(routes::agent_ssh::audit));
         let ssh_activity = Router::new().route("/", get(routes::agent_ssh::activity));

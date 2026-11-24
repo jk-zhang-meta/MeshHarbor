@@ -229,6 +229,9 @@ pub struct ConnectedAgent {
     /// FR-128/FR-134 — the TCP port this connection's management entry is currently
     /// listening on (`None` when not listening).
     pub management_entry_port: Option<u16>,
+    /// FR-137 — the gateway `agent_id` whose management entry attested this agent's
+    /// current control WS connection (`None` for direct or unattested connections).
+    pub via_management_entry: Option<ObjectId>,
     /// FR-90 — the agent advertises `hive`: it answers `rc:hive.start` with
     /// `rc:hive.start_ack` and reports sessions with `rc:hive.state`. Per
     /// CONNECTION, for [`Self::supports_ssh_grant_ack`]'s reason — a stored
@@ -1887,6 +1890,7 @@ impl Hub {
             supports_management_path: false,
             supports_management_entry: false,
             management_entry_port: None,
+            via_management_entry: None,
             // FR-90 — set by `set_agent_hive_support`; `false` = no session
             // frame is ever pushed to this connection.
             supports_hive: false,
@@ -4100,6 +4104,41 @@ impl Hub {
             return prev != port;
         }
         false
+    }
+
+    /// FR-137 — the management entry TCP port currently listening on a live agent
+    /// connection (`None` when offline or not listening).
+    pub fn agent_management_entry_port(&self, agent_id: ObjectId) -> Option<u16> {
+        self.inner
+            .agents
+            .get(&agent_id)
+            .and_then(|a| a.management_entry_port)
+            .filter(|p| *p != 0)
+    }
+
+    /// FR-137 — record which zone gateway management entry `agent_id` connected through
+    /// on its current control WS (`None` for direct or unattested connections).
+    pub fn set_agent_via_management_entry(&self, agent_id: ObjectId, entry_id: Option<ObjectId>) {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            entry.via_management_entry = entry_id;
+        }
+    }
+
+    /// FR-137 — live count of currently connected agents in `tenant_id` whose control
+    /// socket arrived attested through each gateway management entry.
+    pub fn management_entry_device_counts(
+        &self,
+        tenant_id: ObjectId,
+    ) -> std::collections::HashMap<ObjectId, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for entry in self.inner.agents.iter() {
+            if entry.tenant_id == tenant_id
+                && let Some(gw_id) = entry.via_management_entry
+            {
+                *counts.entry(gw_id).or_insert(0) += 1;
+            }
+        }
+        counts
     }
 
     /// FR-134 — push `rc:agent.management_path` to a live agent on this pod when it
@@ -12211,5 +12250,74 @@ mod ice_zone_gate_tests {
                 ..Default::default()
             })
         );
+    }
+
+    #[test]
+    fn management_entry_device_counts_tracks_live_connections_per_tenant_and_drops_on_disconnect() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let tenant_a = ObjectId::new();
+        let tenant_b = ObjectId::new();
+        let owner = ObjectId::new();
+        let gw_1 = ObjectId::new();
+        let gw_2 = ObjectId::new();
+        let dev_1 = ObjectId::new();
+        let dev_2 = ObjectId::new();
+        let dev_direct = ObjectId::new();
+        let dev_other_tenant = ObjectId::new();
+
+        // Gateway listening port is live-only and drops on unregister.
+        let (gw_tx, _, _) = hub.register_agent(gw_1, tenant_a, owner, OsKind::Linux, 1, false, false);
+        assert_eq!(hub.agent_management_entry_port(gw_1), None);
+        assert!(hub.set_agent_management_entry_port(gw_1, Some(18443)));
+        assert_eq!(hub.agent_management_entry_port(gw_1), Some(18443));
+
+        let (tx1, _, _) = hub.register_agent(dev_1, tenant_a, owner, OsKind::Linux, 1, false, false);
+        let (tx2, _, _) = hub.register_agent(dev_2, tenant_a, owner, OsKind::Macos, 1, false, false);
+        let (_txd, _, _) =
+            hub.register_agent(dev_direct, tenant_a, owner, OsKind::Windows, 1, false, false);
+        let (_txo, _, _) = hub.register_agent(
+            dev_other_tenant,
+            tenant_b,
+            owner,
+            OsKind::Linux,
+            1,
+            false,
+            false,
+        );
+
+        hub.set_agent_via_management_entry(dev_1, Some(gw_1));
+        hub.set_agent_via_management_entry(dev_2, Some(gw_1));
+        hub.set_agent_via_management_entry(dev_direct, None);
+        hub.set_agent_via_management_entry(dev_other_tenant, Some(gw_1));
+
+        let counts_a = hub.management_entry_device_counts(tenant_a);
+        assert_eq!(counts_a.get(&gw_1).copied(), Some(2));
+        assert_eq!(counts_a.get(&gw_2).copied(), None);
+        let counts_b = hub.management_entry_device_counts(tenant_b);
+        assert_eq!(counts_b.get(&gw_1).copied(), Some(1));
+
+        // Displacing dev_2 with a new connection resets its via_management_entry until re-set.
+        let (tx2_new, _, _) =
+            hub.register_agent(dev_2, tenant_a, owner, OsKind::Macos, 1, false, false);
+        assert_eq!(
+            hub.management_entry_device_counts(tenant_a)
+                .get(&gw_1)
+                .copied(),
+            Some(1)
+        );
+        // Late unregister from the displaced socket must not affect the newer registration.
+        hub.set_agent_via_management_entry(dev_2, Some(gw_2));
+        hub.unregister_agent(dev_2, Some(&tx2));
+        let counts_after_move = hub.management_entry_device_counts(tenant_a);
+        assert_eq!(counts_after_move.get(&gw_1).copied(), Some(1));
+        assert_eq!(counts_after_move.get(&gw_2).copied(), Some(1));
+
+        // Unregistering live sockets drops counts and live gateway port.
+        hub.unregister_agent(dev_1, Some(&tx1));
+        hub.unregister_agent(dev_2, Some(&tx2_new));
+        hub.unregister_agent(gw_1, Some(&gw_tx));
+        assert!(hub.management_entry_device_counts(tenant_a).is_empty());
+        assert_eq!(hub.agent_management_entry_port(gw_1), None);
     }
 }

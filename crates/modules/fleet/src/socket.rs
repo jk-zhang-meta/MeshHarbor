@@ -124,6 +124,7 @@ pub async fn handle_agent_socket(
     // tunnel opens toward a foreign-homed target.
     dialed_tid: Option<String>,
     connection_origin: ConnectionOrigin,
+    via_management_entry: Option<ObjectId>,
     presented_generation: u32,
 ) {
     info!(%agent_id, %tenant_id, "remote-control agent WS connected");
@@ -490,6 +491,9 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_management_path_support(agent_id, crate::management_path::advertises(&caps));
+    state
+        .rc_hub
+        .set_agent_via_management_entry(agent_id, via_management_entry);
     state.rc_hub.set_agent_management_entry_support(
         agent_id,
         crate::management_path::advertises_entry(&caps),
@@ -2451,12 +2455,12 @@ pub async fn ws_upgrade_agent(
     let token_exp = claims.exp;
     let presented_generation = claims.generation;
 
-    // FR-128 — a connection through a zone's management entry: the entry's attestation names
-    // the device's own address; without one, an entry's address names nobody. Before the
-    // upgrade, so the zone observation and `public_ip` only ever see the resolved origin.
-    // Bounded like the reads above; a timeout on a connection that carried a token does not
-    // fall back to the entry's address.
-    let connection_origin = match tokio::time::timeout(
+    // FR-128 / FR-137 — a connection through a zone's management entry: the entry's attestation
+    // names the device's own address and records which gateway entry attested it; without one,
+    // an entry's address names nobody. Before the upgrade, so the zone observation and
+    // `public_ip` only ever see the resolved origin. Bounded like the reads above; a timeout on
+    // a connection that carried a token does not fall back to the entry's address.
+    let (connection_origin, via_management_entry) = match tokio::time::timeout(
         std::time::Duration::from_secs(3),
         crate::management_path::resolve_origin(
             &state,
@@ -2468,12 +2472,12 @@ pub async fn ws_upgrade_agent(
     )
     .await
     {
-        Ok(origin) => origin,
+        Ok(resolved) => resolved,
         Err(_) if entry.is_some() => {
             warn!(%agent_id, "management entry: attestation check timed out — no address");
-            connection_origin.unattested_entry()
+            (connection_origin.unattested_entry(), None)
         }
-        Err(_) => connection_origin,
+        Err(_) => (connection_origin, None),
     };
 
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
@@ -2537,6 +2541,7 @@ pub async fn ws_upgrade_agent(
                 agent.owner_user_id,
                 tid,
                 connection_origin,
+                via_management_entry,
                 presented_generation,
             )
             .await;

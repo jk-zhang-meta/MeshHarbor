@@ -129,10 +129,11 @@ fallback and 2D toggle), `TimeSeriesChart`, `UptimeStrip`, `UsagePanel`, `UsageT
 `UsageTimeline`, `RangePicker` — fed by the `stats` store from `/api/tenant/{tid}/stats/*` and
 `/api/admin/stats/*`.
 
-### Shared 3D globe (`ui/src/components/globe/`, FR-136)
+### Shared 3D globe (`ui/src/components/globe/`, FR-136 & FR-137)
 
-One lazy-loaded Three.js WebGL2 globe module powers the organization mesh dashboard (`MeshGraph.vue`,
-T6) and is structured to host the zone/server backbone editor (`ServerTopologySection.vue`, T7):
+One lazy-loaded Three.js WebGL2 globe module powers both the organization mesh dashboard
+(`MeshGraph.vue`, FR-136) and the live read-only zone backbone view (`ServerTopologySection.vue`,
+FR-137, consuming `GET /api/tenant/{tid}/network-zones/backbone`):
 
 - `MeshGlobe.vue` probes `isWebGL2Supported()` (`webgl.ts`), dynamically imports `MeshGlobeCanvas.vue`
   so Three.js and Natural Earth 1:50m (`world-atlas/countries-50m.json`) never enter the main entry
@@ -140,12 +141,17 @@ T6) and is structured to host the zone/server backbone editor (`ServerTopologySe
 - `geoLayout.ts` places nodes from the server's already-returned location fields (explicit coords →
   city/region → ISO-2 country centroid → `relay_home` hint → unlocated staging arc — never inventing
   backend location collection), expands co-located clusters deterministically as the user zooms in,
-  generates exact spherical-SLERP great-circle arcs, and dims unrelated arcs on hover/select.
+  clamps every projected label strictly inside the canvas bounds (`layoutProjectedLabels`), groups
+  overlapping devices into ≥ 36 px interactive cluster count pills (`clusterProjectedNodes`) with a
+  compact ≥ 40 px-row device picker, generates exact spherical-SLERP great-circle arcs, and dims
+  unrelated arcs on hover/select.
 - `earthTexture.ts` paints a self-hosted Natural Earth 1:50m canvas texture plus 3D vector coastline
   and border `LineSegments` matched to the light and dark Vuetify themes (zero external CDNs).
-- `GlobeDetailPanel.vue` presents pinned device/link facts as a desktop floating card or mobile
-  (`< 600 px`) bottom sheet (`Esc` to close), omitting absent fields and displaying `public_ip` only
-  where fleet visibility already populates `agentStore`.
+- `GlobeDetailPanel.vue` presents pinned device/gateway/link facts (including multi-zone chips and
+  live gateway management-entry listener port & connected device count) as a desktop floating card
+  or mobile (`< 600 px`) bottom sheet (`Esc` to close), omitting absent fields and displaying
+  `public_ip` only where fleet visibility already populates `agentStore` or on the admin zone
+  backbone view.
 
 ## Admin components (`ui/src/components/admin/`)
 

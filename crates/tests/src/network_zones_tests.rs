@@ -3520,3 +3520,395 @@ async fn a_strict_zone_rides_no_relay_outside_it_not_even_the_centres_derp() {
         let _ = cn_a_id;
     }
 }
+
+#[tokio::test]
+async fn zone_backbone_endpoint_permissions_and_empty_state() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("nz-backbone-perm").await;
+    let other = app.seed_tenant("nz-backbone-other").await;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let admin = &seeded.admin.access_token;
+    let member = &seeded.member.access_token;
+    let backbone_path = tenant_url(&seeded, "/network-zones/backbone");
+
+    // Ordinary member (no MANAGE_AGENTS) and non-member get 403.
+    assert_eq!(get_json(&app, &backbone_path, member).await.0, 403);
+    assert_eq!(
+        get_json(&app, &backbone_path, &other.admin.access_token)
+            .await
+            .0,
+        403
+    );
+
+    // Grant MANAGE_AGENTS to member and confirm 200 OK with empty backbone
+    // and without allocating an overlay_networks document.
+    let mgr_role: Value = app
+        .auth_post(&tenant_url(&seeded, "/role"), admin)
+        .json(&json!({
+            "name": "backbone-viewer",
+            "permissions": meshharbor_db::models::role::permissions::MANAGE_AGENTS
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mgr_role_id = mgr_role["id"].as_str().unwrap();
+    assert_eq!(
+        app.auth_post(
+            &tenant_url(
+                &seeded,
+                &format!("/role/{mgr_role_id}/assign/{}", seeded.member.id)
+            ),
+            admin,
+        )
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16(),
+        200
+    );
+
+    let (status, body) = get_json(&app, &backbone_path, member).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body,
+        json!({
+            "revision": 0,
+            "zones": [],
+            "gateways": [],
+            "links": [],
+        })
+    );
+    assert_eq!(
+        app.db
+            .collection::<bson::Document>("overlay_networks")
+            .count_documents(doc! { "tenant_id": tid })
+            .await
+            .unwrap(),
+        0,
+        "GET /network-zones/backbone must not allocate an overlay_networks document"
+    );
+}
+
+#[tokio::test]
+async fn zone_backbone_endpoint_returns_zones_centre_live_entries_and_gateway_links() {
+    use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
+
+    let app = TestApp::spawn_with_settings(|s| {
+        s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+        s.app.rate_limit_trusted_hops = 0;
+        s.app.management_entries = true;
+    })
+    .await;
+    let seeded = app.seed_tenant("nz-backbone-live").await;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let admin = &seeded.admin.access_token;
+
+    // Enroll three approved gateways (centre, cn, eu) and one regular device in cn.
+    let (gw_centre_id, gw_centre_tok) = enroll(&app, &seeded, "gateway-centre").await;
+    let (gw_cn_id, gw_cn_tok) = enroll(&app, &seeded, "gateway-cn").await;
+    let (gw_eu_id, _gw_eu_tok) = enroll(&app, &seeded, "gateway-eu").await;
+    let (dev_cn_id, dev_cn_tok) = enroll(&app, &seeded, "device-cn").await;
+
+    set_mode(&app, &seeded, "on").await;
+    for gw in [&gw_centre_id, &gw_cn_id, &gw_eu_id] {
+        assert_eq!(approve(&app, &seeded, gw, true).await, 200);
+    }
+
+    // Configure three zones: centre (is_centre=true), cn (router_only), eu (default).
+    let (s, zones_resp) = put(
+        &app,
+        &tenant_url(&seeded, "/network-zones"),
+        admin,
+        json!({
+            "zones": [
+                {
+                    "id": "centre",
+                    "name": "Centre Hub",
+                    "is_centre": true,
+                    "is_default": false,
+                    "cross_zone_mode": "direct_preferred",
+                    "auto_countries": [],
+                    "gateway_relay_ids": [gw_centre_id]
+                },
+                {
+                    "id": "cn",
+                    "name": "CN Mainland",
+                    "is_centre": false,
+                    "is_default": false,
+                    "cross_zone_mode": "router_only",
+                    "auto_countries": ["CN"],
+                    "gateway_relay_ids": [gw_cn_id]
+                },
+                {
+                    "id": "eu",
+                    "name": "EU Region",
+                    "is_centre": false,
+                    "is_default": true,
+                    "cross_zone_mode": "direct_preferred",
+                    "auto_countries": ["DE"],
+                    "gateway_relay_ids": [gw_eu_id]
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(s, 200, "PUT /network-zones: {zones_resp}");
+
+    // Pin each device to its zone so device_count is deterministic without GeoIP MMDB.
+    for (aid, zone) in [
+        (&gw_centre_id, "centre"),
+        (&gw_cn_id, "cn"),
+        (&gw_eu_id, "eu"),
+        (&dev_cn_id, "cn"),
+    ] {
+        let (ps, pbody) = put(
+            &app,
+            &tenant_url(&seeded, &format!("/agent/{aid}/zone-assignment")),
+            admin,
+            json!({ "pinned_zone_id": zone }),
+        )
+        .await;
+        assert_eq!(ps, 200, "pin {aid}->{zone}: {pbody}");
+    }
+
+    // Helper to open an agent WS through loopback proxy with optional entry port & token.
+    async fn open_agent_ws(
+        app: &TestApp,
+        token: &str,
+        xff: &str,
+        entry_port: Option<u16>,
+        entry_token: Option<&str>,
+    ) -> Ws {
+        let mut ws_url = format!("ws://{}/ws?token={}&role=agent", app.addr, token);
+        if let Some(et) = entry_token {
+            ws_url.push_str("&entry=");
+            ws_url.push_str(et);
+        }
+        let mut req = ws_url.into_client_request().expect("ws req");
+        req.headers_mut()
+            .insert("x-forwarded-for", xff.parse().expect("xff"));
+        let (mut ws, _) = connect_async(req).await.expect("ws connect");
+        let mut caps = json!({
+            "hw_encoders": ["openh264"],
+            "codecs": ["h264"],
+            "has_input_permission": true,
+            "supports_clipboard": true,
+            "supports_file_transfer": true,
+            "max_simultaneous_sessions": 1,
+            "rpc": ["management-path", "management-entry", "relay-server"]
+        });
+        if let Some(port) = entry_port {
+            caps["management_entry_port"] = json!(port);
+        }
+        let hello = json!({
+            "t": "rc:agent.hello",
+            "machine_name": "backbone-node",
+            "os": "linux",
+            "agent_version": "0.4.210",
+            "displays": [],
+            "caps": caps
+        });
+        ws.send(Message::Text(hello.to_string().into()))
+            .await
+            .expect("send hello");
+        let _ = recv_t(&mut ws, "rc:agent.management_path", Duration::from_secs(5))
+            .await
+            .expect("management_path fence");
+        ws
+    }
+
+    // Connect gw-centre (online, relay serving turned OFF after zone save so its
+    // centre role is exercised independently from forwarder/entry serving!) and
+    // gw-cn (online, serving relay + management entry listening on 18443).
+    // gw-eu stays offline (and even if its DB row had a stale port, offline must report false/null).
+    assert_eq!(approve(&app, &seeded, &gw_centre_id, false).await, 200);
+    let mut ws_centre = open_agent_ws(&app, &gw_centre_tok, "192.0.2.10", None, None).await;
+    let mut ws_cn = open_agent_ws(&app, &gw_cn_tok, "203.0.113.50", Some(18443), None).await;
+
+    app.db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! { "_id": ObjectId::parse_str(&gw_eu_id).unwrap() },
+            doc! { "$set": { "capabilities.management_entry_port": 18443 } },
+        )
+        .await
+        .unwrap();
+
+    // Sign a valid management-entry attestation from gw-cn for dev-cn and connect dev-cn through it.
+    let gw_cn_row = app
+        .db
+        .collection::<bson::Document>("agents")
+        .find_one(doc! { "_id": ObjectId::parse_str(&gw_cn_id).unwrap() })
+        .await
+        .unwrap()
+        .unwrap();
+    let token_gen = match gw_cn_row.get("token_gen") {
+        Some(bson::Bson::Int32(v)) => *v as u32,
+        Some(bson::Bson::Int64(v)) => *v as u32,
+        _ => 0,
+    };
+    let entry_key = meshharbor_remote_control::management_entry::derive_key(
+        app.settings.jwt.secret.as_bytes(),
+        &gw_cn_id,
+        token_gen,
+    );
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let att_token = meshharbor_remote_control::management_entry::sign(
+        &entry_key,
+        &gw_cn_id,
+        "198.51.100.77".parse().unwrap(),
+        "0123456789abcdef0123456789abcdef",
+        now_s,
+    )
+    .expect("sign attestation");
+    let mut ws_dev_cn =
+        open_agent_ws(&app, &dev_cn_tok, "203.0.113.50", None, Some(&att_token)).await;
+
+    // Join overlay on gw-centre, gw-cn, and dev-cn so overlay_nodes exist.
+    let _nm_centre = join_node(&mut ws_centre, 81, "192.0.2.10:41641", json!({})).await;
+    let _nm_cn = join_node(&mut ws_cn, 82, "203.0.113.50:41641", json!({})).await;
+    let _nm_dev = join_node(&mut ws_dev_cn, 83, "198.51.100.77:41641", json!({})).await;
+    let node_centre = node_id(&app, &seeded, "gateway-centre").await;
+    let node_cn = node_id(&app, &seeded, "gateway-cn").await;
+    let node_dev = node_id(&app, &seeded, "device-cn").await;
+
+    // Seed fresh stats_mesh snapshots for gw-centre and gw-cn (including a non-gateway link
+    // to dev-cn that must be filtered out) plus a stale snapshot for gw-eu (> 180s old).
+    let now_dt = bson::DateTime::now();
+    let stale_dt = bson::DateTime::from_millis(now_dt.timestamp_millis() - 300 * 1000);
+    let mesh_coll = app
+        .db
+        .collection::<bson::Document>(meshharbor_services::dao::stats::STATS_MESH);
+    mesh_coll
+        .insert_many(vec![
+            doc! {
+                "_id": &gw_cn_id,
+                "tenant_id": tid,
+                "agent_id": ObjectId::parse_str(&gw_cn_id).unwrap(),
+                "ts": now_dt,
+                "links": [
+                    { "node": &node_centre, "carrier": "direct", "rtt_ms": 34_i64, "stalled": false },
+                    { "node": &node_dev, "carrier": "direct", "rtt_ms": 7_i64, "stalled": false }
+                ]
+            },
+            doc! {
+                "_id": &gw_centre_id,
+                "tenant_id": tid,
+                "agent_id": ObjectId::parse_str(&gw_centre_id).unwrap(),
+                "ts": now_dt,
+                "links": [
+                    { "node": &node_cn, "carrier": "relay", "relay": "org_relay", "rtt_ms": 46_i64, "stalled": true },
+                    { "node": &node_dev, "carrier": "derp", "rtt_ms": 95_i64, "stalled": false }
+                ]
+            },
+            doc! {
+                "_id": &gw_eu_id,
+                "tenant_id": tid,
+                "agent_id": ObjectId::parse_str(&gw_eu_id).unwrap(),
+                "ts": stale_dt,
+                "links": [
+                    { "node": &node_cn, "carrier": "direct", "rtt_ms": 120_i64, "stalled": false }
+                ]
+            },
+        ])
+        .await
+        .unwrap();
+
+    // Query GET /api/tenant/{tid}/network-zones/backbone.
+    let (status, body) = get_json(&app, &tenant_url(&seeded, "/network-zones/backbone"), admin).await;
+    assert_eq!(status, 200, "GET /network-zones/backbone: {body}");
+    assert!(body["revision"].as_u64().unwrap() > 0);
+
+    // Zones & device counts.
+    let zones = body["zones"].as_array().unwrap();
+    assert_eq!(zones.len(), 3, "{body}");
+    let z_centre = zones.iter().find(|z| z["id"] == "centre").unwrap();
+    let z_cn = zones.iter().find(|z| z["id"] == "cn").unwrap();
+    let z_eu = zones.iter().find(|z| z["id"] == "eu").unwrap();
+    assert_eq!(z_centre["is_centre"], json!(true));
+    assert_eq!(z_centre["device_count"], json!(1));
+    assert_eq!(z_cn["is_centre"], json!(false));
+    assert_eq!(z_cn["device_count"], json!(2));
+    assert_eq!(z_eu["device_count"], json!(1));
+
+    // Gateways & live entry state.
+    let gateways = body["gateways"].as_array().unwrap();
+    assert_eq!(gateways.len(), 3, "{body}");
+    let g_centre = gateways
+        .iter()
+        .find(|g| g["agent_id"] == gw_centre_id)
+        .unwrap();
+    let g_cn = gateways.iter().find(|g| g["agent_id"] == gw_cn_id).unwrap();
+    let g_eu = gateways.iter().find(|g| g["agent_id"] == gw_eu_id).unwrap();
+
+    assert_eq!(g_centre["is_centre"], json!(true));
+    assert_eq!(g_centre["online"], json!(true));
+    assert_eq!(g_centre["serving_relay"], json!(false));
+    assert_eq!(g_centre["entry_listening"], json!(false));
+    assert_eq!(g_centre["entry_port"], Value::Null);
+    assert_eq!(g_centre["entry_device_count"], json!(0));
+
+    assert_eq!(g_cn["is_centre"], json!(false));
+    assert_eq!(g_cn["online"], json!(true));
+    assert_eq!(g_cn["serving_relay"], json!(true));
+    assert_eq!(g_cn["entry_listening"], json!(true));
+    assert_eq!(g_cn["entry_port"], json!(18443));
+    assert_eq!(g_cn["entry_device_count"], json!(1));
+
+    assert_eq!(g_eu["online"], json!(false));
+    assert_eq!(g_eu["entry_listening"], json!(false));
+    assert_eq!(g_eu["entry_port"], Value::Null);
+    assert_eq!(g_eu["entry_device_count"], json!(0));
+
+    // Gateway↔gateway links: only gw-centre <-> gw-cn survives; non-gateway and stale links excluded.
+    let links = body["links"].as_array().unwrap();
+    assert_eq!(links.len(), 1, "expected 1 gateway link: {body}");
+    let link = &links[0];
+    let mut expected_pair = [gw_centre_id.clone(), gw_cn_id.clone()];
+    expected_pair.sort();
+    assert_eq!(link["from_agent_id"], json!(expected_pair[0]));
+    assert_eq!(link["to_agent_id"], json!(expected_pair[1]));
+    assert_eq!(link["carrier"], json!("relay"));
+    assert_eq!(link["rtt_ms"], json!(34));
+    assert_eq!(link["stalled"], json!(true));
+    assert_eq!(link["reports"], json!(2));
+    assert_eq!(link["cross_zone"], json!(true));
+    let ends = link["ends"].as_array().unwrap();
+    assert_eq!(ends.len(), 2);
+    assert!(ends.iter().any(|e| e["node"] == gw_cn_id && e["carrier"] == "direct"));
+    assert!(
+        ends.iter()
+            .any(|e| e["node"] == gw_centre_id && e["carrier"] == "relay" && e["relay"] == "org_relay")
+    );
+
+    // Disconnecting dev-cn drops gw-cn's live entry_device_count back to 0.
+    let _ = ws_dev_cn.close(None).await;
+    drop(ws_dev_cn);
+    let dev_cn_oid = ObjectId::parse_str(&dev_cn_id).unwrap();
+    for _ in 0..50 {
+        if !app.state.fleet().rc_hub.is_agent_online(dev_cn_oid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (status2, body2) =
+        get_json(&app, &tenant_url(&seeded, "/network-zones/backbone"), admin).await;
+    assert_eq!(status2, 200);
+    let g_cn_after = body2["gateways"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["agent_id"] == gw_cn_id)
+        .unwrap();
+    assert_eq!(g_cn_after["entry_device_count"], json!(0));
+
+    let _ = ws_centre.close(None).await;
+    let _ = ws_cn.close(None).await;
+}
