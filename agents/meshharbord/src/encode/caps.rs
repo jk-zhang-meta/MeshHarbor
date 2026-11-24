@@ -2185,6 +2185,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
 
     AgentCaps {
         two_factor: false,
+        default_route_vpn: false,
         hw_encoders,
         codecs,
         // Was `cfg!(feature = "enigo-input")` — a COMPILE-TIME constant, so a

@@ -836,6 +836,23 @@ fn default_route(v6: bool) -> Option<DefaultRoute> {
     route_lookup(far_destination(v6))
 }
 
+/// FR-138 — current IPv4 and IPv6 default-route interface references (`ifindex` text on Windows,
+/// device name on Unix). Reads the cached `netstate` snapshot when running so heartbeats avoid
+/// spawning subprocesses, falling back to a direct route lookup before the monitor starts.
+pub(super) fn default_route_ifrefs() -> (Option<String>, Option<String>) {
+    if let Some(h) = handle() {
+        let snap = h.snapshot();
+        return (
+            snap.default_v4.as_ref().map(|r| r.ifref.clone()),
+            snap.default_v6.as_ref().map(|r| r.ifref.clone()),
+        );
+    }
+    (
+        default_route(false).map(|r| r.ifref),
+        default_route(true).map(|r| r.ifref),
+    )
+}
+
 /// The IPv4 next hop toward the internet, for port mapping
 /// ([`super::portmap`]). `None` on an on-link default route, a v6 next hop,
 /// or a default route through a tunnel. Blocking (it may run `ip route get`).

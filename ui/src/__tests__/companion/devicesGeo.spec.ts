@@ -34,7 +34,10 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
         os: 'linux',
         version: '0.4.166',
         overlay_ip: '100.64.0.45',
-        public_ip: '218.17.152.45',
+        public_ip: '203.0.113.45',
+        physical_public_ip: '203.0.113.45',
+        physical_seen_at: '2026-11-24T12:00:00Z',
+        default_route_vpn: false,
         country_code: 'CN',
         country: '中国',
         region: '广东省',
@@ -42,6 +45,7 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
         pinned_zone_id: 'cn',
         effective_zone_id: 'cn',
         effective_zone_name: 'CN 区',
+        zone_source: 'pinned' as const,
       },
       {
         id: '66f000000000000000000088',
@@ -53,7 +57,10 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
         os: 'linux',
         version: '0.4.166',
         overlay_ip: '100.64.0.88',
-        public_ip: '13.212.40.10',
+        public_ip: '198.51.100.10',
+        physical_public_ip: '203.0.113.88',
+        physical_seen_at: '2026-11-24T12:05:00Z',
+        default_route_vpn: true,
         country_code: 'SG',
         country: '新加坡',
         region: '新加坡',
@@ -61,6 +68,7 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
         pinned_zone_id: null,
         effective_zone_id: 'non-cn',
         effective_zone_name: '非 CN 区',
+        zone_source: 'auto_vpn_held' as const,
       },
       {
         id: '66f000000000000000000089',
@@ -72,7 +80,7 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
         os: 'linux',
         version: '0.4.166',
         overlay_ip: '100.64.0.89',
-        public_ip: '43.154.12.9',
+        public_ip: '192.0.2.9',
         country_code: 'HK',
         country: '中国香港',
         region: '香港',
@@ -158,11 +166,11 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
     const rows = [...document.querySelectorAll('#dv-grid tbody tr')]
     expect(rows).toHaveLength(4)
 
-    // Row 0: siat45 -> CN, 中国 · 广东省 · 深圳市, 218.17.152.45 + Pinned CN 区 badge with SVG pin icon
+    // Row 0: siat45 -> CN, 中国 · 广东省 · 深圳市, 203.0.113.45 + Pinned CN 区 badge with SVG pin icon
     const r0Loc = rows[0]!.querySelector('td[data-col="location"]') as HTMLElement
     expect(r0Loc.querySelector('.geo-code-pill')?.textContent).toBe('CN')
     expect(r0Loc.querySelector('.dv-loc-text')?.textContent).toBe('中国 · 广东省 · 深圳市')
-    expect(r0Loc.querySelector('.dv-loc-ip-val')?.textContent).toBe('218.17.152.45')
+    expect(r0Loc.querySelector('.dv-loc-ip-val')?.textContent).toBe('203.0.113.45')
     const r0Zone = rows[0]!.querySelector('.dv-chip-zone') as HTMLElement
     expect(r0Zone?.textContent).toBe('CN 区')
     expect(r0Zone?.classList.contains('is-pinned')).toBe(true)
@@ -172,7 +180,7 @@ describe('Desktop companion Devices view — Public IP, Location & Logical Zone 
     const r1Loc = rows[1]!.querySelector('td[data-col="location"]') as HTMLElement
     expect(r1Loc.querySelector('.geo-code-pill')?.textContent).toBe('SG')
     expect(r1Loc.querySelector('.dv-loc-text')?.textContent).toBe('新加坡')
-    expect(r1Loc.querySelector('.dv-loc-ip-val')?.textContent).toBe('13.212.40.10')
+    expect(r1Loc.querySelector('.dv-loc-ip-val')?.textContent).toBe('198.51.100.10')
     const r1Zone = rows[1]!.querySelector('.dv-chip-zone') as HTMLElement
     expect(r1Zone?.textContent).toBe('非 CN 区')
     expect(r1Zone?.classList.contains('is-pinned')).toBe(false)

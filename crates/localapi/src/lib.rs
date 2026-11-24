@@ -445,6 +445,34 @@ pub struct NodeStatus {
     /// management entry. Additive; absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management_path: Option<ManagementPathStatus>,
+    /// FR-138 — latest physical-uplink egress probe and current egress IP / zone status.
+    /// Additive; absent from older daemons or before the first probe/check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressProbeStatus>,
+}
+
+/// FR-138 — live physical-path probe & current egress summary surfaced in `mh status`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct EgressProbeStatus {
+    /// Server-observed public IP from the physical non-VPN uplink probe, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_ip: Option<String>,
+    /// Server-observed current control-plane / egress public IP, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_ip: Option<String>,
+    /// Resolved logical network zone slug, if configured and resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<String>,
+    /// Resolved logical network zone display name, if configured and resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_name: Option<String>,
+    /// Which FR-138 evidence source decided the zone (`pinned`, `auto_physical`,
+    /// `auto_vpn_held`, `auto_egress_ip`, `auto_egress_fallback`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<String>,
+    /// Whether the OS IPv4/IPv6 default route currently sits on a VPN/virtual interface.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
 }
 
 /// FR-134 — live management-plane path to the centre and local management-entry listener state.
@@ -5868,6 +5896,7 @@ mod tests {
                 retired_env_present: Some(Vec::new()),
                 files_dir: None,
                 management_path: None,
+                egress: None,
                 derp_inbound_drops: None,
                 netcheck: None,
                 pid: None,

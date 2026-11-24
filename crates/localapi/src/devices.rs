@@ -137,6 +137,10 @@ pub struct DeviceRowLite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -158,6 +162,14 @@ pub struct DeviceRowLite {
     pub effective_zone_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub default_route_vpn: bool,
 }
 
 /// One page of [`DeviceRowLite`]s plus the envelope — the answer to
@@ -445,6 +457,8 @@ mod tests {
             rdp_cert_sha256: None,
             rdp_mesh_reachable: None,
             public_ip: None,
+            physical_public_ip: None,
+            physical_seen_at: None,
             country_code: None,
             country: None,
             region: None,
@@ -456,6 +470,8 @@ mod tests {
             pinned_zone_id: None,
             effective_zone_id: None,
             effective_zone_name: None,
+            zone_source: None,
+            default_route_vpn: false,
         }
     }
 

@@ -6,7 +6,7 @@ import { dedupeLocationParts, formatDeviceLocation, formatDeviceZone } from '@/u
 describe('deviceLocation formatting & deduplication', () => {
   it('formats full Country · Province · City hierarchies cleanly', () => {
     const sz = formatDeviceLocation({
-      public_ip: '218.17.152.45',
+      public_ip: '203.0.113.45',
       country_code: 'cn',
       country: '中国',
       region: '广东省',
@@ -15,7 +15,10 @@ describe('deviceLocation formatting & deduplication', () => {
     expect(sz).toEqual({
       locationText: '中国 · 广东省 · 深圳市',
       countryCode: 'CN',
-      publicIp: '218.17.152.45',
+      publicIp: '203.0.113.45',
+      physicalIp: '',
+      physicalSeenAt: '',
+      defaultRouteVpn: false,
       hasAny: true,
     })
 
@@ -51,6 +54,9 @@ describe('deviceLocation formatting & deduplication', () => {
       locationText: '',
       countryCode: '',
       publicIp: '',
+      physicalIp: '',
+      physicalSeenAt: '',
+      defaultRouteVpn: false,
       hasAny: false,
     })
 
@@ -62,6 +68,9 @@ describe('deviceLocation formatting & deduplication', () => {
       locationText: '日本 · 东京',
       countryCode: 'JP',
       publicIp: '203.0.113.9',
+      physicalIp: '',
+      physicalSeenAt: '',
+      defaultRouteVpn: false,
       hasAny: true,
     })
   })
@@ -73,6 +82,7 @@ describe('deviceLocation formatting & deduplication', () => {
       badgeText: '',
       pinned: false,
       hasZone: false,
+      zoneSource: '',
     })
 
     expect(
@@ -87,6 +97,7 @@ describe('deviceLocation formatting & deduplication', () => {
       badgeText: 'CN 区',
       pinned: false,
       hasZone: true,
+      zoneSource: '',
     })
 
     expect(
@@ -101,6 +112,7 @@ describe('deviceLocation formatting & deduplication', () => {
       badgeText: 'CN 区',
       pinned: true,
       hasZone: true,
+      zoneSource: '',
     })
 
     expect(
@@ -115,6 +127,69 @@ describe('deviceLocation formatting & deduplication', () => {
       badgeText: 'SIAT 区',
       pinned: true,
       hasZone: true,
+      zoneSource: '',
+    })
+  })
+
+  it('preserves FR-138 physical egress, VPN route flag, and zone_source fields', () => {
+    const vpnLoc = formatDeviceLocation({
+      public_ip: '198.51.100.77',
+      physical_public_ip: '203.0.113.45',
+      physical_seen_at: '2026-11-24T12:00:00Z',
+      default_route_vpn: true,
+      country_code: 'CN',
+      country: '中国',
+      region: '广东省',
+      city: '深圳市',
+    })
+    expect(vpnLoc).toEqual({
+      locationText: '中国 · 广东省 · 深圳市',
+      countryCode: 'CN',
+      publicIp: '198.51.100.77',
+      physicalIp: '203.0.113.45',
+      physicalSeenAt: '2026-11-24T12:00:00Z',
+      defaultRouteVpn: true,
+      hasAny: true,
+    })
+
+    const physOnly = formatDeviceLocation({
+      physical_public_ip: '192.0.2.15',
+    })
+    expect(physOnly.physicalIp).toBe('192.0.2.15')
+    expect(physOnly.hasAny).toBe(true)
+
+    expect(
+      formatDeviceZone({
+        pinned_zone_id: null,
+        effective_zone_id: 'cn',
+        effective_zone_name: 'CN 区',
+        zone_source: 'auto_vpn_held',
+      }),
+    ).toEqual({
+      zoneId: 'cn',
+      zoneLabel: 'CN 区',
+      badgeText: 'CN 区',
+      pinned: false,
+      hasZone: true,
+      zoneSource: 'auto_vpn_held',
+    })
+
+    expect(
+      formatDeviceZone(
+        { zone_source: null },
+        {
+          effective_zone_id: 'cn',
+          effective_zone_name: 'CN 区',
+          zone_source: 'auto_physical',
+        },
+      ),
+    ).toEqual({
+      zoneId: 'cn',
+      zoneLabel: 'CN 区',
+      badgeText: 'CN 区',
+      pinned: false,
+      hasZone: true,
+      zoneSource: 'auto_physical',
     })
   })
 })

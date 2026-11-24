@@ -22,7 +22,7 @@ use meshharbor_core::{
 use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::models::{
     CrossZoneMode, DeviceZoneResolution, NetworkZone, OsKind, first_zone_without_gateway,
-    normalize_zone_slug, resolve_device_zone, validate_and_normalize_network_zones,
+    normalize_zone_slug, validate_and_normalize_network_zones,
 };
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -56,6 +56,8 @@ pub struct ZoneAssignmentResponse {
     pub country_code: Option<String>,
     pub effective_zone_id: Option<String>,
     pub effective_zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
 }
 
 /// `GET /api/tenant/{tenant_id}/network-zones`
@@ -257,27 +259,30 @@ pub async fn set_zone_assignment(
     let country_code = fresh_agent
         .as_ref()
         .and_then(|f| meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, f));
-    let (effective_zone_id, effective_zone_name) = if !snapshot.read_failed && !snapshot.superseded
-    {
-        match snapshot.resolve_agent(aid) {
-            DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
-            _ => (None, None),
-        }
-    } else if let (Ok(Some(net)), Some(fresh)) = (
-        state.overlay_networks.find_for_tenant(tid).await,
-        fresh_agent.as_ref(),
-    ) {
-        match meshharbor_remote_control::models::resolve_device_zone(
-            &net.zones,
-            fresh.pinned_zone_id.as_deref(),
-            country_code.as_deref(),
+    let (effective_zone_id, effective_zone_name, zone_source) =
+        if !snapshot.read_failed && !snapshot.superseded {
+            let (res, src) = snapshot.resolve_agent_with_source(aid);
+            match res {
+                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
+                _ => (None, None, src),
+            }
+        } else if let (Ok(Some(net)), Some(fresh)) = (
+            state.overlay_networks.find_for_tenant(tid).await,
+            fresh_agent.as_ref(),
         ) {
-            DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
-            _ => (None, None),
-        }
-    } else {
-        (None, None)
-    };
+            let (res, src) = meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(
+                &state.fleet,
+                &net.zones,
+                fresh,
+                None,
+            );
+            match res {
+                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
+                _ => (None, None, src),
+            }
+        } else {
+            (None, None, None)
+        };
 
     info!(
         tenant = %tid,
@@ -294,6 +299,7 @@ pub async fn set_zone_assignment(
         country_code,
         effective_zone_id,
         effective_zone_name,
+        zone_source,
     }))
 }
 
@@ -525,9 +531,14 @@ pub async fn get_backbone(
         if let Some(aid) = a.id {
             agents_by_id.insert(aid, a);
         }
-        let cc = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, a);
         if let DeviceZoneResolution::Resolved(z) =
-            resolve_device_zone(&raw_zones, a.pinned_zone_id.as_deref(), cc.as_deref())
+            meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(
+                &state.fleet,
+                &raw_zones,
+                a,
+                None,
+            )
+            .0
         {
             *zone_device_counts.entry(z.id.clone()).or_insert(0) += 1;
         }
@@ -599,18 +610,20 @@ pub async fn get_backbone(
         };
 
         let effective_cc = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, a);
-        let public_ip = a
+        let egress_ip = a
             .public_ip
             .as_deref()
             .and_then(|s| s.parse::<IpAddr>().ok())
             .and_then(canonical_public_ip)
-            .or_else(|| state.fleet.rc_hub.agent_live_public_ip(gw_id))
-            .map(|ip| ip.to_string());
-        let geo = public_ip
-            .as_deref()
-            .and_then(|s| s.parse::<IpAddr>().ok())
-            .map(|ip| state.core.geoip.lookup_location(ip))
-            .unwrap_or_default();
+            .or_else(|| state.fleet.rc_hub.agent_live_public_ip(gw_id));
+        let public_ip = egress_ip.map(|ip| ip.to_string());
+        let geo = meshharbor_mod_fleet::socket::lookup_display_location(
+            &state.core.geoip,
+            a.physical_public_ip.as_deref(),
+            a.physical_seen_at.map(|dt| dt.timestamp_millis()),
+            egress_ip,
+            DateTime::now().timestamp_millis(),
+        );
 
         let display_name = a
             .display_name
@@ -626,7 +639,7 @@ pub async fn get_backbone(
             os: a.os,
             agent_version: a.agent_version.clone(),
             last_seen_at: meshharbor_mod_fleet::agent::fmt_dt(a.last_seen_at),
-            country_code: effective_cc.or(geo.country_code),
+            country_code: geo.country_code.or(effective_cc),
             country: geo.country,
             region: geo.region,
             city: geo.city,

@@ -213,6 +213,9 @@ pub fn with_machine_network(mut own: NodeStatus, machine: &NodeStatus) -> NodeSt
         own.exit_node = machine.exit_node.clone();
         own.dns = machine.dns.clone();
     }
+    if own.egress.is_none() && machine.egress.is_some() {
+        own.egress = machine.egress.clone();
+    }
     own
 }
 

@@ -998,6 +998,10 @@ pub struct AgentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -1019,6 +1023,10 @@ pub struct AgentResponse {
     pub effective_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
 }
 
 /// FR-40 — one device's overlay-key rotation as the dashboard reads it:
@@ -2031,16 +2039,22 @@ fn to_agent_response(
     let (presence, is_online) = derive_agent_presence(state, &a, redis_fresh);
     let effective_cc = crate::socket::agent_effective_country(state, &a);
     let pinned_zone_id = a.pinned_zone_id.clone();
-    let (effective_zone_id, effective_zone_name) = match meshharbor_remote_control::models::resolve_device_zone(
-        zones,
-        pinned_zone_id.as_deref(),
-        effective_cc.as_deref(),
-    ) {
+    let (zone_res, zone_source) =
+        crate::socket::resolve_agent_zone_with_source(state, zones, &a, None);
+    let (effective_zone_id, effective_zone_name) = match zone_res {
         meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
             (Some(z.id.clone()), Some(z.name.clone()))
         }
         _ => (None, None),
     };
+    let default_route_vpn = a.capabilities.default_route_vpn;
+    let physical_public_ip = a
+        .physical_public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        .map(|ip| ip.to_string());
+    let physical_seen_at = a.physical_seen_at.map(fmt_dt);
     // Resolved before the struct literal moves `capabilities`: the
     // remote-config state depends on which verbs this device advertises.
     let name_sync = crate::name_sync::view(&a);
@@ -2062,18 +2076,24 @@ fn to_agent_response(
     let peer_auth_key = peer_auth_fingerprint
         .is_some()
         .then(|| a.peer_auth_key.clone());
-    let public_ip = a
-        .public_ip
-        .as_deref()
-        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-        .and_then(meshharbor_core::user_analytics::canonical_public_ip)
-        .map(|ip| ip.to_string());
-    let geo = public_ip
-        .as_deref()
-        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-        .map(|ip| state.core.geoip.lookup_location(ip))
-        .unwrap_or_default();
-    let country_code = effective_cc.or(geo.country_code.clone());
+    let egress_ip = a
+        .id
+        .and_then(|aid| state.rc_hub.agent_live_public_ip(aid))
+        .or_else(|| {
+            a.public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        });
+    let public_ip = egress_ip.map(|ip| ip.to_string());
+    let geo = crate::socket::lookup_display_location(
+        &state.core.geoip,
+        a.physical_public_ip.as_deref(),
+        a.physical_seen_at.map(|dt| dt.timestamp_millis()),
+        egress_ip,
+        bson::DateTime::now().timestamp_millis(),
+    );
+    let country_code = geo.country_code.clone().or(effective_cc);
     let geo_level = geo.effective_geo_level(country_code.as_deref());
     AgentResponse {
         presence,
@@ -2116,6 +2136,8 @@ fn to_agent_response(
         peer_auth_key,
         peer_auth_fingerprint,
         public_ip,
+        physical_public_ip,
+        physical_seen_at,
         country_code,
         country: geo.country,
         region: geo.region,
@@ -2127,6 +2149,8 @@ fn to_agent_response(
         pinned_zone_id,
         effective_zone_id,
         effective_zone_name,
+        zone_source,
+        default_route_vpn,
     }
 }
 
@@ -2686,6 +2710,8 @@ mod geo_serialization_tests {
             peer_auth_key: None,
             peer_auth_fingerprint: None,
             public_ip: None,
+            physical_public_ip: None,
+            physical_seen_at: None,
             country_code: None,
             country: None,
             region: None,
@@ -2697,6 +2723,8 @@ mod geo_serialization_tests {
             pinned_zone_id: None,
             effective_zone_id: None,
             effective_zone_name: None,
+            zone_source: None,
+            default_route_vpn: false,
         }
     }
 

@@ -408,16 +408,15 @@ pub async fn first_reachable_entry(local: &[String], centre: &str) -> Option<Soc
     None
 }
 
-/// Device side: ask `entry` for an attestation of this device's address.
-pub async fn request_attestation(
-    entry: SocketAddr,
+/// Device side: ask `entry` for an attestation of this device's address over an already-connected
+/// TCP stream (used by FR-138 physical-path egress probes so the attestation travels over the
+/// same physical-bound uplink).
+pub async fn request_attestation_over(
+    mut s: TcpStream,
     timeout: Duration,
 ) -> Result<String, AttestFailure> {
     use AttestFailure::{Refused, Unreachable};
     let work = async {
-        let mut s = TcpStream::connect(entry)
-            .await
-            .map_err(|e| Unreachable(e.to_string()))?;
         let nonce: String = {
             use rand::Rng;
             let mut rng = rand::rng();
@@ -438,6 +437,19 @@ pub async fn request_attestation(
     tokio::time::timeout(timeout, work)
         .await
         .map_err(|_| Unreachable("timed out".to_string()))?
+}
+
+/// Device side: ask `entry` for an attestation of this device's address.
+pub async fn request_attestation(
+    entry: SocketAddr,
+    timeout: Duration,
+) -> Result<String, AttestFailure> {
+    use AttestFailure::Unreachable;
+    let s = tokio::time::timeout(timeout, TcpStream::connect(entry))
+        .await
+        .map_err(|_| Unreachable("timed out".to_string()))?
+        .map_err(|e| Unreachable(e.to_string()))?;
+    request_attestation_over(s, timeout).await
 }
 
 #[cfg(test)]

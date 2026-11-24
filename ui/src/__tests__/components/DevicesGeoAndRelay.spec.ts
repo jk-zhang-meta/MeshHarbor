@@ -32,6 +32,7 @@ import PeerRelaysSection from '@/components/admin/PeerRelaysSection.vue'
 import PeerRelayPolicyDialog from '@/components/admin/PeerRelayPolicyDialog.vue'
 import en from '@/locales/en.json'
 import zhCN from '@/locales/zh-CN.json'
+import i18n, { setLocale } from '@/plugins/i18n'
 
 vi.mock('@/api/client', () => ({
   api: {
@@ -2054,5 +2055,164 @@ describe('Logical Network Zones, Per-Device Zone Assignment & Admin-Only Relay R
       (dlg.vm as unknown as { predictedAutoZone?: NetworkZone }).predictedAutoZone,
     ).toBeUndefined()
     dlg.unmount()
+  })
+
+  it('FR-138: renders zone source chip/tooltip and dual physical + current egress IPs in zh-CN and en', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const tenantStore = useTenantStore()
+    tenantStore.myPermissions = ADMINISTRATOR
+    const agentStore = useAgentStore()
+    const deviceStore = useDeviceStore()
+    const zonesStore = useNetworkZonesStore()
+    zonesStore.loadedTenantId = TID
+    zonesStore.zones = [
+      {
+        id: 'cn',
+        name: 'CN 区',
+        auto_countries: ['CN'],
+        is_default: false,
+        gateway_relay_ids: ['66f000000000000000000001'],
+        cross_zone_mode: 'router_only',
+      },
+      {
+        id: 'non-cn',
+        name: '非 CN 区',
+        auto_countries: [],
+        is_default: true,
+        gateway_relay_ids: ['66f000000000000000000002'],
+        cross_zone_mode: 'router_only',
+      },
+    ]
+
+    const devA = makeAgent({
+      id: '66f000000000000000000301',
+      name: 'device-a',
+      public_ip: '203.0.113.42',
+      physical_public_ip: '198.51.100.10',
+      physical_seen_at: '2026-11-24T08:00:00Z',
+      default_route_vpn: true,
+      country_code: 'US',
+      pinned_zone_id: null,
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      zone_source: 'auto_physical',
+    })
+    const devB = makeAgent({
+      id: '66f000000000000000000302',
+      name: 'device-b',
+      public_ip: '203.0.113.43',
+      physical_public_ip: null,
+      default_route_vpn: true,
+      country_code: 'US',
+      pinned_zone_id: null,
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      zone_source: 'auto_vpn_held',
+    })
+    const devC = makeAgent({
+      id: '66f000000000000000000303',
+      name: 'device-c',
+      public_ip: '192.0.2.50',
+      physical_public_ip: null,
+      default_route_vpn: false,
+      country_code: 'CN',
+      pinned_zone_id: 'cn',
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      zone_source: 'pinned',
+    })
+    const devD = makeAgent({
+      id: '66f000000000000000000304',
+      name: 'device-d',
+      public_ip: '192.0.2.51',
+      physical_public_ip: null,
+      default_route_vpn: false,
+      country_code: 'CN',
+      pinned_zone_id: null,
+      effective_zone_id: 'cn',
+      effective_zone_name: 'CN 区',
+      zone_source: 'auto_egress_ip',
+    })
+
+    agentStore.agents = [devA, devB, devC, devD]
+    deviceStore.items = [devA, devB, devC, devD].map((a) => ({
+      kind: 'agent' as const,
+      id: a.id,
+      owner_user_id: a.owner_user_id,
+      name: a.name,
+      machine_id: a.machine_id,
+      os: a.os,
+      version: a.agent_version,
+      status: a.status,
+      presence: 'online' as const,
+      is_online: true,
+      last_seen_at: a.last_seen_at,
+      created_at: a.last_seen_at,
+      public_ip: a.public_ip,
+      physical_public_ip: a.physical_public_ip,
+      physical_seen_at: a.physical_seen_at,
+      default_route_vpn: a.default_route_vpn,
+      country_code: a.country_code,
+      pinned_zone_id: a.pinned_zone_id,
+      effective_zone_id: a.effective_zone_id,
+      effective_zone_name: a.effective_zone_name,
+      zone_source: a.zone_source,
+    }))
+    deviceStore.total = 4
+
+    // zh-CN assertions
+    setLocale('zh-CN')
+    const dlgZh = mount(DeviceZoneDialog, {
+      props: { modelValue: true, tenantId: TID, agent: devA, row: deviceStore.items[0] },
+      global: { plugins: [pinia, vuetify, i18n] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const physZh = document.body.querySelector('[data-testid="zone-dialog-physical-ip"]')
+    const curZh = document.body.querySelector('[data-testid="zone-dialog-current-ip"]')
+    const chipZh = document.body.querySelector('[data-testid="zone-dialog-current-chip"]')
+    expect(physZh?.textContent).toContain('物理出口')
+    expect(physZh?.textContent).toContain('198.51.100.10')
+    expect(curZh?.textContent).toContain('当前出口')
+    expect(curZh?.textContent).toContain('203.0.113.42')
+    expect(chipZh?.textContent).toContain('自动·物理出口')
+    expect(chipZh?.getAttribute('data-zone-source')).toBe('auto_physical')
+    expect(chipZh?.getAttribute('title')).toContain('自动·物理出口')
+    dlgZh.unmount()
+
+    // Verify all 4 primary source labels in both locales via formatZoneChipLabel/Tooltip
+    const { formatDeviceZone, formatZoneChipLabel, formatZoneTooltip } = await import(
+      '@/utils/deviceLocation'
+    )
+    const tZh = (k: string, p?: Record<string, unknown>) => i18n.global.t(k, p ?? {}) as string
+    expect(formatZoneChipLabel(formatDeviceZone(devC), tZh)).toContain('固定')
+    expect(formatZoneChipLabel(formatDeviceZone(devA), tZh)).toContain('自动·物理出口')
+    expect(formatZoneChipLabel(formatDeviceZone(devB), tZh)).toBe('自动·已排除 VPN（保持 CN 区）')
+    expect(formatZoneChipLabel(formatDeviceZone(devD), tZh)).toContain('自动·出口 IP')
+    expect(formatZoneTooltip(formatDeviceZone(devB), tZh)).toContain('已排除 VPN')
+
+    setLocale('en')
+    const tEn = (k: string, p?: Record<string, unknown>) => i18n.global.t(k, p ?? {}) as string
+    expect(formatZoneChipLabel(formatDeviceZone(devC), tEn)).toContain('Pinned')
+    expect(formatZoneChipLabel(formatDeviceZone(devA), tEn)).toContain('Auto · Physical egress')
+    expect(formatZoneChipLabel(formatDeviceZone(devB), tEn)).toBe(
+      'Auto · VPN excluded (held CN 区)',
+    )
+    expect(formatZoneChipLabel(formatDeviceZone(devD), tEn)).toContain('Auto · Egress IP')
+
+    const dlgEn = mount(DeviceZoneDialog, {
+      props: { modelValue: true, tenantId: TID, agent: devA, row: deviceStore.items[0] },
+      global: { plugins: [pinia, vuetify, i18n] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const physEn = document.body.querySelector('[data-testid="zone-dialog-physical-ip"]')
+    const curEn = document.body.querySelector('[data-testid="zone-dialog-current-ip"]')
+    expect(physEn?.textContent).toContain('Physical egress')
+    expect(physEn?.textContent).toContain('198.51.100.10')
+    expect(curEn?.textContent).toContain('Current egress')
+    expect(curEn?.textContent).toContain('203.0.113.42')
+    dlgEn.unmount()
   })
 })

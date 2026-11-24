@@ -582,6 +582,7 @@ fn resolve_peer_scope_enforces_real_tenant_id_and_node_id_and_fails_closed() {
         started_at_ms: None,
         files_dir: None,
         management_path: None,
+        egress: None,
     };
 
     let make_peer = |node_id: &str, name: &str, org: &str, ip: &str| PeerInfo {

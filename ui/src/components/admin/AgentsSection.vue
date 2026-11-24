@@ -209,20 +209,17 @@
               <v-chip
                 v-if="rowZone(item).hasZone"
                 size="x-small"
-                :color="rowZone(item).pinned ? 'primary' : 'secondary'"
+                :color="zoneChipColor(rowZone(item))"
                 variant="tonal"
                 class="ml-2"
-                :prepend-icon="rowZone(item).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
-                :title="
-                  rowZone(item).pinned
-                    ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(item).zoneLabel })
-                    : $t('mh.dev.zoneAutoTitle', { zone: rowZone(item).zoneLabel })
-                "
+                :prepend-icon="zoneChipIcon(rowZone(item))"
+                :title="formatZoneTooltip(rowZone(item), $t)"
                 data-testid="device-zone-chip"
                 :data-zone-pinned="rowZone(item).pinned ? 'true' : 'false'"
+                :data-zone-source="rowZone(item).zoneSource || undefined"
                 @click="mayAssignZoneFor(item) && agentFor(item) ? openZoneDialog(item, agentFor(item)!) : undefined"
               >
-                {{ rowZone(item).badgeText }}
+                {{ formatZoneChipLabel(rowZone(item), $t) }}
               </v-chip>
               <v-chip
                 v-if="isAdmin && relayEntryFor(item)"
@@ -365,8 +362,37 @@
                   {{ rowLocation(item).locationText || '—' }}
                 </span>
               </div>
-              <div class="device-loc-ip text-caption text-medium-emphasis text-mono">
+              <div
+                v-if="rowLocation(item).physicalIp"
+                class="device-loc-ip text-caption text-medium-emphasis text-mono"
+                data-testid="device-physical-ip"
+              >
+                <span class="text-sans mr-1">{{ $t('mh.dev.physicalEgress') }}:</span>
+                <span>{{ rowLocation(item).physicalIp }}</span>
+                <v-btn
+                  :icon="copiedAgentId === rowLocation(item).physicalIp ? 'mdi-check' : 'mdi-content-copy'"
+                  size="x-small"
+                  variant="text"
+                  density="compact"
+                  :color="copiedAgentId === rowLocation(item).physicalIp ? 'success' : undefined"
+                  class="ml-1 device-loc-copy"
+                  :aria-label="$t('mh.dev.copyIpFor', { name: deviceLabel(item) })"
+                  :title="copiedAgentId === rowLocation(item).physicalIp ? $t('mh.dev.copied') : $t('mh.dev.copyIp')"
+                  @click="copyAgentId(rowLocation(item).physicalIp)"
+                />
+              </div>
+              <div class="device-loc-ip text-caption text-medium-emphasis text-mono" data-testid="device-current-ip">
+                <span v-if="rowLocation(item).physicalIp" class="text-sans mr-1">{{ $t('mh.dev.currentEgress') }}:</span>
                 <span>{{ rowLocation(item).publicIp || '—' }}</span>
+                <v-chip
+                  v-if="rowLocation(item).defaultRouteVpn"
+                  size="x-small"
+                  color="info"
+                  variant="tonal"
+                  class="ml-1"
+                >
+                  {{ $t('mh.dev.vpnDefaultRoute') }}
+                </v-chip>
                 <v-btn
                   v-if="rowLocation(item).publicIp"
                   :icon="copiedAgentId === rowLocation(item).publicIp ? 'mdi-check' : 'mdi-content-copy'"
@@ -716,19 +742,16 @@
                 <v-chip
                   v-if="rowZone(item).hasZone"
                   size="x-small"
-                  :color="rowZone(item).pinned ? 'primary' : 'secondary'"
+                  :color="zoneChipColor(rowZone(item))"
                   variant="tonal"
-                  :prepend-icon="rowZone(item).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
-                  :title="
-                    rowZone(item).pinned
-                      ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(item).zoneLabel })
-                      : $t('mh.dev.zoneAutoTitle', { zone: rowZone(item).zoneLabel })
-                  "
+                  :prepend-icon="zoneChipIcon(rowZone(item))"
+                  :title="formatZoneTooltip(rowZone(item), $t)"
                   data-testid="device-zone-chip"
                   :data-zone-pinned="rowZone(item).pinned ? 'true' : 'false'"
+                  :data-zone-source="rowZone(item).zoneSource || undefined"
                   @click="mayAssignZoneFor(item) && agentFor(item) ? openZoneDialog(item, agentFor(item)!) : undefined"
                 >
-                  {{ rowZone(item).badgeText }}
+                  {{ formatZoneChipLabel(rowZone(item), $t) }}
                 </v-chip>
                 <v-chip
                   v-if="isAdmin && relayEntryFor(item)"
@@ -902,10 +925,26 @@
                             </span>
                             <span>{{ rowLocation(item).locationText || '—' }}</span>
                           </div>
-                          <div v-if="rowLocation(item).publicIp" class="text-mono text-medium-emphasis">
-                            {{ rowLocation(item).publicIp }}
-                          </div>
                         </dd>
+                        <template v-if="rowLocation(item).physicalIp || rowLocation(item).publicIp">
+                          <dt>{{ $t('mh.dev.physicalEgress') }}</dt>
+                          <dd class="text-mono text-medium-emphasis" data-testid="card-physical-ip">
+                            {{ rowLocation(item).physicalIp || '—' }}
+                          </dd>
+                          <dt>{{ $t('mh.dev.currentEgress') }}</dt>
+                          <dd class="text-mono text-medium-emphasis" data-testid="card-current-ip">
+                            {{ rowLocation(item).publicIp || '—' }}
+                            <v-chip
+                              v-if="rowLocation(item).defaultRouteVpn"
+                              size="x-small"
+                              color="info"
+                              variant="tonal"
+                              class="ml-1"
+                            >
+                              {{ $t('mh.dev.vpnDefaultRoute') }}
+                            </v-chip>
+                          </dd>
+                        </template>
                       </template>
                       <template v-if="item.overlay_ip">
                         <dt>{{ $t('mh.dev.col.overlay') }}</dt>
@@ -1592,7 +1631,14 @@ import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { usePeerRelaysStore, type RelayDeviceView } from '@/stores/peerRelays'
 import { useNetworkZonesStore } from '@/stores/networkZones'
-import { formatDeviceLocation, formatDeviceZone } from '@/utils/deviceLocation'
+import {
+  formatDeviceLocation,
+  formatDeviceZone,
+  formatZoneChipLabel,
+  formatZoneTooltip,
+  zoneChipColor,
+  zoneChipIcon,
+} from '@/utils/deviceLocation'
 import { canManageAgents, canManageRelays } from '@/utils/permissions'
 import { useGridColumns } from '@/composables/useGridColumns'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'

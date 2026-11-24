@@ -2088,6 +2088,7 @@ async fn connect_once(
     );
     let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let mut last_announced_mgmt_entry_port = hello_caps.management_entry_port;
+    let mut last_announced_default_route_vpn = hello_caps.default_route_vpn;
     // A session's verdict on the software VP9 4:4:4 cell, as the hello carried it.
     let mut last_announced_sw = hello_caps
         .video_cells
@@ -2162,6 +2163,14 @@ async fn connect_once(
         // immediately after upgrade.
         watchdog::tick(ctx.pump);
         info!("rc:agent.hello sent");
+        // FR-138 — fire non-blocking physical-path egress probe on connect.
+        if ctx.is_primary {
+            crate::egress_probe::spawn_probe(
+                cfg.server_url.clone(),
+                ctx.token.get(),
+                cfg.management_entries.clone(),
+            );
+        }
         // A5 — if this connect ended a ≥1 h outage, the fleet may have shipped a
         // fix (or a forced update push) we never saw; check now, not in ≤4 h.
         ctx.note_ws_up_and_maybe_recheck_update();
@@ -2772,6 +2781,14 @@ async fn connect_once(
             }
             summary = next_major_netchange(&mut net_rx) => {
                 let _stage = watchdog::enter(ctx.pump, "netchange");
+                // FR-138 — re-probe physical egress on major network changes without blocking.
+                if ctx.is_primary && !ctx.unenrolled {
+                    crate::egress_probe::spawn_probe(
+                        cfg.server_url.clone(),
+                        ctx.token.get(),
+                        cfg.management_entries.clone(),
+                    );
+                }
                 // New network = new throttle regime — the slowness treadmill
                 // re-earns its hold verdict from scratch.
                 *slowness_cycles = 0;
@@ -2880,9 +2897,11 @@ async fn connect_once(
                 } else {
                     None
                 };
+                let default_route_vpn_now = crate::egress_probe::default_route_vpn();
                 let sw_now = crate::encode::sw_capacity::libvpx_444_sustain_fps();
                 let caps = if relay_server_now == last_announced_relay_server
                     && mgmt_entry_port_now == last_announced_mgmt_entry_port
+                    && default_route_vpn_now == last_announced_default_route_vpn
                     && sw_now == last_announced_sw
                     && caps_now == last_announced_permissions
                     && record_now == last_announced_record
@@ -2899,6 +2918,7 @@ async fn connect_once(
                 } else {
                     last_announced_relay_server = relay_server_now;
                     last_announced_mgmt_entry_port = mgmt_entry_port_now;
+                    last_announced_default_route_vpn = default_route_vpn_now;
                     last_announced_permissions = caps_now.clone();
                     last_announced_record = record_now.clone();
                     last_announced_keep_busy = keep_busy_now;
@@ -8637,6 +8657,9 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool, entry_eligible: bool) -> Age
             .to_owned(),
     );
     caps.two_factor = meshharbor_node_core::two_factor::active();
+    // FR-138 — report whether the OS IPv4/IPv6 default route currently sits on a VPN/virtual
+    // interface so the server holds last_clean_zone_id instead of following the VPN exit.
+    caps.default_route_vpn = crate::egress_probe::default_route_vpn();
     // `detect()` is memoized and config-blind, so the one capability that
     // depends on the host's config gets appended here: `tun` says "this
     // daemon's TUN is already muxed — a second org can join the mesh

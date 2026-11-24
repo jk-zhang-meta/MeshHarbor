@@ -20,20 +20,34 @@
             <span class="text-medium-emphasis">{{ t('mh.zoneAssign.detectedLocation') }}:</span>
             <span v-if="loc.countryCode" class="geo-code-pill">{{ loc.countryCode }}</span>
             <span v-if="loc.locationText" class="font-weight-medium">{{ loc.locationText }}</span>
-            <span v-if="loc.publicIp" class="text-mono text-caption text-medium-emphasis">
-              {{ loc.publicIp }}
+            <span
+              v-if="loc.physicalIp"
+              class="text-caption text-medium-emphasis"
+              data-testid="zone-dialog-physical-ip"
+            >
+              {{ t('mh.dev.physicalEgress') }}: <span class="text-mono">{{ loc.physicalIp }}</span>
+            </span>
+            <span
+              v-if="loc.publicIp"
+              class="text-caption text-medium-emphasis"
+              data-testid="zone-dialog-current-ip"
+            >
+              <template v-if="loc.physicalIp">{{ t('mh.dev.currentEgress') }}: </template>
+              <span class="text-mono">{{ loc.publicIp }}</span>
             </span>
           </template>
           <v-spacer v-if="loc.hasAny && currentZone.hasZone" />
           <v-chip
             v-if="currentZone.hasZone"
             size="x-small"
-            :color="currentZone.pinned ? 'primary' : 'secondary'"
+            :color="zoneChipColor(currentZone)"
             variant="tonal"
-            :prepend-icon="currentZone.pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
+            :prepend-icon="zoneChipIcon(currentZone)"
+            :title="formatZoneTooltip(currentZone, t)"
+            :data-zone-source="currentZone.zoneSource || undefined"
             data-testid="zone-dialog-current-chip"
           >
-            {{ currentZone.badgeText }}
+            {{ formatZoneChipLabel(currentZone, t) }}
           </v-chip>
         </div>
 
@@ -168,7 +182,15 @@ import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent } from '@/stores/agents'
 import { useDeviceStore, type DeviceRow } from '@/stores/devices'
 import { useNetworkZonesStore, type NetworkZone } from '@/stores/networkZones'
-import { formatDeviceLocation, formatDeviceZone } from '@/utils/deviceLocation'
+import {
+  formatDeviceLocation,
+  formatDeviceZone,
+  formatZoneChipLabel,
+  formatZoneTooltip,
+  zoneChipColor,
+  zoneChipIcon,
+  type ZoneSource,
+} from '@/utils/deviceLocation'
 
 const props = defineProps<{
   modelValue: boolean
@@ -186,6 +208,7 @@ const emit = defineEmits<{
       pinned_zone_id: string | null
       effective_zone_id: string | null
       effective_zone_name: string | null
+      zone_source?: ZoneSource | null
     },
   ): void
 }>()
@@ -328,6 +351,7 @@ async function save() {
       pinned_zone_id: resp.pinned_zone_id,
       effective_zone_id: resp.effective_zone_id,
       effective_zone_name: resp.effective_zone_name,
+      ...(resp.zone_source !== undefined ? { zone_source: resp.zone_source } : {}),
     })
     const name = deviceLabel(props.row ?? props.agent)
     const zLabel = resp.effective_zone_name || resp.pinned_zone_id || ''

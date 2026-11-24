@@ -31,7 +31,7 @@ use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::models::{
     Agent, AgentStatus, DeviceZoneResolution, MAX_PEER_RELAY_BACKBONE_EDGES, NetworkZone,
     PeerRelayAuditAction, PeerRelayAuditEvent, PeerRelayDenyReason, PeerRelayMode,
-    PeerRelayPolicy, RpcCap, resolve_device_zone,
+    PeerRelayPolicy, RpcCap,
 };
 use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,8 @@ pub struct RelayDeviceView {
     pub effective_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
 }
 
 impl RelayDeviceView {
@@ -103,12 +105,13 @@ impl RelayDeviceView {
         a: Agent,
     ) -> Self {
         let country_code = meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, &a);
+        let (zone_res, zone_source) =
+            meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(&state.fleet, zones, &a, None);
         let pinned_zone_id = a.pinned_zone_id.filter(|s| !s.trim().is_empty());
-        let (effective_zone_id, effective_zone_name) =
-            match resolve_device_zone(zones, pinned_zone_id.as_deref(), country_code.as_deref()) {
-                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
-                _ => (None, None),
-            };
+        let (effective_zone_id, effective_zone_name) = match zone_res {
+            DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+            _ => (None, None),
+        };
         Self {
             id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
             name: a.name,
@@ -120,6 +123,7 @@ impl RelayDeviceView {
             pinned_zone_id,
             effective_zone_id,
             effective_zone_name,
+            zone_source,
         }
     }
 }

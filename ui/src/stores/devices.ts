@@ -5,6 +5,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/api/client'
 import type { GeoLevel } from '@/utils/deviceLocation'
 import { mergeNameSync, type NameSync } from '@/utils/nameSync'
+import type { ZoneSource } from '@/utils/deviceLocation'
 
 /**
  * The unified devices-grid feed (`GET /tenant/{tid}/device`): agents +
@@ -46,8 +47,11 @@ export interface DeviceRow {
   /** FR-51 — enrolled as temporary: reaped after silence, removed outright on
    *  a clean stop; a later enrollment is a NEW device. Present only when true. */
   ephemeral?: boolean
-  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`) and MMDB coordinates (FR-136 P6). */
+  /** Observed public IP + FR-138 physical-uplink IP + GeoIP hierarchy and MMDB coordinates (FR-136 P6). */
   public_ip?: string | null
+  physical_public_ip?: string | null
+  physical_seen_at?: string | null
+  default_route_vpn?: boolean
   country_code?: string | null
   country?: string | null
   region?: string | null
@@ -60,6 +64,7 @@ export interface DeviceRow {
   pinned_zone_id?: string | null
   effective_zone_id?: string | null
   effective_zone_name?: string | null
+  zone_source?: ZoneSource | null
 }
 
 interface DeviceListResponse {

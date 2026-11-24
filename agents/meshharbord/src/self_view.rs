@@ -800,6 +800,8 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_cert_sha256,
         rdp_mesh_reachable,
         public_ip,
+        physical_public_ip,
+        physical_seen_at,
         country_code,
         country,
         region,
@@ -811,6 +813,8 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         pinned_zone_id,
         effective_zone_id,
         effective_zone_name,
+        zone_source,
+        default_route_vpn,
     } = row;
     DeviceRowLite {
         kind,
@@ -835,6 +839,8 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         rdp_cert_sha256,
         rdp_mesh_reachable,
         public_ip,
+        physical_public_ip,
+        physical_seen_at,
         country_code,
         country,
         region,
@@ -846,6 +852,8 @@ pub(crate) fn device_row_from_server(row: VisibleDeviceRow) -> DeviceRowLite {
         pinned_zone_id,
         effective_zone_id,
         effective_zone_name,
+        zone_source: zone_source.map(|s| s.as_str().to_string()),
+        default_route_vpn,
     }
 }
 
@@ -892,6 +900,8 @@ mod tests {
                     .into(),
             ),
             public_ip: Some("14.20.0.1".into()),
+            physical_public_ip: Some("198.51.100.10".into()),
+            physical_seen_at: Some("2026-09-25T08:55:00Z".into()),
             country_code: Some("CN".into()),
             country: Some("中国".into()),
             region: Some("广东省".into()),
@@ -903,6 +913,8 @@ mod tests {
             pinned_zone_id: Some("siat".into()),
             effective_zone_id: Some("siat".into()),
             effective_zone_name: Some("SIAT Campus".into()),
+            zone_source: Some(meshharbor_remote_control::models::ZoneSource::AutoPhysical),
+            default_route_vpn: true,
         }
     }
 
@@ -942,6 +954,8 @@ mod tests {
                         .into(),
                 ),
                 public_ip: Some("14.20.0.1".into()),
+                physical_public_ip: Some("198.51.100.10".into()),
+                physical_seen_at: Some("2026-09-25T08:55:00Z".into()),
                 country_code: Some("CN".into()),
                 country: Some("中国".into()),
                 region: Some("广东省".into()),
@@ -953,6 +967,8 @@ mod tests {
                 pinned_zone_id: Some("siat".into()),
                 effective_zone_id: Some("siat".into()),
                 effective_zone_name: Some("SIAT Campus".into()),
+                zone_source: Some("auto_physical".into()),
+                default_route_vpn: true,
             }
         );
         assert_eq!(

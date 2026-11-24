@@ -2499,6 +2499,41 @@ fn mode_label(mode: DaemonMode, privileged: Option<bool>) -> &'static str {
     }
 }
 
+/// FR-138 — human-readable zone-source label for `mh status`.
+fn format_zone_source_label(src: &str) -> &'static str {
+    match src {
+        "pinned" => "pinned",
+        "auto_physical" => "auto · physical egress",
+        "auto_vpn_held" => "auto · VPN excluded (held)",
+        "auto_egress_ip" => "auto · egress IP",
+        "auto_egress_fallback" => "auto · egress IP (VPN unverified)",
+        _ => "unknown",
+    }
+}
+
+/// FR-138 — render physical egress IP, current egress IP, and resolved zone/source lines
+/// for `mh status`.
+fn format_egress_status_lines(eg: &tunnel_core::localapi::EgressProbeStatus) -> Vec<String> {
+    let mut lines = Vec::new();
+    let phys = eg.physical_ip.as_deref().unwrap_or("—");
+    let cur = eg.current_ip.as_deref().unwrap_or("—");
+    let vpn_note = if eg.default_route_vpn {
+        " (VPN default route)"
+    } else {
+        ""
+    };
+    lines.push(format!("  egress      physical {phys}  current {cur}{vpn_note}"));
+    if let Some(zone) = eg.zone_name.as_deref().or(eg.zone_id.as_deref()) {
+        let src = eg
+            .zone_source
+            .as_deref()
+            .map(format_zone_source_label)
+            .unwrap_or("unknown");
+        lines.push(format!("  zone        {zone} ({src})"));
+    }
+    lines
+}
+
 fn print_status(s: &NodeStatus) {
     let mode = mode_label(s.mode, s.privileged);
     println!("{} {}", up_glyph(s.connected), s.name);
@@ -2538,6 +2573,12 @@ fn print_status(s: &NodeStatus) {
         println!("  centre path {path_desc}");
         if let Some(port) = mp.listening_port {
             println!("  mgmt entry  listening on tcp/:{port}");
+        }
+    }
+    // FR-138 — physical-path probe IP, current egress IP, and resolved zone source.
+    if let Some(eg) = &s.egress {
+        for line in format_egress_status_lines(eg) {
+            println!("{line}");
         }
     }
     // FR-103 — the primary enrollment's credential. Printed only when the
@@ -4643,5 +4684,35 @@ mod display_name_tests {
         let js: serde_json::Value =
             serde_json::from_str(&peers_json(&named, false).unwrap()).unwrap();
         assert_eq!(js[0]["debug"]["rx_would_deny"], 7);
+    }
+
+    #[test]
+    fn fr138_format_egress_status_lines_shows_both_ips_and_zone_source() {
+        let eg = tunnel_core::localapi::EgressProbeStatus {
+            physical_ip: Some("198.51.100.10".into()),
+            current_ip: Some("203.0.113.42".into()),
+            zone_id: Some("cn".into()),
+            zone_name: Some("CN".into()),
+            zone_source: Some("auto_physical".into()),
+            default_route_vpn: true,
+        };
+        let lines = format_egress_status_lines(&eg);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("physical 198.51.100.10"));
+        assert!(lines[0].contains("current 203.0.113.42"));
+        assert!(lines[0].contains("(VPN default route)"));
+        assert!(lines[1].contains("CN (auto · physical egress)"));
+
+        let held = tunnel_core::localapi::EgressProbeStatus {
+            physical_ip: None,
+            current_ip: Some("203.0.113.42".into()),
+            zone_id: Some("cn".into()),
+            zone_name: None,
+            zone_source: Some("auto_vpn_held".into()),
+            default_route_vpn: true,
+        };
+        let held_lines = format_egress_status_lines(&held);
+        assert!(held_lines[0].contains("physical —"));
+        assert!(held_lines[1].contains("cn (auto · VPN excluded (held))"));
     }
 }

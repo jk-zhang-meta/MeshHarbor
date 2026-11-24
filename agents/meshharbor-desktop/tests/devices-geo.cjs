@@ -41,7 +41,7 @@ assert.equal(dedupeLocationParts(['中国', '北京', '北京市']).join(' · ')
 assert.equal(dedupeLocationParts(['中国', '吉林省', '吉林市']).join(' · '), '中国 · 吉林省 · 吉林市');
 
 const sz = formatDeviceLocation({
-  public_ip: '218.17.152.45',
+  public_ip: '203.0.113.45',
   country_code: 'cn',
   country: '中国',
   region: '广东省',
@@ -50,7 +50,30 @@ const sz = formatDeviceLocation({
 assert.deepEqual(JSON.parse(JSON.stringify(sz)), {
   locationText: '中国 · 广东省 · 深圳市',
   countryCode: 'CN',
-  publicIp: '218.17.152.45',
+  publicIp: '203.0.113.45',
+  physicalIp: '',
+  physicalSeenAt: '',
+  defaultRouteVpn: false,
+  hasAny: true,
+});
+
+const vpnPhysical = formatDeviceLocation({
+  public_ip: '198.51.100.20',
+  physical_public_ip: '203.0.113.45',
+  physical_seen_at: '2026-11-24T12:00:00Z',
+  default_route_vpn: true,
+  country_code: 'CN',
+  country: '中国',
+  region: '广东省',
+  city: '深圳市',
+});
+assert.deepEqual(JSON.parse(JSON.stringify(vpnPhysical)), {
+  locationText: '中国 · 广东省 · 深圳市',
+  countryCode: 'CN',
+  publicIp: '198.51.100.20',
+  physicalIp: '203.0.113.45',
+  physicalSeenAt: '2026-11-24T12:00:00Z',
+  defaultRouteVpn: true,
   hasAny: true,
 });
 
@@ -59,6 +82,9 @@ assert.deepEqual(JSON.parse(JSON.stringify(empty)), {
   locationText: '',
   countryCode: '',
   publicIp: '',
+  physicalIp: '',
+  physicalSeenAt: '',
+  defaultRouteVpn: false,
   hasAny: false,
 });
 
@@ -73,6 +99,22 @@ assert.deepEqual(JSON.parse(JSON.stringify(autoZone)), {
   badgeText: '非 CN 区',
   pinned: false,
   hasZone: true,
+  zoneSource: '',
+});
+
+const vpnHeldZone = formatDeviceZone({
+  pinned_zone_id: null,
+  effective_zone_id: 'cn',
+  effective_zone_name: 'CN 区',
+  zone_source: 'auto_vpn_held',
+});
+assert.deepEqual(JSON.parse(JSON.stringify(vpnHeldZone)), {
+  zoneId: 'cn',
+  zoneLabel: 'CN 区',
+  badgeText: 'CN 区',
+  pinned: false,
+  hasZone: true,
+  zoneSource: 'auto_vpn_held',
 });
 
 const pinnedZone = formatDeviceZone({
@@ -86,6 +128,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(pinnedZone)), {
   badgeText: 'CN 区',
   pinned: true,
   hasZone: true,
+  zoneSource: '',
 });
 
 const noZone = formatDeviceZone({
@@ -99,6 +142,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(noZone)), {
   badgeText: '',
   pinned: false,
   hasZone: false,
+  zoneSource: '',
 });
 
 console.log('desktop devices-geo checks passed');

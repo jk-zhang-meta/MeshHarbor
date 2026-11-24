@@ -375,9 +375,19 @@ pub fn pick_v6_endpoint_rotated(
 /// Allocate rescue (F2).
 pub const MAX_NON_VPN_UPLINKS: usize = 3;
 
+/// FR-138 — a physical non-VPN uplink with interface name, IPv4 address, and optional OS ifindex,
+/// ready for platform-specific egress binding (`SO_BINDTODEVICE` / `IP_BOUND_IF` / `IP_UNICAST_IF`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalUplink {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub ifindex: Option<u32>,
+}
+
 /// Synthetic/enumerated physical uplink candidate fed to [`select_non_vpn_uplinks`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NonVpnUplinkCandidate {
+    pub name: String,
     pub ip: Ipv4Addr,
     pub ifindex: Option<u32>,
     /// Lowest route cost among `0.0.0.0/0` default routes with a gateway on
@@ -386,19 +396,21 @@ pub struct NonVpnUplinkCandidate {
     pub default_gw_metric: Option<u64>,
 }
 
-/// Pure ordering + cap for corp-VPN TURN rescue uplinks (F2):
-/// - Deduplicates by `ip` (preserving first-seen order and keeping the lowest
+/// Pure ordering + cap for physical non-VPN uplinks (F2 TURN/STUN rescue & FR-138):
+/// - Deduplicates by `ip` (preserving first-seen order, upgrading `ifindex` if
+///   absent, preserving first non-empty `name`, and keeping the lowest
 ///   `default_gw_metric` seen for that IP).
 /// - Places NICs WITH a default gateway (`default_gw_metric.is_some()`) ahead
 ///   of NICs without one, sorted by ascending `default_gw_metric` (tie-broken
 ///   by original enumeration order).
 /// - Caps the returned list at [`MAX_NON_VPN_UPLINKS`] (`3`).
-pub fn select_non_vpn_uplinks(
-    candidates: &[NonVpnUplinkCandidate],
-) -> Vec<(Ipv4Addr, Option<u32>)> {
+pub fn select_non_vpn_uplinks(candidates: &[NonVpnUplinkCandidate]) -> Vec<PhysicalUplink> {
     let mut deduped: Vec<(usize, NonVpnUplinkCandidate)> = Vec::with_capacity(candidates.len());
     for (ord, c) in candidates.iter().enumerate() {
         if let Some((_, existing)) = deduped.iter_mut().find(|(_, e)| e.ip == c.ip) {
+            if existing.name.is_empty() && !c.name.is_empty() {
+                existing.name = c.name.clone();
+            }
             if existing.ifindex.is_none() {
                 existing.ifindex = c.ifindex;
             }
@@ -418,7 +430,11 @@ pub fn select_non_vpn_uplinks(
     deduped
         .into_iter()
         .take(MAX_NON_VPN_UPLINKS)
-        .map(|(_, c)| (c.ip, c.ifindex))
+        .map(|(_, c)| PhysicalUplink {
+            name: c.name,
+            ip: c.ip,
+            ifindex: c.ifindex,
+        })
         .collect()
 }
 
@@ -445,7 +461,7 @@ fn parse_linux_proc_net_route_default_gws(text: &str) -> std::collections::BTree
     out
 }
 
-#[cfg(all(windows, feature = "overlay-l3"))]
+#[cfg(windows)]
 fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
     use windows_sys::Win32::Foundation::NO_ERROR;
     use windows_sys::Win32::NetworkManagement::IpHelper::{
@@ -525,22 +541,16 @@ fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
     out
 }
 
-#[cfg(not(any(
-    all(windows, feature = "overlay-l3"),
-    target_os = "linux",
-    target_os = "macos"
-)))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn os_default_gw_metrics_v4() -> std::collections::BTreeMap<String, u64> {
     std::collections::BTreeMap::new()
 }
 
-/// Ordered `(ip, ifindex)` physical-uplink egress candidates (up to
-/// [`MAX_NON_VPN_UPLINKS`] = 3) for TURN/STUN rescue on a corp-VPN-captured
-/// or multi-NIC host (F2). Default-gateway-bearing physical NICs come first
-/// (ordered by route cost), followed by non-gateway physical NICs, so a
-/// secondary physical NIC with real TURN reachability rescues when the first
-/// enumerated or higher-metric NIC cannot reach coturn.
-pub fn non_vpn_uplinks() -> Vec<(Ipv4Addr, Option<u32>)> {
+/// FR-138 — ordered physical non-VPN uplinks with interface names (up to [`MAX_NON_VPN_UPLINKS`]).
+/// Default-gateway-bearing physical NICs come first (ascending route cost), followed by
+/// non-gateway physical NICs. Routes through [`select_non_vpn_uplinks`] so TURN/STUN rescue
+/// ([`non_vpn_uplinks`]) and the FR-138 physical-path probe share the exact tested selector.
+pub fn non_vpn_uplinks_named() -> Vec<PhysicalUplink> {
     let named = gather_lan_interfaces_named();
     if named.is_empty() {
         return Vec::new();
@@ -550,11 +560,14 @@ pub fn non_vpn_uplinks() -> Vec<(Ipv4Addr, Option<u32>)> {
         .into_iter()
         .map(|(name, ip, ifindex)| {
             #[cfg(windows)]
-            let key = ifindex.map(|i| i.to_string()).unwrap_or(name);
+            let key = ifindex
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| name.clone());
             #[cfg(not(windows))]
-            let key = name;
+            let key = name.clone();
             let default_gw_metric = gw_metrics.get(&key).copied();
             NonVpnUplinkCandidate {
+                name,
                 ip,
                 ifindex,
                 default_gw_metric,
@@ -562,6 +575,19 @@ pub fn non_vpn_uplinks() -> Vec<(Ipv4Addr, Option<u32>)> {
         })
         .collect();
     select_non_vpn_uplinks(&candidates)
+}
+
+/// Ordered `(ip, ifindex)` physical-uplink egress candidates (up to
+/// [`MAX_NON_VPN_UPLINKS`] = 3) for TURN/STUN rescue on a corp-VPN-captured
+/// or multi-NIC host (F2). Default-gateway-bearing physical NICs come first
+/// (ordered by route cost), followed by non-gateway physical NICs, so a
+/// secondary physical NIC with real TURN reachability rescues when the first
+/// enumerated or higher-metric NIC cannot reach coturn.
+pub fn non_vpn_uplinks() -> Vec<(Ipv4Addr, Option<u32>)> {
+    non_vpn_uplinks_named()
+        .into_iter()
+        .map(|u| (u.ip, u.ifindex))
+        .collect()
 }
 
 /// Net-change poke acceleration — gate for arming forced revalidation pokes on
@@ -713,11 +739,30 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
         "fortissl",
         "juniper",
         "loopback",
+        // FR-138 — common TUN-mode VPN and proxy-TUN drivers/adapters.
+        "clash",
+        "mihomo",
+        "sing-box",
+        "singbox",
+        "sing-tun",
+        "v2ray",
+        "nekoray",
+        "hiddify",
+        "flclash",
+        "shadowrocket",
+        "mullvad",
+        "protonvpn",
+        "nordlynx",
+        "surfshark",
+        "expressvpn",
+        "anyconnect",
+        "globalprotect",
+        "cloudflare warp",
     ];
     // Prefix matches on the NAME — kernel/driver naming conventions
     // (Linux/macOS/BSD: docker0, veth*, virbr0, br-*, tun0, tap0, utun3,
-    // wg0, ppp0, bridge100). Prefix (not substring) so real adapters whose
-    // names merely CONTAIN these stay allowed.
+    // ipsec0, wg0, ppp0, bridge100). Prefix (not substring) so real adapters
+    // whose names merely CONTAIN these stay allowed.
     const NAME_PREFIX: &[&str] = &[
         "docker",
         "veth",
@@ -727,8 +772,12 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
         "tun",
         "tap",
         "utun",
+        "ipsec",
         "wg",
         "ppp",
+        "cscotun",
+        "gpd",
+        "zt",
         "meshharbor",
     ];
     let n = name.to_ascii_lowercase();
@@ -738,26 +787,26 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
 }
 
 /// Shared structural + deny-list VPN/virtual classification for both LAN
-/// candidate gathering and [`super::netstate`]'s `vpn_class`: combines
-/// [`lan_iface_denied`] (with Windows `GetIfEntry2` driver description),
-/// the Windows `HardwareInterface == false` check, and [`linux_tunnel_iface`].
-pub(super) fn is_vpn_or_virtual_iface(name: &str, index: Option<u32>) -> bool {
+/// candidate gathering, [`super::netstate`]'s `vpn_class`, and FR-138 default-route
+/// VPN detection: combines [`lan_iface_denied`] (with Windows `GetIfEntry2` driver
+/// description + alias), the Windows `HardwareInterface == false` check, and
+/// [`linux_tunnel_iface`].
+pub fn is_vpn_or_virtual_iface(name: &str, index: Option<u32>) -> bool {
     let info = index.and_then(iface_info);
     let desc = info.as_ref().map(|(d, _)| d.as_str()).unwrap_or_default();
     let hardware = info.as_ref().map(|(_, h)| *h);
     lan_iface_denied(name, desc) || hardware == Some(false) || linux_tunnel_iface(name)
 }
 
-/// Windows — the interface DESCRIPTION + hardware bit for an OS ifindex via
+/// Windows — the interface ALIAS + DESCRIPTION + hardware bit for an OS ifindex via
 /// `GetIfEntry2`. The description ("Check Point Virtual Network Adapter For
-/// Endpoint VPN Client") feeds the deny-list — the friendly name alone can't
-/// classify these (the Check Point adapter is named just "Ethernet"). The
-/// `HardwareInterface` flag (rc.281) is the STRUCTURAL signal the deny-list
-/// can't be: every virtual adapter — Wintun, Hyper-V vSwitch, any VPN vendor
-/// we've never heard of — reports `false`, while physical Ethernet/Wi-Fi
-/// report `true`, so unknown vendors now fail CLOSED instead of open.
+/// Endpoint VPN Client") and alias ("Clash", "Mihomo") feed the deny-list — the
+/// friendly name alone can't classify every vendor. The `HardwareInterface` flag
+/// (rc.281) is the STRUCTURAL signal the deny-list can't be: every virtual adapter
+/// — Wintun, Hyper-V vSwitch, any VPN vendor we've never heard of — reports `false`,
+/// while physical Ethernet/Wi-Fi report `true`, so unknown vendors fail CLOSED.
 /// `None` on lookup failure (then the name-only checks still apply).
-#[cfg(all(windows, feature = "overlay-l3"))]
+#[cfg(windows)]
 fn iface_info(ifindex: u32) -> Option<(String, bool)> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{GetIfEntry2, MIB_IF_ROW2};
     // SAFETY: zeroed row + InterfaceIndex is the documented lookup-by-index
@@ -768,23 +817,37 @@ fn iface_info(ifindex: u32) -> Option<(String, bool)> {
         if GetIfEntry2(&mut row) != 0 {
             return None;
         }
-        let len = row
+        let desc_len = row
             .Description
             .iter()
             .position(|&c| c == 0)
             .unwrap_or(row.Description.len());
+        let alias_len = row
+            .Alias
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(row.Alias.len());
+        let desc = String::from_utf16_lossy(&row.Description[..desc_len]);
+        let alias = String::from_utf16_lossy(&row.Alias[..alias_len]);
+        let combined = if alias.is_empty() {
+            desc
+        } else if desc.is_empty() {
+            alias
+        } else {
+            format!("{alias} {desc}")
+        };
         // `InterfaceAndOperStatusFlags` is a packed C bitfield byte;
         // `HardwareInterface` is its FIRST member, and MSVC allocates
         // bitfields low-to-high ⇒ bit 0.
         let hardware = row.InterfaceAndOperStatusFlags._bitfield & 0x01 != 0;
-        Some((String::from_utf16_lossy(&row.Description[..len]), hardware))
+        Some((combined, hardware))
     }
 }
 
 /// No-op off Windows — Linux/macOS interface NAMES mostly follow the
-/// conventions the prefix list catches (docker0, veth*, utun*, wg*…); a Linux
-/// device that does not is caught by [`linux_tunnel_iface`].
-#[cfg(not(all(windows, feature = "overlay-l3")))]
+/// conventions the prefix list catches (docker0, veth*, utun*, ipsec*, wg*…); a
+/// Linux device that does not is caught by [`linux_tunnel_iface`].
+#[cfg(not(windows))]
 fn iface_info(_ifindex: u32) -> Option<(String, bool)> {
     None
 }
@@ -861,6 +924,300 @@ pub fn force_egress_interface(sock: &tokio::net::UdpSocket, ifindex: u32) {
 /// socket (rc.143) is the portable part; egress pinning is Windows-specific.
 #[cfg(not(all(windows, feature = "overlay-l3")))]
 pub fn force_egress_interface(_sock: &tokio::net::UdpSocket, _ifindex: u32) {}
+
+/// FR-138 — parse `/proc/self/status` `CapEff:` hex mask and check bit 13 (`CAP_NET_RAW`),
+/// which Linux requires for `SO_BINDTODEVICE` when not running as root.
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_proc_status_has_cap_net_raw(status_text: &str) -> bool {
+    const CAP_NET_RAW_BIT: u64 = 13;
+    for line in status_text.lines() {
+        if let Some(rest) = line.strip_prefix("CapEff:")
+            && let Ok(mask) = u64::from_str_radix(rest.trim(), 16)
+        {
+            return (mask & (1u64 << CAP_NET_RAW_BIT)) != 0;
+        }
+    }
+    false
+}
+
+/// FR-138 — whether this process has permission to bind a socket to a physical interface
+/// via `SO_BINDTODEVICE` on Linux (`euid == 0` or `CAP_NET_RAW`). Non-root per-user Linux
+/// installs return `false` so the daemon skips the physical probe silently without attempting
+/// a doomed bind. On Windows (`IP_UNICAST_IF`) and macOS (`IP_BOUND_IF`) unprivileged sockets
+/// may bind to an interface index, so this returns `true`.
+#[cfg(target_os = "linux")]
+pub fn linux_can_bind_to_device() -> bool {
+    // SAFETY: geteuid never fails.
+    if unsafe { libc::geteuid() } == 0 {
+        return true;
+    }
+    std::fs::read_to_string("/proc/self/status")
+        .is_ok_and(|s| parse_proc_status_has_cap_net_raw(&s))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn linux_can_bind_to_device() -> bool {
+    true
+}
+
+/// FR-138 — open a TCP connection to `target` strictly bound to physical uplink `uplink`,
+/// bypassing the OS default route (e.g. a TUN-mode VPN):
+/// - Windows: `IP_UNICAST_IF` (network-byte-order ifindex for IPv4) / `IPV6_UNICAST_IF` (host-order)
+/// - macOS: `IP_BOUND_IF` / `IPV6_BOUND_IF` (via `socket2::Socket::bind_device_by_index_v{4,6}`)
+/// - Linux: `SO_BINDTODEVICE` (only when [`linux_can_bind_to_device`] is true)
+pub async fn connect_tcp_bound(
+    target: SocketAddr,
+    uplink: &PhysicalUplink,
+    timeout: std::time::Duration,
+) -> std::io::Result<tokio::net::TcpStream> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    #[cfg(target_os = "linux")]
+    if !linux_can_bind_to_device() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "SO_BINDTODEVICE requires root or CAP_NET_RAW",
+        ));
+    }
+
+    let domain = match target {
+        SocketAddr::V4(_) => Domain::IPV4,
+        SocketAddr::V6(_) => Domain::IPV6,
+    };
+    let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        sock.bind_device(Some(uplink.name.as_bytes()))?;
+        if target.is_ipv4() {
+            sock.bind(&SocketAddr::new(std::net::IpAddr::V4(uplink.ip), 0).into())?;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let idx = uplink.ifindex.or_else(|| {
+            std::ffi::CString::new(uplink.name.as_str())
+                .ok()
+                .map(|c| unsafe { libc::if_nametoindex(c.as_ptr()) })
+                .filter(|&i| i != 0)
+        });
+        let Some(non_zero) = idx.and_then(std::num::NonZeroU32::new) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no OS interface index for macOS IP_BOUND_IF",
+            ));
+        };
+        match target {
+            SocketAddr::V4(_) => {
+                sock.bind_device_by_index_v4(Some(non_zero))?;
+                sock.bind(&SocketAddr::new(std::net::IpAddr::V4(uplink.ip), 0).into())?;
+            }
+            SocketAddr::V6(_) => {
+                sock.bind_device_by_index_v6(Some(non_zero))?;
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Networking::WinSock::{
+            IPPROTO_IP, IPPROTO_IPV6, SOCKET, setsockopt,
+        };
+        let Some(ifindex) = uplink.ifindex.filter(|&i| i != 0) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no OS interface index for Windows IP_UNICAST_IF",
+            ));
+        };
+        match target {
+            SocketAddr::V4(_) => {
+                // WinSock2 IP_UNICAST_IF = 31 takes the interface index in NETWORK byte order.
+                const IP_UNICAST_IF: i32 = 31;
+                let optval: u32 = ifindex.to_be();
+                let ret = unsafe {
+                    setsockopt(
+                        sock.as_raw_socket() as SOCKET,
+                        IPPROTO_IP,
+                        IP_UNICAST_IF,
+                        (&optval as *const u32).cast::<u8>(),
+                        std::mem::size_of::<u32>() as i32,
+                    )
+                };
+                if ret != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                sock.bind(&SocketAddr::new(std::net::IpAddr::V4(uplink.ip), 0).into())?;
+            }
+            SocketAddr::V6(_) => {
+                // WinSock2 IPV6_UNICAST_IF = 31 takes the interface index in HOST byte order.
+                const IPV6_UNICAST_IF: i32 = 31;
+                let optval: u32 = ifindex;
+                let ret = unsafe {
+                    setsockopt(
+                        sock.as_raw_socket() as SOCKET,
+                        IPPROTO_IPV6,
+                        IPV6_UNICAST_IF,
+                        (&optval as *const u32).cast::<u8>(),
+                        std::mem::size_of::<u32>() as i32,
+                    )
+                };
+                if ret != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = uplink;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "physical uplink socket binding is unsupported on this OS",
+        ));
+    }
+
+    sock.set_nonblocking(true)?;
+    let std_stream: std::net::TcpStream = sock.into();
+    let tcp_sock = tokio::net::TcpSocket::from_std_stream(std_stream);
+    let stream = tokio::time::timeout(timeout, tcp_sock.connect(target))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"))??;
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
+}
+
+/// FR-138 — parse Linux `/proc/net/route` and return the winning IPv4 default-route interface,
+/// recognizing both `/0` default routes and `/1` VPN split-default routes (`0.0.0.0/1` or
+/// `128.0.0.0/1`, which override `/0` by longest-prefix match).
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_linux_proc_net_route_default_iface(text: &str) -> Option<String> {
+    let mut best: Option<(u8, u64, String)> = None;
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 8 {
+            continue;
+        }
+        let iface = cols[0];
+        let dest = cols[1];
+        let flags = u32::from_str_radix(cols[3], 16).unwrap_or(0);
+        if (flags & 0x1) == 0 {
+            continue; // RTF_UP required
+        }
+        let metric = cols[6].parse::<u64>().unwrap_or(0);
+        let mask = cols[7];
+        // Mask in /proc/net/route is native-endian hex: 00000000 (/0) or 00000080/80000000 (/1).
+        let plen = if dest == "00000000" && mask == "00000000" {
+            0u8
+        } else if (mask.eq_ignore_ascii_case("00000080") || mask.eq_ignore_ascii_case("80000000"))
+            && (dest == "00000000"
+                || dest.eq_ignore_ascii_case("00000080")
+                || dest.eq_ignore_ascii_case("80000000"))
+        {
+            1u8
+        } else {
+            continue;
+        };
+        let replace = match &best {
+            None => true,
+            Some((best_plen, best_metric, _)) => {
+                plen > *best_plen || (plen == *best_plen && metric < *best_metric)
+            }
+        };
+        if replace {
+            best = Some((plen, metric, iface.to_string()));
+        }
+    }
+    best.map(|(_, _, iface)| iface)
+}
+
+/// FR-138 — parse Linux `/proc/net/ipv6_route` and return the winning IPv6 default-route
+/// interface (`::/0`, `::/1`, or `8000::/1`).
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_linux_proc_net_ipv6_route_default_iface(text: &str) -> Option<String> {
+    let mut best: Option<(u8, u32, String)> = None;
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 10 {
+            continue;
+        }
+        let dest = cols[0];
+        let plen = u8::from_str_radix(cols[1], 16).unwrap_or(255);
+        let metric = u32::from_str_radix(cols[5], 16).unwrap_or(u32::MAX);
+        let flags = u32::from_str_radix(cols[8], 16).unwrap_or(0);
+        let iface = cols[9];
+        if (flags & 0x1) == 0 || iface == "lo" {
+            continue;
+        }
+        let is_default = (plen == 0 && dest == "00000000000000000000000000000000")
+            || (plen == 1
+                && (dest == "00000000000000000000000000000000"
+                    || dest.eq_ignore_ascii_case("80000000000000000000000000000000")));
+        if !is_default {
+            continue;
+        }
+        let replace = match &best {
+            None => true,
+            Some((best_plen, best_metric, _)) => {
+                plen > *best_plen || (plen == *best_plen && metric < *best_metric)
+            }
+        };
+        if replace {
+            best = Some((plen, metric, iface.to_string()));
+        }
+    }
+    best.map(|(_, _, iface)| iface)
+}
+
+fn default_ifref_is_vpn(ifref: &str) -> bool {
+    let trimmed = ifref.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(idx) = trimmed.parse::<u32>() {
+            return is_vpn_or_virtual_iface("", Some(idx));
+        }
+    }
+    is_vpn_or_virtual_iface(trimmed, None)
+}
+
+/// FR-138 — whether the OS IPv4 or IPv6 default route currently sits on a VPN/virtual interface.
+///
+/// Uses `netstate`'s OS-native default route lookup (`GetBestRoute2` + `GetIfEntry2` on Windows,
+/// `ip route get` on Linux, `route -n get` on macOS) and additionally checks Linux `/proc/net/route`
+/// and `/proc/net/ipv6_route` as a subprocess-free fallback.
+pub fn default_route_is_vpn() -> bool {
+    let (v4, v6) = super::netstate::default_route_ifrefs();
+    if v4.as_deref().is_some_and(default_ifref_is_vpn)
+        || v6.as_deref().is_some_and(default_ifref_is_vpn)
+    {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if v4.is_none()
+            && std::fs::read_to_string("/proc/net/route")
+                .ok()
+                .and_then(|s| parse_linux_proc_net_route_default_iface(&s))
+                .is_some_and(|iface| is_vpn_or_virtual_iface(&iface, None))
+        {
+            return true;
+        }
+        if v6.is_none()
+            && std::fs::read_to_string("/proc/net/ipv6_route")
+                .ok()
+                .and_then(|s| parse_linux_proc_net_ipv6_route_default_iface(&s))
+                .is_some_and(|iface| is_vpn_or_virtual_iface(&iface, None))
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Gate for **bind-to-interface-by-route** LAN-carrier egress selection
 /// (`MESHHARBORD_OVERLAY_BIND_BY_ROUTE`). **Default OFF** until field-proven,
@@ -3389,31 +3746,37 @@ mod tests {
         // - NIC 5: Second LAN-only NIC -> dropped by MAX_NON_VPN_UPLINKS = 3 cap
         let cands = vec![
             NonVpnUplinkCandidate {
+                name: "lan0".into(),
                 ip: ip("172.16.0.2"),
                 ifindex: Some(23),
                 default_gw_metric: None,
             },
             NonVpnUplinkCandidate {
+                name: "wlan0".into(),
                 ip: ip("192.168.1.253"),
                 ifindex: Some(12),
                 default_gw_metric: Some(30),
             },
             NonVpnUplinkCandidate {
+                name: "usb0".into(),
                 ip: ip("192.168.42.45"),
                 ifindex: Some(58),
                 default_gw_metric: Some(25),
             },
             NonVpnUplinkCandidate {
+                name: "wlan0".into(),
                 ip: ip("192.168.1.253"),
                 ifindex: Some(12),
                 default_gw_metric: Some(20),
             },
             NonVpnUplinkCandidate {
+                name: "eth0".into(),
                 ip: ip("10.0.10.50"),
                 ifindex: Some(9),
                 default_gw_metric: Some(28),
             },
             NonVpnUplinkCandidate {
+                name: "lan1".into(),
                 ip: ip("192.168.100.2"),
                 ifindex: Some(41),
                 default_gw_metric: None,
@@ -3423,25 +3786,40 @@ mod tests {
         assert_eq!(
             selected,
             vec![
-                (ip("192.168.1.253"), Some(12)), // upgraded metric 20
-                (ip("192.168.42.45"), Some(58)), // metric 25
-                (ip("10.0.10.50"), Some(9)),     // metric 28 (caps at 3; non-gateway NICs excluded)
+                PhysicalUplink {
+                    name: "wlan0".into(),
+                    ip: ip("192.168.1.253"),
+                    ifindex: Some(12),
+                }, // upgraded metric 20
+                PhysicalUplink {
+                    name: "usb0".into(),
+                    ip: ip("192.168.42.45"),
+                    ifindex: Some(58),
+                }, // metric 25
+                PhysicalUplink {
+                    name: "eth0".into(),
+                    ip: ip("10.0.10.50"),
+                    ifindex: Some(9),
+                }, // metric 28 (caps at 3; non-gateway NICs excluded)
             ]
         );
 
         // When fewer than 3 NICs have a default gateway, non-gateway physical NICs fill remaining slots in enumeration order
         let mixed = vec![
             NonVpnUplinkCandidate {
+                name: "lan0".into(),
                 ip: ip("10.10.0.2"),
                 ifindex: Some(7),
                 default_gw_metric: None,
             },
             NonVpnUplinkCandidate {
+                name: "wlan0".into(),
                 ip: ip("192.168.1.253"),
                 ifindex: Some(12),
                 default_gw_metric: Some(30),
             },
             NonVpnUplinkCandidate {
+                name: "lan1".into(),
                 ip: ip("10.20.0.2"),
                 ifindex: Some(8),
                 default_gw_metric: None,
@@ -3450,9 +3828,21 @@ mod tests {
         assert_eq!(
             select_non_vpn_uplinks(&mixed),
             vec![
-                (ip("192.168.1.253"), Some(12)),
-                (ip("10.10.0.2"), Some(7)),
-                (ip("10.20.0.2"), Some(8)),
+                PhysicalUplink {
+                    name: "wlan0".into(),
+                    ip: ip("192.168.1.253"),
+                    ifindex: Some(12),
+                },
+                PhysicalUplink {
+                    name: "lan0".into(),
+                    ip: ip("10.10.0.2"),
+                    ifindex: Some(7),
+                },
+                PhysicalUplink {
+                    name: "lan1".into(),
+                    ip: ip("10.20.0.2"),
+                    ifindex: Some(8),
+                },
             ]
         );
 
@@ -3467,5 +3857,82 @@ eth0\t00000000\tEC2AA8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
         assert_eq!(gws.get("eth0"), Some(&100));
         assert_eq!(gws.get("wlan0"), Some(&600));
         assert_eq!(gws.get("eth1"), None);
+    }
+
+    #[test]
+    fn fr138_vpn_interface_classifier_and_linux_route_and_cap_parsers() {
+        // macOS / Linux / Windows VPN & virtual interfaces are denied.
+        for (name, desc) in [
+            ("utun3", ""),
+            ("ipsec0", ""),
+            ("ppp0", ""),
+            ("tun0", ""),
+            ("wg0", ""),
+            ("Clash", ""),
+            ("Mihomo", ""),
+            ("Meta", "Clash Meta TUN"),
+            ("Ethernet 2", "Wintun Userspace Tunnel"),
+            ("sing-tun", ""),
+            ("cscotun0", ""),
+            ("gpd0", ""),
+            ("zt123456", ""),
+            ("Ethernet", "Cloudflare WARP Virtual Adapter"),
+        ] {
+            assert!(
+                lan_iface_denied(name, desc),
+                "expected VPN/virtual interface ({name:?}, {desc:?}) to be denied"
+            );
+        }
+        // Physical interfaces stay allowed.
+        for (name, desc) in [
+            ("eth0", ""),
+            ("en0", ""),
+            ("wlan0", ""),
+            ("Wi-Fi", "Intel(R) Wi-Fi 6E AX211 160MHz"),
+            ("Ethernet", "Realtek PCIe GbE Family Controller"),
+            ("enp3s0", ""),
+        ] {
+            assert!(
+                !lan_iface_denied(name, desc),
+                "expected physical interface ({name:?}, {desc:?}) to be allowed"
+            );
+        }
+
+        // Linux /proc/net/route: /1 split-default on utun0 overrides /0 on eth0.
+        let split_v4 = "\
+Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+tun0\t00000000\t00000000\t0001\t0\t0\t50\t00000080\t0\t0\t0
+tun0\t00000080\t00000000\t0001\t0\t0\t50\t00000080\t0\t0\t0
+";
+        assert_eq!(
+            parse_linux_proc_net_route_default_iface(split_v4).as_deref(),
+            Some("tun0")
+        );
+
+        let clean_v4 = "\
+Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+";
+        assert_eq!(
+            parse_linux_proc_net_route_default_iface(clean_v4).as_deref(),
+            Some("eth0")
+        );
+
+        // Linux /proc/net/ipv6_route: /1 on wg0 overrides /0 on eth0.
+        let split_v6 = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000064 00000001 00000000 00000003 eth0
+00000000000000000000000000000000 01 00000000000000000000000000000000 00 00000000000000000000000000000000 00000010 00000001 00000000 00000001 wg0
+";
+        assert_eq!(
+            parse_linux_proc_net_ipv6_route_default_iface(split_v6).as_deref(),
+            Some("wg0")
+        );
+
+        // Linux /proc/self/status CapEff bit 13 (CAP_NET_RAW = 0x2000).
+        assert!(parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000002000\n"));
+        assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000000000\n"));
+        assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000001000\n"));
     }
 }

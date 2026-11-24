@@ -49,6 +49,8 @@ pub mod display_match;
 pub mod displays;
 #[cfg(target_os = "windows")]
 pub mod dpi;
+/// FR-138 — physical-path egress probe and default-route VPN reporting.
+pub mod egress_probe;
 pub mod encode;
 pub mod exec;
 /// FR-94 — Fleet RPC as SYSTEM on Windows: the anchor, the doorbell between

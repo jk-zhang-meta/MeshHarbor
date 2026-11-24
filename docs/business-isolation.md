@@ -425,6 +425,31 @@ flowchart LR
 > `AppSettings::relay_auto_links_effective`, is false under it, so no relay is even offered
 > another zone's relays to measure.
 
+## VPN-resistant automatic zones (FR-138)
+
+An Auto device (`pinned_zone_id == None`) must stay in its physical Logical Network Zone even when
+a TUN-mode VPN or proxy captures its OS default route. Every server surface calls one pure function
+`resolve_device_zone_with_source` (`crates/remote_control/src/models.rs:7454-7525`):
+
+```mermaid
+flowchart LR
+    PIN["1. Admin pin (pinned_zone_id)"] --> PHYS["2. Fresh physical probe <= 24 h (auto_physical)"]
+    PHYS --> CLEAN["3. Control-WS IP if !default_route_vpn (auto_egress_ip)"]
+    CLEAN --> HELD["4. Hold last_clean_zone_id if default_route_vpn (auto_vpn_held)"]
+    HELD --> FALL["5. Flagged fallback if no clean history (auto_egress_fallback)"]
+```
+
+- **Physical-path probe.** On connect and major network changes, `meshharbord` sends a non-blocking
+  no-proxy (FR-135) `POST /api/agent/self/egress-probe` bound to a physical non-VPN uplink
+  (`IP_UNICAST_IF` on Windows, `IP_BOUND_IF` on macOS, `SO_BINDTODEVICE` on privileged Linux;
+  unprivileged Linux skips silently). When zoned under FR-134, the probe traverses the zone's
+  management entry with an `MHE1` attestation fetched over the same physical-bound socket. The
+  server records only the observed `canonical_public_ip` (`physical_public_ip` + `physical_seen_at`).
+- **Hold invariant & hysteresis.** `AgentCaps::default_route_vpn` can only hold an existing
+  `last_clean_zone_id` (step 4) and can never move a device into another zone. Within a single
+  control-WS connection, an Auto device moves to a new country only after two physical probes at
+  least 10 minutes apart agree (or immediately on reconnect with a clean physical probe).
+
 ## Known limits
 
 - **A line outlives the center instance that minted it.** Like every org-relay
@@ -475,4 +500,5 @@ flowchart LR
 | the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay`, `a_line_outlives_a_reconnect_from_its_zone_only` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | relay and TURN TestApp tests | `isolation_*` in [`peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | management through an entry (FR-128) | [`management_path.rs`](../crates/modules/fleet/src/management_path.rs), [`mgmt_entry.rs`](../agents/meshharbord/src/mgmt_entry.rs), [`agent-core management_path.rs`](../crates/agent-core/src/management_path.rs); TestApp tests in [`management_entry_tests.rs`](../crates/tests/src/management_entry_tests.rs) |
+| VPN-resistant automatic zones (FR-138) | `resolve_device_zone_with_source` & `evaluate_probe_hysteresis` in [`models.rs`](../crates/remote_control/src/models.rs), `egress_probe` in [`agent_self.rs`](../crates/api/src/routes/agent_self.rs), [`egress_probe.rs`](../agents/meshharbord/src/egress_probe.rs), `connect_tcp_bound` & `default_route_is_vpn` in [`direct.rs`](../crates/tunnel-core/src/overlay/direct.rs); TestApp tests in [`vpn_zone_tests.rs`](../crates/tests/src/vpn_zone_tests.rs) |
 | tunnel gate (#22) | `refuses_parties` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs), step 3d of `handle_tunnel_open` in [`tunnel.rs`](../crates/modules/network/src/tunnel.rs); test `a_center_brokered_tunnel_stays_in_one_zone` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |

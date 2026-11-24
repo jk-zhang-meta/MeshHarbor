@@ -232,6 +232,9 @@ pub struct ConnectedAgent {
     /// FR-137 — the gateway `agent_id` whose management entry attested this agent's
     /// current control WS connection (`None` for direct or unattested connections).
     pub via_management_entry: Option<ObjectId>,
+    /// FR-138 — whether this connection currently reports its OS default route on a
+    /// VPN/virtual interface (`AgentCaps::default_route_vpn`).
+    pub default_route_vpn: bool,
     /// FR-90 — the agent advertises `hive`: it answers `rc:hive.start` with
     /// `rc:hive.start_ack` and reports sessions with `rc:hive.state`. Per
     /// CONNECTION, for [`Self::supports_ssh_grant_ack`]'s reason — a stored
@@ -814,6 +817,12 @@ pub struct HubInner {
     agent_zones: DashMap<ObjectId, (String, BusinessZone)>,
     /// Observed trusted public IP of each online agent's current control WS.
     agent_live_ips: DashMap<ObjectId, (String, std::net::IpAddr)>,
+    /// FR-138 — active control-WS `conn_id` for each online agent (tracked even when
+    /// the WS connects from a non-public/loopback address).
+    agent_live_conn_ids: DashMap<ObjectId, String>,
+    /// FR-138 — per-agent in-memory zone hysteresis state scoped to `conn_id`.
+    agent_zone_hysteresis:
+        DashMap<ObjectId, meshharbor_remote_control::models::ConnectionZoneHysteresis>,
     /// Per-device revisioned Logical Network Zone ICE/STUN policy.
     agent_zone_ice_policies: DashMap<ObjectId, AgentZoneIcePolicy>,
     /// Shared DNS-refreshed ICE server zone/country map (independent of `#21` gate mode).
@@ -1057,6 +1066,8 @@ impl Hub {
                 ice_gate: std::sync::OnceLock::new(),
                 agent_zones: DashMap::new(),
                 agent_live_ips: DashMap::new(),
+                agent_live_conn_ids: DashMap::new(),
+                agent_zone_hysteresis: DashMap::new(),
                 agent_zone_ice_policies: DashMap::new(),
                 ice_zones: std::sync::OnceLock::new(),
                 geoip: std::sync::OnceLock::new(),
@@ -1213,6 +1224,9 @@ impl Hub {
         conn_id: &str,
         ip: Option<std::net::IpAddr>,
     ) {
+        self.inner
+            .agent_live_conn_ids
+            .insert(agent_id, conn_id.to_string());
         match ip.and_then(meshharbor_core::user_analytics::canonical_public_ip) {
             Some(clean) => {
                 self.inner
@@ -1229,10 +1243,66 @@ impl Hub {
         self.inner
             .agent_live_ips
             .remove_if(&agent_id, |_, (c, _)| c == conn_id);
+        self.inner
+            .agent_live_conn_ids
+            .remove_if(&agent_id, |_, c| c == conn_id);
     }
 
     pub fn agent_live_public_ip(&self, agent_id: ObjectId) -> Option<std::net::IpAddr> {
         self.inner.agent_live_ips.get(&agent_id).map(|e| e.1)
+    }
+
+    /// FR-138 — live control-WS `conn_id` for `agent_id`, if connected on this pod.
+    pub fn agent_live_conn_id(&self, agent_id: ObjectId) -> Option<String> {
+        self.inner
+            .agent_live_conn_ids
+            .get(&agent_id)
+            .map(|e| e.value().clone())
+    }
+
+    /// FR-138 — evaluate anti-flapping hysteresis for an incoming physical-path egress probe.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_probe_hysteresis(
+        &self,
+        agent_id: ObjectId,
+        conn_id: &str,
+        current_zone_id: Option<&str>,
+        probe_country: Option<&str>,
+        probe_zone_id: Option<&str>,
+        ws_country: Option<&str>,
+        default_route_vpn: bool,
+        now_ms: i64,
+    ) -> meshharbor_remote_control::models::ProbeHysteresisDecision {
+        let mut entry = self.inner.agent_zone_hysteresis.entry(agent_id).or_default();
+        meshharbor_remote_control::models::evaluate_probe_hysteresis(
+            entry.value_mut(),
+            conn_id,
+            current_zone_id,
+            probe_country,
+            probe_zone_id,
+            ws_country,
+            default_route_vpn,
+            now_ms,
+        )
+    }
+
+    /// FR-138 — drop per-connection hysteresis state when `conn_id` disconnects.
+    pub fn clear_zone_hysteresis(&self, agent_id: ObjectId, conn_id: &str) {
+        self.inner
+            .agent_zone_hysteresis
+            .remove_if(&agent_id, |_, st| st.conn_id == conn_id);
+    }
+
+    /// FR-138 — shift any pending hysteresis candidate timestamp backwards by `delta_ms`.
+    /// Intended for deterministic tests verifying the 10-minute anti-flapping window.
+    pub fn backdate_zone_hysteresis(&self, agent_id: ObjectId, delta_ms: i64) -> bool {
+        if let Some(mut entry) = self.inner.agent_zone_hysteresis.get_mut(&agent_id)
+            && let Some(ref mut pending) = entry.value_mut().pending
+        {
+            pending.first_seen_ms = pending.first_seen_ms.saturating_sub(delta_ms);
+            return true;
+        }
+        false
     }
 
     /// Install a revisioned zone ICE policy for `agent_id`. Rejects stale
@@ -1891,6 +1961,7 @@ impl Hub {
             supports_management_entry: false,
             management_entry_port: None,
             via_management_entry: None,
+            default_route_vpn: false,
             // FR-90 — set by `set_agent_hive_support`; `false` = no session
             // frame is ever pushed to this connection.
             supports_hive: false,
@@ -4139,6 +4210,17 @@ impl Hub {
             }
         }
         counts
+    }
+
+    /// FR-138 — record whether `agent_id`'s live connection reports a VPN default route.
+    /// Returns `true` if the value changed.
+    pub fn set_agent_default_route_vpn(&self, agent_id: ObjectId, vpn: bool) -> bool {
+        if let Some(mut entry) = self.inner.agents.get_mut(&agent_id) {
+            let prev = entry.default_route_vpn;
+            entry.default_route_vpn = vpn;
+            return prev != vpn;
+        }
+        false
     }
 
     /// FR-134 — push `rc:agent.management_path` to a live agent on this pod when it

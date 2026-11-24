@@ -91,6 +91,10 @@ mod exec_service_tests;
 mod business_isolation_tests;
 #[cfg(test)]
 mod network_zones_tests;
+/// FR-138 — VPN-resistant automatic zones: physical-path egress probe, unified 5-step
+/// resolution order, `default_route_vpn` hold invariant, and 10-minute anti-flapping hysteresis.
+#[cfg(test)]
+mod vpn_zone_tests;
 #[cfg(test)]
 mod extauth_tests;
 #[cfg(test)]

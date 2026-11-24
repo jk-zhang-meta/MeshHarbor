@@ -19,11 +19,11 @@ use meshharbor_core::ice_zones::host_of;
 use meshharbor_core::user_analytics::{GeoIp, canonical_public_ip};
 use meshharbor_mod_fleet::hub::AgentZoneIcePolicy;
 use meshharbor_mod_fleet::socket::{
-    agent_effective_country, effective_peer_relay_serve_revision,
+    agent_effective_country, effective_peer_relay_serve_revision, physical_ip_country,
 };
 use meshharbor_remote_control::models::{
-    Agent, CrossZoneMode, DeviceZoneResolution, NetworkZone, NodeRef, OverlayNode,
-    resolve_device_zone,
+    Agent, CrossZoneMode, DeviceZoneInputs, DeviceZoneResolution, NetworkZone, NodeRef,
+    OverlayNode, ZoneSource, resolve_device_zone, resolve_device_zone_with_source,
 };
 use tracing::warn;
 
@@ -45,6 +45,10 @@ pub fn tenant_zone_publish_lock(tenant_id: ObjectId) -> Arc<tokio::sync::Mutex<(
 pub struct AgentZoneFacts {
     pub pinned_zone_id: Option<String>,
     pub country_code: Option<String>,
+    pub physical_country: Option<String>,
+    pub physical_seen_at_ms: Option<i64>,
+    pub default_route_vpn: bool,
+    pub last_clean_zone_id: Option<String>,
 }
 
 /// Immutable per-tenant snapshot of Logical Network Zones and active agent facts.
@@ -71,6 +75,7 @@ pub struct TenantZoneSnapshot {
     /// zone's countries. A missing entry is `false` (fail closed).
     zone_central_relay_ok: HashMap<String, bool>,
     geoip: Option<Arc<GeoIp>>,
+    captured_at_ms: i64,
 }
 
 impl std::fmt::Debug for TenantZoneSnapshot {
@@ -116,11 +121,13 @@ impl TenantZoneSnapshot {
         zones: Vec<NetworkZone>,
         active_agents: &[Agent],
     ) -> Self {
+        let captured_at_ms = bson::DateTime::now().timestamp_millis();
         let mut agents = HashMap::with_capacity(active_agents.len());
         let mut serving_countries: HashMap<ObjectId, Option<String>> = HashMap::new();
         for a in active_agents {
             let Some(aid) = a.id else { continue };
             let cc = agent_effective_country(&state.fleet, a);
+            let phys_cc = physical_ip_country(&state.fleet, a.physical_public_ip.as_deref());
             if a.peer_relay_policy.serve {
                 serving_countries.insert(aid, cc.clone());
             }
@@ -129,6 +136,10 @@ impl TenantZoneSnapshot {
                 AgentZoneFacts {
                     pinned_zone_id: a.pinned_zone_id.clone(),
                     country_code: cc,
+                    physical_country: phys_cc,
+                    physical_seen_at_ms: a.physical_seen_at.map(|dt| dt.timestamp_millis()),
+                    default_route_vpn: a.capabilities.default_route_vpn,
+                    last_clean_zone_id: a.last_clean_zone_id.clone(),
                 },
             );
         }
@@ -145,6 +156,7 @@ impl TenantZoneSnapshot {
                 zone_infra_countries: HashMap::new(),
                 zone_central_relay_ok: HashMap::new(),
                 geoip: Some(state.core.geoip.clone()),
+                captured_at_ms,
             };
         }
         let central = central_relay_url(state);
@@ -195,6 +207,7 @@ impl TenantZoneSnapshot {
             zone_infra_countries,
             zone_central_relay_ok,
             geoip: Some(state.core.geoip.clone()),
+            captured_at_ms,
         }
     }
 
@@ -263,22 +276,54 @@ impl TenantZoneSnapshot {
         }
     }
 
+    pub fn resolve_agent_with_source_and_fallback_country(
+        &self,
+        agent_id: ObjectId,
+        fallback_cc: Option<&str>,
+    ) -> (DeviceZoneResolution<'_>, Option<ZoneSource>) {
+        if self.read_failed || self.superseded {
+            return (DeviceZoneResolution::UnresolvedStrict, None);
+        }
+        if !self.has_zones() {
+            return (DeviceZoneResolution::Unconfigured, None);
+        }
+        let Some(facts) = self.agents.get(&agent_id) else {
+            return (DeviceZoneResolution::UnresolvedStrict, None);
+        };
+        let cc = facts.country_code.as_deref().or(fallback_cc);
+        let now_ms = if self.captured_at_ms > 0 {
+            self.captured_at_ms
+        } else {
+            bson::DateTime::now().timestamp_millis()
+        };
+        resolve_device_zone_with_source(
+            &self.zones,
+            &DeviceZoneInputs {
+                pinned_zone_id: facts.pinned_zone_id.as_deref(),
+                physical_country: facts.physical_country.as_deref(),
+                physical_seen_at_ms: facts.physical_seen_at_ms,
+                egress_country: cc,
+                default_route_vpn: facts.default_route_vpn,
+                last_clean_zone_id: facts.last_clean_zone_id.as_deref(),
+                now_ms,
+            },
+        )
+    }
+
+    pub fn resolve_agent_with_source(
+        &self,
+        agent_id: ObjectId,
+    ) -> (DeviceZoneResolution<'_>, Option<ZoneSource>) {
+        self.resolve_agent_with_source_and_fallback_country(agent_id, None)
+    }
+
     pub fn resolve_agent_with_fallback_country(
         &self,
         agent_id: ObjectId,
         fallback_cc: Option<&str>,
     ) -> DeviceZoneResolution<'_> {
-        if self.read_failed || self.superseded {
-            return DeviceZoneResolution::UnresolvedStrict;
-        }
-        if !self.has_zones() {
-            return DeviceZoneResolution::Unconfigured;
-        }
-        let Some(facts) = self.agents.get(&agent_id) else {
-            return DeviceZoneResolution::UnresolvedStrict;
-        };
-        let cc = facts.country_code.as_deref().or(fallback_cc);
-        resolve_device_zone(&self.zones, facts.pinned_zone_id.as_deref(), cc)
+        self.resolve_agent_with_source_and_fallback_country(agent_id, fallback_cc)
+            .0
     }
 
     pub fn resolve_agent(&self, agent_id: ObjectId) -> DeviceZoneResolution<'_> {

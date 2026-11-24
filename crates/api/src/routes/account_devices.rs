@@ -12,7 +12,7 @@ use meshharbor_core::{
 use meshharbor_db::models::{DeviceShareGrant, Tenant, TenantMember};
 use meshharbor_remote_control::models::{
     Agent, AgentStatus, DeviceZoneResolution, NetworkZone, OsKind, OverlayNetwork, OverlayNode,
-    PeerRelayPolicy, resolve_device_zone,
+    PeerRelayPolicy, ZoneSource, resolve_device_zone_with_source,
 };
 use meshharbor_services::dao::base::DaoError;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,10 @@ pub struct DeviceRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -58,6 +62,10 @@ pub struct DeviceRow {
     pub effective_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<ZoneSource>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
 }
 #[derive(Serialize)]
 pub struct DevicePage {
@@ -80,9 +88,17 @@ struct StoredDevice {
     #[serde(default)]
     public_ip: Option<String>,
     #[serde(default)]
+    physical_public_ip: Option<String>,
+    #[serde(default)]
+    physical_seen_at: Option<DateTime>,
+    #[serde(default)]
+    last_clean_zone_id: Option<String>,
+    #[serde(default)]
     country_code: Option<String>,
     #[serde(default)]
     pinned_zone_id: Option<String>,
+    #[serde(default)]
+    capabilities: meshharbor_remote_control::models::AgentCaps,
     #[serde(default)]
     peer_relay_policy: PeerRelayPolicy,
 }
@@ -164,8 +180,9 @@ pub async fn list(
         "items":[{"$sort":{"_id":1}},{"$skip":skip as i64},{"$limit":size as i64},
             {"$project":{
                 "_id":1,"name":1,"display_name":1,"os":1,"status":1,"tenant_id":1,
-                "machine_id":1,"public_ip":1,"country_code":1,"pinned_zone_id":1,
-                "peer_relay_policy":1
+                "machine_id":1,"public_ip":1,"physical_public_ip":1,"physical_seen_at":1,
+                "last_clean_zone_id":1,"country_code":1,"pinned_zone_id":1,
+                "capabilities":1,"peer_relay_policy":1
             }}],
         "count":[{"$count":"total"}]
     }});
@@ -257,9 +274,15 @@ pub async fn list(
                         .as_ref()
                         .and_then(|m| node_public_ips.get(&(a.tenant_id, m.clone())).copied())
                 });
-            let loc = resolved_ip
-                .map(|ip| core.geoip.lookup_location(ip))
-                .unwrap_or_default();
+            let now_ms = DateTime::now().timestamp_millis();
+            let physical_seen_at_ms = a.physical_seen_at.map(|dt| dt.timestamp_millis());
+            let loc = meshharbor_mod_fleet::socket::lookup_display_location(
+                &core.geoip,
+                a.physical_public_ip.as_deref(),
+                physical_seen_at_ms,
+                resolved_ip,
+                now_ms,
+            );
             // Authoritative zone country uses the exact policy resolver
             // (`live_ip` -> `persisted_public_ip` -> `static_endpoints`),
             // independent of fallback display GeoIP.
@@ -281,11 +304,55 @@ pub async fn list(
                 .get(&a.tenant_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let (effective_zone_id, effective_zone_name) =
-                match resolve_device_zone(zones, a.pinned_zone_id.as_deref(), zone_cc.as_deref()) {
-                    DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
-                    _ => (None, None),
-                };
+            let physical_public_ip = a
+                .physical_public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<IpAddr>().ok())
+                .and_then(canonical_public_ip)
+                .map(|ip| ip.to_string());
+            let physical_seen_at = a
+                .physical_seen_at
+                .and_then(|dt| dt.try_to_rfc3339_string().ok());
+            let default_route_vpn = a.capabilities.default_route_vpn;
+            let (zone_res, zone_source) = match fleet {
+                Some(f) => meshharbor_mod_fleet::socket::resolve_zone_from_fields_with_source(
+                    f,
+                    zones,
+                    Some(a.id),
+                    a.pinned_zone_id.as_deref(),
+                    physical_public_ip.as_deref(),
+                    physical_seen_at_ms,
+                    a.public_ip.as_deref(),
+                    &a.peer_relay_policy.static_endpoints,
+                    None,
+                    default_route_vpn,
+                    a.last_clean_zone_id.as_deref(),
+                    now_ms,
+                ),
+                None => {
+                    let phys_cc = physical_public_ip
+                        .as_deref()
+                        .and_then(|s| s.parse::<IpAddr>().ok())
+                        .and_then(|ip| core.geoip.security_lookup(ip).country_code)
+                        .map(|c| c.to_ascii_uppercase());
+                    resolve_device_zone_with_source(
+                        zones,
+                        &meshharbor_remote_control::models::DeviceZoneInputs {
+                            pinned_zone_id: a.pinned_zone_id.as_deref(),
+                            physical_country: phys_cc.as_deref(),
+                            physical_seen_at_ms,
+                            egress_country: zone_cc.as_deref(),
+                            default_route_vpn,
+                            last_clean_zone_id: a.last_clean_zone_id.as_deref(),
+                            now_ms,
+                        },
+                    )
+                }
+            };
+            let (effective_zone_id, effective_zone_name) = match zone_res {
+                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+                _ => (None, None),
+            };
             DeviceRow {
                 id: a.id.to_hex(),
                 name: a
@@ -297,6 +364,8 @@ pub async fn list(
                 status: a.status,
                 tenant_id: a.tenant_id.to_hex(),
                 public_ip: resolved_ip.map(|ip| ip.to_string()),
+                physical_public_ip,
+                physical_seen_at,
                 country_code: display_cc,
                 country: loc.country,
                 region: loc.region,
@@ -308,6 +377,8 @@ pub async fn list(
                 pinned_zone_id: a.pinned_zone_id.filter(|s| !s.trim().is_empty()),
                 effective_zone_id,
                 effective_zone_name,
+                zone_source,
+                default_route_vpn,
             }
         })
         .collect();

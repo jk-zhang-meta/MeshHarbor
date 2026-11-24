@@ -11,6 +11,7 @@ import { isKeepBusyPattern, type KeepBusyPattern } from '@/composables/keepBusy'
 import type { AgentReleaseBrief } from '@/utils/updateStall'
 import type { GeoLevel } from '@/utils/deviceLocation'
 import { mergeNameSync, type NameSync } from '@/utils/nameSync'
+import type { ZoneSource } from '@/utils/deviceLocation'
 
 /**
  * The three org-level switches (`exec-settings`, `ssh-settings`,
@@ -422,8 +423,11 @@ export interface Agent {
    *  server-side from its STUN probe reports), e.g. "us-east". Absent/null =
    *  never probed or all probes timed out — the default region serves it. */
   relay_home?: string | null
-  /** Observed public IP + GeoIP administrative hierarchy (`国家 · 省 · 市`) and MMDB coordinates (FR-136 P6). */
+  /** Observed public IP + FR-138 physical-uplink IP + GeoIP hierarchy and MMDB coordinates (FR-136 P6). */
   public_ip?: string | null
+  physical_public_ip?: string | null
+  physical_seen_at?: string | null
+  default_route_vpn?: boolean
   country_code?: string | null
   country?: string | null
   region?: string | null
@@ -437,6 +441,7 @@ export interface Agent {
   pinned_zone_id?: string | null
   effective_zone_id?: string | null
   effective_zone_name?: string | null
+  zone_source?: ZoneSource | null
   auto_zone_hint?: { zone_id: string | null; default_zone_id: string | null }
   /** Optional FR-19 peer-relay policy when included on the agent row. */
   peer_relay_policy?: {
@@ -1846,6 +1851,7 @@ export const useAgentStore = defineStore('agents', () => {
     country_code?: string | null
     effective_zone_id: string | null
     effective_zone_name: string | null
+    zone_source?: ZoneSource | null
   }> {
     const resp = await api.put<{
       agent_id: string
@@ -1853,6 +1859,7 @@ export const useAgentStore = defineStore('agents', () => {
       country_code?: string | null
       effective_zone_id: string | null
       effective_zone_name: string | null
+      zone_source?: ZoneSource | null
     }>(`/tenant/${tenantId}/agent/${agentId}/zone-assignment`, {
       pinned_zone_id: pinnedZoneId,
     })
@@ -1893,6 +1900,9 @@ export const useAgentStore = defineStore('agents', () => {
       agents.value[idx]!.auto_zone_hint = autoZoneHint
       agents.value[idx]!.effective_zone_id = resp.effective_zone_id
       agents.value[idx]!.effective_zone_name = resp.effective_zone_name
+      if (resp.zone_source !== undefined) {
+        agents.value[idx]!.zone_source = resp.zone_source
+      }
     }
     peerRelays.syncAgentZone(agentId, resp, contradictedAutoCountry, autoZoneHint)
     return resp

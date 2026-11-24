@@ -413,6 +413,10 @@ pub fn build_router(state: AppState) -> Router {
     #[cfg(feature = "fleet")]
     let api = api
         .route("/agent/self/devices", get(routes::agent_self::devices))
+        .route(
+            "/agent/self/egress-probe",
+            post(routes::agent_self::egress_probe),
+        )
         .route("/agent/self/mesh", get(routes::agent_self::mesh));
 
     // Health check. `/health` stays a cheap process-alive 200 (liveness /

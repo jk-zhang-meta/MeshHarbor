@@ -124,6 +124,10 @@ pub struct DeviceRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -145,6 +149,10 @@ pub struct DeviceRow {
     pub effective_zone_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
 }
 
 /// GET /api/tenant/{tenant_id}/device — membership-gated like every other
@@ -474,28 +482,45 @@ pub(crate) fn agent_row(
     // Only alongside `rdp_available == Some(true)`, like the three above.
     let rdp_mesh_reachable = rdp_available.and(a.capabilities.rdp_mesh_reachable);
     let resolved_ip = a
-        .public_ip
+        .id
+        .and_then(|aid| fleet.rc_hub.agent_live_public_ip(aid))
+        .or_else(|| {
+            a.public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        })
+        .or_else(|| public_ip_from_node(node));
+    let loc = meshharbor_mod_fleet::socket::lookup_display_location(
+        geoip,
+        a.physical_public_ip.as_deref(),
+        a.physical_seen_at.map(|dt| dt.timestamp_millis()),
+        resolved_ip,
+        bson::DateTime::now().timestamp_millis(),
+    );
+    let pinned_zone_id = a.pinned_zone_id.clone();
+    let (zone_res, zone_source) = meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(
+        fleet,
+        zones,
+        &a,
+        loc.country_code.as_deref(),
+    );
+    let (effective_zone_id, effective_zone_name) = match zone_res {
+        meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+            (Some(z.id.clone()), Some(z.name.clone()))
+        }
+        _ => (None, None),
+    };
+    let physical_public_ip = a
+        .physical_public_ip
         .as_deref()
         .and_then(|s| s.parse::<std::net::IpAddr>().ok())
         .and_then(meshharbor_core::user_analytics::canonical_public_ip)
-        .or_else(|| public_ip_from_node(node));
-    let loc = resolved_ip
-        .map(|ip| geoip.lookup_location(ip))
-        .unwrap_or_default();
-    let effective_cc = meshharbor_mod_fleet::socket::agent_effective_country(fleet, &a)
-        .or_else(|| loc.country_code.clone());
-    let pinned_zone_id = a.pinned_zone_id.clone();
-    let (effective_zone_id, effective_zone_name) =
-        match meshharbor_remote_control::models::resolve_device_zone(
-            zones,
-            pinned_zone_id.as_deref(),
-            effective_cc.as_deref(),
-        ) {
-            meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
-                (Some(z.id.clone()), Some(z.name.clone()))
-            }
-            _ => (None, None),
-        };
+        .map(|ip| ip.to_string());
+    let physical_seen_at = a
+        .physical_seen_at
+        .and_then(|dt| dt.try_to_rfc3339_string().ok());
+    let default_route_vpn = a.capabilities.default_route_vpn;
     DeviceRow {
         kind: "agent",
         id: a.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -524,6 +549,8 @@ pub(crate) fn agent_row(
         rdp_cert_sha256,
         rdp_mesh_reachable,
         public_ip: resolved_ip.map(|ip| ip.to_string()),
+        physical_public_ip,
+        physical_seen_at,
         country_code: loc.country_code,
         country: loc.country,
         region: loc.region,
@@ -535,6 +562,8 @@ pub(crate) fn agent_row(
         pinned_zone_id,
         effective_zone_id,
         effective_zone_name,
+        zone_source,
+        default_route_vpn,
     }
 }
 
@@ -551,17 +580,20 @@ pub(crate) fn client_row(
     let loc = resolved_ip
         .map(|ip| geoip.lookup_location(ip))
         .unwrap_or_default();
-    let (effective_zone_id, effective_zone_name) =
-        match meshharbor_remote_control::models::resolve_device_zone(
-            zones,
-            None,
-            loc.country_code.as_deref(),
-        ) {
-            meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
-                (Some(z.id.clone()), Some(z.name.clone()))
-            }
-            _ => (None, None),
-        };
+    let (zone_res, zone_source) = meshharbor_remote_control::models::resolve_device_zone_with_source(
+        zones,
+        &meshharbor_remote_control::models::DeviceZoneInputs {
+            egress_country: loc.country_code.as_deref(),
+            now_ms: bson::DateTime::now().timestamp_millis(),
+            ..Default::default()
+        },
+    );
+    let (effective_zone_id, effective_zone_name) = match zone_res {
+        meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
+            (Some(z.id.clone()), Some(z.name.clone()))
+        }
+        _ => (None, None),
+    };
     DeviceRow {
         kind: "tunnel_client",
         id: c.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -595,6 +627,8 @@ pub(crate) fn client_row(
         rdp_cert_sha256: None,
         rdp_mesh_reachable: None,
         public_ip: resolved_ip.map(|ip| ip.to_string()),
+        physical_public_ip: None,
+        physical_seen_at: None,
         country_code: loc.country_code,
         country: loc.country,
         region: loc.region,
@@ -606,6 +640,8 @@ pub(crate) fn client_row(
         pinned_zone_id: None,
         effective_zone_id,
         effective_zone_name,
+        zone_source,
+        default_route_vpn: false,
     }
 }
 

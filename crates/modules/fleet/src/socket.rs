@@ -241,6 +241,14 @@ pub async fn handle_agent_socket(
         }
     });
 
+    let (prev_persisted_ip, prev_default_route_vpn) = state
+        .agents
+        .find_live_in_tenant(tenant_id, agent_id)
+        .await
+        .ok()
+        .map(|r| (r.public_ip, r.capabilities.default_route_vpn))
+        .unwrap_or((None, false));
+
     // Persist: mark online, update hello fields on the Mongo row. Best-effort —
     // signaling still works if Mongo lags.
     if let Err(e) = state
@@ -262,18 +270,12 @@ pub async fn handle_agent_socket(
     {
         warn!(%agent_id, %e, "agent update_hello failed");
     }
-    let prev_persisted_ip = state
-        .agents
-        .find_live_in_tenant(tenant_id, agent_id)
-        .await
-        .ok()
-        .and_then(|r| r.public_ip);
     state.rc_hub.set_agent_live_public_ip(
         agent_id,
         &conn_id,
         connection_origin.observed_public_ip(),
     );
-    let mut roamed_public_ip = false;
+    let mut roamed_public_ip = prev_default_route_vpn != caps.default_route_vpn;
     if let Some(pub_ip) = connection_origin.observed_public_ip() {
         let next_ip_str = pub_ip.to_string();
         if let Err(e) = state.agents.update_public_ip(agent_id, &next_ip_str).await {
@@ -281,32 +283,37 @@ pub async fn handle_agent_socket(
         }
         if prev_persisted_ip.as_deref() != Some(next_ip_str.as_str()) {
             roamed_public_ip = true;
-            let net_dao =
-                meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
-            let mut should_bump = false;
-            for _ in 0..5 {
-                let Ok(net1) = net_dao.find_for_tenant(tenant_id).await else {
-                    break;
-                };
-                let _ = state.agents.find_live_in_tenant(tenant_id, agent_id).await;
-                let Ok(net2) = net_dao.find_for_tenant(tenant_id).await else {
-                    break;
-                };
-                if net1.as_ref().is_some_and(|n| !n.zones.is_empty())
-                    || net2.as_ref().is_some_and(|n| !n.zones.is_empty())
-                {
-                    should_bump = true;
-                    break;
-                }
-                if net1.as_ref().map(|n| n.zone_revision) == net2.as_ref().map(|n| n.zone_revision)
-                    && net1.is_some() == net2.is_some()
-                {
-                    break;
-                }
+        }
+    }
+    // FR-138 — record clean non-VPN zone history before evaluating connect policies so a
+    // subsequent VPN toggle (step d) immediately has the verified zone to hold.
+    maybe_record_clean_zone_for_tenant(&state, tenant_id, agent_id).await;
+    if roamed_public_ip {
+        let net_dao =
+            meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+        let mut should_bump = false;
+        for _ in 0..5 {
+            let Ok(net1) = net_dao.find_for_tenant(tenant_id).await else {
+                break;
+            };
+            let _ = state.agents.find_live_in_tenant(tenant_id, agent_id).await;
+            let Ok(net2) = net_dao.find_for_tenant(tenant_id).await else {
+                break;
+            };
+            if net1.as_ref().is_some_and(|n| !n.zones.is_empty())
+                || net2.as_ref().is_some_and(|n| !n.zones.is_empty())
+            {
+                should_bump = true;
+                break;
             }
-            if should_bump {
-                let _ = net_dao.bump_zone_revision(tenant_id).await;
+            if net1.as_ref().map(|n| n.zone_revision) == net2.as_ref().map(|n| n.zone_revision)
+                && net1.is_some() == net2.is_some()
+            {
+                break;
             }
+        }
+        if should_bump {
+            let _ = net_dao.bump_zone_revision(tenant_id).await;
         }
     }
 
@@ -501,6 +508,9 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_management_entry_port(agent_id, caps.management_entry_port);
+    state
+        .rc_hub
+        .set_agent_default_route_vpn(agent_id, caps.default_route_vpn);
     state.rc_hub.set_agent_hive_support(agent_id, runs_hive);
     state
         .rc_hub
@@ -1277,6 +1287,13 @@ pub async fn handle_agent_socket(
                                             )
                                             .await;
                                         }
+                                        if state.rc_hub.set_agent_default_route_vpn(
+                                            agent_id,
+                                            caps.default_route_vpn,
+                                        ) {
+                                            on_agent_vpn_flag_changed(&state, tenant_id, agent_id)
+                                                .await;
+                                        }
                                         if state.rc_hub.set_agent_relay_server_support(
                                             agent_id,
                                             caps.has_rpc(RpcCap::RelayServer),
@@ -1531,6 +1548,7 @@ pub async fn handle_agent_socket(
     }
     state.rc_hub.clear_agent_business_zone(agent_id, &conn_id);
     state.rc_hub.clear_agent_live_public_ip(agent_id, &conn_id);
+    state.rc_hub.clear_zone_hysteresis(agent_id, &conn_id);
     business_observation.finish(&state.core, &conn_id).await;
     info!(%agent_id, "remote-control agent WS disconnected");
 }
@@ -1853,6 +1871,240 @@ pub fn effective_country_from_sources(
     None
 }
 
+/// FR-138 — resolve GeoIP country code (uppercase ISO-3166 alpha-2) for a physical public IP.
+pub fn physical_ip_country(state: &FleetState, physical_public_ip: Option<&str>) -> Option<String> {
+    let ip = physical_public_ip
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip)?;
+    state
+        .core
+        .geoip
+        .security_lookup(ip)
+        .country_code
+        .map(|c| c.to_ascii_uppercase())
+}
+
+/// FR-138 — pick the canonical public IP used to resolve a device's display
+/// location (`country_code`/`country`/`region`/`city` + P6 `lat`/`lon`/`accuracy_radius_km`/`geo_level`).
+///
+/// When `physical_public_ip` is a valid public IP observed within the freshness
+/// window (`physical_egress_is_fresh`), display location follows the physical
+/// egress so a VPN exit does not misplace the device on the map; otherwise it
+/// falls back to `fallback_egress_ip` (the existing live/persisted/node IP).
+pub fn display_location_ip(
+    physical_public_ip: Option<&str>,
+    physical_seen_at_ms: Option<i64>,
+    fallback_egress_ip: Option<std::net::IpAddr>,
+    now_ms: i64,
+) -> Option<std::net::IpAddr> {
+    if meshharbor_remote_control::models::physical_egress_is_fresh(physical_seen_at_ms, now_ms)
+        && let Some(phys_ip) = physical_public_ip
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+    {
+        return Some(phys_ip);
+    }
+    fallback_egress_ip
+}
+
+/// FR-138 — resolve a device's display [`meshharbor_core::user_analytics::GeoIpLocation`]
+/// through [`display_location_ip`]. Used by every device listing that fills
+/// display location and P6 coordinates so location follows fresh physical egress
+/// instead of a VPN exit.
+pub fn lookup_display_location(
+    geoip: &meshharbor_core::user_analytics::GeoIp,
+    physical_public_ip: Option<&str>,
+    physical_seen_at_ms: Option<i64>,
+    fallback_egress_ip: Option<std::net::IpAddr>,
+    now_ms: i64,
+) -> meshharbor_core::user_analytics::GeoIpLocation {
+    display_location_ip(
+        physical_public_ip,
+        physical_seen_at_ms,
+        fallback_egress_ip,
+        now_ms,
+    )
+    .map(|ip| geoip.lookup_location(ip))
+    .unwrap_or_default()
+}
+
+/// FR-138 — unified zone resolution for a full [`Agent`] row.
+///
+/// Every server surface (connect policy, management path, Hub ICE policy, device listings,
+/// zone assignments, relay views) calls through this or [`resolve_zone_from_fields_with_source`].
+pub fn resolve_agent_zone_with_source<'a>(
+    state: &FleetState,
+    zones: &'a [meshharbor_remote_control::models::NetworkZone],
+    agent: &meshharbor_remote_control::models::Agent,
+    fallback_egress_country: Option<&str>,
+) -> (
+    meshharbor_remote_control::models::DeviceZoneResolution<'a>,
+    Option<meshharbor_remote_control::models::ZoneSource>,
+) {
+    resolve_zone_from_fields_with_source(
+        state,
+        zones,
+        agent.id,
+        agent.pinned_zone_id.as_deref(),
+        agent.physical_public_ip.as_deref(),
+        agent.physical_seen_at.map(|dt| dt.timestamp_millis()),
+        agent.public_ip.as_deref(),
+        &agent.peer_relay_policy.static_endpoints,
+        fallback_egress_country,
+        agent.capabilities.default_route_vpn,
+        agent.last_clean_zone_id.as_deref(),
+        bson::DateTime::now().timestamp_millis(),
+    )
+}
+
+/// FR-138 — unified zone resolution from projected agent fields (e.g. account directory aggregate).
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_zone_from_fields_with_source<'a>(
+    state: &FleetState,
+    zones: &'a [meshharbor_remote_control::models::NetworkZone],
+    agent_id: Option<bson::oid::ObjectId>,
+    pinned_zone_id: Option<&str>,
+    physical_public_ip: Option<&str>,
+    physical_seen_at_ms: Option<i64>,
+    persisted_public_ip: Option<&str>,
+    static_endpoints: &[String],
+    fallback_egress_country: Option<&str>,
+    default_route_vpn: bool,
+    last_clean_zone_id: Option<&str>,
+    now_ms: i64,
+) -> (
+    meshharbor_remote_control::models::DeviceZoneResolution<'a>,
+    Option<meshharbor_remote_control::models::ZoneSource>,
+) {
+    let phys_cc = physical_ip_country(state, physical_public_ip);
+    let egress_cc = effective_country_from_sources(
+        state,
+        agent_id,
+        persisted_public_ip,
+        static_endpoints,
+    )
+    .or_else(|| fallback_egress_country.map(|c| c.to_ascii_uppercase()));
+    meshharbor_remote_control::models::resolve_device_zone_with_source(
+        zones,
+        &meshharbor_remote_control::models::DeviceZoneInputs {
+            pinned_zone_id,
+            physical_country: phys_cc.as_deref(),
+            physical_seen_at_ms,
+            egress_country: egress_cc.as_deref(),
+            default_route_vpn,
+            last_clean_zone_id,
+            now_ms,
+        },
+    )
+}
+
+/// FR-138 — persist `last_clean_zone_id` when an agent has a verified non-VPN Auto zone
+/// (`AutoPhysical` or `AutoEgressIp`). Never records a centre zone or a VPN fallback zone.
+pub async fn maybe_record_clean_zone(
+    state: &FleetState,
+    agent_id: ObjectId,
+    agent: &meshharbor_remote_control::models::Agent,
+    zones: &[meshharbor_remote_control::models::NetworkZone],
+) {
+    use meshharbor_remote_control::models::{DeviceZoneResolution, ZoneSource};
+    if zones.is_empty() {
+        return;
+    }
+    let (res, src) = resolve_zone_from_fields_with_source(
+        state,
+        zones,
+        agent.id,
+        None,
+        agent.physical_public_ip.as_deref(),
+        agent.physical_seen_at.map(|dt| dt.timestamp_millis()),
+        agent.public_ip.as_deref(),
+        &agent.peer_relay_policy.static_endpoints,
+        None,
+        agent.capabilities.default_route_vpn,
+        agent.last_clean_zone_id.as_deref(),
+        bson::DateTime::now().timestamp_millis(),
+    );
+    if let (DeviceZoneResolution::Resolved(z), Some(ZoneSource::AutoPhysical | ZoneSource::AutoEgressIp)) =
+        (res, src)
+        && !z.is_centre
+        && agent.last_clean_zone_id.as_deref() != Some(z.id.as_str())
+        && let Err(e) = state
+            .agents
+            .update_last_clean_zone(agent_id, &z.id, bson::DateTime::now())
+            .await
+    {
+        warn!(%agent_id, %e, "agent update_last_clean_zone failed");
+    }
+}
+
+async fn maybe_record_clean_zone_for_tenant(
+    state: &FleetState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) {
+    let net_dao = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+    let Ok(Some(net)) = net_dao.find_for_tenant(tenant_id).await else {
+        return;
+    };
+    if net.zones.is_empty() {
+        return;
+    }
+    if let Ok(agent) = state.agents.find_live_in_tenant(tenant_id, agent_id).await {
+        maybe_record_clean_zone(state, agent_id, &agent, &net.zones).await;
+    }
+}
+
+/// FR-138 — refresh clean history, zone revision, Hub ICE policy, overlay policy, and management
+/// paths when an agent's `default_route_vpn` flag flips mid-connection via heartbeat.
+async fn on_agent_vpn_flag_changed(state: &FleetState, tenant_id: ObjectId, agent_id: ObjectId) {
+    let net_dao = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+    let Ok(Some(net)) = net_dao.find_for_tenant(tenant_id).await else {
+        return;
+    };
+    if net.zones.is_empty() {
+        return;
+    }
+    if let Ok(agent) = state.agents.find_live_in_tenant(tenant_id, agent_id).await {
+        maybe_record_clean_zone(state, agent_id, &agent, &net.zones).await;
+    }
+    let _ = net_dao.bump_zone_revision(tenant_id).await;
+    if let ConnectZoneSnapshot::Consistent { ice_policy, .. } =
+        load_consistent_connect_zone_and_relay_state(state, tenant_id, agent_id).await
+    {
+        state
+            .rc_hub
+            .set_agent_zone_ice_policy(agent_id, ice_policy.clone());
+        let countries_vec: Vec<String> = ice_policy.allowed_countries.iter().cloned().collect();
+        crate::ctrl::publish_rc_ctrl(
+            state,
+            "zone_policy",
+            serde_json::json!({
+                "tenant_id": tenant_id.to_hex(),
+                "agent_id": agent_id.to_hex(),
+                "policy_revision": ice_policy.policy_revision,
+                "strict": ice_policy.strict,
+                "allowed_countries": countries_vec,
+                "zone": ice_policy.zone_json().0,
+                "zones": ice_policy.zone_json().1,
+            }),
+        )
+        .await;
+    }
+    crate::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_policy_sync",
+        serde_json::json!({
+            "db": state.core.db.name(),
+            "tenant_id": tenant_id.to_hex(),
+            "auth_revision": 1_u64,
+            "reason": "zone_policy",
+            "agent_id": agent_id.to_hex(),
+        }),
+    )
+    .await;
+    crate::management_path::sync_tenant_management_paths(state, tenant_id).await;
+}
+
 /// Monotonically increasing composite revision for `ServerMsg::PeerRelayServe`
 /// combining the tenant's topology/zone revision (`zone_revision`) and the
 /// relay's own policy revision (`peer_relay_revision`).
@@ -1920,9 +2172,7 @@ pub(crate) fn compute_ice_policy_from_snapshot(
     agent: &meshharbor_remote_control::models::Agent,
     approved_relays: &[meshharbor_remote_control::models::Agent],
 ) -> crate::hub::AgentZoneIcePolicy {
-    use meshharbor_remote_control::models::{
-        CrossZoneMode, DeviceZoneResolution, resolve_device_zone,
-    };
+    use meshharbor_remote_control::models::{CrossZoneMode, DeviceZoneResolution};
     let Some(net) = net else {
         return crate::hub::AgentZoneIcePolicy {
             policy_revision: 0,
@@ -1939,8 +2189,7 @@ pub(crate) fn compute_ice_policy_from_snapshot(
     }
     // FR-121 — every policy carries the tenant's zones, for the session route.
     let zones = crate::hub::zone_route_infos(&net.zones);
-    let cc = agent_effective_country(state, agent);
-    match resolve_device_zone(&net.zones, agent.pinned_zone_id.as_deref(), cc.as_deref()) {
+    match resolve_agent_zone_with_source(state, &net.zones, agent, None).0 {
         DeviceZoneResolution::Unconfigured => crate::hub::AgentZoneIcePolicy {
             policy_revision: net.zone_revision,
             strict: false,
@@ -1985,7 +2234,6 @@ fn compute_connect_backbone_endpoints(
     use meshharbor_core::user_analytics::canonical_public_ip;
     use meshharbor_remote_control::models::{
         DeviceZoneResolution, MAX_PEER_RELAY_BACKBONE_EDGES, peer_relay_limits as limits,
-        resolve_device_zone,
     };
     use std::net::{IpAddr, SocketAddr};
 
@@ -2021,12 +2269,9 @@ fn compute_connect_backbone_endpoints(
     if net.zones.is_empty() {
         return out;
     }
-    let own_cc = agent_effective_country(state, agent);
-    let DeviceZoneResolution::Resolved(own_zone) = resolve_device_zone(
-        &net.zones,
-        agent.pinned_zone_id.as_deref(),
-        own_cc.as_deref(),
-    ) else {
+    let DeviceZoneResolution::Resolved(own_zone) =
+        resolve_agent_zone_with_source(state, &net.zones, agent, None).0
+    else {
         return out;
     };
     let auto_links = state.core.settings.app.relay_auto_links_effective();
@@ -2037,12 +2282,9 @@ fn compute_connect_backbone_endpoints(
         if peer_aid == own_id || explicit_targets.contains(&peer_aid) {
             continue;
         }
-        let peer_cc = agent_effective_country(state, peer);
-        let DeviceZoneResolution::Resolved(peer_zone) = resolve_device_zone(
-            &net.zones,
-            peer.pinned_zone_id.as_deref(),
-            peer_cc.as_deref(),
-        ) else {
+        let DeviceZoneResolution::Resolved(peer_zone) =
+            resolve_agent_zone_with_source(state, &net.zones, peer, None).0
+        else {
             continue;
         };
         let same_zone = peer_zone.id == own_zone.id;
@@ -2656,5 +2898,56 @@ mod tests {
             effective_peer_relay_serve_revision(5, 1)
                 > effective_peer_relay_serve_revision(4, 0xFF_FFFF)
         );
+    }
+
+    #[test]
+    fn display_location_ip_prefers_fresh_physical_egress_and_falls_back_when_stale_or_absent() {
+        use std::net::IpAddr;
+
+        let now_ms: i64 = 1_800_000_000_000;
+        let fresh_seen_ms = now_ms - 5 * 60 * 1000; // 5 min ago (< 24 h)
+        let stale_seen_ms = now_ms - 25 * 60 * 60 * 1000; // 25 h ago (> 24 h)
+        let phys_ip: IpAddr = "192.0.2.10".parse().unwrap();
+        let vpn_ip: IpAddr = "198.51.100.20".parse().unwrap();
+
+        // 1. Fresh physical IP wins over VPN egress IP.
+        assert_eq!(
+            display_location_ip(Some("192.0.2.10"), Some(fresh_seen_ms), Some(vpn_ip), now_ms),
+            Some(phys_ip)
+        );
+
+        // 2. Stale physical IP (> 24 h) falls back to current egress IP.
+        assert_eq!(
+            display_location_ip(Some("192.0.2.10"), Some(stale_seen_ms), Some(vpn_ip), now_ms),
+            Some(vpn_ip)
+        );
+
+        // 3. No physical IP falls back to current egress IP.
+        assert_eq!(
+            display_location_ip(None, None, Some(vpn_ip), now_ms),
+            Some(vpn_ip)
+        );
+
+        // 4. Fresh timestamp with missing/private/invalid physical IP falls back to current egress IP.
+        assert_eq!(
+            display_location_ip(Some("10.0.0.5"), Some(fresh_seen_ms), Some(vpn_ip), now_ms),
+            Some(vpn_ip)
+        );
+        assert_eq!(
+            display_location_ip(Some("not-an-ip"), Some(fresh_seen_ms), Some(vpn_ip), now_ms),
+            Some(vpn_ip)
+        );
+
+        // 5. Neither available returns None, and lookup_display_location returns empty default.
+        assert_eq!(display_location_ip(None, None, None, now_ms), None);
+        let empty_geo = meshharbor_core::user_analytics::GeoIp::open(None);
+        let loc = lookup_display_location(
+            &empty_geo,
+            Some("192.0.2.10"),
+            Some(fresh_seen_ms),
+            Some(vpn_ip),
+            now_ms,
+        );
+        assert_eq!(loc, meshharbor_core::user_analytics::GeoIpLocation::default());
     }
 }

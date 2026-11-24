@@ -11,8 +11,18 @@
 
 export type GeoLevel = 'coords' | 'city' | 'region' | 'country' | 'unknown'
 
+export type ZoneSource =
+  | 'pinned'
+  | 'auto_physical'
+  | 'auto_vpn_held'
+  | 'auto_egress_ip'
+  | 'auto_egress_fallback'
+
 export interface GeoLocationFields {
   public_ip?: string | null
+  physical_public_ip?: string | null
+  physical_seen_at?: string | null
+  default_route_vpn?: boolean | null
   country_code?: string | null
   country?: string | null
   region?: string | null
@@ -27,6 +37,7 @@ export interface DeviceZoneFields {
   pinned_zone_id?: string | null
   effective_zone_id?: string | null
   effective_zone_name?: string | null
+  zone_source?: ZoneSource | null
 }
 
 export interface FormattedDeviceZone {
@@ -40,6 +51,8 @@ export interface FormattedDeviceZone {
   pinned: boolean
   /** True when a logical zone is resolved or pinned for this device. */
   hasZone: boolean
+  /** FR-138 evidence source that decided the zone, or `''` on legacy payloads. */
+  zoneSource: ZoneSource | ''
 }
 
 export interface FormattedDeviceLocation {
@@ -47,9 +60,15 @@ export interface FormattedDeviceLocation {
   locationText: string
   /** Normalized uppercase 2-letter ISO country code (e.g. `CN`, `HK`, `US`), or `''`. */
   countryCode: string
-  /** Trimmed public IP literal, or `''` when unknown. */
+  /** Trimmed current control-WS / egress public IP literal, or `''` when unknown. */
   publicIp: string
-  /** True when at least one of locationText, countryCode, or publicIp is present. */
+  /** Trimmed server-observed physical-uplink egress IP literal (FR-138), or `''` when unknown. */
+  physicalIp: string
+  /** RFC 3339 timestamp of the last physical-uplink observation, or `''`. */
+  physicalSeenAt: string
+  /** Whether the device reports its OS default route sits on a VPN/virtual interface. */
+  defaultRouteVpn: boolean
+  /** True when at least one of locationText, countryCode, publicIp, or physicalIp is present. */
   hasAny: boolean
 }
 
@@ -120,13 +139,32 @@ export function formatDeviceLocation(
   const rawCode = pickStr(primary?.country_code, fallback?.country_code).toUpperCase()
   const countryCode = /^[A-Z]{2}$/.test(rawCode) ? rawCode : ''
   const publicIp = pickStr(primary?.public_ip, fallback?.public_ip)
+  const physicalIp = pickStr(primary?.physical_public_ip, fallback?.physical_public_ip)
+  const physicalSeenAt = pickStr(primary?.physical_seen_at, fallback?.physical_seen_at)
+  const defaultRouteVpn = Boolean(primary?.default_route_vpn ?? fallback?.default_route_vpn)
   const locationText = dedupeLocationParts([country, region, city]).join(' · ')
   return {
     locationText,
     countryCode,
     publicIp,
-    hasAny: Boolean(locationText || countryCode || publicIp),
+    physicalIp,
+    physicalSeenAt,
+    defaultRouteVpn,
+    hasAny: Boolean(locationText || countryCode || publicIp || physicalIp),
   }
+}
+
+const KNOWN_ZONE_SOURCES = new Set<ZoneSource>([
+  'pinned',
+  'auto_physical',
+  'auto_vpn_held',
+  'auto_egress_ip',
+  'auto_egress_fallback',
+])
+
+function pickZoneSource(a?: string | null, b?: string | null): ZoneSource | '' {
+  const raw = pickStr(a, b) as ZoneSource
+  return KNOWN_ZONE_SOURCES.has(raw) ? raw : ''
 }
 
 export function formatDeviceZone(
@@ -143,11 +181,76 @@ export function formatDeviceZone(
   const zoneId = effectiveId || pinnedId
   const zoneLabel = effectiveName || effectiveId || pinnedId
   const hasZone = Boolean(zoneLabel)
+  const zoneSource = pickZoneSource(primary?.zone_source, fallback?.zone_source)
   return {
     zoneId,
     zoneLabel,
     badgeText: hasZone ? zoneLabel : '',
     pinned,
     hasZone,
+    zoneSource,
   }
+}
+
+type TranslateFn = (key: string, named?: Record<string, unknown>) => string
+
+/**
+ * FR-138 — format the zone chip display label including its decision source
+ * when the server reported `zone_source` (preserves bare `zoneLabel` on legacy
+ * rows without `zone_source`).
+ */
+export function formatZoneChipLabel(zone: FormattedDeviceZone, t: TranslateFn): string {
+  if (!zone.hasZone) return ''
+  switch (zone.zoneSource) {
+    case 'pinned':
+      return `${zone.zoneLabel} · ${t('mh.dev.zoneSourcePinned')}`
+    case 'auto_physical':
+      return `${zone.zoneLabel} · ${t('mh.dev.zoneSourcePhysical')}`
+    case 'auto_vpn_held':
+      return t('mh.dev.zoneSourceVpnHeld', { zone: zone.zoneLabel })
+    case 'auto_egress_ip':
+      return `${zone.zoneLabel} · ${t('mh.dev.zoneSourceEgress')}`
+    case 'auto_egress_fallback':
+      return `${zone.zoneLabel} · ${t('mh.dev.zoneSourceEgressFallback')}`
+    default:
+      return zone.badgeText
+  }
+}
+
+/**
+ * FR-138 — format the zone chip tooltip explaining which evidence decided the zone.
+ */
+export function formatZoneTooltip(zone: FormattedDeviceZone, t: TranslateFn): string {
+  if (!zone.hasZone) return ''
+  switch (zone.zoneSource) {
+    case 'pinned':
+      return t('mh.dev.zonePinnedTitle', { zone: zone.zoneLabel })
+    case 'auto_physical':
+      return t('mh.dev.zonePhysicalTitle', { zone: zone.zoneLabel })
+    case 'auto_vpn_held':
+      return t('mh.dev.zoneVpnHeldTitle', { zone: zone.zoneLabel })
+    case 'auto_egress_ip':
+      return t('mh.dev.zoneEgressTitle', { zone: zone.zoneLabel })
+    case 'auto_egress_fallback':
+      return t('mh.dev.zoneEgressFallbackTitle', { zone: zone.zoneLabel })
+    default:
+      return zone.pinned
+        ? t('mh.dev.zonePinnedTitle', { zone: zone.zoneLabel })
+        : t('mh.dev.zoneAutoTitle', { zone: zone.zoneLabel })
+  }
+}
+
+export function zoneChipColor(zone: FormattedDeviceZone): string {
+  if (zone.pinned || zone.zoneSource === 'pinned') return 'primary'
+  if (zone.zoneSource === 'auto_vpn_held') return 'info'
+  if (zone.zoneSource === 'auto_egress_fallback') return 'warning'
+  return 'secondary'
+}
+
+export function zoneChipIcon(zone: FormattedDeviceZone): string {
+  if (zone.pinned || zone.zoneSource === 'pinned') return 'mdi-pin-outline'
+  if (zone.zoneSource === 'auto_vpn_held') return 'mdi-shield-lock-outline'
+  if (zone.zoneSource === 'auto_physical') return 'mdi-ethernet'
+  if (zone.zoneSource === 'auto_egress_fallback') return 'mdi-alert-circle-outline'
+  return 'mdi-map-marker-radius-outline'
 }

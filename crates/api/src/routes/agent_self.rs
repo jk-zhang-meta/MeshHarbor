@@ -37,12 +37,16 @@ use std::collections::{HashMap, HashSet};
 use axum::{
     Json,
     extract::{Query, State},
+    http::HeaderMap,
 };
 use meshharbor_core::ApiError;
+use meshharbor_core::client_ip::{ConnectionOrigin, PeerAddr};
 use meshharbor_mod_fleet::agent::{AgentPresence, agent_presence_batch, derive_agent_presence};
 use meshharbor_remote_control::models::{
-    NodeRef, OverlayAclMode, OverlayNode, VisibleDeviceRow, VisibleDevicesPage,
+    DeviceZoneResolution, NodeRef, OverlayAclMode, OverlayNode, ProbeHysteresisDecision,
+    VisibleDeviceRow, VisibleDevicesPage, ZoneSource, auto_zone_for_country,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::extractors::auth_agent::HostAuthAgent;
 #[cfg(feature = "network")]
@@ -369,6 +373,8 @@ pub async fn devices(
         r.overlay_key_epoch = None;
         if temporary_caller {
             r.public_ip = None;
+            r.physical_public_ip = None;
+            r.physical_seen_at = None;
             r.country_code = None;
             r.country = None;
             r.region = None;
@@ -380,6 +386,8 @@ pub async fn devices(
             r.pinned_zone_id = None;
             r.effective_zone_id = None;
             r.effective_zone_name = None;
+            r.zone_source = None;
+            r.default_route_vpn = false;
         }
     }
 
@@ -423,6 +431,8 @@ pub async fn devices(
                 rdp_cert_sha256: r.rdp_cert_sha256,
                 rdp_mesh_reachable: r.rdp_mesh_reachable,
                 public_ip: r.public_ip,
+                physical_public_ip: r.physical_public_ip,
+                physical_seen_at: r.physical_seen_at,
                 country_code: r.country_code,
                 country: r.country,
                 region: r.region,
@@ -434,6 +444,8 @@ pub async fn devices(
                 pinned_zone_id: r.pinned_zone_id,
                 effective_zone_id: r.effective_zone_id,
                 effective_zone_name: r.effective_zone_name,
+                zone_source: r.zone_source,
+                default_route_vpn: r.default_route_vpn,
             }
         })
         .collect();
@@ -482,6 +494,214 @@ pub async fn mesh(
     payload["overlay"] = serde_json::Value::String(vis.overlay.to_string());
     payload["acl_mode"] = serde_json::Value::String(vis.acl_mode.to_string());
     Ok(Json(payload))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EgressProbeQuery {
+    /// FR-134 — management-entry attestation token when the probe traverses a gateway entry.
+    #[serde(default)]
+    pub entry: Option<String>,
+}
+
+/// Compact response from `POST /api/agent/self/egress-probe` (FR-138).
+#[derive(Debug, Serialize)]
+pub struct EgressProbeResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_public_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<ZoneSource>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hysteresis_held: bool,
+}
+
+/// POST /api/agent/self/egress-probe (FR-138) — physical-path egress observation.
+///
+/// The daemon binds a short-lived HTTPS socket to a physical non-VPN uplink and posts here with
+/// its agent bearer token. The server observes the connection's `canonical_public_ip` (honouring
+/// FR-134 attested management-entry origins); the device never states an IP in the request body.
+pub async fn egress_probe(
+    State(state): State<AppState>,
+    agent: HostAuthAgent,
+    PeerAddr(peer): PeerAddr,
+    headers: HeaderMap,
+    Query(query): Query<EgressProbeQuery>,
+) -> Result<Json<EgressProbeResponse>, ApiError> {
+    let Some(fleet) = state.modules.fleet.as_ref() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the fleet module is not mounted on this server".to_string(),
+        ));
+    };
+    let tid = agent.tenant_id;
+    let aid = agent.agent_id;
+
+    let raw_origin = ConnectionOrigin::capture(
+        &headers,
+        peer,
+        &state.settings.app.business_trusted_proxy_cidrs,
+        state.settings.app.rate_limit_trusted_hops,
+    );
+    let (origin, _entry_id) = meshharbor_mod_fleet::management_path::resolve_origin(
+        fleet,
+        tid,
+        aid,
+        query.entry.as_deref(),
+        raw_origin,
+    )
+    .await;
+    let observed_ip = origin.observed_public_ip();
+
+    let mut row = fleet.agents.find_live_in_tenant(tid, aid).await?;
+    let net_dao = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db);
+    let zones = net_dao
+        .find_for_tenant(tid)
+        .await?
+        .map(|n| n.zones)
+        .unwrap_or_default();
+
+    let now = bson::DateTime::now();
+    let now_ms = now.timestamp_millis();
+
+    let (before_res, before_source) =
+        meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(fleet, &zones, &row, None);
+    let before_zone_id = match before_res {
+        DeviceZoneResolution::Resolved(z) => Some(z.id.clone()),
+        _ => None,
+    };
+
+    let probe_country = observed_ip
+        .and_then(|ip| state.core.geoip.security_lookup(ip).country_code)
+        .map(|c| c.to_ascii_uppercase());
+    let probe_zone_id = probe_country
+        .as_deref()
+        .and_then(|cc| auto_zone_for_country(&zones, Some(cc)))
+        .map(|z| z.id.clone());
+    let ws_country = meshharbor_mod_fleet::socket::agent_effective_country(fleet, &row);
+    let conn_id = fleet
+        .rc_hub
+        .agent_live_conn_id(aid)
+        .unwrap_or_else(|| "__disconnected__".to_string());
+
+    let mut hysteresis_held = false;
+    if let Some(ip) = observed_ip {
+        // A device currently sitting on an unverified VPN fallback (no clean
+        // history yet) has no trusted zone to protect with hysteresis: its
+        // first verified physical-path probe commits immediately.
+        let decision = if row.pinned_zone_id.is_some()
+            || zones.is_empty()
+            || matches!(
+                before_source,
+                Some(meshharbor_remote_control::models::ZoneSource::AutoEgressFallback)
+            ) {
+            ProbeHysteresisDecision::Commit
+        } else {
+            fleet.rc_hub.evaluate_probe_hysteresis(
+                aid,
+                &conn_id,
+                before_zone_id.as_deref(),
+                probe_country.as_deref(),
+                probe_zone_id.as_deref(),
+                ws_country.as_deref(),
+                row.capabilities.default_route_vpn,
+                now_ms,
+            )
+        };
+        match decision {
+            ProbeHysteresisDecision::Commit => {
+                let ip_str = ip.to_string();
+                fleet
+                    .agents
+                    .update_physical_egress(aid, &ip_str, now, probe_zone_id.as_deref())
+                    .await?;
+                row.physical_public_ip = Some(ip_str);
+                row.physical_seen_at = Some(now);
+                if let Some(ref pz) = probe_zone_id {
+                    row.last_clean_zone_id = Some(pz.clone());
+                }
+            }
+            ProbeHysteresisDecision::Hold => {
+                hysteresis_held = true;
+            }
+        }
+    }
+
+    let (after_res, zone_source) =
+        meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(fleet, &zones, &row, None);
+    let (zone_id, zone_name) = match after_res {
+        DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone())),
+        _ => (None, None),
+    };
+
+    if before_zone_id != zone_id && !zones.is_empty() {
+        let _ = net_dao.bump_zone_revision(tid).await;
+        #[cfg(feature = "network")]
+        if let Some(network) = state.modules.network.as_ref() {
+            network.org_relay.bump_eligibility_generation();
+            let snapshot =
+                meshharbor_mod_network::network_zones::TenantZoneSnapshot::load_consistent(
+                    network, tid,
+                )
+                .await;
+            snapshot.sync_hub_policy_for_agent(network, tid, aid).await;
+            if row.peer_relay_policy.serve {
+                snapshot
+                    .sync_relay_backbone_endpoints_at_current_revision(network, tid, None)
+                    .await;
+            }
+            meshharbor_mod_network::org_relay::recheck_zones(network, aid, "egress_probe").await;
+            meshharbor_mod_network::overlay::on_agent_policy_changed(
+                network,
+                tid,
+                aid,
+                "zone_policy",
+            )
+            .await;
+        }
+        meshharbor_mod_fleet::management_path::sync_tenant_management_paths(fleet, tid).await;
+    }
+
+    let physical_public_ip = row
+        .physical_public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        .map(|ip| ip.to_string());
+    let current_public_ip = fleet
+        .rc_hub
+        .agent_live_public_ip(aid)
+        .or_else(|| {
+            row.public_ip
+                .as_deref()
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+        })
+        .map(|ip| ip.to_string());
+
+    tracing::debug!(
+        tenant_id = %tid,
+        agent_id = %aid,
+        observed = observed_ip.is_some(),
+        hysteresis_held,
+        zone_id = ?zone_id,
+        zone_source = ?zone_source,
+        "agent self: egress probe"
+    );
+
+    Ok(Json(EgressProbeResponse {
+        ok: true,
+        physical_public_ip,
+        current_public_ip,
+        zone_id,
+        zone_name,
+        zone_source,
+        hysteresis_held,
+    }))
 }
 
 #[cfg(any(feature = "network", test))]

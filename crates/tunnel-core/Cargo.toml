@@ -203,6 +203,7 @@ features = [
 # (`overlay::dns::scdns`). The versions reqwest already resolves on macOS
 # (system-configuration 0.7 on core-foundation 0.9): no new crate.
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 system-configuration = "0.7"
 system-configuration-sys = "0.6"
 core-foundation = "0.9"

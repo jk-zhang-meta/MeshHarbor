@@ -433,6 +433,12 @@ pub struct AgentCaps {
     /// the device (the centre holds no secret), read by the admin page and the viewers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub two_factor: bool,
+    /// FR-138 — whether this device's OS IPv4 or IPv6 default route currently sits on a VPN or
+    /// virtual tunnel interface. Additive agent→server report: unknown fields are ignored by older
+    /// servers and older agents default to `false`. Security invariant: this flag can ONLY hold
+    /// an already-known `last_clean_zone_id`; it can never move a device into another zone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
     /// FR-85 P3 — what this agent can record for a REMOTE controller, as
     /// [`RecordCap`] wire words:
     ///
@@ -2447,6 +2453,23 @@ pub struct Agent {
     /// GeoIP physical location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
+    /// FR-138 — last server-observed public IP from a physical-uplink egress probe
+    /// (`POST /api/agent/self/egress-probe`). Never supplied in the request body;
+    /// observed from the connection origin (or FR-134 gateway attestation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    /// FR-138 — when [`Self::physical_public_ip`] was last confirmed by the server.
+    /// Fresh within [`PHYSICAL_EGRESS_TTL_SECS`] (24 h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<DateTime>,
+    /// FR-138 — last logical zone slug resolved cleanly without a VPN (from a fresh
+    /// physical probe or a non-VPN control-WS IP). Held when `default_route_vpn` is
+    /// true and no fresh physical probe is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_clean_zone_id: Option<String>,
+    /// FR-138 — when [`Self::last_clean_zone_id`] was last updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_clean_zone_at: Option<DateTime>,
     /// Optional admin-pinned logical [`NetworkZone`] slug (`None` = Auto,
     /// `Some(id)` = Pinned; single assignment representation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3482,6 +3505,10 @@ pub struct VisibleDeviceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physical_seen_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -3503,6 +3530,10 @@ pub struct VisibleDeviceRow {
     pub effective_zone_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_zone_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_source: Option<ZoneSource>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_route_vpn: bool,
 }
 
 /// The page `GET /api/agent/self/devices` answers with.
@@ -3568,6 +3599,8 @@ mod visible_device_tests {
             rdp_cert_sha256: None,
             rdp_mesh_reachable: None,
             public_ip: None,
+            physical_public_ip: None,
+            physical_seen_at: None,
             country_code: None,
             country: None,
             region: None,
@@ -3579,6 +3612,8 @@ mod visible_device_tests {
             pinned_zone_id: None,
             effective_zone_id: None,
             effective_zone_name: None,
+            zone_source: None,
+            default_route_vpn: false,
         }
     }
 
@@ -7528,6 +7563,269 @@ pub fn first_zone_without_gateway(zones: &[NetworkZone]) -> Option<&NetworkZone>
     zones.iter().find(|z| z.gateway_relay_ids.is_empty())
 }
 
+/// FR-138 — freshness window for a server-observed physical-path egress IP (24 hours).
+pub const PHYSICAL_EGRESS_TTL_SECS: i64 = 24 * 60 * 60;
+
+/// FR-138 — anti-flapping hysteresis window within a single control-WS connection (10 minutes).
+/// An Auto device's zone changes within one connection only after two probes at least this far
+/// apart observe the same new country.
+pub const ZONE_HYSTERESIS_SECS: i64 = 10 * 60;
+
+/// FR-138 — explains which evidence selected a device's effective [`NetworkZone`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneSource {
+    /// Admin explicitly pinned `pinned_zone_id`.
+    Pinned,
+    /// Auto device placed via a fresh (≤ 24 h) server-observed physical-path egress IP.
+    AutoPhysical,
+    /// Auto device placed via its control-WS egress IP with `!default_route_vpn`.
+    AutoEgressIp,
+    /// Auto device reporting `default_route_vpn == true` with no fresh physical probe:
+    /// holding its last verified non-VPN zone (`last_clean_zone_id`).
+    AutoVpnHeld,
+    /// Auto device behind a VPN with neither a fresh physical probe nor clean history:
+    /// fell back to its control-WS egress IP, explicitly flagged as VPN-unverified.
+    AutoEgressFallback,
+}
+
+impl ZoneSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::AutoPhysical => "auto_physical",
+            Self::AutoEgressIp => "auto_egress_ip",
+            Self::AutoVpnHeld => "auto_vpn_held",
+            Self::AutoEgressFallback => "auto_egress_fallback",
+        }
+    }
+}
+
+/// FR-138 — whether `physical_seen_at_ms` is within the 24-hour physical-egress TTL of `now_ms`.
+/// Tolerates up to 5 minutes of backward clock skew (e.g. NTP step) while rejecting far-future values.
+pub fn physical_egress_is_fresh(physical_seen_at_ms: Option<i64>, now_ms: i64) -> bool {
+    let Some(seen_ms) = physical_seen_at_ms else {
+        return false;
+    };
+    let max_skew_ms = 5 * 60 * 1000;
+    if seen_ms > now_ms.saturating_add(max_skew_ms) {
+        return false;
+    }
+    now_ms.saturating_sub(seen_ms) <= PHYSICAL_EGRESS_TTL_SECS * 1000
+}
+
+/// FR-138 — all inputs to the unified device-zone resolver [`resolve_device_zone_with_source`].
+#[derive(Debug, Clone, Default)]
+pub struct DeviceZoneInputs<'a> {
+    pub pinned_zone_id: Option<&'a str>,
+    /// ISO-3166 alpha-2 country derived by server GeoIP from `physical_public_ip`.
+    pub physical_country: Option<&'a str>,
+    /// Unix milliseconds when `physical_public_ip` was last observed by the server.
+    pub physical_seen_at_ms: Option<i64>,
+    /// ISO-3166 alpha-2 country derived by server GeoIP from the control-WS egress IP (`public_ip`).
+    pub egress_country: Option<&'a str>,
+    /// Whether the device reports its OS default route currently sits on a VPN/virtual interface.
+    pub default_route_vpn: bool,
+    /// Last zone resolved cleanly (without VPN) and persisted on the agent record.
+    pub last_clean_zone_id: Option<&'a str>,
+    /// Current wall-clock timestamp in Unix milliseconds.
+    pub now_ms: i64,
+}
+
+/// FR-134 + FR-138 — match a country code to an Auto (non-centre) zone, falling back to the
+/// non-centre default zone if configured. Never returns a centre zone (`is_centre == true`).
+pub fn auto_zone_for_country<'a>(
+    zones: &'a [NetworkZone],
+    country: Option<&str>,
+) -> Option<&'a NetworkZone> {
+    if let Some(cc) = country.map(|c| c.trim().to_ascii_uppercase())
+        && !cc.is_empty()
+        && let Some(z) = zones.iter().find(|z| {
+            !z.is_centre && z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc))
+        })
+    {
+        return Some(z);
+    }
+    zones.iter().find(|z| z.is_default && !z.is_centre)
+}
+
+/// FR-138 — the single unified zone resolver for every server code path.
+///
+/// Resolution order:
+/// - Empty `zones` -> `(Unconfigured, None)`.
+/// - (a) Admin pin (`pinned_zone_id`) -> exact match in `zones` (`Pinned`), else `(UnresolvedStrict, None)`.
+/// - (b) `physical_country` if `physical_seen_at_ms` is within 24 h (`PHYSICAL_EGRESS_TTL_SECS`)
+///   and maps to a non-centre Auto zone -> `AutoPhysical`.
+/// - (c) `egress_country` (control-WS IP), ONLY when `!default_route_vpn` -> `AutoEgressIp`.
+/// - (d) Otherwise (`default_route_vpn == true`), hold `last_clean_zone_id` if that zone still
+///   exists in `zones` and `!is_centre` -> `AutoVpnHeld`.
+/// - (e) Device behind a VPN with no valid clean history falls back to `egress_country` ->
+///   `AutoEgressFallback`.
+///
+/// Security invariant: `default_route_vpn` can ONLY hold an existing `last_clean_zone_id` (step d);
+/// it can never place a device into a zone it did not already earn cleanly.
+pub fn resolve_device_zone_with_source<'a>(
+    zones: &'a [NetworkZone],
+    inputs: &DeviceZoneInputs<'_>,
+) -> (DeviceZoneResolution<'a>, Option<ZoneSource>) {
+    if zones.is_empty() {
+        return (DeviceZoneResolution::Unconfigured, None);
+    }
+    // (a) Admin pin.
+    if let Some(pin) = inputs.pinned_zone_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let normalized = pin.to_ascii_lowercase();
+        return match zones.iter().find(|z| z.id == normalized) {
+            Some(z) => (DeviceZoneResolution::Resolved(z), Some(ZoneSource::Pinned)),
+            None => (DeviceZoneResolution::UnresolvedStrict, None),
+        };
+    }
+    // (b) Fresh physical-path egress probe (≤ 24 h) with a resolved GeoIP country.
+    if physical_egress_is_fresh(inputs.physical_seen_at_ms, inputs.now_ms)
+        && let Some(cc) = inputs
+            .physical_country
+            .map(|c| c.trim().to_ascii_uppercase())
+            .filter(|s| !s.is_empty())
+        && let Some(z) = auto_zone_for_country(zones, Some(&cc))
+    {
+        return (
+            DeviceZoneResolution::Resolved(z),
+            Some(ZoneSource::AutoPhysical),
+        );
+    }
+    // (c) Control-WS egress IP, ONLY when the device reports no VPN default route.
+    if !inputs.default_route_vpn {
+        return match auto_zone_for_country(zones, inputs.egress_country) {
+            Some(z) => (
+                DeviceZoneResolution::Resolved(z),
+                Some(ZoneSource::AutoEgressIp),
+            ),
+            None => (DeviceZoneResolution::UnresolvedStrict, None),
+        };
+    }
+    // (d) VPN default route active: hold the last cleanly resolved zone (non-centre).
+    if let Some(clean_id) = inputs
+        .last_clean_zone_id
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        && let Some(z) = zones.iter().find(|z| !z.is_centre && z.id == clean_id)
+    {
+        return (
+            DeviceZoneResolution::Resolved(z),
+            Some(ZoneSource::AutoVpnHeld),
+        );
+    }
+    // (e) No valid clean history while behind VPN: fall back to egress IP, explicitly flagged.
+    match auto_zone_for_country(zones, inputs.egress_country) {
+        Some(z) => (
+            DeviceZoneResolution::Resolved(z),
+            Some(ZoneSource::AutoEgressFallback),
+        ),
+        None => (DeviceZoneResolution::UnresolvedStrict, None),
+    }
+}
+
+/// FR-138 — candidate country awaiting confirmation across two probes ≥ 10 min apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingZoneCandidate {
+    pub country: String,
+    pub first_seen_ms: i64,
+}
+
+/// FR-138 — per-agent in-memory hysteresis state scoped to a control-WS connection ID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectionZoneHysteresis {
+    pub conn_id: String,
+    pub first_probe_seen: bool,
+    pub pending: Option<PendingZoneCandidate>,
+}
+
+/// FR-138 — result of evaluating a physical-path egress probe against hysteresis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeHysteresisDecision {
+    /// Commit `physical_public_ip` and `physical_seen_at` now.
+    Commit,
+    /// Hold the current zone: the probe observed a different zone within one connection and has
+    /// not yet been confirmed by a second probe ≥ `ZONE_HYSTERESIS_SECS` later.
+    Hold,
+}
+
+/// FR-138 — pure hysteresis decision for an incoming physical-path egress probe.
+///
+/// Rules:
+/// 1. When `conn_id` changes from `state.conn_id`, resets connection state and clears `pending`.
+/// 2. If the probe's zone matches `current_zone_id` (or the device has no current zone yet, or the
+///    probe had no GeoIP country), commit immediately and clear `pending`.
+/// 3. On a reconnect's first probe (`!state.first_probe_seen`), when `!default_route_vpn` and the
+///    control-WS country does not contradict `probe_country` (clean physical probe on reconnect),
+///    commit immediately.
+/// 4. Otherwise (within one connection, or while `default_route_vpn == true`), moving to a
+///    different zone requires two probes seeing the same `probe_country` at least
+///    `ZONE_HYSTERESIS_SECS` (10 min) apart.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_probe_hysteresis(
+    state: &mut ConnectionZoneHysteresis,
+    conn_id: &str,
+    current_zone_id: Option<&str>,
+    probe_country: Option<&str>,
+    probe_zone_id: Option<&str>,
+    ws_country: Option<&str>,
+    default_route_vpn: bool,
+    now_ms: i64,
+) -> ProbeHysteresisDecision {
+    if state.conn_id != conn_id {
+        state.conn_id = conn_id.to_string();
+        state.first_probe_seen = false;
+        state.pending = None;
+    }
+    let is_first_probe = !state.first_probe_seen;
+    state.first_probe_seen = true;
+
+    let norm_probe_cc = probe_country
+        .map(|c| c.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty());
+    let norm_ws_cc = ws_country
+        .map(|c| c.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty());
+
+    // Same zone, no established zone yet, or unmapped probe country: commit and clear pending.
+    let same_or_initial = match (current_zone_id, probe_zone_id) {
+        (None, _) | (_, None) => true,
+        (Some(cur), Some(next)) => cur.eq_ignore_ascii_case(next),
+    };
+    if same_or_initial || norm_probe_cc.is_none() {
+        state.pending = None;
+        return ProbeHysteresisDecision::Commit;
+    }
+
+    // Reconnect with a clean physical probe: no VPN default route and WS does not disagree.
+    let probe_cc = norm_probe_cc.expect("checked above");
+    let ws_agrees_or_unknown = norm_ws_cc
+        .as_deref()
+        .is_none_or(|ws| ws.eq_ignore_ascii_case(&probe_cc));
+    if is_first_probe && !default_route_vpn && ws_agrees_or_unknown {
+        state.pending = None;
+        return ProbeHysteresisDecision::Commit;
+    }
+
+    // Within one connection (or behind a VPN): require two probes ≥ 10 min apart for the same country.
+    let window_ms = ZONE_HYSTERESIS_SECS * 1000;
+    if let Some(ref pending) = state.pending
+        && pending.country.eq_ignore_ascii_case(&probe_cc)
+    {
+        if now_ms.saturating_sub(pending.first_seen_ms) >= window_ms {
+            state.pending = None;
+            return ProbeHysteresisDecision::Commit;
+        }
+        return ProbeHysteresisDecision::Hold;
+    }
+
+    state.pending = Some(PendingZoneCandidate {
+        country: probe_cc,
+        first_seen_ms: now_ms,
+    });
+    ProbeHysteresisDecision::Hold
+}
+
 /// Deterministically resolve a device's [`NetworkZone`]:
 /// 1. Empty `zones` -> [`DeviceZoneResolution::Unconfigured`].
 /// 2. `pinned_zone_id == Some(id)` -> exact match in `zones`, else [`DeviceZoneResolution::UnresolvedStrict`].
@@ -7541,28 +7839,15 @@ pub fn resolve_device_zone<'a>(
     pinned_zone_id: Option<&str>,
     observed_country: Option<&str>,
 ) -> DeviceZoneResolution<'a> {
-    if zones.is_empty() {
-        return DeviceZoneResolution::Unconfigured;
-    }
-    if let Some(pin) = pinned_zone_id {
-        let normalized = pin.trim().to_ascii_lowercase();
-        return match zones.iter().find(|z| z.id == normalized) {
-            Some(z) => DeviceZoneResolution::Resolved(z),
-            None => DeviceZoneResolution::UnresolvedStrict,
-        };
-    }
-    if let Some(cc) = observed_country.map(|c| c.trim().to_ascii_uppercase())
-        && !cc.is_empty()
-        && let Some(z) = zones.iter().find(|z| {
-            !z.is_centre && z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc))
-        })
-    {
-        return DeviceZoneResolution::Resolved(z);
-    }
-    match zones.iter().find(|z| z.is_default && !z.is_centre) {
-        Some(z) => DeviceZoneResolution::Resolved(z),
-        None => DeviceZoneResolution::UnresolvedStrict,
-    }
+    resolve_device_zone_with_source(
+        zones,
+        &DeviceZoneInputs {
+            pinned_zone_id,
+            egress_country: observed_country,
+            ..DeviceZoneInputs::default()
+        },
+    )
+    .0
 }
 
 /// One edge of the server topology, between two agents. Stored with
@@ -11140,6 +11425,326 @@ mod backbone_policy_tests {
             resolve_device_zone(&malformed, Some("centre"), Some("HK")),
             DeviceZoneResolution::Resolved(z) if z.id == "centre" && z.is_centre
         ));
+    }
+
+    #[test]
+    fn fr138_resolve_device_zone_with_source_covers_all_branches() {
+        let mk = |id: &str, cc: &[&str], def: bool, centre: bool| NetworkZone {
+            id: id.into(),
+            name: id.to_uppercase(),
+            auto_countries: cc.iter().map(|s| s.to_string()).collect(),
+            is_default: def,
+            gateway_relay_ids: vec!["66f000000000000000000001".into()],
+            cross_zone_mode: CrossZoneMode::RouterOnly,
+            is_centre: centre,
+        };
+        let zones = vec![
+            mk("centre", &[], false, true),
+            mk("cn", &["CN"], false, false),
+            mk("abroad", &[], true, false),
+        ];
+        let now = 1_800_000_000_000_i64;
+        let fresh_seen = Some(now - 60 * 60 * 1000); // 1 h ago
+        let stale_seen = Some(now - (PHYSICAL_EGRESS_TTL_SECS + 60) * 1000); // 24h + 1m ago
+
+        // Empty zones -> Unconfigured.
+        assert_eq!(
+            resolve_device_zone_with_source(&[], &DeviceZoneInputs::default()),
+            (DeviceZoneResolution::Unconfigured, None)
+        );
+
+        // (a) Admin pin wins over fresh physical, egress, and VPN flag.
+        let (res, src) = resolve_device_zone_with_source(
+            &zones,
+            &DeviceZoneInputs {
+                pinned_zone_id: Some("centre"),
+                physical_country: Some("CN"),
+                physical_seen_at_ms: fresh_seen,
+                egress_country: Some("US"),
+                default_route_vpn: true,
+                last_clean_zone_id: Some("cn"),
+                now_ms: now,
+            },
+        );
+        assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "centre"));
+        assert_eq!(src, Some(ZoneSource::Pinned));
+
+        // Deleted pin fails closed (UnresolvedStrict).
+        assert_eq!(
+            resolve_device_zone_with_source(
+                &zones,
+                &DeviceZoneInputs {
+                    pinned_zone_id: Some("deleted"),
+                    physical_country: Some("CN"),
+                    physical_seen_at_ms: fresh_seen,
+                    now_ms: now,
+                    ..Default::default()
+                },
+            ),
+            (DeviceZoneResolution::UnresolvedStrict, None)
+        );
+
+        // (b) Fresh physical probe (<= 24 h) wins over WS VPN exit IP even with or without flag.
+        for vpn in [false, true] {
+            let (res, src) = resolve_device_zone_with_source(
+                &zones,
+                &DeviceZoneInputs {
+                    physical_country: Some("CN"),
+                    physical_seen_at_ms: fresh_seen,
+                    egress_country: Some("US"),
+                    default_route_vpn: vpn,
+                    last_clean_zone_id: Some("abroad"),
+                    now_ms: now,
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "cn"));
+            assert_eq!(src, Some(ZoneSource::AutoPhysical));
+        }
+
+        // Exact 24 h boundary is still fresh; +1 ms is stale.
+        assert!(physical_egress_is_fresh(
+            Some(now - PHYSICAL_EGRESS_TTL_SECS * 1000),
+            now
+        ));
+        assert!(!physical_egress_is_fresh(
+            Some(now - PHYSICAL_EGRESS_TTL_SECS * 1000 - 1),
+            now
+        ));
+        // Far-future timestamp (> 5 min ahead) is rejected.
+        assert!(!physical_egress_is_fresh(Some(now + 10 * 60 * 1000), now));
+
+        // Stale physical probe (> 24 h) falls through to (c) when !default_route_vpn.
+        let (res, src) = resolve_device_zone_with_source(
+            &zones,
+            &DeviceZoneInputs {
+                physical_country: Some("CN"),
+                physical_seen_at_ms: stale_seen,
+                egress_country: Some("US"),
+                default_route_vpn: false,
+                last_clean_zone_id: Some("cn"),
+                now_ms: now,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "abroad"));
+        assert_eq!(src, Some(ZoneSource::AutoEgressIp));
+
+        // Fresh physical timestamp with no GeoIP country does NOT falsely claim AutoPhysical.
+        let (res, src) = resolve_device_zone_with_source(
+            &zones,
+            &DeviceZoneInputs {
+                physical_country: None,
+                physical_seen_at_ms: fresh_seen,
+                egress_country: Some("US"),
+                default_route_vpn: true,
+                last_clean_zone_id: Some("cn"),
+                now_ms: now,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "cn"));
+        assert_eq!(src, Some(ZoneSource::AutoVpnHeld));
+
+        // (d) Stale/missing physical + default_route_vpn=true holds last_clean_zone_id.
+        let (res, src) = resolve_device_zone_with_source(
+            &zones,
+            &DeviceZoneInputs {
+                physical_country: Some("CN"),
+                physical_seen_at_ms: stale_seen,
+                egress_country: Some("US"),
+                default_route_vpn: true,
+                last_clean_zone_id: Some("cn"),
+                now_ms: now,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "cn"));
+        assert_eq!(src, Some(ZoneSource::AutoVpnHeld));
+
+        // (d) Security & centre-zone guard: last_clean_zone_id pointing to deleted or centre zone
+        // cannot be held; falls through to (e) AutoEgressFallback.
+        for bad_clean in [Some("deleted"), Some("centre"), None] {
+            let (res, src) = resolve_device_zone_with_source(
+                &zones,
+                &DeviceZoneInputs {
+                    egress_country: Some("US"),
+                    default_route_vpn: true,
+                    last_clean_zone_id: bad_clean,
+                    now_ms: now,
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(res, DeviceZoneResolution::Resolved(z) if z.id == "abroad"));
+            assert_eq!(src, Some(ZoneSource::AutoEgressFallback));
+        }
+
+        // Strict zone table (no default zone) returns UnresolvedStrict when country unmapped.
+        let strict_zones = vec![mk("cn", &["CN"], false, false)];
+        assert_eq!(
+            resolve_device_zone_with_source(
+                &strict_zones,
+                &DeviceZoneInputs {
+                    egress_country: Some("US"),
+                    default_route_vpn: true,
+                    last_clean_zone_id: None,
+                    now_ms: now,
+                    ..Default::default()
+                },
+            ),
+            (DeviceZoneResolution::UnresolvedStrict, None)
+        );
+    }
+
+    #[test]
+    fn fr138_probe_hysteresis_requires_two_probes_10_min_apart_or_clean_reconnect() {
+        let mut st = ConnectionZoneHysteresis::default();
+        let t0 = 1_800_000_000_000_i64;
+        let min = 60_000_i64;
+
+        // Initial probe in same zone on conn-1 commits immediately.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-1",
+                Some("cn"),
+                Some("CN"),
+                Some("cn"),
+                Some("CN"),
+                false,
+                t0,
+            ),
+            ProbeHysteresisDecision::Commit
+        );
+        assert!(st.pending.is_none());
+
+        // Mid-connection flip to US is HELD on probe #1.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-1",
+                Some("cn"),
+                Some("US"),
+                Some("abroad"),
+                Some("US"),
+                false,
+                t0 + min,
+            ),
+            ProbeHysteresisDecision::Hold
+        );
+        assert_eq!(st.pending.as_ref().unwrap().country, "US");
+
+        // Second probe at +9 min (< 10 min) is still HELD and keeps original first_seen_ms.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-1",
+                Some("cn"),
+                Some("US"),
+                Some("abroad"),
+                Some("US"),
+                false,
+                t0 + 10 * min,
+            ),
+            ProbeHysteresisDecision::Hold
+        );
+        assert_eq!(st.pending.as_ref().unwrap().first_seen_ms, t0 + min);
+
+        // Flap to another country resets the pending timer.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-1",
+                Some("cn"),
+                Some("JP"),
+                Some("abroad"),
+                Some("JP"),
+                false,
+                t0 + 12 * min,
+            ),
+            ProbeHysteresisDecision::Hold
+        );
+        assert_eq!(st.pending.as_ref().unwrap().country, "JP");
+        assert_eq!(st.pending.as_ref().unwrap().first_seen_ms, t0 + 12 * min);
+
+        // Probe seeing JP >= 10 min after JP's first_seen_ms COMMITS.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-1",
+                Some("cn"),
+                Some("JP"),
+                Some("abroad"),
+                Some("JP"),
+                false,
+                t0 + 22 * min,
+            ),
+            ProbeHysteresisDecision::Commit
+        );
+        assert!(st.pending.is_none());
+
+        // Reconnect (conn-2) with VPN active does NOT fast-commit a zone change.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-2",
+                Some("cn"),
+                Some("US"),
+                Some("abroad"),
+                Some("US"),
+                true,
+                t0 + 30 * min,
+            ),
+            ProbeHysteresisDecision::Hold
+        );
+
+        // Reconnect (conn-3) with clean physical probe (!vpn, WS agrees) COMMITS immediately.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-3",
+                Some("cn"),
+                Some("US"),
+                Some("abroad"),
+                Some("US"),
+                false,
+                t0 + 31 * min,
+            ),
+            ProbeHysteresisDecision::Commit
+        );
+        assert!(st.pending.is_none());
+
+        // Reconnect (conn-4) where WS disagrees with probe country is NOT a clean reconnect: HELD.
+        assert_eq!(
+            evaluate_probe_hysteresis(
+                &mut st,
+                "conn-4",
+                Some("cn"),
+                Some("US"),
+                Some("abroad"),
+                Some("CN"),
+                false,
+                t0 + 32 * min,
+            ),
+            ProbeHysteresisDecision::Hold
+        );
+    }
+
+    #[test]
+    fn fr138_agent_caps_default_route_vpn_is_additive() {
+        let mut legacy_val = serde_json::to_value(AgentCaps::default()).unwrap();
+        legacy_val.as_object_mut().unwrap().remove("default_route_vpn");
+        let legacy: AgentCaps = serde_json::from_value(legacy_val).unwrap();
+        assert!(!legacy.default_route_vpn);
+        let wire_false = serde_json::to_string(&legacy).unwrap();
+        assert!(!wire_false.contains("default_route_vpn"));
+
+        let mut vpn_caps = legacy;
+        vpn_caps.default_route_vpn = true;
+        let wire_true = serde_json::to_string(&vpn_caps).unwrap();
+        assert!(wire_true.contains(r#""default_route_vpn":true"#));
+        let roundtrip: AgentCaps = serde_json::from_str(&wire_true).unwrap();
+        assert!(roundtrip.default_route_vpn);
     }
 }
 

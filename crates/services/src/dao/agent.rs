@@ -188,6 +188,10 @@ impl AgentDao {
             peer_relay_policy: Default::default(),
             peer_relay_revision: 0,
             public_ip: None,
+            physical_public_ip: None,
+            physical_seen_at: None,
+            last_clean_zone_id: None,
+            last_clean_zone_at: None,
             pinned_zone_id: None,
             // FR-52 gate 2 closed, and NO connect code. A code is minted on
             // demand rather than at enrollment, so a fleet that never uses
@@ -1095,6 +1099,55 @@ impl AgentDao {
         }
         self.base
             .update_by_id(agent_id, doc! { "$set": { "public_ip": public_ip } })
+            .await?;
+        Ok(())
+    }
+
+    /// FR-138 — persist a server-observed physical-uplink egress IP and timestamp
+    /// from `POST /api/agent/self/egress-probe`. When `clean_zone_id` is `Some`,
+    /// also records `last_clean_zone_id` + `last_clean_zone_at` atomically.
+    pub async fn update_physical_egress(
+        &self,
+        agent_id: ObjectId,
+        physical_public_ip: &str,
+        seen_at: DateTime,
+        clean_zone_id: Option<&str>,
+    ) -> DaoResult<()> {
+        if physical_public_ip.is_empty() {
+            return Ok(());
+        }
+        let mut set = doc! {
+            "physical_public_ip": physical_public_ip,
+            "physical_seen_at": seen_at,
+        };
+        if let Some(zid) = clean_zone_id.filter(|s| !s.is_empty()) {
+            set.insert("last_clean_zone_id", zid);
+            set.insert("last_clean_zone_at", seen_at);
+        }
+        self.base
+            .update_by_id(agent_id, doc! { "$set": set })
+            .await?;
+        Ok(())
+    }
+
+    /// FR-138 — persist the last logical zone slug resolved cleanly without a VPN.
+    pub async fn update_last_clean_zone(
+        &self,
+        agent_id: ObjectId,
+        zone_id: &str,
+        seen_at: DateTime,
+    ) -> DaoResult<()> {
+        if zone_id.is_empty() {
+            return Ok(());
+        }
+        self.base
+            .update_by_id(
+                agent_id,
+                doc! { "$set": {
+                    "last_clean_zone_id": zone_id,
+                    "last_clean_zone_at": seen_at,
+                } },
+            )
             .await?;
         Ok(())
     }

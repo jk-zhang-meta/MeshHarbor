@@ -20,13 +20,14 @@
             <v-chip
               v-if="rowZone(device).hasZone"
               size="x-small"
-              :color="rowZone(device).pinned ? 'primary' : 'secondary'"
+              :color="zoneChipColor(rowZone(device))"
               variant="tonal"
-              :prepend-icon="rowZone(device).pinned ? 'mdi-pin-outline' : 'mdi-map-marker-radius-outline'"
-              :title="rowZone(device).pinned ? $t('mh.dev.zonePinnedTitle', { zone: rowZone(device).zoneLabel }) : $t('mh.dev.zoneAutoTitle', { zone: rowZone(device).zoneLabel })"
+              :prepend-icon="zoneChipIcon(rowZone(device))"
+              :title="formatZoneTooltip(rowZone(device), $t)"
+              :data-zone-source="rowZone(device).zoneSource || undefined"
               data-testid="owned-device-zone-badge"
             >
-              {{ rowZone(device).badgeText }}
+              {{ formatZoneChipLabel(rowZone(device), $t) }}
             </v-chip>
           </div>
           <code>{{ device.id }}</code>
@@ -40,7 +41,16 @@
               <span v-if="rowLocation(device).countryCode" class="geo-code-pill">{{ rowLocation(device).countryCode }}</span>
               <span class="text-caption font-weight-medium">{{ rowLocation(device).locationText || '—' }}</span>
             </div>
+            <div
+              v-if="rowLocation(device).physicalIp"
+              class="device-loc-ip text-caption text-medium-emphasis text-mono"
+              data-testid="owned-device-physical-ip"
+            >
+              <span class="mr-1">{{ $t('mh.dev.physicalEgress') }}:</span>
+              <span>{{ rowLocation(device).physicalIp }}</span>
+            </div>
             <div class="device-loc-ip text-caption text-medium-emphasis text-mono">
+              <span v-if="rowLocation(device).physicalIp" class="mr-1">{{ $t('mh.dev.currentEgress') }}:</span>
               <span>{{ rowLocation(device).publicIp || '—' }}</span>
               <v-btn
                 v-if="rowLocation(device).publicIp"
@@ -75,7 +85,16 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { appOrigin } from '@/utils/deployment'
-import { formatDeviceLocation, formatDeviceZone, type DeviceZoneFields, type GeoLocationFields } from '@/utils/deviceLocation'
+import {
+  formatDeviceLocation,
+  formatDeviceZone,
+  formatZoneChipLabel,
+  formatZoneTooltip,
+  zoneChipColor,
+  zoneChipIcon,
+  type DeviceZoneFields,
+  type GeoLocationFields,
+} from '@/utils/deviceLocation'
 import DeviceSharesView from '@/views/account/DeviceSharesView.vue'
 interface OwnedDevice extends GeoLocationFields, DeviceZoneFields { id: string; name: string; machine_name: string; os: string; status: string; tenant_id: string }
 interface OwnedPage { items: OwnedDevice[]; page: number; total: number }

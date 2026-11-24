@@ -241,6 +241,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/agent/self/egress-probe",
+      "methods": "POST"
+    },
+    {
       "path": "/api/agent/self/link",
       "methods": "POST"
     },

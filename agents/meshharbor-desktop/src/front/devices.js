@@ -216,6 +216,14 @@
     return s && s !== '-' && s !== '—' ? s : '';
   }
 
+  const KNOWN_ZONE_SOURCES = new Set([
+    'pinned',
+    'auto_physical',
+    'auto_vpn_held',
+    'auto_egress_ip',
+    'auto_egress_fallback',
+  ]);
+
   function formatDeviceLocation(row) {
     const r = row || {};
     const country = cleanField(r.country);
@@ -224,12 +232,18 @@
     const rawCode = cleanField(r.country_code).toUpperCase();
     const countryCode = /^[A-Z]{2}$/.test(rawCode) ? rawCode : '';
     const publicIp = cleanField(r.public_ip);
+    const physicalIp = cleanField(r.physical_public_ip);
+    const physicalSeenAt = cleanField(r.physical_seen_at);
+    const defaultRouteVpn = Boolean(r.default_route_vpn);
     const locationText = dedupeLocationParts([country, region, city]).join(' · ');
     return {
       locationText,
       countryCode,
       publicIp,
-      hasAny: Boolean(locationText || countryCode || publicIp),
+      physicalIp,
+      physicalSeenAt,
+      defaultRouteVpn,
+      hasAny: Boolean(locationText || countryCode || publicIp || physicalIp),
     };
   }
 
@@ -242,12 +256,15 @@
     const zoneId = effectiveId || pinnedId;
     const zoneLabel = effectiveName || effectiveId || pinnedId;
     const hasZone = Boolean(zoneLabel);
+    const rawSource = cleanField(r.zone_source);
+    const zoneSource = KNOWN_ZONE_SOURCES.has(rawSource) ? rawSource : '';
     return {
       zoneId,
       zoneLabel,
       badgeText: hasZone ? zoneLabel : '',
       pinned,
       hasZone,
+      zoneSource,
     };
   }
   /** "less than a minute ago" / "N min ago" / "N h ago" — how old the data

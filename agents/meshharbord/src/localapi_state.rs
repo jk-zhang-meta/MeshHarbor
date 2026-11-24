@@ -917,6 +917,7 @@ impl LocalApiState for DaemonState {
                     (None, None) => None,
                 }
             },
+            egress: crate::egress_probe::current_status(),
         }
     }
 
