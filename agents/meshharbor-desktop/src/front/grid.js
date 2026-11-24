@@ -43,6 +43,11 @@
 
   /** Columns a person cannot hide: the row's identity and its actions. */
   const NEVER_HIDE = new Set(['name', 'actions']);
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
+  function resolveText(v) {
+    return typeof v === 'function' ? v() : v;
+  }
 
   /* ── preferences: a port of useGridColumns.ts ───────────────────── */
 
@@ -131,12 +136,14 @@
         th.dataset.key = col.key;
         if (col.width) th.style.width = col.width;
         const label = document.createElement('span');
-        label.textContent = col.title;
+        const titleText = resolveText(col.title) || '';
+        const chooserText = resolveText(col.chooserTitle) || titleText;
+        label.textContent = titleText;
         th.appendChild(label);
         if (col.sort && opts.onSort) {
           th.classList.add('sortable');
           th.tabIndex = 0;
-          th.title = 'Sort by ' + (col.chooserTitle || col.title).toLowerCase();
+          th.title = t('dv.grid.sortBy', { col: chooserText.toLowerCase() }, 'Sort by ' + chooserText.toLowerCase());
           const ind = document.createElement('span');
           ind.className = 'sort-ind';
           if (sort.key === col.sort) {
@@ -263,7 +270,7 @@
         const locked = NEVER_HIDE.has(k);
         return {
           key: k,
-          title: col.chooserTitle || col.title || k,
+          title: resolveText(col.chooserTitle) || resolveText(col.title) || k,
           visible: locked || !pref.hidden.includes(k),
           locked,
         };
@@ -335,7 +342,7 @@
           const handle = document.createElement('span');
           handle.className = 'drag-handle';
           handle.textContent = '⋮⋮';
-          handle.title = 'Drag to reorder';
+          handle.title = t('dv.grid.dragReorder', null, 'Drag to reorder');
 
           const label = document.createElement('label');
           const cb = document.createElement('input');
@@ -351,16 +358,16 @@
           if (e.locked) {
             const note = document.createElement('span');
             note.className = 'muted small';
-            note.textContent = ' (always shown)';
+            note.textContent = t('dv.grid.alwaysShown', null, ' (always shown)');
             label.appendChild(note);
           }
 
-          const up = smallButton('▲', 'Move ' + e.title + ' up', () => {
+          const up = smallButton('▲', t('dv.grid.moveUp', { col: e.title }, 'Move ' + e.title + ' up'), () => {
             move(e.key, -1);
             paint();
           });
           up.disabled = i === 0;
-          const down = smallButton('▼', 'Move ' + e.title + ' down', () => {
+          const down = smallButton('▼', t('dv.grid.moveDown', { col: e.title }, 'Move ' + e.title + ' down'), () => {
             move(e.key, 1);
             paint();
           });
@@ -421,6 +428,7 @@
     return {
       render,
       patchLive,
+      relayout: layout,
       setSort,
       setStorageKey,
       entries,

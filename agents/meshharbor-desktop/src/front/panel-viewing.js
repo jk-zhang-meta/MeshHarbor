@@ -14,6 +14,8 @@
 ;(function () {
   const invoke = (name, payload) => window.__TAURI__.core.invoke(name, payload || {})
   const $ = (id) => document.getElementById(id)
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback
 
   let sessions = []
   let busy = false
@@ -21,14 +23,16 @@
   function ago(startedAtMs) {
     if (!startedAtMs) return ''
     const secs = Math.max(0, Math.round((Date.now() - startedAtMs) / 1000))
-    if (secs < 60) return `${secs}s`
+    if (secs < 60) return t('time.shortSecs', { n: secs }, `${secs}s`)
     const mins = Math.round(secs / 60)
-    return mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`
+    return mins < 60
+      ? t('time.shortMins', { n: mins }, `${mins} min`)
+      : t('time.shortHours', { n: Math.round(mins / 60) }, `${Math.round(mins / 60)} h`)
   }
 
   function paint() {
     if (sessions.length === 0) {
-      $('v-who').textContent = 'Being viewed'
+      $('v-who').textContent = t('viewing.idle', null, 'Being viewed')
       $('v-sub').textContent = ''
       $('v-rec-stop').hidden = true
       $('v-stop').hidden = false
@@ -40,17 +44,22 @@
     const recorder = sessions.find((s) => s.recording)
     const first = recorder || sessions[0]
     const extra = sessions.length - 1
-    const who = first.controller_name || 'a remote operator'
-    $('v-who').textContent =
-      (recorder ? `Recording your screen for ${who}` : `Being viewed by ${who}`) +
-      (extra > 0 ? ` +${extra}` : '')
+    const who = first.controller_name || t('viewing.whoFallback', null, 'a remote operator')
+    const baseText = recorder
+      ? t('viewing.recordingFor', { who }, `Recording your screen for ${who}`)
+      : t('viewing.by', { who }, `Being viewed by ${who}`)
+    $('v-who').textContent = baseText + (extra > 0 ? ` +${extra}` : '')
     $('v-rec-stop').hidden = !recorder
     // FR-85 P3b-3 — a recording whose session dropped goes on for up to a
     // minute while its controller reconnects. Say so, and keep only its Stop:
     // there is no session left to disconnect.
     $('v-stop').hidden = sessions.every((s) => s.reconnecting)
     if (first.reconnecting) {
-      $('v-sub').textContent = 'reconnecting · it stops in a minute unless they come back'
+      $('v-sub').textContent = t(
+        'viewing.reconnecting',
+        null,
+        'reconnecting · it stops in a minute unless they come back',
+      )
       return
     }
 
@@ -58,7 +67,11 @@
     // machine" are different things to be told about.
     const perms = (first.permissions || '').toUpperCase()
     const typing = perms.includes('INPUT')
-    const bits = [typing ? 'keyboard + mouse' : 'view only']
+    const bits = [
+      typing
+        ? t('viewing.input', null, 'keyboard + mouse')
+        : t('viewing.viewOnly', null, 'view only'),
+    ]
     if (first.org) bits.push(first.org)
     const age = ago(first.started_at_ms)
     if (age) bits.push(age)
@@ -86,15 +99,15 @@
     busy = true
     const btn = $('v-rec-stop')
     btn.disabled = true
-    btn.textContent = 'Stopping…'
+    btn.textContent = t('viewing.stopping', null, 'Stopping…')
     try {
       await invoke('cmd_record_stop')
     } catch (e) {
-      $('v-sub').textContent = 'Failed: ' + e
+      $('v-sub').textContent = t('common.failedPrefix', { err: e }, 'Failed: ' + e)
     } finally {
       busy = false
       btn.disabled = false
-      btn.textContent = 'Stop recording'
+      btn.textContent = t('viewing.stopRecording', null, 'Stop recording')
     }
   })
 
@@ -103,20 +116,22 @@
     busy = true
     const btn = $('v-stop')
     btn.disabled = true
-    btn.textContent = 'Stopping…'
+    btn.textContent = t('viewing.stopping', null, 'Stopping…')
     try {
       // Disconnect EVERY live session, not just the first. The button says
       // "Disconnect" next to "being viewed by X +2"; ending one of three and
       // leaving the strip up would read as a failure.
       for (const s of sessions) await invoke('cmd_rc_disconnect', { session: s.session_id })
     } catch (e) {
-      $('v-sub').textContent = 'Failed: ' + e
+      $('v-sub').textContent = t('common.failedPrefix', { err: e }, 'Failed: ' + e)
     } finally {
       busy = false
       btn.disabled = false
-      btn.textContent = 'Disconnect'
+      btn.textContent = t('viewing.disconnect', null, 'Disconnect')
     }
   })
+
+  document.addEventListener('meshharbor:lang', paint)
 
   setInterval(poll, 1000)
   poll()

@@ -18,6 +18,8 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, setText, fmtBytes } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   /* ── pure helpers (exported for the unit tests) ─────────────────── */
 
@@ -58,15 +60,22 @@
   };
 
   function describeEnding(reason) {
-    return ENDINGS[reason] || String(reason || 'unknown');
+    if (Object.prototype.hasOwnProperty.call(ENDINGS, reason)) {
+      return t('rec.end.' + reason, null, ENDINGS[reason]);
+    }
+    return reason ? String(reason) : t('rec.end.unknown', null, 'unknown');
   }
 
   // How the last recording ended, in one sentence.
   function describeLast(last) {
     if (!last) return '';
     const head = last.path
-      ? 'Last recording: ' + fmtDuration(last.duration_ms) + ', ' + fmtBytes(last.bytes)
-      : 'The last recording did not start';
+      ? t(
+          'rec.last.head',
+          { duration: fmtDuration(last.duration_ms), size: fmtBytes(last.bytes) },
+          'Last recording: ' + fmtDuration(last.duration_ms) + ', ' + fmtBytes(last.bytes),
+        )
+      : t('rec.last.didNotStart', null, 'The last recording did not start');
     const why = last.reason === 'requested' ? '' : ' — ' + describeEnding(last.reason);
     const detail = last.detail ? ' (' + last.detail + ')' : '';
     return head + why + detail + '.';
@@ -129,21 +138,21 @@
       if (st.system_audio || st.microphone) {
         parts.push(
           st.system_audio && st.microphone
-            ? 'computer audio + microphone'
+            ? t('rec.live.audioBoth', null, 'computer audio + microphone')
             : st.system_audio
-              ? 'computer audio'
-              : 'microphone',
+              ? t('rec.live.audioSystem', null, 'computer audio')
+              : t('rec.live.audioMic', null, 'microphone'),
         );
       }
       if (st.width && st.height) parts.push(st.width + '×' + st.height + ' @ ' + st.fps + ' fps');
       // FR-85 P3b — a remote controller's recording says whose it is.
       const lead = st.remote_controller
-        ? 'Recording for ' + st.remote_controller + ' (remote)'
-        : 'Recording';
+        ? t('rec.live.forRemote', { who: st.remote_controller }, 'Recording for ' + st.remote_controller + ' (remote)')
+        : t('rec.live.local', null, 'Recording');
       setText('rec-status', lead + ' — ' + parts.join(', '));
     } else {
       hide($('rec-live'));
-      setText('rec-status', 'Not recording.');
+      setText('rec-status', t('rec.notRecording', null, 'Not recording.'));
     }
     // A service that cannot record here says why ahead of time (no recorder
     // in this build; SYSTEM/root until the recorder runs as you): Start is
@@ -151,7 +160,12 @@
     const can = st.available !== false;
     const why = $('rec-unavailable');
     if (!can && !rec) {
-      why.textContent = 'Recording is not available here: ' + (st.unavailable_reason || 'no reason given') + '.';
+      const noReason = t('rec.noReasonGiven', null, 'no reason given');
+      why.textContent = t(
+        'rec.unavailable',
+        { reason: st.unavailable_reason || noReason },
+        'Recording is not available here: ' + (st.unavailable_reason || 'no reason given') + '.',
+      );
       show(why);
     } else {
       hide(why);
@@ -173,7 +187,11 @@
     if (noSystemAudio) sys.checked = false;
     const sysWhy = $('rec-system-audio-unavailable');
     if (noSystemAudio) {
-      sysWhy.textContent = 'Computer audio is not available here: ' + noSystemAudio + '.';
+      sysWhy.textContent = t(
+        'rec.sysAudioUnavailable',
+        { reason: noSystemAudio },
+        'Computer audio is not available here: ' + noSystemAudio + '.',
+      );
       show(sysWhy);
     } else {
       hide(sysWhy);
@@ -192,7 +210,10 @@
     const listing = view.listing || {};
     setText('rec-folder', listing.dir || '—');
     const chosen = view.record_dir || null;
-    setText('rec-folder-note', chosen ? 'A folder you chose.' : 'The default folder.');
+    setText(
+      'rec-folder-note',
+      chosen ? t('rec.folderChosen', null, 'A folder you chose.') : t('rec.folderDefault', null, 'The default folder.'),
+    );
     show($('rec-folder-note'));
     $('rec-folder-default').hidden = !chosen;
     $('rec-folder-change').disabled = busy;
@@ -200,7 +221,11 @@
     $('rec-folder-open').disabled = false;
     const reason = $('rec-folder-reason');
     if (listing.folder_reason) {
-      reason.textContent = 'Not the usual folder: ' + listing.folder_reason + '.';
+      reason.textContent = t(
+        'rec.folderReason',
+        { reason: listing.folder_reason },
+        'Not the usual folder: ' + listing.folder_reason + '.',
+      );
       show(reason);
     } else {
       hide(reason);
@@ -236,7 +261,11 @@
     au.disabled = remoteBusy || !g.enabled || !!noSystemAudio;
     const why = $('rec-remote-audio-unavailable');
     if (noSystemAudio) {
-      why.textContent = "Computer audio can't be included: " + noSystemAudio + '.';
+      why.textContent = t(
+        'rec.remoteAudioUnavailable',
+        { reason: noSystemAudio },
+        "Computer audio can't be included: " + noSystemAudio + '.',
+      );
       show(why);
     } else {
       hide(why);
@@ -281,20 +310,17 @@
     const wrap = document.createElement('div');
     wrap.className = 'actions';
     wrap.style.margin = '0';
-    const del = smallButton('Delete', () => void deleteRecording(name));
+    const del = smallButton(t('rec.btn.delete', null, 'Delete'), () => void deleteRecording(name));
     del.classList.add('danger');
     // FR-85 P5c — only where this device's service has the export engine.
-    const edit = smallButton('Edit', () => void editRecording(name));
+    const edit = smallButton(t('rec.btn.edit', null, 'Edit'), () => void editRecording(name));
     edit.hidden = !canEdit;
-    wrap.append(
-      smallButton('Play', () => void openRecording(name, false)),
-      edit,
-      smallButton('Show', () => void openRecording(name, true)),
-      del,
-    );
+    const play = smallButton(t('rec.btn.play', null, 'Play'), () => void openRecording(name, false));
+    const showBtn = smallButton(t('rec.btn.show', null, 'Show'), () => void openRecording(name, true));
+    wrap.append(play, edit, showBtn, del);
     act.appendChild(wrap);
     tr.appendChild(act);
-    return { tr, cells, del, edit };
+    return { tr, cells, play, edit, showBtn, del };
   }
 
   /* ── FR-85 P5c — the Edit view (`editor.js`) ────────────────────── */
@@ -327,10 +353,20 @@
     row.cells.len.textContent = it.duration_ms ? fmtDuration(it.duration_ms) : '—';
     row.cells.size.textContent = fmtBytes(it.bytes);
     row.cells.by.textContent =
-      it.origin === 'remote' ? 'Remote' + (it.controller ? ' · ' + it.controller : '') : 'This device';
+      it.origin === 'remote'
+        ? t('rec.byRemote', null, 'Remote') + (it.controller ? ' · ' + it.controller : '')
+        : t('rec.byThisDevice', null, 'This device');
     row.tr.title =
-      it.stop_reason && it.stop_reason !== 'requested' ? 'Ended: ' + describeEnding(it.stop_reason) : '';
-    row.del.textContent = pendingDelete === it.name ? 'Confirm delete' : 'Delete';
+      it.stop_reason && it.stop_reason !== 'requested'
+        ? t('rec.endedTip', { reason: describeEnding(it.stop_reason) }, 'Ended: ' + describeEnding(it.stop_reason))
+        : '';
+    row.play.textContent = t('rec.btn.play', null, 'Play');
+    row.edit.textContent = t('rec.btn.edit', null, 'Edit');
+    row.showBtn.textContent = t('rec.btn.show', null, 'Show');
+    row.del.textContent =
+      pendingDelete === it.name
+        ? t('rec.btn.confirmDelete', null, 'Confirm delete')
+        : t('rec.btn.delete', null, 'Delete');
   }
 
   function renderList(view) {
@@ -365,16 +401,20 @@
   function render(view) {
     const banner = $('rec-banner');
     if (!view || !view.available) {
-      const why = view && view.reason ? view.reason : 'the device service did not answer';
-      banner.textContent =
-        'Live data unavailable — ' + why + (lastGood ? '. Showing the last good data.' : '.');
+      const why = view && view.reason ? view.reason : t('rec.bannerNoAnswer', null, 'the device service did not answer');
+      banner.textContent = lastGood
+        ? t('rec.bannerUnavailableLastGood', { why }, 'Live data unavailable — ' + why + '. Showing the last good data.')
+        : t('rec.bannerUnavailable', { why }, 'Live data unavailable — ' + why + '.');
       show(banner);
       if (!lastGood) setControlsEnabled(false);
       return;
     }
     if (view.unsupported) {
-      banner.textContent =
-        'This device service has no screen recorder yet — update it to record.';
+      banner.textContent = t(
+        'rec.bannerUnsupported',
+        null,
+        'This device service has no screen recorder yet — update it to record.',
+      );
       show(banner);
       setControlsEnabled(false);
       lastGood = null;
@@ -434,7 +474,7 @@
   }
 
   function start() {
-    return withBusy('rec-error', { id: 'rec-start', text: 'Starting…' }, () =>
+    return withBusy('rec-error', { id: 'rec-start', text: t('rec.starting', null, 'Starting…') }, () =>
       invoke('cmd_record_start', {
         fps: Number($('rec-fps').value) || 30,
         encoder: $('rec-encoder').value || 'auto',
@@ -448,7 +488,7 @@
   function stop() {
     // The answer comes once the file is final — a long recording's remux
     // copies every byte once, so say what the wait is.
-    return withBusy('rec-error', { id: 'rec-stop', text: 'Finishing the file…' }, () =>
+    return withBusy('rec-error', { id: 'rec-stop', text: t('rec.finishing', null, 'Finishing the file…') }, () =>
       invoke('cmd_record_stop'),
     );
   }
@@ -533,6 +573,9 @@
     });
     // An export lands in the folder: the list shows it on the way back.
     document.addEventListener('meshharbor:editor-closed', () => void refresh({ force: true }));
+    document.addEventListener('meshharbor:lang', () => {
+      if (lastGood) render(lastGood);
+    });
     askEngine();
     setInterval(tick, 1000);
   }

@@ -17,7 +17,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MeshHarbor — session active</title>
+    <title data-i18n="app.viewingTitle">MeshHarbor — session active</title>
     <link rel="stylesheet" href="styles.css" />
     <style>
       html,
@@ -25,6 +25,7 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
+        background: var(--bg-elev);
       }
       body {
         display: flex;
@@ -32,7 +33,7 @@
         gap: 10px;
         padding: 0 12px;
         box-sizing: border-box;
-        border: 1px solid #d33;
+        border: 1px solid var(--error);
         border-radius: 8px;
         user-select: none;
       }
@@ -43,7 +44,7 @@
         width: 9px;
         height: 9px;
         border-radius: 50%;
-        background: #d33;
+        background: var(--error);
         flex: 0 0 auto;
       }
       .who {
@@ -54,6 +55,7 @@
       }
       .who b {
         display: block;
+        font-weight: 600;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -62,6 +64,7 @@
         display: block;
         color: var(--muted);
         font-size: 11px;
+        font-variant-numeric: tabular-nums;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -71,6 +74,7 @@
         flex: 0 0 auto;
         font-size: 12px;
         padding: 4px 10px;
+        min-width: 0;
       }
     </style>
   </head>
@@ -88,8 +92,9 @@
     <!-- FR-85 P3b — shown only while a controller RECORDS: stops the
          recording (the file is kept, and the controller is told the host
          stopped it) without ending the session. -->
-    <button type="button" id="v-rec-stop" class="consent-btn consent-deny" hidden>Stop recording</button>
-    <button type="button" id="v-stop" class="consent-btn consent-deny">Disconnect</button>
+    <button type="button" id="v-rec-stop" class="consent-btn consent-deny" hidden data-i18n="viewing.stopRecording">Stop recording</button>
+    <button type="button" id="v-stop" class="consent-btn consent-deny" data-i18n="viewing.disconnect">Disconnect</button>
+    <script src="i18n.js"></script>
     <script src="panel-viewing.js"></script>
   </body>
 </html>

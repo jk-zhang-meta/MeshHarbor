@@ -40,6 +40,8 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, fmtBytes, on, get, currentView } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   let busy = false;            // one mutation in flight at a time
   let lastRoutes = [];         // last GOOD data — what the tables show
@@ -102,21 +104,31 @@
     return d.toLocaleTimeString([], { hour12: false });
   }
 
+  let lastStaleReason = null;
+
   function noteUnavailable(reason) {
     failures += 1;
+    lastStaleReason = reason;
     if (!unavailableSince) unavailableSince = new Date();
+    paintStaleBanner();
+  }
+
+  function paintStaleBanner() {
     const line = $('tn-stale');
-    if (!line) return;
+    if (!line || !unavailableSince) return;
+    const since = fmtClock(unavailableSince);
+    const reason = lastStaleReason || t('tn.noResponse', null, 'no response');
     line.textContent =
-      'live data unavailable since ' + fmtClock(unavailableSince) +
-      ' · ' + failures + (failures === 1 ? ' failure' : ' failures') +
-      ' · ' + reason;
+      failures === 1
+        ? t('tn.staleOne', { since, n: failures, reason }, 'live data unavailable since ' + since + ' · 1 failure · ' + reason)
+        : t('tn.staleMany', { since, n: failures, reason }, 'live data unavailable since ' + since + ' · ' + failures + ' failures · ' + reason);
     show(line);
   }
 
   function noteAvailable() {
     failures = 0;
     unavailableSince = null;
+    lastStaleReason = null;
     hide($('tn-stale'));
   }
 
@@ -206,20 +218,30 @@
   // than #1685 sends neither field and renders exactly as before.
   function stateLabel(s) {
     switch (s.state) {
-      case 'disabled': return { text: 'disabled', cls: 'muted' };
+      case 'disabled': return { text: t('tn.state.disabled', null, 'disabled'), cls: 'muted' };
       case 'pending':
-        return s.flow_id ? { text: 'connecting', cls: 'muted' } : { text: 'pending', cls: 'muted' };
-      case 'active': return { text: 'active', cls: 'ok' };
+        return s.flow_id
+          ? { text: t('tn.state.connecting', null, 'connecting'), cls: 'muted' }
+          : { text: t('tn.state.pending', null, 'pending'), cls: 'muted' };
+      case 'active': return { text: t('tn.state.active', null, 'active'), cls: 'ok' };
       case 'backoff': {
         if (s.flow_id) {
           const n = s.attempts > 0 ? s.attempts : 1;
-          const next = s.next_retry_secs > 0 ? ', next in ' + s.next_retry_secs + 's' : '';
-          return { text: 'retrying (' + n + next + ') — ' + s.last_error, cls: 'warn' };
+          const next = s.next_retry_secs > 0
+            ? t('tn.state.nextIn', { secs: s.next_retry_secs }, ', next in ' + s.next_retry_secs + 's')
+            : '';
+          return {
+            text: t('tn.state.retryingFlow', { n, next, err: s.last_error }, 'retrying (' + n + next + ') — ' + s.last_error),
+            cls: 'warn',
+          };
         }
-        return { text: 'retrying in ' + s.next_retry_secs + 's: ' + s.last_error, cls: 'warn' };
+        return {
+          text: t('tn.state.retryingBind', { secs: s.next_retry_secs, err: s.last_error }, 'retrying in ' + s.next_retry_secs + 's: ' + s.last_error),
+          cls: 'warn',
+        };
       }
       case 'failed':
-        return { text: 'FAILED: ' + s.reason, cls: 'err' };
+        return { text: t('tn.state.failed', { reason: s.reason }, 'FAILED: ' + s.reason), cls: 'err' };
       // A newer daemon's state word: shown as-is, never an error.
       default: return { text: s.state || '—', cls: 'muted' };
     }
@@ -231,7 +253,7 @@
     const st = stateLabel(r.state);
     const s = r.state || {};
     if ((s.state === 'pending' || s.state === 'backoff') && peerOnline(r.route.node) === false) {
-      return { text: st.text + ' · device offline', cls: st.cls };
+      return { text: t('tn.state.deviceOffline', { state: st.text }, st.text + ' · device offline'), cls: st.cls };
     }
     return st;
   }
@@ -265,10 +287,10 @@
     const actions = document.createElement('td');
     // The handlers read `row.route` at click time, so the buttons are
     // created once and never re-created by a repaint.
-    row.toggle = actionBtn('Disable', false, () =>
+    row.toggle = actionBtn(t('tn.btn.disable', null, 'Disable'), false, () =>
       invoke('cmd_route_set_enabled', { id, enabled: !(row.route && row.route.enabled) }));
-    row.edit = actionBtn('Edit', false, () => beginEdit(row.route));
-    row.remove = actionBtn('Remove', true, () => invoke('cmd_route_remove', { id }));
+    row.edit = actionBtn(t('tn.btn.edit', null, 'Edit'), false, () => beginEdit(row.route));
+    row.remove = actionBtn(t('tn.btn.remove', null, 'Remove'), true, () => invoke('cmd_route_remove', { id }));
     actions.append(row.toggle, row.edit, row.remove);
     tr.appendChild(actions);
     return row;
@@ -293,7 +315,9 @@
     } else {
       row.traffic.hidden = true;
     }
-    setText(row.toggle, d.enabled ? 'Disable' : 'Enable');
+    setText(row.toggle, d.enabled ? t('tn.btn.disable', null, 'Disable') : t('tn.btn.enable', null, 'Enable'));
+    setText(row.edit, t('tn.btn.edit', null, 'Edit'));
+    setText(row.remove, t('tn.btn.remove', null, 'Remove'));
   }
 
   function paintRoutes(routes) {
@@ -401,12 +425,12 @@
     for (const p of agentPeers()) {
       const o = document.createElement('option');
       o.value = p.agent_id;
-      o.textContent = (p.name || p.agent_id.slice(0, 8) + '…') + (p.online ? '' : ' (offline)');
+      o.textContent = (p.name || p.agent_id.slice(0, 8) + '…') + (p.online ? '' : t('tn.form.offlineSuffix', null, ' (offline)'));
       opts.push(o);
     }
     const custom = document.createElement('option');
     custom.value = CUSTOM;
-    custom.textContent = 'Other device (enter agent id)…';
+    custom.textContent = t('tn.form.otherDevice', null, 'Other device (enter agent id)…');
     opts.push(custom);
     sel.replaceChildren(...opts);
     // Keep the operator's selection stable across the 2 s repaint.
@@ -430,13 +454,13 @@
     const cancel = $('tn-cancel');
     const idInput = $('tn-id');
     if (editing) {
-      if (title) title.textContent = 'Edit route ' + editing.id;
-      if (submit) submit.textContent = 'Save changes';
+      if (title) title.textContent = t('tn.form.editSummary', { id: editing.id }, 'Edit route ' + editing.id);
+      if (submit) submit.textContent = t('tn.form.saveBtn', null, 'Save changes');
       show(cancel);
       if (idInput) idInput.readOnly = true;
     } else {
-      if (title) title.textContent = 'Add route…';
-      if (submit) submit.textContent = 'Add route';
+      if (title) title.textContent = t('tn.form.addSummary', null, 'Add route…');
+      if (submit) submit.textContent = t('tn.form.addBtn', null, 'Add route');
       hide(cancel);
       if (idInput) idInput.readOnly = false;
     }
@@ -497,7 +521,7 @@
 
       const node = selectedNode();
       if (!node) {
-        errSlot.textContent = 'Pick a target device (or enter its agent id).';
+        errSlot.textContent = t('tn.form.pickNodeErr', null, 'Pick a target device (or enter its agent id).');
         show(errSlot);
         return;
       }
@@ -542,6 +566,13 @@
     wireForm();
     setFormMode();
     on('deviceView', paintNodeOptions);
+    document.addEventListener('meshharbor:lang', () => {
+      paintNodeOptions();
+      setFormMode();
+      paintRoutes(lastRoutes);
+      paintFlows(lastFlows);
+      paintStaleBanner();
+    });
     // Refresh immediately when the view is entered; poll only while visible.
     document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail === 'tunnels') void refresh({ force: true });

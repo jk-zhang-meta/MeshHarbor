@@ -10,6 +10,10 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, setText, on, get, navigate, refreshStatus } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
+  let lastStatus = null;
+  let lastEntries = null;
 
   function showResult(text, isError) {
     const el = $('settings-result');
@@ -19,25 +23,31 @@
   }
 
   function paintStatus(s) {
+    lastStatus = s;
     const rename = $('rename-input');
     if (rename && !rename.matches(':focus') && s.device_name) {
       rename.value = s.name_sync?.proposed_name || s.device_name;
     }
     const ns = s.name_sync;
+    const syncFailed = t('st.rename.syncFailed', null, 'synchronization failed');
     setText('rename-sync-state', ns?.state === 'pending'
-      ? 'Name proposal queued; waiting for the server. Current name: ' + s.device_name
+      ? t('st.rename.pending', { name: s.device_name }, 'Name proposal queued; waiting for the server. Current name: ' + s.device_name)
       : ns?.state === 'failed'
-        ? 'Name not changed: ' + (ns.error || 'synchronization failed') + '. Review and submit again. Current name: ' + s.device_name
-        : ns?.state === 'unsupported' ? 'Server does not support name synchronization; proposal not applied.'
-          : ns?.state === 'synced' ? 'Name synchronized with the server.'
-          : 'Live synchronization requires a connected, compatible daemon.');
+        ? t('st.rename.failed', { err: ns.error || syncFailed, name: s.device_name }, 'Name not changed: ' + (ns.error || 'synchronization failed') + '. Review and submit again. Current name: ' + s.device_name)
+        : ns?.state === 'unsupported' ? t('st.rename.unsupported', null, 'Server does not support name synchronization; proposal not applied.')
+          : ns?.state === 'synced' ? t('st.rename.synced', null, 'Name synchronized with the server.')
+          : t('st.rename.legacy', null, 'Live synchronization requires a connected, compatible daemon.'));
     setText(
       'st-service',
       s.service_kind === 'scmService'
-        ? 'System service' + (s.service_running ? ' · running' : ' · stopped')
+        ? (s.service_running
+            ? t('ov.device.serviceSystemRunning', null, 'System service · running')
+            : t('ov.device.serviceSystemStopped', null, 'System service · stopped'))
         : s.service_kind === 'scheduledTask'
-          ? 'Per-user auto-start' + (s.service_running ? ' · running' : '')
-          : 'not installed',
+          ? (s.service_running
+              ? t('ov.device.serviceUserRunning', null, 'Per-user auto-start · running')
+              : t('ov.device.serviceUser', null, 'Per-user auto-start'))
+          : t('ov.device.serviceNotInstalled', null, 'not installed'),
     );
     setText('st-log-dir', s.log_dir);
     setText('st-config-dir', s.config_dir);
@@ -124,8 +134,8 @@
     setText(
       'cfg-restart-text',
       n === 1
-        ? '1 change takes effect after the service restarts.'
-        : n + ' changes take effect after the service restarts.',
+        ? t('st.restart.one', null, '1 change takes effect after the service restarts.')
+        : t('st.restart.many', { n }, n + ' changes take effect after the service restarts.'),
     );
     show(bar);
   }
@@ -153,9 +163,9 @@
 
   function restartRefusalText(r) {
     if (r.predates) {
-      return 'This service predates Apply now — restart it from Background service.';
+      return t('st.restart.predates', null, 'This service predates Apply now — restart it from Background service.');
     }
-    return 'Not restarted — ' + r.refusal;
+    return t('st.restart.refused', { refusal: r.refusal }, 'Not restarted — ' + r.refusal);
   }
 
   /* Wait for the relaunched daemon (≤ 60 s, Rust side): its pid, or throws.
@@ -186,12 +196,16 @@
    * shared pending set clears here, whoever asked. */
   async function restartDaemon(reason, progress) {
     const say = typeof progress === 'function' ? progress : () => {};
-    say('Asking the service to restart…');
+    say(t('st.restart.asking', null, 'Asking the service to restart…'));
     let r;
     try {
       r = await invoke('cmd_restart_daemon', { reason });
     } catch (e) {
-      return { ok: false, stage: 'ask', message: 'Could not ask the service to restart: ' + e };
+      return {
+        ok: false,
+        stage: 'ask',
+        message: t('st.restart.askFailed', { err: e }, 'Could not ask the service to restart: ' + e),
+      };
     }
     if (!r.started) {
       return {
@@ -203,8 +217,8 @@
     }
     say(
       r.restart_by === 'caller'
-        ? 'Restarting the service — starting it again…'
-        : 'Restarting the service (' + r.supervisor + ')…',
+        ? t('st.restart.restartingCaller', null, 'Restarting the service — starting it again…')
+        : t('st.restart.restartingSup', { supervisor: r.supervisor }, 'Restarting the service (' + r.supervisor + ')…'),
     );
     try {
       await waitForDaemon(r);
@@ -213,7 +227,7 @@
       return {
         ok: false,
         stage: 'wait',
-        message: 'The service has not come back: ' + e + ' — check Background service.',
+        message: t('st.restart.notBack', { err: e }, 'The service has not come back: ' + e + ' — check Background service.'),
       };
     }
     window.MeshHarbor.settingsPendingRestart.clear();
@@ -237,7 +251,7 @@
         return;
       }
       await loadCfg(true);
-      showResult('Service restarted — your changes are in effect.', false);
+      showResult(t('st.restart.done', null, 'Service restarted — your changes are in effect.'), false);
     } finally {
       applying = false;
       btn.disabled = false;
@@ -250,8 +264,8 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.id = 'btn-apply-now';
-    btn.textContent = 'Apply now';
-    btn.title = 'Restart the device service so the saved changes take effect';
+    btn.textContent = t('st.restart.applyNow', null, 'Apply now');
+    btn.title = t('st.restart.applyNowTip', null, 'Restart the device service so the saved changes take effect');
     btn.addEventListener('click', () => void applyNow(btn));
     slot.appendChild(btn);
   }
@@ -284,7 +298,7 @@
     const badge = group.querySelector('.cfg-group-changed');
     if (!badge) return;
     badge.hidden = changed === 0;
-    badge.textContent = changed + ' changed';
+    badge.textContent = t('st.cfg.changedCount', { n: changed }, changed + ' changed');
   }
 
   async function applyCfg(key, raw, row) {
@@ -302,13 +316,17 @@
       // force yet, and either restart a healthy daemon for nothing or
       // assume they are still exposed.
       if (entry.restart_required) {
-        status.textContent = 'Saved — takes effect after the service restarts.';
+        status.textContent = t('st.cfg.savedRestart', null, 'Saved — takes effect after the service restarts.');
         window.MeshHarbor.settingsPendingRestart.add(key);
       } else {
-        status.textContent = 'Saved — in effect now, no restart needed.';
+        status.textContent = t('st.cfg.savedLive', null, 'Saved — in effect now, no restart needed.');
       }
       status.classList.remove('error');
       paintModified(row, entry);
+      if (lastEntries) {
+        const idx = lastEntries.findIndex((e) => e.key === entry.key);
+        if (idx >= 0) lastEntries[idx] = entry;
+      }
       return entry;
     } catch (e) {
       status.textContent = String(e);
@@ -344,7 +362,7 @@
     head.appendChild(key);
     const mod = document.createElement('span');
     mod.className = 'chip cfg-chip-mod cfg-row-mod';
-    mod.textContent = 'modified';
+    mod.textContent = t('st.cfg.modified', null, 'modified');
     mod.hidden = !isModified(entry);
     head.appendChild(mod);
     row.appendChild(head);
@@ -362,8 +380,8 @@
     if (entry.kind === 'bool') {
       const sel = makeSelect(
         [
-          { value: 'true', label: 'on' },
-          { value: 'false', label: 'off' },
+          { value: 'true', label: t('common.on', null, 'on') },
+          { value: 'false', label: t('common.off', null, 'off') },
         ],
         val || 'false',
       );
@@ -372,9 +390,9 @@
     } else if (entry.kind === 'tribool') {
       const sel = makeSelect(
         [
-          { value: '', label: 'default' },
-          { value: 'true', label: 'on' },
-          { value: 'false', label: 'off' },
+          { value: '', label: t('common.default', null, 'default') },
+          { value: 'true', label: t('common.on', null, 'on') },
+          { value: 'false', label: t('common.off', null, 'off') },
         ],
         val,
       );
@@ -401,7 +419,7 @@
       }
       const save = document.createElement('button');
       save.type = 'button';
-      save.textContent = 'Save';
+      save.textContent = t('common.save', null, 'Save');
       save.addEventListener('click', async () => {
         save.disabled = true;
         const entryBack = await applyCfg(entry.key, ta.value.trim(), row);
@@ -423,10 +441,12 @@
       input.className = 'mono small';
       input.value = val;
       input.style.flex = '1';
-      if (entry.kind === 'list') input.placeholder = 'e.g. 192.168.1.0/24, 10.0.0.0/8';
+      if (entry.kind === 'list') {
+        input.placeholder = t('st.cfg.listPlaceholder', null, 'e.g. 192.168.1.0/24, 10.0.0.0/8');
+      }
       const save = document.createElement('button');
       save.type = 'button';
-      save.textContent = 'Save';
+      save.textContent = t('common.save', null, 'Save');
       const submit = async () => {
         save.disabled = true;
         const entryBack = await applyCfg(entry.key, input.value.trim(), row);
@@ -463,7 +483,9 @@
     name.textContent = label;
     const count = document.createElement('span');
     count.className = 'muted small cfg-group-count';
-    count.textContent = entries.length + (entries.length === 1 ? ' key' : ' keys');
+    count.textContent = entries.length === 1
+      ? t('st.cfg.keyOne', { n: entries.length }, entries.length + ' key')
+      : t('st.cfg.keyMany', { n: entries.length }, entries.length + ' keys');
     const changed = document.createElement('span');
     changed.className = 'chip cfg-chip-mod cfg-group-changed';
     changed.hidden = true;
@@ -495,6 +517,7 @@
   }
 
   function renderCfg(entries) {
+    lastEntries = entries;
     const container = $('cfg-rows');
     const searchWrap = $('cfg-search-wrap');
     container.replaceChildren();
@@ -512,10 +535,10 @@
     container.appendChild(
       cfgGroup(
         ESSENTIALS_ID,
-        'Essentials',
+        t('st.cfg.essentials', null, 'Essentials'),
         essentials,
         defaultOpen(ESSENTIALS_ID),
-        'The switches most people decide on. Everything else is below, grouped.',
+        t('st.cfg.essentialsHint', null, 'The switches most people decide on. Everything else is below, grouped.'),
       ),
     );
 
@@ -574,7 +597,11 @@
     });
     setText(
       'cfg-search-count',
-      total === 0 ? 'No keys match.' : total + (total === 1 ? ' key matches' : ' keys match'),
+      total === 0
+        ? t('st.cfg.matchNone', null, 'No keys match.')
+        : total === 1
+          ? t('st.cfg.matchOne', { n: total }, total + ' key matches')
+          : t('st.cfg.matchMany', { n: total }, total + ' keys match'),
     );
   }
 
@@ -590,10 +617,10 @@
       container.replaceChildren();
       const p = document.createElement('p');
       p.className = 'muted small';
-      p.textContent = 'Could not load the configuration: ' + e;
+      p.textContent = t('st.cfg.loadFailed', { err: e }, 'Could not load the configuration: ' + e);
       const retry = document.createElement('button');
       retry.type = 'button';
-      retry.textContent = 'Retry';
+      retry.textContent = t('common.retry', null, 'Retry');
       retry.addEventListener('click', () => void loadCfg(true));
       container.appendChild(p);
       container.appendChild(retry);
@@ -609,7 +636,7 @@
     if (!sourceEl || !view) return;
     try {
       const r = await invoke('cmd_tail_log', { source: sourceEl.value, maxBytes: 32768 });
-      setText('log-path', r.path + ' · ' + r.size + ' bytes');
+      setText('log-path', t('st.log.meta', { path: r.path, size: r.size }, r.path + ' · ' + r.size + ' bytes'));
       const filter = ($('log-filter').value || '').trim().toLowerCase();
       const lines = r.content.split('\n');
       const shown = filter
@@ -617,11 +644,11 @@
         : lines;
       // Keep the view pinned to the tail unless the operator scrolled up.
       const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 32;
-      view.textContent = shown.join('\n').trim() || '(no matching lines)';
+      view.textContent = shown.join('\n').trim() || t('st.log.noMatch', null, '(no matching lines)');
       if (atBottom) view.scrollTop = view.scrollHeight;
     } catch (e) {
       setText('log-path', '—');
-      view.textContent = 'Could not read the log: ' + e;
+      view.textContent = t('st.log.readFailed', { err: e }, 'Could not read the log: ' + e);
     }
   }
 
@@ -658,10 +685,13 @@
       try {
         const report = await invoke('cmd_set_device_name', { name });
         paintStatus(report);
-        showResult('Name proposal queued; the canonical name changes after server acceptance.', false);
+        showResult(
+          t('st.rename.queued', null, 'Name proposal queued; the canonical name changes after server acceptance.'),
+          false,
+        );
         void refreshStatus();
       } catch (e) {
-        showResult('Rename failed: ' + e, true);
+        showResult(t('st.rename.err', { err: e }, 'Rename failed: ' + e), true);
       }
     });
 
@@ -675,10 +705,10 @@
       btn.disabled = true;
       try {
         const detail = await invoke('cmd_config_cleanup');
-        showResult('Cleaned up: ' + detail, false);
+        showResult(t('st.cleanup.done', { detail }, 'Cleaned up: ' + detail), false);
         void refreshStatus();
       } catch (e) {
-        showResult('Cleanup not performed: ' + e, true);
+        showResult(t('st.cleanup.failed', { err: e }, 'Cleanup not performed: ' + e), true);
       } finally {
         btn.disabled = false;
       }
@@ -689,20 +719,20 @@
       // SCM installs are the MeshHarbor Setup installer's job, not the desktop's.
       try {
         await invoke('cmd_service_install', { asService: false });
-        showResult('Auto-start installed.', false);
+        showResult(t('st.service.installed', null, 'Auto-start installed.'), false);
         void refreshStatus();
       } catch (e) {
-        showResult('Install failed: ' + e, true);
+        showResult(t('st.service.installFailed', { err: e }, 'Install failed: ' + e), true);
       }
     });
 
     $('btn-service-uninstall').addEventListener('click', async () => {
       try {
         await invoke('cmd_service_uninstall', { asService: false });
-        showResult('Auto-start removed.', false);
+        showResult(t('st.service.removed', null, 'Auto-start removed.'), false);
         void refreshStatus();
       } catch (e) {
-        showResult('Removal failed: ' + e, true);
+        showResult(t('st.service.removeFailed', { err: e }, 'Removal failed: ' + e), true);
       }
     });
 
@@ -710,7 +740,7 @@
       try {
         await invoke('cmd_open_log_dir');
       } catch (e) {
-        showResult('Could not open the logs folder: ' + e, true);
+        showResult(t('st.files.openLogsFailed', { err: e }, 'Could not open the logs folder: ' + e), true);
       }
     });
 
@@ -718,7 +748,7 @@
       try {
         await invoke('cmd_open_config_dir');
       } catch (e) {
-        showResult('Could not open the config folder: ' + e, true);
+        showResult(t('st.files.openConfigFailed', { err: e }, 'Could not open the config folder: ' + e), true);
       }
     });
 
@@ -743,6 +773,17 @@
     $('log-follow').addEventListener('change', (ev) => {
       setLogFollow(ev.target.checked);
       if (ev.target.checked) void refreshLog();
+    });
+
+    document.addEventListener('meshharbor:lang', () => {
+      if (lastStatus) paintStatus(lastStatus);
+      paintRestartBar();
+      const applyBtn = $('btn-apply-now');
+      if (applyBtn) {
+        applyBtn.textContent = t('st.restart.applyNow', null, 'Apply now');
+        applyBtn.title = t('st.restart.applyNowTip', null, 'Restart the device service so the saved changes take effect');
+      }
+      if (cfgLoaded && lastEntries) renderCfg(lastEntries);
     });
   });
 })();

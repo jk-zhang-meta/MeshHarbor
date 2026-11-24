@@ -15,39 +15,51 @@
  */
 ;(function () {
   const invoke = (name, payload) => window.__TAURI__.core.invoke(name, payload || {})
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback
 
-  const KINDS = {
+  const KIND_KEYS = {
     rc: {
-      title: 'Remote control request',
-      verb: 'is requesting to control this device',
+      titleKey: 'consent.rc.title',
+      titleFallback: 'Remote control request',
+      verbKey: 'consent.rc.verb',
+      verbFallback: 'is requesting to control this device',
     },
     exec: {
-      title: 'Command execution request',
-      verb: 'wants to run a command on this device',
+      titleKey: 'consent.exec.title',
+      titleFallback: 'Command execution request',
+      verbKey: 'consent.exec.verb',
+      verbFallback: 'wants to run a command on this device',
     },
     ssh: {
-      title: 'SSH session request',
-      verb: 'wants to open an SSH session on this device',
+      titleKey: 'consent.ssh.title',
+      titleFallback: 'SSH session request',
+      verbKey: 'consent.ssh.verb',
+      verbFallback: 'wants to open an SSH session on this device',
     },
     // FR-85 P3b — a controller already in a session asks to keep a COPY of the
     // screen. Its own question: seeing and recording are different answers.
     record: {
-      title: 'Screen recording request',
-      verb: 'wants to record this screen',
+      titleKey: 'consent.record.title',
+      titleFallback: 'Screen recording request',
+      verbKey: 'consent.record.verb',
+      verbFallback: 'wants to record this screen',
     },
   }
 
   const $ = (id) => document.getElementById(id)
   let active = null // session id currently rendered
+  let currentPrompt = null // full pending object so language switches can re-render
   let expiresAt = 0 // unix ms, 0 = unknown
   let busy = false
 
   function render(pc) {
     active = pc.session_id
-    const kind = KINDS[pc.kind] || KINDS.rc
-    $('p-title').textContent = kind.title
-    $('p-verb').textContent = kind.verb
-    $('p-who').textContent = pc.controller_name || 'A remote operator'
+    currentPrompt = pc
+    const kind = KIND_KEYS[pc.kind] || KIND_KEYS.rc
+    $('p-title').textContent = t(kind.titleKey, null, kind.titleFallback)
+    $('p-verb').textContent = t(kind.verbKey, null, kind.verbFallback)
+    $('p-who').textContent = pc.controller_name || t('consent.whoFallback', null, 'A remote operator')
 
     const org = (pc.org || '').trim()
     $('p-org').textContent = org
@@ -80,18 +92,24 @@
     // m:ss above a minute — the plain-prompt window is 5 min (FR-34), and
     // "Expires in 287s" reads worse than "Expires in 4:47".
     const pretty = left >= 60 ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : `${left}s`
-    el.textContent = left > 0 ? `Expires in ${pretty}` : 'Expired'
+    el.textContent =
+      left > 0
+        ? t('consent.expiresIn', { time: pretty }, `Expires in ${pretty}`)
+        : t('consent.expired', null, 'Expired')
   }
 
   async function decide(approve) {
     if (!active || busy) return
     busy = true
-    $('p-countdown').textContent = approve ? 'Approving…' : 'Denying…'
+    $('p-countdown').textContent = approve
+      ? t('consent.approving', null, 'Approving…')
+      : t('consent.denying', null, 'Denying…')
     try {
       await invoke(approve ? 'cmd_consent_approve' : 'cmd_consent_deny', { session: active })
       active = null
+      currentPrompt = null
     } catch (e) {
-      $('p-countdown').textContent = 'Failed: ' + e
+      $('p-countdown').textContent = t('common.failedPrefix', { err: e }, 'Failed: ' + e)
     } finally {
       busy = false
     }
@@ -112,6 +130,7 @@
     if (Array.isArray(pending)) pending = pending.filter((p) => p.surface !== 'native')
     if (!Array.isArray(pending) || pending.length === 0) {
       active = null
+      currentPrompt = null
       expiresAt = 0
       return
     }
@@ -126,6 +145,9 @@
   // prompt people learn to click through.
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') decide(false)
+  })
+  document.addEventListener('meshharbor:lang', () => {
+    if (currentPrompt) render(currentPrompt)
   })
 
   setInterval(poll, 750)

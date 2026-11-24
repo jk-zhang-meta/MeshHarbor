@@ -1,58 +1,165 @@
-/* MeshHarbor Setup — unified SPA stylesheet.
+/* SPDX-License-Identifier: MPL-2.0 */
+/* Copyright (C) 2026 G ROX EOOD */
+/*
+ * MeshHarbor Setup — unified SPA flat theme stylesheet.
  *
- * Adapted from the agent installer's styles.css (the richer of the
- * two legacy sheets: light/dark theme via `color-scheme`, checklist
- * icons, kv grid). Vanilla CSS, no framework. Additions for the
- * unified app: textarea token field (from the tunnel sheet) and the
- * in-HTML force-kill confirmation (plain .warning block). The
- * recovery-cog panel from the agent wizard was dropped — its reset
- * affordance is covered by the error panel's "Back to start". */
+ * Matches the web UI's flat theme (`ui/src/plugins/vuetify.ts` +
+ * `ui/src/styles/theme.css`): cool paper ground, harbor-ink text,
+ * harbor teal primary, hairline borders instead of drop shadows,
+ * sentence-case buttons, bundled IBM Plex Sans / Mono (zero CDN),
+ * and automatic light/dark following `prefers-color-scheme` (plus
+ * optional `html.theme-dark` / `html.theme-light` class overrides).
+ */
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-sans-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
+}
 
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --bg-elevated: #f9fafb;
-  --fg: #1a1a1a;
-  --fg-strong: #0f172a;
-  --muted: #6b7280;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-fg: #ffffff;
-  --border: #e5e7eb;
-  --warning-bg: #fef3c7;
-  --warning-fg: #92400e;
-  --warning-border: #fbbf24;
-  --error-bg: #fef2f2;
-  --error-fg: #991b1b;
-  --error-border: #f87171;
-  --info-bg: #eff6ff;
-  --info-fg: #1e40af;
-  --info-border: #60a5fa;
-  --success-fg: #047857;
+  --mh-font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC',
+    'Segoe UI', system-ui, sans-serif;
+  --mh-font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --bg: #F5F7F9;
+  --bg-elevated: #FFFFFF;
+  --bg-subtle: #F0F3F5;
+  --fg: #10212B;
+  --fg-strong: #10212B;
+  --muted: rgba(16, 33, 43, 0.62);
+  --accent: #0A8F86;
+  --accent-hover: #087870;
+  --accent-fg: #FFFFFF;
+  --accent-tint: rgba(10, 143, 134, 0.10);
+  --buoy: #E07A2E;
+  --border: rgba(16, 33, 43, 0.10);
+  --border-strong: rgba(16, 33, 43, 0.18);
+  --focus-ring: rgba(10, 143, 134, 0.22);
+
+  --warning-bg: rgba(185, 126, 8, 0.10);
+  --warning-fg: #8A5D04;
+  --warning-border: rgba(185, 126, 8, 0.34);
+  --error-bg: rgba(209, 67, 67, 0.10);
+  --error-fg: #B02E2E;
+  --error-border: rgba(209, 67, 67, 0.34);
+  --info-bg: rgba(47, 123, 216, 0.10);
+  --info-fg: #1E5AA8;
+  --info-border: rgba(47, 123, 216, 0.30);
+  --success-fg: #1F9D57;
+  --snackbar-bg: #1D2B33;
+  --snackbar-fg: #EEF3F5;
+  --overlay-shadow: 0 10px 30px -8px rgba(16, 33, 43, 0.18), 0 2px 6px rgba(16, 33, 43, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f172a;
-    --bg-elevated: #1e293b;
-    --fg: #e5e7eb;
-    --fg-strong: #f1f5f9;
-    --muted: #94a3b8;
-    --accent: #3b82f6;
-    --accent-hover: #60a5fa;
-    --accent-fg: #0f172a;
-    --border: #334155;
-    --warning-bg: #422006;
-    --warning-fg: #fbbf24;
-    --warning-border: #92400e;
-    --error-bg: #450a0a;
-    --error-fg: #fca5a5;
-    --error-border: #991b1b;
-    --info-bg: #0c1e3a;
-    --info-fg: #93c5fd;
-    --info-border: #1e3a8a;
-    --success-fg: #34d399;
+  :root:not(.theme-light):not([data-theme="light"]) {
+    --bg: #0E151A;
+    --bg-elevated: #141D23;
+    --bg-subtle: #1A252C;
+    --fg: #E6EEF2;
+    --fg-strong: #E6EEF2;
+    --muted: rgba(230, 238, 242, 0.64);
+    --accent: #3CC7B9;
+    --accent-hover: #52D4C7;
+    --accent-fg: #0E151A;
+    --accent-tint: rgba(60, 199, 185, 0.12);
+    --buoy: #F0965A;
+    --border: rgba(230, 238, 242, 0.10);
+    --border-strong: rgba(230, 238, 242, 0.18);
+    --focus-ring: rgba(60, 199, 185, 0.25);
+
+    --warning-bg: rgba(224, 169, 59, 0.13);
+    --warning-fg: #E6B754;
+    --warning-border: rgba(224, 169, 59, 0.34);
+    --error-bg: rgba(240, 106, 106, 0.13);
+    --error-fg: #F58888;
+    --error-border: rgba(240, 106, 106, 0.34);
+    --info-bg: rgba(92, 158, 240, 0.13);
+    --info-fg: #82B5F5;
+    --info-border: rgba(92, 158, 240, 0.32);
+    --success-fg: #3CCB7F;
+    --snackbar-bg: #E6EEF2;
+    --snackbar-fg: #0E151A;
+    --overlay-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(230, 238, 242, 0.06);
   }
+}
+
+:root.theme-dark,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0E151A;
+  --bg-elevated: #141D23;
+  --bg-subtle: #1A252C;
+  --fg: #E6EEF2;
+  --fg-strong: #E6EEF2;
+  --muted: rgba(230, 238, 242, 0.64);
+  --accent: #3CC7B9;
+  --accent-hover: #52D4C7;
+  --accent-fg: #0E151A;
+  --accent-tint: rgba(60, 199, 185, 0.12);
+  --buoy: #F0965A;
+  --border: rgba(230, 238, 242, 0.10);
+  --border-strong: rgba(230, 238, 242, 0.18);
+  --focus-ring: rgba(60, 199, 185, 0.25);
+
+  --warning-bg: rgba(224, 169, 59, 0.13);
+  --warning-fg: #E6B754;
+  --warning-border: rgba(224, 169, 59, 0.34);
+  --error-bg: rgba(240, 106, 106, 0.13);
+  --error-fg: #F58888;
+  --error-border: rgba(240, 106, 106, 0.34);
+  --info-bg: rgba(92, 158, 240, 0.13);
+  --info-fg: #82B5F5;
+  --info-border: rgba(92, 158, 240, 0.32);
+  --success-fg: #3CCB7F;
+  --snackbar-bg: #E6EEF2;
+  --snackbar-fg: #0E151A;
+  --overlay-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(230, 238, 242, 0.06);
+}
+
+:root.theme-light,
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -61,13 +168,20 @@
   padding: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--mh-font-sans);
   font-size: 14px;
   line-height: 1.5;
   padding: 20px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'kern';
 }
 
 #app {
@@ -78,49 +192,82 @@ body {
   margin: 0 auto;
 }
 
-h1 { font-size: 1.5rem; font-weight: 600; color: var(--fg-strong); }
-h2 { font-size: 1rem; font-weight: 600; color: var(--fg-strong); margin-bottom: 8px; }
-h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 6px; }
+h1 {
+  font-size: 1.4375rem;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--fg-strong);
+}
+h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--fg-strong);
+  margin-bottom: 8px;
+}
+h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
 
 p { margin: 0 0 8px 0; }
 p:last-child { margin-bottom: 0; }
 
-.lead { color: var(--muted); margin-bottom: 12px; }
+.lead { color: var(--muted); margin-bottom: 10px; font-size: 0.875rem; }
 .muted { color: var(--muted); }
 
 code, pre {
-  font-family: "Cascadia Mono", "Consolas", "SF Mono", Menlo, monospace;
-  font-size: 0.85em;
+  font-family: var(--mh-font-mono);
+  font-size: 0.88em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+code {
+  background: var(--bg-subtle);
+  padding: 1px 5px;
+  border-radius: 5px;
 }
 pre {
-  background: var(--bg-elevated);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   padding: 8px 12px;
-  border-radius: 4px;
+  border-radius: 8px;
   overflow-x: auto;
   margin: 8px 0;
 }
 
 .code {
-  font-family: "Cascadia Mono", "Consolas", monospace;
-  font-size: 0.9em;
+  font-family: var(--mh-font-mono);
+  font-size: 0.88em;
+  font-variant-numeric: tabular-nums slashed-zero;
   word-break: break-all;
 }
 
-/* Step indicator (1 of 5 across the top) */
-.step-indicator { margin-bottom: 4px; }
+/* Top bar: step indicator + compact language toggle */
+.wizard-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.step-indicator {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .step-indicator ol {
   list-style: none;
   display: flex;
-  gap: 4px;
-  font-size: 11px;
+  gap: 6px;
+  font-size: 12px;
   color: var(--muted);
 }
 .step-indicator li {
   flex: 1;
-  padding: 6px 8px;
-  border-top: 3px solid var(--border);
+  padding: 6px 6px 4px;
+  border-top: 2px solid var(--border-strong);
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 .step-indicator li.active {
   color: var(--accent);
@@ -132,18 +279,45 @@ pre {
   border-top-color: var(--success-fg);
 }
 
+/* Segmented language switch (matches Web UI `.mh-segmented`) */
+.mh-lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  padding: 2px;
+  gap: 2px;
+}
+.mh-lang-toggle button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.mh-lang-toggle button:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--fg);
+}
+.mh-lang-toggle button.active {
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .step {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
-/* A step's `display: flex` OVERRIDES the `[hidden]` attribute's UA
-   `display: none`, so every section stayed visible stacked vertically
-   and render()'s per-step `hidden` toggle had no visual effect — the
-   wizard looked like one long scroll instead of discrete pages, and
-   Next appeared to do nothing (2026-07-17). `.step[hidden]`
-   (specificity 0,1,1) beats `.step` (0,1,0) → only the current step
-   renders → true step-pages. */
 .step[hidden] {
   display: none;
 }
@@ -151,15 +325,22 @@ pre {
 .card {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 16px;
+  box-shadow: none;
 }
 
 /* Form elements */
+fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   margin-bottom: 12px;
 }
 .field:last-child { margin-bottom: 0; }
@@ -168,30 +349,37 @@ pre {
   color: var(--fg-strong);
   font-size: 0.875rem;
 }
-.field > small { font-size: 0.75rem; }
+.field > small { font-size: 0.78rem; }
 
 input[type="text"],
 input[type="url"],
 input[type="password"],
 textarea {
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated);
   color: var(--fg);
-  font-size: 14px;
+  font-size: 13.5px;
   font-family: inherit;
+  transition: border-color 0.12s ease;
 }
 textarea {
   resize: vertical;
-  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-family: var(--mh-font-mono);
   font-size: 12px;
+}
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 input:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 label.radio,
@@ -200,27 +388,41 @@ label.checkbox {
   gap: 12px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
   margin-bottom: 8px;
   cursor: pointer;
   background: var(--bg);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+label.radio:last-child {
+  margin-bottom: 0;
 }
 label.radio:hover,
 label.checkbox:hover {
   border-color: var(--accent);
 }
+label.radio:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
 label.radio input,
 label.checkbox input {
   margin-top: 3px;
+  accent-color: var(--accent);
 }
-label.radio strong { display: block; margin-bottom: 4px; }
+label.radio strong {
+  display: block;
+  margin-bottom: 3px;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
 label.checkbox {
   align-items: flex-start;
   font-size: 0.875rem;
   margin-top: 12px;
 }
 
-/* Buttons */
+/* Buttons — sentence case, flat, 8px radius */
 .actions {
   display: flex;
   justify-content: flex-end;
@@ -230,41 +432,49 @@ label.checkbox {
 button {
   background: var(--accent);
   color: var(--accent-fg);
-  border: none;
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   padding: 8px 16px;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
   font-family: inherit;
+  box-shadow: none;
 }
 button:hover:not(:disabled) { background: var(--accent-hover); }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.secondary {
-  background: transparent;
+  background: var(--bg-elevated);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
 }
 button.secondary:hover:not(:disabled) {
-  background: var(--bg-elevated);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 
-/* Banners */
+/* Tonal banners */
 .warning {
   background: var(--warning-bg);
   color: var(--warning-fg);
   border: 1px solid var(--warning-border);
-  border-radius: 4px;
+  border-radius: 8px;
   padding: 12px;
-  margin-top: 12px;
+  margin-top: 10px;
   font-size: 0.875rem;
 }
 .error {
   background: var(--error-bg);
   color: var(--error-fg);
   border: 1px solid var(--error-border);
-  border-radius: 4px;
+  border-radius: 8px;
   padding: 12px;
   font-size: 0.875rem;
 }
@@ -272,43 +482,45 @@ button.secondary:hover:not(:disabled) {
   background: var(--info-bg);
   color: var(--info-fg);
   border: 1px solid var(--info-border);
-  border-radius: 4px;
+  border-radius: 8px;
   padding: 12px;
   font-size: 0.875rem;
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 /* Install checklist */
 .checklist {
   list-style: none;
   padding: 0;
-  margin: 12px 0;
+  margin: 8px 0;
+  font-variant-numeric: tabular-nums;
 }
 .checklist li {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-radius: 4px;
-  margin-bottom: 4px;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  margin-bottom: 6px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
+  font-size: 0.875rem;
 }
-.checklist li .icon { width: 20px; text-align: center; }
-.checklist li.running .icon::before { content: "⏳"; }
+.checklist li .icon { width: 18px; text-align: center; flex: 0 0 18px; font-weight: 600; }
+.checklist li.running .icon::before { content: "…"; color: var(--accent); }
 .checklist li.ok .icon::before { content: "✓"; color: var(--success-fg); }
 .checklist li.error .icon::before { content: "✗"; color: var(--error-fg); }
-.checklist li.warning .icon::before { content: "⚠"; color: var(--warning-fg); }
+.checklist li.warning .icon::before { content: "!"; color: var(--warning-fg); }
 
 /* Progress bar */
 .progress-bar {
   width: 100%;
   height: 8px;
-  background: var(--bg-elevated);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 999px;
   overflow: hidden;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 .progress-bar-fill {
   height: 100%;
@@ -316,19 +528,27 @@ button.secondary:hover:not(:disabled) {
   width: 0%;
   transition: width 0.2s ease-out;
 }
+#progress-label {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+}
 
 /* Key-value list on Done page */
 .kv {
   display: grid;
-  grid-template-columns: 130px 1fr;
+  grid-template-columns: 136px 1fr;
   row-gap: 8px;
   column-gap: 16px;
+  font-size: 0.875rem;
 }
 .kv dt {
   font-weight: 500;
   color: var(--muted);
 }
-.kv dd { word-break: break-all; }
+.kv dd {
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Snackbar */
 .snackbar {
@@ -336,16 +556,17 @@ button.secondary:hover:not(:disabled) {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--fg-strong);
-  color: var(--bg);
-  padding: 10px 20px;
-  border-radius: 4px;
+  background: var(--snackbar-bg);
+  color: var(--snackbar-fg);
+  padding: 10px 18px;
+  border-radius: 8px;
   font-size: 0.875rem;
+  box-shadow: var(--overlay-shadow);
   z-index: 200;
-  animation: snackbar-in 0.2s ease-out;
+  animation: snackbar-in 0.18s ease-out;
 }
 @keyframes snackbar-in {
-  from { opacity: 0; transform: translate(-50%, 10px); }
+  from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
@@ -355,6 +576,7 @@ details.card > summary {
   font-weight: 600;
   font-size: 0.9rem;
   user-select: none;
+  color: var(--fg-strong);
 }
 details.card[open] > summary { margin-bottom: 12px; }
 .field.checkline {
@@ -363,4 +585,14 @@ details.card[open] > summary { margin-bottom: 12px; }
   align-items: baseline;
   gap: 8px;
 }
+.field.checkline input[type="checkbox"] {
+  accent-color: var(--accent);
+}
 .field.checkline > span { font-weight: 400; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

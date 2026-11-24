@@ -12,17 +12,38 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, setText, on, get, navigate, currentView } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   let routesActive = null; // painted by tunnels.js via the shared event below
+  let grantHintActive = false;
+
+  function serviceKindLabel(s) {
+    if (s.service_kind === 'scmService') {
+      return s.service_running
+        ? t('ov.device.serviceSystemRunning', null, 'System service · running')
+        : t('ov.device.serviceSystemStopped', null, 'System service · stopped');
+    }
+    if (s.service_kind === 'scheduledTask') {
+      return s.service_running
+        ? t('ov.device.serviceUserRunning', null, 'Per-user auto-start · running')
+        : t('ov.device.serviceUser', null, 'Per-user auto-start');
+    }
+    return t('ov.device.serviceNotInstalled', null, 'not installed');
+  }
 
   function paintStatus(s) {
+    if (!s) return;
     // Banners.
     if (s.enrolled) hide($('ov-not-enrolled'));
     else show($('ov-not-enrolled'));
     if (s.attention) {
       show($('ov-attention'));
       // S1b: show WHAT needs attention, not just where the sentinel sits.
-      setText('ov-attention-msg', s.attention_message || '(no details recorded)');
+      setText(
+        'ov-attention-msg',
+        s.attention_message || t('ov.attention.noDetails', null, '(no details recorded)'),
+      );
       setText('ov-attention-path', s.attention);
       // Re-enrolling fixes every reason except a failed rollback (that one
       // needs an operator to sort the broken-binary state out first).
@@ -34,20 +55,15 @@
 
     const chip = $('ov-enrolled-chip');
     if (chip) {
-      chip.textContent = s.enrolled ? 'Enrolled' : 'Not enrolled';
+      chip.textContent = s.enrolled
+        ? t('ov.device.enrolled', null, 'Enrolled')
+        : t('ov.device.notEnrolled', null, 'Not enrolled');
       chip.className = 'chip ' + (s.enrolled ? 'chip-ok' : 'chip-warn');
     }
 
     setText('ov-server', s.server_url || '—');
     setText('ov-app-version', s.agent_version);
-    setText(
-      'ov-service',
-      s.service_kind === 'scmService'
-        ? 'System service' + (s.service_running ? ' · running' : ' · stopped')
-        : s.service_kind === 'scheduledTask'
-          ? 'Per-user auto-start' + (s.service_running ? ' · running' : '')
-          : 'not installed',
-    );
+    setText('ov-service', serviceKindLabel(s));
     // Config-file identity is a fallback for the fields the live daemon
     // fills in below when it's reachable.
     if (!get('deviceView') || !get('deviceView').available) {
@@ -56,8 +72,9 @@
   }
 
   function paintDeviceView(dv) {
+    if (!dv) return;
     if (!dv.available) {
-      setText('ov-link', 'service offline');
+      setText('ov-link', t('ov.device.linkOffline', null, 'service offline'));
       setText('ov-daemon-version', '—');
       setText('ov-ip', '—');
       paintDns(null);
@@ -67,14 +84,19 @@
     const st = dv.status || {};
     setText('ov-name', st.name || '—');
     setText('ov-daemon-version', st.version || '—');
-    setText('ov-link', st.connected ? 'connected' : 'disconnected');
+    setText(
+      'ov-link',
+      st.connected
+        ? t('ov.device.linkConnected', null, 'connected')
+        : t('ov.device.linkDisconnected', null, 'disconnected'),
+    );
     setText(
       'ov-ip',
       st.overlay_ip
         ? st.overlay_ip6
           ? st.overlay_ip + ' · ' + st.overlay_ip6
           : st.overlay_ip
-        : '(no overlay IP)',
+        : t('ov.device.noOverlayIp', null, '(no overlay IP)'),
     );
     paintExit(st.exit_node);
     paintDns(st.dns);
@@ -97,21 +119,34 @@
     dd.hidden = false;
     // FR-97 P3h — a steer the host's own resolver never asks is not active.
     const health = !dns.resolver_bound
-      ? 'resolver DOWN'
+      ? t('ov.device.dnsResolverDown', null, 'resolver DOWN')
       : !dns.os_steer_active
-        ? 'OS steer failed'
+        ? t('ov.device.dnsSteerFailed', null, 'OS steer failed')
         : dns.os_steer_bypassed
-          ? 'steered but bypassed: ' + dns.os_steer_bypassed
-          : 'active';
+          ? t('ov.device.dnsBypassed', { why: dns.os_steer_bypassed }, 'steered but bypassed: ' + dns.os_steer_bypassed)
+          : t('ov.device.dnsActive', null, 'active');
     dd.textContent =
-      dns.magic_domain + ' · ' + health + (dns.answer_aaaa ? '' : ' · AAAA off');
+      dns.magic_domain +
+      ' · ' +
+      health +
+      (dns.answer_aaaa ? '' : t('ov.device.dnsAaaaOff', null, ' · AAAA off'));
   }
 
   function paintCounts(dv) {
     const peers = (dv && dv.peers) || [];
     const online = peers.filter((p) => p.online).length;
-    let text = online + ' of ' + peers.length + ' devices online';
-    if (routesActive !== null) text += ' · ' + routesActive + ' routes active';
+    let text = t(
+      'ov.device.counts',
+      { online, total: peers.length },
+      online + ' of ' + peers.length + ' devices online',
+    );
+    if (routesActive !== null) {
+      text += t(
+        'ov.device.countsRoutes',
+        { routes: routesActive },
+        ' · ' + routesActive + ' routes active',
+      );
+    }
     setText('ov-counts', peers.length ? text : '—');
   }
 
@@ -125,7 +160,9 @@
     setText('ov-exit-selector', exit.selector || '—');
     const chip = $('ov-exit-chip');
     if (chip) {
-      chip.textContent = exit.active ? 'Active' : 'Withheld';
+      chip.textContent = exit.active
+        ? t('ov.exit.active', null, 'Active')
+        : t('ov.exit.withheld', null, 'Withheld');
       chip.className = 'chip ' + (exit.active ? 'chip-ok' : 'chip-warn');
     }
     let detail;
@@ -133,15 +170,22 @@
       // FR-97 P0c-3 — a netstack node installs no OS routes: only what its
       // SOCKS5 front dials rides the exit, so the v6/DNS caveats below (which
       // describe a host whose traffic all goes through it) would mislead.
-      detail = 'only SOCKS5 clients of 127.0.0.1:' + exit.socks5_port +
-        ' use the exit (IPv4 destinations) · nothing else on this device does';
+      detail = t(
+        'ov.exit.socksOnly',
+        { port: exit.socks5_port },
+        'only SOCKS5 clients of 127.0.0.1:' +
+          exit.socks5_port +
+          ' use the exit (IPv4 destinations) · nothing else on this device does',
+      );
     } else if (exit.active) {
       const caveats = [];
-      if (!exit.v6_active) caveats.push('IPv6 blackholed (exit is v4-only)');
-      if (!exit.dns_steered) caveats.push('DNS not steered — queries may leak locally');
-      detail = caveats.length ? 'routing active · ' + caveats.join(' · ') : 'all traffic routes via the exit node';
+      if (!exit.v6_active) caveats.push(t('ov.exit.v6Blackholed', null, 'IPv6 blackholed (exit is v4-only)'));
+      if (!exit.dns_steered) caveats.push(t('ov.exit.dnsNotSteered', null, 'DNS not steered — queries may leak locally'));
+      detail = caveats.length
+        ? t('ov.exit.routingCaveats', { caveats: caveats.join(' · ') }, 'routing active · ' + caveats.join(' · '))
+        : t('ov.exit.routingAll', null, 'all traffic routes via the exit node');
     } else {
-      detail = exit.withheld_reason || 'not active';
+      detail = exit.withheld_reason || t('ov.exit.notActive', null, 'not active');
     }
     setText('ov-exit-status', detail);
   }
@@ -243,6 +287,7 @@
   }
 
   function paintEncoderCaps(view) {
+    if (!view) return;
     const matrix = $('ov-enc-matrix');
     const foot = $('ov-enc-foot');
     const deniedLine = $('ov-enc-denied');
@@ -254,44 +299,64 @@
 
     if (!view.available) {
       if (view.reason === 'old_daemon') {
-        encChip('Unavailable', 'chip-muted');
-        encNote('The device service predates this view — update the service to see this.');
+        encChip(t('ov.enc.chipUnavailable', null, 'Unavailable'), 'chip-muted');
+        encNote(t('ov.enc.noteOldDaemon', null, 'The device service predates this view — update the service to see this.'));
       } else if (view.reason === 'daemon_unreachable') {
-        encChip('Offline', 'chip-muted');
-        encNote('The device service is not running.');
+        encChip(t('ov.enc.chipOffline', null, 'Offline'), 'chip-muted');
+        encNote(t('ov.enc.noteOffline', null, 'The device service is not running.'));
       } else {
-        encChip('Error', 'chip-warn');
-        encNote('Could not read the encoders: ' + (view.reason || 'unknown error'));
+        encChip(t('ov.enc.chipError', null, 'Error'), 'chip-warn');
+        const reason = view.reason || t('common.unknownError', null, 'unknown error');
+        encNote(t('ov.enc.noteError', { reason }, 'Could not read the encoders: ' + reason));
       }
       return;
     }
     const caps = view.caps || {};
     if (caps.state === 'unsupported') {
-      encChip('None', 'chip-muted');
-      encNote('This build of the device service has no video encoders (signalling only).');
+      encChip(t('ov.enc.chipNone', null, 'None'), 'chip-muted');
+      encNote(t('ov.enc.noteUnsupported', null, 'This build of the device service has no video encoders (signalling only).'));
       return;
     }
     if (caps.state === 'not_probed') {
-      encChip('Not probed yet', 'chip-muted');
+      encChip(t('ov.enc.chipNotProbed', null, 'Not probed yet'), 'chip-muted');
       encNote(
-        'The service tests its encoders when it first connects to the server. ' +
-          'Checking again every ' + ENC_POLL_MS / 1000 + ' s.',
+        t(
+          'ov.enc.noteNotProbed',
+          { secs: ENC_POLL_MS / 1000 },
+          'The service tests its encoders when it first connects to the server. Checking again every ' +
+            ENC_POLL_MS / 1000 +
+            ' s.',
+        ),
       );
       return;
     }
     if (caps.state !== 'ready') {
-      encChip('Unknown', 'chip-muted');
-      encNote('The service answered with a state this app does not know (' + caps.state + ').');
+      encChip(t('ov.enc.chipUnknown', null, 'Unknown'), 'chip-muted');
+      encNote(
+        t(
+          'ov.enc.noteUnknown',
+          { state: caps.state },
+          'The service answered with a state this app does not know (' + caps.state + ').',
+        ),
+      );
       return;
     }
 
     const cells = caps.cells || [];
     const hwCount = cells.filter((c) => c.hardware).length;
     encChip(
-      hwCount ? 'Hardware' : cells.length ? 'Software only' : 'No encoder',
+      hwCount
+        ? t('ov.enc.chipHardware', null, 'Hardware')
+        : cells.length
+          ? t('ov.enc.chipSoftwareOnly', null, 'Software only')
+          : t('ov.enc.chipNoEncoder', null, 'No encoder'),
       hwCount ? 'chip-ok' : 'chip-warn',
     );
-    encNote(cells.length ? '' : 'No encoder opened on this device — remote sessions cannot stream video.');
+    encNote(
+      cells.length
+        ? ''
+        : t('ov.enc.noteNoEncoder', null, 'No encoder opened on this device — remote sessions cannot stream video.'),
+    );
     if (cells.length) paintMatrix(cells, view.denied_cells || []);
     paintEncFooter(caps);
   }
@@ -306,7 +371,7 @@
     const head = $('ov-enc-head');
     head.textContent = '';
     const corner = document.createElement('th');
-    corner.textContent = 'Codec';
+    corner.textContent = t('ov.enc.codecCol', null, 'Codec');
     head.appendChild(corner);
     for (const b of backends) {
       const th = document.createElement('th');
@@ -329,7 +394,10 @@
           const span = document.createElement('span');
           span.className = 'enc-cell ' + (cell.hardware ? 'enc-hw' : 'enc-sw');
           span.textContent = CHROMA_LABEL[chroma] || chroma;
-          span.title = (cell.hardware ? 'Hardware' : 'Software') + ' ' + codec + ' on ' + (BACKEND_LABEL[b] || b);
+          const backend = BACKEND_LABEL[b] || b;
+          span.title = cell.hardware
+            ? t('ov.enc.cellTipHw', { codec, backend }, 'Hardware ' + codec + ' on ' + backend)
+            : t('ov.enc.cellTipSw', { codec, backend }, 'Software ' + codec + ' on ' + backend);
           td.appendChild(span);
         }
         // A denied cell is never opened, so it is not in `cells`: struck
@@ -339,7 +407,11 @@
           const span = document.createElement('span');
           span.className = 'enc-cell enc-denied';
           span.textContent = CHROMA_LABEL[d.chroma] || d.chroma;
-          span.title = 'Denied by encoder_cells_deny (' + d.entry + ') — never opened';
+          span.title = t(
+            'ov.enc.cellTipDenied',
+            { entry: d.entry },
+            'Denied by encoder_cells_deny (' + d.entry + ') — never opened',
+          );
           td.appendChild(span);
         }
         if (!td.childNodes.length) {
@@ -355,9 +427,19 @@
 
   function paintEncFooter(caps) {
     const parts = [];
-    if (caps.probe_ms != null) parts.push('probed in ' + caps.probe_ms + ' ms');
-    parts.push(caps.probe_cached ? 'from the probe cache' : 'fresh probe');
-    if (caps.encoder_preference) parts.push('preference: ' + caps.encoder_preference);
+    if (caps.probe_ms != null) {
+      parts.push(t('ov.enc.probedIn', { ms: caps.probe_ms }, 'probed in ' + caps.probe_ms + ' ms'));
+    }
+    parts.push(
+      caps.probe_cached
+        ? t('ov.enc.probeCached', null, 'from the probe cache')
+        : t('ov.enc.probeFresh', null, 'fresh probe'),
+    );
+    if (caps.encoder_preference) {
+      parts.push(
+        t('ov.enc.preference', { pref: caps.encoder_preference }, 'preference: ' + caps.encoder_preference),
+      );
+    }
     const foot = $('ov-enc-foot');
     foot.textContent = parts.join(' · ');
     show(foot);
@@ -365,8 +447,8 @@
     const denied = caps.denied || [];
     const deniedLine = $('ov-enc-denied');
     deniedLine.textContent = denied.length
-      ? 'Denied by encoder_cells_deny: ' + denied.join(', ')
-      : 'encoder_cells_deny: nothing denied';
+      ? t('ov.enc.deniedList', { list: denied.join(', ') }, 'Denied by encoder_cells_deny: ' + denied.join(', '))
+      : t('ov.enc.deniedNone', null, 'encoder_cells_deny: nothing denied');
     show(deniedLine);
 
     setText('ov-enc-hw', (caps.hw_encoders || []).join(', ') || '—');
@@ -409,8 +491,8 @@
     if (!a || !b) return false;
     const windows = /^[A-Za-z]:|^\\\\/.test(a);
     const norm = (s) => {
-      const t = s.replace(/[\\/]+$/, '');
-      return windows ? t.replace(/\//g, '\\').toLowerCase() : t;
+      const tStr = s.replace(/[\\/]+$/, '');
+      return windows ? tStr.replace(/\//g, '\\').toLowerCase() : tStr;
     };
     return norm(a) === norm(b);
   }
@@ -456,45 +538,64 @@
     };
     if (!v) return;
     if (!v.available) {
-      setChip(v.reason === 'daemon_unreachable' ? 'Offline' : 'Error', 'chip-muted');
+      setChip(
+        v.reason === 'daemon_unreachable'
+          ? t('ov.files.chipOffline', null, 'Offline')
+          : t('ov.files.chipError', null, 'Error'),
+        'chip-muted',
+      );
       setText('ov-files-path', '—');
       setText('ov-files-setting', '—');
+      const reason = v.reason || t('common.unknownError', null, 'unknown error');
       setNote(
         v.reason === 'daemon_unreachable'
-          ? 'The device service is not running.'
-          : 'Could not read the setting: ' + (v.reason || 'unknown error'),
+          ? t('ov.files.noteOffline', null, 'The device service is not running.')
+          : t('ov.files.noteError', { reason }, 'Could not read the setting: ' + reason),
       );
       setFilesButtons(false);
       return;
     }
     if (!v.supported) {
-      setChip('Unavailable', 'chip-muted');
+      setChip(t('ov.files.chipUnavailable', null, 'Unavailable'), 'chip-muted');
       setText('ov-files-path', v.effective || '—');
       setText('ov-files-setting', '—');
-      setNote('The device service predates this setting — update the service to choose where incoming files land.');
+      setNote(
+        t(
+          'ov.files.noteUnsupported',
+          null,
+          'The device service predates this setting — update the service to choose where incoming files land.',
+        ),
+      );
       hide(actions);
       return;
     }
     show(actions);
     setText('ov-files-path', v.effective || '…');
     if (!v.configured) {
-      setChip('Default', 'chip-muted');
-      setText('ov-files-setting', "Default — the signed-in user's Downloads folder");
+      setChip(t('ov.files.chipDefault', null, 'Default'), 'chip-muted');
+      setText(
+        'ov-files-setting',
+        t('ov.files.settingDefault', null, "Default — the signed-in user's Downloads folder"),
+      );
       setNote('');
     } else {
       const perUser = v.configured.startsWith('~');
       setText(
         'ov-files-setting',
-        v.configured + (perUser ? ' (inside the profile of whoever is signed in)' : ''),
+        v.configured +
+          (perUser ? t('ov.files.perUserSuffix', null, ' (inside the profile of whoever is signed in)') : ''),
       );
       if (v.effective && v.configured_resolved && !samePath(v.effective, v.configured_resolved)) {
-        setChip('Not in use', 'chip-warn');
+        setChip(t('ov.files.chipNotInUse', null, 'Not in use'), 'chip-warn');
         setNote(
-          'The chosen folder cannot be used right now, so files land in the default folder instead. ' +
-            'The service log says why.',
+          t(
+            'ov.files.noteNotInUse',
+            null,
+            'The chosen folder cannot be used right now, so files land in the default folder instead. The service log says why.',
+          ),
         );
       } else {
-        setChip('Custom', 'chip-ok');
+        setChip(t('ov.files.chipCustom', null, 'Custom'), 'chip-ok');
         setNote('');
       }
     }
@@ -519,14 +620,13 @@
   }
 
   function savedText(entry, value) {
-    const where = value || (entry && entry.value) || 'the default folder';
-    return (
-      'Saved: ' +
-      where +
-      (entry && entry.restart_required
-        ? ' — takes effect after the service restarts.'
-        : ' — in effect now, for the next file dropped.')
-    );
+    const where =
+      value ||
+      (entry && entry.value) ||
+      t('ov.files.defaultFolderWord', null, 'the default folder');
+    return entry && entry.restart_required
+      ? t('ov.files.savedRestart', { where }, 'Saved: ' + where + ' — takes effect after the service restarts.')
+      : t('ov.files.savedLive', { where }, 'Saved: ' + where + ' — in effect now, for the next file dropped.');
   }
 
   /*
@@ -565,6 +665,14 @@
    */
   let grantBusy = false;
   let grantAskedAt = 0;
+  function grantHintText() {
+    return t(
+      'ov.grantSystem.hint',
+      null,
+      'Sign in to your account from the tray menu ("Sign in…"): signing in grants these rights too.',
+    );
+  }
+
   async function refreshGrant(force) {
     if (grantBusy || (!force && Date.now() - grantAskedAt < 30000)) return;
     grantAskedAt = Date.now();
@@ -581,16 +689,14 @@
     if (btn) btn.hidden = !g.signed_in;
     // The sign-in hint comes and goes with the session; an error from a failed
     // grant stays until the next attempt.
-    const msg = $('ov-grant-system-msg');
     if (g.offered && !g.signed_in) {
-      grantMsg(GRANT_HINT, false);
-    } else if (msg && msg.textContent === GRANT_HINT) {
+      grantHintActive = true;
+      grantMsg(grantHintText(), false);
+    } else if (grantHintActive) {
+      grantHintActive = false;
       grantMsg('', false);
     }
   }
-
-  const GRANT_HINT =
-    'Sign in to your account from the tray menu ("Sign in…"): signing in grants these rights too.';
 
   function grantMsg(text, isError) {
     const el = $('ov-grant-system-msg');
@@ -603,8 +709,9 @@
   async function grantSystem() {
     const btn = $('ov-btn-grant-system');
     grantBusy = true;
+    grantHintActive = false;
     btn.disabled = true;
-    grantMsg('Waiting for your operating system to approve…', false);
+    grantMsg(t('ov.grantSystem.waiting', null, 'Waiting for your operating system to approve…'), false);
     try {
       await invoke('cmd_grant_system');
       grantMsg('', false);
@@ -614,8 +721,12 @@
       const text = String(e);
       grantMsg(
         text.includes('no_account_session')
-          ? 'Sign in to your account first: tray menu → "Sign in…". Signing in grants these rights too.'
-          : 'Not granted: ' + text,
+          ? t(
+              'ov.grantSystem.needSignIn',
+              null,
+              'Sign in to your account first: tray menu → "Sign in…". Signing in grants these rights too.',
+            )
+          : t('ov.grantSystem.notGranted', { err: text }, 'Not granted: ' + text),
         true,
       );
     } finally {
@@ -632,6 +743,13 @@
     on('deviceView', paintDeviceView);
     // FR-84 D4 — the encoder matrix and the drop folder.
     on('deviceView', watchDaemon);
+    document.addEventListener('meshharbor:lang', () => {
+      paintStatus(get('status'));
+      paintDeviceView(get('deviceView'));
+      paintEncoderCaps(encLast);
+      paintFilesDir();
+      if (grantHintActive) grantMsg(grantHintText(), false);
+    });
     document.addEventListener('meshharbor:view', (ev) => {
       if (ev.detail !== 'overview' || lastDaemonKey === null) return;
       // A change made on the Settings page shows up on the way back, and a
@@ -660,8 +778,8 @@
       filesAction(async () => {
         const entry = await invoke('cmd_files_dir_default');
         return entry.restart_required
-          ? 'Back to the default folder after the service restarts.'
-          : 'Back to the default folder — in effect now.';
+          ? t('ov.files.backDefaultRestart', null, 'Back to the default folder after the service restarts.')
+          : t('ov.files.backDefaultLive', null, 'Back to the default folder — in effect now.');
       }),
     );
 
@@ -677,7 +795,7 @@
         try {
           await invoke('cmd_request_permission', { which });
         } catch (e) {
-          pushOutput('Could not open the permission pane: ' + e);
+          pushOutput(t('ov.perms.openFailed', { err: e }, 'Could not open the permission pane: ' + e));
         }
       });
     }
@@ -690,12 +808,12 @@
       try {
         await invoke('cmd_open_meshharbor');
       } catch (e) {
-        pushOutput('Could not open MeshHarbor: ' + e);
+        pushOutput(t('ov.device.openWebFailed', { err: e }, 'Could not open MeshHarbor: ' + e));
       }
     });
 
     $('btn-check-update').addEventListener('click', async () => {
-      pushOutput('Checking for updates…');
+      pushOutput(t('ov.updates.checking', null, 'Checking for updates…'));
       try {
         const out = await invoke('cmd_check_update');
         pushOutput(out);
@@ -703,21 +821,21 @@
           show($('btn-apply-update'));
         }
       } catch (e) {
-        pushOutput('Error: ' + e);
+        pushOutput(t('common.errorPrefix', { err: e }, 'Error: ' + e));
       }
     });
 
     $('btn-apply-update').addEventListener('click', async () => {
-      pushOutput('Applying update…');
+      pushOutput(t('ov.updates.applying', null, 'Applying update…'));
       try {
         // FR-27 — the daemon now tells us what it actually did, and on macOS
         // that is the whole answer: a non-root invocation queues the ROOT
         // update helper and says where to watch. Discarding it made the
         // button look inert on the platform where it worked correctly.
         const out = await invoke('cmd_apply_update');
-        pushOutput(out || 'Update started.');
+        pushOutput(out || t('ov.updates.started', null, 'Update started.'));
       } catch (e) {
-        pushOutput('Error: ' + e);
+        pushOutput(t('common.errorPrefix', { err: e }, 'Error: ' + e));
       }
     });
 

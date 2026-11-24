@@ -13,6 +13,8 @@
 (function () {
   'use strict';
   const { $, invoke, show, on, navigate, refreshStatus } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   const featureLabels = [
     ['desktop_view', 'View screen'], ['desktop_control', 'Control keyboard and mouse'],
@@ -24,7 +26,7 @@
   function featurePicker(parent, initial) {
     const group = document.createElement('fieldset');
     const legend = document.createElement('legend');
-    legend.textContent = 'Features this invitation may use';
+    legend.textContent = t('ob.feat.legend', null, 'Features this invitation may use');
     group.appendChild(legend);
     const inputs = {};
     for (const [name, label] of featureLabels) {
@@ -34,7 +36,7 @@
       input.type = 'checkbox';
       input.checked = initial === null ? true : initial[name] === true;
       inputs[name] = input;
-      row.append(input, document.createTextNode(' ' + label));
+      row.append(input, document.createTextNode(' ' + t('ob.feat.' + name, null, label)));
       group.appendChild(row);
     }
     const sync = () => {
@@ -48,7 +50,11 @@
     parent.appendChild(group);
     const warning = document.createElement('p');
     warning.className = 'muted small';
-    warning.textContent = 'SSH and commands can give full system privileges. Network access may reach other services even if their dedicated feature is off. This selects permission, not installed build support: missing capture/input/SSH components require a full package. Local OFF switches, administrator service policies and OS permissions still apply. You may narrow or revoke this invitation later.';
+    warning.textContent = t(
+      'ob.feat.warning',
+      null,
+      'SSH and commands can give full system privileges. Network access may reach other services even if their dedicated feature is off. This selects permission, not installed build support: missing capture/input/SSH components require a full package. Local OFF switches, administrator service policies and OS permissions still apply. You may narrow or revoke this invitation later.',
+    );
     parent.appendChild(warning);
     return () => featureLabels.filter(([name]) => inputs[name].checked).map(([name]) => name).join(',') || 'none';
   }
@@ -60,46 +66,62 @@
     try {
       const held = await invoke('cmd_invitations');
       if (!held || !held.grants.length) {
-        target.textContent = 'No invitation is recorded on this device.';
+        target.textContent = t('ob.held.none', null, 'No invitation is recorded on this device.');
         return;
       }
       for (const [, grant] of held.grants) {
         const card = document.createElement('div');
         card.className = 'card';
         const title = document.createElement('p');
-        title.textContent = (grant.inviter || grant.org || 'Invitation') + ' · until ' + new Date(grant.access_until_ms).toLocaleString();
+        const who = grant.inviter || grant.org || t('ob.held.fallbackTitle', null, 'Invitation');
+        const when = new Date(grant.access_until_ms).toLocaleString();
+        title.textContent = t('ob.held.until', { who, when }, who + ' · until ' + when);
         card.appendChild(title);
         if (grant.revocation_pending) {
           const pending = document.createElement('p');
-          pending.textContent = 'New authorizations are updated. Revocation of existing SSH / command sessions is still unconfirmed; restarting the device agent does not confirm its separate system service has closed them.';
+          pending.textContent = t(
+            'ob.held.revocationPending',
+            null,
+            'New authorizations are updated. Revocation of existing SSH / command sessions is still unconfirmed; restarting the device agent does not confirm its separate system service has closed them.',
+          );
           card.appendChild(pending);
         }
         if (!grant.features) {
           const note = document.createElement('p');
-          note.textContent = 'Legacy invitation: its prior feature scope was not recorded. Choose an explicit scope before saving; no features are preselected.';
+          note.textContent = t(
+            'ob.held.legacyNote',
+            null,
+            'Legacy invitation: its prior feature scope was not recorded. Choose an explicit scope before saving; no features are preselected.',
+          );
           card.appendChild(note);
         }
         const selection = featurePicker(card, grant.features || {});
         const save = document.createElement('button');
         save.type = 'button';
-        save.textContent = grant.revocation_pending ? 'Save / retry confirmed cleanup' : 'Save features and restart connections';
+        save.textContent = grant.revocation_pending
+          ? t('ob.held.saveRetry', null, 'Save / retry confirmed cleanup')
+          : t('ob.held.saveFeatures', null, 'Save features and restart connections');
         save.disabled = !grant.invite_id;
         const result = document.createElement('p');
         result.className = 'small';
         save.addEventListener('click', async () => {
           save.disabled = true;
-          result.textContent = 'Saving and interrupting managed connections / foreground commands across ALL organizations on this device. Other authorization settings stay unchanged; completed command effects and deliberately detached tasks are not undone. Waiting for confirmed cleanup.';
+          result.textContent = t(
+            'ob.held.saving',
+            null,
+            'Saving and interrupting managed connections / foreground commands across ALL organizations on this device. Other authorization settings stay unchanged; completed command effects and deliberately detached tasks are not undone. Waiting for confirmed cleanup.',
+          );
           try {
             result.textContent = await invoke('cmd_invite_features', { inviteId: grant.invite_id, features: selection(), expectedRevision: grant.features_revision || 0 });
             await refreshInvitations();
           }
-          catch (e) { result.textContent = 'Not fully completed: ' + e; }
+          catch (e) { result.textContent = t('ob.held.notCompleted', { err: e }, 'Not fully completed: ' + e); }
           finally { save.disabled = false; }
         });
         card.append(save, result);
         target.appendChild(card);
       }
-    } catch (e) { target.textContent = 'Could not read invitations: ' + e; }
+    } catch (e) { target.textContent = t('ob.held.readFailed', { err: e }, 'Could not read invitations: ' + e); }
   }
 
   async function prefillDeviceName() {
@@ -131,14 +153,19 @@
 
     const box = document.createElement('div');
     const head = document.createElement('strong');
-    head.textContent = 'Enrolled.';
+    head.textContent = t('ob.form.enrolledHead', null, 'Enrolled.');
     box.appendChild(head);
 
     const detail = document.createElement('p');
     detail.className = 'muted small';
     detail.style.margin = '4px 0 8px';
-    detail.textContent =
-      'device ' + (status.agent_id || '?') + ' · tenant ' + (status.tenant_id || '?');
+    const agentId = status.agent_id || '?';
+    const tenantId = status.tenant_id || '?';
+    detail.textContent = t(
+      'ob.form.enrolledDetail',
+      { agentId, tenantId },
+      'device ' + agentId + ' · tenant ' + tenantId,
+    );
     box.appendChild(detail);
 
     const actions = document.createElement('div');
@@ -148,15 +175,15 @@
     const install = document.createElement('button');
     install.type = 'button';
     install.className = 'primary';
-    install.textContent = 'Install auto-start';
+    install.textContent = t('ob.form.installAutostart', null, 'Install auto-start');
     install.addEventListener('click', async () => {
       install.disabled = true;
-      install.textContent = 'Installing…';
+      install.textContent = t('ob.form.installing', null, 'Installing…');
       try {
         await invoke('cmd_service_install', { asService: false });
-        install.textContent = 'Auto-start installed';
+        install.textContent = t('ob.form.autostartInstalled', null, 'Auto-start installed');
       } catch (e) {
-        install.textContent = 'Install failed: ' + e;
+        install.textContent = t('ob.form.installFailed', { err: e }, 'Install failed: ' + e);
         install.disabled = false;
       }
     });
@@ -166,14 +193,14 @@
     if (window.MeshHarbor.welcomePending) {
       const tour = document.createElement('button');
       tour.type = 'button';
-      tour.textContent = 'Continue the Welcome tour';
+      tour.textContent = t('ob.form.continueTour', null, 'Continue the Welcome tour');
       tour.addEventListener('click', () => navigate('welcome'));
       actions.appendChild(tour);
     }
 
     const done = document.createElement('button');
     done.type = 'button';
-    done.textContent = 'Go to Overview';
+    done.textContent = t('ob.form.gotoOverview', null, 'Go to Overview');
     done.addEventListener('click', () => navigate('overview'));
     actions.appendChild(done);
 
@@ -193,13 +220,13 @@
     const el = resultSlot();
     el.className = 'banner banner-ok';
     const head = document.createElement('strong');
-    head.textContent = 'Re-enrolled — token refreshed.';
+    head.textContent = t('ob.form.reenrolledHead', null, 'Re-enrolled — token refreshed.');
     el.appendChild(head);
     const actions = document.createElement('div');
     actions.className = 'actions';
     const done = document.createElement('button');
     done.type = 'button';
-    done.textContent = 'Go to Overview';
+    done.textContent = t('ob.form.gotoOverview', null, 'Go to Overview');
     done.addEventListener('click', () => navigate('overview'));
     actions.appendChild(done);
     el.appendChild(actions);
@@ -210,13 +237,21 @@
     void refreshInvitations();
     $('refresh-invitations').addEventListener('click', refreshInvitations);
 
+    function paintEnrollBtn() {
+      const btn = $('btn-enroll');
+      if (btn && !btn.disabled) {
+        btn.textContent = enrolledMode
+          ? t('ob.form.reenrollBtn', null, 'Re-enroll this device')
+          : t('ob.form.enrollBtn', null, 'Enroll this device');
+      }
+    }
+
     on('status', (s) => {
       enrolledMode = !!s.enrolled;
       const loginCard = $('login-card');
       if (loginCard) loginCard.hidden = enrolledMode;
       // A machine may hold several invitations, signed in or not.
-      const btn = $('btn-enroll');
-      if (btn) btn.textContent = enrolledMode ? 'Re-enroll this device' : 'Enroll this device';
+      paintEnrollBtn();
       const note = $('onboard-reenroll-note');
       if (note) note.hidden = !enrolledMode;
       const server = $('server');
@@ -245,12 +280,12 @@
       }
       const deviceName = ($('device-name').value || '').trim();
       if (!deviceName) {
-        showError('Fill in the device name first.');
+        showError(t('ob.login.fillDeviceName', null, 'Fill in the device name first.'));
         return;
       }
       const box = $('login-pending');
       loginBtn.disabled = true;
-      loginBtn.textContent = 'Starting…';
+      loginBtn.textContent = t('ob.login.starting', null, 'Starting…');
       try {
         const started = await invoke('cmd_login_start', { server: '', deviceName });
         box.hidden = false;
@@ -258,19 +293,23 @@
         box.replaceChildren();
         const p1 = document.createElement('p');
         p1.textContent = started.opened
-          ? 'Approve this device in the browser window that just opened.'
-          : 'Open this link and approve the device:';
+          ? t('ob.login.opened', null, 'Approve this device in the browser window that just opened.')
+          : t('ob.login.openLink', null, 'Open this link and approve the device:');
         box.appendChild(p1);
         const link = document.createElement('code');
         link.textContent = started.url;
         link.style.wordBreak = 'break-all';
         box.appendChild(link);
         const p2 = document.createElement('p');
-        p2.textContent = 'The page must show the code ' + started.user_code + '. Waiting for approval…';
+        p2.textContent = t(
+          'ob.login.showCode',
+          { code: started.user_code },
+          'The page must show the code ' + started.user_code + '. Waiting for approval…',
+        );
         box.appendChild(p2);
         loginWaiting = true;
         loginBtn.disabled = false;
-        loginBtn.textContent = 'Cancel sign-in';
+        loginBtn.textContent = t('ob.login.cancel', null, 'Cancel sign-in');
         const s = await invoke('cmd_login_wait', { deviceName });
         box.hidden = true;
         showEnrolled(s);
@@ -278,12 +317,12 @@
       } catch (e) {
         box.hidden = true;
         if (!String(e).includes('sign-in cancelled')) {
-          showError('Sign-in failed: ' + e);
+          showError(t('ob.login.failed', { err: e }, 'Sign-in failed: ' + e));
         }
       } finally {
         loginWaiting = false;
         loginBtn.disabled = false;
-        loginBtn.textContent = 'Sign in…';
+        loginBtn.textContent = t('ob.login.btn', null, 'Sign in…');
       }
     });
 
@@ -292,40 +331,51 @@
     if (joinBtn) joinBtn.addEventListener('click', async () => {
       const code = ($('join-code').value || '').trim();
       if (!/^\d{4}[- ]?\d{4}$/.test(code)) {
-        showError('An invite code is 8 digits, like 1234-5678.');
+        showError(t('ob.join.badCode', null, 'An invite code is 8 digits, like 1234-5678.'));
         return;
       }
       const deviceName = ($('device-name').value || '').trim();
       const box = $('join-pending');
       joinBtn.disabled = true;
-      joinBtn.textContent = 'Checking…';
+      joinBtn.textContent = t('ob.join.checking', null, 'Checking…');
       let p;
       try {
         p = await invoke('cmd_join_preview', { code });
-        if (!p.features_supported) throw new Error('Update the server first: it cannot enforce selected invitation features.');
+        if (!p.features_supported) {
+          throw new Error(
+            t('ob.join.unsupportedServer', null, 'Update the server first: it cannot enforce selected invitation features.'),
+          );
+        }
       } catch (e) {
-        showError('Could not check the code: ' + e);
+        showError(t('ob.join.checkFailed', { err: e }, 'Could not check the code: ' + e));
         joinBtn.disabled = false;
-        joinBtn.textContent = 'Join';
+        joinBtn.textContent = t('ob.join.btn', null, 'Join');
         return;
       }
       box.textContent = '';
       const what = document.createElement('p');
-      what.textContent = p.from + ' invites this device for ' + p.remaining +
-        ' (until ' + new Date(p.access_until_ms).toLocaleString() + ').';
+      const until = new Date(p.access_until_ms).toLocaleString();
+      what.textContent = t(
+        'ob.join.previewLine',
+        { from: p.from, remaining: p.remaining, until },
+        p.from + ' invites this device for ' + p.remaining + ' (until ' + until + ').',
+      );
       const how = document.createElement('p');
       how.className = 'muted small';
-      how.textContent = 'Choose what this invitation may access. It cannot initiate access to their devices. ' +
-        'You can change the selection here or leave at any time from the tray menu.';
+      how.textContent = t(
+        'ob.join.previewHint',
+        null,
+        'Choose what this invitation may access. It cannot initiate access to their devices. You can change the selection here or leave at any time from the tray menu.',
+      );
       const row = document.createElement('div');
       row.className = 'actions';
       const accept = document.createElement('button');
       accept.type = 'button';
       accept.className = 'primary';
-      accept.textContent = 'Accept';
+      accept.textContent = t('ob.join.accept', null, 'Accept');
       const cancel = document.createElement('button');
       cancel.type = 'button';
-      cancel.textContent = 'Cancel';
+      cancel.textContent = t('common.cancel', null, 'Cancel');
       row.append(accept, cancel);
       box.append(what, how);
       const selection = featurePicker(box, null);
@@ -334,13 +384,13 @@
       const reset = () => {
         box.hidden = true;
         joinBtn.disabled = false;
-        joinBtn.textContent = 'Join';
+        joinBtn.textContent = t('ob.join.btn', null, 'Join');
       };
       cancel.addEventListener('click', reset);
       accept.addEventListener('click', async () => {
         accept.disabled = true;
         cancel.disabled = true;
-        accept.textContent = 'Joining…';
+        accept.textContent = t('ob.join.joining', null, 'Joining…');
         try {
           const s = await invoke('cmd_join', { code, deviceName, features: selection() });
           reset();
@@ -350,7 +400,7 @@
           void refreshInvitations();
         } catch (e) {
           reset();
-          showError('Could not join: ' + e);
+          showError(t('ob.join.failed', { err: e }, 'Could not join: ' + e));
         }
       });
     });
@@ -359,25 +409,24 @@
       ev.preventDefault();
       const token = $('token').value.trim();
       const btn = $('btn-enroll');
-      const label = btn.textContent;
 
       if (enrolledMode) {
         if (!token) {
-          showError('Paste a fresh enrollment token.');
+          showError(t('ob.form.pasteToken', null, 'Paste a fresh enrollment token.'));
           return;
         }
         btn.disabled = true;
-        btn.textContent = 'Re-enrolling…';
+        btn.textContent = t('ob.form.reenrolling', null, 'Re-enrolling…');
         try {
           await invoke('cmd_re_enroll', { token });
           $('token').value = '';
           showReEnrolled();
           void refreshStatus();
         } catch (e) {
-          showError('Re-enrollment failed: ' + e);
+          showError(t('ob.form.reenrollFailed', { err: e }, 'Re-enrollment failed: ' + e));
         } finally {
           btn.disabled = false;
-          btn.textContent = label;
+          paintEnrollBtn();
         }
         return;
       }
@@ -385,22 +434,35 @@
       const server = $('server').value.trim();
       const deviceName = $('device-name').value.trim();
       if (!server || !deviceName || !token) {
-        showError('Fill all three fields.');
+        showError(t('ob.form.fillAll', null, 'Fill all three fields.'));
         return;
       }
       btn.disabled = true;
-      btn.textContent = 'Enrolling…';
+      btn.textContent = t('ob.form.enrolling', null, 'Enrolling…');
       try {
         const s = await invoke('cmd_enroll', { server, token, deviceName });
         $('token').value = '';
         showEnrolled(s);
         void refreshStatus();
       } catch (e) {
-        showError('Enrollment failed: ' + e);
+        showError(t('ob.form.enrollFailed', { err: e }, 'Enrollment failed: ' + e));
       } finally {
         btn.disabled = false;
-        btn.textContent = label;
+        paintEnrollBtn();
       }
+    });
+
+    document.addEventListener('meshharbor:lang', () => {
+      paintEnrollBtn();
+      if (loginBtn && !loginBtn.disabled) {
+        loginBtn.textContent = loginWaiting
+          ? t('ob.login.cancel', null, 'Cancel sign-in')
+          : t('ob.login.btn', null, 'Sign in…');
+      }
+      if (joinBtn && !joinBtn.disabled) {
+        joinBtn.textContent = t('ob.join.btn', null, 'Join');
+      }
+      void refreshInvitations();
     });
   });
 })();

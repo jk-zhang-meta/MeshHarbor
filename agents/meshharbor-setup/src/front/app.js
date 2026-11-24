@@ -28,6 +28,8 @@
 
 const { invoke, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const I18N = window.MeshHarborSetupI18n;
+const t = (key, params) => (I18N ? I18N.t(key, params) : key);
 
 const STEPS = ["welcome", "server", "token", "install", "done"];
 const ROLES = ["daemon-system", "daemon-machine", "daemon-user", "tunnel-client"];
@@ -122,7 +124,7 @@ async function probeAndRender() {
       agent: { supported: false, canElevate: false, kind: "clean", peruserVersion: null, permachineVersion: null, ambiguous: false },
       tunnel: { installed: false, machineName: null, configPath: null },
     };
-    showSnackbar(`Detection failed: ${err}`);
+    showSnackbar(t("snack.detectFailed", { err }));
   }
 
   // Clean Windows Setup Wizard installs default to full machine-wide
@@ -156,6 +158,13 @@ function wireGlobalListeners() {
   wireToken();
   wireInstall();
   wireDone();
+  if (I18N) {
+    I18N.wireLangToggles(document);
+    I18N.applyI18n(document);
+    document.addEventListener("meshharbor:lang", () => {
+      render();
+    });
+  }
 
   // B9: single-instance plugin emits this when a second wizard EXE
   // launch finds an in-flight install in the first process. Pop a
@@ -166,7 +175,7 @@ function wireGlobalListeners() {
   try {
     Promise.resolve(
       listen("installer-already-running", () => {
-        showSnackbar("Wizard is already running — finish the current install first.");
+        showSnackbar(t("snack.alreadyRunning"));
       }),
     ).catch((e) => console.warn("single-instance listener unavailable:", e));
   } catch (e) {
@@ -246,11 +255,11 @@ function roleFlavour(role) {
 }
 
 function roleLabel(role) {
-  if (role === "daemon-system") return "Background service (pre-logon)";
-  if (role === "daemon-machine") return "Attended service";
-  if (role === "daemon-user") return "This user only";
-  if (role === "tunnel-client") return "Tunnel client";
-  return role ?? "(none)";
+  if (role === "daemon-system") return t("role.daemonSystem");
+  if (role === "daemon-machine") return t("role.daemonMachine");
+  if (role === "daemon-user") return t("role.daemonUser");
+  if (role === "tunnel-client") return t("role.tunnelClient");
+  return role ?? t("role.none");
 }
 
 function flavourLabel(flavour) {
@@ -309,32 +318,44 @@ function renderWelcome() {
   const tunnelSummary = document.getElementById("detect-tunnel-summary");
   const ambiguous = document.getElementById("detect-ambiguous-warning");
   if (!state.detection) {
-    agentSummary.textContent = "Probing…";
+    agentSummary.textContent = t("welcome.probing");
     return;
   }
   const a = state.detection.agent;
-  const t = state.detection.tunnel;
+  const detTunnel = state.detection.tunnel;
 
   // Daemon detection summary.
   if (!a.supported) {
-    agentSummary.textContent = "Daemon: not available on this platform (Windows-only).";
+    agentSummary.textContent = t("welcome.detect.agentUnsupported");
   } else if (a.kind === "clean") {
-    agentSummary.textContent = "Daemon: no existing install detected.";
+    agentSummary.textContent = t("welcome.detect.agentClean");
   } else if (a.kind === "peruser") {
-    agentSummary.textContent = `Daemon: existing perUser install (version ${a.peruserVersion ?? "unknown"}).`;
+    agentSummary.textContent = t("welcome.detect.agentPerUser", {
+      version: a.peruserVersion ?? t("welcome.unknown"),
+    });
   } else if (a.kind === "permachine") {
-    agentSummary.textContent = `Daemon: existing perMachine install (version ${a.permachineVersion ?? "unknown"}).`;
+    agentSummary.textContent = t("welcome.detect.agentPerMachine", {
+      version: a.permachineVersion ?? t("welcome.unknown"),
+    });
   } else if (a.kind === "ambiguous") {
-    agentSummary.textContent = `Daemon: both flavours installed (perUser ${a.peruserVersion ?? "?"} + perMachine ${a.permachineVersion ?? "?"}).`;
+    agentSummary.textContent = t("welcome.detect.agentAmbiguous", {
+      perUser: a.peruserVersion ?? "?",
+      perMachine: a.permachineVersion ?? "?",
+    });
   }
   ambiguous.hidden = a.kind !== "ambiguous";
 
   // Tunnel detection summary.
-  if (t.installed) {
-    const machine = t.machineName ? ` (machine: ${t.machineName})` : "";
-    tunnelSummary.textContent = `Tunnel client: already configured${machine} at ${t.configPath}. Continuing will overwrite the enrollment.`;
+  if (detTunnel.installed) {
+    const machine = detTunnel.machineName
+      ? t("welcome.detect.tunnelMachine", { name: detTunnel.machineName })
+      : "";
+    tunnelSummary.textContent = t("welcome.detect.tunnelConfigured", {
+      machine,
+      path: detTunnel.configPath,
+    });
   } else {
-    tunnelSummary.textContent = "Tunnel client: not configured on this machine.";
+    tunnelSummary.textContent = t("welcome.detect.tunnelNone");
   }
 
   // Non-Windows: only the tunnel-client card makes sense.
@@ -380,13 +401,13 @@ function crossFlavourWarning(agentDetect, flavour) {
   const wantsPerMachine = flavour.startsWith("permachine");
   const wantsPerUser = flavour === "peruser";
   if (agentDetect.kind === "peruser" && wantsPerMachine) {
-    return "Switching from perUser → perMachine. Your existing enrollment will be lost; you'll need a fresh enrollment token from your administrator.";
+    return t("welcome.crossFlavour.userToMachine");
   }
   if (agentDetect.kind === "permachine" && wantsPerUser) {
-    return "Switching from perMachine → perUser. Your existing enrollment will be lost; you'll need a fresh enrollment token from your administrator.";
+    return t("welcome.crossFlavour.machineToUser");
   }
   if (agentDetect.kind === "ambiguous") {
-    return "Both perUser and perMachine installs detected. The MSI's cleanup custom action will remove the one not selected.";
+    return t("welcome.crossFlavour.ambiguous");
   }
   return null;
 }
@@ -510,8 +531,8 @@ async function validateToken() {
 function renderToken() {
   const lead = document.getElementById("token-lead");
   lead.textContent = state.role === "tunnel-client"
-    ? "Paste a tunnel-enrollment token from Admin → Tunnels."
-    : "Paste a fresh enrollment token from Admin → Agents.";
+    ? t("token.leadTunnel")
+    : t("token.leadAgent");
 
   const info = document.getElementById("token-info");
   const warnAudience = document.getElementById("token-warn-audience");
@@ -535,11 +556,11 @@ function renderToken() {
 
   const view = state.tokenView;
   info.hidden = false;
-  document.getElementById("token-issuer").textContent = view.issuer ?? "(none)";
+  document.getElementById("token-issuer").textContent = view.issuer ?? t("token.none");
   document.getElementById("token-type").textContent =
-    view.tokenType ?? view.audience ?? "(none)";
+    view.tokenType ?? view.audience ?? t("token.none");
   document.getElementById("token-expiry").textContent =
-    view.expiresAtUnix ? formatExpiry(view.expiresAtUnix) : "(no exp)";
+    view.expiresAtUnix ? formatExpiry(view.expiresAtUnix) : t("token.noExp");
   // FR-104 — say up front that a second administrator prompt is coming.
   document.getElementById("token-anchor-yes").hidden = view.willAnchor !== true;
   document.getElementById("token-anchor-no").hidden = view.willAnchor !== false;
@@ -549,7 +570,7 @@ function renderToken() {
   if (view.audienceMatches === false) {
     warnAudience.hidden = false;
     document.getElementById("token-warn-aud-name").textContent =
-      view.tokenType ?? view.audience ?? "(none)";
+      view.tokenType ?? view.audience ?? t("token.none");
     return;
   }
   if (view.appearsExpired) {
@@ -564,37 +585,18 @@ function formatExpiry(unix) {
   const now = new Date();
   const minutes = Math.round((date - now) / 60000);
   const stamp = date.toLocaleString();
-  if (minutes < 0) return `${stamp} (${-minutes} min ago)`;
-  if (minutes < 60) return `${stamp} (in ${minutes} min)`;
+  if (minutes < 0) return t("token.expiryAgo", { stamp, mins: -minutes });
+  if (minutes < 60) return t("token.expiryIn", { stamp, mins: minutes });
   return stamp;
 }
 
 // ─── Step 4: Install ───────────────────────────────────────────────────────
 
-const STEP_LABELS = {
-  Started: "Install started",
-  PreflightStarted: "Pre-flight checks",
-  PreflightOk: "Pre-flight: detected install",
-  PreflightWarning: "Pre-flight warning",
-  AssetResolving: "Resolving download URL",
-  AssetResolved: "Download URL resolved",
-  DownloadStarted: "Downloading",
-  DownloadVerified: "Download verified (SHA256)",
-  MsiSpawned: "Running MSI installer",
-  MsiCompleted: "MSI installer finished",
-  ExtractStarted: "Extracting archive",
-  ExtractDone: "Archive extracted",
-  IntegrationStarted: "Wiring up PATH",
-  IntegrationDone: "PATH integration finished",
-  EnrollStarted: "Enrolling with MeshHarbor",
-  EnrollOk: "Enrolled",
-  AnchorStarted: "Anchoring for SYSTEM exec (administrator prompt)",
-  AnchorOk: "Anchored for SYSTEM exec",
-  AnchorSkipped: "Not anchored",
-  Done: "Done",
-  Error: "Error",
-  SystemContextError: "SystemContext step failed",
-};
+function stepLabel(type) {
+  const key = "install.step." + type;
+  const translated = t(key);
+  return translated === key ? type : translated;
+}
 
 function wireInstall() {
   document.getElementById("install-cancel").addEventListener("click", async () => {
@@ -606,9 +608,9 @@ function wireInstall() {
     }
     try {
       await invoke("cmd_cancel_in_progress");
-      showSnackbar("Cancellation requested — bailing at the next checkpoint.");
+      showSnackbar(t("snack.cancelRequested"));
     } catch (err) {
-      showSnackbar(`Cancel failed: ${err}`);
+      showSnackbar(t("snack.cancelFailed", { err }));
     }
   });
   document.getElementById("force-kill-back").addEventListener("click", () => {
@@ -618,9 +620,9 @@ function wireInstall() {
     document.getElementById("force-kill-confirm").hidden = true;
     try {
       await invoke("cmd_force_kill_msi");
-      showSnackbar("msiexec terminated. The install may be partial.");
+      showSnackbar(t("snack.msiTerminated"));
     } catch (err) {
-      showSnackbar(`Force-kill failed: ${err}`);
+      showSnackbar(t("snack.forceKillFailed", { err }));
     }
   });
   document.getElementById("install-retry").addEventListener("click", async () => {
@@ -631,6 +633,17 @@ function wireInstall() {
     state.installErrorStep = null;
     installRows = new Map();
     await gotoStep("welcome");
+  });
+}
+
+function updateInstallSummary() {
+  const what = state.role === "tunnel-client"
+    ? t("install.whatTunnel")
+    : t("install.whatDaemon", { flavour: flavourLabel(roleFlavour(state.role)) });
+  document.getElementById("install-summary").textContent = t("install.summary", {
+    what,
+    server: state.server,
+    device: state.device,
   });
 }
 
@@ -646,11 +659,7 @@ async function runInstall() {
   document.getElementById("force-kill-confirm").hidden = true;
   await gotoStep("install");
 
-  const what = state.role === "tunnel-client"
-    ? "tunnel client"
-    : `daemon (${flavourLabel(roleFlavour(state.role))})`;
-  document.getElementById("install-summary").textContent =
-    `Installing the ${what} from ${state.server} as “${state.device}”.`;
+  updateInstallSummary();
   renderInstall();
 
   // 1. Attach the Channel listener FIRST so no live event is dropped.
@@ -717,8 +726,11 @@ function handleProgress(event, live) {
     if (state.totalBytes > 0) {
       const pct = Math.min(100, (data.receivedBytes / state.totalBytes) * 100);
       document.getElementById("progress-fill").style.width = `${pct.toFixed(1)}%`;
-      document.getElementById("progress-label").textContent =
-        `${(data.receivedBytes / 1_000_000).toFixed(1)} MB of ${(state.totalBytes / 1_000_000).toFixed(1)} MB (${pct.toFixed(0)}%)`;
+      document.getElementById("progress-label").textContent = t("install.progressLabel", {
+        received: (data.receivedBytes / 1_000_000).toFixed(1),
+        total: (state.totalBytes / 1_000_000).toFixed(1),
+        pct: pct.toFixed(0),
+      });
     }
     return;
   }
@@ -744,10 +756,10 @@ function handleProgress(event, live) {
 
   if (type === "SystemContextError") {
     const stageLabel = {
-      env_var_write: "Writing the service env-var failed",
-      service_restart: "Restarting the service failed",
-      unknown: "SystemContext step failed",
-    }[data.stage] ?? `SystemContext (${data.stage}) failed`;
+      env_var_write: t("install.sc.envVarWrite"),
+      service_restart: t("install.sc.serviceRestart"),
+      unknown: t("install.sc.unknown"),
+    }[data.stage] ?? t("install.sc.other", { stage: data.stage });
     document.getElementById("systemcontext-error-stage").textContent = stageLabel;
     document.getElementById("systemcontext-error-message").textContent = data.message ?? "";
     document.getElementById("systemcontext-error-hint").textContent = data.hint ?? "";
@@ -764,6 +776,7 @@ function handleProgress(event, live) {
 }
 
 function renderInstall() {
+  if (state.role) updateInstallSummary();
   const list = document.getElementById("install-checklist");
   list.innerHTML = "";
   for (const event of installRows.values()) {
@@ -786,14 +799,16 @@ function renderInstall() {
   // Cancel button: relabel once msiexec is running (the polite flag
   // can't interrupt it any more — only force-kill can).
   const cancelBtn = document.getElementById("install-cancel");
-  cancelBtn.textContent = state.msiSpawned ? "Force-kill installer" : "Cancel";
+  cancelBtn.textContent = state.msiSpawned ? t("install.forceKillBtn") : t("btn.cancel");
 
   // Error recovery panel, scoped to the failing step.
   const errorEl = document.getElementById("install-error");
   if (state.installError) {
     errorEl.hidden = false;
     document.getElementById("install-error-title").textContent =
-      state.installErrorStep ? `Install failed at: ${state.installErrorStep}` : "Install failed";
+      state.installErrorStep
+        ? t("install.errorTitleAt", { step: state.installErrorStep })
+        : t("install.errorTitle");
     document.getElementById("install-error-message").textContent = state.installError;
     cancelBtn.hidden = true;
   } else {
@@ -803,13 +818,13 @@ function renderInstall() {
 }
 
 function checklistClass(event) {
-  const t = event.type;
-  if (t === "Error" || t === "SystemContextError") return "error";
-  if (t === "PreflightWarning" || t === "AnchorSkipped") return "warning";
+  const et = event.type;
+  if (et === "Error" || et === "SystemContextError") return "error";
+  if (et === "PreflightWarning" || et === "AnchorSkipped") return "warning";
   if (
-    t === "Done" || t === "EnrollOk" || t === "AnchorOk" || t === "MsiCompleted" ||
-    t === "ExtractDone" || t === "IntegrationDone" ||
-    t === "DownloadVerified" || t === "PreflightOk" || t === "AssetResolved"
+    et === "Done" || et === "EnrollOk" || et === "AnchorOk" || et === "MsiCompleted" ||
+    et === "ExtractDone" || et === "IntegrationDone" ||
+    et === "DownloadVerified" || et === "PreflightOk" || et === "AssetResolved"
   ) {
     return "ok";
   }
@@ -817,28 +832,41 @@ function checklistClass(event) {
 }
 
 function checklistLabel(event) {
-  const t = event.type;
+  const et = event.type;
   const d = event.data ?? {};
-  const base = STEP_LABELS[t] ?? t;
-  if (t === "PreflightOk") return `Pre-flight: detected ${d.existing}`;
-  if (t === "PreflightWarning") return `${base}: ${d.message}`;
-  if (t === "AssetResolving") return `Resolving download URL (${d.artifact})`;
-  if (t === "AssetResolved") return `Resolved tag ${d.tag} (${(d.sizeBytes / 1_000_000).toFixed(1)} MB)`;
-  if (t === "MsiSpawned") return `Running MSI installer (PID ${d.pid})`;
-  if (t === "MsiCompleted") return `MSI installer finished (exit ${d.code}, ${d.decoded})`;
-  if (t === "ExtractDone") return `Extracted. Binary at ${d.tunnelBinary}`;
-  if (t === "IntegrationDone")
-    return `Integration: PATH ${d.pathUpdated ? "updated" : "unchanged"}; shortcut ${d.shortcutCreated ? "created" : "skipped"}`;
-  if (t === "EnrollOk") return `Enrolled (${d.principalKind} ${d.principalId})`;
-  if (t === "AnchorSkipped") return `Not anchored: ${d.reason}`;
-  if (t === "Error") return `Error at ${d.step}: ${d.message}`;
-  if (t === "SystemContextError") {
+  const base = stepLabel(et);
+  if (et === "PreflightOk") return t("install.row.preflightOk", { existing: d.existing });
+  if (et === "PreflightWarning") return t("install.row.preflightWarning", { base, message: d.message });
+  if (et === "AssetResolving") return t("install.row.assetResolving", { artifact: d.artifact });
+  if (et === "AssetResolved") {
+    return t("install.row.assetResolved", {
+      tag: d.tag,
+      mb: (d.sizeBytes / 1_000_000).toFixed(1),
+    });
+  }
+  if (et === "MsiSpawned") return t("install.row.msiSpawned", { pid: d.pid });
+  if (et === "MsiCompleted") return t("install.row.msiCompleted", { code: d.code, decoded: d.decoded });
+  if (et === "ExtractDone") return t("install.row.extractDone", { path: d.tunnelBinary });
+  if (et === "IntegrationDone") {
+    return t("install.row.integrationDone", {
+      pathState: d.pathUpdated ? t("install.row.pathUpdated") : t("install.row.pathUnchanged"),
+      shortcutState: d.shortcutCreated ? t("install.row.shortcutCreated") : t("install.row.shortcutSkipped"),
+    });
+  }
+  if (et === "EnrollOk") return t("install.row.enrollOk", { kind: d.principalKind, id: d.principalId });
+  if (et === "AnchorSkipped") return t("install.row.anchorSkipped", { reason: d.reason });
+  if (et === "Error") return t("install.row.error", { step: d.step, message: d.message });
+  if (et === "SystemContextError") {
     const stageLabel = {
-      env_var_write: "Writing service env-var",
-      service_restart: "Restarting service",
-      unknown: "SystemContext step",
-    }[d.stage] ?? `SystemContext (${d.stage})`;
-    return `${stageLabel} failed: ${d.message}${d.hint ? " — " + d.hint : ""}`;
+      env_var_write: t("install.scRow.envVarWrite"),
+      service_restart: t("install.scRow.serviceRestart"),
+      unknown: t("install.scRow.unknown"),
+    }[d.stage] ?? t("install.scRow.other", { stage: d.stage });
+    return t("install.scRow.failed", {
+      stage: stageLabel,
+      message: d.message,
+      hint: d.hint ? " — " + d.hint : "",
+    });
   }
   return base;
 }
@@ -869,12 +897,12 @@ function renderDone() {
   const desktopInstalled = !isTunnel && done.desktopInstalled === true;
   let lead;
   if (isTunnel) {
-    lead = "The tunnel client is installed, enrolled, and on PATH.";
+    lead = t("done.leadTunnel");
   } else {
-    lead = "The MeshHarbor daemon is installed and enrolled.";
-    if (cliIncluded) lead += " The meshharbor CLI came with it (managed by the daemon's updater).";
-    if (desktopInstalled) lead += " The meshharbor-desktop app is installed alongside it.";
-    if (done.anchored === true) lead += " It is anchored: commands can run as SYSTEM here.";
+    lead = t("done.leadDaemon");
+    if (cliIncluded) lead += t("done.leadCli");
+    if (desktopInstalled) lead += t("done.leadDesktop");
+    if (done.anchored === true) lead += t("done.leadAnchored");
   }
   document.getElementById("done-lead").textContent = lead;
 
@@ -892,12 +920,12 @@ function renderDone() {
   }
 
   document.getElementById("done-principal-label").textContent =
-    isTunnel ? "Tunnel client ID" : "Agent ID";
+    isTunnel ? t("done.tunnelClientId") : t("done.agentId");
   document.getElementById("done-principal-id").textContent =
-    done.principalId ?? "(unknown — install report missing)";
-  document.getElementById("done-tenant-id").textContent = done.tenantId ?? "(unknown)";
+    done.principalId ?? t("done.unknownMissing");
+  document.getElementById("done-tenant-id").textContent = done.tenantId ?? t("done.unknown");
   document.getElementById("done-role").textContent = roleLabel(done.role ?? state.role);
-  document.getElementById("done-tag").textContent = done.tag ?? "(unknown)";
+  document.getElementById("done-tag").textContent = done.tag ?? t("done.unknown");
 
   // Daemon extras: MSI flavour.
   const flavour = done.flavour ?? (isTunnel ? null : roleFlavour(state.role));
@@ -969,16 +997,16 @@ function showSnackbar(message, durationMs = 4000) {
 // frozen on the previous step with no visible error.
 window.addEventListener("error", (event) => {
   console.error("[window.error]", event.message, event.error);
-  showSnackbar(`Wizard error: ${event.message}`, 30_000);
+  showSnackbar(t("snack.wizardError", { err: event.message }), 30_000);
 });
 window.addEventListener("unhandledrejection", (event) => {
   console.error("[unhandledrejection]", event.reason);
-  showSnackbar(`Wizard error: ${event.reason}`, 30_000);
+  showSnackbar(t("snack.wizardError", { err: event.reason }), 30_000);
 });
 
 // ─── Go ────────────────────────────────────────────────────────────────────
 
 init().catch((err) => {
   console.error("init failed:", err);
-  showSnackbar(`Init failed: ${err}`, 30_000);
+  showSnackbar(t("snack.initFailed", { err }), 30_000);
 });

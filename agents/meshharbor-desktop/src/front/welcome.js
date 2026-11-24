@@ -26,6 +26,8 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, setText, on, get, navigate, refreshStatus } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   const STEPS = ['device', 'network', 'consent', 'files', 'login', 'done'];
   const OVERLAY_WAIT_MS = 60000;
@@ -133,8 +135,16 @@
 
   function manualRestartHint() {
     return installScope() === 'user'
-      ? 'Saved. It takes effect the next time the MeshHarbor service starts — sign out and back in, or restart it from Settings → Background service.'
-      : 'Saved. It takes effect the next time the MeshHarbor service starts — for example after the next restart of this computer.';
+      ? t(
+          'wl.manualHintUser',
+          null,
+          'Saved. It takes effect the next time the MeshHarbor service starts — sign out and back in, or restart it from Settings → Background service.',
+        )
+      : t(
+          'wl.manualHintMachine',
+          null,
+          'Saved. It takes effect the next time the MeshHarbor service starts — for example after the next restart of this computer.',
+        );
   }
 
   /* ── step rendering ─────────────────────────────────────────────── */
@@ -153,7 +163,9 @@
     if (back) back.hidden = step === 0;
     if (skip) skip.hidden = step === STEPS.length - 1;
     if (next) {
-      next.textContent = step === STEPS.length - 1 ? 'Go to Overview' : 'Next';
+      next.textContent = step === STEPS.length - 1
+        ? t('wl.gotoOverview', null, 'Go to Overview')
+        : t('common.next', null, 'Next');
       next.disabled = busy;
     }
   }
@@ -175,19 +187,23 @@
   function networkState() {
     if (platform.name === 'macos') {
       return platform.macosPrivilegedHalf
-        ? "Run by MeshHarbor's system service on this Mac"
-        : 'Not installed on this Mac';
+        ? t('wl.net.stateMacPriv', null, "Run by MeshHarbor's system service on this Mac")
+        : t('wl.net.stateMacNone', null, 'Not installed on this Mac');
     }
     const dv = get('deviceView');
     const on = entryValue('overlay_enabled') === 'true';
     if (!dv || !dv.available) {
-      return on ? 'On (the service is not running right now)' : 'Off';
+      return on
+        ? t('wl.net.stateOnOffline', null, 'On (the service is not running right now)')
+        : t('common.enabledOff', null, 'Off');
     }
     const ip = dv.status && dv.status.overlay_ip;
-    if (ip) return 'On — this computer is ' + ip;
-    if (on && pending.has('overlay_enabled')) return 'On after the service restarts';
-    if (on) return 'On, but not connected yet';
-    return 'Off';
+    if (ip) return t('wl.net.stateOnIp', { ip }, 'On — this computer is ' + ip);
+    if (on && pending.has('overlay_enabled')) {
+      return t('wl.net.stateAfterRestart', null, 'On after the service restarts');
+    }
+    if (on) return t('wl.net.stateNotConnected', null, 'On, but not connected yet');
+    return t('common.enabledOff', null, 'Off');
   }
 
   function paintNetwork() {
@@ -198,23 +214,31 @@
     // half on the mesh as well would make the Mac two nodes.
     if (platform.name === 'macos') {
       setText('wl-net-state', networkState());
-      setText('wl-net-user-title', 'On a Mac');
+      setText('wl-net-user-title', t('wl.net.macTitle', null, 'On a Mac'));
       setText(
         'wl-net-user-text',
         platform.macosPrivilegedHalf
-          ? "The private network runs in MeshHarbor's system service, which has its own " +
-              'enrollment (it appears among your devices with "-daemon" after its name). ' +
-              'There is nothing to turn on here.'
-          : "On a Mac the private network runs in MeshHarbor's system service, which the " +
-              'installer adds when given a second enrollment token (install.sh --daemon-token). ' +
-              'Screen sharing works without it.',
+          ? t(
+              'wl.net.macPrivDesc',
+              null,
+              'The private network runs in MeshHarbor\'s system service, which has its own ' +
+                'enrollment (it appears among your devices with "-daemon" after its name). ' +
+                'There is nothing to turn on here.',
+            )
+          : t(
+              'wl.net.macNoPrivDesc',
+              null,
+              "On a Mac the private network runs in MeshHarbor's system service, which the " +
+                'installer adds when given a second enrollment token (install.sh --daemon-token). ' +
+                'Screen sharing works without it.',
+            ),
       );
       userBox.hidden = false;
       btn.hidden = true;
       return;
     }
     setText('wl-net-state', networkState());
-    setText('wl-net-user-title', 'Per-user installation');
+    setText('wl-net-user-title', t('wl.net.userTitle', null, 'Per-user installation'));
     const scope = installScope();
     const dv = get('deviceView');
     const hasIp = !!(dv && dv.available && dv.status && dv.status.overlay_ip);
@@ -224,22 +248,32 @@
       if (multiOrg) {
         setText(
           'wl-net-user-text',
-          'This is a per-user installation, and this computer is set to join several ' +
-            "organisations' networks at once (overlay_multi_org). Userspace mode can serve only " +
-            'one, so the private network here needs the machine-wide MeshHarbor service (installed ' +
-            'by an administrator).',
+          t(
+            'wl.net.userMultiOrg',
+            null,
+            'This is a per-user installation, and this computer is set to join several ' +
+              "organisations' networks at once (overlay_multi_org). Userspace mode can serve only " +
+              'one, so the private network here needs the machine-wide MeshHarbor service (installed ' +
+              'by an administrator).',
+          ),
         );
       } else {
         setText(
           'wl-net-user-text',
-          'MeshHarbor was installed for your account only, so it cannot add a network adapter ' +
-            '(that needs an administrator). It can join in userspace mode instead: remote desktop ' +
-            'works as usual, and other apps reach your devices through a local SOCKS5 proxy on ' +
-            'this computer.',
+          t(
+            'wl.net.userUserspace',
+            null,
+            'MeshHarbor was installed for your account only, so it cannot add a network adapter ' +
+              '(that needs an administrator). It can join in userspace mode instead: remote desktop ' +
+              'works as usual, and other apps reach your devices through a local SOCKS5 proxy on ' +
+              'this computer.',
+          ),
         );
       }
     }
-    btn.textContent = scope === 'user' ? 'Turn on in userspace mode' : 'Turn on the private network';
+    btn.textContent = scope === 'user'
+      ? t('wl.net.btnEnableUserspace', null, 'Turn on in userspace mode')
+      : t('wl.net.btnEnable', null, 'Turn on the private network');
     btn.hidden = hasIp || (scope === 'user' && multiOrg);
     btn.disabled = busy || !(get('status') && get('status').enrolled);
   }
@@ -278,33 +312,43 @@
     }
     if (!v.available) {
       setText('wl-files-path', '—');
+      const reason = v.reason || t('common.unknownError', null, 'unknown error');
       setText(
         'wl-files-note',
         v.reason === 'daemon_unreachable'
-          ? 'The MeshHarbor service is not running, so the folder cannot be shown or changed right now.'
-          : 'Could not read the setting: ' + (v.reason || 'unknown error'),
+          ? t('wl.files.noteOffline', null, 'The MeshHarbor service is not running, so the folder cannot be shown or changed right now.')
+          : t('ov.files.noteError', { reason }, 'Could not read the setting: ' + reason),
       );
       actions.hidden = true;
       return;
     }
-    setText('wl-files-path', v.effective || 'your Downloads folder');
+    setText('wl-files-path', v.effective || t('wl.files.downloads', null, 'your Downloads folder'));
     if (!v.supported) {
       setText(
         'wl-files-note',
-        'This version of the MeshHarbor service always uses your Downloads folder; updating it lets you choose.',
+        t(
+          'wl.files.noteUnsupported',
+          null,
+          'This version of the MeshHarbor service always uses your Downloads folder; updating it lets you choose.',
+        ),
       );
       actions.hidden = true;
       return;
     }
     actions.hidden = false;
     useDefault.hidden = !v.configured;
+    const suffix = v.configured && v.configured.startsWith('~')
+      ? t('ov.files.perUserSuffix', null, ' (inside the profile of whoever is signed in)')
+      : '';
     setText(
       'wl-files-note',
       v.configured
-        ? 'Your choice: ' + v.configured +
-            (v.configured.startsWith('~') ? ' (inside the profile of whoever is signed in)' : '') +
-            '. The Overview shows the same folder.'
-        : "The default: the signed-in user's Downloads folder. You can pick another folder here or later on the Overview.",
+        ? t('wl.files.noteChosen', { path: v.configured, suffix }, 'Your choice: ' + v.configured + suffix + '. The Overview shows the same folder.')
+        : t(
+            'wl.files.noteSystemDefault',
+            null,
+            "The default: the signed-in user's Downloads folder. You can pick another folder here or later on the Overview.",
+          ),
     );
   }
 
@@ -325,32 +369,43 @@
   }
 
   function filesSavedText(entry, value) {
-    const where = value || (entry && entry.value) || 'the default folder';
-    return (
-      'Saved: ' +
-      where +
-      (entry && entry.restart_required
-        ? ' — takes effect after the service restarts.'
-        : ' — in effect now, for the next file.')
-    );
+    const where = value || (entry && entry.value) || t('ov.files.defaultFolderWord', null, 'the default folder');
+    return entry && entry.restart_required
+      ? t('ov.files.savedRestart', { where }, 'Saved: ' + where + ' — takes effect after the service restarts.')
+      : t('wl.files.savedLive', { where }, 'Saved: ' + where + ' — in effect now, for the next file.');
   }
 
   async function paintLogin() {
     await paintAutostart('wl-login-toggle', 'wl-login-note', 'wl-login-label');
   }
 
+  function networkOutcomeText() {
+    if (!outcome.network) return networkState();
+    if (outcome.network.kind === 'afterRestart') {
+      return t('wl.net.stateAfterRestart', null, 'On after the service restarts');
+    }
+    if (outcome.network.kind === 'ip') {
+      return t('wl.net.outcomeIp', { ip: outcome.network.ip }, 'On — ' + outcome.network.ip);
+    }
+    if (outcome.network.kind === 'notConnected') {
+      return t('wl.net.outcomeNotConn', null, 'On, but not connected');
+    }
+    return networkState();
+  }
+
   function paintDone() {
-    setText('wl-sum-network', outcome.network || networkState());
+    setText('wl-sum-network', networkOutcomeText());
     setText(
       'wl-sum-consent',
       entryValue('auto_grant_session') === 'false'
-        ? 'You are asked before someone connects'
-        : 'People in your organisation can connect without asking',
+        ? t('wl.done.sumAsk', null, 'You are asked before someone connects')
+        : t('wl.done.sumAuto', null, 'People in your organisation can connect without asking'),
     );
     const loginBox = el('wl-login-toggle');
+    const loginOn = outcome.login != null ? outcome.login : !!(loginBox && loginBox.checked);
     setText(
       'wl-sum-login',
-      outcome.login || (loginBox && loginBox.checked ? 'On' : 'Off'),
+      loginOn ? t('common.enabledOn', null, 'On') : t('common.enabledOff', null, 'Off'),
     );
     const n = pending.size();
     el('wl-pending').hidden = n === 0;
@@ -358,8 +413,8 @@
       setText(
         'wl-pending-text',
         n === 1
-          ? '1 setting takes effect after the MeshHarbor service restarts.'
-          : n + ' settings take effect after the MeshHarbor service restarts.',
+          ? t('wl.done.pendingOne', null, '1 setting takes effect after the MeshHarbor service restarts.')
+          : t('wl.done.pendingMany', { n }, n + ' settings take effect after the MeshHarbor service restarts.'),
       );
     }
   }
@@ -401,15 +456,19 @@
   async function whyNoAddress() {
     const dv = get('deviceView');
     if (!dv || !dv.available) {
-      return 'The MeshHarbor service did not come back. Settings → Service log says why.';
+      return t('wl.net.noIpServiceDown', null, 'The MeshHarbor service did not come back. Settings → Service log says why.');
     }
     const st = dv.status || {};
     if (st.join_refusal && (st.join_refusal.detail || st.join_refusal.reason)) {
-      return 'The server did not add this computer to the network: ' +
-        (st.join_refusal.detail || st.join_refusal.reason);
+      const why = st.join_refusal.detail || st.join_refusal.reason;
+      return t('wl.net.noIpRefused', { why }, 'The server did not add this computer to the network: ' + why);
     }
     if (!st.connected) {
-      return 'The service is not connected to the MeshHarbor server yet, so it has no address to join with.';
+      return t(
+        'wl.net.noIpNotConnected',
+        null,
+        'The service is not connected to the MeshHarbor server yet, so it has no address to join with.',
+      );
     }
     try {
       const tail = await invoke('cmd_tail_log', { source: 'daemon', maxBytes: 32768 });
@@ -417,12 +476,13 @@
         (l) => /overlay|wintun|\btun\b|netstack/i.test(l) && /\b(WARN|ERROR)\b/.test(l),
       );
       if (lines.length) {
-        return 'No address after a minute. The service log says: ' + lines[lines.length - 1].trim();
+        const line = lines[lines.length - 1].trim();
+        return t('wl.net.noIpLogLine', { line }, 'No address after a minute. The service log says: ' + line);
       }
     } catch (e) {
       console.debug('welcome: no log tail', e);
     }
-    return 'No address after a minute. Settings → Service log has the details.';
+    return t('wl.net.noIpTimeout', null, 'No address after a minute. Settings → Service log has the details.');
   }
 
   async function freeSocksPort() {
@@ -446,7 +506,7 @@
     const scope = installScope();
     let socksPort = null;
     try {
-      say('wl-net-result', 'Saving…');
+      say('wl-net-result', t('wl.net.saving', null, 'Saving…'));
       if (scope === 'user') {
         socksPort = await freeSocksPort();
         await setKey('netstack_socks_port', String(socksPort));
@@ -455,33 +515,36 @@
 
       const r = await restartService('welcome: private network', (text) => say('wl-net-result', text));
       if (r.manual) {
-        outcome.network = 'On after the service restarts';
-        say('wl-net-result', r.message ? 'Saved. ' + r.message : manualRestartHint());
+        outcome.network = { kind: 'afterRestart' };
+        say('wl-net-result', r.message ? t('wl.savedPrefix', { msg: r.message }, 'Saved. ' + r.message) : manualRestartHint());
         return;
       }
       if (!r.ok) {
         // The flow's own words: a refusal verbatim, or why it did not come back.
-        outcome.network = 'On after the service restarts';
-        say('wl-net-result', r.message || 'The service was not restarted.', 'error');
+        outcome.network = { kind: 'afterRestart' };
+        say('wl-net-result', r.message || t('wl.net.notRestarted', null, 'The service was not restarted.'), 'error');
         return;
       }
       pending.clear();
-      say('wl-net-result', 'Waiting for this computer to get its address (up to a minute)…');
+      say('wl-net-result', t('wl.net.waitingIp', null, 'Waiting for this computer to get its address (up to a minute)…'));
       const ip = await waitForOverlayIp(OVERLAY_WAIT_MS);
       if (ip) {
-        outcome.network = 'On — ' + ip;
-        let text = 'Connected. This computer is ' + ip + ' on your private network.';
+        outcome.network = { kind: 'ip', ip };
+        let text = t('wl.net.connected', { ip }, 'Connected. This computer is ' + ip + ' on your private network.');
         if (socksPort) {
-          text += ' Apps reach your devices through SOCKS5 127.0.0.1:' + socksPort +
-            '; remote desktop needs nothing.';
+          text += t(
+            'wl.net.connectedSocks',
+            { port: socksPort },
+            ' Apps reach your devices through SOCKS5 127.0.0.1:' + socksPort + '; remote desktop needs nothing.',
+          );
         }
         say('wl-net-result', text, 'ok');
       } else {
-        outcome.network = 'On, but not connected';
+        outcome.network = { kind: 'notConnected' };
         say('wl-net-result', await whyNoAddress(), 'error');
       }
     } catch (e) {
-      say('wl-net-result', 'Could not turn it on: ' + e, 'error');
+      say('wl-net-result', t('wl.net.enableFailed', { err: e }, 'Could not turn it on: ' + e), 'error');
     } finally {
       busy = false;
       await loadEntries();
@@ -500,11 +563,15 @@
       say(
         'wl-consent-result',
         entry.restart_required
-          ? 'Saved — applies when the MeshHarbor service restarts (you can do that at the end of this tour).'
-          : 'Saved.',
+          ? t(
+              'wl.consent.savedRestart',
+              null,
+              'Saved — applies when the MeshHarbor service restarts (you can do that at the end of this tour).',
+            )
+          : t('wl.consent.saved', null, 'Saved.'),
       );
     } catch (e) {
-      say('wl-consent-result', 'Could not save: ' + e, 'error');
+      say('wl-consent-result', t('wl.consent.saveFailed', { err: e }, 'Could not save: ' + e), 'error');
       paintConsent();
     }
   }
@@ -515,7 +582,7 @@
 
   function autostartNote(s) {
     if (!s || !s.supported) {
-      return (s && s.note) || 'This platform manages login items itself.';
+      return (s && s.note) || t('wl.login.platformDefault', null, 'This platform manages login items itself.');
     }
     return s.note || '';
   }
@@ -526,7 +593,7 @@
     try {
       autostartState = await invoke('cmd_autostart_get');
     } catch (e) {
-      autostartState = { supported: false, enabled: false, note: 'Unavailable: ' + e };
+      autostartState = { supported: false, enabled: false, note: t('wl.login.unavailable', { err: e }, 'Unavailable: ' + e) };
     }
     toggle.checked = !!autostartState.enabled;
     toggle.disabled = !autostartState.supported;
@@ -538,10 +605,15 @@
   async function setAutostart(enabled, resultId, toggleId, noteId, labelId) {
     try {
       autostartState = await invoke('cmd_autostart_set', { enabled });
-      outcome.login = autostartState.enabled ? 'On' : 'Off';
-      say(resultId, enabled ? 'MeshHarbor starts when you sign in.' : 'MeshHarbor no longer starts when you sign in.');
+      outcome.login = !!autostartState.enabled;
+      say(
+        resultId,
+        enabled
+          ? t('wl.login.enabledMsg', null, 'MeshHarbor starts when you sign in.')
+          : t('wl.login.disabledMsg', null, 'MeshHarbor no longer starts when you sign in.'),
+      );
     } catch (e) {
-      say(resultId, 'Could not change it: ' + e, 'error');
+      say(resultId, t('wl.login.changeFailed', { err: e }, 'Could not change it: ' + e), 'error');
     }
     await paintAutostart(toggleId, noteId, labelId);
   }
@@ -556,14 +628,14 @@
       (text) => say('wl-pending-result', text),
     );
     if (r.manual) {
-      say('wl-pending-result', r.message ? 'Saved. ' + r.message : manualRestartHint());
+      say('wl-pending-result', r.message ? t('wl.savedPrefix', { msg: r.message }, 'Saved. ' + r.message) : manualRestartHint());
     } else if (r.ok) {
       pending.clear();
-      say('wl-pending-result', 'Done — your choices are in effect.', 'ok');
+      say('wl-pending-result', t('wl.done.applied', null, 'Done — your choices are in effect.'), 'ok');
       await loadEntries();
       paintDone();
     } else {
-      say('wl-pending-result', r.message || 'The service was not restarted.', 'error');
+      say('wl-pending-result', r.message || t('wl.net.notRestarted', null, 'The service was not restarted.'), 'error');
     }
     btn.disabled = false;
   }
@@ -673,8 +745,8 @@
       filesAction(async () => {
         const entry = await invoke('cmd_files_dir_default');
         return entry.restart_required
-          ? 'Back to the default folder after the service restarts.'
-          : 'Back to the default folder — in effect now.';
+          ? t('ov.files.backDefaultRestart', null, 'Back to the default folder after the service restarts.')
+          : t('ov.files.backDefaultLive', null, 'Back to the default folder — in effect now.');
       }),
     );
 
@@ -687,5 +759,14 @@
     }
     const tour = el('btn-welcome-tour');
     if (tour) tour.addEventListener('click', () => navigate('welcome'));
+
+    document.addEventListener('meshharbor:lang', () => {
+      if (window.MeshHarbor.currentView() === 'welcome') {
+        void paintStep();
+      }
+      if (autostartState) {
+        setText('st-autostart-note', autostartNote(autostartState));
+      }
+    });
   });
 })();

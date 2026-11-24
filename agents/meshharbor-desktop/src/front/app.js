@@ -46,18 +46,23 @@ window.MeshHarbor = (function () {
     return (u === 0 ? String(v) : v.toFixed(1)) + ' ' + units[u];
   }
 
+  function t(key, params, fallback) {
+    return window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
+  }
+
   // Relative age from an epoch-ms timestamp ("12s ago" / "5m ago" / …).
   function fmtRelative(epochMs) {
     if (epochMs == null) return '—';
     const delta = Math.max(0, Date.now() - Number(epochMs));
     const s = Math.round(delta / 1000);
-    if (s < 5) return 'now';
-    if (s < 60) return s + 's ago';
+    if (s < 5) return t('time.now', null, 'now');
+    if (s < 60) return t('time.secsAgo', { n: s }, s + 's ago');
     const m = Math.round(s / 60);
-    if (m < 60) return m + 'm ago';
+    if (m < 60) return t('time.minsAgo', { n: m }, m + 'm ago');
     const h = Math.round(m / 60);
-    if (h < 48) return h + 'h ago';
-    return Math.round(h / 24) + 'd ago';
+    if (h < 48) return t('time.hoursAgo', { n: h }, h + 'h ago');
+    const d = Math.round(h / 24);
+    return t('time.daysAgo', { n: d }, d + 'd ago');
   }
 
   /* ── store + pollers ────────────────────────────────────────────── */
@@ -135,14 +140,21 @@ window.MeshHarbor = (function () {
     const label = $('conn-label');
     if (!dot || !label) return;
     const dv = state.deviceView;
-    if (!dv || !dv.available) {
+    if (dv === null) {
+      dot.className = 'dot dot-warn';
+      label.textContent = t('conn.connecting', null, 'Connecting…');
+      return;
+    }
+    if (!dv.available) {
       dot.className = 'dot dot-off';
-      label.textContent = 'Service offline';
+      label.textContent = t('conn.serviceOffline', null, 'Service offline');
       return;
     }
     const connected = !!(dv.status && dv.status.connected);
     dot.className = 'dot ' + (connected ? 'dot-on' : 'dot-warn');
-    label.textContent = connected ? 'Connected' : 'Server unreachable';
+    label.textContent = connected
+      ? t('conn.connected', null, 'Connected')
+      : t('conn.serverUnreachable', null, 'Server unreachable');
   }
 
   function paintChrome() {
@@ -184,6 +196,7 @@ window.MeshHarbor = (function () {
 
     on('status', paintChrome);
     on('deviceView', paintConnIndicator);
+    document.addEventListener('meshharbor:lang', paintConnIndicator);
 
     void pollStatus();
     void pollDeviceView();

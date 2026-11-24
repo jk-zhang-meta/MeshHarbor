@@ -18,7 +18,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MeshHarbor — permission needed</title>
+    <title data-i18n="app.consentTitle">MeshHarbor — permission needed</title>
     <link rel="stylesheet" href="styles.css" />
     <style>
       /* Its own window: no chrome, no scroll, fills the frame exactly. */
@@ -27,27 +27,29 @@
         margin: 0;
         height: 100%;
         overflow: hidden;
+        background: var(--bg-elev);
       }
       body {
         display: flex;
         flex-direction: column;
-        padding: 14px 16px;
+        padding: 16px 18px;
         gap: 8px;
         box-sizing: border-box;
         /* Borderless + always-on-top: an outline is the only thing telling
            the eye where the window ends. */
-        border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
-        border-radius: 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
       }
       .p-title {
         margin: 0;
         font-size: 15px;
         font-weight: 600;
+        letter-spacing: -0.01em;
       }
       .p-lead {
         margin: 0;
         font-size: 13px;
-        line-height: 1.4;
+        line-height: 1.45;
       }
       .p-meta {
         margin: 0;
@@ -56,10 +58,11 @@
       }
       .p-detail {
         margin: 0;
-        padding: 6px 8px;
-        border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
-        border-radius: 5px;
-        background: rgba(127, 127, 127, 0.08);
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-inset);
+        font-family: var(--mh-font-mono);
         font-size: 11.5px;
         line-height: 1.4;
         max-height: 4.4em;
@@ -78,6 +81,7 @@
          looks from the other end. */
       #p-countdown {
         font-size: 12px;
+        font-variant-numeric: tabular-nums;
         color: var(--muted);
         margin-right: auto;
       }
@@ -86,14 +90,15 @@
   <body>
     <h1 class="p-title" id="p-title">Remote control request</h1>
     <p class="p-lead"><strong id="p-who"></strong> <span id="p-verb"></span>.</p>
-    <p class="p-meta" id="p-org-row" hidden>On behalf of <strong id="p-org"></strong></p>
+    <p class="p-meta" id="p-org-row" hidden><span data-i18n="consent.orgPrefix">On behalf of </span><strong id="p-org"></strong></p>
     <p class="p-detail" id="p-detail-row" hidden><span id="p-detail"></span></p>
-    <p class="p-meta" id="p-perms-row">Permissions: <span id="p-perms" class="mono"></span></p>
+    <p class="p-meta" id="p-perms-row"><span data-i18n="consent.permsPrefix">Permissions: </span><span id="p-perms" class="mono"></span></p>
     <div class="p-actions">
       <span id="p-countdown"></span>
-      <button type="button" id="p-deny" class="consent-btn consent-deny">Deny</button>
-      <button type="button" id="p-approve" class="consent-btn consent-approve">Approve</button>
+      <button type="button" id="p-deny" class="consent-btn consent-deny" data-i18n="consent.deny">Deny</button>
+      <button type="button" id="p-approve" class="consent-btn consent-approve" data-i18n="consent.approve">Approve</button>
     </div>
+    <script src="i18n.js"></script>
     <script src="panel-consent.js"></script>
   </body>
 </html>

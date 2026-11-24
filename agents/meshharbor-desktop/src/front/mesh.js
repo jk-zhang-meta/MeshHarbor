@@ -36,14 +36,16 @@
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const TAU = Math.PI * 2;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   /** The carrier classes, in the web's order and wording. */
   const CARRIERS = [
-    { key: 'direct', label: 'Direct' },
-    { key: 'relay', label: 'TURN relay' },
-    { key: 'derp', label: 'DERP' },
-    { key: 'tunnel', label: 'Tunnel' },
-    { key: 'blocked', label: 'Blocked' },
+    { key: 'direct', label: 'Direct', labelKey: 'dv.mesh.carrier.direct' },
+    { key: 'relay', label: 'TURN relay', labelKey: 'dv.mesh.carrier.relay' },
+    { key: 'derp', label: 'DERP', labelKey: 'dv.mesh.carrier.derp' },
+    { key: 'tunnel', label: 'Tunnel', labelKey: 'dv.mesh.carrier.tunnel' },
+    { key: 'blocked', label: 'Blocked', labelKey: 'dv.mesh.carrier.blocked' },
   ];
   const KNOWN = new Set(CARRIERS.map((c) => c.key));
 
@@ -140,7 +142,7 @@
     return (
       fromName + ' → ' + toName + ': ' + util().qualifiedCarrier(end.carrier, end.relay) +
       (end.rtt_ms != null ? ' · ' + end.rtt_ms + ' ms' : '') +
-      (end.stalled ? ' · stalled' : '')
+      (end.stalled ? t('dv.mesh.stalledSuffix', null, ' · stalled') : '')
     );
   }
 
@@ -154,8 +156,8 @@
       );
     }
     const endStalled = (sides.from && sides.from.stalled) || (sides.to && sides.to.stalled);
-    if (e.stalled && !endStalled) lines.push('stalled');
-    if (e.reports === 1) lines.push('one-sided — only one end reported');
+    if (e.stalled && !endStalled) lines.push(t('dv.mesh.stalled', null, 'stalled'));
+    if (e.reports === 1) lines.push(t('dv.mesh.oneSided', null, 'one-sided — only one end reported'));
     return lines;
   }
 
@@ -224,7 +226,7 @@
         const count = document.createElement('span');
         count.className = 'muted';
         count.textContent = ' ' + (counts[c.key] || 0);
-        label.append(cb, dot, document.createTextNode(c.label), count);
+        label.append(cb, dot, document.createTextNode(t(c.labelKey, null, c.label)), count);
         return label;
       });
       const off = document.createElement('label');
@@ -237,7 +239,7 @@
         showOffline = cb.checked;
         draw();
       });
-      off.append(cb, document.createTextNode('Offline devices (' + offline + ')'));
+      off.append(cb, document.createTextNode(t('dv.mesh.offlineDevices', { n: offline }, 'Offline devices (' + offline + ')')));
       opts.controls.replaceChildren(...items, off);
     }
 
@@ -257,7 +259,11 @@
       svg.setAttribute('viewBox', '0 0 ' + size + ' ' + size);
 
       const title = svgEl('title');
-      title.textContent = 'Private network: this device, the devices it can see, and how they reach each other';
+      title.textContent = t(
+        'dv.mesh.svgTitle',
+        null,
+        'Private network: this device, the devices it can see, and how they reach each other',
+      );
       const defs = svgEl('defs');
       const root = svgEl('g', { transform: 'translate(' + size / 2 + ',' + size / 2 + ')' });
       svgEl('circle', { r: round(radius), class: 'mesh-ring' }, root);
@@ -375,8 +381,11 @@
           g,
         );
         label.textContent = n.name;
-        const bits = [n.name + (n.isSelf ? ' (this device)' : ''), n.online ? 'online' : 'offline'];
-        if (n.relay_home) bits.push('home ' + n.relay_home);
+        const bits = [
+          n.name + (n.isSelf ? t('dv.mesh.thisDeviceSuffix', null, ' (this device)') : ''),
+          n.online ? t('dv.mesh.online', null, 'online') : t('dv.mesh.offline', null, 'offline'),
+        ];
+        if (n.relay_home) bits.push(t('dv.mesh.home', { relay: n.relay_home }, 'home ' + n.relay_home));
         if (n.version) bits.push('v' + n.version);
         const tip = bits.join(' · ');
         g.addEventListener('mouseenter', () => {
@@ -395,9 +404,17 @@
     }
 
     function paintLegend(devices, links, asym) {
+      const devStr =
+        devices === 1
+          ? t('dv.mesh.deviceOne', { n: devices }, devices + ' device')
+          : t('dv.mesh.deviceMany', { n: devices }, devices + ' devices');
+      const linkStr =
+        links === 1
+          ? t('dv.mesh.linkOne', { n: links }, links + ' link')
+          : t('dv.mesh.linkMany', { n: links }, links + ' links');
       const parts = [
         document.createTextNode(
-          devices + (devices === 1 ? ' device' : ' devices') + ' · ' + links + (links === 1 ? ' link' : ' links') + ' shown',
+          t('dv.mesh.legendCount', { devices: devStr, links: linkStr }, devStr + ' · ' + linkStr + ' shown'),
         ),
       ];
       if (asym > 0) {
@@ -405,9 +422,9 @@
         swatch.className = 'mesh-asym-swatch';
         swatch.setAttribute('aria-hidden', 'true');
         parts.push(
-          document.createTextNode(' · ' + asym + ' asymmetric '),
+          document.createTextNode(t('dv.mesh.legendAsymPre', { n: asym }, ' · ' + asym + ' asymmetric ')),
           swatch,
-          document.createTextNode(' two colours = each side’s own carrier'),
+          document.createTextNode(t('dv.mesh.legendAsymPost', null, ' two colours = each side’s own carrier')),
         );
       }
       opts.legend.replaceChildren(...parts);
@@ -421,7 +438,11 @@
       draw();
     }
 
-    return { render };
+    function rerender() {
+      if (view) render(view);
+    }
+
+    return { render, rerender };
   }
 
   window.MeshHarbor.Mesh = { create, layout, chordPath, angleDelta, nodesFromView, CARRIERS };

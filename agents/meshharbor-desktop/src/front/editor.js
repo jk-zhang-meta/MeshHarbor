@@ -20,6 +20,8 @@
 (function () {
   'use strict';
   const { $, invoke, show, hide, setText, fmtBytes } = window.MeshHarbor;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   /* ── pure helpers (exported for the unit tests) ─────────────────── */
 
@@ -209,7 +211,9 @@
 
   function describeRefusal(r) {
     if (!r) return '';
-    const head = REFUSALS[r.code] || String(r.code || 'refused');
+    const head = Object.prototype.hasOwnProperty.call(REFUSALS, r.code)
+      ? t('ed.refusal.' + r.code, null, REFUSALS[r.code])
+      : String(r.code || 'refused');
     return head.charAt(0).toUpperCase() + head.slice(1) + (r.detail ? ' (' + r.detail + ')' : '') + '.';
   }
 
@@ -227,9 +231,19 @@
   }
 
   function describeDone(done) {
-    const parts = [fmtDuration(done.duration_ms), fmtBytes(done.bytes)];
-    const sound = SOUND[done.audio] || String(done.audio || 'no sound');
-    return 'Saved as ' + baseName(done.path) + ' — ' + parts.join(', ') + ', with ' + sound + '.';
+    const duration = fmtDuration(done.duration_ms);
+    const size = fmtBytes(done.bytes);
+    const sound = Object.prototype.hasOwnProperty.call(SOUND, done.audio)
+      ? t('ed.sound.' + done.audio, null, SOUND[done.audio])
+      : done.audio
+        ? String(done.audio)
+        : t('ed.sound.none', null, 'no sound');
+    const file = baseName(done.path);
+    return t(
+      'ed.doneText',
+      { file, duration, size, sound },
+      'Saved as ' + file + ' — ' + duration + ', ' + size + ', with ' + sound + '.',
+    );
   }
 
   function errorText(e) {
@@ -262,7 +276,11 @@
   }
 
   function label(s) {
-    return s.action === 'cut' ? 'cut' : s.action === 'speed' ? s.speed + '×' : 'kept';
+    return s.action === 'cut'
+      ? t('ed.seg.cut', null, 'cut')
+      : s.action === 'speed'
+        ? s.speed + '×'
+        : t('ed.seg.kept', null, 'kept');
   }
 
   function renderTimeline() {
@@ -286,7 +304,11 @@
   function renderSelection() {
     const s = cur.segs[cur.selected];
     const note = s
-      ? 'Selected: ' + fmtDuration(s.start_ms) + '–' + fmtDuration(s.end_ms) + ', ' + label(s) + '.'
+      ? t(
+          'ed.selected',
+          { start: fmtDuration(s.start_ms), end: fmtDuration(s.end_ms), label: label(s) },
+          'Selected: ' + fmtDuration(s.start_ms) + '–' + fmtDuration(s.end_ms) + ', ' + label(s) + '.',
+        )
       : '';
     setText('ed-selection', note);
     for (const id of ['ed-split', 'ed-keep', 'ed-cut', 'ed-speed', 'ed-speed-apply']) {
@@ -306,7 +328,7 @@
     $('ed-original-volume').disabled = exporting || !cur.hasAudio;
     $('ed-original-note').hidden = cur.hasAudio;
     const m = snd.music;
-    $('ed-music-pick').textContent = m ? 'Change music…' : 'Add music…';
+    $('ed-music-pick').textContent = m ? t('ed.musicChange', null, 'Change music…') : t('ed.musicAdd', null, 'Add music…');
     $('ed-music-pick').disabled = exporting;
     setText('ed-music-name', m ? baseName(m.path) : '');
     $('ed-music-remove').hidden = !m;
@@ -326,11 +348,18 @@
 
   function renderSummary() {
     const out = outputMs(cur.segs);
-    setText('ed-summary', 'The export: ' + fmtDuration(out) + ' of ' + fmtDuration(cur.durationMs));
+    setText(
+      'ed-summary',
+      t(
+        'ed.exportSummary',
+        { out: fmtDuration(out), total: fmtDuration(cur.durationMs) },
+        'The export: ' + fmtDuration(out) + ' of ' + fmtDuration(cur.durationMs),
+      ),
+    );
     const none = nothingKept(cur.segs);
     const why = $('ed-export-why');
     if (none) {
-      why.textContent = 'Everything is cut: there is nothing to export.';
+      why.textContent = t('ed.exportNothing', null, 'Everything is cut: there is nothing to export.');
       show(why);
     } else {
       hide(why);
@@ -366,12 +395,12 @@
     const run = (async () => {
       try {
         await invoke('cmd_edit_save', { name, list });
-        setText('ed-saved', 'Your edits are saved beside the recording.');
+        setText('ed-saved', t('ed.saved', null, 'Your edits are saved beside the recording.'));
         show($('ed-saved'));
         hide($('ed-save-error'));
       } catch (e) {
         const el = $('ed-save-error');
-        el.textContent = 'The edits could not be saved: ' + errorText(e);
+        el.textContent = t('ed.saveFailed', { err: errorText(e) }, 'The edits could not be saved: ' + errorText(e));
         show(el);
       }
     })();
@@ -399,7 +428,7 @@
     const next = splitAt(cur.segs, at);
     const note = $('ed-note');
     if (!next) {
-      note.textContent = 'Move the playhead further into a piece to split it there.';
+      note.textContent = t('ed.splitTooClose', null, 'Move the playhead further into a piece to split it there.');
       show(note);
       return;
     }
@@ -537,7 +566,11 @@
       if (!cur || cur.name !== name) return;
       v.src = core.convertFileSrc(path);
     } catch (e) {
-      note.textContent = 'No preview: ' + errorText(e) + '. The timeline and the export still work.';
+      note.textContent = t(
+        'ed.noPreview',
+        { err: errorText(e) },
+        'No preview: ' + errorText(e) + '. The timeline and the export still work.',
+      );
       show(note);
     }
   }
@@ -555,7 +588,7 @@
       bar.value = Math.min(st.frames || 0, bar.max);
       show(bar);
       const p = st.total ? Math.floor((100 * (st.frames || 0)) / st.total) : 0;
-      status.textContent = 'Exporting… ' + p + ' %';
+      status.textContent = t('ed.exporting', { pct: p }, 'Exporting… ' + p + ' %');
       show(status);
       hide(result);
       hide(error);
@@ -646,7 +679,7 @@
     clearTimeout(pollTimer);
     hide($('rec-main'));
     show($('rec-editor'));
-    setText('ed-title', 'Edit ' + name);
+    setText('ed-title', t('ed.titleName', { name }, 'Edit ' + name));
     for (const id of ['ed-banner', 'ed-body', 'ed-sound', 'ed-export-card', 'ed-note', 'ed-saved', 'ed-save-error', 'ed-result', 'ed-export-error', 'ed-music-error']) {
       hide($(id));
     }
@@ -656,7 +689,11 @@
     try {
       probe = await invoke('cmd_media_probe', { name });
     } catch (e) {
-      banner.textContent = 'This recording cannot be opened for editing: ' + errorText(e) + '.';
+      banner.textContent = t(
+        'ed.openFailed',
+        { err: errorText(e) },
+        'This recording cannot be opened for editing: ' + errorText(e) + '.',
+      );
       show(banner);
       return;
     }
@@ -666,7 +703,12 @@
       return;
     }
     if (!probe.editable) {
-      banner.textContent = 'This recording cannot be edited here: ' + (probe.reason || 'no reason given') + '.';
+      const noReason = t('rec.noReasonGiven', null, 'no reason given');
+      banner.textContent = t(
+        'ed.notEditable',
+        { reason: probe.reason || noReason },
+        'This recording cannot be edited here: ' + (probe.reason || 'no reason given') + '.',
+      );
       show(banner);
       return;
     }
@@ -688,10 +730,13 @@
       selected: 0,
     };
     if (loadError || (saved && !fitted.fitted)) {
-      banner.textContent =
+      banner.textContent = t(
+        'ed.editsNotFit',
+        { err: loadError ? ' (' + loadError + ')' : '' },
         'The saved edits did not fit this recording' +
-        (loadError ? ' (' + loadError + ')' : '') +
-        ': starting from the whole recording.';
+          (loadError ? ' (' + loadError + ')' : '') +
+          ': starting from the whole recording.',
+      );
       show(banner);
     }
     show($('ed-body'));
@@ -745,15 +790,19 @@
     $('ed-result-show').addEventListener('click', () => void openResult(true));
     const v = $('ed-video');
     v.addEventListener('play', () => {
-      setText('ed-play', 'Pause');
+      setText('ed-play', t('ed.pause', null, 'Pause'));
       frame(follow);
     });
-    v.addEventListener('pause', () => setText('ed-play', 'Play'));
+    v.addEventListener('pause', () => setText('ed-play', t('ed.play', null, 'Play')));
     v.addEventListener('seeked', () => cur && drawPlayhead(playheadMs()));
     v.addEventListener('error', () => {
       if (!v.getAttribute('src')) return;
       const note = $('ed-preview-note');
-      note.textContent = 'This system cannot play the recording here. The timeline and the export still work.';
+      note.textContent = t(
+        'ed.cannotPlay',
+        null,
+        'This system cannot play the recording here. The timeline and the export still work.',
+      );
       show(note);
     });
     // A hidden section keeps playing its sound: leaving the view, or closing
@@ -766,6 +815,12 @@
     });
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) quiet();
+    });
+    document.addEventListener('meshharbor:lang', () => {
+      if (!cur) return;
+      setText('ed-title', t('ed.titleName', { name: cur.name }, 'Edit ' + cur.name));
+      setText('ed-play', v && !v.paused ? t('ed.pause', null, 'Pause') : t('ed.play', null, 'Play'));
+      render();
     });
   }
 

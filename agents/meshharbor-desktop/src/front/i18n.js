@@ -1,0 +1,1919 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (C) 2026 G ROX EOOD
+/*
+ * MeshHarbor Desktop Companion — plain-JS i18n dictionary (`en` and `zh-CN`).
+ *
+ * Loaded by every HTML page under `src/front/` (`index.html`,
+ * `panel-consent.html`, `panel-viewing.html`).
+ *
+ * Resolution order matches the web UI (`ui/src/plugins/i18n.ts`) and Rust tray
+ * (`tray_i18n.rs`):
+ *   1. Saved explicit choice (`en` or `zh-CN`) synced between Rust
+ *      `desktop-state.json` (`get_ui_language` / `set_ui_language`) and
+ *      `localStorage['meshharbor.locale']`.
+ *   2. OS / webview locale: any `zh*` (`zh`, `zh-CN`, `zh-Hans`, `zh-TW`, …)
+ *      → `zh-CN`; everything else → `en`.
+ */
+(function (root) {
+  'use strict';
+
+  const STORAGE_KEY = 'meshharbor.locale';
+  const LOCALES = [
+    { code: 'en', label: 'English', shortLabel: 'EN' },
+    { code: 'zh-CN', label: '简体中文', shortLabel: '中文' },
+  ];
+
+  const MESSAGES = {
+    en: {
+      // App chrome & navigation
+      'app.title': 'MeshHarbor',
+      'app.consentTitle': 'MeshHarbor — permission needed',
+      'app.viewingTitle': 'MeshHarbor — session active',
+      'lang.aria': 'Language',
+      'lang.en': 'English',
+      'lang.zhCN': '简体中文',
+      'nav.overview': 'Overview',
+      'nav.devices': 'Devices',
+      'nav.account': 'My devices & sharing',
+      'nav.routes': 'Routes',
+      'nav.recordings': 'Recordings',
+      'nav.settings': 'Settings',
+      'nav.onboarding': 'Onboarding',
+      'conn.connecting': 'Connecting…',
+      'conn.serviceOffline': 'Service offline',
+      'conn.connected': 'Connected',
+      'conn.serverUnreachable': 'Server unreachable',
+
+      // Common / relative time / units
+      'common.dash': '—',
+      'common.loading': 'Loading…',
+      'common.refresh': 'Refresh',
+      'common.cancel': 'Cancel',
+      'common.save': 'Save',
+      'common.done': 'Done',
+      'common.reset': 'Reset',
+      'common.retry': 'Retry',
+      'common.back': 'Back',
+      'common.next': 'Next',
+      'common.on': 'on',
+      'common.off': 'off',
+      'common.default': 'default',
+      'common.enabledOn': 'On',
+      'common.enabledOff': 'Off',
+      'common.errorPrefix': 'Error: {err}',
+      'common.failedPrefix': 'Failed: {err}',
+      'common.unknownError': 'unknown error',
+      'time.now': 'now',
+      'time.secsAgo': '{n}s ago',
+      'time.minsAgo': '{n}m ago',
+      'time.hoursAgo': '{n}h ago',
+      'time.daysAgo': '{n}d ago',
+      'time.lessThanMinAgo': 'less than a minute ago',
+      'time.minAgo': '{n} min ago',
+      'time.hourAgo': '{n} h ago',
+      'time.shortSecs': '{n}s',
+      'time.shortMins': '{n} min',
+      'time.shortHours': '{n} h',
+
+      // Overview
+      'ov.title': 'Overview',
+      'ov.sub': 'This device and its place in your MeshHarbor network.',
+      'ov.notEnrolled.title': 'Not enrolled',
+      'ov.notEnrolled.body':
+        "This device isn't part of a MeshHarbor network yet. Enroll it with a token from a tenant admin.",
+      'ov.notEnrolled.btn': 'Set up this device',
+      'ov.grantSystem.title': "This device runs with your user's rights only",
+      'ov.grantSystem.body':
+        'Your account on this computer is an administrator, so MeshHarbor can run as a system service (Administrator / root, the default for a new sign-in): commands and SSH get full rights, and the device stays reachable when nobody is signed in. Your operating system asks for approval once.',
+      'ov.grantSystem.btn': 'Grant administrator rights…',
+      'ov.grantSystem.hint':
+        'Sign in to your account from the tray menu ("Sign in…"): signing in grants these rights too.',
+      'ov.grantSystem.waiting': 'Waiting for your operating system to approve…',
+      'ov.grantSystem.needSignIn':
+        'Sign in to your account first: tray menu → "Sign in…". Signing in grants these rights too.',
+      'ov.grantSystem.notGranted': 'Not granted: {err}',
+      'ov.perms.title': 'macOS permissions needed',
+      'ov.perms.body':
+        'macOS does not report an error when these are missing — the screen streams as wallpaper only, and remote clicks and keys do nothing.',
+      'ov.perms.screen': 'Screen Recording — the remote screen will be blank',
+      'ov.perms.input': 'Accessibility — remote keyboard and mouse will do nothing',
+      'ov.perms.grant': 'Grant',
+      'ov.perms.restart': 'After enabling a toggle, restart the agent for it to take effect.',
+      'ov.perms.openFailed': 'Could not open the permission pane: {err}',
+      'ov.attention.title': 'Attention required',
+      'ov.attention.noDetails': '(no details recorded)',
+      'ov.attention.reenroll': 'Re-enroll this device…',
+      'ov.device.title': 'This device',
+      'ov.device.enrolled': 'Enrolled',
+      'ov.device.notEnrolled': 'Not enrolled',
+      'ov.device.name': 'Device name',
+      'ov.device.overlayIp': 'Overlay IP',
+      'ov.device.noOverlayIp': '(no overlay IP)',
+      'ov.device.server': 'Server',
+      'ov.device.serverLink': 'Server link',
+      'ov.device.linkOffline': 'service offline',
+      'ov.device.linkConnected': 'connected',
+      'ov.device.linkDisconnected': 'disconnected',
+      'ov.device.service': 'Service',
+      'ov.device.serviceSystemRunning': 'System service · running',
+      'ov.device.serviceSystemStopped': 'System service · stopped',
+      'ov.device.serviceUserRunning': 'Per-user auto-start · running',
+      'ov.device.serviceUser': 'Per-user auto-start',
+      'ov.device.serviceNotInstalled': 'not installed',
+      'ov.device.appVersion': 'App version',
+      'ov.device.serviceVersion': 'Service version',
+      'ov.device.network': 'Network',
+      'ov.device.counts': '{online} of {total} devices online',
+      'ov.device.countsRoutes': ' · {routes} routes active',
+      'ov.device.magicDns': 'MagicDNS',
+      'ov.device.dnsResolverDown': 'resolver DOWN',
+      'ov.device.dnsSteerFailed': 'OS steer failed',
+      'ov.device.dnsBypassed': 'steered but bypassed: {why}',
+      'ov.device.dnsActive': 'active',
+      'ov.device.dnsAaaaOff': ' · AAAA off',
+      'ov.device.openWeb': 'Open MeshHarbor',
+      'ov.device.openWebFailed': 'Could not open MeshHarbor: {err}',
+      'ov.exit.title': 'Exit node',
+      'ov.exit.routingVia': 'Routing via',
+      'ov.exit.status': 'Status',
+      'ov.exit.active': 'Active',
+      'ov.exit.withheld': 'Withheld',
+      'ov.exit.socksOnly':
+        'only SOCKS5 clients of 127.0.0.1:{port} use the exit (IPv4 destinations) · nothing else on this device does',
+      'ov.exit.v6Blackholed': 'IPv6 blackholed (exit is v4-only)',
+      'ov.exit.dnsNotSteered': 'DNS not steered — queries may leak locally',
+      'ov.exit.routingCaveats': 'routing active · {caveats}',
+      'ov.exit.routingAll': 'all traffic routes via the exit node',
+      'ov.exit.notActive': 'not active',
+      'ov.enc.title': 'Hardware video encoding',
+      'ov.enc.legendHw': 'hardware',
+      'ov.enc.legendSw': 'software',
+      'ov.enc.legendDenied': 'denied by',
+      'ov.enc.rawSummary': 'As advertised to viewers',
+      'ov.enc.encoders': 'Encoders',
+      'ov.enc.codecs': 'Codecs',
+      'ov.enc.codecCol': 'Codec',
+      'ov.enc.chipUnavailable': 'Unavailable',
+      'ov.enc.chipOffline': 'Offline',
+      'ov.enc.chipError': 'Error',
+      'ov.enc.chipNone': 'None',
+      'ov.enc.chipNotProbed': 'Not probed yet',
+      'ov.enc.chipUnknown': 'Unknown',
+      'ov.enc.chipHardware': 'Hardware',
+      'ov.enc.chipSoftwareOnly': 'Software only',
+      'ov.enc.chipNoEncoder': 'No encoder',
+      'ov.enc.noteOldDaemon': 'The device service predates this view — update the service to see this.',
+      'ov.enc.noteOffline': 'The device service is not running.',
+      'ov.enc.noteError': 'Could not read the encoders: {reason}',
+      'ov.enc.noteUnsupported': 'This build of the device service has no video encoders (signalling only).',
+      'ov.enc.noteNotProbed':
+        'The service tests its encoders when it first connects to the server. Checking again every {secs} s.',
+      'ov.enc.noteUnknown': 'The service answered with a state this app does not know ({state}).',
+      'ov.enc.noteNoEncoder': 'No encoder opened on this device — remote sessions cannot stream video.',
+      'ov.enc.cellTipHw': 'Hardware {codec} on {backend}',
+      'ov.enc.cellTipSw': 'Software {codec} on {backend}',
+      'ov.enc.cellTipDenied': 'Denied by encoder_cells_deny ({entry}) — never opened',
+      'ov.enc.probedIn': 'probed in {ms} ms',
+      'ov.enc.probeCached': 'from the probe cache',
+      'ov.enc.probeFresh': 'fresh probe',
+      'ov.enc.preference': 'preference: {pref}',
+      'ov.enc.deniedList': 'Denied by encoder_cells_deny: {list}',
+      'ov.enc.deniedNone': 'encoder_cells_deny: nothing denied',
+      'ov.files.title': 'Incoming files',
+      'ov.files.sub': 'Where files dropped onto this device during a remote session land.',
+      'ov.files.folder': 'Folder',
+      'ov.files.setting': 'Setting',
+      'ov.files.open': 'Open folder',
+      'ov.files.change': 'Change…',
+      'ov.files.useDefault': 'Use default',
+      'ov.files.chipOffline': 'Offline',
+      'ov.files.chipError': 'Error',
+      'ov.files.chipUnavailable': 'Unavailable',
+      'ov.files.chipDefault': 'Default',
+      'ov.files.chipNotInUse': 'Not in use',
+      'ov.files.chipCustom': 'Custom',
+      'ov.files.noteOffline': 'The device service is not running.',
+      'ov.files.noteError': 'Could not read the setting: {reason}',
+      'ov.files.noteUnsupported':
+        'The device service predates this setting — update the service to choose where incoming files land.',
+      'ov.files.settingDefault': "Default — the signed-in user's Downloads folder",
+      'ov.files.perUserSuffix': ' (inside the profile of whoever is signed in)',
+      'ov.files.noteNotInUse':
+        'The chosen folder cannot be used right now, so files land in the default folder instead. The service log says why.',
+      'ov.files.defaultFolderWord': 'the default folder',
+      'ov.files.savedRestart': 'Saved: {where} — takes effect after the service restarts.',
+      'ov.files.savedLive': 'Saved: {where} — in effect now, for the next file dropped.',
+      'ov.files.backDefaultRestart': 'Back to the default folder after the service restarts.',
+      'ov.files.backDefaultLive': 'Back to the default folder — in effect now.',
+      'ov.updates.title': 'Updates',
+      'ov.updates.check': 'Check for updates',
+      'ov.updates.install': 'Install update',
+      'ov.updates.checking': 'Checking for updates…',
+      'ov.updates.applying': 'Applying update…',
+      'ov.updates.started': 'Update started.',
+
+      // Account view
+      'acc.title': 'My devices & sharing',
+      'acc.sub':
+        "Your personal device inventory and the centre's authoritative sharing records — separate from this node's organization network.",
+      'acc.cardTitle': 'Personal account',
+      'acc.cardBody':
+        'Sign in inside the built-in account window. See device counts, shares received and sent, permissions, creation/expiry times and revocations. Revoked and expired records remain visible.',
+      'acc.btnDevices': 'My devices & counts',
+      'acc.btnReceived': 'Shared with me',
+      'acc.btnSent': 'Shared by me',
+      'acc.footnote':
+        "Account sign-in and sharing permissions are enforced by the centre. This window never borrows the device service's credentials. Desktop/file sessions use the existing supported viewer or browser.",
+      'acc.openError': 'Cannot open the account centre. Check this device’s server URL and try again.',
+
+      // Devices view + grid + mesh
+      'dv.title': 'Devices',
+      'dv.sub':
+        'The devices your private network lets this one see — itself included — and how it reaches each of them right now.',
+      'dv.unavailable.title': 'Device service not running',
+      'dv.unavailable.body':
+        "The MeshHarbor service isn't running on this machine, so live device state is unavailable.",
+      'dv.searchPlaceholder': 'Search name, tag, IP, MagicDNS…',
+      'dv.searchAria': 'Search devices',
+      'dv.orgAria': 'Organization',
+      'dv.rows': 'Rows',
+      'dv.rowsAria': 'Rows per page',
+      'dv.columns': 'Columns',
+      'dv.columnsTitle': 'Show, hide and reorder columns',
+      'dv.columnsHint':
+        'Tick to show a column; drag a row or use ▲ ▼ to reorder. Saved per organization on this computer.',
+      'dv.prev': '‹ Prev',
+      'dv.prevAria': 'Previous page',
+      'dv.next': 'Next ›',
+      'dv.nextAria': 'Next page',
+      'dv.mesh.title': 'Mesh',
+      'dv.mesh.loading': 'Loading the mesh graph…',
+      'dv.mesh.aria': 'Mesh graph',
+      'dv.mesh.svgTitle':
+        'Private network: this device, the devices it can see, and how they reach each other',
+      'dv.mesh.carrier.direct': 'Direct',
+      'dv.mesh.carrier.relay': 'TURN relay',
+      'dv.mesh.carrier.derp': 'DERP',
+      'dv.mesh.carrier.tunnel': 'Tunnel',
+      'dv.mesh.carrier.blocked': 'Blocked',
+      'dv.mesh.offlineDevices': 'Offline devices ({n})',
+      'dv.mesh.stalledSuffix': ' · stalled',
+      'dv.mesh.stalled': 'stalled',
+      'dv.mesh.oneSided': 'one-sided — only one end reported',
+      'dv.mesh.thisDeviceSuffix': ' (this device)',
+      'dv.mesh.online': 'online',
+      'dv.mesh.offline': 'offline',
+      'dv.mesh.home': 'home {relay}',
+      'dv.mesh.legendCount': '{devices} · {links} shown',
+      'dv.mesh.deviceOne': '{n} device',
+      'dv.mesh.deviceMany': '{n} devices',
+      'dv.mesh.linkOne': '{n} link',
+      'dv.mesh.linkMany': '{n} links',
+      'dv.mesh.legendAsymPre': ' · {n} asymmetric ',
+      'dv.mesh.legendAsymPost': ' two colours = each side’s own carrier',
+      'dv.mesh.needsNewer': 'The mesh graph needs a newer {what}.',
+      'dv.mesh.statsOff': 'This server has usage statistics turned off, so there is no mesh graph to show.',
+      'dv.mesh.stale': 'Showing the graph from {ago} — {msg}',
+      'dv.mesh.loadFailed': 'Couldn’t load the mesh graph — {msg}',
+      'dv.mesh.emptyNoNode': 'This device isn’t on your private network, so there is no mesh to draw.',
+      'dv.mesh.emptyNoNetwork': 'Your organization has no private network yet, so there is no mesh to draw.',
+      'dv.mesh.emptyUnavailable': 'This server has no private-network module, so there is no mesh to draw.',
+      'dv.mesh.emptyDefault': 'No devices on your private network yet.',
+      'dv.col.actions': 'Actions',
+      'dv.col.name': 'Name',
+      'dv.col.connection': 'Connection',
+      'dv.col.ping': 'Ping',
+      'dv.col.status': 'Status',
+      'dv.col.os': 'OS',
+      'dv.col.version': 'Version',
+      'dv.col.location': 'Public IP & Location',
+      'dv.col.overlayIp': 'Overlay IP',
+      'dv.col.magicDns': 'MagicDNS',
+      'dv.col.tags': 'Tags',
+      'dv.col.kind': 'Kind',
+      'dv.col.lastSeen': 'Last seen',
+      'dv.grid.sortBy': 'Sort by {col}',
+      'dv.grid.dragReorder': 'Drag to reorder',
+      'dv.grid.alwaysShown': ' (always shown)',
+      'dv.grid.moveUp': 'Move {col} up',
+      'dv.grid.moveDown': 'Move {col} down',
+      'dv.conn.direct': 'Direct',
+      'dv.conn.relay': 'Relay',
+      'dv.conn.tunnel': 'Tunnel',
+      'dv.conn.blocked': 'Blocked',
+      'dv.conn.offline': 'Offline',
+      'dv.conn.stalled': 'Stalled',
+      'dv.presence.online': 'online',
+      'dv.presence.stale': 'stale',
+      'dv.presence.offline': 'offline',
+      'dv.kind.tunnel': 'tunnel',
+      'dv.kind.device': 'device',
+      'dv.action.connect': 'Connect',
+      'dv.action.connectTip': 'Remote control (does not lock the remote screen)',
+      'dv.action.moreTip': 'More ways to connect (RDP)',
+      'dv.action.connectRdp': 'Connect with RDP',
+      'dv.action.connectRdpTip':
+        'Open the system RDP client (an RDP session locks the remote computer’s local screen)',
+      'dv.action.rdpMeshHint': 'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).',
+      'dv.action.rdpConfirmAria': 'Confirm RDP connection',
+      'dv.action.rdpConfirmText': 'An RDP session locks the remote computer’s local screen.',
+      'dv.action.rdpUnpinnedNote':
+        'This device reported no certificate fingerprint; the RDP client will check the certificate itself.',
+      'dv.viewerNoteBrowserTab':
+        'The remote screen opened in a tab of your default browser. Install Chrome, Edge, Chromium or Brave and it opens in a window of its own.',
+      'dv.dot.selfConnected': 'connected to the server',
+      'dv.dot.selfDisconnected': 'not connected to the server',
+      'dv.dot.peerOnline': 'reachable on the private network',
+      'dv.dot.peerOffline': 'not reachable right now',
+      'dv.dot.serverPresence': 'server: {presence}',
+      'dv.chip.thisDevice': 'this device',
+      'dv.chip.ephemeral': 'ephemeral',
+      'dv.chip.ephemeralTip': 'Removes itself after inactivity or on a clean shutdown; removal is final',
+      'dv.chip.zonePinned': 'Logical network zone: {zone} (pinned — locked regardless of GeoIP)',
+      'dv.chip.zoneAuto': 'Logical network zone: {zone} (auto-matched by public IP location)',
+      'dv.peerNotInList': 'Not in this device’s live peer list',
+      'dv.ping.tip': 'Ping {ip} over the private network',
+      'dv.ping.noIp': 'No overlay address to ping',
+      'dv.ping.failed': 'failed — {msg}',
+      'dv.copyIpTip': 'Click to copy public IP ({ip})',
+      'dv.legacy.daemon': 'device service',
+      'dv.legacy.server': 'server',
+      'dv.note.loading': 'Loading the device list…',
+      'dv.note.legacy':
+        'Showing only the devices this one reaches directly — update the {what} to see every device your private network lets it see.',
+      'dv.note.stale': 'Showing data from {ago} — {msg}{retry}',
+      'dv.note.failedFallback':
+        'Couldn’t get the device list — {msg}. Showing the devices this one reaches directly{retry}',
+      'dv.note.retryingIn': ' (retrying in {secs} s).',
+      'dv.note.noNode':
+        'This device isn’t on your private network, so it lists only itself. Turn the private network on (Settings → overlay_enabled) to see the devices it can reach.',
+      'dv.note.noNetwork': 'Your organization has no private network yet, so only this device is listed.',
+      'dv.note.unavailable': 'This server has no private-network module, so only this device is listed.',
+      'dv.note.noSearchMatch': 'No devices match “{q}”.',
+      'dv.note.aclEmpty': 'Your organization’s access rules (ACL enforce) let this device see no other device.',
+      'dv.note.noOthers': 'No other devices are on your private network yet.',
+      'dv.pager.range': '{from}–{to} of {total}',
+      'dv.pager.totalOne': '{n} device',
+      'dv.pager.totalMany': '{n} devices',
+      'dv.org.primarySuffix': ' (primary)',
+      'dv.org.disabledSuffix': ' — disabled',
+
+      // Routes (Tunnels) view
+      'tn.title': 'Routes',
+      'tn.sub':
+        'Declared routes are supervised by the device service — they come back on every restart until removed.',
+      'tn.declaredTitle': 'Declared routes',
+      'tn.empty': 'No declared routes yet — add one below.',
+      'tn.col.id': 'ID',
+      'tn.col.kind': 'Kind',
+      'tn.col.local': 'Local',
+      'tn.col.remote': 'Remote',
+      'tn.col.device': 'Device',
+      'tn.col.state': 'State',
+      'tn.col.target': 'Target',
+      'tn.col.transport': 'Transport',
+      'tn.col.conns': 'Conns',
+      'tn.col.traffic': 'Traffic',
+      'tn.form.addSummary': 'Add route…',
+      'tn.form.editSummary': 'Edit route {id}',
+      'tn.form.targetDevice': 'Target device',
+      'tn.form.customNodePlaceholder': '24-hex agent id',
+      'tn.form.otherDevice': 'Other device (enter agent id)…',
+      'tn.form.offlineSuffix': ' (offline)',
+      'tn.form.localPort': 'Local port',
+      'tn.form.remote': 'Remote (host:port — leave empty for SOCKS5)',
+      'tn.form.transport': 'Transport',
+      'tn.form.transportAuto': 'auto',
+      'tn.form.routeId': 'Route id (optional)',
+      'tn.form.routeIdPlaceholder': 'generated when empty',
+      'tn.form.addBtn': 'Add route',
+      'tn.form.saveBtn': 'Save changes',
+      'tn.form.pickNodeErr': 'Pick a target device (or enter its agent id).',
+      'tn.flowsTitle': 'Live forwards',
+      'tn.staleOne': 'live data unavailable since {since} · {n} failure · {reason}',
+      'tn.staleMany': 'live data unavailable since {since} · {n} failures · {reason}',
+      'tn.noResponse': 'no response',
+      'tn.state.disabled': 'disabled',
+      'tn.state.connecting': 'connecting',
+      'tn.state.pending': 'pending',
+      'tn.state.active': 'active',
+      'tn.state.retryingFlow': 'retrying ({n}{next}) — {err}',
+      'tn.state.nextIn': ', next in {secs}s',
+      'tn.state.retryingBind': 'retrying in {secs}s: {err}',
+      'tn.state.failed': 'FAILED: {reason}',
+      'tn.state.deviceOffline': '{state} · device offline',
+      'tn.btn.disable': 'Disable',
+      'tn.btn.enable': 'Enable',
+      'tn.btn.edit': 'Edit',
+      'tn.btn.remove': 'Remove',
+
+      // Recordings + Editor view
+      'rec.title': 'Recordings',
+      'rec.sub': 'Record this screen to a high-quality video file. Recordings stay on this device, in the folder below.',
+      'rec.controlTitle': 'Record this screen',
+      'rec.notRecording': 'Not recording.',
+      'rec.frameRate': 'Frame rate',
+      'rec.encoder': 'Encoder',
+      'rec.encoderAuto': 'Automatic (GPU, else software)',
+      'rec.encoderHw': 'GPU only',
+      'rec.encoderSw': 'Software only',
+      'rec.computerAudio': 'Computer audio',
+      'rec.microphone': 'Microphone',
+      'rec.start': 'Start recording',
+      'rec.starting': 'Starting…',
+      'rec.stop': 'Stop recording',
+      'rec.finishing': 'Finishing the file…',
+      'rec.folderTitle': 'Where recordings are saved',
+      'rec.folderChosen': 'A folder you chose.',
+      'rec.folderDefault': 'The default folder.',
+      'rec.folderReason': 'Not the usual folder: {reason}.',
+      'rec.folderChange': 'Change folder…',
+      'rec.folderUseDefault': 'Use the default folder',
+      'rec.folderOpen': 'Open folder',
+      'rec.remoteTitle': 'Recording by a remote controller',
+      'rec.remoteDesc':
+        'Off unless you turn it on. When on, someone controlling this device through MeshHarbor may ask to record the screen. The recording is saved on this device, a banner shows while it runs, and you can stop it at any time. Your microphone is never recorded remotely.',
+      'rec.remoteAllow': 'Allow remote recording',
+      'rec.remoteAudio': 'Include computer audio',
+      'rec.remoteAudioUnavailable': "Computer audio can't be included: {reason}.",
+      'rec.savedTitle': 'Saved recordings',
+      'rec.empty': 'No recordings yet.',
+      'rec.col.name': 'Name',
+      'rec.col.recorded': 'Recorded',
+      'rec.col.length': 'Length',
+      'rec.col.size': 'Size',
+      'rec.col.by': 'By',
+      'rec.byRemote': 'Remote',
+      'rec.byThisDevice': 'This device',
+      'rec.endedTip': 'Ended: {reason}',
+      'rec.btn.play': 'Play',
+      'rec.btn.edit': 'Edit',
+      'rec.btn.show': 'Show',
+      'rec.btn.delete': 'Delete',
+      'rec.btn.confirmDelete': 'Confirm delete',
+      'rec.live.forRemote': 'Recording for {who} (remote)',
+      'rec.live.local': 'Recording',
+      'rec.live.audioBoth': 'computer audio + microphone',
+      'rec.live.audioSystem': 'computer audio',
+      'rec.live.audioMic': 'microphone',
+      'rec.unavailable': 'Recording is not available here: {reason}.',
+      'rec.noReasonGiven': 'no reason given',
+      'rec.sysAudioUnavailable': 'Computer audio is not available here: {reason}.',
+      'rec.bannerUnavailable': 'Live data unavailable — {why}.',
+      'rec.bannerUnavailableLastGood': 'Live data unavailable — {why}. Showing the last good data.',
+      'rec.bannerNoAnswer': 'the device service did not answer',
+      'rec.bannerUnsupported': 'This device service has no screen recorder yet — update it to record.',
+      'rec.last.head': 'Last recording: {duration}, {size}',
+      'rec.last.didNotStart': 'The last recording did not start',
+      'rec.end.requested': 'stopped',
+      'rec.end.host_stopped': 'stopped on this device',
+      'rec.end.session_ended': 'the remote session ended',
+      'rec.end.session_changed': 'the signed-in user changed',
+      'rec.end.display_changed': 'the display changed size',
+      'rec.end.disk_low': 'the disk was nearly full',
+      'rec.end.max_duration': 'it reached the maximum length',
+      'rec.end.encoder_failed': 'the video encoder failed',
+      'rec.end.capture_failed': 'screen capture failed',
+      'rec.end.gate_revoked': 'remote recording was switched off',
+      'rec.end.parent_gone': 'the device service stopped',
+      'rec.end.interrupted': 'it was cut off, and recovered afterwards',
+      'rec.end.recorder_exited': 'the recorder exited unexpectedly',
+      'rec.end.start_timeout': 'the recorder did not start in time',
+      'rec.end.no_frame': 'no picture came from the screen',
+      'rec.end.encoder_unavailable': 'no video encoder could be opened',
+      'rec.end.folder_unwritable': 'the folder could not be written',
+      'rec.end.audio_unavailable': 'this device cannot record audio',
+      'rec.end.system_audio_unavailable': 'computer audio could not be captured on this device',
+      'rec.end.mic_unavailable': 'the microphone could not be opened',
+      'rec.end.audio_failed': 'the audio failed, and the rest was recorded without it',
+      'rec.end.unknown': 'unknown',
+
+      // Recording editor
+      'ed.back': '← Recordings',
+      'ed.title': 'Edit',
+      'ed.titleName': 'Edit {name}',
+      'ed.play': 'Play',
+      'ed.pause': 'Pause',
+      'ed.timelineAria': 'Timeline: click a piece to select it',
+      'ed.split': 'Split at the playhead',
+      'ed.keep': 'Keep',
+      'ed.cut': 'Cut',
+      'ed.speedAria': 'Speed',
+      'ed.speedUp': 'Speed up',
+      'ed.seg.cut': 'cut',
+      'ed.seg.kept': 'kept',
+      'ed.selected': 'Selected: {start}–{end}, {label}.',
+      'ed.soundTitle': 'Sound',
+      'ed.origVolume': "The recording's sound",
+      'ed.noSound': 'This recording has no sound of its own.',
+      'ed.speedMuteNote': 'Muted where a piece is sped up: sped-up speech is noise. Music plays on under it.',
+      'ed.musicAdd': 'Add music…',
+      'ed.musicChange': 'Change music…',
+      'ed.musicRemove': 'Remove music',
+      'ed.musicVolume': 'Volume',
+      'ed.musicStartsAt': 'Starts at',
+      'ed.musicFadeIn': 'Fade in',
+      'ed.musicFadeOut': 'Fade out',
+      'ed.musicLoop': 'Loop',
+      'ed.exportTitle': 'Export',
+      'ed.exportSub': 'A new file beside the recording. The recording itself is never changed.',
+      'ed.exportBtn': 'Export',
+      'ed.exportCancel': 'Cancel export',
+      'ed.exportSummary': 'The export: {out} of {total}',
+      'ed.exportNothing': 'Everything is cut: there is nothing to export.',
+      'ed.exporting': 'Exporting… {pct} %',
+      'ed.resultShow': 'Show in folder',
+      'ed.saved': 'Your edits are saved beside the recording.',
+      'ed.saveFailed': 'The edits could not be saved: {err}',
+      'ed.splitTooClose': 'Move the playhead further into a piece to split it there.',
+      'ed.noPreview': 'No preview: {err}. The timeline and the export still work.',
+      'ed.cannotPlay': 'This system cannot play the recording here. The timeline and the export still work.',
+      'ed.openFailed': 'This recording cannot be opened for editing: {err}.',
+      'ed.notEditable': 'This recording cannot be edited here: {reason}.',
+      'ed.editsNotFit': 'The saved edits did not fit this recording{err}: starting from the whole recording.',
+      'ed.doneText': 'Saved as {file} — {duration}, {size}, with {sound}.',
+      'ed.sound.none': 'no sound',
+      'ed.sound.original': "the recording's sound",
+      'ed.sound.music': 'the music',
+      'ed.sound.original_and_music': "the recording's sound and the music",
+      'ed.sound.not_carried': 'no sound: this device cannot encode audio',
+      'ed.refusal.bad_edit_list': 'the edits cannot be followed',
+      'ed.refusal.source_unreadable': 'the recording cannot be read',
+      'ed.refusal.decoder_unavailable':
+        'this recording was made with the GPU encoder, and this device has no decoder for it',
+      'ed.refusal.encoder_unavailable': 'no video encoder could be opened',
+      'ed.refusal.decode_failed': 'the recording could not be decoded',
+      'ed.refusal.write_failed': 'the new file could not be written',
+      'ed.refusal.music_unreadable': 'the music file cannot be read',
+      'ed.refusal.audio_unavailable': 'this device cannot put sound in a video',
+      'ed.refusal.cancelled': 'the export was cancelled',
+      'ed.refusal.engine_failed': 'the export stopped unexpectedly',
+
+      // Settings view
+      'st.title': 'Settings',
+      'st.sub': 'Device identity, service management and file locations.',
+      'st.lang.title': 'Language',
+      'st.lang.desc': 'Applies to this companion window, panels, and the system tray menu.',
+      'st.split.title': 'Two configurations found',
+      'st.split.body':
+        'Both a machine-wide and a per-user configuration exist on this machine. The service uses the one shown under Files below — the other copy is likely stale.',
+      'st.split.btn': 'Clean up the stale copy',
+      'st.split.note':
+        'The device service archives the stale file (never deletes) — only when both copies carry the same device identity.',
+      'st.rename.title': 'Device name',
+      'st.rename.placeholder': '(loading current name…)',
+      'st.rename.btn': 'Rename device',
+      'st.rename.defaultHint':
+        'Names synchronize live. Offline proposals wait for the server; newer website changes take precedence.',
+      'st.rename.scmHint':
+        "This device runs a machine-wide service — the rename is applied through the device service. Administrator rights are only needed if the service isn't running.",
+      'st.rename.pending': 'Name proposal queued; waiting for the server. Current name: {name}',
+      'st.rename.failed':
+        'Name not changed: {err}. Review and submit again. Current name: {name}',
+      'st.rename.syncFailed': 'synchronization failed',
+      'st.rename.unsupported': 'Server does not support name synchronization; proposal not applied.',
+      'st.rename.synced': 'Name synchronized with the server.',
+      'st.rename.legacy': 'Live synchronization requires a connected, compatible daemon.',
+      'st.rename.queued': 'Name proposal queued; the canonical name changes after server acceptance.',
+      'st.rename.err': 'Rename failed: {err}',
+      'st.enroll.title': 'Enrollment',
+      'st.enroll.body':
+        'Need a new token (revoked/expired)? Re-enrollment moved to the Onboarding view — server URL and device name are preserved there.',
+      'st.enroll.btn': 'Open Onboarding',
+      'st.autostart.title': 'Start at login',
+      'st.autostart.check': 'Start MeshHarbor when I sign in',
+      'st.autostart.tourBtn': 'Open the Welcome tour',
+      'st.service.title': 'Background service',
+      'st.service.status': 'Status',
+      'st.service.install': 'Install auto-start',
+      'st.service.uninstall': 'Remove auto-start',
+      'st.service.note':
+        'Auto-start runs the device service at login (per-user install). Machine-wide service installs are managed by the MeshHarbor Setup installer.',
+      'st.service.installed': 'Auto-start installed.',
+      'st.service.installFailed': 'Install failed: {err}',
+      'st.service.removed': 'Auto-start removed.',
+      'st.service.removeFailed': 'Removal failed: {err}',
+      'st.cfg.title': 'Device configuration',
+      'st.cfg.sub':
+        "Per-device options — the essentials first, the rest grouped. Changes are saved to this device's configuration; each key says whether it takes effect at once or after the service restarts.",
+      'st.cfg.searchPlaceholder': 'Search keys and descriptions…',
+      'st.cfg.essentials': 'Essentials',
+      'st.cfg.essentialsHint': 'The switches most people decide on. Everything else is below, grouped.',
+      'st.cfg.modified': 'modified',
+      'st.cfg.changedCount': '{n} changed',
+      'st.cfg.keyOne': '{n} key',
+      'st.cfg.keyMany': '{n} keys',
+      'st.cfg.matchNone': 'No keys match.',
+      'st.cfg.matchOne': '{n} key matches',
+      'st.cfg.matchMany': '{n} keys match',
+      'st.cfg.savedRestart': 'Saved — takes effect after the service restarts.',
+      'st.cfg.savedLive': 'Saved — in effect now, no restart needed.',
+      'st.cfg.loadFailed': 'Could not load the configuration: {err}',
+      'st.cfg.listPlaceholder': 'e.g. 192.168.1.0/24, 10.0.0.0/8',
+      'st.restart.one': '1 change takes effect after the service restarts.',
+      'st.restart.many': '{n} changes take effect after the service restarts.',
+      'st.restart.applyNow': 'Apply now',
+      'st.restart.applyNowTip': 'Restart the device service so the saved changes take effect',
+      'st.restart.predates': 'This service predates Apply now — restart it from Background service.',
+      'st.restart.refused': 'Not restarted — {refusal}',
+      'st.restart.asking': 'Asking the service to restart…',
+      'st.restart.askFailed': 'Could not ask the service to restart: {err}',
+      'st.restart.restartingCaller': 'Restarting the service — starting it again…',
+      'st.restart.restartingSup': 'Restarting the service ({supervisor})…',
+      'st.restart.notBack': 'The service has not come back: {err} — check Background service.',
+      'st.restart.done': 'Service restarted — your changes are in effect.',
+      'st.files.title': 'Files',
+      'st.files.logs': 'Logs',
+      'st.files.config': 'Configuration',
+      'st.files.openLogs': 'Open logs folder',
+      'st.files.openConfig': 'Open config folder',
+      'st.files.openLogsFailed': 'Could not open the logs folder: {err}',
+      'st.files.openConfigFailed': 'Could not open the config folder: {err}',
+      'st.cleanup.done': 'Cleaned up: {detail}',
+      'st.cleanup.failed': 'Cleanup not performed: {err}',
+      'st.log.title': 'Service log',
+      'st.log.srcDaemon': 'Device service',
+      'st.log.srcService': 'Service host',
+      'st.log.srcPanic': 'Crash dumps',
+      'st.log.filterPlaceholder': 'filter, e.g. ERROR',
+      'st.log.follow': 'Follow',
+      'st.log.initial': '(press Refresh to load)',
+      'st.log.meta': '{path} · {size} bytes',
+      'st.log.noMatch': '(no matching lines)',
+      'st.log.readFailed': 'Could not read the log: {err}',
+
+      // Onboarding view
+      'ob.title': 'Onboarding',
+      'ob.sub':
+        'Enroll this device into a MeshHarbor network. Ask a tenant admin for an enrollment token (Admin → Devices → Generate enrollment token) — it is single-use and expires after 10 minutes.',
+      'ob.login.title': 'Sign in with your account',
+      'ob.login.body':
+        'Opens the MeshHarbor website in your browser. Approve this device there and it joins your organization; your devices then show under Devices. A new personal device enables supported owner services, including SSH and commands as its service account (possibly root / SYSTEM). Existing local OFF choices and operating-system permissions are retained. Features also require their components in the installed package; choosing permission does not install support.',
+      'ob.login.btn': 'Sign in…',
+      'ob.login.starting': 'Starting…',
+      'ob.login.cancel': 'Cancel sign-in',
+      'ob.login.fillDeviceName': 'Fill in the device name first.',
+      'ob.login.opened': 'Approve this device in the browser window that just opened.',
+      'ob.login.openLink': 'Open this link and approve the device:',
+      'ob.login.showCode': 'The page must show the code {code}. Waiting for approval…',
+      'ob.login.failed': 'Sign-in failed: {err}',
+      'ob.join.title': 'Join with an invite code',
+      'ob.join.body':
+        'Someone gave you an 8-digit code. You see who it is from and for how long before you accept. Only they can reach this machine, it cannot reach theirs, and their access ends by itself when the time is up. This machine keeps its own sign-in and any other invitations.',
+      'ob.join.codeLabel': 'Invite code',
+      'ob.join.btn': 'Join',
+      'ob.join.checking': 'Checking…',
+      'ob.join.joining': 'Joining…',
+      'ob.join.accept': 'Accept',
+      'ob.join.badCode': 'An invite code is 8 digits, like 1234-5678.',
+      'ob.join.unsupportedServer': 'Update the server first: it cannot enforce selected invitation features.',
+      'ob.join.checkFailed': 'Could not check the code: {err}',
+      'ob.join.previewLine': '{from} invites this device for {remaining} (until {until}).',
+      'ob.join.previewHint':
+        'Choose what this invitation may access. It cannot initiate access to their devices. You can change the selection here or leave at any time from the tray menu.',
+      'ob.join.failed': 'Could not join: {err}',
+      'ob.held.title': 'Invitations this device holds',
+      'ob.held.body':
+        'You choose the exposed features. Saving briefly interrupts existing MeshHarbor-managed connections and foreground commands across ALL organizations on this device; their authorization settings stay unchanged. It does not undo completed commands or deliberately detached tasks. Cleanup must be confirmed before pending revocation is cleared.',
+      'ob.held.refresh': 'Refresh invitations',
+      'ob.held.none': 'No invitation is recorded on this device.',
+      'ob.held.fallbackTitle': 'Invitation',
+      'ob.held.until': '{who} · until {when}',
+      'ob.held.revocationPending':
+        'New authorizations are updated. Revocation of existing SSH / command sessions is still unconfirmed; restarting the device agent does not confirm its separate system service has closed them.',
+      'ob.held.legacyNote':
+        'Legacy invitation: its prior feature scope was not recorded. Choose an explicit scope before saving; no features are preselected.',
+      'ob.held.saveRetry': 'Save / retry confirmed cleanup',
+      'ob.held.saveFeatures': 'Save features and restart connections',
+      'ob.held.saving':
+        'Saving and interrupting managed connections / foreground commands across ALL organizations on this device. Other authorization settings stay unchanged; completed command effects and deliberately detached tasks are not undone. Waiting for confirmed cleanup.',
+      'ob.held.notCompleted': 'Not fully completed: {err}',
+      'ob.held.readFailed': 'Could not read invitations: {err}',
+      'ob.feat.legend': 'Features this invitation may use',
+      'ob.feat.desktop_view': 'View screen',
+      'ob.feat.desktop_control': 'Control keyboard and mouse',
+      'ob.feat.clipboard': 'Clipboard',
+      'ob.feat.files': 'Read and write files',
+      'ob.feat.ssh': 'SSH shell (may run as root / SYSTEM)',
+      'ob.feat.exec': 'Run commands (may run as root / SYSTEM)',
+      'ob.feat.rdp': 'Remote Desktop (RDP)',
+      'ob.feat.network': 'Any network service, including system SSH / RDP',
+      'ob.feat.warning':
+        'SSH and commands can give full system privileges. Network access may reach other services even if their dedicated feature is off. This selects permission, not installed build support: missing capture/input/SSH components require a full package. Local OFF switches, administrator service policies and OS permissions still apply. You may narrow or revoke this invitation later.',
+      'ob.form.reenrollNote':
+        'This device is already enrolled — submitting refreshes its token. Server URL and device name are locked to the current enrollment.',
+      'ob.form.serverUrl': 'Server URL',
+      'ob.form.deviceName': 'Device name',
+      'ob.form.deviceNamePlaceholder': "will default to this machine's hostname",
+      'ob.form.token': 'Enrollment token',
+      'ob.form.enrollBtn': 'Enroll this device',
+      'ob.form.reenrollBtn': 'Re-enroll this device',
+      'ob.form.enrolling': 'Enrolling…',
+      'ob.form.reenrolling': 'Re-enrolling…',
+      'ob.form.pasteToken': 'Paste a fresh enrollment token.',
+      'ob.form.fillAll': 'Fill all three fields.',
+      'ob.form.enrolledHead': 'Enrolled.',
+      'ob.form.enrolledDetail': 'device {agentId} · tenant {tenantId}',
+      'ob.form.installAutostart': 'Install auto-start',
+      'ob.form.installing': 'Installing…',
+      'ob.form.autostartInstalled': 'Auto-start installed',
+      'ob.form.installFailed': 'Install failed: {err}',
+      'ob.form.continueTour': 'Continue the Welcome tour',
+      'ob.form.gotoOverview': 'Go to Overview',
+      'ob.form.reenrolledHead': 'Re-enrolled — token refreshed.',
+      'ob.form.reenrollFailed': 'Re-enrollment failed: {err}',
+      'ob.form.enrollFailed': 'Enrollment failed: {err}',
+
+      // Welcome tour
+      'wl.title': 'Welcome to MeshHarbor',
+      'wl.sub': 'A few choices, one at a time. You can change every one of them later in Settings.',
+      'wl.stepsAria': 'Welcome steps',
+      'wl.step.device': 'This device',
+      'wl.step.network': 'Private network',
+      'wl.step.consent': 'Screen access',
+      'wl.step.files': 'Received files',
+      'wl.step.login': 'Start at login',
+      'wl.step.done': 'Done',
+      'wl.dev.title': 'This device',
+      'wl.dev.enrolledPre': 'This computer is enrolled as ',
+      'wl.dev.enrolledMid': ' on ',
+      'wl.dev.enrolledPost': '.',
+      'wl.dev.notEnrolledTitle': 'Not enrolled yet',
+      'wl.dev.notEnrolledBody':
+        'To join your organisation, this computer needs an enrollment token from an admin (Admin → Devices → Generate enrollment token). You can also do this later.',
+      'wl.dev.enrollBtn': 'Enroll this device…',
+      'wl.dev.about':
+        'MeshHarbor runs in the background as a service. This app is how that service talks to you: it shows what the device is doing, and it is where a request to view your screen appears.',
+      'wl.dev.offline':
+        'The MeshHarbor service is not running on this computer right now, so the choices below are saved but cannot take effect until it starts.',
+      'wl.net.title': 'Your private network',
+      'wl.net.intro':
+        "MeshHarbor can join this computer to a private network with your other devices. It is a WireGuard mesh: your devices connect to each other with end-to-end encryption, directly when the network allows it and through a relay when it doesn't. The MeshHarbor server introduces them to each other but never sees what they send, and a relay only ever carries encrypted data.",
+      'wl.net.p1Head': 'What you get.',
+      'wl.net.p1Body': ' Reach your devices by name. Remote desktop, SSH and tunnels use this network.',
+      'wl.net.p2Head': 'What changes on this computer.',
+      'wl.net.p2Body':
+        " MeshHarbor adds a virtual network adapter, with routes for the network's own addresses (in the 100.64.0.0/10 range). If your admins have approved a subnet router (an office network reachable through one of your devices, say), its addresses go through the private network too. Your internet traffic is not rerouted.",
+      'wl.net.p3Head': 'Who can reach this computer.',
+      'wl.net.p3Body':
+        " Only devices in your organisation, and only as far as your organisation's access rules allow. When your admins enforce rules, anything they have not allowed is blocked.",
+      'wl.net.p4Head': 'Turning it off.',
+      'wl.net.p4Body': ' Settings → Private network, at any time.',
+      'wl.net.statusLabel': 'Status',
+      'wl.net.userTitle': 'Per-user installation',
+      'wl.net.macTitle': 'On a Mac',
+      'wl.net.btnEnable': 'Turn on the private network',
+      'wl.net.btnEnableUserspace': 'Turn on in userspace mode',
+      'wl.net.stateMacPriv': "Run by MeshHarbor's system service on this Mac",
+      'wl.net.stateMacNone': 'Not installed on this Mac',
+      'wl.net.stateOnOffline': 'On (the service is not running right now)',
+      'wl.net.stateOnIp': 'On — this computer is {ip}',
+      'wl.net.stateAfterRestart': 'On after the service restarts',
+      'wl.net.stateNotConnected': 'On, but not connected yet',
+      'wl.net.macPrivDesc':
+        'The private network runs in MeshHarbor\'s system service, which has its own enrollment (it appears among your devices with "-daemon" after its name). There is nothing to turn on here.',
+      'wl.net.macNoPrivDesc':
+        "On a Mac the private network runs in MeshHarbor's system service, which the installer adds when given a second enrollment token (install.sh --daemon-token). Screen sharing works without it.",
+      'wl.net.userMultiOrg':
+        "This is a per-user installation, and this computer is set to join several organisations' networks at once (overlay_multi_org). Userspace mode can serve only one, so the private network here needs the machine-wide MeshHarbor service (installed by an administrator).",
+      'wl.net.userUserspace':
+        'MeshHarbor was installed for your account only, so it cannot add a network adapter (that needs an administrator). It can join in userspace mode instead: remote desktop works as usual, and other apps reach your devices through a local SOCKS5 proxy on this computer.',
+      'wl.net.saving': 'Saving…',
+      'wl.net.waitingIp': 'Waiting for this computer to get its address (up to a minute)…',
+      'wl.net.connected': 'Connected. This computer is {ip} on your private network.',
+      'wl.net.connectedSocks':
+        ' Apps reach your devices through SOCKS5 127.0.0.1:{port}; remote desktop needs nothing.',
+      'wl.net.outcomeIp': 'On — {ip}',
+      'wl.net.outcomeNotConn': 'On, but not connected',
+      'wl.net.notRestarted': 'The service was not restarted.',
+      'wl.net.enableFailed': 'Could not turn it on: {err}',
+      'wl.net.noIpServiceDown': 'The MeshHarbor service did not come back. Settings → Service log says why.',
+      'wl.net.noIpRefused': 'The server did not add this computer to the network: {why}',
+      'wl.net.noIpNotConnected':
+        'The service is not connected to the MeshHarbor server yet, so it has no address to join with.',
+      'wl.net.noIpLogLine': 'No address after a minute. The service log says: {line}',
+      'wl.net.noIpTimeout': 'No address after a minute. Settings → Service log has the details.',
+      'wl.consent.title': 'Who may view this screen',
+      'wl.consent.body':
+        'When someone in your organisation asks to view or control this computer, MeshHarbor can let them in straight away, or ask you first.',
+      'wl.consent.check': 'Ask me before someone connects',
+      'wl.consent.hint': 'Leave this off on a computer nobody sits at: a request that nobody answers is refused.',
+      'wl.consent.savedRestart':
+        'Saved — applies when the MeshHarbor service restarts (you can do that at the end of this tour).',
+      'wl.consent.saved': 'Saved.',
+      'wl.consent.saveFailed': 'Could not save: {err}',
+      'wl.files.title': 'Files you receive',
+      'wl.files.body': 'Files someone sends to this computer during a remote session are saved to:',
+      'wl.files.downloads': 'your Downloads folder',
+      'wl.files.noteDefault': 'You can pick a different folder later on the Overview.',
+      'wl.files.noteOffline':
+        'The MeshHarbor service is not running, so the folder cannot be shown or changed right now.',
+      'wl.files.noteUnsupported':
+        'This version of the MeshHarbor service always uses your Downloads folder; updating it lets you choose.',
+      'wl.files.noteChosen': 'Your choice: {path}{suffix}. The Overview shows the same folder.',
+      'wl.files.noteSystemDefault':
+        "The default: the signed-in user's Downloads folder. You can pick another folder here or later on the Overview.",
+      'wl.files.savedLive': 'Saved: {where} — in effect now, for the next file.',
+      'wl.login.title': 'Start at login',
+      'wl.login.body':
+        'MeshHarbor lives in the notification area (the menu bar on a Mac). That is where a request to view this screen appears, so keeping it running is recommended.',
+      'wl.login.check': 'Start MeshHarbor when I sign in',
+      'wl.login.platformDefault': 'This platform manages login items itself.',
+      'wl.login.unavailable': 'Unavailable: {err}',
+      'wl.login.enabledMsg': 'MeshHarbor starts when you sign in.',
+      'wl.login.disabledMsg': 'MeshHarbor no longer starts when you sign in.',
+      'wl.login.changeFailed': 'Could not change it: {err}',
+      'wl.done.title': "You're set",
+      'wl.done.sumAsk': 'You are asked before someone connects',
+      'wl.done.sumAuto': 'People in your organisation can connect without asking',
+      'wl.done.pendingOne': '1 setting takes effect after the MeshHarbor service restarts.',
+      'wl.done.pendingMany': '{n} settings take effect after the MeshHarbor service restarts.',
+      'wl.done.restartBtn': 'Restart the service now',
+      'wl.done.applied': 'Done — your choices are in effect.',
+      'wl.manualHintUser':
+        'Saved. It takes effect the next time the MeshHarbor service starts — sign out and back in, or restart it from Settings → Background service.',
+      'wl.manualHintMachine':
+        'Saved. It takes effect the next time the MeshHarbor service starts — for example after the next restart of this computer.',
+      'wl.savedPrefix': 'Saved. {msg}',
+      'wl.skip': 'Skip the tour',
+      'wl.gotoOverview': 'Go to Overview',
+
+      // Consent panel & modal
+      'consent.rc.title': 'Remote control request',
+      'consent.rc.verb': 'is requesting to control this device',
+      'consent.exec.title': 'Command execution request',
+      'consent.exec.verb': 'wants to run a command on this device',
+      'consent.ssh.title': 'SSH session request',
+      'consent.ssh.verb': 'wants to open an SSH session on this device',
+      'consent.record.title': 'Screen recording request',
+      'consent.record.verb': 'wants to record this screen',
+      'consent.whoFallback': 'A remote operator',
+      'consent.orgPrefix': 'On behalf of ',
+      'consent.permsPrefix': 'Permissions: ',
+      'consent.deny': 'Deny',
+      'consent.approve': 'Approve',
+      'consent.approving': 'Approving…',
+      'consent.denying': 'Denying…',
+      'consent.expiresIn': 'Expires in {time}',
+      'consent.expired': 'Expired',
+
+      // Viewing banner panel
+      'viewing.idle': 'Being viewed',
+      'viewing.whoFallback': 'a remote operator',
+      'viewing.by': 'Being viewed by {who}',
+      'viewing.recordingFor': 'Recording your screen for {who}',
+      'viewing.reconnecting': 'reconnecting · it stops in a minute unless they come back',
+      'viewing.input': 'keyboard + mouse',
+      'viewing.viewOnly': 'view only',
+      'viewing.stopRecording': 'Stop recording',
+      'viewing.disconnect': 'Disconnect',
+      'viewing.stopping': 'Stopping…',
+    },
+
+    'zh-CN': {
+      // App chrome & navigation
+      'app.title': 'MeshHarbor',
+      'app.consentTitle': 'MeshHarbor — 需要授权',
+      'app.viewingTitle': 'MeshHarbor — 远程会话进行中',
+      'lang.aria': '界面语言',
+      'lang.en': 'English',
+      'lang.zhCN': '简体中文',
+      'nav.overview': '概览',
+      'nav.devices': '设备',
+      'nav.account': '我的设备与共享',
+      'nav.routes': '路由',
+      'nav.recordings': '录屏',
+      'nav.settings': '设置',
+      'nav.onboarding': '设备接入',
+      'conn.connecting': '连接中…',
+      'conn.serviceOffline': '服务未运行',
+      'conn.connected': '已连接',
+      'conn.serverUnreachable': '无法连接服务器',
+
+      // Common / relative time / units
+      'common.dash': '—',
+      'common.loading': '加载中…',
+      'common.refresh': '刷新',
+      'common.cancel': '取消',
+      'common.save': '保存',
+      'common.done': '完成',
+      'common.reset': '重置',
+      'common.retry': '重试',
+      'common.back': '上一步',
+      'common.next': '下一步',
+      'common.on': '开',
+      'common.off': '关',
+      'common.default': '默认',
+      'common.enabledOn': '开',
+      'common.enabledOff': '关',
+      'common.errorPrefix': '错误：{err}',
+      'common.failedPrefix': '失败：{err}',
+      'common.unknownError': '未知错误',
+      'time.now': '刚刚',
+      'time.secsAgo': '{n} 秒前',
+      'time.minsAgo': '{n} 分钟前',
+      'time.hoursAgo': '{n} 小时前',
+      'time.daysAgo': '{n} 天前',
+      'time.lessThanMinAgo': '1 分钟内',
+      'time.minAgo': '{n} 分钟前',
+      'time.hourAgo': '{n} 小时前',
+      'time.shortSecs': '{n} 秒',
+      'time.shortMins': '{n} 分钟',
+      'time.shortHours': '{n} 小时',
+
+      // Overview
+      'ov.title': '概览',
+      'ov.sub': '本设备的状态及其在 MeshHarbor 网络中的位置。',
+      'ov.notEnrolled.title': '尚未接入',
+      'ov.notEnrolled.body': '此设备尚未加入 MeshHarbor 网络。请向组织管理员获取注册令牌完成接入。',
+      'ov.notEnrolled.btn': '配置此设备',
+      'ov.grantSystem.title': '此设备目前仅以当前用户权限运行',
+      'ov.grantSystem.body':
+        '你在这台电脑上的账号是管理员，因此 MeshHarbor 可以作为系统服务运行（Administrator / root，新登录时的默认方式）：命令执行和 SSH 将拥有完整权限，无人登录时设备也保持可达。操作系统仅需询问批准一次。',
+      'ov.grantSystem.btn': '授予管理员权限…',
+      'ov.grantSystem.hint': '请从托盘菜单登录你的账号（「登录账号…」）：登录时也会一并授予此权限。',
+      'ov.grantSystem.waiting': '正在等待操作系统批准…',
+      'ov.grantSystem.needSignIn': '请先从托盘菜单 →「登录账号…」登录你的账号。登录时也会授予此权限。',
+      'ov.grantSystem.notGranted': '未授予：{err}',
+      'ov.perms.title': '需要 macOS 系统权限',
+      'ov.perms.body':
+        '缺少这些权限时 macOS 不会报错 —— 远程画面只会显示桌面壁纸，且远程鼠标和键盘操作无效。',
+      'ov.perms.screen': '屏幕录制 —— 未授权时远程画面将为空白',
+      'ov.perms.input': '辅助功能 —— 未授权时远程键鼠将无法操作',
+      'ov.perms.grant': '前往授权',
+      'ov.perms.restart': '打开开关后，请重启设备服务使权限生效。',
+      'ov.perms.openFailed': '无法打开系统权限设置：{err}',
+      'ov.attention.title': '需要注意',
+      'ov.attention.noDetails': '（未记录详细信息）',
+      'ov.attention.reenroll': '重新接入此设备…',
+      'ov.device.title': '此设备',
+      'ov.device.enrolled': '已接入',
+      'ov.device.notEnrolled': '未接入',
+      'ov.device.name': '设备名称',
+      'ov.device.overlayIp': '组网 IP',
+      'ov.device.noOverlayIp': '（暂无组网 IP）',
+      'ov.device.server': '服务器',
+      'ov.device.serverLink': '服务器连接',
+      'ov.device.linkOffline': '服务未运行',
+      'ov.device.linkConnected': '已连接',
+      'ov.device.linkDisconnected': '未连接',
+      'ov.device.service': '后台服务',
+      'ov.device.serviceSystemRunning': '系统服务 · 运行中',
+      'ov.device.serviceSystemStopped': '系统服务 · 已停止',
+      'ov.device.serviceUserRunning': '用户自启动 · 运行中',
+      'ov.device.serviceUser': '用户自启动',
+      'ov.device.serviceNotInstalled': '未安装',
+      'ov.device.appVersion': '应用版本',
+      'ov.device.serviceVersion': '服务版本',
+      'ov.device.network': '网络',
+      'ov.device.counts': '{online} / {total} 台设备在线',
+      'ov.device.countsRoutes': ' · {routes} 条活跃路由',
+      'ov.device.magicDns': 'MagicDNS',
+      'ov.device.dnsResolverDown': '解析器未运行',
+      'ov.device.dnsSteerFailed': '系统 DNS 引导失败',
+      'ov.device.dnsBypassed': '已引导但被绕过：{why}',
+      'ov.device.dnsActive': '正常',
+      'ov.device.dnsAaaaOff': ' · AAAA 已关',
+      'ov.device.openWeb': '打开 MeshHarbor',
+      'ov.device.openWebFailed': '无法打开 MeshHarbor：{err}',
+      'ov.exit.title': '出口节点',
+      'ov.exit.routingVia': '出口路径',
+      'ov.exit.status': '状态',
+      'ov.exit.active': '已启用',
+      'ov.exit.withheld': '已暂停',
+      'ov.exit.socksOnly':
+        '仅通过 127.0.0.1:{port} 的 SOCKS5 客户端走此出口（IPv4 目标）· 本机其他流量不受影响',
+      'ov.exit.v6Blackholed': 'IPv6 已丢弃（出口仅支持 IPv4）',
+      'ov.exit.dnsNotSteered': 'DNS 未接管 —— 查询可能走本地出口',
+      'ov.exit.routingCaveats': '路由生效中 · {caveats}',
+      'ov.exit.routingAll': '全部流量通过此出口节点转发',
+      'ov.exit.notActive': '未激活',
+      'ov.enc.title': '硬件视频编码',
+      'ov.enc.legendHw': '硬件',
+      'ov.enc.legendSw': '软件',
+      'ov.enc.legendDenied': '已禁用：',
+      'ov.enc.rawSummary': '向查看端通告的能力',
+      'ov.enc.encoders': '编码器',
+      'ov.enc.codecs': '编解码格式',
+      'ov.enc.codecCol': '编码格式',
+      'ov.enc.chipUnavailable': '不可用',
+      'ov.enc.chipOffline': '离线',
+      'ov.enc.chipError': '错误',
+      'ov.enc.chipNone': '无',
+      'ov.enc.chipNotProbed': '尚未探测',
+      'ov.enc.chipUnknown': '未知',
+      'ov.enc.chipHardware': '硬件加速',
+      'ov.enc.chipSoftwareOnly': '仅软件编码',
+      'ov.enc.chipNoEncoder': '无可用编码器',
+      'ov.enc.noteOldDaemon': '当前设备服务版本较旧 —— 升级后即可查看编码能力。',
+      'ov.enc.noteOffline': '设备服务未运行。',
+      'ov.enc.noteError': '无法读取编码器信息：{reason}',
+      'ov.enc.noteUnsupported': '当前设备服务构建不包含视频编码器（仅信令模式）。',
+      'ov.enc.noteNotProbed': '设备服务会在首次连接服务器时检测编码器，每 {secs} 秒自动重新检查。',
+      'ov.enc.noteUnknown': '设备服务返回了当前应用无法识别的状态（{state}）。',
+      'ov.enc.noteNoEncoder': '此设备未打开任何可用编码器 —— 远程会话无法传输视频画面。',
+      'ov.enc.cellTipHw': '{backend} 上的硬件 {codec}',
+      'ov.enc.cellTipSw': '{backend} 上的软件 {codec}',
+      'ov.enc.cellTipDenied': '已被 encoder_cells_deny（{entry}）禁用 —— 未尝试打开',
+      'ov.enc.probedIn': '探测耗时 {ms} ms',
+      'ov.enc.probeCached': '来自探测缓存',
+      'ov.enc.probeFresh': '实时探测',
+      'ov.enc.preference': '偏好：{pref}',
+      'ov.enc.deniedList': '已被 encoder_cells_deny 禁用：{list}',
+      'ov.enc.deniedNone': 'encoder_cells_deny：未禁用任何项',
+      'ov.files.title': '接收文件',
+      'ov.files.sub': '远程会话期间拖放到此设备上的文件会保存在这里。',
+      'ov.files.folder': '文件夹',
+      'ov.files.setting': '配置',
+      'ov.files.open': '打开文件夹',
+      'ov.files.change': '更改…',
+      'ov.files.useDefault': '恢复默认',
+      'ov.files.chipOffline': '离线',
+      'ov.files.chipError': '错误',
+      'ov.files.chipUnavailable': '不可用',
+      'ov.files.chipDefault': '默认',
+      'ov.files.chipNotInUse': '未生效',
+      'ov.files.chipCustom': '自定义',
+      'ov.files.noteOffline': '设备服务未运行。',
+      'ov.files.noteError': '无法读取该设置：{reason}',
+      'ov.files.noteUnsupported': '当前设备服务版本较旧 —— 升级后即可自定义接收文件保存位置。',
+      'ov.files.settingDefault': '默认 —— 当前登录用户的「下载」文件夹',
+      'ov.files.perUserSuffix': '（位于当前登录用户的目录内）',
+      'ov.files.noteNotInUse': '当前无法使用所选文件夹，文件会暂存到默认文件夹。具体原因请查看服务日志。',
+      'ov.files.defaultFolderWord': '默认文件夹',
+      'ov.files.savedRestart': '已保存：{where} —— 重启服务后生效。',
+      'ov.files.savedLive': '已保存：{where} —— 立即生效，下次接收文件即使用该位置。',
+      'ov.files.backDefaultRestart': '已恢复默认文件夹，重启服务后生效。',
+      'ov.files.backDefaultLive': '已恢复默认文件夹，立即生效。',
+      'ov.updates.title': '更新',
+      'ov.updates.check': '检查更新',
+      'ov.updates.install': '安装更新',
+      'ov.updates.checking': '正在检查更新…',
+      'ov.updates.applying': '正在安装更新…',
+      'ov.updates.started': '更新已启动。',
+
+      // Account view
+      'acc.title': '我的设备与共享',
+      'acc.sub': '你的个人设备清单及中心服务器的权威共享记录 —— 与本机所属组织网络相互独立。',
+      'acc.cardTitle': '个人账号',
+      'acc.cardBody':
+        '在内置账号窗口中登录，查看设备数量、收到的与发出的共享、权限、创建/过期时间以及撤销记录。已撤销和已过期的记录仍会保留可见。',
+      'acc.btnDevices': '我的设备与统计',
+      'acc.btnReceived': '共享给我的',
+      'acc.btnSent': '我共享出去的',
+      'acc.footnote':
+        '账号登录与共享权限由中心服务器强制执行。此窗口绝不会借用设备服务的凭据。远程桌面和文件会话继续使用现有的查看器或浏览器。',
+      'acc.openError': '无法打开账号中心。请检查此设备的服务器地址后重试。',
+
+      // Devices view + grid + mesh
+      'dv.title': '设备',
+      'dv.sub': '你的私有网络允许本设备看到的全部设备（包括本机），以及当前与每台设备的连接方式。',
+      'dv.unavailable.title': '设备服务未运行',
+      'dv.unavailable.body': '本机上的 MeshHarbor 服务未运行，暂时无法获取实时设备状态。',
+      'dv.searchPlaceholder': '搜索名称、标签、IP、MagicDNS…',
+      'dv.searchAria': '搜索设备',
+      'dv.orgAria': '组织',
+      'dv.rows': '每页',
+      'dv.rowsAria': '每页显示行数',
+      'dv.columns': '列设置',
+      'dv.columnsTitle': '显示、隐藏和调整列顺序',
+      'dv.columnsHint': '勾选需要显示的列；拖动行或使用 ▲ ▼ 调整顺序。设置按组织保存在本机。',
+      'dv.prev': '‹ 上一页',
+      'dv.prevAria': '上一页',
+      'dv.next': '下一页 ›',
+      'dv.nextAria': '下一页',
+      'dv.mesh.title': '组网拓扑',
+      'dv.mesh.loading': '正在加载组网拓扑…',
+      'dv.mesh.aria': '组网拓扑图',
+      'dv.mesh.svgTitle': '私有网络：本设备、可见设备及彼此之间的连接方式',
+      'dv.mesh.carrier.direct': '直连',
+      'dv.mesh.carrier.relay': 'TURN 中继',
+      'dv.mesh.carrier.derp': 'DERP',
+      'dv.mesh.carrier.tunnel': '隧道',
+      'dv.mesh.carrier.blocked': '已阻止',
+      'dv.mesh.offlineDevices': '离线设备 ({n})',
+      'dv.mesh.stalledSuffix': ' · 卡顿',
+      'dv.mesh.stalled': '卡顿',
+      'dv.mesh.oneSided': '单侧上报 —— 仅一端有连接记录',
+      'dv.mesh.thisDeviceSuffix': '（本机）',
+      'dv.mesh.online': '在线',
+      'dv.mesh.offline': '离线',
+      'dv.mesh.home': '主中继 {relay}',
+      'dv.mesh.legendCount': '已显示 {devices} · {links}',
+      'dv.mesh.deviceOne': '{n} 台设备',
+      'dv.mesh.deviceMany': '{n} 台设备',
+      'dv.mesh.linkOne': '{n} 条链路',
+      'dv.mesh.linkMany': '{n} 条链路',
+      'dv.mesh.legendAsymPre': ' · {n} 条非对称 ',
+      'dv.mesh.legendAsymPost': ' 双色表示两端各自使用的传输路径',
+      'dv.mesh.needsNewer': '组网拓扑需要更新版本的{what}。',
+      'dv.mesh.statsOff': '此服务器未开启使用统计，因此没有可显示的组网拓扑。',
+      'dv.mesh.stale': '显示的是 {ago} 的拓扑数据 —— {msg}',
+      'dv.mesh.loadFailed': '无法加载组网拓扑 —— {msg}',
+      'dv.mesh.emptyNoNode': '本设备未加入私有网络，因此没有可绘制的拓扑。',
+      'dv.mesh.emptyNoNetwork': '你的组织尚未创建私有网络，因此没有可绘制的拓扑。',
+      'dv.mesh.emptyUnavailable': '此服务器未启用私有网络模块，因此没有可绘制的拓扑。',
+      'dv.mesh.emptyDefault': '私有网络中还没有设备。',
+      'dv.col.actions': '操作',
+      'dv.col.name': '名称',
+      'dv.col.connection': '连接方式',
+      'dv.col.ping': 'Ping',
+      'dv.col.status': '状态',
+      'dv.col.os': '系统',
+      'dv.col.version': '版本',
+      'dv.col.location': '公网 IP 与地区',
+      'dv.col.overlayIp': '组网 IP',
+      'dv.col.magicDns': 'MagicDNS',
+      'dv.col.tags': '标签',
+      'dv.col.kind': '类型',
+      'dv.col.lastSeen': '最近在线',
+      'dv.grid.sortBy': '按{col}排序',
+      'dv.grid.dragReorder': '拖动以重新排序',
+      'dv.grid.alwaysShown': '（始终显示）',
+      'dv.grid.moveUp': '将「{col}」上移',
+      'dv.grid.moveDown': '将「{col}」下移',
+      'dv.conn.direct': '直连',
+      'dv.conn.relay': '中继',
+      'dv.conn.tunnel': '隧道',
+      'dv.conn.blocked': '已阻止',
+      'dv.conn.offline': '离线',
+      'dv.conn.stalled': '卡顿',
+      'dv.presence.online': '在线',
+      'dv.presence.stale': '超时',
+      'dv.presence.offline': '离线',
+      'dv.kind.tunnel': '隧道',
+      'dv.kind.device': '设备',
+      'dv.action.connect': '连接',
+      'dv.action.connectTip': '远程控制（不会锁定对方本地屏幕）',
+      'dv.action.moreTip': '更多连接方式（RDP）',
+      'dv.action.connectRdp': '用 RDP 连接',
+      'dv.action.connectRdpTip': '打开系统 RDP 客户端（RDP 会话会锁定远端电脑的本地屏幕）',
+      'dv.action.rdpMeshHint': '请在目标设备上开启 RDP over mesh（rdp_over_mesh = true）。',
+      'dv.action.rdpConfirmAria': '确认 RDP 连接',
+      'dv.action.rdpConfirmText': 'RDP 会话会锁定远端电脑的本地屏幕。',
+      'dv.action.rdpUnpinnedNote': '目标设备未上报证书指纹，将由系统 RDP 客户端自行校验证书。',
+      'dv.viewerNoteBrowserTab':
+        '远程画面已在默认浏览器的新标签页中打开。安装 Chrome、Edge、Chromium 或 Brave 后可以独立窗口打开。',
+      'dv.dot.selfConnected': '已连接到服务器',
+      'dv.dot.selfDisconnected': '未连接到服务器',
+      'dv.dot.peerOnline': '可通过私有网络访问',
+      'dv.dot.peerOffline': '当前不可达',
+      'dv.dot.serverPresence': '服务器状态：{presence}',
+      'dv.chip.thisDevice': '本机',
+      'dv.chip.ephemeral': '临时',
+      'dv.chip.ephemeralTip': '空闲超时或正常关闭后会自动移除，且移除后无法恢复',
+      'dv.chip.zonePinned': '逻辑网络分区：{zone}（已固定，不受 GeoIP 变化影响）',
+      'dv.chip.zoneAuto': '逻辑网络分区：{zone}（按公网 IP 位置自动匹配）',
+      'dv.peerNotInList': '不在本机的实时对端列表中',
+      'dv.ping.tip': '通过私有网络 Ping {ip}',
+      'dv.ping.noIp': '没有可 Ping 的组网 IP',
+      'dv.ping.failed': '失败 —— {msg}',
+      'dv.copyIpTip': '点击复制公网 IP（{ip}）',
+      'dv.legacy.daemon': '设备服务',
+      'dv.legacy.server': '服务器',
+      'dv.note.loading': '正在加载设备列表…',
+      'dv.note.legacy': '当前仅显示本机直连的对端 —— 更新{what}后即可查看私有网络允许访问的全部设备。',
+      'dv.note.stale': '显示的是 {ago} 的数据 —— {msg}{retry}',
+      'dv.note.failedFallback': '无法获取设备列表 —— {msg}。当前先显示本机直连的对端{retry}',
+      'dv.note.retryingIn': '（{secs} 秒后重试）。',
+      'dv.note.noNode':
+        '此设备未加入私有网络，因此仅列出本机。前往「设置 → overlay_enabled」开启私有网络即可查看其他可达设备。',
+      'dv.note.noNetwork': '你的组织尚未配置私有网络，因此仅列出本机。',
+      'dv.note.unavailable': '此服务器未启用私有网络模块，因此仅列出本机。',
+      'dv.note.noSearchMatch': '没有匹配“{q}”的设备。',
+      'dv.note.aclEmpty': '根据组织的访问控制规则（ACL enforce），此设备无法看到其他设备。',
+      'dv.note.noOthers': '私有网络中还没有其他设备。',
+      'dv.pager.range': '第 {from}–{to} 条，共 {total} 条',
+      'dv.pager.totalOne': '共 {n} 台设备',
+      'dv.pager.totalMany': '共 {n} 台设备',
+      'dv.org.primarySuffix': '（主组织）',
+      'dv.org.disabledSuffix': ' —— 已停用',
+
+      // Routes (Tunnels) view
+      'tn.title': '路由',
+      'tn.sub': '声明式路由由设备服务托管 —— 每次重启都会自动恢复，直到手动移除。',
+      'tn.declaredTitle': '已声明路由',
+      'tn.empty': '还没有声明路由 —— 可在下方添加。',
+      'tn.col.id': 'ID',
+      'tn.col.kind': '类型',
+      'tn.col.local': '本地监听',
+      'tn.col.remote': '远端目标',
+      'tn.col.device': '目标设备',
+      'tn.col.state': '状态',
+      'tn.col.target': '目标',
+      'tn.col.transport': '传输方式',
+      'tn.col.conns': '连接数',
+      'tn.col.traffic': '流量',
+      'tn.form.addSummary': '添加路由…',
+      'tn.form.editSummary': '编辑路由 {id}',
+      'tn.form.targetDevice': '目标设备',
+      'tn.form.customNodePlaceholder': '24 位十六进制设备 ID',
+      'tn.form.otherDevice': '其他设备（手动输入设备 ID）…',
+      'tn.form.offlineSuffix': '（离线）',
+      'tn.form.localPort': '本地端口',
+      'tn.form.remote': '远端地址（host:port —— 留空则创建 SOCKS5 代理）',
+      'tn.form.transport': '传输方式',
+      'tn.form.transportAuto': '自动',
+      'tn.form.routeId': '路由 ID（可选）',
+      'tn.form.routeIdPlaceholder': '留空时自动生成',
+      'tn.form.addBtn': '添加路由',
+      'tn.form.saveBtn': '保存修改',
+      'tn.form.pickNodeErr': '请选择目标设备（或输入其设备 ID）。',
+      'tn.flowsTitle': '实时转发',
+      'tn.staleOne': '自 {since} 起无法获取实时数据 · 已失败 {n} 次 · {reason}',
+      'tn.staleMany': '自 {since} 起无法获取实时数据 · 已失败 {n} 次 · {reason}',
+      'tn.noResponse': '无响应',
+      'tn.state.disabled': '已停用',
+      'tn.state.connecting': '连接中',
+      'tn.state.pending': '等待中',
+      'tn.state.active': '活跃',
+      'tn.state.retryingFlow': '重试中（第 {n} 次{next}）—— {err}',
+      'tn.state.nextIn': '，{secs} 秒后重试',
+      'tn.state.retryingBind': '{secs} 秒后重试：{err}',
+      'tn.state.failed': '失败：{reason}',
+      'tn.state.deviceOffline': '{state} · 设备离线',
+      'tn.btn.disable': '停用',
+      'tn.btn.enable': '启用',
+      'tn.btn.edit': '编辑',
+      'tn.btn.remove': '移除',
+
+      // Recordings + Editor view
+      'rec.title': '录屏',
+      'rec.sub': '将本机屏幕录制为高质量视频文件。录像仅保存在本设备的下方文件夹中。',
+      'rec.controlTitle': '录制此屏幕',
+      'rec.notRecording': '未在录制。',
+      'rec.frameRate': '帧率',
+      'rec.encoder': '编码器',
+      'rec.encoderAuto': '自动（优先 GPU，否则软件）',
+      'rec.encoderHw': '仅 GPU 硬件编码',
+      'rec.encoderSw': '仅软件编码',
+      'rec.computerAudio': '电脑音频',
+      'rec.microphone': '麦克风',
+      'rec.start': '开始录制',
+      'rec.starting': '正在开始…',
+      'rec.stop': '停止录制',
+      'rec.finishing': '正在完成写入…',
+      'rec.folderTitle': '录像保存位置',
+      'rec.folderChosen': '你选择的自定义文件夹。',
+      'rec.folderDefault': '默认文件夹。',
+      'rec.folderReason': '当前未用默认文件夹：{reason}。',
+      'rec.folderChange': '更改文件夹…',
+      'rec.folderUseDefault': '使用默认文件夹',
+      'rec.folderOpen': '打开文件夹',
+      'rec.remoteTitle': '允许远程控制端录屏',
+      'rec.remoteDesc':
+        '默认关闭。开启后，通过 MeshHarbor 控制此设备的人可以请求录制屏幕。录像保存在本设备上，录制期间屏幕会显示提示横幅，你可以随时停止。麦克风绝不会被远程录制。',
+      'rec.remoteAllow': '允许远程录屏',
+      'rec.remoteAudio': '同时录制电脑音频',
+      'rec.remoteAudioUnavailable': '无法包含电脑音频：{reason}。',
+      'rec.savedTitle': '已保存的录像',
+      'rec.empty': '还没有录像。',
+      'rec.col.name': '名称',
+      'rec.col.recorded': '录制时间',
+      'rec.col.length': '时长',
+      'rec.col.size': '大小',
+      'rec.col.by': '发起方',
+      'rec.byRemote': '远程',
+      'rec.byThisDevice': '本设备',
+      'rec.endedTip': '结束原因：{reason}',
+      'rec.btn.play': '播放',
+      'rec.btn.edit': '剪辑',
+      'rec.btn.show': '定位',
+      'rec.btn.delete': '删除',
+      'rec.btn.confirmDelete': '确认删除',
+      'rec.live.forRemote': '正在为 {who} 录制（远程）',
+      'rec.live.local': '正在录制',
+      'rec.live.audioBoth': '电脑音频 + 麦克风',
+      'rec.live.audioSystem': '电脑音频',
+      'rec.live.audioMic': '麦克风',
+      'rec.unavailable': '此处无法录制：{reason}。',
+      'rec.noReasonGiven': '未提供原因',
+      'rec.sysAudioUnavailable': '此处无法录制电脑音频：{reason}。',
+      'rec.bannerUnavailable': '实时数据不可用 —— {why}。',
+      'rec.bannerUnavailableLastGood': '实时数据不可用 —— {why}。当前显示上一次成功的数据。',
+      'rec.bannerNoAnswer': '设备服务未响应',
+      'rec.bannerUnsupported': '当前设备服务尚未支持录屏功能 —— 请升级服务。',
+      'rec.last.head': '上次录制：{duration}，{size}',
+      'rec.last.didNotStart': '上次录制未能开始',
+      'rec.end.requested': '已停止',
+      'rec.end.host_stopped': '已在本机停止',
+      'rec.end.session_ended': '远程会话已结束',
+      'rec.end.session_changed': '当前登录用户已切换',
+      'rec.end.display_changed': '屏幕分辨率发生变化',
+      'rec.end.disk_low': '磁盘空间不足',
+      'rec.end.max_duration': '已达到最长录制时间',
+      'rec.end.encoder_failed': '视频编码器出错',
+      'rec.end.capture_failed': '屏幕采集失败',
+      'rec.end.gate_revoked': '远程录屏开关已被关闭',
+      'rec.end.parent_gone': '设备服务已停止',
+      'rec.end.interrupted': '录制意外中断，事后已恢复文件',
+      'rec.end.recorder_exited': '录制进程意外退出',
+      'rec.end.start_timeout': '录制启动超时',
+      'rec.end.no_frame': '未采集到任何屏幕画面',
+      'rec.end.encoder_unavailable': '无法打开视频编码器',
+      'rec.end.folder_unwritable': '目标文件夹不可写入',
+      'rec.end.audio_unavailable': '此设备无法录制音频',
+      'rec.end.system_audio_unavailable': '此设备无法采集电脑音频',
+      'rec.end.mic_unavailable': '无法打开麦克风',
+      'rec.end.audio_failed': '音频录制出错，剩余部分已无声录制',
+      'rec.end.unknown': '未知原因',
+
+      // Recording editor
+      'ed.back': '← 返回录像列表',
+      'ed.title': '剪辑',
+      'ed.titleName': '剪辑 {name}',
+      'ed.play': '播放',
+      'ed.pause': '暂停',
+      'ed.timelineAria': '时间轴：点击片段进行选择',
+      'ed.split': '在播放头处分割',
+      'ed.keep': '保留',
+      'ed.cut': '剪掉',
+      'ed.speedAria': '倍速',
+      'ed.speedUp': '应用倍速',
+      'ed.seg.cut': '已剪掉',
+      'ed.seg.kept': '保留',
+      'ed.selected': '已选中：{start}–{end}，{label}。',
+      'ed.soundTitle': '音频',
+      'ed.origVolume': '原录像音量',
+      'ed.noSound': '此录像本身没有音轨。',
+      'ed.speedMuteNote': '倍速片段会自动静音（加速人声会变杂音），背景音乐会正常播放。',
+      'ed.musicAdd': '添加音乐…',
+      'ed.musicChange': '更换音乐…',
+      'ed.musicRemove': '移除音乐',
+      'ed.musicVolume': '音量',
+      'ed.musicStartsAt': '开始于',
+      'ed.musicFadeIn': '淡入',
+      'ed.musicFadeOut': '淡出',
+      'ed.musicLoop': '循环播放',
+      'ed.exportTitle': '导出',
+      'ed.exportSub': '将在原录像旁边生成新文件，原录像不会被修改。',
+      'ed.exportBtn': '导出',
+      'ed.exportCancel': '取消导出',
+      'ed.exportSummary': '导出时长：{out} / 原时长 {total}',
+      'ed.exportNothing': '全部片段已被剪掉，没有可导出的内容。',
+      'ed.exporting': '正在导出… {pct} %',
+      'ed.resultShow': '在文件夹中显示',
+      'ed.saved': '剪辑记录已保存在原录像旁边。',
+      'ed.saveFailed': '剪辑记录保存失败：{err}',
+      'ed.splitTooClose': '请将播放头移到片段更靠中间的位置再分割。',
+      'ed.noPreview': '无法预览：{err}。时间轴编辑和导出功能仍正常可用。',
+      'ed.cannotPlay': '此系统无法在此处直接播放该录像。时间轴编辑和导出功能仍正常可用。',
+      'ed.openFailed': '无法打开此录像进行剪辑：{err}。',
+      'ed.notEditable': '此录像无法在此处剪辑：{reason}。',
+      'ed.editsNotFit': '已保存的剪辑记录与当前录像不匹配{err}，已从完整录像重新开始。',
+      'ed.doneText': '已保存为 {file} —— {duration}，{size}，音频：{sound}。',
+      'ed.sound.none': '无声音',
+      'ed.sound.original': '原录像声音',
+      'ed.sound.music': '背景音乐',
+      'ed.sound.original_and_music': '原录像声音与背景音乐',
+      'ed.sound.not_carried': '无声音（此设备不支持音频编码）',
+      'ed.refusal.bad_edit_list': '剪辑方案无效',
+      'ed.refusal.source_unreadable': '无法读取原录像文件',
+      'ed.refusal.decoder_unavailable': '此录像使用 GPU 编码器录制，但当前设备没有对应的解码器',
+      'ed.refusal.encoder_unavailable': '无法打开视频编码器',
+      'ed.refusal.decode_failed': '原录像解码失败',
+      'ed.refusal.write_failed': '无法写入新文件',
+      'ed.refusal.music_unreadable': '无法读取音乐文件',
+      'ed.refusal.audio_unavailable': '此设备无法向视频写入音轨',
+      'ed.refusal.cancelled': '导出已取消',
+      'ed.refusal.engine_failed': '导出进程意外停止',
+
+      // Settings view
+      'st.title': '设置',
+      'st.sub': '设备标识、后台服务管理与文件位置。',
+      'st.lang.title': '界面语言',
+      'st.lang.desc': '实时作用于本应用窗口、弹窗横幅以及系统托盘菜单。',
+      'st.split.title': '发现两份配置文件',
+      'st.split.body':
+        '本机同时存在系统级和用户级两份配置。服务当前使用的是下方「文件」中显示的那一份，另一份很可能已过时。',
+      'st.split.btn': '清理过时的副本',
+      'st.split.note': '仅当两份配置属于同一设备身份时，设备服务才会将过时文件归档（绝不直接删除）。',
+      'st.rename.title': '设备名称',
+      'st.rename.placeholder': '（正在加载当前名称…）',
+      'st.rename.btn': '重命名设备',
+      'st.rename.defaultHint': '名称会实时同步。离线提交的名称会排队等待服务器确认；网页端更新的修改优先。',
+      'st.rename.scmHint': '此设备以系统服务方式运行 —— 改名会通过设备服务写入。仅在服务未运行时才需要管理员权限。',
+      'st.rename.pending': '新名称已排队，正在等待服务器确认。当前名称：{name}',
+      'st.rename.failed': '名称未更改：{err}。请检查后重新提交。当前名称：{name}',
+      'st.rename.syncFailed': '同步失败',
+      'st.rename.unsupported': '服务器不支持名称同步，本次修改未生效。',
+      'st.rename.synced': '名称已与服务器同步。',
+      'st.rename.legacy': '实时名称同步需要已连接且兼容版本的设备服务。',
+      'st.rename.queued': '新名称已排队，服务器接受后正式生效。',
+      'st.rename.err': '重命名失败：{err}',
+      'st.enroll.title': '设备接入',
+      'st.enroll.body': '需要更换新令牌（已吊销或过期）？重新接入已移至「设备接入」页面，服务器地址和设备名称会自动保留。',
+      'st.enroll.btn': '打开设备接入',
+      'st.autostart.title': '登录时启动',
+      'st.autostart.check': '登录系统时自动启动 MeshHarbor',
+      'st.autostart.tourBtn': '重新打开欢迎引导',
+      'st.service.title': '后台服务',
+      'st.service.status': '状态',
+      'st.service.install': '安装用户自启动',
+      'st.service.uninstall': '移除用户自启动',
+      'st.service.note': '自启动会在用户登录时运行设备服务（用户级安装）。系统级服务请通过 MeshHarbor Setup 安装向导管理。',
+      'st.service.installed': '已安装用户自启动。',
+      'st.service.installFailed': '安装失败：{err}',
+      'st.service.removed': '已移除用户自启动。',
+      'st.service.removeFailed': '移除失败：{err}',
+      'st.cfg.title': '设备配置',
+      'st.cfg.sub': '按设备生效的选项 —— 常用项在最上方，其余按分组折叠。修改后会写入设备配置，并标明是立即生效还是重启服务后生效。',
+      'st.cfg.searchPlaceholder': '搜索配置项键名与说明…',
+      'st.cfg.essentials': '常用设置',
+      'st.cfg.essentialsHint': '最常需要调整的核心开关，其余配置项见下方分组。',
+      'st.cfg.modified': '已修改',
+      'st.cfg.changedCount': '已改 {n} 项',
+      'st.cfg.keyOne': '{n} 项',
+      'st.cfg.keyMany': '{n} 项',
+      'st.cfg.matchNone': '没有匹配的配置项。',
+      'st.cfg.matchOne': '匹配 {n} 项',
+      'st.cfg.matchMany': '匹配 {n} 项',
+      'st.cfg.savedRestart': '已保存 —— 重启服务后生效。',
+      'st.cfg.savedLive': '已保存 —— 立即生效，无需重启。',
+      'st.cfg.loadFailed': '无法加载设备配置：{err}',
+      'st.cfg.listPlaceholder': '例如 192.168.1.0/24, 10.0.0.0/8',
+      'st.restart.one': '有 1 项修改需要重启服务后生效。',
+      'st.restart.many': '有 {n} 项修改需要重启服务后生效。',
+      'st.restart.applyNow': '立即应用',
+      'st.restart.applyNowTip': '重启设备服务使已保存的修改立即生效',
+      'st.restart.predates': '当前设备服务版本不支持「立即应用」—— 请在「后台服务」中手动重启。',
+      'st.restart.refused': '未重启 —— {refusal}',
+      'st.restart.asking': '正在请求服务重启…',
+      'st.restart.askFailed': '无法请求服务重启：{err}',
+      'st.restart.restartingCaller': '正在重启服务 —— 重新启动中…',
+      'st.restart.restartingSup': '正在重启服务（{supervisor}）…',
+      'st.restart.notBack': '服务未能恢复运行：{err} —— 请检查「后台服务」。',
+      'st.restart.done': '服务已重启 —— 修改已全部生效。',
+      'st.files.title': '文件位置',
+      'st.files.logs': '日志目录',
+      'st.files.config': '配置文件',
+      'st.files.openLogs': '打开日志文件夹',
+      'st.files.openConfig': '打开配置文件夹',
+      'st.files.openLogsFailed': '无法打开日志文件夹：{err}',
+      'st.files.openConfigFailed': '无法打开配置文件夹：{err}',
+      'st.cleanup.done': '已完成清理：{detail}',
+      'st.cleanup.failed': '未执行清理：{err}',
+      'st.log.title': '服务日志',
+      'st.log.srcDaemon': '设备服务',
+      'st.log.srcService': '服务宿主',
+      'st.log.srcPanic': '崩溃转储',
+      'st.log.filterPlaceholder': '过滤关键词，例如 ERROR',
+      'st.log.follow': '持续跟踪',
+      'st.log.initial': '（点击「刷新」加载日志）',
+      'st.log.meta': '{path} · {size} 字节',
+      'st.log.noMatch': '（没有匹配的日志行）',
+      'st.log.readFailed': '无法读取日志：{err}',
+
+      // Onboarding view
+      'ob.title': '设备接入',
+      'ob.sub':
+        '将此设备接入 MeshHarbor 网络。向组织管理员获取注册令牌（管理 → 设备 → 生成注册令牌）—— 令牌仅限使用一次，10 分钟后过期。',
+      'ob.login.title': '使用账号登录',
+      'ob.login.body':
+        '会在浏览器中打开 MeshHarbor 网页。在网页中批准此设备后即可加入你的组织，随后所有设备会显示在「设备」页面中。新接入的个人设备会自动启用受支持的所有者服务（包括以服务账号运行的 SSH 和命令，可能是 root / SYSTEM）。本地已关闭的选项和操作系统权限会保留。功能启用还取决于安装包是否包含相应组件；勾选权限不会自动安装组件。',
+      'ob.login.btn': '登录账号…',
+      'ob.login.starting': '正在启动…',
+      'ob.login.cancel': '取消登录',
+      'ob.login.fillDeviceName': '请先填写设备名称。',
+      'ob.login.opened': '请在刚刚打开的浏览器窗口中批准此设备。',
+      'ob.login.openLink': '请打开以下链接并批准此设备：',
+      'ob.login.showCode': '页面上应显示验证码 {code}。正在等待批准…',
+      'ob.login.failed': '登录失败：{err}',
+      'ob.join.title': '使用邀请码加入',
+      'ob.join.body':
+        '输入对方提供给你的 8 位邀请码。接受前可以看到邀请人及有效时长。只有对方能够访问本机，本机无法访问对方设备，到期后权限会自动失效。此设备原本的账号登录和其他邀请均不受影响。',
+      'ob.join.codeLabel': '邀请码',
+      'ob.join.btn': '加入',
+      'ob.join.checking': '正在检查…',
+      'ob.join.joining': '正在加入…',
+      'ob.join.accept': '接受邀请',
+      'ob.join.badCode': '邀请码应为 8 位数字，例如 1234-5678。',
+      'ob.join.unsupportedServer': '请先升级服务器：当前服务器无法按所选功能范围限制邀请权限。',
+      'ob.join.checkFailed': '无法核验邀请码：{err}',
+      'ob.join.previewLine': '{from} 邀请此设备加入，时长 {remaining}（有效期至 {until}）。',
+      'ob.join.previewHint':
+        '请选择允许此邀请访问的功能。对方邀请无法用于主动连接对方设备。你随时可以在这里调整权限，或从托盘菜单退出邀请。',
+      'ob.join.failed': '无法加入：{err}',
+      'ob.held.title': '此设备当前持有的邀请',
+      'ob.held.body':
+        '你可以自主决定向邀请方开放哪些功能。保存设置会短暂中断本设备上所有组织由 MeshHarbor 管理的连接和前台命令，各组织授权设置保持不变；已完成命令的结果和主动后台分离的任务不会被撤销。确认清理完成后才会清除待撤销状态。',
+      'ob.held.refresh': '刷新邀请',
+      'ob.held.none': '此设备上目前没有记录任何邀请。',
+      'ob.held.fallbackTitle': '邀请',
+      'ob.held.until': '{who} · 有效期至 {when}',
+      'ob.held.revocationPending':
+        '新授权已更新，但现有 SSH / 命令会话的撤销尚未得到确认；重启设备代理不能确认独立系统服务中的会话已关闭。',
+      'ob.held.legacyNote':
+        '旧版邀请未记录之前的功能范围。保存前请明确勾选允许的功能；默认不预选任何项。',
+      'ob.held.saveRetry': '保存 / 重试确认清理',
+      'ob.held.saveFeatures': '保存功能并重启连接',
+      'ob.held.saving':
+        '正在保存并中断本设备上所有组织的受管连接与前台命令。其他授权设置不变，已完成命令效果及后台分离任务不会被撤销。正在等待清理确认…',
+      'ob.held.notCompleted': '未完全完成：{err}',
+      'ob.held.readFailed': '无法读取邀请：{err}',
+      'ob.feat.legend': '此邀请可使用的功能',
+      'ob.feat.desktop_view': '查看屏幕',
+      'ob.feat.desktop_control': '控制键盘和鼠标',
+      'ob.feat.clipboard': '剪贴板',
+      'ob.feat.files': '读写文件',
+      'ob.feat.ssh': 'SSH 终端（可能以 root / SYSTEM 身份运行）',
+      'ob.feat.exec': '执行命令（可能以 root / SYSTEM 身份运行）',
+      'ob.feat.rdp': '远程桌面（RDP）',
+      'ob.feat.network': '任意网络服务（包含系统 SSH / RDP）',
+      'ob.feat.warning':
+        'SSH 和命令执行可能授予完整系统权限；网络访问即使在对应专用功能关闭时也可能触达其他服务。此处只控制授权范围，不会安装缺失的采集/输入/SSH 构建组件。本地关闭开关、管理员服务策略和操作系统权限依然生效。你随时可以缩小范围或撤销邀请。',
+      'ob.form.reenrollNote':
+        '此设备已经接入 —— 提交后将刷新令牌。服务器地址和设备名称已锁定为当前接入信息。',
+      'ob.form.serverUrl': '服务器地址',
+      'ob.form.deviceName': '设备名称',
+      'ob.form.deviceNamePlaceholder': '默认使用本机主机名',
+      'ob.form.token': '注册令牌',
+      'ob.form.enrollBtn': '接入此设备',
+      'ob.form.reenrollBtn': '重新接入此设备',
+      'ob.form.enrolling': '正在接入…',
+      'ob.form.reenrolling': '正在重新接入…',
+      'ob.form.pasteToken': '请粘贴新的注册令牌。',
+      'ob.form.fillAll': '请完整填写三项信息。',
+      'ob.form.enrolledHead': '接入成功。',
+      'ob.form.enrolledDetail': '设备 {agentId} · 组织 {tenantId}',
+      'ob.form.installAutostart': '安装用户自启动',
+      'ob.form.installing': '正在安装…',
+      'ob.form.autostartInstalled': '已安装自启动',
+      'ob.form.installFailed': '安装失败：{err}',
+      'ob.form.continueTour': '继续欢迎引导',
+      'ob.form.gotoOverview': '前往概览',
+      'ob.form.reenrolledHead': '重新接入成功 —— 令牌已刷新。',
+      'ob.form.reenrollFailed': '重新接入失败：{err}',
+      'ob.form.enrollFailed': '接入失败：{err}',
+
+      // Welcome tour
+      'wl.title': '欢迎使用 MeshHarbor',
+      'wl.sub': '按步骤完成几项基础选择，所有选项日后都可以随时在「设置」中修改。',
+      'wl.stepsAria': '欢迎引导步骤',
+      'wl.step.device': '此设备',
+      'wl.step.network': '私有网络',
+      'wl.step.consent': '屏幕访问',
+      'wl.step.files': '接收文件',
+      'wl.step.login': '登录时启动',
+      'wl.step.done': '完成',
+      'wl.dev.title': '此设备',
+      'wl.dev.enrolledPre': '这台电脑已注册为 ',
+      'wl.dev.enrolledMid': '，所属服务器：',
+      'wl.dev.enrolledPost': '。',
+      'wl.dev.notEnrolledTitle': '尚未接入',
+      'wl.dev.notEnrolledBody':
+        '要加入你的组织，需要从管理员处获取一个注册令牌（管理 → 设备 → 生成注册令牌）。你也可以稍后再完成。',
+      'wl.dev.enrollBtn': '接入此设备…',
+      'wl.dev.about':
+        'MeshHarbor 会在后台以服务方式运行。这个桌面应用负责和你沟通：展示设备运行状态，并在有人请求查看你的屏幕时弹出确认。',
+      'wl.dev.offline':
+        '本机上的 MeshHarbor 服务当前未运行，以下选择会被保存，待服务启动后生效。',
+      'wl.net.title': '你的私有网络',
+      'wl.net.intro':
+        'MeshHarbor 可以将这台电脑与你的其他设备组成私有网络。它基于 WireGuard 网格：设备之间端到端加密通信，网络允许时直连，无法直连时经由中继转发。MeshHarbor 服务器只负责引荐，永远看不到通信内容，中继也只转发加密数据。',
+      'wl.net.p1Head': '你将获得：',
+      'wl.net.p1Body': '直接按名称访问你的设备。远程桌面、SSH 和隧道都会使用这个网络。',
+      'wl.net.p2Head': '本机变化：',
+      'wl.net.p2Body':
+        'MeshHarbor 会添加一块虚拟网卡，并为私有网段（100.64.0.0/10）配置路由。如果管理员批准了子网路由器（例如办公室局域网），相应网段也会走私有网络。普通互联网流量不会被改道。',
+      'wl.net.p3Head': '谁能访问本机：',
+      'wl.net.p3Body':
+        '仅限同组织内的设备，且受组织访问规则约束。当管理员启用强制规则时，未明确允许的访问都会被拦截。',
+      'wl.net.p4Head': '随时关闭：',
+      'wl.net.p4Body': '可在「设置 → 私有网络」中随时关闭。',
+      'wl.net.statusLabel': '状态',
+      'wl.net.userTitle': '用户级安装',
+      'wl.net.macTitle': '在 Mac 上',
+      'wl.net.btnEnable': '开启私有网络',
+      'wl.net.btnEnableUserspace': '以用户态模式开启',
+      'wl.net.stateMacPriv': '由本机上的 MeshHarbor 系统服务运行',
+      'wl.net.stateMacNone': '尚未在这台 Mac 上安装',
+      'wl.net.stateOnOffline': '已开启（服务当前未运行）',
+      'wl.net.stateOnIp': '已开启 —— 本机地址为 {ip}',
+      'wl.net.stateAfterRestart': '重启服务后开启',
+      'wl.net.stateNotConnected': '已开启，尚未连通',
+      'wl.net.macPrivDesc':
+        '私有网络运行在 MeshHarbor 系统服务中，拥有独立的设备注册（在设备列表中以“-daemon”结尾显示）。这里无需额外开启。',
+      'wl.net.macNoPrivDesc':
+        '在 Mac 上私有网络由系统服务运行，可通过安装脚本传入第二个注册令牌（install.sh --daemon-token）启用。屏幕共享无需此项也能工作。',
+      'wl.net.userMultiOrg':
+        '当前为用户级安装，且本机已开启同时加入多个组织网络（overlay_multi_org）。用户态模式仅支持单个组织，需要由管理员安装系统级 MeshHarbor 服务。',
+      'wl.net.userUserspace':
+        'MeshHarbor 仅为当前账号安装，无法创建系统虚拟网卡（需要管理员权限），但可以改用用户态模式加入：远程桌面正常使用，其他应用可通过本机 SOCKS5 代理访问组网设备。',
+      'wl.net.saving': '正在保存…',
+      'wl.net.waitingIp': '正在等待本机分配组网地址（最长约 1 分钟）…',
+      'wl.net.connected': '已连接。本机在私有网络中的地址为 {ip}。',
+      'wl.net.connectedSocks': '其他应用可通过 SOCKS5 127.0.0.1:{port} 访问设备；远程桌面无需额外设置。',
+      'wl.net.outcomeIp': '已开启 —— {ip}',
+      'wl.net.outcomeNotConn': '已开启，但尚未连通',
+      'wl.net.notRestarted': '服务未重启。',
+      'wl.net.enableFailed': '无法开启：{err}',
+      'wl.net.noIpServiceDown': 'MeshHarbor 服务未能恢复运行，请查看「设置 → 服务日志」了解原因。',
+      'wl.net.noIpRefused': '服务器未将此电脑加入网络：{why}',
+      'wl.net.noIpNotConnected': '设备服务尚未连接到 MeshHarbor 服务器，暂时无法获取组网地址。',
+      'wl.net.noIpLogLine': '等待 1 分钟仍未获取到地址。服务日志显示：{line}',
+      'wl.net.noIpTimeout': '等待 1 分钟仍未获取到地址。详情请查看「设置 → 服务日志」。',
+      'wl.consent.title': '谁可以查看此屏幕',
+      'wl.consent.body':
+        '当组织里的成员请求查看或控制这台电脑时，MeshHarbor 可以直接放行，或先弹窗询问你的同意。',
+      'wl.consent.check': '有人连接前先询问我',
+      'wl.consent.hint': '无人值守的电脑建议保持关闭：无人回应的请求会被自动拒绝。',
+      'wl.consent.savedRestart': '已保存 —— 重启 MeshHarbor 服务后生效（可在引导最后一步一键重启）。',
+      'wl.consent.saved': '已保存。',
+      'wl.consent.saveFailed': '保存失败：{err}',
+      'wl.files.title': '接收到的文件',
+      'wl.files.body': '远程会话中发送给这台电脑的文件将保存到：',
+      'wl.files.downloads': '你的「下载」文件夹',
+      'wl.files.noteDefault': '你之后也可以在「概览」页面随时更换文件夹。',
+      'wl.files.noteOffline': 'MeshHarbor 服务未运行，暂时无法查看或更改文件夹。',
+      'wl.files.noteUnsupported': '当前版本的 MeshHarbor 服务固定使用「下载」文件夹；升级后即可自定义。',
+      'wl.files.noteChosen': '当前选择：{path}{suffix}。「概览」页显示的是同一个文件夹。',
+      'wl.files.noteSystemDefault':
+        '默认位置：当前登录用户的「下载」文件夹。你可以在这里或稍后在「概览」中更换。',
+      'wl.files.savedLive': '已保存：{where} —— 立即生效，下次接收文件即使用该位置。',
+      'wl.login.title': '登录时启动',
+      'wl.login.body':
+        'MeshHarbor 常驻在系统托盘（Mac 上为菜单栏）。有人请求查看屏幕时会通过它弹出提示，建议保持开机启动。',
+      'wl.login.check': '登录系统时自动启动 MeshHarbor',
+      'wl.login.platformDefault': '此平台由系统自身管理登录启动项。',
+      'wl.login.unavailable': '不可用：{err}',
+      'wl.login.enabledMsg': '已开启登录时自动启动 MeshHarbor。',
+      'wl.login.disabledMsg': '已关闭登录时自动启动 MeshHarbor。',
+      'wl.login.changeFailed': '更改失败：{err}',
+      'wl.done.title': '全部就绪',
+      'wl.done.sumAsk': '有人连接前会先询问你',
+      'wl.done.sumAuto': '同组织成员可直接连接，无需询问',
+      'wl.done.pendingOne': '有 1 项设置需要重启 MeshHarbor 服务后生效。',
+      'wl.done.pendingMany': '有 {n} 项设置需要重启 MeshHarbor 服务后生效。',
+      'wl.done.restartBtn': '立即重启服务',
+      'wl.done.applied': '完成 —— 你的所有设置均已生效。',
+      'wl.manualHintUser':
+        '已保存。将在 MeshHarbor 服务下次启动时生效 —— 可重新登录，或在「设置 → 后台服务」中重启。',
+      'wl.manualHintMachine': '已保存。将在 MeshHarbor 服务下次启动（例如下次重启电脑）时生效。',
+      'wl.savedPrefix': '已保存。{msg}',
+      'wl.skip': '跳过引导',
+      'wl.gotoOverview': '前往概览',
+
+      // Consent panel & modal
+      'consent.rc.title': '远程控制请求',
+      'consent.rc.verb': '正在请求控制此设备',
+      'consent.exec.title': '命令执行请求',
+      'consent.exec.verb': '请求在此设备上运行命令',
+      'consent.ssh.title': 'SSH 会话请求',
+      'consent.ssh.verb': '请求在此设备上打开 SSH 会话',
+      'consent.record.title': '屏幕录制请求',
+      'consent.record.verb': '请求录制此屏幕',
+      'consent.whoFallback': '远程操作者',
+      'consent.orgPrefix': '代表组织：',
+      'consent.permsPrefix': '权限：',
+      'consent.deny': '拒绝',
+      'consent.approve': '批准',
+      'consent.approving': '正在批准…',
+      'consent.denying': '正在拒绝…',
+      'consent.expiresIn': '剩余 {time} 过期',
+      'consent.expired': '已过期',
+
+      // Viewing banner panel
+      'viewing.idle': '正在被查看',
+      'viewing.whoFallback': '远程操作者',
+      'viewing.by': '正由 {who} 查看',
+      'viewing.recordingFor': '正在为 {who} 录制屏幕',
+      'viewing.reconnecting': '重连中 · 若对方未在 1 分钟内返回将自动停止',
+      'viewing.input': '键盘与鼠标',
+      'viewing.viewOnly': '仅观看',
+      'viewing.stopRecording': '停止录制',
+      'viewing.disconnect': '断开连接',
+      'viewing.stopping': '正在停止…',
+    },
+  };
+
+  function normalizeLang(raw) {
+    if (typeof raw !== 'string') return null;
+    const norm = raw.trim().replace('_', '-').toLowerCase();
+    if (norm === 'en') return 'en';
+    if (norm === 'zh-cn') return 'zh-CN';
+    return null;
+  }
+
+  function detectOsLang(locales) {
+    let langs;
+    if (Array.isArray(locales)) {
+      langs = locales;
+    } else if (typeof locales === 'string') {
+      langs = [locales];
+    } else if (typeof navigator !== 'undefined') {
+      langs =
+        Array.isArray(navigator.languages) && navigator.languages.length
+          ? navigator.languages
+          : [navigator.language || ''];
+    } else {
+      return 'en';
+    }
+    return langs.some((l) => typeof l === 'string' && l.trim().toLowerCase().startsWith('zh'))
+      ? 'zh-CN'
+      : 'en';
+  }
+
+  function readSavedLang() {
+    try {
+      return normalizeLang(typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeSavedLang(lang) {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, lang);
+    } catch (_) {
+      /* storage unavailable */
+    }
+  }
+
+  let currentLang = readSavedLang() || detectOsLang();
+
+  function interpolate(str, params) {
+    if (!params || typeof str !== 'string') return str;
+    return str.replace(/\{(\w+)\}/g, (_, k) =>
+      Object.prototype.hasOwnProperty.call(params, k) && params[k] != null ? String(params[k]) : '',
+    );
+  }
+
+  function t(key, params) {
+    const table = MESSAGES[currentLang] || MESSAGES.en;
+    const raw = Object.prototype.hasOwnProperty.call(table, key)
+      ? table[key]
+      : Object.prototype.hasOwnProperty.call(MESSAGES.en, key)
+        ? MESSAGES.en[key]
+        : key;
+    return interpolate(raw, params);
+  }
+
+  function syncLangButtons(container) {
+    const scope = container || (typeof document !== 'undefined' ? document : null);
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('[data-lang-btn]').forEach((btn) => {
+      const active = btn.dataset.langBtn === currentLang;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function applyI18n(container) {
+    const scope = container || (typeof document !== 'undefined' ? document : null);
+    if (!scope) return;
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = currentLang;
+      const titleEl = document.querySelector('title[data-i18n]');
+      if (titleEl) document.title = t(titleEl.dataset.i18n);
+    }
+    if (scope.querySelectorAll) {
+      scope.querySelectorAll('[data-i18n]').forEach((el) => {
+        if (el.tagName === 'TITLE') return;
+        el.textContent = t(el.dataset.i18n);
+      });
+      scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+        el.placeholder = t(el.dataset.i18nPlaceholder);
+      });
+      scope.querySelectorAll('[data-i18n-title]').forEach((el) => {
+        el.title = t(el.dataset.i18nTitle);
+      });
+      scope.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+        el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
+      });
+    }
+    syncLangButtons(scope);
+  }
+
+  function applyAndNotify(next, persistLocal) {
+    const changed = next !== currentLang;
+    currentLang = next;
+    if (persistLocal) writeSavedLang(next);
+    if (changed && typeof document !== 'undefined') {
+      applyI18n(document);
+      document.dispatchEvent(new CustomEvent('meshharbor:lang', { detail: next }));
+    }
+  }
+
+  function getLang() {
+    return currentLang;
+  }
+
+  function setLang(lang, opts) {
+    const next = normalizeLang(lang);
+    if (!next) return currentLang;
+    const syncNative = !(opts && opts.syncNative === false);
+    applyAndNotify(next, true);
+    if (
+      syncNative &&
+      typeof window !== 'undefined' &&
+      window.__TAURI__ &&
+      window.__TAURI__.core &&
+      typeof window.__TAURI__.core.invoke === 'function'
+    ) {
+      Promise.resolve(window.__TAURI__.core.invoke('set_ui_language', { language: next })).catch(() => {});
+    }
+    return currentLang;
+  }
+
+  function wireLangToggles(container) {
+    const scope = container || (typeof document !== 'undefined' ? document : null);
+    if (!scope || !scope.querySelectorAll) return;
+    scope.querySelectorAll('[data-lang-btn]').forEach((btn) => {
+      if (btn.dataset.langWired) return;
+      btn.dataset.langWired = '1';
+      btn.addEventListener('click', () => setLang(btn.dataset.langBtn));
+    });
+    syncLangButtons(scope);
+  }
+
+  async function syncFromNative() {
+    if (
+      typeof window === 'undefined' ||
+      !window.__TAURI__ ||
+      !window.__TAURI__.core ||
+      typeof window.__TAURI__.core.invoke !== 'function'
+    ) {
+      return;
+    }
+    try {
+      const info = await window.__TAURI__.core.invoke('get_ui_language');
+      const nativeSaved = info && normalizeLang(info.saved);
+      const nativeEffective = info && normalizeLang(info.language);
+      if (nativeSaved) {
+        applyAndNotify(nativeSaved, true);
+      } else {
+        const localSaved = readSavedLang();
+        if (localSaved) {
+          // Promote an existing webview localStorage choice to desktop-state so the tray matches.
+          setLang(localSaved);
+        } else if (nativeEffective) {
+          applyAndNotify(nativeEffective, false);
+        }
+      }
+    } catch (_) {
+      /* backend unavailable or older build */
+    }
+  }
+
+  function subscribeCrossWindow() {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('storage', (ev) => {
+      if (ev.key !== STORAGE_KEY) return;
+      const next = normalizeLang(ev.newValue);
+      if (next) applyAndNotify(next, false);
+    });
+    if (
+      window.__TAURI__ &&
+      window.__TAURI__.event &&
+      typeof window.__TAURI__.event.listen === 'function'
+    ) {
+      try {
+        Promise.resolve(
+          window.__TAURI__.event.listen('meshharbor:language', (ev) => {
+            const next = normalizeLang(ev && ev.payload);
+            if (next) applyAndNotify(next, true);
+          }),
+        ).catch(() => {});
+      } catch (_) {
+        /* optional event capability */
+      }
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = currentLang;
+    const boot = () => {
+      applyI18n(document);
+      wireLangToggles(document);
+      subscribeCrossWindow();
+      void syncFromNative();
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot);
+    } else {
+      boot();
+    }
+  }
+
+  const api = {
+    LOCALES,
+    MESSAGES,
+    STORAGE_KEY,
+    normalizeLang,
+    detectOsLang,
+    t,
+    applyI18n,
+    getLang,
+    setLang,
+    syncLangButtons,
+    wireLangToggles,
+  };
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+  if (root) {
+    root.MeshHarborI18n = api;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

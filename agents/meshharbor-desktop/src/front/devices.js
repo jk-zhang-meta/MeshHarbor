@@ -39,6 +39,8 @@
   'use strict';
   const R = window.MeshHarbor;
   const { $, invoke, show, hide, fmtRelative, on, get, currentView } = R;
+  const t = (key, params, fallback) =>
+    window.MeshHarborI18n ? window.MeshHarborI18n.t(key, params) : fallback;
 
   // ConnectionType (snake_case) → label; the badge class is `badge-<key>`.
   const CONN = {
@@ -48,6 +50,20 @@
     blocked: 'Blocked',
     offline: 'Offline',
   };
+  function connLabel(key) {
+    return CONN[key] ? t('dv.conn.' + key, null, CONN[key]) : key;
+  }
+  function presenceLabel(pres) {
+    if (pres === 'online') return t('dv.presence.online', null, 'online');
+    if (pres === 'stale') return t('dv.presence.stale', null, 'stale');
+    if (pres === 'offline') return t('dv.presence.offline', null, 'offline');
+    return pres || '—';
+  }
+  function legacyWhat(code) {
+    if (code === 'unsupported_daemon') return t('dv.legacy.daemon', null, 'device service');
+    if (code === 'unsupported_server') return t('dv.legacy.server', null, 'server');
+    return LEGACY[code] || code;
+  }
   const PAGE_SIZES = [10, 25, 50, 100];
   const REFRESH_MS = 30000;
   const BACKOFF_MS = [30000, 60000, 120000];
@@ -88,8 +104,12 @@
    */
   function viewerNoteFor(where) {
     return where === 'browser_tab'
-      ? 'The remote screen opened in a tab of your default browser. Install Chrome, Edge, ' +
-          'Chromium or Brave and it opens in a window of its own.'
+      ? t(
+          'dv.viewerNoteBrowserTab',
+          null,
+          'The remote screen opened in a tab of your default browser. Install Chrome, Edge, ' +
+            'Chromium or Brave and it opens in a window of its own.',
+        )
       : null;
   }
   const mesh = {
@@ -234,10 +254,11 @@
    *  on screen is. */
   function agoText(epochMs) {
     const s = Math.max(0, (Date.now() - epochMs) / 1000);
-    if (s < 60) return 'less than a minute ago';
+    if (s < 60) return t('time.lessThanMinAgo', null, 'less than a minute ago');
     const m = Math.round(s / 60);
-    if (m < 60) return m + ' min ago';
-    return Math.round(m / 60) + ' h ago';
+    if (m < 60) return t('time.minAgo', { n: m }, m + ' min ago');
+    const h = Math.round(m / 60);
+    return t('time.hourAgo', { n: h }, h + ' h ago');
   }
 
   /** On screen: the Devices view is current and the window is visible. */
@@ -399,7 +420,7 @@
     {
       key: 'actions',
       title: '',
-      chooserTitle: 'Actions',
+      chooserTitle: () => t('dv.col.actions', null, 'Actions'),
       cls: 'dv-col-actions',
       build(td) {
         const s = {
@@ -412,9 +433,9 @@
         const wrap = el('div', 'dv-split-wrap');
         const group = el('div', 'dv-split-group');
 
-        const btn = el('button', 'sm dv-split-main', 'Connect');
+        const btn = el('button', 'sm dv-split-main', t('dv.action.connect', null, 'Connect'));
         btn.type = 'button';
-        btn.title = 'Remote control (does not lock the remote screen)';
+        btn.title = t('dv.action.connectTip', null, 'Remote control (does not lock the remote screen)');
         btn.addEventListener('click', async () => {
           closeAllSplitMenus(null);
           if (!s.agentId) return;
@@ -441,7 +462,7 @@
 
         const toggleBtn = el('button', 'sm dv-split-toggle', '▾');
         toggleBtn.type = 'button';
-        toggleBtn.title = 'More ways to connect (RDP)';
+        toggleBtn.title = t('dv.action.moreTip', null, 'More ways to connect (RDP)');
         toggleBtn.setAttribute('aria-haspopup', 'menu');
         toggleBtn.setAttribute('aria-expanded', 'false');
 
@@ -489,41 +510,41 @@
           }
         }
 
-        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', 'Connect with RDP');
+        const rdpItem = el('button', 'dv-split-item dv-split-item-rdp', t('dv.action.connectRdp', null, 'Connect with RDP'));
         rdpItem.type = 'button';
         rdpItem.setAttribute('role', 'menuitem');
-        rdpItem.title = 'Open the system RDP client (an RDP session locks the remote computer’s local screen)';
+        rdpItem.title = t('dv.action.connectRdpTip', null, 'Open the system RDP client (an RDP session locks the remote computer’s local screen)');
         // RDP over the mesh: offered only when the target reports it reachable
         // (`rdp_mesh_reachable`); an RDP server with no mesh path gets a hint.
-        const meshHint = el('div', 'dv-split-hint', 'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).');
+        const meshHint = el('div', 'dv-split-hint', t('dv.action.rdpMeshHint', null, 'Turn on RDP over the mesh on the target device (rdp_over_mesh = true).'));
         meshHint.hidden = true;
 
         const confirmBox = el('div', 'dv-rdp-confirm');
         confirmBox.setAttribute('role', 'alertdialog');
-        confirmBox.setAttribute('aria-label', 'Confirm RDP connection');
+        confirmBox.setAttribute('aria-label', t('dv.action.rdpConfirmAria', null, 'Confirm RDP connection'));
         confirmBox.hidden = true;
 
         const confirmText = el(
           'div',
           'dv-rdp-confirm-text',
-          'An RDP session locks the remote computer’s local screen.'
+          t('dv.action.rdpConfirmText', null, 'An RDP session locks the remote computer’s local screen.'),
         );
         const unpinnedNote = el(
           'div',
           'dv-rdp-unpinned-note',
-          'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'
+          t('dv.action.rdpUnpinnedNote', null, 'This device reported no certificate fingerprint; the RDP client will check the certificate itself.'),
         );
         const confirmActions = el('div', 'dv-rdp-confirm-actions');
         const confirmAcceptBtn = el(
           'button',
           'sm primary dv-rdp-confirm-accept',
-          'Connect'
+          t('dv.action.connect', null, 'Connect'),
         );
         confirmAcceptBtn.type = 'button';
         const confirmCancelBtn = el(
           'button',
           'sm dv-rdp-confirm-cancel',
-          'Cancel'
+          t('common.cancel', null, 'Cancel'),
         );
         confirmCancelBtn.type = 'button';
 
@@ -605,7 +626,7 @@
     },
     {
       key: 'name',
-      title: 'Name',
+      title: () => t('dv.col.name', null, 'Name'),
       sort: 'name',
       live: true,
       cls: 'dv-col-name',
@@ -628,14 +649,20 @@
         let tip;
         if (row.is_self) {
           cls = ctx.selfConnected ? 'dot dot-on' : 'dot dot-warn';
-          tip = ctx.selfConnected ? 'connected to the server' : 'not connected to the server';
+          tip = ctx.selfConnected
+            ? t('dv.dot.selfConnected', null, 'connected to the server')
+            : t('dv.dot.selfDisconnected', null, 'not connected to the server');
         } else if (peer) {
           cls = peer.online ? 'dot dot-on' : 'dot dot-off';
-          tip = peer.online ? 'reachable on the private network' : 'not reachable right now';
+          tip = peer.online
+            ? t('dv.dot.peerOnline', null, 'reachable on the private network')
+            : t('dv.dot.peerOffline', null, 'not reachable right now');
         } else {
           cls =
             row.presence === 'online' ? 'dot dot-on' : row.presence === 'stale' ? 'dot dot-warn' : 'dot dot-off';
-          tip = row.presence ? 'server: ' + row.presence : '';
+          tip = row.presence
+            ? t('dv.dot.serverPresence', { presence: presenceLabel(row.presence) }, 'server: ' + row.presence)
+            : '';
         }
         setClass(s.dot, cls);
         if (s.dot.title !== tip) s.dot.title = tip;
@@ -645,16 +672,19 @@
         setText(s.sub, showSub ? row.name : '');
         s.sub.hidden = !showSub;
         const zone = formatDeviceZone(row);
+        const lang = window.MeshHarborI18n ? window.MeshHarborI18n.getLang() : 'en';
         const chipKey =
+          lang +
+          '|' +
           (row.is_self ? 's' : '') +
           (row.ephemeral ? 'e' : '') +
           (zone.hasZone ? (zone.pinned ? 'zp:' : 'za:') + zone.zoneLabel : '');
         if (chipKey !== s.chipKey) {
           const chips = [];
-          if (row.is_self) chips.push(el('span', 'chip chip-self', 'this device'));
+          if (row.is_self) chips.push(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
           if (row.ephemeral) {
-            const c = el('span', 'chip chip-warn', 'ephemeral');
-            c.title = 'Removes itself after inactivity or on a clean shutdown; removal is final';
+            const c = el('span', 'chip chip-warn', t('dv.chip.ephemeral', null, 'ephemeral'));
+            c.title = t('dv.chip.ephemeralTip', null, 'Removes itself after inactivity or on a clean shutdown; removal is final');
             chips.push(c);
           }
           if (zone.hasZone) {
@@ -678,12 +708,16 @@
             c.dataset.zoneId = zone.zoneId;
             c.dataset.pinned = zone.pinned ? '1' : '0';
             c.title = zone.pinned
-              ? 'Logical network zone: ' +
-                zone.zoneLabel +
-                ' (pinned — locked regardless of GeoIP)'
-              : 'Logical network zone: ' +
-                zone.zoneLabel +
-                ' (auto-matched by public IP location)';
+              ? t(
+                  'dv.chip.zonePinned',
+                  { zone: zone.zoneLabel },
+                  'Logical network zone: ' + zone.zoneLabel + ' (pinned — locked regardless of GeoIP)',
+                )
+              : t(
+                  'dv.chip.zoneAuto',
+                  { zone: zone.zoneLabel },
+                  'Logical network zone: ' + zone.zoneLabel + ' (auto-matched by public IP location)',
+                );
             chips.push(c);
           }
           s.chips.replaceChildren(...chips);
@@ -693,7 +727,7 @@
     },
     {
       key: 'connection',
-      title: 'Connection',
+      title: () => t('dv.col.connection', null, 'Connection'),
       live: true,
       cls: 'dv-col-conn',
       build(td) {
@@ -707,7 +741,7 @@
         if (row.is_self) {
           s.badge.hidden = true;
           setText(s.rtt, '');
-          setText(s.note, 'this device');
+          setText(s.note, t('dv.chip.thisDevice', null, 'this device'));
           return;
         }
         const p = ctx.peerFor(row);
@@ -715,14 +749,14 @@
           s.badge.hidden = true;
           setText(s.rtt, '');
           setText(s.note, '—');
-          s.note.title = 'Not in this device’s live peer list';
+          s.note.title = t('dv.peerNotInList', null, 'Not in this device’s live peer list');
           return;
         }
         const key = String(p.connection || 'offline').toLowerCase();
         const stalled = p.stalled && (key === 'direct' || key === 'relay');
         s.badge.hidden = false;
         setClass(s.badge, 'badge badge-' + (stalled ? 'blocked' : key));
-        setText(s.badge, stalled ? 'Stalled' : CONN[key] || key);
+        setText(s.badge, stalled ? t('dv.conn.stalled', null, 'Stalled') : connLabel(key));
         // For a relayed peer, which relay and both endpoints (same-vs-cross
         // worker triage), as the CLI's CONN column says it.
         const kind = p.relay_kind ? p.relay_kind + (p.relay_transport ? '/' + p.relay_transport : '') : '';
@@ -737,11 +771,11 @@
     },
     {
       key: 'ping',
-      title: 'Ping',
+      title: () => t('dv.col.ping', null, 'Ping'),
       live: true,
       cls: 'ping-cell',
       build(td) {
-        const btn = el('button', 'sm', 'Ping');
+        const btn = el('button', 'sm', t('dv.col.ping', null, 'Ping'));
         btn.type = 'button';
         const out = el('span', 'ping-result');
         const s = { btn, out, target: null, busy: false };
@@ -755,13 +789,15 @@
         s.btn.hidden = !!row.is_self;
         if (s.busy) return;
         s.btn.disabled = !s.target;
-        s.btn.title = s.target ? 'Ping ' + s.target + ' over the private network' : 'No overlay address to ping';
+        s.btn.title = s.target
+          ? t('dv.ping.tip', { ip: s.target }, 'Ping ' + s.target + ' over the private network')
+          : t('dv.ping.noIp', null, 'No overlay address to ping');
         paintPing(s.out, s.target ? pingResults.get(s.target) : null);
       },
     },
     {
       key: 'status',
-      title: 'Status',
+      title: () => t('dv.col.status', null, 'Status'),
       sort: 'status',
       build(td) {
         const chip = el('span', 'chip chip-muted');
@@ -772,14 +808,14 @@
         const pres = row.presence || '';
         const cls = pres === 'online' ? 'chip chip-ok' : pres === 'stale' ? 'chip chip-warn' : 'chip chip-muted';
         setClass(s.chip, cls);
-        setText(s.chip, pres || '—');
+        setText(s.chip, presenceLabel(pres));
       },
     },
-    textCol('os', 'OS', 'os', (r) => r.os),
-    textCol('version', 'Version', 'version', (r) => r.version, 'mono'),
+    textCol('os', () => t('dv.col.os', null, 'OS'), 'os', (r) => r.os),
+    textCol('version', () => t('dv.col.version', null, 'Version'), 'version', (r) => r.version, 'mono'),
     {
       key: 'location',
-      title: 'Public IP & Location',
+      title: () => t('dv.col.location', null, 'Public IP & Location'),
       cls: 'dv-col-location',
       build(td) {
         const empty = el('span', 'muted small', '—');
@@ -830,13 +866,15 @@
         setText(s.ip, loc.publicIp || '—');
         s.currentIp = loc.publicIp;
         s.secondary.classList.toggle('is-copyable', Boolean(loc.publicIp));
-        const tip = loc.publicIp ? 'Click to copy public IP (' + loc.publicIp + ')' : '';
+        const tip = loc.publicIp
+          ? t('dv.copyIpTip', { ip: loc.publicIp }, 'Click to copy public IP (' + loc.publicIp + ')')
+          : '';
         if (s.secondary.title !== tip) s.secondary.title = tip;
       },
     },
     {
       key: 'overlay_ip',
-      title: 'Overlay IP',
+      title: () => t('dv.col.overlayIp', null, 'Overlay IP'),
       sort: 'overlay_ip',
       live: true,
       cls: 'mono',
@@ -856,10 +894,10 @@
         s.v6.hidden = !six;
       },
     },
-    textCol('magic_dns', 'MagicDNS', 'magic_dns', (r) => r.magic_dns_fqdn || r.magic_dns_name, 'mono small'),
+    textCol('magic_dns', () => t('dv.col.magicDns', null, 'MagicDNS'), 'magic_dns', (r) => r.magic_dns_fqdn || r.magic_dns_name, 'mono small'),
     {
       key: 'tags',
-      title: 'Tags',
+      title: () => t('dv.col.tags', null, 'Tags'),
       build(td) {
         return { td, sig: null };
       },
@@ -872,22 +910,28 @@
           s.td.replaceChildren(document.createTextNode('—'));
           return;
         }
-        s.td.replaceChildren(...tags.map((t) => el('span', 'tag-chip', t)));
+        s.td.replaceChildren(...tags.map((tag) => el('span', 'tag-chip', tag)));
       },
     },
-    textCol('kind', 'Kind', 'kind', (r) => (r.kind === 'tunnel_client' ? 'tunnel' : r.kind ? 'device' : '')),
+    textCol('kind', () => t('dv.col.kind', null, 'Kind'), 'kind', (r) =>
+      r.kind === 'tunnel_client'
+        ? t('dv.kind.tunnel', null, 'tunnel')
+        : r.kind
+          ? t('dv.kind.device', null, 'device')
+          : '',
+    ),
     {
       key: 'last_seen_at',
-      title: 'Last seen',
+      title: () => t('dv.col.lastSeen', null, 'Last seen'),
       sort: 'last_seen_at',
       cls: 'small',
       build(td) {
         return { td };
       },
       update(s, row) {
-        const t = row.last_seen_at ? Date.parse(row.last_seen_at) : NaN;
-        setText(s.td, Number.isFinite(t) ? fmtRelative(t) : '—');
-        const title = Number.isFinite(t) ? new Date(t).toLocaleString() : '';
+        const ts = row.last_seen_at ? Date.parse(row.last_seen_at) : NaN;
+        setText(s.td, Number.isFinite(ts) ? fmtRelative(ts) : '—');
+        const title = Number.isFinite(ts) ? new Date(ts).toLocaleString() : '';
         if (s.td.title !== title) s.td.title = title;
       },
     },
@@ -921,7 +965,7 @@
       // A short reason inline, the whole of it on hover.
       const msg = String(err);
       const short = msg.length > 60 ? msg.slice(0, 57) + '…' : msg;
-      pingResults.set(target, { ok: false, text: 'failed — ' + short, title: msg });
+      pingResults.set(target, { ok: false, text: t('dv.ping.failed', { msg: short }, 'failed — ' + short), title: msg });
     } finally {
       s.busy = false;
       s.btn.textContent = label;
@@ -1152,17 +1196,25 @@
   function overlayNote(p, searched) {
     switch (p.overlay) {
       case 'no_node':
-        return 'This device isn’t on your private network, so it lists only itself. Turn the private network on (Settings → overlay_enabled) to see the devices it can reach.';
+        return t(
+          'dv.note.noNode',
+          null,
+          'This device isn’t on your private network, so it lists only itself. Turn the private network on (Settings → overlay_enabled) to see the devices it can reach.',
+        );
       case 'no_network':
-        return 'Your organization has no private network yet, so only this device is listed.';
+        return t('dv.note.noNetwork', null, 'Your organization has no private network yet, so only this device is listed.');
       case 'unavailable':
-        return 'This server has no private-network module, so only this device is listed.';
+        return t('dv.note.unavailable', null, 'This server has no private-network module, so only this device is listed.');
       default:
-        if (searched) return (Number(p.total) || 0) === 0 ? 'No devices match “' + st.q.trim() + '”.' : null;
+        if (searched) {
+          return (Number(p.total) || 0) === 0
+            ? t('dv.note.noSearchMatch', { q: st.q.trim() }, 'No devices match “' + st.q.trim() + '”.')
+            : null;
+        }
         if ((Number(p.total) || 0) > 1) return null;
         return p.acl_mode === 'enforce'
-          ? 'Your organization’s access rules (ACL enforce) let this device see no other device.'
-          : 'No other devices are on your private network yet.';
+          ? t('dv.note.aclEmpty', null, 'Your organization’s access rules (ACL enforce) let this device see no other device.')
+          : t('dv.note.noOthers', null, 'No other devices are on your private network yet.');
     }
   }
 
@@ -1170,13 +1222,13 @@
   function emptyMeshNote(overlay) {
     switch (overlay) {
       case 'no_node':
-        return 'This device isn’t on your private network, so there is no mesh to draw.';
+        return t('dv.mesh.emptyNoNode', null, 'This device isn’t on your private network, so there is no mesh to draw.');
       case 'no_network':
-        return 'Your organization has no private network yet, so there is no mesh to draw.';
+        return t('dv.mesh.emptyNoNetwork', null, 'Your organization has no private network yet, so there is no mesh to draw.');
       case 'unavailable':
-        return 'This server has no private-network module, so there is no mesh to draw.';
+        return t('dv.mesh.emptyUnavailable', null, 'This server has no private-network module, so there is no mesh to draw.');
       default:
-        return 'No devices on your private network yet.';
+        return t('dv.mesh.emptyDefault', null, 'No devices on your private network yet.');
     }
   }
 
@@ -1187,23 +1239,33 @@
     let warn = null;
     const searched = !!st.q.trim();
     if (v.source === 'loading') {
-      note = 'Loading the device list…';
+      note = t('dv.note.loading', null, 'Loading the device list…');
     } else if (st.mode === 'legacy' && st.error) {
-      note =
+      note = t(
+        'dv.note.legacy',
+        { what: legacyWhat(st.error.code) },
         'Showing only the devices this one reaches directly — update the ' +
-        LEGACY[st.error.code] +
-        ' to see every device your private network lets it see.';
+          LEGACY[st.error.code] +
+          ' to see every device your private network lets it see.',
+      );
     } else if (v.source === 'server') {
       note = overlayNote(v.envelope, searched);
       if (st.error) {
-        warn = 'Showing data from ' + agoText(st.lastGoodAt) + ' — ' + st.error.message + retryText();
+        warn = t(
+          'dv.note.stale',
+          { ago: agoText(st.lastGoodAt), msg: st.error.message, retry: retryText() },
+          'Showing data from ' + agoText(st.lastGoodAt) + ' — ' + st.error.message + retryText(),
+        );
       }
     } else if (st.error) {
-      warn =
+      warn = t(
+        'dv.note.failedFallback',
+        { msg: st.error.message, retry: retryText() },
         'Couldn’t get the device list — ' +
-        st.error.message +
-        '. Showing the devices this one reaches directly' +
-        retryText();
+          st.error.message +
+          '. Showing the devices this one reaches directly' +
+          retryText(),
+      );
     }
     const combinedWarn = st.rdpActionError
       ? warn
@@ -1220,17 +1282,25 @@
   function retryText() {
     if (!st.nextAt) return '.';
     const secs = Math.max(0, Math.round((st.nextAt - Date.now()) / 1000));
-    return secs > 0 ? ' (retrying in ' + secs + ' s).' : '.';
+    return secs > 0 ? t('dv.note.retryingIn', { secs }, ' (retrying in ' + secs + ' s).') : '.';
   }
 
   function paintPager(v) {
     const from = v.total === 0 || !v.rows.length ? 0 : (v.page - 1) * v.perPage + 1;
     const to = from === 0 ? 0 : from + v.rows.length - 1;
-    setText($('dv-pager-range'), v.source === 'loading' ? '' : from + '–' + to + ' of ' + v.total);
+    setText(
+      $('dv-pager-range'),
+      v.source === 'loading'
+        ? ''
+        : t('dv.pager.range', { from, to, total: v.total }, from + '–' + to + ' of ' + v.total),
+    );
     $('dv-prev').disabled = v.page <= 1;
     $('dv-next').disabled = v.page >= v.totalPages;
-    const noun = v.total === 1 ? ' device' : ' devices';
-    setText($('dv-total'), v.source === 'loading' ? '' : v.total + noun);
+    const totalText =
+      v.total === 1
+        ? t('dv.pager.totalOne', { n: v.total }, v.total + ' device')
+        : t('dv.pager.totalMany', { n: v.total }, v.total + ' devices');
+    setText($('dv-total'), v.source === 'loading' ? '' : totalText);
   }
 
   function paintOrgs(dv) {
@@ -1246,7 +1316,8 @@
       return;
     }
     show(sel);
-    const sig = rows.map((o) => o.label + (o.enabled ? '' : '~')).join('|');
+    const lang = window.MeshHarborI18n ? window.MeshHarborI18n.getLang() : 'en';
+    const sig = lang + '|' + rows.map((o) => o.label + (o.enabled ? '' : '~')).join('|');
     // Never rebuild a dropdown someone has open.
     if (sel.dataset.sig !== sig && document.activeElement !== sel) {
       sel.replaceChildren(
@@ -1254,7 +1325,9 @@
           const opt = document.createElement('option');
           opt.value = o.label;
           opt.textContent =
-            o.label + (o.primary && o.label !== PRIMARY ? ' (primary)' : '') + (o.enabled ? '' : ' — disabled');
+            o.label +
+            (o.primary && o.label !== PRIMARY ? t('dv.org.primarySuffix', null, ' (primary)') : '') +
+            (o.enabled ? '' : t('dv.org.disabledSuffix', null, ' — disabled'));
           return opt;
         }),
       );
@@ -1331,19 +1404,25 @@
     let text = null;
     let draw = false;
     if (e && LEGACY[e.code]) {
-      text = 'The mesh graph needs a newer ' + LEGACY[e.code] + '.';
+      text = t('dv.mesh.needsNewer', { what: legacyWhat(e.code) }, 'The mesh graph needs a newer ' + LEGACY[e.code] + '.');
     } else if (v && !v.enabled) {
       // Statistics off on the server: data, not a failure.
-      text = 'This server has usage statistics turned off, so there is no mesh graph to show.';
+      text = t('dv.mesh.statsOff', null, 'This server has usage statistics turned off, so there is no mesh graph to show.');
     } else if (v && !(v.nodes || []).length) {
       text = emptyMeshNote(v.overlay);
     } else if (v) {
       draw = true;
-      if (e) text = 'Showing the graph from ' + agoText(mesh.lastGoodAt) + ' — ' + e.message;
+      if (e) {
+        text = t(
+          'dv.mesh.stale',
+          { ago: agoText(mesh.lastGoodAt), msg: e.message },
+          'Showing the graph from ' + agoText(mesh.lastGoodAt) + ' — ' + e.message,
+        );
+      }
     } else if (e) {
-      text = 'Couldn’t load the mesh graph — ' + e.message;
+      text = t('dv.mesh.loadFailed', { msg: e.message }, 'Couldn’t load the mesh graph — ' + e.message);
     } else {
-      text = 'Loading the mesh graph…';
+      text = t('dv.mesh.loading', null, 'Loading the mesh graph…');
     }
     if (draw) {
       show(body);
@@ -1485,6 +1564,13 @@
         clearTimeout(st.timer);
         clearTimeout(mesh.timer);
       }
+    });
+
+    document.addEventListener('meshharbor:lang', () => {
+      if (grid && grid.relayout) grid.relayout();
+      paint();
+      paintMesh();
+      if (graph && graph.rerender) graph.rerender();
     });
 
     document.addEventListener('visibilitychange', () => {
