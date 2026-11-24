@@ -831,11 +831,35 @@ function checklistClass(event) {
   return "running";
 }
 
+function formatPreflightExisting(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value || value === "clean") return t("install.existing.clean");
+  const ambig = value.match(/^ambiguous \(perUser (.+) \+ perMachine (.+)\)$/);
+  if (ambig) {
+    return t("install.existing.ambiguous", { perUser: ambig[1], perMachine: ambig[2] });
+  }
+  const perUser = value.match(/^perUser (.+)$/);
+  if (perUser) {
+    const version = perUser[1] === "(unknown version)" ? t("welcome.unknown") : perUser[1];
+    return t("install.existing.perUser", { version });
+  }
+  const perMachine = value.match(/^perMachine (.+)$/);
+  if (perMachine) {
+    const version = perMachine[1] === "(unknown version)" ? t("welcome.unknown") : perMachine[1];
+    return t("install.existing.perMachine", { version });
+  }
+  const installed = value.match(/^installed \((.+)\)$/);
+  if (installed) {
+    return t("install.existing.installed", { detail: installed[1] });
+  }
+  return value;
+}
+
 function checklistLabel(event) {
   const et = event.type;
   const d = event.data ?? {};
   const base = stepLabel(et);
-  if (et === "PreflightOk") return t("install.row.preflightOk", { existing: d.existing });
+  if (et === "PreflightOk") return t("install.row.preflightOk", { existing: formatPreflightExisting(d.existing) });
   if (et === "PreflightWarning") return t("install.row.preflightWarning", { base, message: d.message });
   if (et === "AssetResolving") return t("install.row.assetResolving", { artifact: d.artifact });
   if (et === "AssetResolved") {

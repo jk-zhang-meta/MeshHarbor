@@ -43,12 +43,12 @@
         'This platform supports the tunnel client only — the daemon roles are Windows-only.',
       'welcome.role.daemonSystem.title': 'Be accessed — background service (pre-logon, recommended)',
       'welcome.role.daemonSystem.desc':
-        'perMachine install + SystemContext: remote control works on the lock screen, UAC dialogs, and admin apps. Requires admin (UAC prompt).',
+        'Installs for all users and runs as a system service so remote control works on the lock screen, UAC prompts, and admin apps. Requires administrator approval.',
       'welcome.role.daemonMachine.title': 'Be accessed — attended service',
       'welcome.role.daemonMachine.desc':
-        'perMachine install for all users on this PC, without the SystemContext swap. Requires admin (UAC prompt) during install.',
+        'Installs for all users on this PC for signed-in sessions only (no lock-screen or UAC control). Requires administrator approval during install.',
       'welcome.role.daemonUser.title': 'Be accessed — this user only',
-      'welcome.role.daemonUser.desc': 'perUser install under my account. No admin password needed.',
+      'welcome.role.daemonUser.desc': 'Installs for your account only. No administrator password needed.',
       'welcome.role.tunnelClient.title': 'Reach others only — tunnel client',
       'welcome.role.tunnelClient.descPre': 'Installs the ',
       'welcome.role.tunnelClient.descPost':
@@ -180,6 +180,11 @@
       'install.step.Done': 'Done',
       'install.step.Error': 'Error',
       'install.step.SystemContextError': 'SystemContext step failed',
+      'install.existing.clean': 'not installed',
+      'install.existing.perUser': 'existing single-user install ({version})',
+      'install.existing.perMachine': 'existing machine-wide install ({version})',
+      'install.existing.ambiguous': 'both user and machine installs ({perUser} + {perMachine})',
+      'install.existing.installed': 'existing install ({detail})',
       'install.row.preflightOk': 'Pre-flight: detected {existing}',
       'install.row.preflightWarning': '{base}: {message}',
       'install.row.assetResolving': 'Resolving download URL ({artifact})',
@@ -274,12 +279,12 @@
       'welcome.platformNote': '当前平台仅支持隧道客户端 —— 守护服务角色仅支持 Windows。',
       'welcome.role.daemonSystem.title': '被访问 —— 后台系统服务（登录前可用，推荐）',
       'welcome.role.daemonSystem.desc':
-        'perMachine 安装 + SystemContext：可在锁屏、UAC 弹窗和管理员应用上远程控制。需要管理员权限（UAC 确认）。',
+        '为本机所有用户安装，以系统身份运行，可在锁屏、UAC 弹窗和管理员窗口上远程控制。安装时需要管理员确认。',
       'welcome.role.daemonMachine.title': '被访问 —— 有人值守服务',
       'welcome.role.daemonMachine.desc':
-        '为本机所有用户进行 perMachine 安装，不启用 SystemContext 切换。安装时需要管理员权限（UAC 确认）。',
+        '为本机所有用户安装，仅在用户登录后可用（不控制锁屏和 UAC 弹窗）。安装时需要管理员确认。',
       'welcome.role.daemonUser.title': '被访问 —— 仅当前用户',
-      'welcome.role.daemonUser.desc': '在当前账号下进行 perUser 安装，无需管理员密码。',
+      'welcome.role.daemonUser.desc': '仅为当前账号安装，无需管理员密码。',
       'welcome.role.tunnelClient.title': '仅访问其他设备 —— 隧道客户端',
       'welcome.role.tunnelClient.descPre': '安装并注册 ',
       'welcome.role.tunnelClient.descPost':
@@ -409,7 +414,12 @@
       'install.step.Done': '完成',
       'install.step.Error': '出错',
       'install.step.SystemContextError': 'SystemContext 步骤失败',
-      'install.row.preflightOk': '安装前检查：检测到 {existing}',
+      'install.existing.clean': '未安装',
+      'install.existing.perUser': '已有单用户安装（{version}）',
+      'install.existing.perMachine': '已有全机安装（{version}）',
+      'install.existing.ambiguous': '同时存在单用户与全机安装（{perUser} + {perMachine}）',
+      'install.existing.installed': '已有安装（{detail}）',
+      'install.row.preflightOk': '安装前检查：检测到{existing}',
       'install.row.preflightWarning': '{base}：{message}',
       'install.row.assetResolving': '正在解析下载地址（{artifact}）',
       'install.row.assetResolved': '已解析版本 {tag}（{mb} MB）',
@@ -450,10 +460,10 @@
       'done.anchorNoteBody':
         '安装本身已经完成。如需稍后为本机锚定，请在管理员终端中使用从控制台获取的新注册令牌运行以下命令：',
       'done.scNoteTitle': 'SystemContext 模式已启用。',
-      'done.scNoteBodyPre': '已安装 perMachine MSI，守护服务已注册，SCM 服务会在 ',
-      'done.scNoteBodyMid': ' 中带有 ',
+      'done.scNoteBodyPre': '已安装 perMachine MSI，守护服务已注册，SCM 服务已将 ',
+      'done.scNoteBodyMid': ' 写入 ',
       'done.scNoteBodyPost':
-        ' 环境变量。现在通过浏览器远程控制时，可正常操作 Windows 锁屏界面、UAC 弹窗和管理员应用。',
+        ' 环境变量块。现在通过浏览器远程控制时，可正常操作 Windows 锁屏界面、UAC 弹窗和管理员应用。',
       'done.scNoteHintPre': '如需日后关闭 SystemContext 模式，请在管理员终端运行 ',
       'done.scNoteHintPost': '，或重新运行本向导并选择“有人值守服务”角色。',
 

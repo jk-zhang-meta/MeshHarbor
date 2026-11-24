@@ -53,23 +53,21 @@
             <input type="radio" name="role" value="daemon-system">
             <div>
               <strong data-i18n="welcome.role.daemonSystem.title">Be accessed — background service (pre-logon, recommended)</strong>
-              <p class="muted" data-i18n="welcome.role.daemonSystem.desc">perMachine install + SystemContext: remote control works on
-              the lock screen, UAC dialogs, and admin apps. Requires admin (UAC prompt).</p>
+              <p class="muted" data-i18n="welcome.role.daemonSystem.desc">Installs for all users and runs as a system service so remote control works on the lock screen, UAC prompts, and admin apps. Requires administrator approval.</p>
             </div>
           </label>
           <label class="radio role-daemon">
             <input type="radio" name="role" value="daemon-machine">
             <div>
               <strong data-i18n="welcome.role.daemonMachine.title">Be accessed — attended service</strong>
-              <p class="muted" data-i18n="welcome.role.daemonMachine.desc">perMachine install for all users on this PC, without the
-              SystemContext swap. Requires admin (UAC prompt) during install.</p>
+              <p class="muted" data-i18n="welcome.role.daemonMachine.desc">Installs for all users on this PC for signed-in sessions only (no lock-screen or UAC control). Requires administrator approval during install.</p>
             </div>
           </label>
           <label class="radio role-daemon">
             <input type="radio" name="role" value="daemon-user">
             <div>
               <strong data-i18n="welcome.role.daemonUser.title">Be accessed — this user only</strong>
-              <p class="muted" data-i18n="welcome.role.daemonUser.desc">perUser install under my account. No admin password needed.</p>
+              <p class="muted" data-i18n="welcome.role.daemonUser.desc">Installs for your account only. No administrator password needed.</p>
             </div>
           </label>
           <label class="radio">
