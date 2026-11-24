@@ -810,12 +810,14 @@
             class="mh-gv2-panel__body"
             data-testid="globe-v2-mobile-list-body"
           >
-            <div class="mh-gv2-list">
+            <div class="mh-gv2-list" @keydown="handleListKeyDown">
               <button
                 v-for="item in pagedAllNodes"
                 :key="item.id"
                 type="button"
                 class="mh-gv2-list-row"
+                @focus="onFocusListNode(item)"
+                @blur="onBlurListNode"
                 @click="selectNodeFromList(item)"
               >
                 <span class="mh-gv2-list-row__name">
@@ -1248,12 +1250,14 @@
               <div v-if="listPanelPrecisionNote" class="mh-gv2-note">
                 {{ listPanelPrecisionNote }}
               </div>
-              <div class="mh-gv2-list" data-testid="globe-v2-paginated-list">
+              <div class="mh-gv2-list" data-testid="globe-v2-paginated-list" @keydown="handleListKeyDown">
                 <button
                   v-for="item in pagedListNodes"
                   :key="item.id"
                   type="button"
                   class="mh-gv2-list-row"
+                  @focus="onFocusListNode(item)"
+                  @blur="onBlurListNode"
                   @click="selectNodeFromList(item)"
                 >
                   <span class="mh-gv2-list-row__name">
@@ -1329,6 +1333,7 @@ import {
   readStoredMaxZoom,
   writeStoredMaxZoom,
 } from './maxZoomSetting'
+import { createAdaptiveDprController } from './adaptiveDpr'
 import {
   centralAngleRad,
   classifyGroupInteraction,
@@ -1579,7 +1584,9 @@ const fresnelColors = computed(() =>
       },
 )
 
-// Telemetry counters
+// Telemetry counters & S11 monotonic adaptive pixel-ratio controller (2 -> 1.5 -> 1)
+const dprController = createAdaptiveDprController(props.pixelRatio)
+const effectivePixelRatio = ref<number>(dprController.current())
 const mountTime = typeof performance !== 'undefined' ? performance.now() : 0
 const firstFrameMs = ref<number | null>(null)
 const webglContextLostCount = ref(0)
@@ -2647,7 +2654,7 @@ function buildBackboneMarkerFeatures(map: MapLibreMap): {
   features: Array<GeoJSON.Feature<GeoJSON.Point>>
   layoutSig: string
 } {
-  const dpr = Math.max(1, Math.min(2, props.pixelRatio))
+  const dpr = effectivePixelRatio.value
   ensureStaticIcons(map, props.themeMode, dpr)
   ensureBackboneStaticIcons(map, props.themeMode, dpr)
 
@@ -2715,7 +2722,7 @@ function buildMarkerFeatures(map: MapLibreMap): {
     return buildBackboneMarkerFeatures(map)
   }
 
-  const dpr = Math.max(1, Math.min(2, props.pixelRatio))
+  const dpr = effectivePixelRatio.value
   ensureStaticIcons(map, props.themeMode, dpr)
 
   const hasSpiderfy = Boolean(activeSpiderfy.value)
@@ -3608,6 +3615,45 @@ function handleKeyDown(e: KeyboardEvent): void {
   }
 }
 
+function handleListKeyDown(e: KeyboardEvent): void {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
+  const list = e.currentTarget as HTMLElement | null
+  if (!list) return
+  const rows = Array.from(list.querySelectorAll<HTMLButtonElement>('.mh-gv2-list-row'))
+  if (!rows.length) return
+  const idx = rows.indexOf(document.activeElement as HTMLButtonElement)
+  e.preventDefault()
+  let nextIdx = 0
+  if (e.key === 'Home') nextIdx = 0
+  else if (e.key === 'End') nextIdx = rows.length - 1
+  else if (e.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : (idx + 1) % rows.length
+  else if (e.key === 'ArrowUp') nextIdx = idx <= 0 ? rows.length - 1 : idx - 1
+  rows[nextIdx]?.focus()
+}
+
+function onFocusListNode(node: GlobeNode): void {
+  if (isBackboneView.value) {
+    if (hoveredBackboneNodeId.value !== node.id) {
+      hoveredBackboneNodeId.value = node.id
+      syncMapSources()
+    }
+    return
+  }
+  const displayId = merged.value.displayIdByNodeId.get(node.id) ?? null
+  if (displayId && hoveredDisplayId.value !== displayId) {
+    hoveredDisplayId.value = displayId
+    syncMapSources()
+  }
+}
+
+function onBlurListNode(): void {
+  if (hoveredBackboneNodeId.value != null || hoveredDisplayId.value != null) {
+    hoveredBackboneNodeId.value = null
+    hoveredDisplayId.value = null
+    syncMapSources()
+  }
+}
+
 function handleCanvasKeyDown(e: KeyboardEvent): void {
   const map = mapRef.value
   if (!map) return
@@ -3723,7 +3769,7 @@ onMounted(() => {
       pitchWithRotate: false,
       renderWorldCopies: false,
       fadeDuration: 150,
-      pixelRatio: Math.max(1, Math.min(2, props.pixelRatio)),
+      pixelRatio: effectivePixelRatio.value,
       cooperativeGestures: effectiveCooperativeGestures.value,
       localIdeographFontFamily: CJK_FONT_STACK,
       attributionControl: false,
@@ -3749,8 +3795,18 @@ onMounted(() => {
   canvas.addEventListener('webglcontextlost', onContextLost)
   canvas.addEventListener('webglcontextrestored', onContextRestored)
 
+  map.on('movestart', () => {
+    dprController.beginInteraction()
+  })
+
   map.on('render', () => {
     renderEventCounter++
+    const degraded = dprController.recordFrame(performance.now())
+    if (degraded != null && degraded !== effectivePixelRatio.value) {
+      effectivePixelRatio.value = degraded
+      map.setPixelRatio(degraded)
+      syncMapSources()
+    }
     syncFresnelRim()
   })
 
@@ -3789,6 +3845,7 @@ onMounted(() => {
   })
 
   map.on('moveend', () => {
+    dprController.endInteraction()
     currentCenterLat.value = map.getCenter().lat
     syncFresnelRim()
     refreshMarkerEdgePlacements()
@@ -3909,8 +3966,10 @@ watch(
   () => props.pixelRatio,
   (pr) => {
     const map = mapRef.value
+    const next = dprController.setCap(pr)
+    effectivePixelRatio.value = next
     if (!map) return
-    map.setPixelRatio(Math.max(1, Math.min(2, pr)))
+    map.setPixelRatio(next)
     syncMapSources()
   },
 )
@@ -4031,7 +4090,7 @@ async function runPerfBenchmark(durationMs = 10_000): Promise<GlobePerfReport> {
 
   const report: GlobePerfReport = {
     variant: 'L',
-    pixelRatio: props.pixelRatio,
+    pixelRatio: effectivePixelRatio.value,
     dataset: props.datasetTag,
     viewport: { width: Math.round(rect.width), height: Math.round(rect.height) },
     renderer: getWebglRendererName(),
@@ -4192,6 +4251,7 @@ function getDebugState() {
     globeDiameterRatio,
     legendCollapsed: legendCollapsed.value,
     webglContextLost: webglContextLostCount.value,
+    effectivePixelRatio: effectivePixelRatio.value,
     styleReloads: styleReloadCount.value,
     cooperativeGesturesEnabled: Boolean(map?.cooperativeGestures?.isEnabled()),
     isFullPage: isFullLayout.value,

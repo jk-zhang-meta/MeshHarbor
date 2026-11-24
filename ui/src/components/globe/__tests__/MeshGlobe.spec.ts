@@ -2,7 +2,6 @@
 // Copyright (C) 2026 G ROX EOOD
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { routeLocationKey } from 'vue-router'
 import { createVuetify } from 'vuetify'
 import * as components from 'vuetify/components'
 import * as directives from 'vuetify/directives'
@@ -10,14 +9,10 @@ import * as directives from 'vuetify/directives'
 vi.mock('@/components/globe-v2/MeshGlobeMap.vue', () => ({
   default: { name: 'MeshGlobeMapStub', template: '<div data-testid="globe-v2-stub" />' },
 }))
-vi.mock('../MeshGlobeCanvas.vue', () => ({
-  default: { name: 'MeshGlobeCanvasStub', template: '<div data-testid="globe-legacy-stub" />' },
-}))
 
 import MeshGlobe from '../MeshGlobe.vue'
-import GlobeDetailPanel from '../GlobeDetailPanel.vue'
 import MeshGraph from '@/components/stats/MeshGraph.vue'
-import type { GlobeArc, PlacedGlobeNode } from '../types'
+import type { GlobeArc, GlobeNode } from '../types'
 import en from '@/locales/en.json'
 import zhCN from '@/locales/zh-CN.json'
 
@@ -33,7 +28,7 @@ beforeAll(() => {
 
 const vuetify = createVuetify({ components, directives })
 
-const sampleNodes: PlacedGlobeNode[] = [
+const sampleNodes: GlobeNode[] = [
   {
     id: 'node-1',
     name: 'gateway-a',
@@ -48,6 +43,8 @@ const sampleNodes: PlacedGlobeNode[] = [
     country: '中国',
     region: '广东省',
     city: '深圳市',
+    lat: 22.54,
+    lon: 114.06,
     publicIp: '192.0.2.10',
     overlayIp: '100.64.0.10',
     relayHome: 'cn-south',
@@ -55,14 +52,6 @@ const sampleNodes: PlacedGlobeNode[] = [
     zoneName: 'CN Zone',
     zonePinned: true,
     managementPath: { mode: 'gateway', gatewayName: 'gateway-a' },
-    baseLon: 114.06,
-    baseLat: 22.54,
-    lon: 114.06,
-    lat: 22.54,
-    precision: 'city',
-    locationLabel: '中国 · 广东省 · 深圳市',
-    clusterSize: 1,
-    clusterIndex: 0,
   },
   {
     id: 'node-2',
@@ -71,14 +60,11 @@ const sampleNodes: PlacedGlobeNode[] = [
     presence: 'online',
     os: 'macos',
     version: '0.4.204',
-    baseLon: 8.68,
-    baseLat: 50.11,
-    lon: 8.68,
     lat: 50.11,
-    precision: 'city',
-    locationLabel: 'Germany · Frankfurt',
-    clusterSize: 1,
-    clusterIndex: 0,
+    lon: 8.68,
+    countryCode: 'DE',
+    country: 'Germany',
+    city: 'Frankfurt',
   },
 ]
 
@@ -101,7 +87,7 @@ const sampleArcs: GlobeArc[] = [
   },
 ]
 
-describe('MeshGlobe — WebGL2 unavailable fallback', () => {
+describe('MeshGlobe — MapLibre v2 engine & WebGL2 fallback', () => {
   it('renders the #fallback slot and emits fallback-active in environments without WebGL2', () => {
     const w = mount(MeshGlobe, {
       props: { nodes: sampleNodes, arcs: sampleArcs },
@@ -113,7 +99,7 @@ describe('MeshGlobe — WebGL2 unavailable fallback', () => {
     expect(w.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('fallback')
   })
 
-  it('defaults to MapLibre v2 when WebGL2 is available and honors ?globe=legacy', async () => {
+  it('always uses MapLibre v2 when WebGL2 is available (for both devices and backbone views) and honors forceFallback', () => {
     vi.stubGlobal('WebGL2RenderingContext', class {})
     const spy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((kind: string) =>
       kind === 'webgl2'
@@ -125,33 +111,25 @@ describe('MeshGlobe — WebGL2 unavailable fallback', () => {
         global: { plugins: [vuetify] },
       })
       expect(wDefault.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('v2')
+      expect(wDefault.find('[data-testid="mesh-globe-root"]').attributes('data-globe-view')).toBe('devices')
       wDefault.unmount()
 
-      const wLegacy = mount(MeshGlobe, {
-        props: { nodes: sampleNodes, arcs: sampleArcs },
-        global: {
-          plugins: [vuetify],
-          provide: {
-            [routeLocationKey as symbol]: { query: { globe: 'legacy' } },
-          },
-        },
-      })
-      expect(wLegacy.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('legacy')
-      wLegacy.unmount()
-
-      // Backbone view ALWAYS uses MapLibre v2 even when ?globe=legacy is set
       const wBackbone = mount(MeshGlobe, {
         props: { viewMode: 'backbone', nodes: sampleNodes, arcs: sampleArcs },
-        global: {
-          plugins: [vuetify],
-          provide: {
-            [routeLocationKey as symbol]: { query: { globe: 'legacy' } },
-          },
-        },
+        global: { plugins: [vuetify] },
       })
       expect(wBackbone.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('v2')
       expect(wBackbone.find('[data-testid="mesh-globe-root"]').attributes('data-globe-view')).toBe('backbone')
       wBackbone.unmount()
+
+      const wForced = mount(MeshGlobe, {
+        props: { nodes: sampleNodes, arcs: sampleArcs, forceFallback: true },
+        slots: { fallback: '<div data-testid="ring-slot">2D Ring</div>' },
+        global: { plugins: [vuetify] },
+      })
+      expect(wForced.find('[data-testid="mesh-globe-root"]').attributes('data-globe-engine')).toBe('fallback')
+      expect(wForced.find('[data-testid="ring-slot"]').exists()).toBe(true)
+      wForced.unmount()
     } finally {
       spy.mockRestore()
       vi.unstubAllGlobals()
@@ -177,70 +155,7 @@ describe('MeshGlobe — WebGL2 unavailable fallback', () => {
   })
 })
 
-describe('GlobeDetailPanel — node & link details', () => {
-  it('renders full device facts, management_path, peers, and emits open-device & close', async () => {
-    const w = mount(GlobeDetailPanel, {
-      props: {
-        node: sampleNodes[0]!,
-        arc: null,
-        nodes: sampleNodes,
-        arcs: sampleArcs,
-        isMobile: false,
-      },
-      global: { plugins: [vuetify] },
-    })
-    const txt = w.text()
-    expect(txt).toContain('gateway-a')
-    expect(txt).toContain('CN Zone')
-    expect(txt).toContain('linux · v0.4.204')
-    expect(txt).toContain('中国 · 广东省 · 深圳市')
-    expect(w.find('[data-testid="globe-panel-public-ip"]').text()).toContain('192.0.2.10')
-    expect(w.find('[data-testid="globe-panel-mgmt-path"]').text()).toContain('gateway-a')
-    expect(w.find('[data-testid="globe-panel-peers"]').text()).toContain('device-b')
-
-    await w.find('[data-testid="globe-panel-open-device"]').trigger('click')
-    expect(w.emitted('open-device')?.[0]).toEqual(['node-1'])
-
-    await w.find('[data-testid="globe-panel-close"]').trigger('click')
-    expect(w.emitted('close')).toHaveLength(1)
-  })
-
-  it('omits public IP and management path when absent, and uses mobile bottom-sheet class below 600px', () => {
-    const w = mount(GlobeDetailPanel, {
-      props: {
-        node: sampleNodes[1]!,
-        arc: null,
-        nodes: sampleNodes,
-        arcs: sampleArcs,
-        isMobile: true,
-      },
-      global: { plugins: [vuetify] },
-    })
-    expect(w.find('[data-testid="globe-detail-panel"]').classes()).toContain('mh-globe-panel--mobile')
-    expect(w.find('[data-testid="globe-panel-public-ip"]').exists()).toBe(false)
-    expect(w.find('[data-testid="globe-panel-mgmt-path"]').exists()).toBe(false)
-  })
-
-  it('renders per-direction asymmetric link breakdown and jumps to endpoints', async () => {
-    const w = mount(GlobeDetailPanel, {
-      props: {
-        node: null,
-        arc: sampleArcs[0]!,
-        nodes: sampleNodes,
-        arcs: sampleArcs,
-      },
-      global: { plugins: [vuetify] },
-    })
-    const txt = w.text()
-    expect(txt).toContain('gateway-a ↔ device-b')
-    expect(txt).toContain('relay:turn/udp')
-    expect(txt).toContain('142 ms')
-    expect(txt).toContain('168 ms')
-    expect(txt).toContain('Asymmetric')
-  })
-})
-
-describe('i18n parity for mh.mesh', () => {
+describe('i18n parity for mh.mesh, mh.globeV2, and mh.backbone', () => {
   type Tree = { [k: string]: string | Tree }
   function leaves(tree: Tree, prefix = ''): string[] {
     return Object.entries(tree).flatMap(([k, v]) =>
@@ -248,7 +163,7 @@ describe('i18n parity for mh.mesh', () => {
     )
   }
 
-  it('keeps 100% key parity between en.json and zh-CN.json under mh.mesh and mh.globeV2', () => {
+  it('keeps 100% key parity between en.json and zh-CN.json under mh.mesh, mh.globeV2, and mh.backbone', () => {
     const enMesh = leaves((en as unknown as { mh: { mesh: Tree } }).mh.mesh, 'mh.mesh.')
     const zhMesh = leaves((zhCN as unknown as { mh: { mesh: Tree } }).mh.mesh, 'mh.mesh.')
     expect(enMesh.length).toBeGreaterThan(30)

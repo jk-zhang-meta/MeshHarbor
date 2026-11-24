@@ -70,7 +70,7 @@
         </div>
       </div>
 
-      <!-- 3D Interactive WebGL2 Globe (lazy-loaded MapLibre v2; ?globe=legacy fallback) with automatic 2D Ring fallback -->
+      <!-- 3D Interactive WebGL2 Globe (lazy-loaded MapLibre v2) with automatic 2D Ring fallback -->
       <mesh-globe
         :nodes="globeNodes"
         :arcs="globeArcs"

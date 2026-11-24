@@ -42,7 +42,7 @@ flowchart LR
 |---|---|---|
 | Marketing / auth | `LandingView`, `auth/{Login,Register,OAuthCallback}View`, `legal/{Terms,PrivacyPolicy}View` | |
 | Collaboration | `dashboard/{DashboardView,TenantDashboard}`, `rooms/{RoomList,ExploreView}`, `chat/ChatView`, `conference/ConferenceView`, `files/FilesBrowser`, `invite/{InviteLanding,InviteManage}View`, `profile/{Profile,ProfileEdit}View`, `billing/BillingView` | `ChatView`/`ConferenceView` own their layout (no `v-container`) |
-| Fleet | `devices/DevicesView` (enrolled machines), `remote/RemoteControl` (the viewer), `remote/ConsentView`, `network/NetworkPanel` (overlay mesh), `observability/ObservabilityView`, `analytics/AnalyticsView`, `admin/AdminPanel` | |
+| Fleet | `devices/DevicesView` (enrolled machines), `remote/RemoteControl` (the viewer), `remote/ConsentView`, `network/NetworkPanel` (overlay mesh & zone backbone), `network/NetworkGlobeView` (dedicated full-page / desktop-companion `?embed=1&lang=&theme=` 3D device globe), `observability/ObservabilityView`, `analytics/AnalyticsView`, `admin/AdminPanel` | `NetworkGlobeView` hides `AppLayout` chrome when opened with `?embed=1` (`meta.allowEmbed`) |
 | Agent sessions (FR-90, module `hive`) | `hive/HiveSessionsView` (your sessions, start dialog, stop; P2j-3: where sessions are copied, each of your own rows' **Delete for good** (never on a session of someone else's the list holds from its room or a hit), `components/hive/HivePurgeDialog`: the session's title typed to confirm, then the purge followed device by device, read again every 5 s until each answered; P2i-3: a **search box**, shown only where the organization's copies can be searched, `search` in `GET …/hive`, asked again at each visit; a query is asked 300 ms after the last keystroke, over `useHiveSearch`, and its hits replace the list while it stands: each with its session's title from your list, else "A session you can read", its snippet's `[` `]` drawn as `<mark>` from text, never `v-html`, and a click opening the session's room), `hive/HiveMemoryView` (P1e — **Agent memory**: the facts kept for the org's sessions by scope — organization, yours, a chosen device — each with its character budget; add, edit at the version read, archive; a refusal, `409 over_budget` or a 403 on a scope you may not write, shows in the server's words with the draft kept), `hive/HiveCopiesView` (P2h-2 — **Agent copies**: the org's replica policy read back, and its archive replicas: every device that offers itself as one (its `hive-archive` word, matched by equality) or is designated, with a **Designated** switch for administrators that writes the whole policy from the revision read (a stale write is read again and said so); P2j-4: an administrator edits the rules in place on the policy card (at least and at most, archive replicas, then the owner's own devices, the restricted tags with the org's device tags offered, the days kept), the whole policy written from the revision the form was opened on with everything it does not edit as read, the switches locked meanwhile; a stale write is read again and shown as stored now, any other refusal in the server's words with the draft kept; **Add an archive replica** mints an enrollment token and shows `docker run` and compose for the archive replica image, the token gone when the dialog closes; shown, and in the nav, only where the server copies sessions at all, `replicaset` in `GET …/hive`) | a session's own page is its chat room: `ChatView` opens `components/hive/HiveTranscript` as a side panel when the room's `binding.module` is `hive`. Its header's **People** button is `components/hive/HiveParticipants` (P1c): who takes part — the owner adds people as readers or drivers, changes their part, takes them out; everyone else sees the list. Its **Copies** button, only for a record that carries a replicaset, is `components/hive/HiveCopies` (P2j-1): each device that holds a copy, its role and state, and how far behind the primary's its copy is, by the server's own count (`holds`, read through `utils/hiveCopies.ts`); a move in flight; and the owner's **Move**, to the copy that holds the most, preselected, the answer in the server's words. Beside it (P2j-2), **Move elsewhere**, a teleport to an online device that holds no copy, and **Fork**, a new session from its conversation in a folder of its own, its room offered once made; both read the organization's devices once, matching each device's words by equality. Beside them (P2j-5), `components/hive/HiveManage`: an ended terminal session's owner makes it a managed one, offered where sessions are copied on an adopted session its terminal ended (`mayBecomeManaged`), its folder sent only when it is not its terminal's, the answer in the server's words, the word its device refused the last asking with said, and the asking in flight shown to anyone in the room (`isBecomingManaged`). The transcript's "ask the agent" composer is a driver's; the room's own composer is ordinary chat, which never reaches the agent. P1f: a tool call is drawn by its tool — `components/hive/HiveToolCall` and `HiveToolInput` over `utils/toolView.ts`: a command line, an edit as a diff (`utils/lineDiff.ts`), a new file's first lines, a file range, a search, a to-do list; its result (`HiveToolResult`) folded under it. A call that waited for an approval is drawn by its approval card, with the same input view, and its result after the answer. P1f-2: following the newest, the transcript keeps at most 1,000 events (`keep`; the oldest a "load earlier" away, never trimmed while someone reads further up). Output is coloured from SGR by `HiveAnsi` (`utils/ansi.ts`), as text: no `v-html` but assistant markdown. P1j: an adopted session (`origin: adopted`, a terminal's, `isAdopted`) is marked **Adopted** in the list, its Stop reads **Stop mirroring**, its transcript says it runs in a terminal and is read-only (the server's grant gives no composer), and its People dialog offers readers only; `ChatView` reads the record (`fetchSession`) to tell. P3-4e-3: a message the vault binds to an approval (`binding.module` `vault`, its `ref` the approval's id) carries `components/vault/VaultApprovalCard` under its text, through `MessageBubble`: where the approval stands, and **Approve** / **Deny** for a driver who may answer it now, **Approve** only where the policy would take their yes (`may_approve` in `GET …/vault/approval/{id}`, else off with why); a refusal in the server's words, and the approval read again whenever the vault edits its card (a new `updated_at` on the message) |
 | Fallback | `NotFoundView` | |
 
@@ -124,34 +124,62 @@ flowchart TB
 ## Observability components
 
 `ui/src/components/stats/`: `MeshGraph` (FR-136 interactive 3D WebGL2 mesh globe backed by the shared
-`ui/src/components/globe/` module, with the preserved d3 radial ring SVG as its automatic WebGL2
-fallback and 2D toggle), `TimeSeriesChart`, `UptimeStrip`, `UsagePanel`, `UsageTable`,
-`UsageTimeline`, `RangePicker` — fed by the `stats` store from `/api/tenant/{tid}/stats/*` and
-`/api/admin/stats/*`.
+MapLibre GL JS v6 + self-hosted PMTiles globe module, with the preserved d3 radial ring SVG as its
+automatic WebGL2 fallback and 2D toggle), `TimeSeriesChart`, `UptimeStrip`, `UsagePanel`,
+`UsageTable`, `UsageTimeline`, `RangePicker` — fed by the `stats` store from
+`/api/tenant/{tid}/stats/*` and `/api/admin/stats/*`.
 
-### Shared 3D globe (`ui/src/components/globe/`, FR-136 & FR-137)
+### Shared 3D globe (`ui/src/components/globe/` & `ui/src/components/globe-v2/`, FR-136 & FR-137)
 
-One lazy-loaded Three.js WebGL2 globe module powers both the organization mesh dashboard
-(`MeshGraph.vue`, FR-136) and the live read-only zone backbone view (`ServerTopologySection.vue`,
-FR-137, consuming `GET /api/tenant/{tid}/network-zones/backbone`):
+One lazily-loaded **MapLibre GL JS `6.19.0` + self-hosted PMTiles `4.5.0`** globe engine (no
+Three.js, no `world-atlas`, zero third-party CDN requests) powers the organization mesh dashboard
+(`MeshGraph.vue`, FR-136), the live read-only zone backbone view (`ServerTopologySection.vue`,
+FR-137, consuming `GET /api/tenant/{tid}/network-zones/backbone`), and the dedicated full-page /
+desktop-companion embed route (`views/network/NetworkGlobeView.vue`, `/tenant/:tenantId/network/globe`,
+`plugins/router.ts:309-314`):
 
-- `MeshGlobe.vue` probes `isWebGL2Supported()` (`webgl.ts`), dynamically imports `MeshGlobeCanvas.vue`
-  so Three.js and Natural Earth 1:50m (`world-atlas/countries-50m.json`) never enter the main entry
-  bundle, and renders `#fallback` automatically whenever WebGL2 is unavailable.
-- `geoLayout.ts` places nodes from the server's already-returned location fields (explicit coords →
-  city/region → ISO-2 country centroid → `relay_home` hint → unlocated staging arc — never inventing
-  backend location collection), expands co-located clusters deterministically as the user zooms in,
-  clamps every projected label strictly inside the canvas bounds (`layoutProjectedLabels`), groups
-  overlapping devices into ≥ 36 px interactive cluster count pills (`clusterProjectedNodes`) with a
-  compact ≥ 40 px-row device picker, generates exact spherical-SLERP great-circle arcs, and dims
-  unrelated arcs on hover/select.
-- `earthTexture.ts` paints a self-hosted Natural Earth 1:50m canvas texture plus 3D vector coastline
-  and border `LineSegments` matched to the light and dark Vuetify themes (zero external CDNs).
-- `GlobeDetailPanel.vue` presents pinned device/gateway/link facts (including multi-zone chips and
-  live gateway management-entry listener port & connected device count) as a desktop floating card
-  or mobile (`< 600 px`) bottom sheet (`Esc` to close), omitting absent fields and displaying
-  `public_ip` only where fleet visibility already populates `agentStore` or on the admin zone
-  backbone view.
+- **Wrapper & zero main-entry growth (`components/globe/`)**: `MeshGlobe.vue` probes
+  `isWebGL2Supported()` (`webgl.ts:9`), loads `components/globe-v2/MeshGlobeMap.vue` via
+  `defineAsyncComponent` (`MeshGlobe.vue:197`) so MapLibre, PMTiles, and the gazetteer never enter
+  the main entry chunk, syncs Vuetify theme & vue-i18n locale live, and renders `#fallback`
+  automatically whenever WebGL2 is unavailable or `forceFallback` is set (2D radial ring SVG in
+  `MeshGraph.vue`, structured Gateways/Links tables in `ServerTopologySection.vue`). Public data
+  contracts (`GlobeNode`, `GlobeArc`, `GlobeCenter`) live in `components/globe/types.ts`.
+- **Self-hosted boundaries & worker (`style.ts`, `scripts/globe/`)**: `buildGlobeStyle`
+  (`style.ts:154`) targets same-origin `/geo/mh-boundaries-v1.pmtiles` (built locally by
+  `scripts/globe/build-boundaries.sh`, untracked in git, SHA-256 pinned in
+  `scripts/globe/SHA256SUMS`), carrying global 3-level boundaries (Natural Earth de facto admin-0
+  with dashed disputed/LoC lines + global geoBoundaries CGAZ ADM1/ADM2 + NE HK/MO patch) plus
+  full-resolution China 4-level boundaries (province / prefecture `admin2_pref` / district `admin2`
+  and `label_admin2`). Style omits `glyphs` so all Latin/CJK labels use local system fonts; Vite
+  emits the MapLibre module worker as `.js` (`vite.config.ts`, 0 `.mjs` assets). `applyThemeToMap`
+  (`style.ts:803`) and `applyLangToMap` (`style.ts:916`) switch themes and languages in place with
+  zero `setStyle()` reloads.
+- **Honest location & one-city-one-point grouping (`locationResolver.ts`, `gazetteer.ts`,
+  `grouping.ts`, `spiderfy.ts`)**: `resolveV2Location` (`locationResolver.ts:368`) consumes P6 MMDB
+  `lat`/`lon`/`accuracy_radius_km`/`geo_level` (drawing a 67% confidence 64-gon accuracy circle at
+  `z ≥ 3`), then falls back to the lazy offline `gazetteer-v1.json` (`gazetteer.ts`, 121.37 kB gz)
+  for city → region (`≈`) → country (`≈`) → off-globe `Unknown location N` chip, never using
+  `relay_home` for placement. Co-located devices share exact coordinates (`groupNodesByLocation`,
+  `grouping.ts:100`) and expand in screen space via circle (`n = 2–8`) or Archimedean spiral
+  (`n = 9–20`) spiderfy (`SpiderfyOverlay.vue`) or a paginated list (`n > 20`).
+- **Aggregated links & Zone Backbone (`links.ts`, `backbone.ts`)**: `aggregateLinks`
+  (`links.ts:129`) suppresses intra-city lines and caps resting overview lines at 60 majority-carrier
+  links (with overflow count and mixed-carrier `◆` mark); hovering/selecting reveals the full
+  carrier-patterned ego network (`buildEgoNetwork`, `links.ts:310`) with asymmetric midpoint split
+  and problem/RTT filters. In `backbone` mode (`resolveBackboneNodes`, `backbone.ts:123`), the same
+  Map instance switches layers in place to show WCAG-checked zone colors, centre diamond, gateway
+  halos, FR-134 management paths, directional 120 px arrows, and an optional 3 px Devices overlay
+  (OFF by default).
+- **Full-page UX, per-viewer max-zoom, adaptive DPR & accessibility**: `useFullPage`
+  (`useFullPage.ts:26`) mounts a `<Teleport to="body">` `100dvh` overlay (plus optional Fullscreen
+  API) with `?g_full=1` history Back/Esc exit, desktop side panel, and mobile 3-snap (`30%`/`60%`/
+  `92%` dvh) bottom sheet. `maxZoomSetting.ts:46` persists per-viewer max zoom (`z6–z14`, default
+  `z11`, live ground-span hint) in `localStorage`. `createAdaptiveDprController` (`adaptiveDpr.ts:52`)
+  degrades pixel ratio monotonically `2 → 1.5 → 1` if interactive p95 frame time exceeds 24 ms over
+  120 frames, while keeping 0 idle WebGL frames, `prefers-reduced-motion: reduce` compliance,
+  `webglcontextlost`/`restored` recovery, and keyboard navigation (`Arrows`/`+/-`/`Esc` + arrow-key
+  list focus preview).
 
 ## Admin components (`ui/src/components/admin/`)
 
