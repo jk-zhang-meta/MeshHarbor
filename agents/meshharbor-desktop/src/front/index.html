@@ -353,20 +353,66 @@
             </div>
           </div>
 
-          <div class="card globe-card" id="dv-globe-card">
+          <div class="card globe-card" id="dv-globe-card" data-viz="globe">
             <div class="globe-card-header">
               <div class="globe-card-head">
                 <span class="globe-card-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <svg id="dv-viz-icon-globe" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="9.5"></circle>
                     <path d="M2.5 12h19"></path>
                     <path d="M12 2.5a14.5 14.5 0 0 1 0 19 14.5 14.5 0 0 1 0-19"></path>
                   </svg>
+                  <svg id="dv-viz-icon-mesh" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="8.5" stroke-dasharray="2.5 2.5"></circle>
+                    <circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"></circle>
+                    <circle cx="12" cy="3.5" r="2" fill="currentColor" stroke="none"></circle>
+                    <circle cx="19.4" cy="16.2" r="2" fill="currentColor" stroke="none"></circle>
+                    <circle cx="4.6" cy="16.2" r="2" fill="currentColor" stroke="none"></circle>
+                  </svg>
                 </span>
-                <h3 data-i18n="dv.globe.title">Network map</h3>
+                <h3 id="dv-viz-title" data-i18n="dv.globe.title">Network map</h3>
                 <span id="dv-map-summary" class="chip chip-muted globe-map-pill" hidden></span>
+                <span id="dv-mesh-meta" class="chip chip-muted globe-map-pill" hidden></span>
               </div>
               <div class="globe-card-actions">
+                <div
+                  id="dv-viz-switch"
+                  class="nm-mode-switch"
+                  role="group"
+                  aria-label="Network visualization mode"
+                  data-i18n-aria-label="dv.viz.switchAria"
+                >
+                  <button
+                    type="button"
+                    id="dv-viz-globe"
+                    class="nm-mode-btn is-active"
+                    data-viz="globe"
+                    aria-pressed="true"
+                  >
+                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6"></circle>
+                      <path d="M2 8h12"></path>
+                      <path d="M8 2a9.2 9.2 0 0 1 0 12 9.2 9.2 0 0 1 0-12"></path>
+                    </svg>
+                    <span data-i18n="dv.viz.globe">3D Globe</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="dv-viz-mesh"
+                    class="nm-mode-btn"
+                    data-viz="mesh"
+                    aria-pressed="false"
+                  >
+                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="8" cy="8" r="5.5" stroke-dasharray="2 2"></circle>
+                      <circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"></circle>
+                      <circle cx="8" cy="2.5" r="1.4" fill="currentColor" stroke="none"></circle>
+                      <circle cx="12.8" cy="10.8" r="1.4" fill="currentColor" stroke="none"></circle>
+                      <circle cx="3.2" cy="10.8" r="1.4" fill="currentColor" stroke="none"></circle>
+                    </svg>
+                    <span data-i18n="dv.viz.mesh">2D Ring</span>
+                  </button>
+                </div>
                 <button
                   type="button"
                   id="dv-open-globe"
@@ -384,88 +430,85 @@
                 </button>
               </div>
             </div>
-            <div id="dv-map-stage" class="nm-stage">
-              <div
-                id="dv-map-canvas"
-                class="nm-canvas"
-                role="application"
-                tabindex="0"
-                aria-label="Interactive 3D network map"
-                data-i18n-aria-label="dv.globe.mapAria"
-              ></div>
-              <svg id="dv-map-fresnel" class="nm-fresnel" aria-hidden="true"></svg>
-              <div class="nm-controls" role="group">
-                <button
-                  type="button"
-                  id="dv-map-zoom-in"
-                  class="nm-ctrl-btn"
-                  aria-label="Zoom in"
-                  title="Zoom in"
-                  data-i18n-aria-label="dv.globe.zoomIn"
-                  data-i18n-title="dv.globe.zoomIn"
-                >
-                  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                    <path d="M8 3.5v9M3.5 8h9"></path>
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  id="dv-map-zoom-out"
-                  class="nm-ctrl-btn"
-                  aria-label="Zoom out"
-                  title="Zoom out"
-                  data-i18n-aria-label="dv.globe.zoomOut"
-                  data-i18n-title="dv.globe.zoomOut"
-                >
-                  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                    <path d="M3.5 8h9"></path>
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  id="dv-map-reset"
-                  class="nm-ctrl-btn"
-                  aria-label="Reset view"
-                  title="Reset view"
-                  data-i18n-aria-label="dv.globe.resetView"
-                  data-i18n-title="dv.globe.resetView"
-                >
-                  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-                    <circle cx="8" cy="8" r="4"></circle>
-                    <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"></path>
-                  </svg>
-                </button>
+            <div id="dv-panel-globe" class="dv-viz-panel">
+              <div id="dv-map-stage" class="nm-stage">
+                <div
+                  id="dv-map-canvas"
+                  class="nm-canvas"
+                  role="application"
+                  tabindex="0"
+                  aria-label="Interactive 3D network map"
+                  data-i18n-aria-label="dv.globe.mapAria"
+                ></div>
+                <svg id="dv-map-fresnel" class="nm-fresnel" aria-hidden="true"></svg>
+                <div class="nm-controls" role="group">
+                  <button
+                    type="button"
+                    id="dv-map-zoom-in"
+                    class="nm-ctrl-btn"
+                    aria-label="Zoom in"
+                    title="Zoom in"
+                    data-i18n-aria-label="dv.globe.zoomIn"
+                    data-i18n-title="dv.globe.zoomIn"
+                  >
+                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <path d="M8 3.5v9M3.5 8h9"></path>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    id="dv-map-zoom-out"
+                    class="nm-ctrl-btn"
+                    aria-label="Zoom out"
+                    title="Zoom out"
+                    data-i18n-aria-label="dv.globe.zoomOut"
+                    data-i18n-title="dv.globe.zoomOut"
+                  >
+                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <path d="M3.5 8h9"></path>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    id="dv-map-reset"
+                    class="nm-ctrl-btn"
+                    aria-label="Reset view"
+                    title="Reset view"
+                    data-i18n-aria-label="dv.globe.resetView"
+                    data-i18n-title="dv.globe.resetView"
+                  >
+                    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                      <circle cx="8" cy="8" r="4"></circle>
+                      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"></path>
+                    </svg>
+                  </button>
+                </div>
+                <div id="dv-map-legend" class="nm-legend" aria-hidden="true">
+                  <span class="nm-legend-item"><span class="nm-swatch nm-swatch-self"></span><span data-i18n="dv.globe.legendSelf">This device</span></span>
+                  <span class="nm-legend-item"><span class="nm-line nm-line-direct"></span><span data-i18n="dv.globe.legendDirect">Direct</span></span>
+                  <span class="nm-legend-item"><span class="nm-line nm-line-relay"></span><span data-i18n="dv.globe.legendRelay">Relay</span></span>
+                  <span class="nm-legend-item"><span class="nm-line nm-line-tunnel"></span><span data-i18n="dv.globe.legendTunnel">Tunnel</span></span>
+                </div>
+                <div id="dv-map-status" class="nm-status-pill" hidden></div>
+                <div id="dv-map-tooltip" class="nm-tooltip" role="status" hidden></div>
               </div>
-              <div id="dv-map-legend" class="nm-legend" aria-hidden="true">
-                <span class="nm-legend-item"><span class="nm-swatch nm-swatch-self"></span><span data-i18n="dv.globe.legendSelf">This device</span></span>
-                <span class="nm-legend-item"><span class="nm-line nm-line-direct"></span><span data-i18n="dv.globe.legendDirect">Direct</span></span>
-                <span class="nm-legend-item"><span class="nm-line nm-line-relay"></span><span data-i18n="dv.globe.legendRelay">Relay</span></span>
-                <span class="nm-legend-item"><span class="nm-line nm-line-tunnel"></span><span data-i18n="dv.globe.legendTunnel">Tunnel</span></span>
+              <div id="dv-map-fallback" class="nm-fallback" hidden></div>
+              <div id="dv-map-foot" class="nm-foot muted small">
+                <span id="dv-map-unlocated" hidden></span>
+                <span class="nm-attr" data-i18n="dv.globe.attribution">Boundaries: Natural Earth · geoBoundaries</span>
               </div>
-              <div id="dv-map-status" class="nm-status-pill" hidden></div>
-              <div id="dv-map-tooltip" class="nm-tooltip" role="status" hidden></div>
+              <p id="dv-globe-error" class="error small globe-card-err" role="alert" hidden></p>
             </div>
-            <div id="dv-map-fallback" class="nm-fallback" hidden></div>
-            <div id="dv-map-foot" class="nm-foot muted small">
-              <span id="dv-map-unlocated" hidden></span>
-              <span class="nm-attr" data-i18n="dv.globe.attribution">Boundaries: Natural Earth · geoBoundaries</span>
-            </div>
-            <p id="dv-globe-error" class="error small globe-card-err" role="alert" hidden></p>
-          </div>
-
-          <div class="card" id="dv-mesh-card">
-            <div class="card-title-row">
-              <h3 data-i18n="dv.mesh.title">Mesh</h3>
-              <span id="dv-mesh-meta" class="muted small"></span>
-            </div>
-            <p id="dv-mesh-note" class="muted small dv-note">Loading the mesh graph…</p>
-            <div id="dv-mesh-body" hidden>
-              <div id="dv-mesh-controls" class="mesh-controls"></div>
-              <div id="dv-mesh-wrap" class="mesh-wrap">
-                <svg id="dv-mesh" class="mesh-svg" role="img" aria-label="Mesh graph" data-i18n-aria-label="dv.mesh.aria"></svg>
-                <div id="dv-mesh-tip" class="mesh-tooltip" hidden></div>
+            <div id="dv-panel-mesh" class="dv-viz-panel" hidden>
+              <p id="dv-mesh-note" class="muted small dv-note">Loading the mesh graph…</p>
+              <div id="dv-mesh-body" hidden>
+                <div id="dv-mesh-controls" class="mesh-controls"></div>
+                <div id="dv-mesh-wrap" class="mesh-wrap">
+                  <svg id="dv-mesh" class="mesh-svg" role="img" aria-label="Mesh graph" data-i18n-aria-label="dv.mesh.aria"></svg>
+                  <div id="dv-mesh-tip" class="mesh-tooltip" hidden></div>
+                </div>
+                <div id="dv-mesh-legend" class="mesh-legend muted small"></div>
               </div>
-              <div id="dv-mesh-legend" class="mesh-legend muted small"></div>
             </div>
           </div>
         </div>

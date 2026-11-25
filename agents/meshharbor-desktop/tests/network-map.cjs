@@ -69,8 +69,14 @@ const externalUrlsInVendorCss = (vendorCss.match(/https?:\/\/[^\s'"`)]+/gi) || [
 );
 assert.deepEqual(externalUrlsInVendorCss, [], 'vendor/maplibre-gl.css must not contain external CDN URLs');
 
-// Verify #dv-globe-card DOM structure & Enlarge button in index.html + i18n en & zh-CN.
+// Verify unified #dv-globe-card DOM structure, 3D Globe / 2D Ring switcher, & Enlarge button.
 assert.ok(indexHtml.includes('id="dv-globe-card"'), 'index.html missing #dv-globe-card');
+assert.equal(indexHtml.includes('id="dv-mesh-card"'), false, 'mesh graph must live inside #dv-globe-card, not a second stacked card');
+assert.ok(indexHtml.includes('id="dv-viz-switch"'), 'index.html missing #dv-viz-switch');
+assert.ok(indexHtml.includes('id="dv-viz-globe"'), 'index.html missing #dv-viz-globe');
+assert.ok(indexHtml.includes('id="dv-viz-mesh"'), 'index.html missing #dv-viz-mesh');
+assert.ok(indexHtml.includes('id="dv-panel-globe"'), 'index.html missing #dv-panel-globe');
+assert.ok(indexHtml.includes('id="dv-panel-mesh"'), 'index.html missing #dv-panel-mesh');
 assert.ok(indexHtml.includes('id="dv-map-stage"'), 'index.html missing #dv-map-stage');
 assert.ok(indexHtml.includes('id="dv-map-canvas"'), 'index.html missing #dv-map-canvas');
 assert.ok(indexHtml.includes('id="dv-map-fallback"'), 'index.html missing #dv-map-fallback');
@@ -84,6 +90,10 @@ assert.equal(i18n.MESSAGES.en['dv.globe.title'], 'Network map');
 assert.equal(i18n.MESSAGES['zh-CN']['dv.globe.title'], '网络地图');
 assert.equal(i18n.MESSAGES.en['dv.globe.openBtn'], 'Enlarge');
 assert.equal(i18n.MESSAGES['zh-CN']['dv.globe.openBtn'], '放大');
+assert.equal(i18n.MESSAGES.en['dv.viz.globe'], '3D Globe');
+assert.equal(i18n.MESSAGES['zh-CN']['dv.viz.globe'], '3D 地球');
+assert.equal(i18n.MESSAGES.en['dv.viz.mesh'], '2D Ring');
+assert.equal(i18n.MESSAGES['zh-CN']['dv.viz.mesh'], '2D 环形图');
 
 // Verify strict CSP in tauri.conf.json allows local worker + blob without weakening default-src.
 const tauriConf = JSON.parse(fs.readFileSync(path.join(DESKTOP_DIR, 'tauri.conf.json'), 'utf8'));
@@ -140,6 +150,12 @@ function makeFakeElement(tag) {
     },
     classList: {
       set: new Set(),
+      add(cls) {
+        this.set.add(cls);
+      },
+      remove(cls) {
+        this.set.delete(cls);
+      },
       toggle(cls, on) {
         if (on) this.set.add(cls);
         else this.set.delete(cls);
@@ -521,11 +537,236 @@ async function testEnlargeButton() {
   assert.equal(errEl.hidden, true);
 }
 
+/* ── 9. Unified 3D Globe / 2D Ring click & keyboard toggle (devices.js) ── */
+
+async function testVizModeToggle() {
+  const devicesSrc = fs.readFileSync(path.join(FRONT_DIR, 'devices.js'), 'utf8');
+  const ids = [
+    'devices-unavailable',
+    'devices-content',
+    'dv-grid',
+    'dv-search',
+    'dv-org',
+    'dv-page-size',
+    'dv-cols-btn',
+    'dv-cols-dialog',
+    'dv-refresh',
+    'dv-prev',
+    'dv-next',
+    'dv-pager-range',
+    'dv-total',
+    'dv-grid-status',
+    'dv-grid-error',
+    'dv-globe-card',
+    'dv-viz-icon-globe',
+    'dv-viz-icon-mesh',
+    'dv-viz-title',
+    'dv-map-summary',
+    'dv-mesh-meta',
+    'dv-viz-switch',
+    'dv-viz-globe',
+    'dv-viz-mesh',
+    'dv-panel-globe',
+    'dv-panel-mesh',
+    'dv-map-stage',
+    'dv-map-canvas',
+    'dv-map-fresnel',
+    'dv-map-fallback',
+    'dv-map-unlocated',
+    'dv-map-foot',
+    'dv-map-status',
+    'dv-map-tooltip',
+    'dv-map-zoom-in',
+    'dv-map-zoom-out',
+    'dv-map-reset',
+    'dv-mesh-note',
+    'dv-mesh-body',
+    'dv-mesh-controls',
+    'dv-mesh-wrap',
+    'dv-mesh',
+    'dv-mesh-tip',
+    'dv-mesh-legend',
+  ];
+  const byId = {};
+  for (const id of ids) {
+    const el = makeFakeElement('div');
+    el.value = '';
+    el.focus = () => {
+      el.__focused = true;
+    };
+    byId[id] = el;
+  }
+  byId['dv-panel-mesh'].hidden = true;
+  byId['dv-viz-icon-mesh'].hidden = true;
+
+  const docListeners = {};
+  const storage = new Map();
+  const nmActiveCalls = [];
+  let graphRerenders = 0;
+  let meshRenders = 0;
+
+  const dvState = {
+    available: true,
+    status: { connected: true, orgs: [{ label: 'primary', primary: true, enabled: true, connected: true }] },
+    peers: [],
+  };
+
+  const doc = {
+    visibilityState: 'visible',
+    activeElement: null,
+    documentElement: { lang: 'en', dataset: {}, classList: { contains: () => false } },
+    getElementById: (id) => byId[id] || null,
+    createElement: (tag) => makeFakeElement(tag),
+    createElementNS: (_ns, tag) => makeFakeElement(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text), children: [] }),
+    querySelectorAll: () => [],
+    addEventListener(type, fn) {
+      if (!docListeners[type]) docListeners[type] = [];
+      docListeners[type].push(fn);
+    },
+    dispatchEvent(ev) {
+      for (const fn of docListeners[ev.type] || []) fn(ev);
+    },
+  };
+
+  const dvRealm = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    console,
+    Map,
+    Set,
+    Math,
+    Number,
+    Date,
+    Error,
+    Promise,
+    Element: function Element() {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    requestAnimationFrame: (fn) => fn(),
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+    },
+    addEventListener: () => {},
+    MeshHarborI18n: i18n,
+    MeshHarbor: {
+      $: (id) => byId[id] || null,
+      invoke: async (name) => {
+        if (name === 'cmd_mesh') return { enabled: true, acl_mode: 'warn', nodes: [{ id: 'n1', label: 'device-a' }], edges: [] };
+        if (name === 'cmd_devices') return { items: [], total: 0, page: 1, per_page: 25 };
+        return null;
+      },
+      show: (el) => {
+        if (el) el.hidden = false;
+      },
+      hide: (el) => {
+        if (el) el.hidden = true;
+      },
+      fmtRelative: () => 'now',
+      on: () => {},
+      get: (k) => (k === 'deviceView' ? dvState : null),
+      currentView: () => 'devices',
+      Grid: {
+        create: () => ({
+          render: () => {},
+          patchLive: () => {},
+          setSort: () => {},
+          setStorageKey: () => {},
+          openChooser: () => {},
+          customized: () => false,
+          relayout: () => {},
+        }),
+      },
+      Mesh: {
+        create: () => ({
+          render: () => {
+            meshRenders += 1;
+          },
+          rerender: () => {
+            graphRerenders += 1;
+          },
+        }),
+      },
+      NetworkMap: {
+        create: () => ({
+          setActive: (v) => nmActiveCalls.push(v),
+          setDevices: () => {},
+          setLiveContext: () => {},
+          setMesh: () => {},
+          setLang: () => {},
+          resetOrg: () => {},
+        }),
+      },
+    },
+  };
+  dvRealm.window = dvRealm;
+  dvRealm.globalThis = dvRealm;
+
+  i18n.setLang('en', { syncNative: false });
+  vm.runInNewContext(devicesSrc, dvRealm);
+  assert.equal(dvRealm.MeshHarborDevices.normalizeVizMode('mesh'), 'mesh');
+  assert.equal(dvRealm.MeshHarborDevices.normalizeVizMode('globe'), 'globe');
+  assert.equal(dvRealm.MeshHarborDevices.normalizeVizMode('invalid'), 'globe');
+
+  doc.dispatchEvent({ type: 'DOMContentLoaded' });
+  doc.dispatchEvent({ type: 'meshharbor:view', detail: 'devices' });
+  await new Promise((r) => setImmediate(r));
+
+  // Initial state: 3D Globe active, 2D Ring hidden.
+  assert.equal(byId['dv-globe-card'].dataset.viz, 'globe');
+  assert.equal(byId['dv-panel-globe'].hidden, false);
+  assert.equal(byId['dv-panel-mesh'].hidden, true);
+  assert.equal(byId['dv-viz-title'].textContent, 'Network map');
+  assert.equal(byId['dv-viz-globe'].getAttribute('aria-pressed'), 'true');
+  assert.equal(byId['dv-viz-mesh'].getAttribute('aria-pressed'), 'false');
+  assert.ok(meshRenders >= 1, 'mesh view fetched in background for globe links');
+
+  // Click 2D Ring: alternates card to mesh ring, pauses globe, persists choice, re-measures SVG.
+  const rerendersBefore = graphRerenders;
+  await byId['dv-viz-mesh'].trigger('click');
+  assert.equal(byId['dv-globe-card'].dataset.viz, 'mesh');
+  assert.equal(byId['dv-panel-globe'].hidden, true);
+  assert.equal(byId['dv-panel-mesh'].hidden, false);
+  assert.equal(byId['dv-viz-title'].textContent, 'Mesh');
+  assert.equal(byId['dv-viz-globe'].getAttribute('aria-pressed'), 'false');
+  assert.equal(byId['dv-viz-mesh'].getAttribute('aria-pressed'), 'true');
+  assert.equal(nmActiveCalls[nmActiveCalls.length - 1], false);
+  assert.ok(graphRerenders > rerendersBefore, 'switching to 2D Ring must trigger SVG rerender');
+  assert.equal(storage.get('meshharbor-desktop:devices-viz-mode'), 'mesh');
+
+  // Switch language to zh-CN while on 2D Ring -> title updates to 组网拓扑.
+  i18n.setLang('zh-CN', { syncNative: false });
+  doc.dispatchEvent({ type: 'meshharbor:lang' });
+  assert.equal(byId['dv-viz-title'].textContent, '组网拓扑');
+
+  // Keyboard ArrowLeft cycles back to 3D Globe -> title updates to 网络地图 & globe activates.
+  let prevented = false;
+  await byId['dv-viz-switch'].trigger('keydown', {
+    key: 'ArrowLeft',
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true);
+  assert.equal(byId['dv-globe-card'].dataset.viz, 'globe');
+  assert.equal(byId['dv-panel-globe'].hidden, false);
+  assert.equal(byId['dv-panel-mesh'].hidden, true);
+  assert.equal(byId['dv-viz-title'].textContent, '网络地图');
+  assert.equal(byId['dv-viz-globe'].__focused, true);
+  assert.equal(nmActiveCalls[nmActiveCalls.length - 1], true);
+  assert.equal(storage.get('meshharbor-desktop:devices-viz-mode'), 'globe');
+
+  i18n.setLang('en', { syncNative: false });
+}
+
 (async () => {
   await testIpcSource();
   testWebglFallback();
   await testEnlargeButton();
-  console.log('desktop network-map checks passed: hygiene, style, P6 coords, links, IPC source, WebGL2 fallback, Enlarge button');
+  await testVizModeToggle();
+  console.log('desktop network-map checks passed: hygiene, style, P6 coords, links, IPC source, WebGL2 fallback, Enlarge button, 3D/2D viz switcher');
 })().catch((err) => {
   console.error(err);
   process.exit(1);

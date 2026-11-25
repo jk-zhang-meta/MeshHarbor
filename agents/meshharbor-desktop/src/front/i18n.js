@@ -274,6 +274,9 @@
       'dv.globe.fallbackNotice':
         '3D map requires WebGL2, which is unavailable on this display. Showing device list instead — you can still click Enlarge to open the standalone map.',
       'dv.globe.fallbackEmpty': 'No devices to display yet.',
+      'dv.viz.switchAria': 'Network visualization mode',
+      'dv.viz.globe': '3D Globe',
+      'dv.viz.mesh': '2D Ring',
       'dv.mesh.title': 'Mesh',
       'dv.mesh.loading': 'Loading the mesh graph…',
       'dv.mesh.aria': 'Mesh graph',
@@ -1137,6 +1140,9 @@
       'dv.globe.fallbackNotice':
         '3D 地图需要 WebGL2，当前显示环境不支持，已切换为设备列表 —— 你仍可点击“放大”在独立窗口中打开地图。',
       'dv.globe.fallbackEmpty': '暂无可显示的设备。',
+      'dv.viz.switchAria': '网络视图模式',
+      'dv.viz.globe': '3D 地球',
+      'dv.viz.mesh': '2D 环形图',
       'dv.mesh.title': '组网拓扑',
       'dv.mesh.loading': '正在加载组网拓扑…',
       'dv.mesh.aria': '组网拓扑图',

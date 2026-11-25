@@ -908,8 +908,56 @@ textarea {
 .globe-card-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   flex: 0 0 auto;
+}
+.nm-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--mh-radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+.nm-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: calc(var(--mh-radius-sm) - 2px);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.nm-mode-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: transparent;
+  border-color: transparent;
+}
+.nm-mode-btn.is-active,
+.nm-mode-btn.is-active:hover:not(:disabled) {
+  background: var(--bg-elev);
+  color: var(--primary);
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+.nm-mode-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+#dv-globe-card[data-viz="mesh"] #dv-viz-icon-globe,
+#dv-globe-card[data-viz="globe"] #dv-viz-icon-mesh,
+#dv-globe-card[data-viz="mesh"] #dv-map-summary,
+#dv-globe-card[data-viz="globe"] #dv-mesh-meta {
+  display: none;
 }
 .globe-enlarge-btn {
   display: inline-flex;

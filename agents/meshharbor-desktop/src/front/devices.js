@@ -71,9 +71,14 @@
   const SEARCH_DEBOUNCE_MS = 300;
   const PRIMARY = 'primary';
   const PREF_PAGE_SIZE = 'meshharbor-desktop:devices-per-page';
+  const PREF_VIZ_MODE = 'meshharbor-desktop:devices-viz-mode';
   // The two causes that mean "this cannot work until something is updated":
   // fall back to the peers table and name what to update.
   const LEGACY = { unsupported_daemon: 'device service', unsupported_server: 'server' };
+
+  function normalizeVizMode(mode) {
+    return mode === 'mesh' ? 'mesh' : 'globe';
+  }
 
   const st = {
     org: null, // the enrollment label on screen
@@ -83,6 +88,7 @@
     sort: null, // a server sort key, or null = online first, then name
     dir: 'asc',
     mode: 'server', // 'server' | 'legacy'
+    vizMode: 'globe', // 'globe' | 'mesh'
     lastPage: null, // the last GOOD page for this org + query
     lastGoodAt: 0,
     lastAskAt: 0,
@@ -1432,9 +1438,65 @@
     paintPager(v);
     paintNotes(v);
     if (networkMap) {
-      networkMap.setActive(currentView() === 'devices');
+      networkMap.setActive(currentView() === 'devices' && st.vizMode === 'globe');
       syncMapDevices(dv);
     }
+  }
+
+  /* ── unified globe / 2D mesh view switcher ──────────────────────── */
+
+  function applyVizMode(opts) {
+    const mode = normalizeVizMode(st.vizMode);
+    st.vizMode = mode;
+    const isGlobe = mode === 'globe';
+    const card = $('dv-globe-card');
+    if (card) card.dataset.viz = mode;
+    const globePanel = $('dv-panel-globe');
+    const meshPanel = $('dv-panel-mesh');
+    if (globePanel) globePanel.hidden = !isGlobe;
+    if (meshPanel) meshPanel.hidden = isGlobe;
+    const titleEl = $('dv-viz-title');
+    if (titleEl) {
+      const key = isGlobe ? 'dv.globe.title' : 'dv.mesh.title';
+      titleEl.setAttribute('data-i18n', key);
+      setText(titleEl, t(key, null, isGlobe ? 'Network map' : 'Mesh'));
+    }
+    const btnGlobe = $('dv-viz-globe');
+    const btnMesh = $('dv-viz-mesh');
+    if (btnGlobe) {
+      btnGlobe.classList.toggle('is-active', isGlobe);
+      btnGlobe.setAttribute('aria-pressed', isGlobe ? 'true' : 'false');
+    }
+    if (btnMesh) {
+      btnMesh.classList.toggle('is-active', !isGlobe);
+      btnMesh.setAttribute('aria-pressed', !isGlobe ? 'true' : 'false');
+    }
+    if (opts && opts.domOnly) return;
+    const dv = get('deviceView');
+    if (isGlobe) {
+      if (networkMap) {
+        networkMap.setActive(!!(dv && dv.available && currentView() === 'devices'));
+        if (dv && dv.available) syncMapDevices(dv);
+      }
+    } else {
+      if (networkMap) networkMap.setActive(false);
+      if (mesh.view && graph && graph.rerender) {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => graph.rerender());
+        } else {
+          graph.rerender();
+        }
+      } else if (active() && st.org && !mesh.inFlight) {
+        void refreshMesh({ force: true });
+      }
+    }
+  }
+
+  function setVizMode(next, persist) {
+    const mode = normalizeVizMode(next);
+    st.vizMode = mode;
+    if (persist) storageSet(PREF_VIZ_MODE, mode);
+    applyVizMode();
   }
 
   /* ── the mesh ───────────────────────────────────────────────────── */
@@ -1516,7 +1578,11 @@
     setText(note, text || '');
     note.hidden = !text;
     const meta = v && v.enabled && v.acl_mode ? 'ACL ' + v.acl_mode : '';
-    setText($('dv-mesh-meta'), meta);
+    const metaEl = $('dv-mesh-meta');
+    if (metaEl) {
+      setText(metaEl, meta);
+      metaEl.hidden = !meta;
+    }
     if (networkMap) networkMap.setMesh(v && v.enabled ? v : null);
   }
 
@@ -1594,6 +1660,22 @@
 
     const dialog = $('dv-cols-dialog');
     $('dv-cols-btn').addEventListener('click', () => grid.openChooser(dialog));
+
+    const btnGlobe = $('dv-viz-globe');
+    const btnMesh = $('dv-viz-mesh');
+    if (btnGlobe) btnGlobe.addEventListener('click', () => setVizMode('globe', true));
+    if (btnMesh) btnMesh.addEventListener('click', () => setVizMode('mesh', true));
+    const vizSwitch = $('dv-viz-switch');
+    if (vizSwitch) {
+      vizSwitch.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+        ev.preventDefault();
+        const next = st.vizMode === 'globe' ? 'mesh' : 'globe';
+        setVizMode(next, true);
+        const target = next === 'globe' ? btnGlobe : btnMesh;
+        if (target && typeof target.focus === 'function') target.focus();
+      });
+    }
   }
 
   /** The Columns button says when this org's columns are customised. */
@@ -1612,6 +1694,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     const saved = parseInt(storageGet(PREF_PAGE_SIZE) || '', 10);
     if (PAGE_SIZES.includes(saved)) st.perPage = saved;
+    st.vizMode = normalizeVizMode(storageGet(PREF_VIZ_MODE));
 
     grid = R.Grid.create({
       table: $('dv-grid'),
@@ -1647,6 +1730,7 @@
       });
     }
     wireControls();
+    applyVizMode({ domOnly: true });
     paintColsButton();
 
     // The 2 s peer poll: patch the live cells in place; the fallback rows ARE
@@ -1679,6 +1763,7 @@
       if (grid && grid.relayout) grid.relayout();
       paint();
       paintMesh();
+      applyVizMode({ domOnly: true });
       if (graph && graph.rerender) graph.rerender();
       if (networkMap) {
         networkMap.setLang(window.MeshHarborI18n ? window.MeshHarborI18n.getLang() : 'en');
@@ -1704,5 +1789,7 @@
     formatDeviceLocation,
     formatDeviceZone,
     viewerNoteFor,
+    normalizeVizMode,
+    PREF_VIZ_MODE,
   };
 })();
