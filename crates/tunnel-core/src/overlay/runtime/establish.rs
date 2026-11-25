@@ -1516,28 +1516,43 @@ impl OverlayRuntime {
                 if !rehomed {
                     coord.clear_floor(&nid);
                 }
+                let dead_org = e.relay_kind == Some(crate::overlay::relay_link::RelayKind::Org);
                 if !tier.is_direct() {
-                    coord.forget(&nid);
+                    if dead_org {
+                        // A convicted ORG carrier's cached `org_sessions` entry
+                        // holds the dead `OrgRelayConn` (`s.conn.is_some()`).
+                        // `forget` alone deliberately keeps `org_sessions` for
+                        // the session-accept → bind handshake, so leaving it
+                        // behind makes `relay_strategy()` keep selecting
+                        // `OrgRelay` while `org_request_bind()` silently no-ops
+                        // on `s.conn.is_some()`, wedging same-zone pairs (and
+                        // paced line peers) in `blocked` until the 1 h session
+                        // TTL expires. Always close and drop the dead session.
+                        coord.drop_dead_org_session(&nid);
+                    } else {
+                        coord.forget(&nid);
+                    }
                 }
                 // U1 — ship the death as evidence with the re-request: the
                 // dead carrier's relay flavour (None for a direct→relay fall)
                 // + the typed reason, so the server's churn escalation can
                 // log/act on WHAT died instead of inferring from timing.
                 coord.note_refresh_context(nid, e.relay_kind, reason.as_str());
-                // #21 — a line peer has no other carrier, and its cached
-                // session is the dead one (re-binding it is a no-op while its
-                // conn is held): ask the server for the line again, which
-                // re-mints one past its bind window.
-                let line = cfg.backbone_only
-                    && e.relay_kind == Some(crate::overlay::relay_link::RelayKind::Org);
-                // Item 3 — on the floor already: the better tiers are asked
-                // for exactly as the birth floor asks (a DERP-strategy pair
-                // has its link, and a second request would rebuild it).
+                // Ask the server for a fresh ORG session when ANY ORG carrier
+                // dies (both cross-zone `backbone_only` lines and same-zone
+                // pairs): on `backbone_only`, a line peer has no other carrier;
+                // on same-zone pairs, a `SingleRelay(false)` dialer's plain
+                // `coord.request` sends zero wire messages, whereas
+                // `request_org_fallback` immediately revokes/demotes the dead
+                // relay and re-mints for both ends. If paced (`ORG_FALLBACK_GAP`),
+                // `drop_dead_org_session` above already cleared the stale
+                // `s.conn`, so falling through to `coord.request` cleanly runs
+                // the normal ladder instead of wedging on a no-op bind.
                 if rehomed {
                     if !coord.strategy_is_derp(&nid, &cfg) {
                         coord.request(nid, cfg).await;
                     }
-                } else if !(line && coord.request_org_fallback(nid, now).await) {
+                } else if !(dead_org && coord.request_org_fallback(nid, now).await) {
                     coord.request(nid, cfg).await;
                 }
             }
@@ -1818,8 +1833,15 @@ impl OverlayRuntime {
                 }
             }
         }
+        let removed_org = removed
+            .as_ref()
+            .is_some_and(|e| e.relay_kind == Some(RelayKind::Org));
         if let Some(r) = relay.as_mut() {
-            r.forget(&node_id);
+            if removed_org {
+                r.drop_dead_org_session(&node_id);
+            } else {
+                r.forget(&node_id);
+            }
         }
         // rc.211 — drop any in-flight off-loop relay build (stale on arrival).
         relay_bq.invalidate(&node_id);
@@ -2801,6 +2823,16 @@ impl OverlayRuntime {
                             "overlay relay: repaired STALE floor bookkeeping — the peer was \
                              marked floored with no installed carrier, which blocked its \
                              floor from ever rebuilding; rebuilding now"
+                        );
+                    }
+                    if let Some(coord) = relay.as_mut()
+                        && coord.clear_stale_bound_org_session(&np.node_id)
+                    {
+                        warn!(
+                            peer = %np.node_id,
+                            "overlay relay: repaired STALE bound org-relay session — the peer \
+                             had no installed carrier while holding a bound org conn, which \
+                             blocked re-coordination; dropping stale session now"
                         );
                     }
                     // rc.415 (#25) — an in-flight TURN grant no longer blocks

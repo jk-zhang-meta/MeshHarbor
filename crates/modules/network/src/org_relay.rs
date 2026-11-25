@@ -5183,6 +5183,15 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
                     }
                     return;
                 }
+                // Mirror `maybe_mint_fallback`: the member is asking again past
+                // the bind window, so this single-hop relay never gave it a
+                // working carrier (one-way or dead path). Rank it last for this
+                // pair so the re-mint below tries another relay first.
+                state.org_relay.demote_unbound(
+                    &pk,
+                    s.relay.node_id,
+                    Instant::now() + UNBOUND_DEMOTE,
+                );
                 revoke_where(state, "relay_request_bind_window_passed", |current| {
                     current.pair_key == pk
                         && current.vni == s.vni

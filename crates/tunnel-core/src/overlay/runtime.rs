@@ -16144,4 +16144,291 @@ mod org_upgrade_tests {
         drop(evt_tx);
         let _ = rt_task.await;
     }
+
+    async fn make_bound_org_session(
+        coord: &mut RelayCoordinator,
+        peer_id: ObjectId,
+        peer_cfg: PeerConfig,
+        vni: u32,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        Arc<crate::overlay::orgrelay::client::OrgRelayConn>,
+        ReadyLink,
+    ) {
+        use crate::overlay::orgrelay::bind::{BindSecret, CookieKey};
+        use crate::overlay::orgrelay::client::{OrgRelayConn, bind_any};
+        use crate::overlay::orgrelay::server::{RelayServer, RelayStats};
+        use crate::overlay::orgrelay::session::{Member, Session};
+
+        let relay_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_addr = relay_sock.local_addr().unwrap();
+        let (server, handle) = RelayServer::new(
+            CookieKey::from_bytes([9; 32]),
+            Arc::new(RelayStats::default()),
+        );
+        let serve = tokio::spawn(server.serve(relay_sock));
+        let now = Instant::now();
+        assert!(handle.install(Session {
+            vni,
+            generation: 1,
+            members: [
+                Member {
+                    wg_public: [0x11; 32],
+                    secret: BindSecret::from_bytes([3; 32]),
+                },
+                Member {
+                    wg_public: [0x22; 32],
+                    secret: BindSecret::from_bytes([4; 32]),
+                },
+            ],
+            bound: [None, None],
+            max_lifetime: now + Duration::from_secs(3600),
+            idle_deadline: now + Duration::from_secs(3600),
+            bind_deadline: now + Duration::from_secs(30),
+        }));
+        coord.org_session_accept(
+            peer_id,
+            crate::overlay::orgrelay::member::OrgSession {
+                vni,
+                generation: 1,
+                relay_node_id: ObjectId::new(),
+                endpoints: vec![relay_addr],
+                secret: BindSecret::from_bytes([3; 32]),
+                bind_budget: Duration::from_secs(30),
+                expires_at: now + Duration::from_secs(3600),
+                conn: None,
+            },
+        );
+        coord.org_request_bind(peer_id, peer_cfg);
+        let job = coord.take_org_jobs().pop().expect("org bind job");
+        let (sock, bound_to, _) = bind_any(
+            &job.endpoints,
+            job.vni,
+            job.generation,
+            &job.secret,
+            job.per_endpoint,
+        )
+        .await
+        .expect("bind on loopback org relay");
+        let conn = Arc::new(
+            OrgRelayConn::new(Arc::new(sock), bound_to, job.vni, "r".into())
+                .with_rebind(job.generation, job.secret.clone()),
+        );
+        let link = coord
+            .commit_org_bind(peer_id, job.generation, conn.clone())
+            .expect("commit bound org carrier");
+        (serve, conn, link)
+    }
+
+    /// Field 2026-11-25: when a same-zone (`backbone_only == false`) `RelayKind::Org`
+    /// carrier died in `sweep_carrier_health` (without an explicit server revoke),
+    /// `forget` preserved the live-TTL `org_sessions` entry with `s.conn.is_some()`,
+    /// causing `relay_strategy()` -> `org_request_bind()` to silently no-op and
+    /// wedge both dialer and anchor ends in `blocked` for up to 1 hour.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_dead_same_zone_org_carrier_drops_session_and_re_requests_both_roles() {
+        use crate::overlay::runtime::tests::MockTun;
+        use meshharbor_remote_control::signaling::RelayStrategyWire;
+        for (label, strategy, paced) in [
+            ("dialer-unpaced", RelayStrategyWire::SingleRelayDialer, false),
+            ("anchor-unpaced", RelayStrategyWire::SingleRelayAnchor, false),
+            ("anchor-paced", RelayStrategyWire::SingleRelayAnchor, true),
+        ] {
+            let kp = WgKeypair::generate();
+            let peer_kp = WgKeypair::generate();
+            let (out_tx, mut out_rx) = mpsc::channel::<ClientMsg>(16);
+            let (tun_mock, _inj, _del) = MockTun::new();
+            let tf: TunFactory = {
+                let m = tun_mock.clone();
+                Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+            };
+            let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+            let mut coord = RelayCoordinator::new(out_tx, kp.public.to_bytes(), true, vec![], None);
+            coord.set_org_relay(true);
+
+            let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+            let ip = Ipv4Addr::new(100, 65, 72, 25);
+            let pk = peer_kp.public.to_bytes();
+            let nid = ObjectId::new();
+            let mut np = test_netmap_peer(nid, ip, &peer_kp);
+            np.supports_derp = false;
+            np.supports_derp_floor = false;
+            np.supports_relay_single = true;
+            np.supports_org_relay = true;
+            np.udp_dialer_ok = Some(false);
+            np.relay_strategy = Some(strategy);
+            np.backbone_only = false;
+            let cfg = peer_config_from_netmap(&np).unwrap();
+            let (serve, conn, link) = make_bound_org_session(&mut coord, nid, cfg, 41).await;
+
+            // Install the real ORG carrier in WgDevice + by_node.
+            wg.add_peer(pk, ip, link.carrier, true);
+            wg.test_latch_handshake_done(&pk);
+            let now = Instant::now();
+            let stale = now.checked_sub(Duration::from_secs(180)).unwrap();
+            let mut by_node = HashMap::new();
+            by_node.insert(
+                nid,
+                Installed {
+                    since: stale,
+                    last_rx_at: stale,
+                    relay_kind: Some(RelayKind::Org),
+                    ..Installed::base(pk, ip, DirectTier::Relay, stale)
+                },
+            );
+            // If testing the paced branch, pre-spend ORG_FALLBACK_GAP so
+            // `request_org_fallback` returns `false`, proving we STILL drop the
+            // dead session and fall through to `coord.request` cleanly.
+            if paced {
+                assert!(coord.request_org_fallback(nid, now).await);
+                let _ = out_rx.try_recv();
+                let (serve_p, conn_p, link_p) = make_bound_org_session(
+                    &mut coord,
+                    nid,
+                    peer_config_from_netmap(&np).unwrap(),
+                    42,
+                )
+                .await;
+                wg.add_peer(pk, ip, link_p.carrier, true);
+                wg.test_latch_handshake_done(&pk);
+                let _ = conn_p;
+                serve_p.abort();
+            }
+            while out_rx.try_recv().is_ok() {}
+
+            let mut relay = Some(coord);
+            let tun: Arc<dyn TunIo> = tun_mock;
+            let mut refresh = HashMap::new();
+            let peers = HashMap::from([(nid, np)]);
+
+            assert!(
+                rt.sweep_carrier_health(
+                    &mut wg,
+                    &mut by_node,
+                    &mut relay,
+                    &tun,
+                    &mut refresh,
+                    &peers,
+                    ForcedPoke::No,
+                )
+                .await,
+                "{label}: dead same-zone ORG carrier must be convicted"
+            );
+            assert!(!by_node.contains_key(&nid), "{label}: dead peer removed");
+            let r = relay.as_ref().unwrap();
+            assert!(
+                !r.holds_org_session(&nid),
+                "{label}: dead org session must be dropped so org_request_bind cannot wedge"
+            );
+            if !paced {
+                assert!(!conn.is_alive(), "{label}: dead org conn must be closed");
+                assert!(
+                    matches!(
+                        out_rx.try_recv(),
+                        Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. })
+                            if peer_node_id == nid
+                    ),
+                    "{label}: dead same-zone ORG carrier must request fresh org path immediately"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        out_rx.try_recv(),
+                        Ok(ClientMsg::OverlayRelayRequest { peer_node_id, .. })
+                            if peer_node_id == nid
+                    ),
+                    "{label}: when ORG fallback is paced, anchor must fall through to OverlayRelayRequest instead of wedging"
+                );
+            }
+            serve.abort();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn install_peers_repairs_stale_bound_org_session_and_remove_peer_state_drops_org() {
+        use crate::overlay::runtime::tests::MockTun;
+        use meshharbor_remote_control::signaling::RelayStrategyWire;
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, mut out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+        let mut coord = RelayCoordinator::new(out_tx, kp.public.to_bytes(), true, vec![], None);
+        coord.set_org_relay(true);
+
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let ip = Ipv4Addr::new(100, 65, 72, 26);
+        let pk = peer_kp.public.to_bytes();
+        let nid = ObjectId::new();
+        let mut np = test_netmap_peer(nid, ip, &peer_kp);
+        np.supports_derp = false;
+        np.supports_derp_floor = false;
+        np.supports_relay_single = true;
+        np.supports_org_relay = true;
+        np.udp_dialer_ok = Some(false);
+        np.relay_strategy = Some(RelayStrategyWire::SingleRelayAnchor);
+        np.backbone_only = false;
+        let cfg = peer_config_from_netmap(&np).unwrap();
+
+        // 1. Stale bound org session while `by_node` is empty: `install_peers`
+        // repairs it and sends `OverlayRelayRequest`.
+        let (serve1, conn1, _link1) = make_bound_org_session(&mut coord, nid, cfg.clone(), 51).await;
+        let mut relay = Some(coord);
+        let mut by_node = HashMap::new();
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut probes = HashMap::new();
+        let mut bq = test_relay_bq();
+        rt.install_peers(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            std::slice::from_ref(&np),
+            None,
+            &mut probes,
+            &mut bq,
+            "test-repair",
+        )
+        .await;
+        assert!(!relay.as_ref().unwrap().holds_org_session(&nid));
+        assert!(!conn1.is_alive());
+        assert!(matches!(
+            out_rx.try_recv(),
+            Ok(ClientMsg::OverlayRelayRequest { peer_node_id, .. }) if peer_node_id == nid
+        ));
+        serve1.abort();
+
+        // 2. `remove_peer_state` on an installed `RelayKind::Org` peer (e.g.
+        // resume-from-suspend) drops its bound org session cleanly.
+        let r = relay.as_mut().unwrap();
+        r.forget(&nid);
+        let (serve2, conn2, link2) = make_bound_org_session(r, nid, cfg, 52).await;
+        wg.add_peer(pk, ip, link2.carrier, true);
+        by_node.insert(
+            nid,
+            Installed {
+                relay_kind: Some(RelayKind::Org),
+                ..Installed::base(pk, ip, DirectTier::Relay, Instant::now())
+            },
+        );
+        rt.remove_peer_state(
+            nid,
+            &mut wg,
+            &mut by_node,
+            &tun,
+            &mut relay,
+            &mut bq,
+            None,
+            &mut probes,
+            PeerRoute::Drop,
+        )
+        .await;
+        assert!(!relay.as_ref().unwrap().holds_org_session(&nid));
+        assert!(!conn2.is_alive());
+        serve2.abort();
+    }
 }

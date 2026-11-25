@@ -2327,6 +2327,34 @@ impl RelayCoordinator {
         dead
     }
 
+    /// Drop a convicted or torn-down ORG carrier's cached session so its dead
+    /// `OrgRelayConn` (`s.conn.is_some()`) cannot stay live in `org_sessions`
+    /// and make `relay_strategy()` → `org_request_bind()` silently no-op until
+    /// the session's absolute TTL expires.
+    pub(crate) fn drop_dead_org_session(&mut self, peer: &ObjectId) {
+        self.drop_org_session(peer);
+    }
+
+    /// Defense-in-depth mirror of [`Self::clear_floor`] for `install_peers`'s
+    /// carrier-less path (`installed.is_none()`): an unbound `OrgSession`
+    /// (`conn.is_none()`) is legitimately waiting for `org_request_bind`,
+    /// whereas a bound session (`conn.is_some()`) with no installed carrier in
+    /// `by_node` is stale by construction and would wedge re-coordination until
+    /// its absolute lifetime expires. Returns whether a stale bound session was
+    /// dropped.
+    pub(crate) fn clear_stale_bound_org_session(&mut self, peer: &ObjectId) -> bool {
+        if self
+            .org_sessions
+            .get(peer)
+            .is_some_and(|s| s.conn.is_some())
+        {
+            self.drop_org_session(peer);
+            true
+        } else {
+            false
+        }
+    }
+
     fn drop_org_session(&mut self, peer: &ObjectId) {
         if let Some(s) = self.org_sessions.remove(peer)
             && let Some(conn) = s.conn
@@ -5823,5 +5851,55 @@ mod tests {
             peers.len(),
             "fixed-order peers must all get a turn"
         );
+    }
+
+    #[tokio::test]
+    async fn drop_dead_org_session_and_stale_bound_repair_unblock_recoordination() {
+        let (serve, mut coord, mut control, node, conn, _relay_addr) =
+            bound_org_carrier(false).await;
+        // 1. An unbound org session waiting to bind is NOT stale.
+        let unbound_peer = ObjectId::new();
+        coord.org_session_accept(unbound_peer, org_session(11, 60));
+        assert!(
+            !coord.clear_stale_bound_org_session(&unbound_peer),
+            "unbound session must be preserved for org_request_bind"
+        );
+        assert!(coord.holds_org_session(&unbound_peer));
+
+        // 2. A bound org session (`conn.is_some()`) survives plain `forget`
+        // (needed for accept->bind), which would make `request` silently no-op
+        // on `org_request_bind` if a dead carrier didn't drop it.
+        coord.forget(&node);
+        assert!(coord.holds_org_session(&node));
+        let mut anchor_peer = base_peer();
+        anchor_peer.relay_strategy = Some(RelayStrategyWire::SingleRelayAnchor);
+        coord.request(node, anchor_peer.clone()).await;
+        assert!(
+            control.try_recv().is_err() && coord.take_org_jobs().is_empty(),
+            "stale bound session reproduces the silent no-op wedge"
+        );
+
+        // 3. `clear_stale_bound_org_session` closes the stale conn, drops the
+        // session, and unblocks `request` so a real OverlayRelayRequest fires.
+        assert!(coord.clear_stale_bound_org_session(&node));
+        assert!(!coord.holds_org_session(&node));
+        assert!(!conn.is_alive(), "stale org conn must be closed");
+        coord.request(node, anchor_peer).await;
+        assert!(
+            matches!(
+                control.try_recv(),
+                Ok(ClientMsg::OverlayRelayRequest { peer_node_id, .. }) if peer_node_id == node
+            ),
+            "re-coordination must send OverlayRelayRequest once stale bound session is dropped"
+        );
+
+        // 4. `drop_dead_org_session` closes & removes an active bound session.
+        let (serve2, mut coord2, _control2, node2, conn2, _) = bound_org_carrier(false).await;
+        coord2.drop_dead_org_session(&node2);
+        assert!(!coord2.holds_org_session(&node2));
+        assert!(!conn2.is_alive());
+
+        serve.abort();
+        serve2.abort();
     }
 }
