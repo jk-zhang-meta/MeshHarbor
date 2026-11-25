@@ -52,6 +52,7 @@ struct TrayStaticItems<R: Runtime> {
 
 static RECORD_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static KEEP_BUSY_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static UPDATE_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Refresh every tray label immediately after the user switches UI language.
 pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
@@ -71,6 +72,7 @@ pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
     ACCOUNT_WATCH_WAKE.notify_one();
     RECORD_WATCH_WAKE.notify_one();
     KEEP_BUSY_WATCH_WAKE.notify_one();
+    UPDATE_WATCH_WAKE.notify_one();
 }
 
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -290,6 +292,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     );
     spawn_recording_watch(app.clone(), record);
     spawn_keep_busy_watch(keep_busy);
+    spawn_update_watch(check_updates_item);
 
     // FR-27 — ADOPT the tray Tauri already created from `app.trayIcon` in
     // tauri.conf.json instead of building a second one.
@@ -859,24 +862,68 @@ fn open_meshharbor_web<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-fn check_updates<R: Runtime>(app: &AppHandle<R>) {
-    match crate::commands::cmd_check_update() {
-        Ok(stdout) => {
-            // Forward to the main window so the SPA can render the
-            // update banner. Sets a global flag the SPA polls.
-            if let Some(window) = app.get_webview_window("main") {
-                let payload = serde_json::json!({ "check": stdout }).to_string();
-                let _ = window.eval(format!(
-                    "window.__meshharbor_check_update_result = {payload}; window.dispatchEvent(new Event('meshharbor-update-check'))"
-                ));
-                let _ = window.show();
-                let _ = window.set_focus();
+fn update_menu_label(
+    info: Option<&meshharbor_localapi::UpdateStatusInfo>,
+    lang: tray_i18n::Lang,
+) -> String {
+    if let Some(s) = info
+        && s.update_available
+        && let Some(ver) = s.latest.as_deref()
+    {
+        if s.staged_ready || s.stage == "ready" {
+            return tray_i18n::update_ready(lang, ver);
+        }
+        return tray_i18n::update_available(lang, ver);
+    }
+    tray_i18n::check_updates(lang).to_string()
+}
+
+/// Poll `LocalAPI::UpdateStatus` every 30 s (zero network I/O) so when the
+/// daemon silently pre-downloads a verified update in the background, the tray
+/// item gently advertises `"Update Ready (x.y.z) — Install"`.
+fn spawn_update_watch<R: Runtime>(item: MenuItem<R>) {
+    tauri::async_runtime::spawn(async move {
+        let mut shown: Option<String> = None;
+        loop {
+            let answer = match meshharbor_localapi::connect().await {
+                Ok(mut c) => c.update_status().await.ok(),
+                Err(_) => None,
+            };
+            let label = update_menu_label(answer.as_ref(), tray_i18n::current_lang());
+            if shown.as_deref() != Some(label.as_str()) {
+                let _ = item.set_text(&label);
+                shown = Some(label);
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                _ = UPDATE_WATCH_WAKE.notified() => {}
             }
         }
-        Err(e) => {
-            tracing::warn!(%e, "check-update failed");
+    });
+}
+
+fn check_updates<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let payload = match crate::commands::cmd_check_update().await {
+            Ok(info) => {
+                UPDATE_WATCH_WAKE.notify_one();
+                serde_json::json!({ "status": info })
+            }
+            Err(e) => {
+                tracing::warn!(%e, "check-update failed");
+                serde_json::json!({ "error": e })
+            }
+        };
+        if let Some(window) = handle.get_webview_window("main") {
+            let json = payload.to_string();
+            let _ = window.eval(format!(
+                "window.__meshharbor_check_update_result = {json}; window.dispatchEvent(new Event('meshharbor-update-check'))"
+            ));
+            let _ = window.show();
+            let _ = window.set_focus();
         }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -1896,6 +1943,46 @@ mod account_tests {
         assert_eq!(
             keep_busy_labels_in(Some(&kb), Lang::ZhCn),
             ("停止保持活跃（Heart · paused）".into(), true)
+        );
+    }
+
+    #[test]
+    fn update_menu_label_reflects_ready_available_and_idle_states() {
+        assert_eq!(update_menu_label(None, Lang::En), "Check for Updates");
+        assert_eq!(update_menu_label(None, Lang::ZhCn), "检查更新");
+
+        let ready = meshharbor_localapi::UpdateStatusInfo {
+            current: "0.4.216".into(),
+            latest: Some("agent-v0.4.217".into()),
+            stage: "ready".into(),
+            update_available: true,
+            staged_ready: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            update_menu_label(Some(&ready), Lang::En),
+            "Update Ready (0.4.217) — Install"
+        );
+        assert_eq!(
+            update_menu_label(Some(&ready), Lang::ZhCn),
+            "有新版本（0.4.217）· 点击升级"
+        );
+
+        let avail = meshharbor_localapi::UpdateStatusInfo {
+            current: "0.4.216".into(),
+            latest: Some("agent-v0.4.217".into()),
+            stage: "available".into(),
+            update_available: true,
+            staged_ready: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            update_menu_label(Some(&avail), Lang::En),
+            "Update Available (0.4.217)"
+        );
+        assert_eq!(
+            update_menu_label(Some(&avail), Lang::ZhCn),
+            "发现新版本（0.4.217）"
         );
     }
 }

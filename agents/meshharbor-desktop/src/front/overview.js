@@ -193,9 +193,359 @@
   function pushOutput(text) {
     const el = $('action-output');
     if (!el) return;
+    if (!text) {
+      hide(el);
+      return;
+    }
     el.textContent = text;
     show(el);
   }
+
+  /* ── Self-update UI state machine (LocalAPI daemon-driven) ──────── */
+  const ACTIVE_UPDATE_STAGES = new Set([
+    'checking',
+    'downloading',
+    'verifying',
+    'installing',
+    'queued',
+    'restarting',
+  ]);
+
+  function stripAgentTag(v) {
+    if (!v) return '';
+    return String(v).replace(/^agent-v/, '');
+  }
+
+  function fmtBytes(n) {
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function describeUpdate(info, translate) {
+    const tr = translate || t;
+    const s = info || { stage: 'idle', current: '' };
+    const stage = String(s.stage || 'idle');
+    const current = stripAgentTag(s.current);
+    const latest = stripAgentTag(s.latest);
+    const done = typeof s.downloaded_bytes === 'number' ? s.downloaded_bytes : null;
+    const total = typeof s.total_bytes === 'number' && s.total_bytes > 0 ? s.total_bytes : null;
+    const pct = done !== null && total !== null
+      ? Math.max(0, Math.min(100, Math.round((done * 100) / total)))
+      : null;
+
+    let text = '';
+    let tone = '';
+    let detail = s.message || '';
+    let showProgress = false;
+    let indeterminate = false;
+    let showInstall = false;
+    let installLabelKey = 'ov.updates.install';
+    let showBanner = false;
+    let bannerTitle = '';
+    let bannerSub = '';
+
+    if (stage === 'checking') {
+      text = tr('ov.updates.checking', null, 'Checking for updates…');
+      showProgress = true;
+      indeterminate = true;
+    } else if (stage === 'up_to_date') {
+      text = tr('ov.updates.upToDate', { version: current || latest }, 'Up to date (' + (current || latest) + ').');
+      tone = 'ok';
+    } else if (stage === 'available' || stage === 'ready') {
+      const staged = Boolean(s.staged_ready || stage === 'ready');
+      text = staged
+        ? tr('ov.updates.readyBannerTitle', { latest }, 'Version ' + latest + ' is ready to install')
+        : tr('ov.updates.available', { current, latest }, 'Update available: ' + current + ' → ' + latest + '.');
+      showInstall = true;
+      installLabelKey = staged ? 'ov.updates.installNow' : 'ov.updates.install';
+      showBanner = Boolean(latest);
+      bannerTitle = staged
+        ? tr('ov.updates.readyBannerTitle', { latest }, 'Version ' + latest + ' is ready to install')
+        : tr('ov.updates.availableBannerTitle', { latest }, 'Version ' + latest + ' is available');
+      if (staged) {
+        if (s.defer_reason === 'active_session' || s.defer_reason === 'active_work') {
+          bannerSub = tr(
+            'ov.updates.readyWaitingSession',
+            null,
+            'Pre-downloaded and verified. Waiting for active sessions to finish, or click Install now.',
+          );
+        } else if (s.defer_reason === 'user_active') {
+          bannerSub = tr(
+            'ov.updates.readyWaitingIdle',
+            null,
+            'Pre-downloaded and verified. Will install automatically once idle or locked, or click Install now.',
+          );
+        } else {
+          bannerSub = tr(
+            'ov.updates.readyImmediate',
+            null,
+            'Pre-downloaded and signature-verified — installs without waiting to download.',
+          );
+        }
+      } else {
+        bannerSub = tr('ov.updates.available', { current, latest }, 'Update available: ' + current + ' → ' + latest + '.');
+      }
+    } else if (stage === 'downloading') {
+      text = pct !== null
+        ? tr(
+            'ov.updates.downloadingProgress',
+            { latest, done: fmtBytes(done), total: fmtBytes(total), pct: String(pct) },
+            'Downloading ' + latest + '… ' + fmtBytes(done) + ' / ' + fmtBytes(total) + ' (' + pct + '%)',
+          )
+        : tr('ov.updates.downloading', { latest }, 'Downloading ' + latest + '…');
+      showProgress = true;
+      indeterminate = pct === null;
+    } else if (stage === 'verifying') {
+      text = tr('ov.updates.verifying', { latest }, 'Verifying signature for ' + latest + '…');
+      showProgress = true;
+      indeterminate = true;
+    } else if (stage === 'installing') {
+      text = tr('ov.updates.installing', { latest: latest || current }, 'Installing ' + (latest || current) + '…');
+      showProgress = true;
+      indeterminate = true;
+    } else if (stage === 'queued') {
+      text = tr('ov.updates.queued', null, 'Queued for the system update helper…');
+      showProgress = true;
+      indeterminate = true;
+    } else if (stage === 'restarting') {
+      text = tr('ov.updates.restarting', { latest: latest || current }, 'Restarting device service onto ' + (latest || current) + '…');
+      showProgress = true;
+      indeterminate = true;
+    } else if (stage === 'succeeded') {
+      text = tr('ov.updates.succeeded', { version: latest || current }, 'Updated to ' + (latest || current) + '.');
+      tone = 'ok';
+    } else if (stage === 'disabled') {
+      text = tr('ov.updates.disabled', null, 'Automatic updates are disabled on this device.');
+    } else if (stage === 'failed') {
+      const reason = s.message || 'unknown error';
+      text = tr('ov.updates.failed', { reason }, 'Update failed: ' + reason);
+      tone = 'error';
+      showInstall = Boolean(s.update_available || latest);
+      installLabelKey = 'ov.updates.retry';
+      detail = '';
+    }
+
+    return {
+      stage,
+      active: ACTIVE_UPDATE_STAGES.has(stage),
+      text,
+      tone,
+      detail,
+      showProgress,
+      indeterminate,
+      pct,
+      progressLabel: pct !== null ? pct + '%' : '',
+      showInstall,
+      installLabelKey,
+      showBanner,
+      bannerTitle,
+      bannerSub,
+    };
+  }
+
+  let lastUpdateInfo = null;
+  let updatePollTimer = null;
+  let updateRestartTarget = null;
+  let updateRestartStartedAt = 0;
+
+  function stopUpdatePoll() {
+    if (updatePollTimer) {
+      clearTimeout(updatePollTimer);
+      updatePollTimer = null;
+    }
+  }
+
+  function paintUpdate(info) {
+    lastUpdateInfo = info || null;
+    const view = describeUpdate(info);
+    const statusEl = $('ov-update-status');
+    const progWrap = $('ov-update-progress');
+    const bar = progWrap ? progWrap.querySelector('.upd-bar') : null;
+    const fill = $('ov-update-bar-fill');
+    const progText = $('ov-update-progress-text');
+    const btnCheck = $('btn-check-update');
+    const btnApply = $('btn-apply-update');
+    const banner = $('ov-update-ready-banner');
+    const bannerTitle = $('ov-update-banner-title');
+    const bannerSub = $('ov-update-banner-sub');
+    const bannerBtn = $('ov-update-banner-btn');
+
+    if (statusEl) {
+      if (view.text) {
+        statusEl.textContent = view.text;
+        statusEl.className = 'small ' + (view.tone === 'error' ? 'is-error' : view.tone === 'ok' ? 'is-ok' : 'muted');
+        show(statusEl);
+      } else {
+        hide(statusEl);
+      }
+    }
+
+    if (progWrap && bar && fill) {
+      if (view.showProgress) {
+        show(progWrap);
+        bar.classList.toggle('is-indeterminate', view.indeterminate);
+        if (view.indeterminate) {
+          fill.style.width = '';
+          bar.removeAttribute('aria-valuenow');
+        } else {
+          const pct = view.pct === null ? 0 : view.pct;
+          fill.style.width = pct + '%';
+          bar.setAttribute('aria-valuenow', String(pct));
+        }
+        if (progText) progText.textContent = view.progressLabel;
+      } else {
+        hide(progWrap);
+      }
+    }
+
+    if (btnCheck) btnCheck.disabled = view.active;
+    if (btnApply) {
+      btnApply.disabled = view.active;
+      btnApply.textContent = t(view.installLabelKey, null, 'Install update');
+      if (view.showInstall && !view.active) show(btnApply);
+      else hide(btnApply);
+    }
+
+    if (banner) {
+      if (view.showBanner && !view.active) {
+        if (bannerTitle) bannerTitle.textContent = view.bannerTitle;
+        if (bannerSub) bannerSub.textContent = view.bannerSub;
+        if (bannerBtn) {
+          bannerBtn.disabled = false;
+          bannerBtn.textContent = t(view.installLabelKey, null, 'Install now');
+        }
+        show(banner);
+      } else {
+        hide(banner);
+      }
+    }
+
+    pushOutput(view.detail);
+  }
+
+  function scheduleUpdatePoll(delayMs) {
+    stopUpdatePoll();
+    updatePollTimer = setTimeout(() => {
+      updatePollTimer = null;
+      void pollUpdateStatus();
+    }, delayMs);
+  }
+
+  async function pollUpdateStatus() {
+    try {
+      const info = await invoke('cmd_update_status');
+      if (updateRestartTarget) {
+        const cur = stripAgentTag(info && info.current);
+        const target = stripAgentTag(updateRestartTarget);
+        if (cur && target && cur === target) {
+          updateRestartTarget = null;
+          paintUpdate({
+            current: cur,
+            latest: target,
+            stage: 'succeeded',
+            update_available: false,
+          });
+          return;
+        }
+        if (
+          info &&
+          (info.stage === 'idle' || info.stage === 'up_to_date') &&
+          Date.now() - updateRestartStartedAt < 180000
+        ) {
+          paintUpdate({
+            current: info.current,
+            latest: updateRestartTarget,
+            stage: 'restarting',
+            update_available: true,
+          });
+          scheduleUpdatePoll(1500);
+          return;
+        }
+        if (info && info.stage === 'failed') {
+          updateRestartTarget = null;
+        }
+      }
+      paintUpdate(info);
+      if (info && ACTIVE_UPDATE_STAGES.has(info.stage)) {
+        if (info.stage === 'restarting' || info.stage === 'queued') {
+          updateRestartTarget = info.latest || updateRestartTarget;
+          if (!updateRestartStartedAt) updateRestartStartedAt = Date.now();
+        }
+        scheduleUpdatePoll(1000);
+      }
+    } catch (_e) {
+      // Service is expected to go unreachable briefly while restarting onto
+      // the new binary; show a calm "restarting" state instead of a scary error.
+      if (updateRestartTarget && Date.now() - updateRestartStartedAt < 180000) {
+        paintUpdate({
+          current: lastUpdateInfo ? lastUpdateInfo.current : '',
+          latest: updateRestartTarget,
+          stage: 'restarting',
+          update_available: true,
+        });
+        scheduleUpdatePoll(1500);
+      }
+    }
+  }
+
+  async function triggerCheckUpdate() {
+    paintUpdate({
+      current: lastUpdateInfo ? lastUpdateInfo.current : '',
+      stage: 'checking',
+    });
+    try {
+      const info = await invoke('cmd_check_update');
+      paintUpdate(info);
+      if (info && ACTIVE_UPDATE_STAGES.has(info.stage)) {
+        scheduleUpdatePoll(1000);
+      }
+    } catch (e) {
+      paintUpdate({
+        current: lastUpdateInfo ? lastUpdateInfo.current : '',
+        stage: 'failed',
+        message: String(e),
+      });
+    }
+  }
+
+  async function triggerApplyUpdate() {
+    const knownLatest = lastUpdateInfo ? lastUpdateInfo.latest : null;
+    updateRestartTarget = knownLatest;
+    updateRestartStartedAt = Date.now();
+    paintUpdate({
+      current: lastUpdateInfo ? lastUpdateInfo.current : '',
+      latest: knownLatest,
+      stage: 'installing',
+      update_available: true,
+    });
+    try {
+      const info = await invoke('cmd_apply_update');
+      if (info && info.latest) updateRestartTarget = info.latest;
+      paintUpdate(info);
+      if (info && ACTIVE_UPDATE_STAGES.has(info.stage)) {
+        scheduleUpdatePoll(1000);
+      } else if (info && info.stage === 'failed') {
+        updateRestartTarget = null;
+      }
+    } catch (e) {
+      updateRestartTarget = null;
+      paintUpdate({
+        current: lastUpdateInfo ? lastUpdateInfo.current : '',
+        latest: knownLatest,
+        stage: 'failed',
+        update_available: Boolean(knownLatest),
+        message: String(e),
+      });
+    }
+  }
+
+  window.MeshHarborOverview = {
+    describeUpdate,
+    fmtBytes,
+    stripAgentTag,
+  };
 
   /* ── FR-84 D4: what this device can encode ─────────────────────────
    *
@@ -812,39 +1162,41 @@
       }
     });
 
-    $('btn-check-update').addEventListener('click', async () => {
-      pushOutput(t('ov.updates.checking', null, 'Checking for updates…'));
-      try {
-        const out = await invoke('cmd_check_update');
-        pushOutput(out);
-        if (out.toLowerCase().includes('update available')) {
-          show($('btn-apply-update'));
-        }
-      } catch (e) {
-        pushOutput(t('common.errorPrefix', { err: e }, 'Error: ' + e));
-      }
-    });
+    $('btn-check-update').addEventListener('click', () => void triggerCheckUpdate());
+    $('btn-apply-update').addEventListener('click', () => void triggerApplyUpdate());
+    const bannerApplyBtn = $('ov-update-banner-btn');
+    if (bannerApplyBtn) {
+      bannerApplyBtn.addEventListener('click', () => void triggerApplyUpdate());
+    }
 
-    $('btn-apply-update').addEventListener('click', async () => {
-      pushOutput(t('ov.updates.applying', null, 'Applying update…'));
-      try {
-        // FR-27 — the daemon now tells us what it actually did, and on macOS
-        // that is the whole answer: a non-root invocation queues the ROOT
-        // update helper and says where to watch. Discarding it made the
-        // button look inert on the platform where it worked correctly.
-        const out = await invoke('cmd_apply_update');
-        pushOutput(out || t('ov.updates.started', null, 'Update started.'));
-      } catch (e) {
-        pushOutput(t('common.errorPrefix', { err: e }, 'Error: ' + e));
-      }
+    // Read cached daemon update state on load & when returning to Overview so a
+    // silently pre-downloaded update immediately reveals the Install banner.
+    void pollUpdateStatus();
+    window.addEventListener('focus', () => {
+      if (!updatePollTimer) void pollUpdateStatus();
+    });
+    document.addEventListener('meshharbor:lang', () => {
+      if (lastUpdateInfo) paintUpdate(lastUpdateInfo);
     });
 
     // Tray's "Check for Updates" menu item evals a global + dispatches this
-    // event (tray.rs) — surface the result where it's visible.
+    // event (tray.rs) — surface the structured status or error immediately.
     window.addEventListener('meshharbor-update-check', () => {
       const r = window.__meshharbor_check_update_result;
-      if (r && r.check) {
-        navigate('overview');
+      if (!r) return;
+      navigate('overview');
+      if (r.status) {
+        paintUpdate(r.status);
+        if (ACTIVE_UPDATE_STAGES.has(r.status.stage)) {
+          scheduleUpdatePoll(1000);
+        }
+      } else if (r.error) {
+        paintUpdate({
+          current: lastUpdateInfo ? lastUpdateInfo.current : '',
+          stage: 'failed',
+          message: String(r.error),
+        });
+      } else if (r.check) {
         pushOutput(r.check);
         if (r.check.toLowerCase().includes('update available')) {
           show($('btn-apply-update'));

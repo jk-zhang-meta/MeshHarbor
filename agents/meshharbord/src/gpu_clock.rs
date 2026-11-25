@@ -296,11 +296,19 @@ impl Drop for GpuClockPin {
 }
 
 static PIN: Mutex<Option<GpuClockPin>> = Mutex::new(None);
+static ACTIVE_RC_SESSIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of active remote-control sessions last observed by the signaling loop.
+pub fn active_rc_sessions() -> usize {
+    ACTIVE_RC_SESSIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Session-count hook for the signaling loop: call after every mutation of
 /// the remote-desktop peers map. Engages the pin on 0→N, releases it (and
 /// resets the clocks) at 0. Cheap when the feature is off (env parse only).
 pub fn on_sessions_changed(active_sessions: usize) {
+    ACTIVE_RC_SESSIONS.store(active_sessions, std::sync::atomic::Ordering::Relaxed);
     let Ok(mut guard) = PIN.lock() else { return };
     if active_sessions > 0 {
         if guard.is_none() {

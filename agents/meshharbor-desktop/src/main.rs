@@ -174,6 +174,7 @@ fn main() {
             commands::cmd_re_enroll,
             commands::cmd_set_device_name,
             commands::cmd_default_device_name,
+            commands::cmd_update_status,
             commands::cmd_check_update,
             commands::cmd_apply_update,
             commands::cmd_service_install,

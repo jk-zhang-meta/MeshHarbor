@@ -117,6 +117,26 @@ pub const MIN_INSTALLER_BYTES: usize = 1_000_000;
 /// up + reach the clean-run threshold.
 pub const STARTUP_UPDATE_COOLDOWN: Duration = Duration::from_secs(300);
 
+/// Short anti-spam floor for explicit manual update wakes (`ApplyUpdate` /
+/// wake file) on helper-owned hosts (macOS / Linux per-user), so a user who
+/// clicks "Install update" shortly after boot or a prior update is not
+/// silently ignored for 5 minutes.
+pub const MANUAL_WAKE_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Connect timeout for update manifest & artifact HTTP requests so an
+/// unreachable first management entry fails over quickly instead of stalling
+/// the full 30 s request timeout.
+pub const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// How long a desktop user's keyboard/mouse must be idle before an automatic
+/// background update installs while unlocked (15 minutes). Locked screens and
+/// headless hosts (no desktop companion) do not wait on this threshold.
+pub const DESKTOP_IDLE_THRESHOLD_SECS: u64 = 15 * 60;
+
+/// Recheck cadence once a verified installer is already staged on disk and
+/// waiting for the desktop user to go idle or lock the screen (5 minutes).
+pub const DESKTOP_IDLE_RECHECK: Duration = Duration::from_secs(5 * 60);
+
 /// rc.19: short-cycle interval when the auto-updater defers because
 /// file transfers are in flight. Keeps checking every hour so the
 /// install fires shortly after the operator's last upload completes,
@@ -237,6 +257,208 @@ pub fn decide_defer(active: usize, net_transition: bool, consecutive_defers: u32
     } else {
         DeferDecision::DeferOnce
     }
+}
+
+/// Decision for whether an automatic periodic update whose installer is
+/// already GPG-verified and staged on disk should install right now or wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopInstallGate {
+    InstallNow,
+    Defer {
+        reason: &'static str,
+        recheck: Duration,
+    },
+}
+
+/// Pure gate deciding whether a periodic auto-update should install now or
+/// stay staged while the machine is busy.
+///
+/// - Never interrupts an active remote-control session (`active_rc_sessions > 0`)
+///   until `MAX_CONSECUTIVE_DEFERS` is reached.
+/// - Preserves existing `active_work` (transfers/recordings) and
+///   `net_transition` deferral rules.
+/// - When a desktop companion is connected (`desktop_connected == true`), waits
+///   until either the screen is locked or the local user has been idle for at
+///   least [`DESKTOP_IDLE_THRESHOLD_SECS`] (15 min). If the platform exposes no
+///   idle clock (`user_idle_secs == None`), does not stall forever once no
+///   sessions/transfers are active.
+/// - Headless servers and gateways (`desktop_connected == false`) install as
+///   soon as active work/sessions/transitions clear.
+pub fn decide_desktop_auto_install(
+    active_work: usize,
+    active_rc_sessions: usize,
+    net_transition: bool,
+    desktop_connected: bool,
+    user_idle_secs: Option<u64>,
+    screen_locked: bool,
+    consecutive_defers: u32,
+) -> DesktopInstallGate {
+    if active_rc_sessions > 0 {
+        if consecutive_defers >= MAX_CONSECUTIVE_DEFERS {
+            return DesktopInstallGate::InstallNow;
+        }
+        return DesktopInstallGate::Defer {
+            reason: "active_session",
+            recheck: NET_DEFER_RECHECK,
+        };
+    }
+    match decide_defer(active_work, net_transition, consecutive_defers) {
+        DeferDecision::DeferOnce => {
+            if net_transition && active_work == 0 {
+                return DesktopInstallGate::Defer {
+                    reason: "net_transition",
+                    recheck: NET_DEFER_RECHECK,
+                };
+            }
+            return DesktopInstallGate::Defer {
+                reason: "active_work",
+                recheck: TRANSFER_DEFER_RECHECK,
+            };
+        }
+        DeferDecision::ForceAfterDefers => return DesktopInstallGate::InstallNow,
+        DeferDecision::Proceed => {}
+    }
+    if desktop_connected
+        && !screen_locked
+        && let Some(idle) = user_idle_secs
+        && idle < DESKTOP_IDLE_THRESHOLD_SECS
+    {
+        return DesktopInstallGate::Defer {
+            reason: "user_active",
+            recheck: DESKTOP_IDLE_RECHECK,
+        };
+    }
+    DesktopInstallGate::InstallNow
+}
+
+#[derive(Debug, Clone)]
+struct StagedInstaller {
+    version: String,
+    path: PathBuf,
+    sha256_hex: String,
+}
+
+static STAGED_INSTALLER: std::sync::LazyLock<std::sync::Mutex<Option<StagedInstaller>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+static UPDATE_STATUS: std::sync::LazyLock<
+    std::sync::RwLock<tunnel_core::localapi::UpdateStatusInfo>,
+> = std::sync::LazyLock::new(|| {
+    std::sync::RwLock::new(tunnel_core::localapi::UpdateStatusInfo {
+        current: env!("CARGO_PKG_VERSION").to_string(),
+        stage: "idle".to_string(),
+        ..Default::default()
+    })
+});
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn current_update_owner() -> &'static str {
+    if UPDATE_TRIGGER.get().is_none() {
+        return "disabled";
+    }
+    if cfg!(target_os = "macos") {
+        return "helper";
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if linux_user::current() {
+            return "user";
+        }
+        if helper_owns_updates().is_some() {
+            return "helper";
+        }
+    }
+    "daemon"
+}
+
+fn mutate_update_status(f: impl FnOnce(&mut tunnel_core::localapi::UpdateStatusInfo)) {
+    let mut g = UPDATE_STATUS.write().unwrap_or_else(|e| e.into_inner());
+    g.current = env!("CARGO_PKG_VERSION").to_string();
+    g.owner = Some(current_update_owner().to_string());
+    f(&mut g);
+    g.updated_at_unix = Some(now_unix_secs());
+}
+
+fn record_staged_installer(version: &str, path: &std::path::Path, sha256_hex: &str) {
+    let mut g = STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(prev) = g.take()
+        && prev.path != path
+    {
+        discard_download(&prev.path);
+    }
+    *g = Some(StagedInstaller {
+        version: version.to_string(),
+        path: path.to_path_buf(),
+        sha256_hex: sha256_hex.to_string(),
+    });
+}
+
+fn verify_staged_entry(entry: &StagedInstaller) -> bool {
+    use sha2::{Digest, Sha256};
+    let Ok(bytes) = std::fs::read(&entry.path) else {
+        return false;
+    };
+    format!("{:x}", Sha256::digest(&bytes)) == entry.sha256_hex
+}
+
+fn peek_valid_staged(version: &str) -> bool {
+    let g = STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref()
+        .is_some_and(|e| e.version == version && e.path.is_file())
+}
+
+fn take_valid_staged(version: &str) -> Option<PathBuf> {
+    let mut g = STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner());
+    let matches = g.as_ref().is_some_and(|e| e.version == version);
+    if !matches {
+        return None;
+    }
+    let entry = g.take()?;
+    if verify_staged_entry(&entry) {
+        Some(entry.path)
+    } else {
+        discard_download(&entry.path);
+        None
+    }
+}
+
+fn keep_staged_for_retry(version: &str, path: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    if let Ok(bytes) = std::fs::read(path) {
+        let hex = format!("{:x}", Sha256::digest(&bytes));
+        let mut g = STAGED_INSTALLER.lock().unwrap_or_else(|e| e.into_inner());
+        *g = Some(StagedInstaller {
+            version: version.to_string(),
+            path: path.to_path_buf(),
+            sha256_hex: hex,
+        });
+    }
+}
+
+/// Live snapshot of the daemon's update lifecycle for `LocalAPI::UpdateStatus`.
+pub fn update_status_snapshot() -> tunnel_core::localapi::UpdateStatusInfo {
+    let mut snap = UPDATE_STATUS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    snap.current = env!("CARGO_PKG_VERSION").to_string();
+    let owner = current_update_owner();
+    snap.owner = Some(owner.to_string());
+    if owner == "disabled" && snap.stage == "idle" {
+        snap.stage = "disabled".to_string();
+    }
+    if let Some(ref latest) = snap.latest {
+        snap.staged_ready = peek_valid_staged(latest);
+    } else {
+        snap.staged_ready = false;
+    }
+    snap
 }
 
 /// FR-90 P1d-1 (AC7) — what the updater does about running agent turns.
@@ -686,7 +908,7 @@ pub struct GithubRelease {
     pub prerelease: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GithubAsset {
     pub name: String,
     pub browser_download_url: String,
@@ -1098,6 +1320,7 @@ async fn fetch_releases_from(url: &str) -> Result<Vec<GithubRelease>> {
     // FR-128 — to the centre along the control socket's path.
     let client = meshharbor_node_core::management_path::route_http(meshharbor_node_core::http_client::builder())
         .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(UPDATE_CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(30))
         .redirect(update_redirect_policy(origin, false))
         .build()
@@ -2052,6 +2275,16 @@ fn discard_download(path: &std::path::Path) {
 /// self-identify as that release or it is discarded — see
 /// [`crate::artifact_version`] for the downgrade this closes.
 pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -> Result<PathBuf> {
+    download_asset_inner(asset, claimed_release, false).await
+}
+
+async fn download_asset_inner(
+    asset: &GithubAsset,
+    claimed_release: &str,
+    track_progress: bool,
+) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+
     let origin = update_origin()?;
     origin::validate_asset_name(&asset.name).map_err(anyhow::Error::msg)?;
     let asset_url = origin
@@ -2059,15 +2292,53 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
         .map_err(anyhow::Error::msg)?;
     let client = meshharbor_node_core::management_path::route_http(meshharbor_node_core::http_client::builder())
         .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(UPDATE_CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(600))
         .redirect(update_redirect_policy(origin.clone(), true))
         .build()
         .context("building download client")?;
-    let resp = client.get(asset_url).send().await.context("GET asset")?;
+    let expected_total = (asset.size > 0).then_some(asset.size);
+    if track_progress {
+        mutate_update_status(|s| {
+            s.stage = "downloading".into();
+            s.latest = Some(claimed_release.to_string());
+            s.update_available = true;
+            s.staged_ready = false;
+            s.downloaded_bytes = Some(0);
+            s.total_bytes = expected_total;
+            s.defer_reason = None;
+            s.message = None;
+        });
+    }
+    let mut resp = client.get(asset_url).send().await.context("GET asset")?;
     if !resp.status().is_success() {
         bail!("asset download returned {}", resp.status());
     }
-    let bytes = resp.bytes().await.context("reading asset body")?;
+    let total_bytes = resp.content_length().or(expected_total);
+    let mut bytes = Vec::with_capacity(total_bytes.unwrap_or(0).min(128 * 1024 * 1024) as usize);
+    let mut last_reported: u64 = 0;
+    while let Some(chunk) = resp.chunk().await.context("reading asset body")? {
+        bytes.extend_from_slice(&chunk);
+        if track_progress {
+            let dl = bytes.len() as u64;
+            if dl.saturating_sub(last_reported) >= 131_072 {
+                last_reported = dl;
+                mutate_update_status(|s| {
+                    s.stage = "downloading".into();
+                    s.downloaded_bytes = Some(dl);
+                    s.total_bytes = total_bytes;
+                });
+            }
+        }
+    }
+    if track_progress {
+        let dl = bytes.len() as u64;
+        mutate_update_status(|s| {
+            s.stage = "verifying".into();
+            s.downloaded_bytes = Some(dl);
+            s.total_bytes = total_bytes.or(Some(dl));
+        });
+    }
     if bytes.len() < MIN_INSTALLER_BYTES {
         bail!(
             "asset {} is implausibly small: {} bytes (minimum {})",
@@ -2076,6 +2347,7 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
             MIN_INSTALLER_BYTES
         );
     }
+    let payload_sha256_hex = format!("{:x}", Sha256::digest(&bytes));
     // Transport-integrity check: when GitHub / our proxy gave us a digest,
     // verify the downloaded bytes match. This catches corruption mid-flight
     // (rare with TLS but possible with broken middleboxes).
@@ -2232,6 +2504,16 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
 
     cleanup.0 = None;
     drop(cleanup);
+    if track_progress {
+        record_staged_installer(claimed_release, &path, &payload_sha256_hex);
+        mutate_update_status(|s| {
+            s.stage = "ready".into();
+            s.latest = Some(claimed_release.to_string());
+            s.update_available = true;
+            s.staged_ready = true;
+            s.message = None;
+        });
+    }
     Ok(path)
 }
 
@@ -2315,51 +2597,153 @@ pub async fn pin_version(tag: &str) -> CheckOutcome {
     }
 }
 
-/// Run one check cycle: GET releases → compare → download if needed.
-/// Returns the outcome so the caller can log + decide whether to
-/// spawn the installer. Never panics; network errors fold into
-/// `Unreachable(...)` (#1755) and verdicts into `Skipped(...)`, so a flaky
-/// link doesn't crash the agent.
-pub async fn check_once() -> CheckOutcome {
+/// Result of a metadata-only update check (zero installer download).
+#[derive(Debug)]
+pub enum MetadataCheckOutcome {
+    UpToDate {
+        current: String,
+        latest: String,
+    },
+    Available {
+        current: String,
+        latest: String,
+        asset: GithubAsset,
+    },
+    Skipped(String),
+    Unreachable(String),
+}
+
+/// Check the trusted release feed without downloading any installer payload.
+/// Used by `self-update --check-only` and `LocalAPI::CheckUpdate` (~200 ms,
+/// ~5 KB JSON instead of downloading 33–93 MB just to check).
+pub async fn check_metadata_only() -> MetadataCheckOutcome {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let release = match fetch_latest_release().await {
         Ok(r) => r,
-        Err(e) => return failed("fetch", e),
+        Err(e) => {
+            return match failed("fetch", e) {
+                CheckOutcome::Unreachable(msg) => MetadataCheckOutcome::Unreachable(msg),
+                CheckOutcome::Skipped(msg) => MetadataCheckOutcome::Skipped(msg),
+                _ => MetadataCheckOutcome::Skipped("fetch failed".into()),
+            };
+        }
     };
-    // Drafts are always skipped; prereleases are tolerated because
-    // our 0.x release history marked them all `prerelease: true` and
-    // we want those agents to update even though GitHub's own
-    // /releases/latest endpoint excludes them. pick_latest_release
-    // has already filtered by tag prefix.
     if release.draft {
-        return CheckOutcome::Skipped(format!("latest release is draft: {}", release.tag_name));
+        return MetadataCheckOutcome::Skipped(format!(
+            "latest release is draft: {}",
+            release.tag_name
+        ));
     }
     let latest_parsed = match parse_version(&release.tag_name) {
         Some(_) => release.tag_name.clone(),
-        None => return CheckOutcome::Skipped(format!("unparseable tag {}", release.tag_name)),
+        None => {
+            return MetadataCheckOutcome::Skipped(format!("unparseable tag {}", release.tag_name));
+        }
     };
     if !is_newer(&latest_parsed, &current) {
-        return CheckOutcome::UpToDate {
+        return MetadataCheckOutcome::UpToDate {
             current,
             latest: latest_parsed,
         };
     }
     let asset = match pick_asset_for_platform(&release.assets) {
-        Some(a) => a,
+        Some(a) => a.clone(),
         None => {
-            return CheckOutcome::Skipped(format!(
+            return MetadataCheckOutcome::Skipped(format!(
                 "no installer asset for this platform in release {latest_parsed}"
             ));
         }
     };
-    let downloaded = download_asset(asset, &latest_parsed).await;
-    match downloaded {
-        Ok(path) => CheckOutcome::UpdateReady {
+    MetadataCheckOutcome::Available {
+        current,
+        latest: latest_parsed,
+        asset,
+    }
+}
+
+/// Run one check cycle: GET releases → compare → reuse verified staged
+/// installer if present, else download & verify. Never panics; network errors
+/// fold into `Unreachable(...)` (#1755) and verdicts into `Skipped(...)`.
+pub async fn check_once() -> CheckOutcome {
+    match check_metadata_only().await {
+        MetadataCheckOutcome::UpToDate { current, latest } => {
+            mutate_update_status(|s| {
+                s.stage = "up_to_date".into();
+                s.latest = Some(latest.clone());
+                s.update_available = false;
+                s.staged_ready = false;
+                s.downloaded_bytes = None;
+                s.total_bytes = None;
+                s.defer_reason = None;
+                s.message = None;
+            });
+            CheckOutcome::UpToDate { current, latest }
+        }
+        MetadataCheckOutcome::Skipped(reason) => {
+            mutate_update_status(|s| {
+                if !s.staged_ready {
+                    s.stage = "idle".into();
+                }
+                s.message = Some(reason.clone());
+            });
+            CheckOutcome::Skipped(reason)
+        }
+        MetadataCheckOutcome::Unreachable(reason) => {
+            mutate_update_status(|s| {
+                if !s.staged_ready {
+                    s.stage = "failed".into();
+                }
+                s.message = Some(reason.clone());
+            });
+            CheckOutcome::Unreachable(reason)
+        }
+        MetadataCheckOutcome::Available {
             current,
-            latest: latest_parsed,
-            installer_path: path,
-        },
-        Err(e) => failed("download", e),
+            latest,
+            asset,
+        } => {
+            if let Some(staged_path) = take_valid_staged(&latest) {
+                tracing::info!(
+                    latest = %latest,
+                    path = %staged_path.display(),
+                    "reusing verified pre-downloaded installer"
+                );
+                mutate_update_status(|s| {
+                    s.stage = "ready".into();
+                    s.latest = Some(latest.clone());
+                    s.update_available = true;
+                    s.staged_ready = true;
+                    s.message = None;
+                });
+                return CheckOutcome::UpdateReady {
+                    current,
+                    latest,
+                    installer_path: staged_path,
+                };
+            }
+            match download_asset_inner(&asset, &latest, true).await {
+                Ok(path) => CheckOutcome::UpdateReady {
+                    current,
+                    latest,
+                    installer_path: path,
+                },
+                Err(e) => {
+                    let out = failed("download", e);
+                    let msg = match &out {
+                        CheckOutcome::Skipped(m) | CheckOutcome::Unreachable(m) => m.clone(),
+                        _ => "download failed".into(),
+                    };
+                    mutate_update_status(|s| {
+                        s.stage = "failed".into();
+                        s.latest = Some(latest.clone());
+                        s.update_available = true;
+                        s.staged_ready = false;
+                        s.message = Some(msg);
+                    });
+                    out
+                }
+            }
+        }
     }
 }
 
@@ -3869,6 +4253,135 @@ pub(crate) fn resolve_check_interval_with(
 static UPDATE_TRIGGER: std::sync::OnceLock<tokio::sync::mpsc::Sender<Option<String>>> =
     std::sync::OnceLock::new();
 
+/// Set by [`apply_update_via_localapi`] right before sending a wake on
+/// [`UPDATE_TRIGGER`] so `run_periodic` distinguishes an explicit local user
+/// click (which skips the 5-minute startup cooldown and desktop idle defer)
+/// from a server-pushed `rc:agent.update`.
+static MANUAL_UPDATE_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// LocalAPI `CheckUpdate` handler: metadata-only check (~5 KB JSON, zero
+/// installer download) routed through the daemon's active management path.
+pub async fn check_update_via_localapi() -> tunnel_core::localapi::UpdateStatusInfo {
+    let current_stage = update_status_snapshot().stage;
+    if matches!(
+        current_stage.as_str(),
+        "downloading" | "verifying" | "installing" | "restarting"
+    ) {
+        return update_status_snapshot();
+    }
+    mutate_update_status(|s| {
+        s.stage = "checking".into();
+        s.message = None;
+    });
+    match check_metadata_only().await {
+        MetadataCheckOutcome::UpToDate { latest, .. } => {
+            mutate_update_status(|s| {
+                s.stage = "up_to_date".into();
+                s.latest = Some(latest);
+                s.update_available = false;
+                s.staged_ready = false;
+                s.downloaded_bytes = None;
+                s.total_bytes = None;
+                s.defer_reason = None;
+                s.message = None;
+            });
+        }
+        MetadataCheckOutcome::Available { latest, .. } => {
+            let staged = peek_valid_staged(&latest);
+            mutate_update_status(|s| {
+                s.stage = if staged { "ready" } else { "available" }.into();
+                s.latest = Some(latest);
+                s.update_available = true;
+                s.staged_ready = staged;
+                s.message = None;
+            });
+        }
+        MetadataCheckOutcome::Skipped(reason) => {
+            mutate_update_status(|s| {
+                s.stage = "idle".into();
+                s.message = Some(reason);
+            });
+        }
+        MetadataCheckOutcome::Unreachable(reason) => {
+            mutate_update_status(|s| {
+                s.stage = "failed".into();
+                s.message = Some(reason);
+            });
+        }
+    }
+    update_status_snapshot()
+}
+
+/// LocalAPI `ApplyUpdate` handler: triggers an immediate privileged update
+/// using the running daemon (Windows SYSTEM / per-user, Linux root/user) or
+/// its root update helper (macOS / Linux per-user helper). Returns immediately
+/// with the live snapshot so the desktop UI can poll `UpdateStatus` for
+/// progress without timing out the LocalAPI call.
+pub async fn apply_update_via_localapi() -> tunnel_core::localapi::UpdateStatusInfo {
+    let snap = update_status_snapshot();
+    if matches!(
+        snap.stage.as_str(),
+        "downloading" | "verifying" | "installing" | "restarting"
+    ) {
+        return snap;
+    }
+    let owner = current_update_owner();
+    if owner == "disabled" {
+        mutate_update_status(|s| {
+            s.stage = "disabled".into();
+            s.message = Some("auto-update is disabled on this device".into());
+        });
+        return update_status_snapshot();
+    }
+    if owner == "helper" {
+        match queue_update_check() {
+            Ok(()) => {
+                let msg = if cfg!(target_os = "macos") {
+                    "Queued for root update helper (fans.itachi.meshharbor.update). Watch /var/log/meshharbor/update.log."
+                } else {
+                    "Queued for root update helper (meshharbor-update.service). Watch journalctl -u meshharbor-update.service."
+                };
+                mutate_update_status(|s| {
+                    s.stage = "queued".into();
+                    s.defer_reason = None;
+                    s.message = Some(msg.into());
+                });
+            }
+            Err(e) => {
+                mutate_update_status(|s| {
+                    s.stage = "failed".into();
+                    s.message = Some(format!(
+                        "could not wake update helper ({}): {e}",
+                        update_trigger_path()
+                    ));
+                });
+            }
+        }
+        return update_status_snapshot();
+    }
+    MANUAL_UPDATE_PENDING.store(true, std::sync::atomic::Ordering::Release);
+    if !request_update_now(None) {
+        MANUAL_UPDATE_PENDING.store(false, std::sync::atomic::Ordering::Release);
+        mutate_update_status(|s| {
+            s.stage = "failed".into();
+            s.message = Some("update queue is busy or updater is not running".into());
+        });
+        return update_status_snapshot();
+    }
+    let next_stage = if snap.staged_ready {
+        "installing"
+    } else {
+        "checking"
+    };
+    mutate_update_status(|s| {
+        s.stage = next_stage.into();
+        s.defer_reason = None;
+        s.message = None;
+    });
+    update_status_snapshot()
+}
+
 /// Create the forced-update trigger channel and register its sender — for
 /// a daemon whose updater will run. Called once from `run_cmd`; the
 /// receiver goes to [`run_periodic`].
@@ -3974,10 +4487,22 @@ fn act_on_outcome_with(
                 path = %installer_path.display(),
                 "new release available — spawning installer and exiting"
             );
+            mutate_update_status(|s| {
+                s.stage = "installing".into();
+                s.latest = Some(latest.clone());
+                s.update_available = true;
+                s.staged_ready = true;
+                s.defer_reason = None;
+                s.message = None;
+            });
             if let Err(e) = spawn(&installer_path, Some(&latest)) {
                 tracing::error!(error = %e, "installer spawn failed; will retry next cycle");
                 // FR-90 P1d-1 — no restart is coming: take agent prompts again.
                 hold_agent_prompts(false);
+                mutate_update_status(|s| {
+                    s.stage = "failed".into();
+                    s.message = Some(format!("{e:#}"));
+                });
                 // A failed install is otherwise INVISIBLE: the version the
                 // server sees simply never moves, which reads as "the update
                 // button does nothing". Raise the same operator sentinel the
@@ -3987,6 +4512,11 @@ fn act_on_outcome_with(
                 ));
                 return false;
             }
+            mutate_update_status(|s| {
+                s.stage = "restarting".into();
+                s.latest = Some(latest.clone());
+                s.message = None;
+            });
             #[cfg(target_os = "linux")]
             if linux_user::current() {
                 // The independent user service, not this updater, owns stop,
@@ -4156,12 +4686,13 @@ pub async fn run_periodic(
         }
         first = false;
 
-        // S1a — operator-forced cycle (rc:agent.update). Bypasses the
-        // transfer-defer gate (explicit operator intent) but keeps the
-        // install-storm cooldown; a pinned tag skips the is-newer check
-        // (pin_version semantics — the admin chose the version).
+        // S1a — operator-forced cycle (rc:agent.update) or local desktop
+        // manual click (`LocalAPI::ApplyUpdate`). Manual clicks bypass the
+        // 5-minute startup cooldown and desktop idle defer, and reuse any
+        // already-verified staged installer immediately.
         if let Some(pin) = forced {
-            if recent_update_attempt(STARTUP_UPDATE_COOLDOWN) {
+            let manual = MANUAL_UPDATE_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel);
+            if !manual && recent_update_attempt(STARTUP_UPDATE_COOLDOWN) {
                 tracing::info!(
                     "forced update suppressed by recent-install cooldown; try again shortly"
                 );
@@ -4204,50 +4735,11 @@ pub async fn run_periodic(
             continue;
         }
 
-        // rc.19 gate: don't fire an installer while file transfers
-        // are in flight. Pair with resumable transfers — even with
-        // resume the install + restart kills the WebRTC peer for
-        // several seconds, which is a UX nuisance. Skip the cycle
-        // when active > 0 unless we've deferred MAX_CONSECUTIVE_DEFERS
-        // times in a row (security-vs-uptime trade-off documented in
-        // the rc.19 plan M3 fix).
-        let active = active_work();
-        let net_transition = net_transition_recent();
-        match decide_defer(active, net_transition, consecutive_defers) {
-            DeferDecision::DeferOnce => {
-                consecutive_defers = consecutive_defers.saturating_add(1);
-                // R5b — a transition defer rechecks fast (the network
-                // settles in minutes); a transfer defer keeps its hour.
-                let recheck = if net_transition && active == 0 {
-                    NET_DEFER_RECHECK
-                } else {
-                    TRANSFER_DEFER_RECHECK
-                };
-                defer_recheck = Some(recheck);
-                tracing::info!(
-                    active,
-                    net_transition,
-                    consecutive_defers,
-                    next_check_secs = recheck.as_secs(),
-                    "auto-updater: deferring — transfers or a recording in flight, or the network just moved"
-                );
-                continue;
-            }
-            DeferDecision::ForceAfterDefers => {
-                tracing::warn!(
-                    active,
-                    consecutive_defers,
-                    "auto-updater: forcing update after {} consecutive defers",
-                    MAX_CONSECUTIVE_DEFERS
-                );
-                consecutive_defers = 0;
-                // Fall through to check_once.
-            }
-            DeferDecision::Proceed => {
-                consecutive_defers = 0;
-            }
-        }
-
+        // Periodic cycle: pre-download & GPG-verify silently first (zero
+        // interruption), then decide whether to install now or stay staged
+        // until active sessions/transfers clear and a desktop user is idle or
+        // locked. A manual click via LocalAPI::ApplyUpdate reuses the staged
+        // payload immediately.
         let outcome = check_once().await;
         // FR-117 P1 — the companion package follows this daemon. Here, in the
         // loop that runs the daemon's own install and never beside it, so two
@@ -4259,6 +4751,64 @@ pub async fn run_periodic(
             crate::companion::sync_package().await;
         }
         let retry = recheck_after(&outcome, &mut transport_failures, interval);
+        if let CheckOutcome::UpdateReady {
+            ref latest,
+            ref installer_path,
+            ..
+        } = outcome
+        {
+            let active = active_work();
+            let rc_sessions = crate::gpu_clock::active_rc_sessions();
+            let net_transition = net_transition_recent();
+            let desktop_connected = crate::companion::connected_version().is_some();
+            let (idle_secs, screen_locked) = if desktop_connected {
+                crate::presence::desktop_idle_probe()
+            } else {
+                (None, false)
+            };
+            match decide_desktop_auto_install(
+                active,
+                rc_sessions,
+                net_transition,
+                desktop_connected,
+                idle_secs,
+                screen_locked,
+                consecutive_defers,
+            ) {
+                DesktopInstallGate::Defer { reason, recheck } => {
+                    if reason != "user_active" {
+                        consecutive_defers = consecutive_defers.saturating_add(1);
+                    }
+                    keep_staged_for_retry(latest, installer_path);
+                    mutate_update_status(|s| {
+                        s.stage = "ready".into();
+                        s.latest = Some(latest.clone());
+                        s.update_available = true;
+                        s.staged_ready = true;
+                        s.defer_reason = Some(reason.to_string());
+                        s.message = None;
+                    });
+                    defer_recheck = Some(recheck);
+                    tracing::info!(
+                        reason,
+                        active,
+                        rc_sessions,
+                        net_transition,
+                        desktop_connected,
+                        idle_secs = ?idle_secs,
+                        screen_locked,
+                        next_check_secs = recheck.as_secs(),
+                        "auto-updater: verified update staged; deferring install until host is idle"
+                    );
+                    continue;
+                }
+                DesktopInstallGate::InstallNow => {
+                    consecutive_defers = 0;
+                }
+            }
+        } else {
+            consecutive_defers = 0;
+        }
         // FR-90 P1d-1 — AC7: the installer waits for running agent turns.
         if matches!(outcome, CheckOutcome::UpdateReady { .. })
             && !wait_for_agent_turns(&mut shutdown, "auto-updater").await
@@ -4726,15 +5276,17 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     // job, and a `systemctl stop` during the Linux gate's sleep finds the file
     // already gone and does not re-trigger the path unit.
     #[cfg(target_os = "macos")]
-    {
+    let woke_by_trigger = {
         // launchd WatchPaths is edge-triggered and ThrottleInterval spaces
         // relaunches, so macOS needs no in-helper gate. `remove_file` never
         // follows a symlink, so a planted link is unlinked, not dereferenced.
-        let _ = std::fs::remove_file(update_trigger_path());
-    }
+        std::fs::remove_file(update_trigger_path()).is_ok()
+    };
     #[cfg(target_os = "linux")]
-    {
-        match consume_wake(std::path::Path::new(LINUX_UPDATE_TRIGGER)) {
+    let woke_by_trigger = {
+        let consumed = consume_wake(std::path::Path::new(LINUX_UPDATE_TRIGGER));
+        let triggered = matches!(consumed, WakeConsumed::Removed);
+        match consumed {
             WakeConsumed::Nothing | WakeConsumed::Removed => {}
             WakeConsumed::MovedAside { cleanup: None } => tracing::warn!(
                 "update-helper: a non-file was planted at the wake path; moved aside and removed"
@@ -4796,7 +5348,8 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
             );
             return Ok(());
         }
-    }
+        triggered
+    };
 
     // The operator's opt-out. postinstall removes the launchd unit when this
     // marker is set, but a loaded job can linger until reboot (it must not
@@ -4828,9 +5381,15 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     crate::companion::sync_package().await;
 
-    if recent_update_attempt(STARTUP_UPDATE_COOLDOWN) {
+    let cooldown = if woke_by_trigger {
+        MANUAL_WAKE_COOLDOWN
+    } else {
+        STARTUP_UPDATE_COOLDOWN
+    };
+    if recent_update_attempt(cooldown) {
         tracing::info!(
-            cooldown_secs = STARTUP_UPDATE_COOLDOWN.as_secs(),
+            cooldown_secs = cooldown.as_secs(),
+            woke_by_trigger,
             "update-helper: suppressed by recent-install cooldown"
         );
         return Ok(());
@@ -8498,5 +9057,77 @@ mod install_owner_fence_tests {
             "the installer is running: the daemon is told to shut down"
         );
         assert!(exits, "and the update loop ends");
+    }
+
+    #[test]
+    fn desktop_auto_install_gate_defers_for_active_sessions_and_active_user() {
+        // Active remote-control session always defers below the force cap.
+        assert_eq!(
+            decide_desktop_auto_install(0, 1, false, true, Some(3600), true, 0),
+            DesktopInstallGate::Defer {
+                reason: "active_session",
+                recheck: NET_DEFER_RECHECK,
+            }
+        );
+        // Active desktop user (< 15 min idle, unlocked) defers with user_active.
+        assert_eq!(
+            decide_desktop_auto_install(0, 0, false, true, Some(120), false, 0),
+            DesktopInstallGate::Defer {
+                reason: "user_active",
+                recheck: DESKTOP_IDLE_RECHECK,
+            }
+        );
+        // Desktop user idle >= 15 min installs silently.
+        assert_eq!(
+            decide_desktop_auto_install(
+                0,
+                0,
+                false,
+                true,
+                Some(DESKTOP_IDLE_THRESHOLD_SECS),
+                false,
+                0
+            ),
+            DesktopInstallGate::InstallNow
+        );
+        // Locked screen installs immediately even when idle clock is small.
+        assert_eq!(
+            decide_desktop_auto_install(0, 0, false, true, Some(5), true, 0),
+            DesktopInstallGate::InstallNow
+        );
+        // Headless server/gateway (no desktop companion) installs immediately.
+        assert_eq!(
+            decide_desktop_auto_install(0, 0, false, false, Some(0), false, 0),
+            DesktopInstallGate::InstallNow
+        );
+        // Desktop with unavailable idle clock (e.g. Wayland) does not stall forever.
+        assert_eq!(
+            decide_desktop_auto_install(0, 0, false, true, None, false, 0),
+            DesktopInstallGate::InstallNow
+        );
+    }
+
+    #[test]
+    fn staged_installer_cache_verifies_digest_and_rejects_tampering() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meshharbor-0.4.217.msi");
+        let body = b"verified-installer-bytes";
+        std::fs::write(&path, body).unwrap();
+        let hex = format!("{:x}", Sha256::digest(body));
+
+        record_staged_installer("agent-v0.4.217", &path, &hex);
+        assert!(peek_valid_staged("agent-v0.4.217"));
+        assert!(!peek_valid_staged("agent-v0.4.218"));
+
+        // Matching version returns the staged path.
+        let taken = take_valid_staged("agent-v0.4.217");
+        assert_eq!(taken.as_deref(), Some(path.as_path()));
+
+        // Re-record then tamper with the file on disk: must fail closed!
+        record_staged_installer("agent-v0.4.217", &path, &hex);
+        std::fs::write(&path, b"tampered-bytes").unwrap();
+        assert!(take_valid_staged("agent-v0.4.217").is_none());
     }
 }

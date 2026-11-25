@@ -720,6 +720,40 @@ textarea {
   font-variant-numeric: tabular-nums slashed-zero;
 }
 
+.upd-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.upd-progress[hidden] { display: none; }
+.upd-bar {
+  flex: 1;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.upd-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 180ms ease;
+}
+.upd-bar.is-indeterminate .upd-bar-fill {
+  width: 38%;
+  animation: upd-slide 1.2s ease-in-out infinite;
+}
+@keyframes upd-slide {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(280%); }
+}
+#ov-update-status { margin: 0 0 10px; }
+#ov-update-status.is-error { color: var(--error); }
+#ov-update-status.is-ok { color: var(--ok); }
+
 /* ── Devices view bits (FR-84 D5c) ─────────────────────────────────── */
 
 .dv-toolbar {

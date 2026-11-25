@@ -443,6 +443,56 @@ pub fn now() -> Presence {
     }
 }
 
+/// Read `(user_idle_secs, screen_locked)` for the background updater's desktop
+/// idle gate. Returns `(None, false)` on headless hosts or platforms where no
+/// idle clock is reachable; callers must never treat `None` as actively busy
+/// forever.
+pub fn desktop_idle_probe() -> (Option<u64>, bool) {
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", feature = "enigo-input")
+    ))]
+    {
+        if !samples() {
+            return (None, false);
+        }
+        start();
+        let locked = sample()
+            || crate::lock_state::probe_lock_state_service()
+                == Some(crate::lock_state::LockState::Locked);
+        let (ago_ms, away) = {
+            let t = TRACKER.lock().unwrap_or_else(|p| p.into_inner());
+            (t.person_ms_ago(os_tick()), t.away_since_lock())
+        };
+        (ago_ms.map(|ms| ms / 1000), locked || away)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // kCGEventSourceStateCombinedSessionState (0), kCGAnyInputEventType (!0u32)
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+        }
+        let secs = unsafe { CGEventSourceSecondsSinceLastEventType(0, !0u32) };
+        let idle = if secs.is_finite() && secs >= 0.0 {
+            Some(secs as u64)
+        } else {
+            None
+        };
+        let locked = crate::lock_state::probe_lock_state_service()
+            == Some(crate::lock_state::LockState::Locked);
+        (idle, locked)
+    }
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        all(target_os = "linux", feature = "enigo-input")
+    )))]
+    {
+        (None, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

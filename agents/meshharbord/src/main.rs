@@ -1219,6 +1219,29 @@ fn two_factor_cmd(config_path: &std::path::Path, action: TwoFactorCmd) -> Result
     Ok(())
 }
 
+/// Resolve the config path for a standalone `meshharbord self-update` CLI call.
+/// On a Windows `perMachine` install, a non-elevated caller (such as a fallback
+/// from the desktop companion) has no per-user config under `%APPDATA%`; when
+/// `--config` was omitted, prefer the readable machine-global `%PROGRAMDATA%`
+/// config so release-origin and CN management-path resolution match the live
+/// service instead of failing against a nonexistent file.
+fn pick_self_update_config_path(
+    explicit: Option<&std::path::Path>,
+    default_chosen: PathBuf,
+    machine_global: Option<&std::path::Path>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> PathBuf {
+    if explicit.is_some() || exists(&default_chosen) {
+        return default_chosen;
+    }
+    if let Some(mg) = machine_global
+        && exists(mg)
+    {
+        return mg.to_path_buf();
+    }
+    default_chosen
+}
+
 fn resolve_config_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let default = config::default_config_path().context("resolving default config path")?;
 
@@ -2597,6 +2620,18 @@ async fn daemon_main() -> Result<()> {
         .await
         .context("timed out locating the active daemon config; no policy was changed")??;
         active_invitation_config(cli.config.as_deref(), status.config_path.as_deref())?
+    } else if matches!(cli.command.as_ref(), Some(Command::SelfUpdate { .. })) {
+        let base = resolve_config_path(cli.config.clone())?;
+        #[cfg(target_os = "windows")]
+        let machine_global = Some(config::machine_global_config_path());
+        #[cfg(not(target_os = "windows"))]
+        let machine_global: Option<PathBuf> = None;
+        pick_self_update_config_path(
+            cli.config.as_deref(),
+            base,
+            machine_global.as_deref(),
+            |p| p.exists(),
+        )
     } else {
         resolve_config_path(cli.config.clone())?
     };
@@ -5192,9 +5227,13 @@ async fn run_cmd(
             meshharbord::supervision::Supervision::WindowsScm
         );
         tokio::spawn(async move {
-            if !host_refreshes_companion {
-                meshharbord::companion::refresh_if_stale(respawn_ctx).await;
-            }
+            let initial_refresh_ok = if !host_refreshes_companion {
+                meshharbord::companion::refresh_if_stale(respawn_ctx).await
+            } else {
+                true
+            };
+            #[cfg(not(target_os = "windows"))]
+            let _ = initial_refresh_ok;
             #[cfg(target_os = "windows")]
             if !scm_owns_companion {
                 meshharbord::post_install::await_windows_update_receipt().await;
@@ -5229,7 +5268,8 @@ async fn run_cmd(
             // on Linux the companion's package moves inside the updater's loop.
             #[cfg(target_os = "windows")]
             if !host_refreshes_companion {
-                meshharbord::companion::refresh_periodically(respawn_ctx).await;
+                meshharbord::companion::refresh_periodically(respawn_ctx, initial_refresh_ok)
+                    .await;
             }
         });
     }
@@ -6917,17 +6957,12 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
     // it touches nothing, so any uid may ask.
     #[cfg(target_os = "macos")]
     if !check_only && unsafe { libc::geteuid() } != 0 {
-        // RETIRED-NAME-ANCHOR(14): the printed guidance names
-        // /var/log/meshharbor-agent/update.log and /etc/meshharbor-agent/disable-auto-update —
-        // real macOS paths fixed by the launchd plists, which are pinned to the frozen
-        // .app bundle name (D5). They sit inside a string literal, so the anchor is on
-        // the statement. docs/fr/FR-21
         return match updater::queue_update_check() {
             Ok(()) => {
                 println!(
                     "Queued for the root update helper (fans.itachi.meshharbor.update).\n\
-                     Watch: /var/log/meshharbor-agent/update.log\n\
-                     (If this Mac set /etc/meshharbor-agent/disable-auto-update, updates are manual:\n\
+                     Watch: /var/log/meshharbor/update.log\n\
+                     (If this Mac set /etc/meshharbor/disable-auto-update, updates are manual:\n\
                       sudo installer -pkg <pkg> -target /)"
                 );
                 Ok(())
@@ -6960,6 +6995,26 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
                 updater::LINUX_UPDATE_TRIGGER
             ))),
         };
+    }
+    if check_only {
+        match updater::check_metadata_only().await {
+            updater::MetadataCheckOutcome::UpToDate { current, latest } => {
+                println!("Up to date (current: {current}, latest: {latest})");
+            }
+            updater::MetadataCheckOutcome::Available {
+                current, latest, ..
+            } => {
+                println!("Update available: {current} -> {latest}");
+                println!("(skipping install — --check-only)");
+            }
+            updater::MetadataCheckOutcome::Skipped(reason) => {
+                println!("Update check skipped: {reason}");
+            }
+            updater::MetadataCheckOutcome::Unreachable(reason) => {
+                println!("Update check could not reach the release server: {reason}");
+            }
+        }
+        return Ok(());
     }
     let outcome = updater::check_once().await;
     match outcome {
@@ -8873,4 +8928,32 @@ mod tests {
         assert!(!should_self_heal_config(true, peruser, mg, true));
     }
     // RETIRED-NAME-ANCHOR-END
+
+    #[test]
+    fn self_update_config_prefers_machine_global_when_user_config_is_absent() {
+        let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor\config.toml");
+        let peruser = Path::new(r"C:\Users\u\AppData\Roaming\meshharbor\meshharbor\config\config.toml");
+        let explicit = Path::new(r"C:\custom\config.toml");
+
+        // Explicit --config always wins.
+        assert_eq!(
+            pick_self_update_config_path(Some(explicit), explicit.to_path_buf(), Some(mg), |p| p == mg),
+            explicit
+        );
+        // Existing per-user config is preserved.
+        assert_eq!(
+            pick_self_update_config_path(None, peruser.to_path_buf(), Some(mg), |p| p == peruser || p == mg),
+            peruser
+        );
+        // Missing per-user config on perMachine install falls back to machine-global.
+        assert_eq!(
+            pick_self_update_config_path(None, peruser.to_path_buf(), Some(mg), |p| p == mg),
+            mg
+        );
+        // Neither exists → keeps default so error names it honestly.
+        assert_eq!(
+            pick_self_update_config_path(None, peruser.to_path_buf(), Some(mg), |_| false),
+            peruser
+        );
+    }
 }

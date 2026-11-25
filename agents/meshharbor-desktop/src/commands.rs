@@ -2981,65 +2981,268 @@ pub fn cmd_default_device_name() -> String {
         .unwrap_or_else(|_| "my-device".to_string())
 }
 
-/// Spawn `meshharbord self-update --check-only` and parse the
-/// stdout — looks for the "Update available" sentinel line and
-/// extracts the version pair.
-#[tauri::command]
-pub fn cmd_check_update() -> Result<String, String> {
-    let exe = agent_exe_path()?;
-    let output = no_window_command(&exe)
-        .args(["self-update", "--check-only"])
-        .output()
-        .map_err(|e| format!("Spawning self-update: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "self-update --check-only exited {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// Desktop-local fallback update status used only when the running daemon is
+/// unavailable or predates `LocalAPI::{UpdateStatus,CheckUpdate,ApplyUpdate}`.
+static FALLBACK_UPDATE_STATUS: std::sync::LazyLock<
+    std::sync::Mutex<Option<localapi::UpdateStatusInfo>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+fn set_fallback_update_status(info: localapi::UpdateStatusInfo) {
+    *FALLBACK_UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(info);
 }
 
-/// Trigger the actual self-update. On perMachine installs this
-/// surfaces UAC (Feature 1 from the rc.18 plan). The agent exits
-/// after spawning msiexec so subsequent status polls show "service
-/// not running" briefly while the installer runs.
-///
-/// FR-27 — returns what the daemon said, instead of nothing.
-///
-/// On Windows the daemon spawns msiexec and exits, so there is nothing to wait
-/// for and the detached spawn is right. Everywhere else the command RETURNS,
-/// and on macOS what it returns is the part that matters: a non-root
-/// invocation queues the root update helper (`fans.itachi.meshharbor.update`) and prints
-/// where to watch. Discarding that left the button looking like it had done
-/// nothing — on the one platform where it had in fact done the right thing.
-#[tauri::command]
-pub fn cmd_apply_update() -> Result<String, String> {
-    let exe = agent_exe_path()?;
-    #[cfg(windows)]
+fn clear_fallback_update_status() {
+    *FALLBACK_UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn get_fallback_update_status() -> Option<localapi::UpdateStatusInfo> {
+    FALLBACK_UPDATE_STATUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn is_predates_update_verb(err: &std::io::Error) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("bad request") || msg.contains("unknown variant")
+}
+
+/// Resolve an explicit `--config <path>` argument for fallback CLI spawns so
+/// Windows `perMachine` installs never point a non-elevated child at a
+/// nonexistent `%APPDATA%` config when `%PROGRAMDATA%` holds the real one.
+fn fallback_cli_config_arg() -> Option<PathBuf> {
+    let is_scm = probe_service_state().0 == "scmService";
+    active_config_path(is_scm).ok().filter(|p| p.exists())
+}
+
+/// Parse stdout from `meshharbord self-update --check-only` into a structured
+/// [`localapi::UpdateStatusInfo`] when falling back to the CLI.
+pub(crate) fn parse_cli_check_output(stdout: &str) -> localapi::UpdateStatusInfo {
+    let trimmed = stdout.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let mut info = localapi::UpdateStatusInfo {
+        current: env!("CARGO_PKG_VERSION").to_string(),
+        owner: Some("cli".into()),
+        ..Default::default()
+    };
+    if let Some(rest) = trimmed
+        .lines()
+        .find_map(|l| l.strip_prefix("Update available:"))
     {
-        // Detached — the daemon hands off to msiexec and exits; blocking the
-        // tray's event loop on that would freeze the UI mid-install.
-        no_window_command(&exe)
-            .arg("self-update")
-            .spawn()
-            .map_err(|e| format!("Spawning self-update: {e}"))?;
-        Ok("Update started. The device service will restart when it finishes.".to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        let out = no_window_command(&exe)
-            .arg("self-update")
-            .output()
-            .map_err(|e| format!("Spawning self-update ({}): {e}", exe.display()))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(if stderr.is_empty() { stdout } else { stderr });
+        let parts: Vec<&str> = rest.split("->").map(str::trim).collect();
+        if let Some(cur) = parts.first()
+            && !cur.is_empty()
+        {
+            info.current = (*cur).to_string();
         }
-        Ok(stdout)
+        if let Some(lat) = parts.get(1)
+            && !lat.is_empty()
+        {
+            let tag = lat.split('.').next().unwrap_or(lat);
+            let _ = tag;
+            info.latest = Some((*lat).to_string());
+        }
+        info.stage = "available".into();
+        info.update_available = true;
+        return info;
     }
+    if lower.starts_with("up to date") {
+        info.stage = "up_to_date".into();
+        info.update_available = false;
+        if let Some(after) = trimmed.split("latest:").nth(1) {
+            let lat = after.trim().trim_end_matches(')').trim();
+            if !lat.is_empty() {
+                info.latest = Some(lat.to_string());
+            }
+        }
+        return info;
+    }
+    if lower.contains("could not reach") {
+        info.stage = "failed".into();
+        info.message = Some(trimmed.to_string());
+        return info;
+    }
+    info.stage = "idle".into();
+    if !trimmed.is_empty() {
+        info.message = Some(trimmed.to_string());
+    }
+    info
+}
+
+/// Read the live self-update status from the running daemon (zero network I/O).
+#[tauri::command]
+pub async fn cmd_update_status() -> Result<localapi::UpdateStatusInfo, String> {
+    match localapi::connect().await {
+        Ok(mut client) => match client.update_status().await {
+            Ok(info) => {
+                clear_fallback_update_status();
+                Ok(info)
+            }
+            Err(e) if is_predates_update_verb(&e) => Ok(get_fallback_update_status().unwrap_or(
+                localapi::UpdateStatusInfo {
+                    current: env!("CARGO_PKG_VERSION").to_string(),
+                    stage: "idle".into(),
+                    owner: Some("cli".into()),
+                    ..Default::default()
+                },
+            )),
+            Err(e) => get_fallback_update_status()
+                .ok_or_else(|| format!("Reading update status: {e}")),
+        },
+        Err(e) => get_fallback_update_status().ok_or_else(|| daemon_unreachable(e)),
+    }
+}
+
+/// Ask the running daemon for a metadata-only update check (~200 ms, zero
+/// installer download, routed over the daemon's active management path). Falls
+/// back to `meshharbord [--config …] self-update --check-only` only when the
+/// daemon is unreachable or predates `Request::CheckUpdate`.
+#[tauri::command]
+pub async fn cmd_check_update() -> Result<localapi::UpdateStatusInfo, String> {
+    if let Ok(mut client) = localapi::connect().await {
+        match client.check_update().await {
+            Ok(info) => {
+                clear_fallback_update_status();
+                return Ok(info);
+            }
+            Err(e) if !is_predates_update_verb(&e) => {
+                tracing::warn!(error = %e, "localapi check_update failed; falling back to CLI");
+            }
+            Err(_) => {}
+        }
+    }
+    tokio::task::spawn_blocking(|| {
+        let exe = agent_exe_path()?;
+        let mut cmd = no_window_command(&exe);
+        if let Some(cfg) = fallback_cli_config_arg() {
+            cmd.arg("--config").arg(cfg);
+        }
+        let output = cmd
+            .args(["self-update", "--check-only"])
+            .output()
+            .map_err(|e| format!("Spawning self-update: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(format!(
+                "self-update --check-only exited {:?}: {detail}",
+                output.status.code()
+            ));
+        }
+        let info = parse_cli_check_output(&String::from_utf8_lossy(&output.stdout));
+        set_fallback_update_status(info.clone());
+        Ok(info)
+    })
+    .await
+    .map_err(|e| format!("Check update task failed: {e}"))?
+}
+
+/// Trigger an immediate self-update.
+///
+/// Primary path: asks the running privileged daemon over LocalAPI
+/// (`Request::ApplyUpdate`) so Windows `perMachine` installs update silently as
+/// `SYSTEM` (no background UAC prompt, real `ProgramData` config & active CN
+/// entry route, reusing any pre-downloaded verified installer, with live
+/// download/install progress via [`cmd_update_status`]).
+///
+/// Fallback path (daemon down or predating `ApplyUpdate`): runs
+/// `meshharbord [--config …] self-update` in a background thread that captures
+/// full stdout/stderr and records real completion or failure in
+/// `FALLBACK_UPDATE_STATUS` instead of silently dropping errors.
+#[tauri::command]
+pub async fn cmd_apply_update() -> Result<localapi::UpdateStatusInfo, String> {
+    if let Ok(mut client) = localapi::connect().await {
+        match client.apply_update().await {
+            Ok(info) => {
+                clear_fallback_update_status();
+                return Ok(info);
+            }
+            Err(e) if !is_predates_update_verb(&e) => {
+                tracing::warn!(error = %e, "localapi apply_update failed; falling back to CLI");
+            }
+            Err(_) => {}
+        }
+    }
+    let exe = agent_exe_path()?;
+    let cfg = tokio::task::spawn_blocking(fallback_cli_config_arg)
+        .await
+        .ok()
+        .flatten();
+    let initial = localapi::UpdateStatusInfo {
+        current: env!("CARGO_PKG_VERSION").to_string(),
+        latest: get_fallback_update_status().and_then(|s| s.latest),
+        stage: "installing".into(),
+        update_available: true,
+        owner: Some("cli".into()),
+        ..Default::default()
+    };
+    set_fallback_update_status(initial.clone());
+    std::thread::spawn(move || {
+        let mut cmd = no_window_command(&exe);
+        if let Some(cfg_path) = cfg {
+            cmd.arg("--config").arg(cfg_path);
+        }
+        match cmd.arg("self-update").output() {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let combined = if stderr.is_empty() { stdout } else { stderr };
+                let lower = combined.to_ascii_lowercase();
+                if !out.status.success() || lower.contains("could not reach") || lower.contains("error") {
+                    set_fallback_update_status(localapi::UpdateStatusInfo {
+                        current: env!("CARGO_PKG_VERSION").to_string(),
+                        stage: "failed".into(),
+                        owner: Some("cli".into()),
+                        message: Some(if combined.is_empty() {
+                            format!("self-update exited {:?}", out.status.code())
+                        } else {
+                            combined
+                        }),
+                        ..Default::default()
+                    });
+                } else if lower.contains("queued for the root update helper") {
+                    set_fallback_update_status(localapi::UpdateStatusInfo {
+                        current: env!("CARGO_PKG_VERSION").to_string(),
+                        stage: "queued".into(),
+                        owner: Some("helper".into()),
+                        message: Some(combined),
+                        ..Default::default()
+                    });
+                } else if lower.contains("up to date") {
+                    set_fallback_update_status(localapi::UpdateStatusInfo {
+                        current: env!("CARGO_PKG_VERSION").to_string(),
+                        stage: "up_to_date".into(),
+                        owner: Some("cli".into()),
+                        message: Some(combined),
+                        ..Default::default()
+                    });
+                } else {
+                    set_fallback_update_status(localapi::UpdateStatusInfo {
+                        current: env!("CARGO_PKG_VERSION").to_string(),
+                        stage: "restarting".into(),
+                        owner: Some("cli".into()),
+                        message: (!combined.is_empty()).then_some(combined),
+                        ..Default::default()
+                    });
+                }
+            }
+            Err(e) => {
+                set_fallback_update_status(localapi::UpdateStatusInfo {
+                    current: env!("CARGO_PKG_VERSION").to_string(),
+                    stage: "failed".into(),
+                    owner: Some("cli".into()),
+                    message: Some(format!("Spawning self-update ({}): {e}", exe.display())),
+                    ..Default::default()
+                });
+            }
+        }
+    });
+    Ok(initial)
 }
 
 /// Register the agent for auto-start via either Scheduled Task
@@ -5655,12 +5858,15 @@ mod tests {
         assert!(!forget("&reset=0"));
         assert!(!forget("&reset=true"));
         assert!(!forget("&reset="));
-        assert!(WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT.contains("payload.resetCredential === true"));
-        assert!(
-            !WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT
-                .to_ascii_lowercase()
-                .contains("password")
-        );
+        #[cfg(target_os = "windows")]
+        {
+            assert!(WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT.contains("payload.resetCredential === true"));
+            assert!(
+                !WEB_WINDOW_RDP_BRIDGE_INIT_SCRIPT
+                    .to_ascii_lowercase()
+                    .contains("password")
+            );
+        }
     }
 
     #[test]
@@ -6054,5 +6260,27 @@ mod system_login_purpose_tests {
             login_purpose_for_system_personal_state(true, true, false),
             Purpose::UserSession
         );
+    }
+
+    #[test]
+    fn parse_cli_check_output_maps_available_up_to_date_and_unreachable() {
+        let avail = parse_cli_check_output(
+            "Update available: 0.4.216 -> agent-v0.4.217\n(skipping install — --check-only)\n",
+        );
+        assert_eq!(avail.stage, "available");
+        assert!(avail.update_available);
+        assert_eq!(avail.current, "0.4.216");
+        assert_eq!(avail.latest.as_deref(), Some("agent-v0.4.217"));
+
+        let up = parse_cli_check_output("Up to date (current: 0.4.216, latest: agent-v0.4.216)\n");
+        assert_eq!(up.stage, "up_to_date");
+        assert!(!up.update_available);
+        assert_eq!(up.latest.as_deref(), Some("agent-v0.4.216"));
+
+        let err = parse_cli_check_output(
+            "Update check could not reach the release server: dns error",
+        );
+        assert_eq!(err.stage, "failed");
+        assert!(err.message.as_deref().unwrap_or("").contains("dns error"));
     }
 }

@@ -468,16 +468,18 @@ fn service_main_inner() -> Result<()> {
                     .build()
                 {
                     rt.block_on(async {
-                        crate::companion::refresh_if_stale(
+                        let initial_ok = crate::companion::refresh_if_stale(
                             crate::companion::RespawnContext::SystemService,
                         )
                         .await;
                         crate::companion::scm_host_startup().await;
                         // FR-117 P2 — and again on every tick for the life of
                         // this host, so a refresh that failed at the start is
-                        // retried within hours, not at the next restart.
+                        // retried in 30 s → 2 m → 10 m → 1 h → 4 h instead of
+                        // waiting 4 h or until the next restart.
                         crate::companion::refresh_periodically(
                             crate::companion::RespawnContext::SystemService,
+                            initial_ok,
                         )
                         .await;
                     });

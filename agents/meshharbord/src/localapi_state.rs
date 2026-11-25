@@ -930,6 +930,18 @@ impl LocalApiState for DaemonState {
         crate::companion::clear_connected_version(pid)
     }
 
+    fn update_status(&self) -> tunnel_core::localapi::UpdateStatusInfo {
+        crate::updater::update_status_snapshot()
+    }
+
+    async fn check_update(&self) -> Response {
+        Response::UpdateStatus(Box::new(crate::updater::check_update_via_localapi().await))
+    }
+
+    async fn apply_update(&self) -> Response {
+        Response::UpdateStatus(Box::new(crate::updater::apply_update_via_localapi().await))
+    }
+
     fn encoder_caps(&self) -> Option<tunnel_core::localapi::EncoderCapsSummary> {
         // FR-84 D4 — the probe's CACHED result and nothing else. This answers
         // every Overview poll; `caps::detect()` here would spawn the probe

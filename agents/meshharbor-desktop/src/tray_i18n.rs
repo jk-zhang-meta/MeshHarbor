@@ -428,6 +428,22 @@ pub const fn check_updates(lang: Lang) -> &'static str {
     }
 }
 
+pub fn update_ready(lang: Lang, version: &str) -> String {
+    let ver = version.strip_prefix("agent-v").unwrap_or(version);
+    match lang {
+        Lang::En => format!("Update Ready ({ver}) — Install"),
+        Lang::ZhCn => format!("有新版本（{ver}）· 点击升级"),
+    }
+}
+
+pub fn update_available(lang: Lang, version: &str) -> String {
+    let ver = version.strip_prefix("agent-v").unwrap_or(version);
+    match lang {
+        Lang::En => format!("Update Available ({ver})"),
+        Lang::ZhCn => format!("发现新版本（{ver}）"),
+    }
+}
+
 pub const fn open_logs(lang: Lang) -> &'static str {
     match lang {
         Lang::En => "Open Logs Folder",
@@ -881,6 +897,16 @@ mod tests {
                 "check_updates",
                 check_updates(Lang::En).into(),
                 check_updates(Lang::ZhCn).into(),
+            ),
+            (
+                "update_ready",
+                update_ready(Lang::En, "agent-v0.4.217"),
+                update_ready(Lang::ZhCn, "agent-v0.4.217"),
+            ),
+            (
+                "update_available",
+                update_available(Lang::En, "agent-v0.4.217"),
+                update_available(Lang::ZhCn, "agent-v0.4.217"),
             ),
             (
                 "open_logs",

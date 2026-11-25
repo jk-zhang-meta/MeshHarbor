@@ -84,6 +84,14 @@
         <div class="view-head"><h2 data-i18n="ov.title">Overview</h2></div>
         <p class="view-sub" data-i18n="ov.sub">This device and its place in your MeshHarbor network.</p>
 
+        <div id="ov-update-ready-banner" class="banner banner-ok" hidden>
+          <div style="flex: 1">
+            <strong id="ov-update-banner-title">Update available</strong>
+            <p id="ov-update-banner-sub" class="muted small" style="margin: 4px 0 0"></p>
+          </div>
+          <button type="button" class="primary" id="ov-update-banner-btn" data-i18n="ov.updates.install">Install update</button>
+        </div>
+
         <div id="ov-not-enrolled" class="banner banner-warn" hidden>
           <div>
             <strong data-i18n="ov.notEnrolled.title">Not enrolled</strong>
@@ -260,8 +268,15 @@
           <p id="ov-files-msg" class="small" hidden style="white-space: pre-wrap"></p>
         </div>
 
-        <div class="card">
+        <div class="card" id="ov-updates-card">
           <h3 data-i18n="ov.updates.title">Updates</h3>
+          <p id="ov-update-status" class="muted small" hidden></p>
+          <div id="ov-update-progress" class="upd-progress" hidden>
+            <div class="upd-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="ov-update-bar-fill" class="upd-bar-fill"></div>
+            </div>
+            <span id="ov-update-progress-text" class="small muted"></span>
+          </div>
           <div class="actions" style="margin-top: 0">
             <button type="button" id="btn-check-update" data-i18n="ov.updates.check">Check for updates</button>
             <button type="button" id="btn-apply-update" class="primary" hidden data-i18n="ov.updates.install">Install update</button>

@@ -1706,6 +1706,55 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid: Option<u32>,
     },
+    /// Cached/live self-update state snapshot (read-only, zero network I/O).
+    UpdateStatus,
+    /// Metadata-only update check routed through the daemon's active config
+    /// and management path (never downloads the installer payload).
+    CheckUpdate,
+    /// Request an immediate privileged self-update via the running daemon (or
+    /// its root update helper), bypassing automatic idle deferral and startup
+    /// cooldown and reusing any verified pre-downloaded installer.
+    ApplyUpdate,
+}
+
+/// Snapshot of the daemon's self-update lifecycle, shared across
+/// [`Request::UpdateStatus`], [`Request::CheckUpdate`] and [`Request::ApplyUpdate`].
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateStatusInfo {
+    /// Currently running daemon version (`env!("CARGO_PKG_VERSION")`).
+    pub current: String,
+    /// Latest known release version or tag, if checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// Lifecycle stage: `"idle"` | `"checking"` | `"up_to_date"` | `"available"`
+    /// | `"downloading"` | `"verifying"` | `"ready"` | `"installing"`
+    /// | `"queued"` | `"restarting"` | `"succeeded"` | `"failed"` | `"disabled"`.
+    pub stage: String,
+    /// True when `latest` is strictly newer than `current`.
+    #[serde(default)]
+    pub update_available: bool,
+    /// True when a GPG-verified installer for `latest` is already staged on disk.
+    #[serde(default)]
+    pub staged_ready: bool,
+    /// Bytes downloaded so far during `"downloading"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<u64>,
+    /// Expected total bytes during `"downloading"`, when announced by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    /// Update installation owner: `"daemon"` | `"helper"` | `"user"` | `"disabled"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Human-readable status detail or failure reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Why an automatic background install is currently waiting (e.g.
+    /// `"active_session"`, `"user_active"`, `"active_work"`, `"net_transition"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_reason: Option<String>,
+    /// Unix epoch seconds of the most recent status update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_unix: Option<u64>,
 }
 
 /// FR-90 P3-9-2b — what `mh connect` asks for: the arguments a
@@ -2112,6 +2161,9 @@ pub enum Response {
     CompanionAck {
         ok: bool,
     },
+    /// Answer to [`Request::UpdateStatus`], [`Request::CheckUpdate`], and
+    /// [`Request::ApplyUpdate`].
+    UpdateStatus(Box<UpdateStatusInfo>),
 }
 
 /// FR-85 — options for a LOCAL recording. The microphone and system audio are
@@ -3178,6 +3230,26 @@ pub trait LocalApiState: Send + Sync {
     fn companion_bye(&self, _pid: Option<u32>) -> bool {
         true
     }
+    /// Current self-update lifecycle snapshot (zero network I/O).
+    fn update_status(&self) -> UpdateStatusInfo {
+        UpdateStatusInfo {
+            current: String::new(),
+            stage: "idle".into(),
+            ..Default::default()
+        }
+    }
+    /// Metadata-only check against the configured release feed.
+    async fn check_update(&self) -> Response {
+        Response::Error {
+            message: "update checks are not supported on this node".into(),
+        }
+    }
+    /// Trigger an immediate privileged self-update (reusing verified staging).
+    async fn apply_update(&self) -> Response {
+        Response::Error {
+            message: "self-update is not supported on this node".into(),
+        }
+    }
 }
 
 /// FR-85 — the refusal a non-console caller gets for a recording verb.
@@ -3293,7 +3365,13 @@ pub fn person_may(req: &Request) -> bool {
         // Desktop companion liveness hello/bye: the companion on a Linux
         // system install or macOS root half connects to the person socket.
         | Request::CompanionHello { .. }
-        | Request::CompanionBye { .. } => true,
+        | Request::CompanionBye { .. }
+        // Desktop self-update controls: the daemon independently resolves and
+        // GPG-verifies its own pinned release feed, so allowing the person at
+        // the console to check/trigger updates never grants version/URL control.
+        | Request::UpdateStatus
+        | Request::CheckUpdate
+        | Request::ApplyUpdate => true,
         Request::Flows
         | Request::Ping { .. }
         | Request::CreateForward { .. }
@@ -3401,6 +3479,7 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
         Request::CompanionBye { pid } => Response::CompanionAck {
             ok: state.companion_bye(*pid),
         },
+        Request::UpdateStatus => Response::UpdateStatus(Box::new(state.update_status())),
         // `Ping` / `Create*` / the mutating `Route*` verbs are async —
         // intercepted in `serve_connection` before this sync dispatch runs.
         // These arms only satisfy match exhaustiveness.
@@ -3436,7 +3515,9 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
         | Request::RestartDaemon { .. }
         | Request::HiveUpdateHold
         | Request::Connect { .. }
-        | Request::ConnectStatus { .. } => Response::Error {
+        | Request::ConnectStatus { .. }
+        | Request::CheckUpdate
+        | Request::ApplyUpdate => Response::Error {
             message: "this verb must be served on the async path".into(),
         },
     }
@@ -3794,6 +3875,8 @@ where
                     message: format!("no endpoint {id} was opened on this connection"),
                 },
                 Ok(Request::ConnectStatus { id }) => state.connect_status(id),
+                Ok(Request::CheckUpdate) => state.check_update().await,
+                Ok(Request::ApplyUpdate) => state.apply_update().await,
                 Ok(req) => handle(&req, state),
                 Err(e) => Response::Error {
                     message: format!("bad request: {e}"),
@@ -5449,6 +5532,30 @@ impl Client {
         let req = Request::CompanionBye { pid };
         match self.request(&req).await? {
             Response::CompanionAck { ok } => Ok(ok),
+            other => Err(unexpected_response(other)),
+        }
+    }
+
+    /// Read the daemon's cached/live self-update state (no network I/O).
+    pub async fn update_status(&mut self) -> std::io::Result<UpdateStatusInfo> {
+        match self.request(&Request::UpdateStatus).await? {
+            Response::UpdateStatus(info) => Ok(*info),
+            other => Err(unexpected_response(other)),
+        }
+    }
+
+    /// Ask the daemon to run a metadata-only update check via its active route.
+    pub async fn check_update(&mut self) -> std::io::Result<UpdateStatusInfo> {
+        match self.request(&Request::CheckUpdate).await? {
+            Response::UpdateStatus(info) => Ok(*info),
+            other => Err(unexpected_response(other)),
+        }
+    }
+
+    /// Ask the running daemon (or its root helper) to apply the latest update.
+    pub async fn apply_update(&mut self) -> std::io::Result<UpdateStatusInfo> {
+        match self.request(&Request::ApplyUpdate).await? {
+            Response::UpdateStatus(info) => Ok(*info),
             other => Err(unexpected_response(other)),
         }
     }
@@ -9709,6 +9816,99 @@ mod personal_system_status_tests {
             // Matching PID bye clears it back to None.
             assert!(client.companion_bye(Some(777)).await.unwrap());
             assert_eq!(client.status().await.unwrap().companion_version, None);
+
+            drop(client);
+            srv.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn update_status_check_and_apply_work_on_full_and_person_sockets() {
+        use std::sync::Mutex;
+
+        struct UpdateMock {
+            info: Mutex<UpdateStatusInfo>,
+        }
+        #[async_trait::async_trait]
+        impl LocalApiState for UpdateMock {
+            fn status(&self) -> NodeStatus {
+                serde_json::from_value(serde_json::json!({
+                    "node_id": "n1",
+                    "name": "devbox",
+                    "version": "0.4.216",
+                    "mode": "service",
+                    "connected": true
+                }))
+                .unwrap()
+            }
+            fn peers(&self) -> Vec<PeerInfo> {
+                Vec::new()
+            }
+            fn flows(&self) -> Vec<FlowInfo> {
+                Vec::new()
+            }
+            fn update_status(&self) -> UpdateStatusInfo {
+                self.info.lock().unwrap().clone()
+            }
+            async fn check_update(&self) -> Response {
+                let mut g = self.info.lock().unwrap();
+                g.stage = "available".into();
+                g.latest = Some("0.4.217".into());
+                g.update_available = true;
+                Response::UpdateStatus(Box::new(g.clone()))
+            }
+            async fn apply_update(&self) -> Response {
+                let mut g = self.info.lock().unwrap();
+                g.stage = "downloading".into();
+                g.downloaded_bytes = Some(1024);
+                g.total_bytes = Some(4096);
+                Response::UpdateStatus(Box::new(g.clone()))
+            }
+        }
+
+        assert_eq!(
+            serde_json::to_string(&Request::UpdateStatus).unwrap(),
+            r#"{"t":"update_status"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Request::CheckUpdate).unwrap(),
+            r#"{"t":"check_update"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Request::ApplyUpdate).unwrap(),
+            r#"{"t":"apply_update"}"#
+        );
+
+        for scope in [Scope::Full, Scope::Person] {
+            let state = Arc::new(UpdateMock {
+                info: Mutex::new(UpdateStatusInfo {
+                    current: "0.4.216".into(),
+                    stage: "idle".into(),
+                    owner: Some("daemon".into()),
+                    ..Default::default()
+                }),
+            });
+            let (client_end, server_end) = tokio::io::duplex(16 * 1024);
+            let st = Arc::clone(&state);
+            let srv = tokio::spawn(async move {
+                serve_connection_scoped(server_end, &*st, ClientPeer::UNKNOWN, scope).await
+            });
+            let mut client = Client::new(Box::new(client_end));
+
+            let s0 = client.update_status().await.unwrap();
+            assert_eq!(s0.current, "0.4.216");
+            assert_eq!(s0.stage, "idle");
+            assert!(!s0.update_available);
+
+            let s1 = client.check_update().await.unwrap();
+            assert_eq!(s1.stage, "available");
+            assert_eq!(s1.latest.as_deref(), Some("0.4.217"));
+            assert!(s1.update_available);
+
+            let s2 = client.apply_update().await.unwrap();
+            assert_eq!(s2.stage, "downloading");
+            assert_eq!(s2.downloaded_bytes, Some(1024));
+            assert_eq!(s2.total_bytes, Some(4096));
 
             drop(client);
             srv.await.unwrap().unwrap();

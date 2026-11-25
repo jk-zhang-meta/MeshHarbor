@@ -69,25 +69,41 @@ pub(crate) fn sync_enabled() -> bool {
     tunnel_core::env::flag("COMPANION_SYNC", true)
 }
 
-/// FR-117 P2 — [`refresh_if_stale`] again every [`REFRESH_RETRY`], for as long
-/// as the process that owns the refresh runs (#1686: the SCM host, or the
-/// worker). Before this a failed refresh waited for the next restart, which on
-/// a laptop that is never restarted is never, and nothing said why (a corp
-/// laptop sat a version behind on 2026-10-20). One file read when the version
-/// marker matches.
-#[cfg(target_os = "windows")]
-pub async fn refresh_periodically(respawn: RespawnContext) {
-    loop {
-        tokio::time::sleep(REFRESH_RETRY).await;
-        if sync_enabled() {
-            refresh_if_stale(respawn).await;
-        }
+/// FR-117 P2 — [`refresh_if_stale`] retry schedule. After a failed refresh
+/// (commonly a transient boot-time CN route/DNS hiccup), back off exponentially
+/// instead of waiting the full 4 h periodic interval before trying again.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn companion_retry_delay(consecutive_failures: u32) -> std::time::Duration {
+    match consecutive_failures {
+        0 => crate::updater::CHECK_INTERVAL,
+        1 => std::time::Duration::from_secs(30),
+        2 => std::time::Duration::from_secs(120),
+        3 => std::time::Duration::from_secs(600),
+        4 => std::time::Duration::from_secs(3600),
+        _ => crate::updater::CHECK_INTERVAL,
     }
 }
 
-/// FR-117 P2 — the retry's period: the updater's own default interval.
+/// FR-117 P2 — [`refresh_if_stale`] again on [`companion_retry_delay`], for as
+/// long as the process that owns the refresh runs (#1686: the SCM host, or the
+/// worker). Before this a failed refresh waited for the next restart or 4 h
+/// tick, leaving the desktop UI behind the daemon on flaky boot networks.
 #[cfg(target_os = "windows")]
-const REFRESH_RETRY: std::time::Duration = crate::updater::CHECK_INTERVAL;
+pub async fn refresh_periodically(respawn: RespawnContext, initial_ok: bool) {
+    let mut consecutive_failures: u32 = if initial_ok { 0 } else { 1 };
+    loop {
+        tokio::time::sleep(companion_retry_delay(consecutive_failures)).await;
+        if !sync_enabled() {
+            consecutive_failures = 0;
+            continue;
+        }
+        if refresh_if_stale(respawn).await {
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+        }
+    }
+}
 
 /// FR-84 D6 — open the companion ONCE after a fresh install, from whichever
 /// process owns that on this host: the SCM host on a perMachine Windows
@@ -1259,10 +1275,14 @@ async fn ensure_running_inner() -> Result<EnsureOutcome> {
 
 /// Entry point — spawn-and-forget from daemon startup. Never fails the
 /// caller; every error path logs and returns (retry on next start).
-pub async fn refresh_if_stale(respawn: RespawnContext) {
+pub async fn refresh_if_stale(respawn: RespawnContext) -> bool {
     #[cfg(target_os = "windows")]
-    if let Err(e) = refresh_inner(respawn).await {
-        tracing::warn!(error = %format!("{e:#}"), "desktop companion refresh skipped");
+    {
+        if let Err(e) = refresh_inner(respawn).await {
+            tracing::warn!(error = %format!("{e:#}"), "desktop companion refresh skipped");
+            return false;
+        }
+        true
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1278,6 +1298,7 @@ pub async fn refresh_if_stale(respawn: RespawnContext) {
         // the updater's loop (`sync_package`), never by swapping a file the
         // package manager owns.
         let _ = respawn;
+        true
     }
 }
 
@@ -1955,5 +1976,19 @@ mod tests {
     #[test]
     fn non_numeric_greeter_ids_are_kept() {
         assert_eq!(session_ids("c1 42 gdm seat0 - active no -\n"), ["c1"]);
+    }
+
+    #[test]
+    fn companion_retry_delay_backs_off_exponentially() {
+        use super::companion_retry_delay;
+        assert_eq!(companion_retry_delay(0), crate::updater::CHECK_INTERVAL);
+        assert_eq!(companion_retry_delay(1), std::time::Duration::from_secs(30));
+        assert_eq!(companion_retry_delay(2), std::time::Duration::from_secs(120));
+        assert_eq!(companion_retry_delay(3), std::time::Duration::from_secs(600));
+        assert_eq!(
+            companion_retry_delay(4),
+            std::time::Duration::from_secs(3600)
+        );
+        assert_eq!(companion_retry_delay(5), crate::updater::CHECK_INTERVAL);
     }
 }
