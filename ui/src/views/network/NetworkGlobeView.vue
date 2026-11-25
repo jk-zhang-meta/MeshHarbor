@@ -231,6 +231,7 @@ const globeNodes = computed<GlobeNode[]>(() => {
       lastSeenAt: fa?.last_seen_at ?? n.last_seen_at ?? null,
       overlayIp: n.overlay_ip ?? null,
       publicIp: showFleet.value ? (fa?.public_ip ?? null) : null,
+      physicalPublicIp: showFleet.value ? (fa?.physical_public_ip ?? null) : null,
       zoneId: fa?.effective_zone_id ?? fa?.pinned_zone_id ?? null,
       zoneName: fa?.effective_zone_name ?? null,
       zonePinned: Boolean(fa?.pinned_zone_id),

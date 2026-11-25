@@ -31,6 +31,7 @@ export interface GlobeTokens {
   stalled: string
   centre: string
   focusRing: string
+  selfRing: string
   leg: string
   hubFill: string
   hubText: string
@@ -61,6 +62,7 @@ export const DARK_TOKENS: GlobeTokens = {
   stalled: '#F0703A',
   centre: '#F5F7FA',
   focusRing: '#FFFFFF',
+  selfRing: '#2BB58A',
   leg: 'rgba(169, 182, 200, 0.6)',
   hubFill: '#08131E',
   hubText: '#E6EDF6',
@@ -91,6 +93,7 @@ export const LIGHT_TOKENS: GlobeTokens = {
   stalled: '#C24A00',
   centre: '#111827',
   focusRing: '#111827',
+  selfRing: '#00785A',
   leg: 'rgba(75, 85, 99, 0.6)',
   hubFill: '#FFFFFF',
   hubText: '#1F2937',

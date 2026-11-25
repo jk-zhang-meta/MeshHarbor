@@ -28,6 +28,11 @@
   const DEFAULT_FOV_DEG = 36.87;
   const MIN_GLOBE_ZOOM = 0.6;
   const MAX_GLOBE_ZOOM = 12;
+  const SPIDERFY_CIRCLE_MAX = 8;
+  const SPIDERFY_SPIRAL_MAX = 20;
+  const SPIDERFY_MAX_SITES = 6;
+  const SPIDERFY_MIN_OPEN_ZOOM = 2.6;
+  const SPIDERFY_ZOOM_COLLAPSE_DELTA = 0.85;
 
   const EMPTY_FC = { type: 'FeatureCollection', features: [] };
 
@@ -64,6 +69,7 @@
     stalled: '#F0703A',
     selfRing: '#3CC7B9',
     focusRing: '#FFFFFF',
+    leg: 'rgba(169, 182, 200, 0.6)',
     hubFill: '#08131E',
     hubText: '#E6EDF6',
   };
@@ -92,6 +98,7 @@
     stalled: '#C24A00',
     selfRing: '#0A8F86',
     focusRing: '#111827',
+    leg: 'rgba(75, 85, 99, 0.6)',
     hubFill: '#FFFFFF',
     hubText: '#1F2937',
   };
@@ -738,7 +745,7 @@
 
   function computeFitGlobeZoom(width, height, latDeg, targetRatio, fovDeg) {
     const w = Math.max(120, Number(width) || 640);
-    const h = Math.max(120, Number(height) || 380);
+    const h = Math.max(120, Number(height) || 580);
     const ratio = targetRatio || 0.86;
     const desiredR = (Math.min(w, h) * ratio) / 2;
     const f = cameraFocalDistancePx(h, fovDeg);
@@ -938,6 +945,8 @@
         city: cleanText(row.city),
         region: cleanText(row.region),
         country: cleanText(row.country),
+        publicIp: cleanText(row.public_ip),
+        physicalPublicIp: cleanText(row.physical_public_ip),
         zoneLabel: zone.zoneLabel || '',
         zonePinned: Boolean(zone.pinned),
         lat,
@@ -1127,6 +1136,560 @@
     return { type: 'FeatureCollection', features };
   }
 
+  /* ── Plan B: Same-city egress-IP site-grouped Spiderfy + radial fallback ── */
+
+  function effectiveSiteKey(item) {
+    if (!item || typeof item !== 'object') return '';
+    return cleanText(item.physicalPublicIp) || cleanText(item.publicIp) || '';
+  }
+
+  function truncateFootLabel(name, maxChars) {
+    const s = String(name || '');
+    const limit = maxChars || 14;
+    if (s.length <= limit) return s;
+    return s.slice(0, limit - 1) + '…';
+  }
+
+  function sortClusterItems(items) {
+    const presRank = { online: 0, stale: 1, offline: 2 };
+    return (items || []).slice().sort(
+      (a, b) =>
+        Number(b.isSelf) - Number(a.isSelf) ||
+        (presRank[a.presence] ?? 3) - (presRank[b.presence] ?? 3) ||
+        String(a.name || '').localeCompare(String(b.name || '')) ||
+        String(a.id || '').localeCompare(String(b.id || '')),
+    );
+  }
+
+  // Inter-site carrier priority: stalled surfaces faults; otherwise best active path
+  // (direct > tunnel > relay > derp > blocked).
+  function siteLinkCarrierPriority(carrier, stalled) {
+    if (stalled) return 5;
+    if (carrier === 'direct') return 4;
+    if (carrier === 'tunnel') return 3;
+    if (carrier === 'relay') return 2;
+    if (carrier === 'derp') return 1;
+    if (carrier === 'blocked') return 0;
+    return -1;
+  }
+
+  function pointHitsSiteHeader(px, py, sites) {
+    for (const s of sites) {
+      const halfW = 66;
+      const topY = s.cy - s.podRadius - 40;
+      const botY = s.cy - s.podRadius + 4;
+      if (px >= s.cx - halfW && px <= s.cx + halfW && py >= topY && py <= botY) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function computeSpiderfyLayout(cluster, meshView, livePeers) {
+    if (!cluster || !Array.isArray(cluster.items)) return null;
+    const count = cluster.items.length;
+    if (count <= 1) return null;
+
+    const orderedAll = sortClusterItems(cluster.items);
+    if (count > SPIDERFY_SPIRAL_MAX) {
+      return {
+        mode: 'list',
+        items: orderedAll,
+        sites: [],
+        feet: [],
+        siteLinks: [],
+        maxRadius: 0,
+        maxRadiusX: 0,
+        maxRadiusY: 0,
+      };
+    }
+
+    // Group devices by effective egress IP (physicalPublicIp overrides publicIp).
+    const buckets = new Map();
+    const unknownItems = [];
+    for (const item of orderedAll) {
+      const key = effectiveSiteKey(item);
+      if (!key) {
+        unknownItems.push(item);
+      } else {
+        let arr = buckets.get(key);
+        if (!arr) {
+          arr = [];
+          buckets.set(key, arr);
+        }
+        arr.push(item);
+      }
+    }
+
+    const distinctIpCount = buckets.size;
+    const totalPods = distinctIpCount + (unknownItems.length > 0 ? 1 : 0);
+
+    if (distinctIpCount >= 2 && totalPods <= SPIDERFY_MAX_SITES) {
+      const sites = [];
+      const addSite = (key, items, isUnknown) => {
+        const sorted = sortClusterItems(items);
+        let onlineCount = 0;
+        let staleCount = 0;
+        let offlineCount = 0;
+        let hasSelf = false;
+        for (const it of sorted) {
+          if (it.presence === 'online') onlineCount += 1;
+          else if (it.presence === 'stale') staleCount += 1;
+          else offlineCount += 1;
+          if (it.isSelf) hasSelf = true;
+        }
+        sites.push({
+          id: isUnknown ? 'site-unknown' : 'site-' + key,
+          key: isUnknown ? '' : key,
+          isUnknown,
+          labelCode: '',
+          hasSelf,
+          items: sorted,
+          count: sorted.length,
+          onlineCount,
+          staleCount,
+          offlineCount,
+          intraMinRttMs: null,
+          cx: 0,
+          cy: 0,
+          podRadius: 26,
+          feet: [],
+        });
+      };
+
+      for (const [key, items] of buckets.entries()) {
+        addSite(key, items, false);
+      }
+      if (unknownItems.length > 0) {
+        addSite('', unknownItems, true);
+      }
+
+      sites.sort(
+        (a, b) =>
+          Number(b.hasSelf) - Number(a.hasSelf) ||
+          b.onlineCount - a.onlineCount ||
+          b.count - a.count ||
+          Number(a.isUnknown) - Number(b.isUnknown) ||
+          a.key.localeCompare(b.key),
+      );
+
+      const siteLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
+      const compact = sites.length >= 4;
+      const siteById = new Map();
+      const itemByNode = new Map();
+      const itemByAgent = new Map();
+      const siteOfItemId = new Map();
+      let selfItem = null;
+
+      for (let idx = 0; idx < sites.length; idx += 1) {
+        const site = sites[idx];
+        site.labelCode = siteLetters[idx] || String(idx + 1);
+        siteById.set(site.id, site);
+        for (const item of site.items) {
+          siteOfItemId.set(item.id, site);
+          if (item.isSelf) selfItem = item;
+          if (item.overlayNodeId) itemByNode.set(item.overlayNodeId, item);
+          if (item.agentId) itemByAgent.set(item.agentId, item);
+          if (item.id) {
+            if (!itemByNode.has(item.id)) itemByNode.set(item.id, item);
+            if (!itemByAgent.has(item.id)) itemByAgent.set(item.id, item);
+          }
+        }
+
+        // Local mini-radial (or mini-spiral if >= 9 in one site) foot geometry.
+        const m = site.items.length;
+        if (m === 1) {
+          site.podRadius = compact ? 22 : 25;
+          site._localFeet = [{ item: site.items[0], localDx: 0, localDy: 0, angle: -Math.PI / 2, hideLabel: false }];
+        } else if (m <= SPIDERFY_CIRCLE_MAX) {
+          const sep = compact ? 24 : 33;
+          const rMin = compact ? 18 : 26;
+          const ringR = Math.max(rMin, (m * sep) / (2 * Math.PI));
+          site.podRadius = Math.ceil(ringR + (compact ? 14 : 18));
+          site._localFeet = site.items.map((item, i) => {
+            const angle = -Math.PI / 2 + (2 * Math.PI * i) / m;
+            return {
+              item,
+              localDx: Math.cos(angle) * ringR,
+              localDy: Math.sin(angle) * ringR,
+              angle,
+              hideLabel: false,
+            };
+          });
+        } else {
+          const r0 = 15;
+          const k = 3.0;
+          const sep = 21;
+          let theta = 0;
+          let r = r0;
+          let maxR = r0;
+          site._localFeet = site.items.map((item, i) => {
+            if (i > 0) {
+              theta += sep / r;
+              r = r0 + k * theta;
+            }
+            const angle = -Math.PI / 2 + theta;
+            if (r > maxR) maxR = r;
+            return {
+              item,
+              localDx: Math.cos(angle) * r,
+              localDy: Math.sin(angle) * r,
+              angle,
+              hideLabel: true,
+            };
+          });
+          site.podRadius = Math.ceil(maxR + 14);
+        }
+      }
+
+      // Position site pods cleanly around (0, 0) inside the tall inline stage.
+      if (sites.length === 2) {
+        const halfSpan = Math.max(150, Math.ceil((sites[0].podRadius + sites[1].podRadius + 176) / 2));
+        sites[0].cx = -halfSpan;
+        sites[0].cy = 0;
+        sites[1].cx = halfSpan;
+        sites[1].cy = 0;
+      } else if (sites.length === 3) {
+        const maxPod = Math.max(sites[0].podRadius, sites[1].podRadius, sites[2].podRadius);
+        const rx = Math.max(122, maxPod * 2 + 56);
+        const ry = Math.max(76, Math.min(96, Math.ceil(maxPod + 48)));
+        const triAngles = [-Math.PI / 2, Math.PI / 6, (5 * Math.PI) / 6];
+        for (let i = 0; i < 3; i += 1) {
+          sites[i].cx = Math.round(Math.cos(triAngles[i]) * rx);
+          sites[i].cy = Math.round(Math.sin(triAngles[i]) * ry);
+        }
+      } else if (sites.length === 4) {
+        const maxPod = Math.max(...sites.map((s) => s.podRadius));
+        const rx = Math.max(134, Math.ceil(maxPod * 1.9 + 76));
+        const ry = Math.max(84, Math.min(102, Math.ceil(maxPod * 1.45 + 46)));
+        const quadAngles = [(-3 * Math.PI) / 4, -Math.PI / 4, Math.PI / 4, (3 * Math.PI) / 4];
+        for (let i = 0; i < 4; i += 1) {
+          sites[i].cx = Math.round(Math.cos(quadAngles[i]) * rx);
+          sites[i].cy = Math.round(Math.sin(quadAngles[i]) * ry);
+        }
+      } else {
+        const maxPod = Math.max(...sites.map((s) => s.podRadius));
+        const rx = Math.max(
+          150,
+          Math.ceil(((sites.length * (maxPod * 2 + 26)) / (2 * Math.PI)) * 1.15),
+        );
+        const ry = Math.max(96, Math.min(116, Math.ceil(rx * 0.64)));
+        for (let i = 0; i < sites.length; i += 1) {
+          const ang = -Math.PI / 2 + (2 * Math.PI * i) / sites.length;
+          sites[i].cx = Math.round(Math.cos(ang) * rx);
+          sites[i].cy = Math.round(Math.sin(ang) * ry);
+        }
+      }
+
+      // Finalize screen-space foot coordinates.
+      const allFeet = [];
+      let footIndex = 0;
+      for (const site of sites) {
+        const localFeet = site._localFeet || [];
+        delete site._localFeet;
+        for (const lf of localFeet) {
+          const dx = Math.round((site.cx + lf.localDx) * 10) / 10;
+          const dy = Math.round((site.cy + lf.localDy) * 10) / 10;
+          let labelSide;
+          if (site.count === 1) {
+            labelSide = site.cx < -4 ? 'left' : 'right';
+          } else if (Math.abs(lf.localDx) > 4) {
+            labelSide = lf.localDx < 0 ? 'left' : 'right';
+          } else {
+            labelSide = site.cx < -4 ? 'left' : 'right';
+          }
+          const foot = {
+            item: lf.item,
+            siteId: site.id,
+            index: footIndex,
+            dx,
+            dy,
+            localDx: Math.round(lf.localDx * 10) / 10,
+            localDy: Math.round(lf.localDy * 10) / 10,
+            angle: lf.angle,
+            presence: lf.item.presence,
+            shortLabel: truncateFootLabel(lf.item.name, 14),
+            labelSide,
+            hideLabel: Boolean(lf.hideLabel),
+          };
+          footIndex += 1;
+          site.feet.push(foot);
+          allFeet.push(foot);
+        }
+      }
+
+      // Aggregate intra-site min RTT and inter-site live links from meshView.edges + livePeers.
+      const sitePairMap = new Map();
+      const seenDevicePairs = new Set();
+
+      const recordPair = (itemA, itemB, carrier, stalled, rawRtt, fromMesh) => {
+        if (!itemA || !itemB || itemA.id === itemB.id) return;
+        if (carrier === 'offline') return;
+        const siteA = siteOfItemId.get(itemA.id);
+        const siteB = siteOfItemId.get(itemB.id);
+        if (!siteA || !siteB) return;
+        const rttMs =
+          typeof rawRtt === 'number' && Number.isFinite(rawRtt) ? Math.round(rawRtt) : null;
+        const devKey = itemA.id < itemB.id ? itemA.id + '~' + itemB.id : itemB.id + '~' + itemA.id;
+        const alreadySeen = seenDevicePairs.has(devKey);
+        if (fromMesh) seenDevicePairs.add(devKey);
+
+        if (siteA.id === siteB.id) {
+          if (rttMs != null) {
+            siteA.intraMinRttMs =
+              siteA.intraMinRttMs == null ? rttMs : Math.min(siteA.intraMinRttMs, rttMs);
+          }
+          return;
+        }
+
+        const [first, second] = siteA.id < siteB.id ? [siteA, siteB] : [siteB, siteA];
+        const pairKey = first.id + '~' + second.id;
+        const prev = sitePairMap.get(pairKey);
+        if (!prev) {
+          sitePairMap.set(pairKey, {
+            key: pairKey,
+            fromSite: first,
+            toSite: second,
+            carrier,
+            stalled: Boolean(stalled),
+            rttMs,
+            count: 1,
+          });
+        } else {
+          if (!alreadySeen) {
+            prev.count += 1;
+            if (
+              siteLinkCarrierPriority(carrier, stalled) >
+              siteLinkCarrierPriority(prev.carrier, prev.stalled)
+            ) {
+              prev.carrier = carrier;
+              prev.stalled = Boolean(stalled);
+            }
+          }
+          if (rttMs != null) {
+            prev.rttMs = prev.rttMs == null ? rttMs : Math.min(prev.rttMs, rttMs);
+          }
+        }
+      };
+
+      const edges = (meshView && Array.isArray(meshView.edges) && meshView.edges) || [];
+      for (const e of edges) {
+        if (!e) continue;
+        const fromItem = itemByNode.get(e.from) || itemByAgent.get(e.from);
+        const toItem = itemByNode.get(e.to) || itemByAgent.get(e.to);
+        if (!fromItem || !toItem) continue;
+        recordPair(fromItem, toItem, normalizeCarrier(e.carrier), Boolean(e.stalled), e.rtt_ms, true);
+      }
+
+      if (selfItem && Array.isArray(livePeers)) {
+        for (const p of livePeers) {
+          if (!p || !p.online) continue;
+          const target =
+            (p.node_id && itemByNode.get(p.node_id)) ||
+            (p.agent_id && itemByAgent.get(p.agent_id));
+          if (!target || target.id === selfItem.id) continue;
+          const conn = normalizeCarrier(p.connection);
+          const stalled = Boolean(p.stalled && (conn === 'direct' || conn === 'relay'));
+          recordPair(selfItem, target, conn, stalled, p.rtt_ms, false);
+        }
+      }
+
+      // Compute clean curved SVG paths + non-overlapping midpoint pills for inter-site links.
+      const siteLinks = [];
+      let linkIdx = 0;
+      for (const entry of sitePairMap.values()) {
+        const sA = entry.fromSite;
+        const sB = entry.toSite;
+        let sx, sy, ex, ey, ctrlX, ctrlY, pillX, pillY;
+
+        if (sites.length === 2) {
+          const [leftSite, rightSite] = sA.cx <= sB.cx ? [sA, sB] : [sB, sA];
+          sx = leftSite.cx + leftSite.podRadius * 0.78;
+          sy = leftSite.cy + leftSite.podRadius * 0.62;
+          ex = rightSite.cx - rightSite.podRadius * 0.78;
+          ey = rightSite.cy + rightSite.podRadius * 0.62;
+          ctrlX = (sx + ex) / 2;
+          ctrlY = Math.max(66, Math.max(leftSite.podRadius, rightSite.podRadius) + 32);
+          pillX = 0.25 * sx + 0.5 * ctrlX + 0.25 * ex;
+          pillY = 0.25 * sy + 0.5 * ctrlY + 0.25 * ey;
+        } else {
+          const dx = sB.cx - sA.cx;
+          const dy = sB.cy - sA.cy;
+          const dist = Math.hypot(dx, dy) || 1;
+          const ux = dx / dist;
+          const uy = dy / dist;
+          sx = sA.cx + ux * (sA.podRadius + 4);
+          sy = sA.cy + uy * (sA.podRadius + 4);
+          ex = sB.cx - ux * (sB.podRadius + 4);
+          ey = sB.cy - uy * (sB.podRadius + 4);
+          const mx = (sx + ex) / 2;
+          const my = (sy + ey) / 2;
+          let nx = -uy;
+          let ny = ux;
+          if (Math.hypot(mx, my) >= 16) {
+            if (mx * nx + my * ny < 0) {
+              nx = -nx;
+              ny = -ny;
+            }
+          } else if (linkIdx % 2 === 1) {
+            nx = -nx;
+            ny = -ny;
+          }
+          const bow = Math.min(40, Math.max(22, dist * 0.2));
+          ctrlX = mx + nx * bow;
+          ctrlY = my + ny * bow;
+          pillX = 0.25 * sx + 0.5 * ctrlX + 0.25 * ex;
+          pillY = 0.25 * sy + 0.5 * ctrlY + 0.25 * ey;
+
+          if (pointHitsSiteHeader(pillX, pillY, sites)) {
+            nx = -nx;
+            ny = -ny;
+            ctrlX = mx + nx * bow;
+            ctrlY = my + ny * bow;
+            pillX = 0.25 * sx + 0.5 * ctrlX + 0.25 * ex;
+            pillY = 0.25 * sy + 0.5 * ctrlY + 0.25 * ey;
+          }
+
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const collides = siteLinks.some((o) => Math.hypot(pillX - o.pillX, pillY - o.pillY) < 26);
+            if (!collides) break;
+            ctrlX += nx * 18;
+            ctrlY += ny * 18;
+            pillX = 0.25 * sx + 0.5 * ctrlX + 0.25 * ex;
+            pillY = 0.25 * sy + 0.5 * ctrlY + 0.25 * ey;
+          }
+        }
+
+        const r1 = (v) => Math.round(v * 10) / 10;
+        const pathD =
+          'M ' +
+          r1(sx) +
+          ' ' +
+          r1(sy) +
+          ' Q ' +
+          r1(ctrlX) +
+          ' ' +
+          r1(ctrlY) +
+          ' ' +
+          r1(ex) +
+          ' ' +
+          r1(ey);
+        siteLinks.push({
+          key: entry.key,
+          fromSiteId: sA.id,
+          toSiteId: sB.id,
+          carrier: entry.carrier,
+          stalled: entry.stalled,
+          rttMs: entry.rttMs,
+          count: entry.count,
+          sx: r1(sx),
+          sy: r1(sy),
+          ctrlX: r1(ctrlX),
+          ctrlY: r1(ctrlY),
+          ex: r1(ex),
+          ey: r1(ey),
+          pillX: r1(pillX),
+          pillY: r1(pillY),
+          pathD,
+        });
+        linkIdx += 1;
+      }
+
+      let maxRadiusX = 90;
+      let maxRadiusY = 70;
+      for (const s of sites) {
+        maxRadiusX = Math.max(maxRadiusX, Math.abs(s.cx) + s.podRadius + 24);
+        maxRadiusY = Math.max(maxRadiusY, Math.abs(s.cy) + s.podRadius + 46);
+      }
+      for (const l of siteLinks) {
+        maxRadiusX = Math.max(maxRadiusX, Math.abs(l.pillX) + 52);
+        maxRadiusY = Math.max(maxRadiusY, Math.abs(l.pillY) + 22);
+      }
+
+      return {
+        mode: 'sites',
+        sites,
+        feet: allFeet,
+        siteLinks,
+        maxRadius: Math.max(maxRadiusX, maxRadiusY),
+        maxRadiusX,
+        maxRadiusY,
+      };
+    }
+
+    // Classic radial Spiderfy fallback (matching Web spiderfy.ts: 2..8 circle, 9..20 spiral).
+    const sep = 28;
+    if (count <= SPIDERFY_CIRCLE_MAX) {
+      const rMin = 28;
+      const radius = Math.max(rMin, (count * sep) / (2 * Math.PI));
+      const feet = orderedAll.map((item, i) => {
+        const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
+        const dx = Math.round(Math.cos(angle) * radius * 10) / 10;
+        const dy = Math.round(Math.sin(angle) * radius * 10) / 10;
+        return {
+          item,
+          siteId: null,
+          index: i,
+          dx,
+          dy,
+          angle,
+          radius,
+          presence: item.presence,
+          shortLabel: truncateFootLabel(item.name, 14),
+          labelSide: dx < -4 ? 'left' : 'right',
+          hideLabel: false,
+        };
+      });
+      return {
+        mode: 'circle',
+        sites: [],
+        feet,
+        siteLinks: [],
+        maxRadius: radius,
+        maxRadiusX: radius,
+        maxRadiusY: radius,
+      };
+    }
+
+    const r0 = 22;
+    const k = 4;
+    let theta = 0;
+    let r = r0;
+    let maxRadius = r0;
+    const feet = orderedAll.map((item, i) => {
+      if (i > 0) {
+        theta += sep / r;
+        r = r0 + k * theta;
+      }
+      const angle = -Math.PI / 2 + theta;
+      if (r > maxRadius) maxRadius = r;
+      const dx = Math.round(Math.cos(angle) * r * 10) / 10;
+      const dy = Math.round(Math.sin(angle) * r * 10) / 10;
+      return {
+        item,
+        siteId: null,
+        index: i,
+        dx,
+        dy,
+        angle,
+        radius: r,
+        presence: item.presence,
+        shortLabel: truncateFootLabel(item.name, 14),
+        labelSide: dx < -4 ? 'left' : 'right',
+        hideLabel: true,
+      };
+    });
+    return {
+      mode: 'spiral',
+      sites: [],
+      feet,
+      siteLinks: [],
+      maxRadius,
+      maxRadiusX: maxRadius,
+      maxRadiusY: maxRadius,
+    };
+  }
+
   function computeInitialView(locatedItems, width, height) {
     const list = Array.isArray(locatedItems) ? locatedItems : [];
     let centerLon = DEFAULT_CENTER[0];
@@ -1152,7 +1715,7 @@
       }
       centerLat = Math.max(-45, Math.min(55, latSum / list.length));
     }
-    const zoom = computeFitGlobeZoom(width || 640, height || 380, centerLat, 0.86);
+    const zoom = computeFitGlobeZoom(width || 640, height || 580, centerLat, 0.86);
     return { center: [centerLon, centerLat], zoom };
   }
 
@@ -1325,9 +1888,10 @@
     return id;
   }
 
-  function buildMarkerFeatures(clusters, map, mode, dpr) {
+  function buildMarkerFeatures(clusters, map, mode, dpr, hiddenClusterId) {
     const features = [];
     for (const c of clusters || []) {
+      if (hiddenClusterId && c.id === hiddenClusterId) continue;
       const icon = map
         ? resolveClusterIconId(map, c, mode, dpr)
         : c.count === 1
@@ -1558,49 +2122,142 @@
     container.replaceChildren(notice, ul);
   }
 
-  /* ── Tooltip content builder (strictly textContent) ──────────────── */
+  /* ── Tooltip & Spiderfy DOM builders (strictly textContent, zero innerHTML) ── */
+
+  function populateDeviceTooltip(tipEl, item) {
+    if (!tipEl || !item) return;
+    const nodes = [];
+    const head = el('div', 'nm-tip-head');
+    head.append(el('span', dotClassForPresence(item.presence)), el('span', null, item.name));
+    if (item.isSelf) {
+      head.appendChild(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
+    }
+    nodes.push(head);
+
+    const locRow = el('div', 'nm-tip-row');
+    locRow.appendChild(
+      el('span', null, item.locationText || t('dv.globe.noLocation', null, 'Location unavailable')),
+    );
+    if (item.zoneLabel) {
+      locRow.appendChild(
+        el('span', 'chip dv-chip-zone' + (item.zonePinned ? ' is-pinned' : ''), item.zoneLabel),
+      );
+    }
+    nodes.push(locRow);
+
+    const egressIp = effectiveSiteKey(item);
+    if (egressIp) {
+      const ipRow = el('div', 'nm-tip-row nm-tip-ip');
+      ipRow.appendChild(
+        el('span', 'mono', t('dv.globe.egressIp', { ip: egressIp }, 'Egress ' + egressIp)),
+      );
+      nodes.push(ipRow);
+    }
+
+    if (!item.isSelf && item.connection && item.connection !== 'offline') {
+      const connRow = el('div', 'nm-tip-row');
+      connRow.appendChild(
+        el('span', connBadgeClass(item.connection, item.stalled), connBadgeLabel(item.connection, item.stalled)),
+      );
+      if (item.rttMs != null) {
+        connRow.appendChild(el('span', 'mono', item.rttMs + ' ms'));
+      }
+      nodes.push(connRow);
+    }
+    tipEl.replaceChildren(...nodes);
+  }
 
   function populateTooltip(tipEl, cluster) {
     if (!tipEl || !cluster) return;
-    const nodes = [];
     if (cluster.count === 1) {
-      const item = cluster.items[0];
-      const head = el('div', 'nm-tip-head');
-      head.append(el('span', dotClassForPresence(item.presence)), el('span', null, item.name));
+      populateDeviceTooltip(tipEl, cluster.items[0]);
+      return;
+    }
+    const nodes = [];
+    const head = el('div', 'nm-tip-head');
+    head.appendChild(el('span', null, cluster.locationText || cluster.label));
+    nodes.push(head);
+    nodes.push(
+      el(
+        'div',
+        'nm-tip-row',
+        t(
+          'dv.globe.clusterCount',
+          { count: cluster.count, online: cluster.onlineCount },
+          cluster.count + ' devices · ' + cluster.onlineCount + ' online',
+        ),
+      ),
+    );
+    const list = el('ul', 'nm-tip-list');
+    const visible = cluster.items.slice(0, 5);
+    for (const item of visible) {
+      const li = el('li');
+      const left = el('span', 'nm-tip-list-left');
+      left.append(el('span', dotClassForPresence(item.presence)), el('span', null, item.name));
+      li.appendChild(left);
       if (item.isSelf) {
-        head.appendChild(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
+        li.appendChild(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
+      } else if (item.rttMs != null) {
+        li.appendChild(el('span', 'muted mono', item.rttMs + ' ms'));
       }
-      nodes.push(head);
-
-      const locRow = el('div', 'nm-tip-row');
-      locRow.appendChild(
-        el('span', null, item.locationText || t('dv.globe.noLocation', null, 'Location unavailable')),
+      list.appendChild(li);
+    }
+    if (cluster.items.length > visible.length) {
+      const more = el(
+        'li',
+        'muted',
+        t(
+          'dv.globe.clusterMore',
+          { n: cluster.items.length - visible.length },
+          '+' + (cluster.items.length - visible.length) + ' more',
+        ),
       );
-      if (item.zoneLabel) {
-        locRow.appendChild(
-          el('span', 'chip dv-chip-zone' + (item.zonePinned ? ' is-pinned' : ''), item.zoneLabel),
-        );
-      }
-      nodes.push(locRow);
+      list.appendChild(more);
+    }
+    nodes.push(list);
+    nodes.push(
+      el('div', 'nm-tip-hint', t('dv.globe.clickToExpand', null, 'Click to expand')),
+    );
+    tipEl.replaceChildren(...nodes);
+  }
 
-      if (!item.isSelf && item.connection && item.connection !== 'offline') {
-        const connRow = el('div', 'nm-tip-row');
-        connRow.appendChild(
-          el('span', connBadgeClass(item.connection, item.stalled), connBadgeLabel(item.connection, item.stalled)),
-        );
-        if (item.rttMs != null) {
-          connRow.appendChild(el('span', 'mono', item.rttMs + ' ms'));
-        }
-        nodes.push(connRow);
-      }
-    } else {
-      const head = el('div', 'nm-tip-head');
-      head.appendChild(el('span', null, cluster.locationText || cluster.label));
-      nodes.push(head);
-      nodes.push(
+  function spiderfyLinkStroke(link, tok) {
+    if (link.stalled) return { color: tok.stalled, dash: '2 3' };
+    if (link.carrier === 'direct') return { color: tok.direct, dash: null };
+    if (link.carrier === 'tunnel') return { color: tok.tunnel, dash: null };
+    if (link.carrier === 'relay') return { color: tok.relay, dash: '5 3' };
+    if (link.carrier === 'derp') return { color: tok.derp, dash: '2.5 2.5' };
+    return { color: tok.blocked, dash: '1.5 3' };
+  }
+
+  function renderSpiderfyDom(cluster, layout, opts) {
+    if (!cluster || !layout) return null;
+    const o = opts || {};
+    const theme = o.theme === 'dark' ? 'dark' : 'light';
+    const tok = getTokens(theme);
+    const selectedId = o.selectedDeviceId || null;
+    const stopEv = (ev) => {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+    };
+
+    const rootEl = el('div', 'nm-spiderfy nm-spiderfy--' + layout.mode);
+    rootEl.dataset.spiderfyMode = layout.mode;
+    rootEl.dataset.clusterId = cluster.id || '';
+
+    if (layout.mode === 'list') {
+      const pop = el('div', 'nm-spiderfy-list');
+      pop.addEventListener('click', stopEv);
+      pop.addEventListener('mousedown', stopEv);
+      pop.addEventListener('wheel', stopEv);
+      pop.addEventListener('dblclick', stopEv);
+
+      const head = el('div', 'nm-spiderfy-list-head');
+      const titleBox = el('div', 'nm-spiderfy-list-title');
+      titleBox.append(
+        el('div', 'nm-spiderfy-list-city', cluster.locationText || cluster.label || ''),
         el(
           'div',
-          'nm-tip-row',
+          'nm-spiderfy-list-sub',
           t(
             'dv.globe.clusterCount',
             { count: cluster.count, online: cluster.onlineCount },
@@ -1608,35 +2265,271 @@
           ),
         ),
       );
-      const list = el('ul', 'nm-tip-list');
-      const visible = cluster.items.slice(0, 5);
-      for (const item of visible) {
+      const closeBtn = el('button', 'nm-spiderfy-list-close', '×');
+      closeBtn.setAttribute('type', 'button');
+      const collapseLabel = t('dv.globe.spiderfyCollapse', null, 'Collapse expanded cluster');
+      closeBtn.setAttribute('aria-label', collapseLabel);
+      closeBtn.setAttribute('title', collapseLabel);
+      closeBtn.addEventListener('click', (ev) => {
+        stopEv(ev);
+        if (typeof o.onCollapse === 'function') o.onCollapse();
+      });
+      head.append(titleBox, closeBtn);
+
+      const ul = el('ul', 'nm-spiderfy-list-items');
+      for (const item of layout.items || []) {
         const li = el('li');
-        const left = el('span', 'nm-tip-list-left');
-        left.append(el('span', dotClassForPresence(item.presence)), el('span', null, item.name));
-        li.appendChild(left);
+        const isSel = Boolean(selectedId && selectedId === item.id);
+        const rowBtn = el('button', 'nm-spiderfy-list-row' + (isSel ? ' is-selected' : ''));
+        rowBtn.setAttribute('type', 'button');
+        rowBtn.dataset.deviceId = item.id;
+
+        const left = el('span', 'nm-spiderfy-list-row-left');
+        left.append(el('span', dotClassForPresence(item.presence)), el('span', 'nm-spiderfy-list-name', item.name));
         if (item.isSelf) {
-          li.appendChild(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
-        } else if (item.rttMs != null) {
-          li.appendChild(el('span', 'muted mono', item.rttMs + ' ms'));
+          left.appendChild(el('span', 'chip chip-self', t('dv.chip.thisDevice', null, 'this device')));
         }
-        list.appendChild(li);
+
+        const meta = el('span', 'nm-spiderfy-list-meta');
+        if (!item.isSelf && item.connection && item.connection !== 'offline') {
+          meta.appendChild(
+            el('span', connBadgeClass(item.connection, item.stalled), connBadgeLabel(item.connection, item.stalled)),
+          );
+          if (item.rttMs != null) {
+            meta.appendChild(el('span', 'mono', item.rttMs + ' ms'));
+          }
+        } else {
+          const siteIp = effectiveSiteKey(item);
+          if (siteIp) meta.appendChild(el('span', 'mono', siteIp));
+        }
+
+        rowBtn.append(left, meta);
+        rowBtn.addEventListener('click', (ev) => {
+          stopEv(ev);
+          if (typeof o.onSelectDevice === 'function') o.onSelectDevice(item, null, ev);
+        });
+        li.appendChild(rowBtn);
+        ul.appendChild(li);
       }
-      if (cluster.items.length > visible.length) {
-        const more = el(
-          'li',
-          'muted',
-          t(
-            'dv.globe.clusterMore',
-            { n: cluster.items.length - visible.length },
-            '+' + (cluster.items.length - visible.length) + ' more',
-          ),
-        );
-        list.appendChild(more);
-      }
-      nodes.push(list);
+
+      pop.append(head, ul);
+      rootEl.appendChild(pop);
+      return rootEl;
     }
-    tipEl.replaceChildren(...nodes);
+
+    // Shared foot button builder for sites / circle / spiral modes.
+    const buildFootButton = (foot) => {
+      const item = foot.item;
+      const isSel = Boolean(selectedId && selectedId === item.id);
+      const btn = el('button', 'nm-spiderfy-foot' + (isSel ? ' is-selected' : ''));
+      btn.setAttribute('type', 'button');
+      btn.dataset.deviceId = item.id;
+      btn.style.transform = 'translate(' + foot.dx + 'px, ' + foot.dy + 'px) translate(-50%, -50%)';
+      btn.setAttribute('aria-label', item.name + ' (' + foot.presence + ')');
+
+      const dotCls =
+        'nm-spiderfy-dot is-' +
+        foot.presence +
+        (item.isSelf ? ' is-self' : '') +
+        (isSel ? ' is-selected' : '');
+      btn.appendChild(el('span', dotCls));
+
+      if (!foot.hideLabel) {
+        btn.appendChild(el('span', 'nm-spiderfy-label is-' + (foot.labelSide || 'right'), foot.shortLabel));
+      }
+
+      btn.addEventListener('click', (ev) => {
+        stopEv(ev);
+        if (typeof o.onSelectDevice === 'function') o.onSelectDevice(item, foot, ev);
+      });
+      btn.addEventListener('mouseenter', (ev) => {
+        if (typeof o.onHoverDevice === 'function') o.onHoverDevice(item, foot, ev);
+      });
+      btn.addEventListener('mouseleave', (ev) => {
+        if (typeof o.onHoverDevice === 'function') o.onHoverDevice(null, null, ev);
+      });
+      btn.addEventListener('focus', (ev) => {
+        if (typeof o.onHoverDevice === 'function') o.onHoverDevice(item, foot, ev);
+      });
+      btn.addEventListener('blur', (ev) => {
+        if (typeof o.onHoverDevice === 'function') o.onHoverDevice(null, null, ev);
+      });
+      return btn;
+    };
+
+    const halfW = Math.ceil((layout.maxRadiusX || layout.maxRadius || 120) + 32);
+    const halfH = Math.ceil((layout.maxRadiusY || layout.maxRadius || 120) + 32);
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'nm-spiderfy-legs');
+    svg.setAttribute('width', String(halfW * 2));
+    svg.setAttribute('height', String(halfH * 2));
+    svg.setAttribute('viewBox', -halfW + ' ' + -halfH + ' ' + halfW * 2 + ' ' + halfH * 2);
+    svg.setAttribute('aria-hidden', 'true');
+
+    if (layout.mode === 'sites') {
+      // 1. Subtle radial tethers from city anchor (0, 0) to each site pod perimeter.
+      for (const site of layout.sites) {
+        const dist = Math.hypot(site.cx, site.cy) || 1;
+        const endDist = Math.max(0, dist - site.podRadius);
+        const tx = (site.cx / dist) * endDist;
+        const ty = (site.cy / dist) * endDist;
+        const tether = document.createElementNS(SVG_NS, 'line');
+        tether.setAttribute('x1', '0');
+        tether.setAttribute('y1', '0');
+        tether.setAttribute('x2', tx.toFixed(1));
+        tether.setAttribute('y2', ty.toFixed(1));
+        tether.setAttribute('stroke', tok.leg);
+        tether.setAttribute('stroke-width', '1');
+        tether.setAttribute('stroke-dasharray', '2 3');
+        tether.setAttribute('opacity', '0.75');
+        svg.appendChild(tether);
+
+        // Mini-radial legs inside multi-device pods.
+        if (site.count >= 2) {
+          for (const foot of site.feet) {
+            const leg = document.createElementNS(SVG_NS, 'line');
+            leg.setAttribute('x1', String(site.cx));
+            leg.setAttribute('y1', String(site.cy));
+            leg.setAttribute('x2', String(foot.dx));
+            leg.setAttribute('y2', String(foot.dy));
+            leg.setAttribute('stroke', tok.leg);
+            leg.setAttribute('stroke-width', '1.1');
+            leg.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(leg);
+          }
+        }
+      }
+
+      // 2. Curved inter-site live link arcs.
+      for (const link of layout.siteLinks) {
+        const st = spiderfyLinkStroke(link, tok);
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', link.pathD);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', st.color);
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('stroke-linecap', 'round');
+        if (st.dash) path.setAttribute('stroke-dasharray', st.dash);
+        svg.appendChild(path);
+      }
+      rootEl.appendChild(svg);
+
+      // 3. Compact city banner cleanly above the topmost site header.
+      let minTopY = -80;
+      for (const s of layout.sites) {
+        const headerTop = s.cy - s.podRadius - 44;
+        if (headerTop < minTopY) minTopY = headerTop;
+      }
+      const cityName = cluster.label || cluster.locationText || '';
+      const banner = el(
+        'div',
+        'nm-spiderfy-banner',
+        t(
+          'dv.globe.spiderfyCityBanner',
+          { city: cityName, sites: layout.sites.length, count: cluster.count },
+          cityName + ' · ' + layout.sites.length + ' sites · ' + cluster.count + ' devices',
+        ),
+      );
+      banner.style.top = Math.round(minTopY - 6) + 'px';
+      rootEl.appendChild(banner);
+
+      // 4. Site pod backdrops + headers + subtitles.
+      for (const site of layout.sites) {
+        const podCls =
+          'nm-spiderfy-site' +
+          (site.hasSelf ? ' is-self' : '') +
+          (site.isUnknown ? ' is-unknown' : '');
+        const pod = el('div', podCls);
+        pod.dataset.siteId = site.id;
+        pod.style.left = site.cx + 'px';
+        pod.style.top = site.cy + 'px';
+        pod.style.width = site.podRadius * 2 + 'px';
+        pod.style.height = site.podRadius * 2 + 'px';
+
+        let headText;
+        if (site.hasSelf && site.key) {
+          headText = t('dv.globe.siteLocal', { ip: site.key }, 'Local site · ' + site.key);
+        } else if (site.hasSelf) {
+          headText = t('dv.globe.siteLocalNoIp', null, 'Local site');
+        } else if (!site.isUnknown) {
+          headText = t(
+            'dv.globe.siteNamed',
+            { label: site.labelCode, ip: site.key },
+            'Site ' + site.labelCode + ' · ' + site.key,
+          );
+        } else {
+          headText = t('dv.globe.siteOther', null, 'Other devices');
+        }
+
+        let subText;
+        if (site.count === 1) {
+          subText = t('dv.globe.siteSubSingle', null, '1 device');
+        } else if (site.intraMinRttMs != null) {
+          subText = t(
+            'dv.globe.siteSubIntra',
+            { count: site.count, rtt: site.intraMinRttMs },
+            site.count + ' devices · ' + site.intraMinRttMs + ' ms LAN',
+          );
+        } else {
+          subText = t(
+            'dv.globe.siteSubCount',
+            { count: site.count, online: site.onlineCount },
+            site.count + ' devices · ' + site.onlineCount + ' online',
+          );
+        }
+
+        const meta = el('div', 'nm-spiderfy-site-meta');
+        meta.append(el('div', 'nm-spiderfy-site-head', headText), el('div', 'nm-spiderfy-site-sub', subText));
+        pod.appendChild(meta);
+        rootEl.appendChild(pod);
+      }
+
+      // 5. Inter-site carrier + RTT midpoint pills cleanly outside pod headers.
+      for (const link of layout.siteLinks) {
+        const pillKey = link.stalled ? 'stalled' : link.carrier;
+        const pillText =
+          connBadgeLabel(link.carrier, link.stalled) +
+          (link.rttMs != null ? ' · ' + link.rttMs + ' ms' : '');
+        const pill = el('div', 'nm-spiderfy-link-pill is-' + pillKey, pillText);
+        pill.dataset.linkKey = link.key;
+        pill.style.left = link.pillX + 'px';
+        pill.style.top = link.pillY + 'px';
+        rootEl.appendChild(pill);
+      }
+    } else {
+      // Classic circle (2..8) or spiral (9..20) radial legs.
+      for (const foot of layout.feet) {
+        const leg = document.createElementNS(SVG_NS, 'line');
+        leg.setAttribute('x1', '0');
+        leg.setAttribute('y1', '0');
+        leg.setAttribute('x2', String(foot.dx));
+        leg.setAttribute('y2', String(foot.dy));
+        leg.setAttribute('stroke', tok.leg);
+        leg.setAttribute('stroke-width', '1.25');
+        leg.setAttribute('stroke-linecap', 'round');
+        svg.appendChild(leg);
+      }
+      rootEl.appendChild(svg);
+    }
+
+    // Center collapse anchor button.
+    const anchor = el('button', 'nm-spiderfy-anchor');
+    anchor.setAttribute('type', 'button');
+    const collapseLabel = t('dv.globe.spiderfyCollapse', null, 'Collapse expanded cluster');
+    anchor.setAttribute('aria-label', collapseLabel);
+    anchor.setAttribute('title', collapseLabel);
+    anchor.addEventListener('click', (ev) => {
+      stopEv(ev);
+      if (typeof o.onCollapse === 'function') o.onCollapse();
+    });
+    rootEl.appendChild(anchor);
+
+    // Device feet.
+    for (const foot of layout.feet) {
+      rootEl.appendChild(buildFootButton(foot));
+    }
+
+    return rootEl;
   }
 
   /* ── Controller factory ──────────────────────────────────────────── */
@@ -1671,6 +2564,10 @@
       framed: false,
       pinnedClusterId: null,
       hoveredClusterId: null,
+      spiderfyClusterId: null,
+      spiderfyOpenZoom: null,
+      selectedDeviceId: null,
+      hoveredDeviceId: null,
       tilesError: false,
     };
 
@@ -1680,6 +2577,12 @@
     let resizeObs = null;
     let themeObs = null;
     let mediaQuery = null;
+    let spiderfyMarker = null;
+    let spiderfyEl = null;
+    let spiderfyLayout = null;
+    let spiderfyEaseActive = false;
+    let spiderfyEaseTimer = null;
+    let docKeydownHandler = null;
 
     function updateStageThemeClass() {
       if (stageEl) stageEl.classList.toggle('is-dark', state.theme === 'dark');
@@ -1746,24 +2649,302 @@
       tooltipEl.hidden = true;
     }
 
+    function positionTooltip(point, optsPos) {
+      if (!tooltipEl || !stageEl) return;
+      const sw = stageEl.clientWidth || 640;
+      const sh = stageEl.clientHeight || 580;
+      const tw = tooltipEl.offsetWidth || 210;
+      const th = tooltipEl.offsetHeight || 78;
+      const px = point ? point.x : sw / 2;
+      const py = point ? point.y : sh / 2;
+      const avoidFoot = Boolean(optsPos && optsPos.avoidFoot);
+      const pad = 10;
+
+      if (!avoidFoot) {
+        let left = px + 14;
+        let top = py - 16;
+        if (left + tw > sw - pad) left = Math.max(pad, px - tw - 14);
+        if (top + th > sh - pad) top = Math.max(pad, sh - th - pad);
+        if (top < pad) top = pad;
+        tooltipEl.style.left = Math.round(left) + 'px';
+        tooltipEl.style.top = Math.round(top) + 'px';
+        return;
+      }
+
+      // Position cleanly inside #dv-map-stage without covering the selected/hovered foot.
+      const gap = 18;
+      const footClear = 14;
+      const clampX = (x) => Math.max(pad, Math.min(sw - tw - pad, x));
+      const clampY = (y) => Math.max(pad, Math.min(sh - th - pad, y));
+      const overlapsFoot = (l, tp) =>
+        l < px + footClear && l + tw > px - footClear && tp < py + footClear && tp + th > py - footClear;
+      const fitsInStage = (l, tp) => l >= pad && l + tw <= sw - pad && tp >= pad && tp + th <= sh - pad;
+
+      const preferLeft = optsPos && optsPos.preferSide === 'left';
+      const rightCand = { left: px + gap, top: clampY(py - th / 2) };
+      const leftCand = { left: px - tw - gap, top: clampY(py - th / 2) };
+      const belowCand = { left: clampX(px - tw / 2), top: py + gap };
+      const aboveCand = { left: clampX(px - tw / 2), top: py - th - gap };
+      const candidates = preferLeft
+        ? [leftCand, rightCand, aboveCand, belowCand]
+        : [rightCand, leftCand, aboveCand, belowCand];
+
+      let chosen = null;
+      for (const c of candidates) {
+        if (fitsInStage(c.left, c.top) && !overlapsFoot(c.left, c.top)) {
+          chosen = c;
+          break;
+        }
+      }
+      if (!chosen) {
+        for (const c of candidates) {
+          const cl = clampX(c.left);
+          const ct = clampY(c.top);
+          if (!overlapsFoot(cl, ct)) {
+            chosen = { left: cl, top: ct };
+            break;
+          }
+        }
+      }
+      if (!chosen) {
+        const useAbove = py > sh / 2;
+        chosen = {
+          left: clampX(px - tw / 2),
+          top: useAbove ? Math.max(pad, py - th - gap) : Math.min(sh - th - pad, py + gap),
+        };
+      }
+      tooltipEl.style.left = Math.round(chosen.left) + 'px';
+      tooltipEl.style.top = Math.round(chosen.top) + 'px';
+    }
+
     function showTooltipAt(cluster, point) {
       if (!tooltipEl || !stageEl || !cluster) return;
       populateTooltip(tooltipEl, cluster);
       tooltipEl.hidden = false;
-      const sw = stageEl.clientWidth || 640;
-      const sh = stageEl.clientHeight || 380;
-      const tw = tooltipEl.offsetWidth || 200;
-      const th = tooltipEl.offsetHeight || 72;
-      let left = (point ? point.x : sw / 2) + 14;
-      let top = (point ? point.y : sh / 2) - 16;
-      if (left + tw > sw - 10) left = Math.max(10, (point ? point.x : sw / 2) - tw - 14);
-      if (top + th > sh - 10) top = Math.max(10, sh - th - 10);
-      if (top < 10) top = 10;
-      tooltipEl.style.left = Math.round(left) + 'px';
-      tooltipEl.style.top = Math.round(top) + 'px';
+      positionTooltip(point, { avoidFoot: false });
+    }
+
+    function footScreenPoint(cluster, foot) {
+      if (!cluster) return null;
+      let anchorPt = null;
+      if (map && typeof map.project === 'function') {
+        try {
+          anchorPt = map.project([cluster.lon, cluster.lat]);
+        } catch (_) {
+          anchorPt = null;
+        }
+      }
+      const sw = (stageEl && stageEl.clientWidth) || 640;
+      const sh = (stageEl && stageEl.clientHeight) || 580;
+      const ax = anchorPt && Number.isFinite(anchorPt.x) ? anchorPt.x : sw / 2;
+      const ay = anchorPt && Number.isFinite(anchorPt.y) ? anchorPt.y : sh / 2;
+      return {
+        x: ax + (foot ? foot.dx : 0),
+        y: ay + (foot ? foot.dy : 0),
+      };
+    }
+
+    function showDeviceTooltip(item, cluster, foot) {
+      if (!tooltipEl || !stageEl || !item) return;
+      populateDeviceTooltip(tooltipEl, item);
+      tooltipEl.hidden = false;
+      const pt = footScreenPoint(cluster, foot);
+      // Open away from the foot's text label when possible.
+      const preferSide = foot && foot.labelSide === 'right' ? 'left' : 'right';
+      positionTooltip(pt, { avoidFoot: true, preferSide });
+    }
+
+    function findFootInLayout(layout, deviceId) {
+      if (!layout || !deviceId || !Array.isArray(layout.feet)) return null;
+      for (const f of layout.feet) {
+        if (f.item && f.item.id === deviceId) return f;
+      }
+      return null;
+    }
+
+    function clearSpiderfyEaseGuard() {
+      spiderfyEaseActive = false;
+      if (spiderfyEaseTimer != null) {
+        clearTimeout(spiderfyEaseTimer);
+        spiderfyEaseTimer = null;
+      }
+    }
+
+    function renderSpiderfyInPlace() {
+      if (!state.spiderfyClusterId || !spiderfyEl) return;
+      const cluster = state.clusterById.get(state.spiderfyClusterId);
+      if (!cluster || cluster.count <= 1) {
+        collapseSpiderfy();
+        return;
+      }
+      spiderfyLayout = computeSpiderfyLayout(cluster, state.meshView, state.livePeers);
+      if (!spiderfyLayout) {
+        collapseSpiderfy();
+        return;
+      }
+
+      if (state.selectedDeviceId && !cluster.items.some((it) => it.id === state.selectedDeviceId)) {
+        state.selectedDeviceId = null;
+        hideTooltip();
+      }
+
+      const inner = renderSpiderfyDom(cluster, spiderfyLayout, {
+        theme: state.theme,
+        selectedDeviceId: state.selectedDeviceId,
+        onCollapse: collapseSpiderfy,
+        onSelectDevice: (item, foot) => {
+          state.selectedDeviceId = item.id;
+          state.hoveredDeviceId = null;
+          renderSpiderfyInPlace();
+          const activeCluster = state.clusterById.get(state.spiderfyClusterId) || cluster;
+          const activeFoot = foot || findFootInLayout(spiderfyLayout, item.id);
+          showDeviceTooltip(item, activeCluster, activeFoot);
+        },
+        onHoverDevice: (item, foot) => {
+          if (state.selectedDeviceId) return;
+          if (item) {
+            state.hoveredDeviceId = item.id;
+            showDeviceTooltip(item, cluster, foot);
+          } else if (state.hoveredDeviceId) {
+            state.hoveredDeviceId = null;
+            hideTooltip();
+          }
+        },
+      });
+      if (inner) {
+        spiderfyEl.replaceChildren(inner);
+      }
+      if (spiderfyMarker && typeof spiderfyMarker.setLngLat === 'function') {
+        spiderfyMarker.setLngLat([cluster.lon, cluster.lat]);
+      }
+      if (state.selectedDeviceId) {
+        const selItem = cluster.items.find((it) => it.id === state.selectedDeviceId);
+        if (selItem) {
+          showDeviceTooltip(selItem, cluster, findFootInLayout(spiderfyLayout, selItem.id));
+        }
+      }
+    }
+
+    function collapseSpiderfy(optsCollapse) {
+      const skipSourceSync = Boolean(optsCollapse && optsCollapse.skipSourceSync);
+      clearSpiderfyEaseGuard();
+      const wasOpen = Boolean(state.spiderfyClusterId || spiderfyMarker);
+      state.spiderfyClusterId = null;
+      state.spiderfyOpenZoom = null;
+      state.selectedDeviceId = null;
+      state.hoveredDeviceId = null;
+      spiderfyLayout = null;
+      if (spiderfyMarker) {
+        try {
+          spiderfyMarker.remove();
+        } catch (_) {
+          /* ignore */
+        }
+        spiderfyMarker = null;
+      }
+      spiderfyEl = null;
+      if (wasOpen) {
+        hideTooltip();
+        if (!skipSourceSync && !state.fallback) {
+          syncSourcesToMap();
+        }
+      }
+    }
+
+    function openSpiderfy(cluster) {
+      if (!cluster || cluster.count <= 1 || !map) return;
+      if (state.spiderfyClusterId === cluster.id && spiderfyMarker && spiderfyEl) {
+        renderSpiderfyInPlace();
+        return;
+      }
+      collapseSpiderfy({ skipSourceSync: true });
+      state.pinnedClusterId = null;
+      state.hoveredClusterId = null;
+      hideTooltip();
+
+      const layout = computeSpiderfyLayout(cluster, state.meshView, state.livePeers);
+      if (!layout) return;
+
+      state.spiderfyClusterId = cluster.id;
+      spiderfyLayout = layout;
+      spiderfyEl = el('div', 'nm-spiderfy-marker');
+
+      const MarkerCtor = root.maplibregl && root.maplibregl.Marker;
+      if (MarkerCtor) {
+        spiderfyMarker = new MarkerCtor({
+          element: spiderfyEl,
+          anchor: 'center',
+          opacityWhenCovered: '0',
+        })
+          .setLngLat([cluster.lon, cluster.lat])
+          .addTo(map);
+      }
+
+      renderSpiderfyInPlace();
+      syncSourcesToMap();
+
+      const curZoom = typeof map.getZoom === 'function' ? map.getZoom() : SPIDERFY_MIN_OPEN_ZOOM;
+      state.spiderfyOpenZoom = curZoom;
+
+      // Smoothly ease camera if cluster is near viewport edge or zoom < 2.6 so pods fit inside 380px card.
+      const sw = (stageEl && stageEl.clientWidth) || 640;
+      const sh = (stageEl && stageEl.clientHeight) || 580;
+      let pt = null;
+      if (typeof map.project === 'function') {
+        try {
+          pt = map.project([cluster.lon, cluster.lat]);
+        } catch (_) {
+          pt = null;
+        }
+      }
+      const padX =
+        layout.mode === 'sites'
+          ? Math.min(sw * 0.36, (layout.maxRadiusX || 170) + 32)
+          : Math.min(sw * 0.3, (layout.maxRadius || 72) + 48);
+      const padY =
+        layout.mode === 'sites'
+          ? Math.min(sh * 0.42, (layout.maxRadiusY || 110) + 26)
+          : Math.min(sh * 0.35, (layout.maxRadius || 72) + 36);
+      const nearEdge = !pt || pt.x < padX || pt.x > sw - padX || pt.y < padY || pt.y > sh - padY;
+      const tooZoomedOut = curZoom < SPIDERFY_MIN_OPEN_ZOOM;
+
+      if ((nearEdge || tooZoomedOut) && typeof map.easeTo === 'function') {
+        const targetZoom = tooZoomedOut ? SPIDERFY_MIN_OPEN_ZOOM : curZoom;
+        state.spiderfyOpenZoom = targetZoom;
+        spiderfyEaseActive = true;
+        const finishEase = () => {
+          if (!spiderfyEaseActive) return;
+          clearSpiderfyEaseGuard();
+          if (map && typeof map.getZoom === 'function' && state.spiderfyClusterId) {
+            state.spiderfyOpenZoom = map.getZoom();
+          }
+          if (state.spiderfyClusterId && state.selectedDeviceId) {
+            const c = state.clusterById.get(state.spiderfyClusterId);
+            const item = c && c.items.find((it) => it.id === state.selectedDeviceId);
+            if (c && item) showDeviceTooltip(item, c, findFootInLayout(spiderfyLayout, item.id));
+          }
+        };
+        if (typeof map.once === 'function') map.once('moveend', finishEase);
+        spiderfyEaseTimer = setTimeout(finishEase, 520);
+        map.easeTo({
+          center: [cluster.lon, cluster.lat],
+          zoom: targetZoom,
+          duration: 380,
+        });
+      }
+    }
+
+    function syncSelectedSpiderfyTooltip() {
+      if (!state.spiderfyClusterId || !state.selectedDeviceId) return;
+      const cluster = state.clusterById.get(state.spiderfyClusterId);
+      if (!cluster) return;
+      const item = cluster.items.find((it) => it.id === state.selectedDeviceId);
+      if (!item) return;
+      showDeviceTooltip(item, cluster, findFootInLayout(spiderfyLayout, item.id));
     }
 
     function enterFallback() {
+      collapseSpiderfy({ skipSourceSync: true });
       state.fallback = true;
       if (map) {
         try {
@@ -1798,7 +2979,9 @@
       ensureStaticIcons(map, state.theme, dpr);
       const markersSrc = map.getSource(MARKERS_SOURCE_ID);
       if (markersSrc && typeof markersSrc.setData === 'function') {
-        markersSrc.setData(buildMarkerFeatures(state.clusters, map, state.theme, dpr));
+        markersSrc.setData(
+          buildMarkerFeatures(state.clusters, map, state.theme, dpr, state.spiderfyClusterId),
+        );
       }
       const linksSrc = map.getSource(LINKS_SOURCE_ID);
       if (linksSrc && typeof linksSrc.setData === 'function') {
@@ -1813,7 +2996,7 @@
     function frameInitialView(animate) {
       if (!map || !stageEl) return;
       const w = stageEl.clientWidth || 640;
-      const h = stageEl.clientHeight || 380;
+      const h = stageEl.clientHeight || 580;
       const view = computeInitialView(state.projected.locatedItems, w, h);
       const optsCam = { center: view.center, zoom: view.zoom, bearing: 0, pitch: 0 };
       if (animate && typeof map.easeTo === 'function') {
@@ -1834,7 +3017,9 @@
         return;
       }
       syncSourcesToMap();
-      if (state.pinnedClusterId) {
+      if (state.spiderfyClusterId) {
+        renderSpiderfyInPlace();
+      } else if (state.pinnedClusterId) {
         const c = state.clusterById.get(state.pinnedClusterId);
         if (c && map) {
           populateTooltip(tooltipEl, c);
@@ -1882,7 +3067,7 @@
       try {
         ensureMapLibreProtocol(maplibregl, pmtilesNs, invokeFn);
         const w = stageEl.clientWidth || 640;
-        const h = stageEl.clientHeight || 380;
+        const h = stageEl.clientHeight || 580;
         const initial = computeInitialView(state.projected.locatedItems, w, h);
 
         map = new maplibregl.Map({
@@ -1951,15 +3136,32 @@
         }
       });
 
-      map.on('move', syncFresnel);
-      map.on('zoom', syncFresnel);
-      map.on('resize', syncFresnel);
+      map.on('move', () => {
+        syncFresnel();
+        syncSelectedSpiderfyTooltip();
+      });
+      map.on('zoom', () => {
+        syncFresnel();
+        if (
+          state.spiderfyClusterId &&
+          !spiderfyEaseActive &&
+          state.spiderfyOpenZoom != null &&
+          typeof map.getZoom === 'function' &&
+          Math.abs(map.getZoom() - state.spiderfyOpenZoom) >= SPIDERFY_ZOOM_COLLAPSE_DELTA
+        ) {
+          collapseSpiderfy();
+        }
+      });
+      map.on('resize', () => {
+        syncFresnel();
+        syncSelectedSpiderfyTooltip();
+      });
 
       map.on('mousemove', (ev) => {
         const cluster = queryClusterAt(ev.point);
         if (webglCanvas) webglCanvas.style.cursor = cluster ? 'pointer' : '';
-        if (state.pinnedClusterId) return;
-        if (cluster) {
+        if (state.pinnedClusterId || state.selectedDeviceId || state.hoveredDeviceId) return;
+        if (cluster && cluster.id !== state.spiderfyClusterId) {
           state.hoveredClusterId = cluster.id;
           showTooltipAt(cluster, ev.point);
         } else if (state.hoveredClusterId) {
@@ -1969,7 +3171,7 @@
       });
 
       map.on('mouseleave', () => {
-        if (!state.pinnedClusterId) {
+        if (!state.pinnedClusterId && !state.selectedDeviceId && !state.hoveredDeviceId) {
           state.hoveredClusterId = null;
           hideTooltip();
         }
@@ -1978,29 +3180,56 @@
       map.on('click', (ev) => {
         const cluster = queryClusterAt(ev.point);
         if (cluster) {
-          state.pinnedClusterId = cluster.id;
-          showTooltipAt(cluster, ev.point);
-          if (map.getZoom() < 3.2) {
-            map.easeTo({
-              center: [cluster.lon, cluster.lat],
-              zoom: Math.max(map.getZoom(), 2.8),
-              duration: 420,
-            });
+          if (cluster.count >= 2) {
+            openSpiderfy(cluster);
+          } else {
+            collapseSpiderfy();
+            state.pinnedClusterId = cluster.id;
+            showTooltipAt(cluster, ev.point);
+            if (map.getZoom() < 3.2) {
+              map.easeTo({
+                center: [cluster.lon, cluster.lat],
+                zoom: Math.max(map.getZoom(), 2.8),
+                duration: 420,
+              });
+            }
           }
-        } else if (state.pinnedClusterId) {
-          state.pinnedClusterId = null;
-          hideTooltip();
+        } else {
+          if (state.spiderfyClusterId) {
+            collapseSpiderfy();
+          }
+          if (state.pinnedClusterId) {
+            state.pinnedClusterId = null;
+            hideTooltip();
+          }
         }
       });
 
       if (canvasEl) {
         canvasEl.addEventListener('keydown', (ev) => {
-          if (ev.key === 'Escape' && state.pinnedClusterId) {
-            state.pinnedClusterId = null;
-            hideTooltip();
+          if (ev && ev.key === 'Escape') {
+            if (state.spiderfyClusterId) {
+              collapseSpiderfy();
+            } else if (state.pinnedClusterId) {
+              state.pinnedClusterId = null;
+              hideTooltip();
+            }
           }
         });
       }
+    }
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      docKeydownHandler = (ev) => {
+        if (!ev || ev.key !== 'Escape') return;
+        if (state.spiderfyClusterId) {
+          collapseSpiderfy();
+        } else if (state.pinnedClusterId) {
+          state.pinnedClusterId = null;
+          hideTooltip();
+        }
+      };
+      document.addEventListener('keydown', docKeydownHandler);
     }
 
     // Wire toolbar buttons
@@ -2016,6 +3245,7 @@
     }
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
+        collapseSpiderfy();
         state.pinnedClusterId = null;
         hideTooltip();
         frameInitialView(true);
@@ -2029,6 +3259,7 @@
         if (map) {
           map.resize();
           syncFresnel();
+          syncSelectedSpiderfyTooltip();
         }
       });
       resizeObs.observe(stageEl);
@@ -2045,6 +3276,7 @@
         applyThemeToMap(map, next);
         syncSourcesToMap();
       }
+      if (state.spiderfyClusterId) renderSpiderfyInPlace();
     }
 
     if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
@@ -2079,11 +3311,15 @@
       },
       setMesh(meshView) {
         state.meshView = meshView || null;
-        if (!state.fallback) syncSourcesToMap();
+        if (!state.fallback) {
+          syncSourcesToMap();
+          if (state.spiderfyClusterId) renderSpiderfyInPlace();
+        }
       },
       setActive(isActive) {
         state.active = Boolean(isActive);
         if (!state.active) {
+          collapseSpiderfy();
           hideTooltip();
           state.pinnedClusterId = null;
           return;
@@ -2116,6 +3352,8 @@
         updateChrome();
         if (state.fallback) {
           renderFallbackList(fallbackEl, state.projected);
+        } else if (state.spiderfyClusterId) {
+          renderSpiderfyInPlace();
         } else if (state.pinnedClusterId) {
           const c = state.clusterById.get(state.pinnedClusterId);
           if (c) populateTooltip(tooltipEl, c);
@@ -2131,13 +3369,16 @@
           applyThemeToMap(map, next);
           syncSourcesToMap();
         }
+        if (state.spiderfyClusterId) renderSpiderfyInPlace();
       },
       resetView() {
+        collapseSpiderfy();
         state.pinnedClusterId = null;
         hideTooltip();
         frameInitialView(true);
       },
       resetOrg() {
+        collapseSpiderfy({ skipSourceSync: true });
         state.rows = [];
         state.meshView = null;
         state.framed = false;
@@ -2146,6 +3387,15 @@
         recompute();
       },
       destroy() {
+        collapseSpiderfy({ skipSourceSync: true });
+        if (
+          docKeydownHandler &&
+          typeof document !== 'undefined' &&
+          typeof document.removeEventListener === 'function'
+        ) {
+          document.removeEventListener('keydown', docKeydownHandler);
+          docKeydownHandler = null;
+        }
         if (resizeObs) resizeObs.disconnect();
         if (themeObs) themeObs.disconnect();
         if (mediaQuery && typeof mediaQuery.removeEventListener === 'function') {
@@ -2173,6 +3423,8 @@
           clusterCount: state.clusters.length,
           mapLoaded,
           tilesError: state.tilesError,
+          spiderfyClusterId: state.spiderfyClusterId,
+          selectedDeviceId: state.selectedDeviceId,
         };
       },
     };
@@ -2181,6 +3433,9 @@
   const api = {
     PMTILES_KEY,
     WORKER_URL,
+    SPIDERFY_CIRCLE_MAX,
+    SPIDERFY_SPIRAL_MAX,
+    SPIDERFY_MAX_SITES,
     DARK_TOKENS,
     LIGHT_TOKENS,
     MAPLIBRE_LOCAL_TEXT_FONT,
@@ -2201,6 +3456,11 @@
     clusterLocatedDevices,
     buildLinkFeatures,
     buildMarkerFeatures,
+    effectiveSiteKey,
+    computeSpiderfyLayout,
+    populateDeviceTooltip,
+    populateTooltip,
+    renderSpiderfyDom,
     renderFallbackList,
     create,
   };

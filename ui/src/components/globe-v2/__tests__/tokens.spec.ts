@@ -25,6 +25,7 @@ describe('globe-v2 visual tokens — WCAG 1.4.11 non-text contrast (>= 3:1) & da
     'stalled',
     'centre',
     'focusRing',
+    'selfRing',
   ] as const
 
   it('meets >= 3:1 contrast for all dark-theme status, link, and zone colors against land and ocean', () => {

@@ -38,7 +38,7 @@
       :show-control-plane="showControlPlane"
       :show-detail-panel="showDetailPanel"
       :show-open-device-action="showOpenDeviceAction"
-      :height="height || 560"
+      :height="height"
       :aria-label="ariaLabel"
       :sync-url="syncUrl"
       @node-click="emit('node-click', $event)"

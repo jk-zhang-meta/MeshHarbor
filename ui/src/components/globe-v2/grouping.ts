@@ -20,10 +20,17 @@ import {
   classifyGroupInteraction,
   computeSpiderfyLayout,
   effectivePresence,
+  effectiveSiteIp,
   LIST_PAGE_SIZE,
   sortSpiderfyMembers,
   SPIDERFY_CIRCLE_MAX,
+  SPIDERFY_MAX_SITES,
   SPIDERFY_SPIRAL_MAX,
+  type SpiderfyFoot,
+  type SpiderfyLayout,
+  type SpiderfyMode,
+  type SpiderfySiteGroup,
+  type SpiderfySiteLink,
 } from './spiderfy'
 
 export {
@@ -31,14 +38,25 @@ export {
   computeSpiderfyLayout,
   COUNTRY_LONLAT,
   effectivePresence,
+  effectiveSiteIp,
   LIST_PAGE_SIZE,
   normalizePlaceName,
   resolveV2Location,
   sortSpiderfyMembers,
   SPIDERFY_CIRCLE_MAX,
+  SPIDERFY_MAX_SITES,
   SPIDERFY_SPIRAL_MAX,
 }
-export type { GazetteerV1, ResolvedV2Location, V2GeoPrecision }
+export type {
+  GazetteerV1,
+  ResolvedV2Location,
+  SpiderfyFoot,
+  SpiderfyLayout,
+  SpiderfyMode,
+  SpiderfySiteGroup,
+  SpiderfySiteLink,
+  V2GeoPrecision,
+}
 
 export interface CityGroup {
   key: string

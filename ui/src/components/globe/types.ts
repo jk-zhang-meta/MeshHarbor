@@ -55,6 +55,10 @@ export interface GlobeNode {
   overlayIp?: string | null
   /** Populated ONLY where the current UI already displays public IP (fleet view). */
   publicIp?: string | null
+  /** FR-138 physical-uplink egress IP (populated ONLY where fleet public IP is already shown). */
+  physicalPublicIp?: string | null
+  /** Optional flag marking the local device running this viewer/companion. */
+  isSelf?: boolean
   /** Logical network zone (T6) or backbone zone (T7/S12). */
   zoneId?: string | null
   zoneName?: string | null

@@ -194,6 +194,10 @@ function createRealm() {
       if (!docListeners[type]) docListeners[type] = [];
       docListeners[type].push(fn);
     },
+    removeEventListener(type, fn) {
+      if (!docListeners[type]) return;
+      docListeners[type] = docListeners[type].filter((f) => f !== fn);
+    },
     dispatchEvent(ev) {
       for (const fn of docListeners[ev.type] || []) fn(ev);
     },
@@ -624,6 +628,10 @@ async function testVizModeToggle() {
       if (!docListeners[type]) docListeners[type] = [];
       docListeners[type].push(fn);
     },
+    removeEventListener(type, fn) {
+      if (!docListeners[type]) return;
+      docListeners[type] = docListeners[type].filter((f) => f !== fn);
+    },
     dispatchEvent(ev) {
       for (const fn of docListeners[ev.type] || []) fn(ev);
     },
@@ -761,12 +769,620 @@ async function testVizModeToggle() {
   i18n.setLang('en', { syncNative: false });
 }
 
+/* ── 10. Plan B Spiderfy: effectiveSiteKey, site-grouped layout, radial fallback, XSS DOM, & lifecycle ── */
+
+function findAllNodes(node, pred, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (pred(node)) out.push(node);
+  for (const c of node.children || []) findAllNodes(c, pred, out);
+  return out;
+}
+
+function testSpiderfyLayoutAndDom() {
+  // 10a. effectiveSiteKey: physicalPublicIp overrides publicIp; dashes/blanks normalized.
+  assert.equal(
+    NM.effectiveSiteKey({ physicalPublicIp: '198.51.100.10', publicIp: '203.0.113.20' }),
+    '198.51.100.10',
+    'physicalPublicIp must override publicIp',
+  );
+  assert.equal(
+    NM.effectiveSiteKey({ physicalPublicIp: '', publicIp: '203.0.113.20' }),
+    '203.0.113.20',
+  );
+  assert.equal(NM.effectiveSiteKey({ physicalPublicIp: '—', publicIp: ' - ' }), '');
+  assert.equal(NM.effectiveSiteKey(null), '');
+
+  // 10b. projectDevices keeps publicIp and physicalPublicIp.
+  const multiSiteRows = [
+    {
+      id: 'dev-self',
+      overlay_node_id: 'n-self',
+      kind: 'agent',
+      name: 'lab-1',
+      is_self: true,
+      presence: 'online',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '203.0.113.99',
+      physical_public_ip: '198.51.100.10',
+      effective_zone_name: 'Zone-A',
+    },
+    {
+      id: 'dev-a2',
+      overlay_node_id: 'n-a2',
+      kind: 'agent',
+      name: 'lab-2',
+      is_self: false,
+      presence: 'online',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '198.51.100.10',
+    },
+    {
+      id: 'dev-b1',
+      overlay_node_id: 'n-b1',
+      kind: 'agent',
+      name: 'office-1',
+      is_self: false,
+      presence: 'online',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '203.0.113.20',
+    },
+    {
+      id: 'dev-b2',
+      overlay_node_id: 'n-b2',
+      kind: 'agent',
+      name: 'office-2',
+      is_self: false,
+      presence: 'stale',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '203.0.113.20',
+    },
+    {
+      id: 'dev-b3',
+      overlay_node_id: 'n-b3',
+      kind: 'agent',
+      name: 'office-3',
+      is_self: false,
+      presence: 'offline',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '203.0.113.20',
+    },
+    {
+      id: 'dev-c1',
+      overlay_node_id: 'n-c1',
+      kind: 'agent',
+      name: 'remote-1',
+      is_self: false,
+      presence: 'online',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '192.0.2.30',
+    },
+    {
+      id: 'dev-u1',
+      overlay_node_id: 'n-u1',
+      kind: 'agent',
+      name: 'unmapped-ip-dev',
+      is_self: false,
+      presence: 'offline',
+      country: 'Testland',
+      city: 'Harbor City',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+    },
+  ];
+  const sitePeers = [
+    { node_id: 'n-a2', agent_id: 'dev-a2', online: true, connection: 'direct', rtt_ms: 2.3 },
+    { node_id: 'n-b1', agent_id: 'dev-b1', online: true, connection: 'direct', rtt_ms: 14.2 },
+    { node_id: 'n-c1', agent_id: 'dev-c1', online: true, connection: 'relay', rtt_ms: 48.6, stalled: true },
+  ];
+  const siteProj = NM.projectDevices(multiSiteRows, {
+    selfConnected: true,
+    peerFor: (r) => sitePeers.find((p) => p.node_id === r.overlay_node_id) || null,
+  });
+  const selfItem = siteProj.items.find((it) => it.id === 'dev-self');
+  assert.equal(selfItem.publicIp, '203.0.113.99');
+  assert.equal(selfItem.physicalPublicIp, '198.51.100.10');
+  assert.equal(NM.effectiveSiteKey(selfItem), '198.51.100.10');
+
+  const multiClusters = NM.clusterLocatedDevices(siteProj.locatedItems);
+  assert.equal(multiClusters.length, 1);
+  const cityCluster = multiClusters[0];
+
+  // Single-item cluster returns null.
+  assert.equal(
+    NM.computeSpiderfyLayout({ id: 'c:1', count: 1, items: [siteProj.items[0]] }, null, []),
+    null,
+  );
+
+  // 10c. Multi-IP same-city cluster -> mode 'sites', sorted hasSelf first -> onlineCount desc -> count desc -> key asc.
+  const siteMesh = {
+    edges: [
+      { from: 'n-self', to: 'n-a2', carrier: 'direct', rtt_ms: 2, stalled: false },
+      { from: 'n-a2', to: 'n-b1', carrier: 'relay', rtt_ms: 28, stalled: false },
+      { from: 'n-self', to: 'n-b1', carrier: 'direct', rtt_ms: 14, stalled: false },
+      { from: 'n-b1', to: 'n-c1', carrier: 'tunnel', rtt_ms: 22, stalled: false },
+    ],
+  };
+  const sitesLayout = NM.computeSpiderfyLayout(cityCluster, siteMesh, sitePeers);
+  assert.equal(sitesLayout.mode, 'sites');
+  assert.equal(sitesLayout.sites.length, 4, '3 distinct IPs + 1 unknown pod = 4 sites');
+  assert.equal(sitesLayout.sites[0].key, '198.51.100.10', 'site containing isSelf sorts first');
+  assert.equal(sitesLayout.sites[0].hasSelf, true);
+  assert.equal(sitesLayout.sites[0].intraMinRttMs, 2, 'intra-site min RTT computed');
+  assert.equal(sitesLayout.sites[1].key, '203.0.113.20', 'next by onlineCount/count desc');
+  assert.equal(sitesLayout.sites[2].key, '192.0.2.30', 'next by onlineCount desc');
+  assert.equal(sitesLayout.sites[3].isUnknown, true, 'no-IP devices placed in optional unknown pod');
+  assert.equal(sitesLayout.feet.length, 7);
+
+  // Inter-site carrier priority: direct beats relay (site A <-> B), stalled beats all (site A <-> C), tunnel kept (B <-> C).
+  assert.equal(sitesLayout.siteLinks.length, 3);
+  const linkAB = sitesLayout.siteLinks.find(
+    (l) => l.key.includes('198.51.100.10') && l.key.includes('203.0.113.20'),
+  );
+  assert.ok(linkAB, 'link between site A and site B present');
+  assert.equal(linkAB.carrier, 'direct', 'direct beats relay on inter-site aggregation');
+  assert.equal(linkAB.stalled, false);
+  assert.equal(linkAB.rttMs, 14, 'min RTT across parallel inter-site links');
+  assert.ok(linkAB.pathD.startsWith('M ') && linkAB.pathD.includes(' Q '), 'curved quadratic SVG path');
+
+  const linkAC = sitesLayout.siteLinks.find(
+    (l) => l.key.includes('198.51.100.10') && l.key.includes('192.0.2.30'),
+  );
+  assert.ok(linkAC, 'livePeers supplements inter-site link A <-> C');
+  assert.equal(linkAC.stalled, true, 'stalled flag surfaced');
+  assert.equal(linkAC.rttMs, 49);
+
+  // Verify no site link pill sits inside any site pod header bounding box.
+  for (const l of sitesLayout.siteLinks) {
+    for (const s of sitesLayout.sites) {
+      const inHeader =
+        l.pillX >= s.cx - 60 &&
+        l.pillX <= s.cx + 60 &&
+        l.pillY >= s.cy - s.podRadius - 36 &&
+        l.pillY <= s.cy - s.podRadius;
+      assert.equal(inHeader, false, `link pill ${l.key} must stay outside site ${s.id} header`);
+    }
+  }
+
+  // 10d. Single-site (all share 1 egress IP) -> circle (2..8) & spiral (9..20); >20 -> list.
+  const makeSameIpCluster = (n, withIp) => {
+    const rows = [];
+    for (let i = 0; i < n; i += 1) {
+      rows.push({
+        id: 'dev-' + i,
+        overlay_node_id: 'n-' + i,
+        kind: 'agent',
+        name: 'node-' + String(i).padStart(2, '0'),
+        is_self: i === 0,
+        presence: i % 3 === 0 ? 'online' : i % 3 === 1 ? 'stale' : 'offline',
+        city: 'Port Town',
+        lat: 31.23,
+        lon: 121.47,
+        geo_level: 'city',
+        public_ip: withIp ? '198.51.100.55' : '',
+      });
+    }
+    const p = NM.projectDevices(rows, null);
+    return NM.clusterLocatedDevices(p.locatedItems)[0];
+  };
+
+  const circleLayout = NM.computeSpiderfyLayout(makeSameIpCluster(5, true), null, []);
+  assert.equal(circleLayout.mode, 'circle', '5 devices sharing 1 egress IP -> circle fallback');
+  assert.equal(circleLayout.sites.length, 0);
+  assert.equal(circleLayout.feet.length, 5);
+  assert.equal(circleLayout.feet[0].item.isSelf, true, 'self device placed first at 12 o clock');
+  assert.ok(circleLayout.feet[0].dy < 0 && Math.abs(circleLayout.feet[0].dx) < 0.1);
+
+  const spiralLayout = NM.computeSpiderfyLayout(makeSameIpCluster(12, false), null, []);
+  assert.equal(spiralLayout.mode, 'spiral', '12 no-IP devices -> Archimedean spiral fallback');
+  assert.equal(spiralLayout.feet.length, 12);
+  assert.ok(spiralLayout.feet[11].radius > spiralLayout.feet[0].radius, 'spiral radius grows monotonically');
+
+  const listLayout = NM.computeSpiderfyLayout(makeSameIpCluster(25, true), null, []);
+  assert.equal(listLayout.mode, 'list', '> 20 devices -> scrollable list popover');
+  assert.equal(listLayout.items.length, 25, 'list mode retains all 25 devices without truncating at 5');
+
+  // 10e. XSS-safe DOM rendering (textContent only, dark/light + en/zh-CN).
+  const xssCityRows = [
+    {
+      id: 'x1',
+      overlay_node_id: 'nx1',
+      kind: 'agent',
+      name: '<img src=x onerror=alert(1)>',
+      is_self: true,
+      presence: 'online',
+      city: '<script>city()</script>',
+      lat: 35.68,
+      lon: 139.69,
+      geo_level: 'city',
+      public_ip: '198.51.100.1',
+    },
+    {
+      id: 'x2',
+      overlay_node_id: 'nx2',
+      kind: 'agent',
+      name: 'device-b',
+      is_self: false,
+      presence: 'online',
+      city: '<script>city()</script>',
+      lat: 35.68,
+      lon: 139.69,
+      geo_level: 'city',
+      public_ip: '203.0.113.2',
+    },
+  ];
+  const xssCluster = NM.clusterLocatedDevices(NM.projectDevices(xssCityRows, null).locatedItems)[0];
+  const xssLayout = NM.computeSpiderfyLayout(
+    xssCluster,
+    { edges: [{ from: 'nx1', to: 'nx2', carrier: 'direct', rtt_ms: 9 }] },
+    [],
+  );
+  assert.equal(xssLayout.mode, 'sites');
+
+  let collapsedCount = 0;
+  let selectedId = null;
+  i18n.setLang('en', { syncNative: false });
+  const domEn = NM.renderSpiderfyDom(xssCluster, xssLayout, {
+    theme: 'dark',
+    selectedDeviceId: 'x1',
+    onCollapse: () => {
+      collapsedCount += 1;
+    },
+    onSelectDevice: (item) => {
+      selectedId = item.id;
+    },
+  });
+  assert.equal(domEn.dataset.spiderfyMode, 'sites');
+  const enText = collectText(domEn);
+  assert.ok(enText.includes('Local site · 198.51.100.1'));
+  assert.ok(enText.includes('Site B · 203.0.113.2'));
+  assert.ok(enText.includes('Direct · 9 ms'));
+  assert.ok(enText.includes('<script>city()</script>'), 'untrusted city name rendered via textContent');
+  const feetBtns = findAllNodes(domEn, (n) => String(n.className).includes('nm-spiderfy-foot'));
+  assert.equal(feetBtns.length, 2);
+  assert.ok(feetBtns[0].className.includes('is-selected'), 'selected foot receives .is-selected');
+  feetBtns[1].trigger('click', { stopPropagation() {} });
+  assert.equal(selectedId, 'x2');
+
+  const anchorBtn = findAllNodes(domEn, (n) => String(n.className).includes('nm-spiderfy-anchor'))[0];
+  assert.ok(anchorBtn, 'center collapse anchor rendered');
+  anchorBtn.trigger('click', { stopPropagation() {} });
+  assert.equal(collapsedCount, 1);
+
+  // Re-render in zh-CN + light mode -> localized site headings & link pill.
+  i18n.setLang('zh-CN', { syncNative: false });
+  const domZh = NM.renderSpiderfyDom(xssCluster, xssLayout, { theme: 'light' });
+  const zhText = collectText(domZh);
+  assert.ok(zhText.includes('本机站点 · 198.51.100.1'), 'zh-CN local site label rendered');
+  assert.ok(zhText.includes('站点 B · 203.0.113.2'), 'zh-CN named site label rendered');
+  assert.ok(zhText.includes('直连 · 9 ms'), 'zh-CN link pill rendered');
+  const linkPathLight = findAllNodes(domZh, (n) => n.tagName === 'PATH')[0];
+  assert.equal(linkPathLight.getAttribute('stroke'), NM.LIGHT_TOKENS.direct, 'light theme link arc stroke');
+
+  // Render dense >20 list popover and verify all 25 rows exist.
+  const denseCluster = makeSameIpCluster(25, true);
+  const denseDom = NM.renderSpiderfyDom(denseCluster, NM.computeSpiderfyLayout(denseCluster, null, []), {
+    theme: 'dark',
+  });
+  const listRows = findAllNodes(
+    denseDom,
+    (n) => n.tagName === 'BUTTON' && String(n.className).includes('nm-spiderfy-list-row'),
+  );
+  assert.equal(listRows.length, 25, 'list popover renders all 25 items without truncation');
+
+  i18n.setLang('en', { syncNative: false });
+}
+
+function testSpiderfyControllerLifecycle() {
+  // Mock MapLibre Map + Marker + WebGL2 inside an isolated realm.
+  const r2 = createRealm();
+  r2.WebGL2RenderingContext = function WebGL2RenderingContext() {};
+  const origCreateEl = r2.document.createElement;
+  r2.document.createElement = (tag) => {
+    const node = origCreateEl(tag);
+    if (tag === 'canvas') {
+      node.getContext = (type) => {
+        if (type === 'webgl2') return { getExtension: () => ({ loseContext() {} }) };
+        return {
+          scale() {},
+          beginPath() {},
+          arc() {},
+          fill() {},
+          stroke() {},
+          closePath() {},
+          moveTo() {},
+          lineTo() {},
+          fillText() {},
+          getImageData: () => ({ width: 4, height: 4, data: new Uint8ClampedArray(64) }),
+        };
+      };
+    }
+    return node;
+  };
+
+  let mockMap = null;
+  let activeMarkers = [];
+  let easeCalls = [];
+  let markerDataHistory = [];
+
+  class MockMarker {
+    constructor(opts) {
+      this.element = opts.element;
+      this.opts = opts;
+      this.lngLat = null;
+      this.removed = false;
+    }
+    setLngLat(ll) {
+      this.lngLat = ll;
+      return this;
+    }
+    addTo() {
+      activeMarkers.push(this);
+      return this;
+    }
+    remove() {
+      this.removed = true;
+      activeMarkers = activeMarkers.filter((m) => m !== this);
+    }
+  }
+
+  class MockMap {
+    constructor(opts) {
+      this._handlers = {};
+      this._once = {};
+      this._zoom = opts.zoom || 1.4;
+      this._center = { lng: opts.center[0], lat: opts.center[1] };
+      this._images = new Set();
+      this._canvas = makeFakeElement('canvas');
+      this._sources = {
+        'mh-markers': {
+          setData: (fc) => markerDataHistory.push(fc),
+        },
+        'mh-links': { setData: () => {} },
+      };
+      this._hits = [];
+      mockMap = this;
+    }
+    on(ev, fn) {
+      if (!this._handlers[ev]) this._handlers[ev] = [];
+      this._handlers[ev].push(fn);
+    }
+    once(ev, fn) {
+      if (!this._once[ev]) this._once[ev] = [];
+      this._once[ev].push(fn);
+    }
+    emit(ev, payload) {
+      for (const fn of this._handlers[ev] || []) fn(payload);
+      const onceList = this._once[ev] || [];
+      this._once[ev] = [];
+      for (const fn of onceList) fn(payload);
+    }
+    isStyleLoaded() {
+      return true;
+    }
+    getLayer() {
+      return {};
+    }
+    setPaintProperty() {}
+    setLayoutProperty() {}
+    setSky() {}
+    hasImage(id) {
+      return this._images.has(id);
+    }
+    addImage(id) {
+      this._images.add(id);
+    }
+    getSource(id) {
+      return this._sources[id] || null;
+    }
+    getCanvas() {
+      return this._canvas;
+    }
+    getCenter() {
+      return this._center;
+    }
+    getZoom() {
+      return this._zoom;
+    }
+    project() {
+      return { x: 320, y: 190 };
+    }
+    queryRenderedFeatures() {
+      return this._hits;
+    }
+    easeTo(o) {
+      easeCalls.push(o);
+      if (typeof o.zoom === 'number') this._zoom = o.zoom;
+      this.emit('zoom');
+      this.emit('moveend');
+    }
+    jumpTo(o) {
+      if (typeof o.zoom === 'number') this._zoom = o.zoom;
+    }
+    zoomTo(z) {
+      this._zoom = z;
+      this.emit('zoom');
+    }
+    resize() {}
+    remove() {}
+  }
+
+  r2.maplibregl = {
+    Map: MockMap,
+    Marker: MockMarker,
+    setWorkerUrl() {},
+    addProtocol() {},
+  };
+  r2.pmtiles = {
+    Protocol: function Protocol() {
+      this.add = () => {};
+      this.tile = () => {};
+    },
+    PMTiles: function PMTiles() {},
+  };
+
+  const stage = makeFakeElement('div');
+  stage.clientWidth = 640;
+  stage.clientHeight = 380;
+  const canvas = makeFakeElement('div');
+  const fallback = makeFakeElement('div');
+  const tooltip = makeFakeElement('div');
+  tooltip.hidden = true;
+  tooltip.offsetWidth = 210;
+  tooltip.offsetHeight = 84;
+  const resetBtn = makeFakeElement('button');
+
+  const ctrl = r2.MeshHarborNetworkMap.create({
+    stage,
+    canvas,
+    fallback,
+    tooltip,
+    reset: resetBtn,
+    invoke: r2.MeshHarbor.invoke,
+  });
+
+  const rows = [
+    {
+      id: 'd1',
+      overlay_node_id: 'nd1',
+      kind: 'agent',
+      name: 'lab-1',
+      is_self: true,
+      presence: 'online',
+      city: 'Harbor City',
+      country: 'Testland',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '198.51.100.10',
+    },
+    {
+      id: 'd2',
+      overlay_node_id: 'nd2',
+      kind: 'agent',
+      name: 'office-1',
+      is_self: false,
+      presence: 'online',
+      city: 'Harbor City',
+      country: 'Testland',
+      lat: 22.54,
+      lon: 114.06,
+      geo_level: 'city',
+      public_ip: '203.0.113.20',
+    },
+  ];
+  const peers = [{ node_id: 'nd2', agent_id: 'd2', online: true, connection: 'direct', rtt_ms: 11 }];
+  ctrl.setLiveContext({ selfConnected: true, peerFor: (r) => peers.find((p) => p.node_id === r.overlay_node_id) || null }, peers);
+  ctrl.setDevices(rows);
+  ctrl.setActive(true);
+  mockMap.emit('load');
+
+  // Set low zoom so clicking multi-device cluster triggers easeTo >= 2.6.
+  mockMap._zoom = 1.6;
+  const clusterId = markerDataHistory[markerDataHistory.length - 1].features[0].properties.clusterId;
+  mockMap._hits = [{ properties: { clusterId } }];
+  mockMap.emit('click', { point: { x: 320, y: 190 } });
+
+  assert.equal(ctrl.getState().spiderfyClusterId, clusterId, 'clicking multi-device cluster opens Spiderfy');
+  assert.equal(activeMarkers.length, 1, 'MapLibre Marker mounted with opacityWhenCovered=0');
+  assert.equal(activeMarkers[0].opts.opacityWhenCovered, '0');
+  assert.ok(easeCalls.some((e) => e.zoom >= 2.6), 'camera eases toward cluster when zoom < 2.6');
+  assert.equal(
+    markerDataHistory[markerDataHistory.length - 1].features.length,
+    0,
+    'expanded cluster donut hidden while Spiderfy is open',
+  );
+
+  // Click second device foot -> selects device & shows detail tooltip with egress IP & RTT, without covering foot.
+  const feet = findAllNodes(activeMarkers[0].element, (n) => String(n.className).includes('nm-spiderfy-foot'));
+  assert.equal(feet.length, 2);
+  feet[1].trigger('click', { stopPropagation() {} });
+  assert.equal(ctrl.getState().selectedDeviceId, 'd2');
+  assert.equal(tooltip.hidden, false);
+  const tipText = collectText(tooltip);
+  assert.ok(tipText.includes('office-1') && tipText.includes('203.0.113.20') && tipText.includes('11 ms'));
+  const tipLeft = parseFloat(tooltip.style.left);
+  const tipTop = parseFloat(tooltip.style.top);
+  assert.ok(tipLeft >= 10 && tipLeft + tooltip.offsetWidth <= stage.clientWidth - 10, 'tooltip fits horizontally in stage');
+  assert.ok(tipTop >= 10 && tipTop + tooltip.offsetHeight <= stage.clientHeight - 10, 'tooltip fits vertically in stage');
+
+  // Live language + theme switches re-render open Spiderfy in place without unmounting Marker.
+  i18n.setLang('zh-CN', { syncNative: false });
+  ctrl.setLang('zh-CN');
+  ctrl.setTheme('light');
+  assert.equal(activeMarkers.length, 1);
+  assert.ok(collectText(activeMarkers[0].element).includes('本机站点 · 198.51.100.10'));
+  assert.ok(collectText(tooltip).includes('出口 203.0.113.20'));
+
+  // Escape collapses Spiderfy and restores cluster marker.
+  r2.document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+  assert.equal(ctrl.getState().spiderfyClusterId, null);
+  assert.equal(activeMarkers.length, 0);
+  assert.equal(tooltip.hidden, true);
+  assert.equal(markerDataHistory[markerDataHistory.length - 1].features.length, 1);
+
+  // Re-open and confirm empty map click collapses Spiderfy.
+  mockMap.emit('click', { point: { x: 320, y: 190 } });
+  assert.equal(ctrl.getState().spiderfyClusterId, clusterId);
+  mockMap._hits = [];
+  mockMap.emit('click', { point: { x: 20, y: 20 } });
+  assert.equal(ctrl.getState().spiderfyClusterId, null, 'clicking empty map background collapses Spiderfy');
+  mockMap._hits = [{ properties: { clusterId } }];
+
+  // Re-open and confirm Reset button collapses Spiderfy.
+  mockMap.emit('click', { point: { x: 320, y: 190 } });
+  assert.equal(ctrl.getState().spiderfyClusterId, clusterId);
+  resetBtn.trigger('click');
+  assert.equal(ctrl.getState().spiderfyClusterId, null, 'clicking Reset view collapses Spiderfy');
+
+  // Re-open and confirm significant zoom collapses Spiderfy cleanly.
+  mockMap.emit('click', { point: { x: 320, y: 190 } });
+  assert.equal(ctrl.getState().spiderfyClusterId, clusterId);
+  mockMap.zoomTo(mockMap.getZoom() + 1.2);
+  assert.equal(ctrl.getState().spiderfyClusterId, null, 'significant zoom collapses Spiderfy');
+
+  // Re-open and confirm setActive(false) collapses Spiderfy cleanly.
+  mockMap.emit('click', { point: { x: 320, y: 190 } });
+  assert.equal(ctrl.getState().spiderfyClusterId, clusterId);
+  ctrl.setActive(false);
+  assert.equal(ctrl.getState().spiderfyClusterId, null, 'switching tab/view collapses Spiderfy');
+
+  ctrl.destroy();
+  i18n.setLang('en', { syncNative: false });
+}
+
 (async () => {
   await testIpcSource();
   testWebglFallback();
   await testEnlargeButton();
   await testVizModeToggle();
-  console.log('desktop network-map checks passed: hygiene, style, P6 coords, links, IPC source, WebGL2 fallback, Enlarge button, 3D/2D viz switcher');
+  testSpiderfyLayoutAndDom();
+  testSpiderfyControllerLifecycle();
+  console.log('desktop network-map checks passed: hygiene, style, P6 coords, links, IPC source, WebGL2 fallback, Enlarge button, 3D/2D viz switcher, Plan B Spiderfy');
 })().catch((err) => {
   console.error(err);
   process.exit(1);

@@ -89,6 +89,7 @@
             v-if="activeSpiderfy"
             :layout="activeSpiderfy.layout"
             :tokens="tokens"
+            :lang="props.lang"
             :selected-node-id="selectedNode?.id ?? null"
             @select-node="onSelectSpiderfyNode"
             @hover-node="onHoverSpiderfyNode"
@@ -1477,7 +1478,7 @@ const props = withDefaults(
     showControlPlane: true,
     showDetailPanel: true,
     showOpenDeviceAction: true,
-    height: 560,
+    height: 0,
     ariaLabel: '',
     datasetTag: 'real',
     syncUrl: false,
@@ -1711,11 +1712,19 @@ const effectiveCooperativeGestures = computed(
   () => !isFullLayout.value && props.cooperativeGestures,
 )
 
+const resolvedCardHeightCss = computed(() =>
+  isMobile.value
+    ? 'min(56vh, 420px)'
+    : props.height > 0
+      ? `${props.height}px`
+      : 'clamp(600px, 68vh, 840px)',
+)
+
 const placeholderStyle = computed(() =>
   props.standaloneFullPage
     ? {}
     : {
-        minHeight: isMobile.value ? 'min(56vh, 420px)' : `${props.height}px`,
+        minHeight: resolvedCardHeightCss.value,
       },
 )
 
@@ -1723,7 +1732,7 @@ const shellStyle = computed(() =>
   isFullLayout.value
     ? {}
     : {
-        height: isMobile.value ? 'min(56vh, 420px)' : `${props.height}px`,
+        height: resolvedCardHeightCss.value,
       },
 )
 
@@ -2219,7 +2228,9 @@ function getStageDimensions(): { width: number; height: number } {
       : 800
     : isMobile.value
       ? 380
-      : props.height
+      : props.height > 0
+        ? props.height
+        : 640
   return { width: fallbackW, height: fallbackH }
 }
 
@@ -2662,7 +2673,7 @@ function buildBackboneMarkerFeatures(map: MapLibreMap): {
   const center = map.getCenter()
   const rect = mapHostEl.value?.getBoundingClientRect()
   const stageW = rect?.width || 800
-  const stageH = rect?.height || props.height
+  const stageH = rect?.height || (props.height > 0 ? props.height : 640)
 
   const selNodeId = selectedNode.value?.id ?? null
   const selArc = selectedBackboneArc.value
@@ -2732,7 +2743,7 @@ function buildMarkerFeatures(map: MapLibreMap): {
   const center = map.getCenter()
   const rect = mapHostEl.value?.getBoundingClientRect()
   const stageW = rect?.width || 800
-  const stageH = rect?.height || props.height
+  const stageH = rect?.height || (props.height > 0 ? props.height : 640)
 
   // Pre-project visible clusters so we can suppress duplicate co-located place labels
   // (e.g., control-centre country point overlapping a same-city Singapore cluster — Fix #2).
@@ -2984,20 +2995,30 @@ async function openSpiderfyForCluster(cluster: DisplayCluster): Promise<void> {
     return
   }
 
-  // S4: If anchor is > 0.7 of globe screen radius from center, easeTo center first
+  const layout = computeSpiderfyLayout(cluster.nodes, isCoarsePointer.value, deviceDatasetArcs.value)
+
+  // S4: If anchor is > 0.7 of globe screen radius from center (or a multi-site pod layout
+  // would clip near viewport edges), easeTo center first so pods stay comfortably visible.
   const pt = map.project([cluster.lon, cluster.lat])
   const rect = map.getContainer().getBoundingClientRect()
   const cx = rect.width / 2
   const cy = rect.height / 2
   const maxR = Math.min(rect.width, rect.height) * 0.35
-  if (Math.hypot(pt.x - cx, pt.y - cy) > maxR && map.getZoom() < 4) {
+  const clipsEdge =
+    layout.mode === 'sites' &&
+    rect.width > 0 &&
+    rect.height > 0 &&
+    (pt.x - layout.maxRadius < 16 ||
+      pt.x + layout.maxRadius > rect.width - 16 ||
+      pt.y - layout.maxRadius < 16 ||
+      pt.y + layout.maxRadius > rect.height - 16)
+  if ((Math.hypot(pt.x - cx, pt.y - cy) > maxR && map.getZoom() < 4) || clipsEdge) {
     map.easeTo({
       center: [cluster.lon, cluster.lat],
       duration: prefersReducedMotion.value ? 0 : 300,
     })
   }
 
-  const layout = computeSpiderfyLayout(cluster.nodes, isCoarsePointer.value)
   activeSpiderfy.value = {
     cluster,
     layout,
@@ -3839,8 +3860,11 @@ onMounted(() => {
       currentZi.value = zi
       syncMapSources()
     }
-    if (activeSpiderfy.value && Math.abs(z - activeSpiderfy.value.startZoom) > 0.3) {
-      collapseSpiderfy()
+    if (activeSpiderfy.value) {
+      const collapseDelta = activeSpiderfy.value.layout.mode === 'sites' ? 1.2 : 0.3
+      if (Math.abs(z - activeSpiderfy.value.startZoom) > collapseDelta) {
+        collapseSpiderfy()
+      }
     }
   })
 
@@ -4257,6 +4281,7 @@ function getDebugState() {
     isFullPage: isFullLayout.value,
     activeSpiderfyMode: activeSpiderfy.value?.layout.mode ?? null,
     activeSpiderfyFeet: activeSpiderfy.value?.layout.feet.length ?? 0,
+    activeSpiderfySites: activeSpiderfy.value?.layout.sites.length ?? 0,
     panelOpen: panelOpen.value,
     mobileSheetOpen: mobileSheetOpen.value,
     mobileSnap: mobileSnap.value,

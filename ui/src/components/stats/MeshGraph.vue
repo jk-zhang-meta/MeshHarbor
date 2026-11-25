@@ -239,6 +239,9 @@ export interface MeshNode {
   overlay_ip?: string | null
   /** Populated ONLY where the current UI already displays public IP (fleet view). */
   public_ip?: string | null
+  /** FR-138 physical-uplink egress IP (populated ONLY where fleet public IP is already shown). */
+  physical_public_ip?: string | null
+  is_self?: boolean
   country_code?: string | null
   country?: string | null
   region?: string | null
@@ -536,6 +539,8 @@ const globeNodes = computed<GlobeNode[]>(() =>
     lastSeenAt: n.last_seen_at,
     overlayIp: n.overlay_ip,
     publicIp: n.public_ip,
+    physicalPublicIp: n.physical_public_ip ?? null,
+    isSelf: n.is_self,
     zoneId: n.zone_id,
     zoneName: n.zone_name,
     zonePinned: n.zone_pinned,

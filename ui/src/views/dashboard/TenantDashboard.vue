@@ -341,6 +341,7 @@ const meshNodes = computed<MeshNode[]>(() => {
       overlay_ip: n.overlay_ip ?? null,
       // Public IP ONLY when the caller already has fleet visibility (agentStore loaded it).
       public_ip: showFleet.value ? (fleetAgent?.public_ip ?? null) : null,
+      physical_public_ip: showFleet.value ? (fleetAgent?.physical_public_ip ?? null) : null,
       country_code: fleetAgent?.country_code ?? null,
       country: fleetAgent?.country ?? null,
       region: fleetAgent?.region ?? null,
