@@ -93,6 +93,8 @@ pub struct RemoteConfigServices {
     /// FR-139 — LIVE local GPU per-process attribution switch (default ON).
     /// Read by the GPU supervisor; device-owned, never server-pushable.
     gpu_processes: Arc<AtomicBool>,
+    /// FR-139 — host-wide GPU telemetry child supervisor & alert ring.
+    gpu: crate::gpu_sampler::supervisor::GpuSupervisor,
 }
 
 /// FR-100 P1c — the policy in an atomic: `0` off, `1` audit.
@@ -121,6 +123,12 @@ impl RemoteConfigServices {
         exec_enabled: bool,
         remote_config_enabled: bool,
     ) -> Self {
+        let gpu_telemetry = Arc::new(AtomicBool::new(true));
+        let gpu_processes = Arc::new(AtomicBool::new(true));
+        let gpu = crate::gpu_sampler::supervisor::GpuSupervisor::from_flags(
+            gpu_telemetry.clone(),
+            gpu_processes.clone(),
+        );
         Self {
             names: Arc::new(crate::device_name::DeviceNames::new(path.clone(), lock.clone())),
             path,
@@ -133,9 +141,15 @@ impl RemoteConfigServices {
             peer_auth_policy: Arc::new(std::sync::atomic::AtomicU8::new(policy_bits(
                 crate::peer_auth::PeerAuthPolicy::Audit,
             ))),
-            gpu_telemetry: Arc::new(AtomicBool::new(true)),
-            gpu_processes: Arc::new(AtomicBool::new(true)),
+            gpu_telemetry,
+            gpu_processes,
+            gpu,
         }
+    }
+
+    /// FR-139 — host-wide GPU telemetry supervisor.
+    pub fn gpu(&self) -> &crate::gpu_sampler::supervisor::GpuSupervisor {
+        &self.gpu
     }
 
     /// FR-139 — whether local GPU telemetry is allowed (live, default ON).
@@ -277,6 +291,7 @@ impl RemoteConfigServices {
             .store(cfg.gpu_telemetry_enabled(), Ordering::Relaxed);
         self.gpu_processes
             .store(cfg.gpu_processes_enabled(), Ordering::Relaxed);
+        self.gpu.notify_config_changed();
     }
 
     /// Reconcile the on-disk config against `desired`, persist, and put the

@@ -332,6 +332,10 @@ enum Command {
     /// already reports.
     #[command(hide = true, name = "caps-probe")]
     CapsProbe,
+    /// FR-139 — out-of-process GPU telemetry sampler child. Spawned by the
+    /// daemon supervisor so GPU driver calls never run inside the daemon.
+    #[command(hide = true, name = "gpu-sampler")]
+    GpuSampler,
     /// FR-97 P6a — read a downloaded release artifact's own version and bind
     /// it to the release it is offered as, exactly as the updater does before
     /// it installs anything. Prints the verdict; exits non-zero on a refusal.
@@ -2815,6 +2819,7 @@ async fn daemon_main() -> Result<()> {
             meshharbord::encode::caps::print_probe_result();
             Ok(())
         }
+        Command::GpuSampler => meshharbord::gpu_sampler::run_child(),
         Command::PortalSession => {
             #[cfg(all(target_os = "linux", feature = "portal-capture"))]
             {
@@ -5528,6 +5533,11 @@ async fn run_cmd(
     // FR-100 P1c — and every other live key it holds (`peer_auth`), from the
     // same config: a fresh `new` judges offers under `audit` until told.
     remote_cfg.adopt_local(&cfg);
+    // FR-139 — host-wide GPU telemetry supervisor (single child shared across
+    // all org connections) + optional loopback-only Prometheus `/metrics`.
+    remote_cfg
+        .gpu()
+        .spawn(cfg.gpu_metrics_listen.as_deref(), shutdown_rx.clone());
     // FR-90 — the agent-session supervisor, from this start's `hive_*` keys
     // (restart-required). Built with every gate closed too, so a start is
     // answered with the device's actual refusal rather than silence.

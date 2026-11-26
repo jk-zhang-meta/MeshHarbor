@@ -111,6 +111,9 @@ anyhow = { workspace = true }
 # GPU-clock session pin (gpu_clock.rs): NVML is dlopen'd at runtime, never
 # linked — this is just the cross-platform dlopen mechanism.
 libloading = "0.8"
+# FR-139 — NVIDIA NVML wrapper, invoked ONLY inside the isolated
+# `meshharbord gpu-sampler` child process (dynamically loaded, never unloaded).
+nvml-wrapper = "0.13"
 thiserror = { workspace = true }
 
 # Hashing (for machine_id derivation)
@@ -498,6 +501,9 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSString",
     "NSThread",
 ] }
+# FR-139 — Apple Silicon GPU telemetry without sudo (child process only).
+# `default-features = false` keeps the `app` TUI/ratatui/clap feature out.
+macmon = { version = "0.12", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Effort 2 (Windows Service deployment mode). Optional opt-in alternative

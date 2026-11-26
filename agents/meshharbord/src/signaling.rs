@@ -2282,6 +2282,11 @@ async fn connect_once(
         crate::hive::on_connected(outbound_tx.clone());
     }
     let _sink_guard = tunnel_hub.publish_sink(outbound_tx.clone());
+    // FR-139 — register this org's WS with the host-wide GPU supervisor so it
+    // receives static `rc:agent.gpu_inventory` and leased `rc:agent.gpu_report`
+    // frames; drops automatically when the socket closes.
+    let _gpu_guard = (!ctx.unenrolled)
+        .then(|| remote_cfg.gpu().register_org_guard(&cfg.tenant_id, outbound_tx.clone()));
     // FR-43 P2b — point the delegation channel at THIS connection's outbound
     // queue, so a worker's `SdpAnswer` / `Ice` reach the server.
     //
@@ -5745,6 +5750,19 @@ async fn handle_server_msg(
         ServerMsg::AgentResumeWindow { secs } => {
             peers.set_window(secs);
         }
+        // FR-139 — GPU telemetry lease & owner desktop alert fan-in.
+        ServerMsg::GpuLease {
+            interval_ms,
+            ttl_ms,
+            standing,
+        } => {
+            remote_cfg
+                .gpu()
+                .apply_lease(&agent_cfg.tenant_id, interval_ms, ttl_ms, standing);
+        }
+        ServerMsg::GpuAlert { alert } => {
+            remote_cfg.gpu().record_alert(*alert);
+        }
         // FR-130 — the server accepted a kept session's claim: it goes on
         // under its own id, every sender it holds pointed at this connection.
         // One its deadline already closed, or whose peer died, is said to be
@@ -8484,6 +8502,17 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool, entry_eligible: bool) -> Age
     // is on is stamped at every announcement, so the admin page follows a local reset too.
     caps.rpc.push(
         meshharbor_remote_control::models::RpcCap::TwoFactor
+            .wire()
+            .to_owned(),
+    );
+    // FR-139 — GPU telemetry & desktop-companion alert verbs.
+    caps.rpc.push(
+        meshharbor_remote_control::models::RpcCap::Gpu
+            .wire()
+            .to_owned(),
+    );
+    caps.rpc.push(
+        meshharbor_remote_control::models::RpcCap::GpuAlerts
             .wire()
             .to_owned(),
     );
