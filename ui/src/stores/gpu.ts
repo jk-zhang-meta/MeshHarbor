@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch, type WatchStopHandle } from 'vue'
 import {
   cardFaultReasons,
   cardHasFault,
   cardHasWarning,
   cardRuntimeKind,
+  computeFleetSummary,
   createGpuChannel,
   deleteGpuChannel,
   fetchGpuAlertRules,
@@ -27,15 +28,35 @@ import {
   type GpuRange,
   type GpuState,
   type GpuUserRow,
+  type GpuWsSubscribedPayload,
+  type GpuWsUpdatePayload,
   type PatchGpuChannelReq,
   type TestGpuChannelResp,
 } from '@/api/gpu'
+import { useWsStore } from './ws'
 
-const DEFAULT_LIVE_POLL_MS = 2000
+export const GPU_CADENCE_OPTIONS = [500, 1000, 2000] as const
+export type GpuCadenceMs = (typeof GPU_CADENCE_OPTIONS)[number]
+
+const DEFAULT_LIVE_POLL_MS: GpuCadenceMs = 1000
+const WS_RECONCILE_MS = 15000
 const STANDING_POLL_MS = 15000
 const BACKOFF_MS = [10000, 30000, 60000]
 const DELTA_TTL_MS = 4000
 const MAX_RECENT_CHANGES = 12
+const CADENCE_STORAGE_KEY = 'mh.gpu.cadenceMs'
+
+function loadStoredCadence(): GpuCadenceMs {
+  try {
+    const raw = Number(globalThis.localStorage?.getItem(CADENCE_STORAGE_KEY))
+    if ((GPU_CADENCE_OPTIONS as readonly number[]).includes(raw)) {
+      return raw as GpuCadenceMs
+    }
+  } catch {
+    /* storage unavailable */
+  }
+  return DEFAULT_LIVE_POLL_MS
+}
 
 export interface GpuCardDelta {
   utilDelta: number
@@ -103,10 +124,14 @@ export const useGpuStore = defineStore('gpu', () => {
   const alertsLoading = ref(false)
 
   const liveActive = ref(false)
+  const requestedIntervalMs = ref<GpuCadenceMs>(loadStoredCadence())
+  const wsLive = ref(false)
+  const wsIntervalMs = ref<number | null>(null)
   const cardDeltas = ref<Record<string, GpuCardDelta>>({})
   const recentChanges = ref<GpuLiveChange[]>([])
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let wsStatusStop: WatchStopHandle | null = null
   let activeTenantId: string | null = null
   /** Tracks which tenant currently owns the cached fleet/users/changes/settings
    *  data, independently of active polling, so navigating away from tenant A and
@@ -123,7 +148,11 @@ export const useGpuStore = defineStore('gpu', () => {
   let prevHosts = new Map<string, PrevHostSnap>()
 
   const hosts = computed(() => fleet.value?.hosts ?? [])
-  const liveIntervalMs = computed(() => fleet.value?.live_interval_ms ?? DEFAULT_LIVE_POLL_MS)
+  const liveIntervalMs = computed(() => {
+    if (fleet.value?.live_interval_ms === 0 || wsIntervalMs.value === 0) return 0
+    if (wsLive.value && wsIntervalMs.value != null) return wsIntervalMs.value
+    return fleet.value?.live_interval_ms ?? requestedIntervalMs.value
+  })
   const summary = computed(
     () =>
       fleet.value?.summary ?? {
@@ -170,8 +199,131 @@ export const useGpuStore = defineStore('gpu', () => {
     channels.value = []
     cardDeltas.value = {}
     recentChanges.value = []
+    wsLive.value = false
+    wsIntervalMs.value = null
     lastTrackAt = 0
     prevHosts = new Map()
+  }
+
+  function isTabHidden(): boolean {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  }
+
+  function sendWsSubscribe(tenantId: string) {
+    if (disabled.value || fleet.value?.live_interval_ms === 0 || isTabHidden()) return
+    const wsStore = useWsStore()
+    if (wsStore.status !== 'connected') return
+    wsStore.send('gpu:subscribe', {
+      tenant_id: tenantId,
+      interval_ms: requestedIntervalMs.value,
+    })
+  }
+
+  function sendWsUnsubscribe() {
+    wsLive.value = false
+    wsIntervalMs.value = null
+    const wsStore = useWsStore()
+    if (wsStore.status === 'connected') {
+      wsStore.send('gpu:unsubscribe', {})
+    }
+  }
+
+  function setRequestedIntervalMs(ms: GpuCadenceMs) {
+    if (!(GPU_CADENCE_OPTIONS as readonly number[]).includes(ms)) return
+    requestedIntervalMs.value = ms
+    try {
+      globalThis.localStorage?.setItem(CADENCE_STORAGE_KEY, String(ms))
+    } catch {
+      /* ignore */
+    }
+    if (!liveActive.value || !activeTenantId || disabled.value) return
+    const tid = activeTenantId
+    const wsStore = useWsStore()
+    if (wsStore.status === 'connected' && fleet.value?.live_interval_ms !== 0) {
+      sendWsSubscribe(tid)
+    } else {
+      void refreshFleet(tid, true).then(() => scheduleNextPoll())
+    }
+  }
+
+  function noteWsSubscribed(payload: GpuWsSubscribedPayload) {
+    if (!liveActive.value || !activeTenantId || !payload || payload.tenant_id !== activeTenantId) {
+      return
+    }
+    if (payload.interval_ms === 0) {
+      wsLive.value = false
+      wsIntervalMs.value = 0
+    } else {
+      wsLive.value = true
+      wsIntervalMs.value = payload.interval_ms
+    }
+    scheduleNextPoll()
+  }
+
+  function applyWsHostUpdate(payload: GpuWsUpdatePayload) {
+    if (
+      !liveActive.value ||
+      !activeTenantId ||
+      isTabHidden() ||
+      !payload ||
+      payload.tenant_id !== activeTenantId ||
+      !payload.host ||
+      !fleet.value
+    ) {
+      return
+    }
+    const incoming = payload.host
+    const serverMs = payload.server_time_ms > 0 ? payload.server_time_ms : Date.now()
+    const existingIdx = fleet.value.hosts.findIndex((h) => h.agent_id === incoming.agent_id)
+    if (existingIdx !== -1) {
+      const prev = fleet.value.hosts[existingIdx]
+      const prevSeq = prev.seq ?? 0
+      const nextSeq = incoming.seq ?? 0
+      if (
+        prevSeq > 0 &&
+        nextSeq > 0 &&
+        nextSeq < prevSeq &&
+        (incoming.received_at_ms ?? 0) <= (prev.received_at_ms ?? 0)
+      ) {
+        return
+      }
+    }
+
+    const nextHosts: GpuHostView[] = fleet.value.hosts.map((h) => {
+      if (h.agent_id === incoming.agent_id) return incoming
+      if (h.received_at_ms != null && h.received_at_ms > 0) {
+        return { ...h, age_ms: Math.max(0, serverMs - h.received_at_ms) }
+      }
+      return h
+    })
+    if (existingIdx === -1) {
+      nextHosts.push(incoming)
+      nextHosts.sort((a, b) => a.name.localeCompare(b.name))
+    }
+
+    const nextFleet: GpuFleetResponse = {
+      hosts: nextHosts,
+      summary: computeFleetSummary(nextHosts),
+      server_time_ms: serverMs,
+      live_interval_ms: payload.live_interval_ms ?? fleet.value.live_interval_ms ?? requestedIntervalMs.value,
+    }
+    trackChanges(nextFleet)
+    fleet.value = nextFleet
+    wsLive.value = nextFleet.live_interval_ms !== 0
+    if (payload.live_interval_ms != null) {
+      wsIntervalMs.value = payload.live_interval_ms
+    }
+    error.value = null
+    consecutiveFailures.value = 0
+    nextRetryAt.value = 0
+    lastPollOkAt.value = Date.now()
+
+    if (selectedHost.value && selectedHost.value.agent_id === incoming.agent_id) {
+      selectedHost.value = {
+        ...incoming,
+        inventory: incoming.inventory ?? selectedHost.value.inventory,
+      }
+    }
   }
 
   function pushChange(entry: Omit<GpuLiveChange, 'id' | 'at'>) {
@@ -243,8 +395,8 @@ export const useGpuStore = defineStore('gpu', () => {
       }
 
       const advanced =
-        (h.seq != null && h.seq > 0 && h.seq !== prev.seq) ||
-        (h.received_at_ms != null && h.received_at_ms > 0 && h.received_at_ms !== prev.received_at_ms)
+        (h.seq != null && h.seq > 0 && h.seq > prev.seq) ||
+        (h.received_at_ms != null && h.received_at_ms > 0 && h.received_at_ms > prev.received_at_ms)
       if (!advanced) continue
 
       for (const g of h.gpus) {
@@ -299,14 +451,56 @@ export const useGpuStore = defineStore('gpu', () => {
     cardDeltas.value = nextDeltas
   }
 
+  function mergeNewerWsFrames(resp: GpuFleetResponse): GpuFleetResponse {
+    const prevFleet = fleet.value
+    if (!prevFleet || !prevFleet.hosts.length) return resp
+    const prevById = new Map(prevFleet.hosts.map((h) => [h.agent_id, h]))
+    let keptAny = false
+    const serverMs = Math.max(resp.server_time_ms, prevFleet.server_time_ms)
+    const mergedHosts = resp.hosts.map((h) => {
+      const prev = prevById.get(h.agent_id)
+      if (!prev) return h
+      const prevSeq = prev.seq ?? 0
+      const nextSeq = h.seq ?? 0
+      const prevTs = prev.received_at_ms ?? 0
+      const nextTs = h.received_at_ms ?? 0
+      const incomingOlder =
+        (prevSeq > 0 && nextSeq > 0 && nextSeq < prevSeq && nextTs <= prevTs) ||
+        (prevSeq === nextSeq && prevTs > nextTs) ||
+        (prevSeq > 0 && nextSeq === 0 && prevTs > nextTs)
+      if (incomingOlder && prev.is_online === h.is_online) {
+        keptAny = true
+        return prevTs > 0
+          ? { ...prev, age_ms: Math.max(0, serverMs - prevTs) }
+          : prev
+      }
+      return h
+    })
+    if (!keptAny) return resp
+    return {
+      ...resp,
+      hosts: mergedHosts,
+      summary: computeFleetSummary(mergedHosts),
+      server_time_ms: serverMs,
+    }
+  }
+
   async function refreshFleet(tenantId: string, live = true): Promise<void> {
     const seq = ++pollSeq
     if (!fleet.value) loading.value = true
     try {
-      const resp = await fetchGpuFleet(tenantId, { live })
+      const rawResp = await fetchGpuFleet(tenantId, {
+        live,
+        intervalMs: live ? requestedIntervalMs.value : undefined,
+      })
       if (seq !== pollSeq) return
+      const resp = mergeNewerWsFrames(rawResp)
       trackChanges(resp)
       fleet.value = resp
+      if (resp.live_interval_ms === 0) {
+        wsLive.value = false
+        wsIntervalMs.value = 0
+      }
       disabled.value = false
       error.value = null
       consecutiveFailures.value = 0
@@ -349,8 +543,14 @@ export const useGpuStore = defineStore('gpu', () => {
   function scheduleNextPoll() {
     clearTimer()
     if (!liveActive.value || !activeTenantId || disabled.value) return
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (isTabHidden()) return
     const tid = activeTenantId
+    const wsConnected = useWsStore().status === 'connected'
+    const usingWsPush =
+      wsLive.value &&
+      wsConnected &&
+      consecutiveFailures.value === 0 &&
+      fleet.value?.live_interval_ms !== 0
     let delay: number
     if (consecutiveFailures.value > 0) {
       delay = BACKOFF_MS[Math.min(consecutiveFailures.value - 1, BACKOFF_MS.length - 1)]
@@ -358,13 +558,21 @@ export const useGpuStore = defineStore('gpu', () => {
     } else if (fleet.value?.live_interval_ms === 0) {
       delay = STANDING_POLL_MS
       nextRetryAt.value = 0
+    } else if (usingWsPush) {
+      // Real-time host frames arrive via `gpu:update` WS pushes; renew the
+      // 45 s subscription TTL and reconcile full fleet membership every 15 s.
+      delay = WS_RECONCILE_MS
+      nextRetryAt.value = 0
     } else {
-      delay = Math.max(1000, fleet.value?.live_interval_ms ?? DEFAULT_LIVE_POLL_MS)
+      delay = Math.max(500, fleet.value?.live_interval_ms ?? requestedIntervalMs.value)
       nextRetryAt.value = 0
     }
     pollTimer = setTimeout(async () => {
       if (!liveActive.value || activeTenantId !== tid) return
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (isTabHidden()) return
+      if (useWsStore().status === 'connected' && fleet.value?.live_interval_ms !== 0) {
+        sendWsSubscribe(tid)
+      }
       await refreshFleet(tid, fleet.value?.live_interval_ms !== 0)
       scheduleNextPoll()
     }, delay)
@@ -377,23 +585,55 @@ export const useGpuStore = defineStore('gpu', () => {
     dataTenantId = tenantId
     activeTenantId = tenantId
     liveActive.value = true
+    const wsStore = useWsStore()
+    wsStatusStop = watch(
+      () => wsStore.status,
+      (nextStatus, prevStatus) => {
+        if (!liveActive.value || !activeTenantId) return
+        if (nextStatus === 'connected') {
+          if (!isTabHidden()) {
+            const live = fleet.value?.live_interval_ms !== 0
+            if (live) sendWsSubscribe(activeTenantId)
+            void refreshFleet(activeTenantId, live).then(() => scheduleNextPoll())
+          }
+        } else if (prevStatus === 'connected') {
+          wsLive.value = false
+          wsIntervalMs.value = null
+          if (consecutiveFailures.value === 0 || pollTimer === null) {
+            scheduleNextPoll()
+          }
+        }
+      },
+    )
     if (typeof document !== 'undefined') {
       visHandler = () => {
         if (document.visibilityState === 'visible' && liveActive.value && activeTenantId) {
-          void refreshFleet(activeTenantId, true).then(() => scheduleNextPoll())
+          const live = fleet.value?.live_interval_ms !== 0
+          if (live) sendWsSubscribe(activeTenantId)
+          void refreshFleet(activeTenantId, live).then(() => scheduleNextPoll())
         } else {
           clearTimer()
+          sendWsUnsubscribe()
         }
       }
       document.addEventListener('visibilitychange', visHandler)
     }
-    void refreshFleet(tenantId, true).then(() => scheduleNextPoll())
+    const initialLive = fleet.value?.live_interval_ms !== 0 && !isTabHidden()
+    if (initialLive) sendWsSubscribe(tenantId)
+    void refreshFleet(tenantId, initialLive).then(() => scheduleNextPoll())
   }
 
   function stopLivePolling() {
     liveActive.value = false
     activeTenantId = null
+    pollSeq += 1
+    hostDetailSeq += 1
     clearTimer()
+    sendWsUnsubscribe()
+    if (wsStatusStop) {
+      wsStatusStop()
+      wsStatusStop = null
+    }
     if (visHandler && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', visHandler)
       visHandler = null
@@ -403,7 +643,7 @@ export const useGpuStore = defineStore('gpu', () => {
   async function openHostDetail(tenantId: string, agentId: string, range: GpuRange = '24h', uuid?: string) {
     const seq = ++hostDetailSeq
     try {
-      const host = await fetchGpuHost(tenantId, agentId, true)
+      const host = await fetchGpuHost(tenantId, agentId, true, requestedIntervalMs.value)
       if (seq !== hostDetailSeq) return
       selectedHost.value = host
     } catch {
@@ -510,9 +750,14 @@ export const useGpuStore = defineStore('gpu', () => {
     channels,
     alertsLoading,
     liveActive,
+    requestedIntervalMs,
+    wsLive,
     cardDeltas,
     recentChanges,
     clearRecentChanges,
+    setRequestedIntervalMs,
+    noteWsSubscribed,
+    applyWsHostUpdate,
     refreshFleet,
     startLivePolling,
     stopLivePolling,

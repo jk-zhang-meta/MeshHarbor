@@ -7,6 +7,7 @@ pub mod alerts;
 pub mod bots;
 pub mod history;
 pub mod routes;
+pub mod ws;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,9 +21,9 @@ use meshharbor_config::GpuSettings;
 use meshharbor_core::notify::{NotifyParams, PushTo, notify_users};
 use meshharbor_db::models::notification::{NotificationSource, NotificationType};
 use meshharbor_remote_control::gpu::{
-    GpuAlertWire, GpuInventory, GpuReport, GpuStateThresholds,
+    GpuAlertWire, GpuHostStatus, GpuInventory, GpuReport, GpuStateThresholds,
 };
-use meshharbor_remote_control::models::RpcCap;
+use meshharbor_remote_control::models::{AgentStatus, RpcCap};
 use meshharbor_remote_control::signaling::ServerMsg;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
@@ -30,6 +31,8 @@ use tokio::sync::{Mutex, Notify};
 use crate::FleetState;
 
 pub const SNAPSHOT_COLLECTION: &str = "gpu_snapshot";
+pub const MIN_LIVE_INTERVAL_MS: u32 = 500;
+pub const MAX_LIVE_INTERVAL_MS: u32 = 10_000;
 const STANDING_INTERVAL_MS: u32 = 30_000;
 const LIVE_LEASE_TTL_MS: u32 = 30_000;
 
@@ -50,20 +53,95 @@ pub struct GpuSnapshotDoc {
 #[derive(Debug, Clone)]
 struct LeaseSlot {
     standing: bool,
-    live_until: Option<Instant>,
+    /// Active HTTP live-viewer lease requests as `(interval_ms, expires_at)`.
+    /// Always kept compact by deduplicating on `interval_ms`.
+    live_requests: Vec<(u32, Instant)>,
     last_sent_interval_ms: u32,
-    last_sent_at: Instant,
+    /// Deadline of the agent's currently dispatched live `GpuLease` (`None`
+    /// when standing-only or no lease has been sent yet).
+    last_sent_until: Option<Instant>,
 }
 
 impl LeaseSlot {
-    fn effective(&self, live_interval_ms: u32, now: Instant) -> (u32, u32, bool) {
-        if live_interval_ms > 0
-            && let Some(until) = self.live_until
-            && until > now
+    fn record_sent(&mut self, eff_iv: u32, eff_ttl: u32, now: Instant) {
+        self.last_sent_interval_ms = eff_iv;
+        self.last_sent_until = if eff_iv > 0 && eff_iv < STANDING_INTERVAL_MS && eff_ttl > 0 {
+            Some(now + Duration::from_millis(u64::from(eff_ttl)))
+        } else {
+            None
+        };
+    }
+
+    fn needs_live_refresh(&self, eff_iv: u32, now: Instant) -> bool {
+        if eff_iv == 0 || eff_iv >= STANDING_INTERVAL_MS {
+            return false;
+        }
+        match self.last_sent_until {
+            None => true,
+            Some(until) => {
+                until.saturating_duration_since(now)
+                    <= Duration::from_millis(u64::from(LIVE_LEASE_TTL_MS / 2))
+            }
+        }
+    }
+
+    fn upsert_live(&mut self, interval_ms: u32, until: Instant, now: Instant) {
+        self.live_requests.retain(|(_, exp)| *exp > now);
+        if let Some(existing) = self
+            .live_requests
+            .iter_mut()
+            .find(|(iv, _)| *iv == interval_ms)
         {
-            let rem_ms = until.saturating_duration_since(now).as_millis() as u32;
-            (live_interval_ms.max(500), rem_ms.max(1000), self.standing)
-        } else if self.standing {
+            if until > existing.1 {
+                existing.1 = until;
+            }
+        } else {
+            self.live_requests.push((interval_ms, until));
+        }
+    }
+
+    fn effective(
+        &self,
+        server_live_interval_ms: u32,
+        ws_min: Option<(u32, Instant)>,
+        now: Instant,
+    ) -> (u32, u32, bool) {
+        if server_live_interval_ms > 0 {
+            let mut best: Option<(u32, Instant)> = None;
+            for &(iv, until) in &self.live_requests {
+                if until <= now {
+                    continue;
+                }
+                let clamped = iv.clamp(MIN_LIVE_INTERVAL_MS, MAX_LIVE_INTERVAL_MS);
+                best = match best {
+                    None => Some((clamped, until)),
+                    Some((cur_iv, _)) if clamped < cur_iv => Some((clamped, until)),
+                    Some((cur_iv, cur_until)) if clamped == cur_iv && until > cur_until => {
+                        Some((cur_iv, until))
+                    }
+                    other => other,
+                };
+            }
+            if let Some((iv, until)) = ws_min
+                && until > now
+                && iv > 0
+            {
+                let clamped = iv.clamp(MIN_LIVE_INTERVAL_MS, MAX_LIVE_INTERVAL_MS);
+                best = match best {
+                    None => Some((clamped, until)),
+                    Some((cur_iv, _)) if clamped < cur_iv => Some((clamped, until)),
+                    Some((cur_iv, cur_until)) if clamped == cur_iv && until > cur_until => {
+                        Some((cur_iv, until))
+                    }
+                    other => other,
+                };
+            }
+            if let Some((iv, until)) = best {
+                let rem_ms = until.saturating_duration_since(now).as_millis() as u32;
+                return (iv, rem_ms.clamp(1000, LIVE_LEASE_TTL_MS), self.standing);
+            }
+        }
+        if self.standing {
             (STANDING_INTERVAL_MS, 0, true)
         } else {
             (0, 0, false)
@@ -76,6 +154,9 @@ pub struct GpuManager {
     pub settings: GpuSettings,
     leases: DashMap<ObjectId, LeaseSlot>,
     waiters: DashMap<ObjectId, Arc<Notify>>,
+    ws_subs: DashMap<String, ws::GpuWsSubscription>,
+    history_credit_ms: DashMap<ObjectId, u32>,
+    last_history_ms: DashMap<ObjectId, i64>,
     evaluator: Mutex<alerts::AlertEvaluator>,
     bots: bots::BotDispatcher,
     alert_seq: AtomicU64,
@@ -87,10 +168,67 @@ impl GpuManager {
             settings,
             leases: DashMap::new(),
             waiters: DashMap::new(),
+            ws_subs: DashMap::new(),
+            history_credit_ms: DashMap::new(),
+            last_history_ms: DashMap::new(),
             evaluator: Mutex::new(alerts::AlertEvaluator::default()),
             bots: bots::BotDispatcher::default(),
             alert_seq: AtomicU64::new(1),
         }
+    }
+
+    /// Resolve a viewer's effective live cadence in milliseconds (`0` when live
+    /// sampling is disabled by server config, otherwise `500..=10_000` ms).
+    pub fn effective_viewer_interval_ms(&self, requested_ms: Option<u32>) -> u32 {
+        if self.settings.live_interval_ms == 0 {
+            return 0;
+        }
+        requested_ms
+            .unwrap_or(self.settings.live_interval_ms)
+            .clamp(MIN_LIVE_INTERVAL_MS, MAX_LIVE_INTERVAL_MS)
+    }
+
+    fn ws_min_for_agent(&self, agent_id: ObjectId, now: Instant) -> Option<(u32, Instant)> {
+        let mut best: Option<(u32, Instant)> = None;
+        for entry in self.ws_subs.iter() {
+            let sub = entry.value();
+            if sub.expires_at <= now || sub.interval_ms == 0 {
+                continue;
+            }
+            if !sub.visible_agents.contains_key(&agent_id) {
+                continue;
+            }
+            best = match best {
+                None => Some((sub.interval_ms, sub.expires_at)),
+                Some((iv, _)) if sub.interval_ms < iv => Some((sub.interval_ms, sub.expires_at)),
+                Some((iv, exp)) if sub.interval_ms == iv && sub.expires_at > exp => {
+                    Some((iv, sub.expires_at))
+                }
+                other => other,
+            };
+        }
+        best
+    }
+
+    /// Accumulate sub-second report intervals into whole seconds for `stats_gpu`,
+    /// bounded by actual elapsed server wall time so 500 ms cadence and jitter
+    /// bursts never over-credit GPU·hours.
+    fn credit_history_secs(&self, agent_id: ObjectId, interval_ms: u32, now_ms: i64) -> u64 {
+        let declared = interval_ms.clamp(250, 60_000);
+        let prev_ms = self.last_history_ms.insert(agent_id, now_ms);
+        let add = match prev_ms {
+            Some(prev) if now_ms <= prev => return 0,
+            Some(prev) => {
+                let elapsed = (now_ms - prev) as u64;
+                elapsed.min(u64::from(declared).saturating_add(2_000)) as u32
+            }
+            None => declared,
+        };
+        let mut entry = self.history_credit_ms.entry(agent_id).or_insert(0);
+        let total = entry.saturating_add(add);
+        let secs = u64::from(total / 1000);
+        *entry = total % 1000;
+        secs
     }
 
     pub fn thresholds(&self) -> GpuStateThresholds {
@@ -102,8 +240,8 @@ impl GpuManager {
     }
 
     /// Called when an agent completes `rc:agent.hello` on this pod.
-    /// Grants a standing 30 s lease iff the agent is marked `gpu_server = true`
-    /// and advertises `RpcCap::Gpu`.
+    /// Grants a standing 30 s lease (or preserves active viewer live leases)
+    /// iff the agent is marked `gpu_server = true` and advertises `RpcCap::Gpu`.
     pub fn on_agent_connected(
         &self,
         hub: &crate::Hub,
@@ -119,21 +257,35 @@ impl GpuManager {
             return;
         }
         let now = Instant::now();
-        self.leases.insert(
-            agent_id,
-            LeaseSlot {
-                standing: true,
-                live_until: None,
-                last_sent_interval_ms: STANDING_INTERVAL_MS,
-                last_sent_at: now,
-            },
-        );
+        let ws_min = self.ws_min_for_agent(agent_id, now);
+        let preserved_live: Vec<(u32, Instant)> = self
+            .leases
+            .get(&agent_id)
+            .map(|existing| {
+                existing
+                    .live_requests
+                    .iter()
+                    .copied()
+                    .filter(|(_, exp)| *exp > now)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut slot = LeaseSlot {
+            standing: true,
+            live_requests: preserved_live,
+            last_sent_interval_ms: STANDING_INTERVAL_MS,
+            last_sent_until: None,
+        };
+        let (eff_iv, eff_ttl, standing) =
+            slot.effective(self.settings.live_interval_ms, ws_min, now);
+        slot.record_sent(eff_iv, eff_ttl, now);
+        self.leases.insert(agent_id, slot);
         let _ = hub.send_to_agent(
             agent_id,
             ServerMsg::GpuLease {
-                interval_ms: STANDING_INTERVAL_MS,
-                ttl_ms: 0,
-                standing: true,
+                interval_ms: eff_iv,
+                ttl_ms: eff_ttl,
+                standing,
             },
         );
     }
@@ -146,77 +298,210 @@ impl GpuManager {
         gpu_server: bool,
         supports_gpu: bool,
     ) {
-        if !self.settings.enabled || !supports_gpu {
+        if !self.settings.enabled {
             return;
         }
         if gpu_server {
-            self.on_agent_connected(hub, agent_id, true, true);
+            if supports_gpu {
+                self.on_agent_connected(hub, agent_id, true, true);
+            }
         } else {
             self.leases.remove(&agent_id);
+            self.history_credit_ms.remove(&agent_id);
+            self.last_history_ms.remove(&agent_id);
+            for mut sub in self.ws_subs.iter_mut() {
+                sub.visible_agents.remove(&agent_id);
+            }
             if let Ok(mut eval) = self.evaluator.try_lock() {
                 eval.remove_host(agent_id);
             }
-            let _ = hub.send_to_agent(
-                agent_id,
-                ServerMsg::GpuLease {
-                    interval_ms: 0,
-                    ttl_ms: 0,
-                    standing: false,
-                },
-            );
+            if supports_gpu {
+                let _ = hub.send_to_agent(
+                    agent_id,
+                    ServerMsg::GpuLease {
+                        interval_ms: 0,
+                        ttl_ms: 0,
+                        standing: false,
+                    },
+                );
+            }
         }
     }
 
-    /// Merge a 30 s live viewer lease across all listed online marked agents.
-    /// Emits `rc:gpu.lease` ONLY when the effective interval changes or the
-    /// live lease is within 10 s of expiry (no frame spam across N viewers).
-    /// Setting `live_interval_ms == 0` disables live sampling entirely.
+    /// Drop any active browser WebSocket GPU subscriptions held by a removed
+    /// member in `tenant_id` and immediately reconcile affected agent leases.
+    pub fn revoke_ws_for_member(
+        &self,
+        hub: &crate::Hub,
+        tenant_id: ObjectId,
+        user_id: ObjectId,
+    ) {
+        let conn_ids: Vec<String> = self
+            .ws_subs
+            .iter()
+            .filter(|e| e.value().tenant_id == tenant_id && e.value().user_id == user_id)
+            .map(|e| e.key().clone())
+            .collect();
+        for cid in conn_ids {
+            self.remove_ws_subscription(hub, &cid);
+        }
+    }
+
+    /// Drop all active browser WebSocket GPU subscriptions scoped to `tenant_id`
+    /// (called on tenant archive).
+    pub fn revoke_ws_for_tenant(&self, hub: &crate::Hub, tenant_id: ObjectId) {
+        let conn_ids: Vec<String> = self
+            .ws_subs
+            .iter()
+            .filter(|e| e.value().tenant_id == tenant_id)
+            .map(|e| e.key().clone())
+            .collect();
+        for cid in conn_ids {
+            self.remove_ws_subscription(hub, &cid);
+        }
+    }
+
+    /// Merge a 30 s live viewer lease across all listed online marked agents
+    /// using the server's default live interval.
     pub fn request_live_leases(&self, hub: &crate::Hub, agents: &[(ObjectId, bool)]) {
+        self.request_live_leases_at(hub, agents, None);
+    }
+
+    /// Merge a 30 s live viewer lease at an optional viewer-requested cadence
+    /// (`500..=10_000` ms) across all listed online marked agents.
+    /// Emits `rc:gpu.lease` immediately when the effective interval changes
+    /// (e.g. `2s -> 0.5s`) or the agent's dispatched lease is past half-TTL.
+    pub fn request_live_leases_at(
+        &self,
+        hub: &crate::Hub,
+        agents: &[(ObjectId, bool)],
+        requested_interval_ms: Option<u32>,
+    ) {
         if !self.settings.enabled || self.settings.live_interval_ms == 0 {
             return;
         }
         let now = Instant::now();
-        let target_iv = self.settings.live_interval_ms.max(500);
+        let target_iv = self.effective_viewer_interval_ms(requested_interval_ms);
+        if target_iv == 0 {
+            return;
+        }
         let new_until = now + Duration::from_millis(u64::from(LIVE_LEASE_TTL_MS));
 
         for &(agent_id, supports_gpu) in agents {
             if !supports_gpu || !hub.is_agent_online(agent_id) {
                 continue;
             }
-            let mut should_send = false;
+            let ws_min = self.ws_min_for_agent(agent_id, now);
+            let mut send_params: Option<(u32, u32, bool)> = None;
             self.leases
                 .entry(agent_id)
                 .and_modify(|slot| {
                     let prev_iv = slot.last_sent_interval_ms;
-                    let needs_refresh =
-                        now.duration_since(slot.last_sent_at) >= Duration::from_secs(15);
                     slot.standing = true;
-                    slot.live_until = Some(new_until);
-                    if prev_iv != target_iv || needs_refresh {
-                        slot.last_sent_interval_ms = target_iv;
-                        slot.last_sent_at = now;
-                        should_send = true;
+                    slot.upsert_live(target_iv, new_until, now);
+                    let (eff_iv, eff_ttl, standing) =
+                        slot.effective(self.settings.live_interval_ms, ws_min, now);
+                    if prev_iv != eff_iv || slot.needs_live_refresh(eff_iv, now) {
+                        slot.record_sent(eff_iv, eff_ttl, now);
+                        send_params = Some((eff_iv, eff_ttl, standing));
                     }
                 })
                 .or_insert_with(|| {
-                    should_send = true;
-                    LeaseSlot {
+                    let mut slot = LeaseSlot {
                         standing: true,
-                        live_until: Some(new_until),
+                        live_requests: vec![(target_iv, new_until)],
                         last_sent_interval_ms: target_iv,
-                        last_sent_at: now,
-                    }
+                        last_sent_until: None,
+                    };
+                    let (eff_iv, eff_ttl, standing) =
+                        slot.effective(self.settings.live_interval_ms, ws_min, now);
+                    slot.record_sent(eff_iv, eff_ttl, now);
+                    send_params = Some((eff_iv, eff_ttl, standing));
+                    slot
                 });
-            if should_send {
+            if let Some((iv, ttl, standing)) = send_params {
                 let _ = hub.send_to_agent(
                     agent_id,
                     ServerMsg::GpuLease {
-                        interval_ms: target_iv,
-                        ttl_ms: LIVE_LEASE_TTL_MS,
-                        standing: true,
+                        interval_ms: iv,
+                        ttl_ms: ttl,
+                        standing,
                     },
                 );
             }
+        }
+    }
+
+    fn upsert_ws_subscription(
+        &self,
+        hub: &crate::Hub,
+        sub: ws::GpuWsSubscription,
+        lease_targets: &[(ObjectId, bool)],
+    ) {
+        let prev_agents: Vec<ObjectId> = self
+            .ws_subs
+            .insert(sub.connection_id.clone(), sub)
+            .map(|old| old.visible_agents.into_keys().collect())
+            .unwrap_or_default();
+        let now = Instant::now();
+        let mut to_reconcile: HashSet<ObjectId> = prev_agents.into_iter().collect();
+        for &(aid, supports_gpu) in lease_targets {
+            if supports_gpu && hub.is_agent_online(aid) {
+                to_reconcile.insert(aid);
+                self.leases.entry(aid).or_insert_with(|| LeaseSlot {
+                    standing: true,
+                    live_requests: Vec::new(),
+                    last_sent_interval_ms: STANDING_INTERVAL_MS,
+                    last_sent_until: None,
+                });
+            }
+        }
+        for aid in to_reconcile {
+            self.reconcile_agent_lease(hub, aid, now, true);
+        }
+    }
+
+    pub(super) fn remove_ws_subscription(&self, hub: &crate::Hub, connection_id: &str) {
+        let Some((_, old)) = self.ws_subs.remove(connection_id) else {
+            return;
+        };
+        let now = Instant::now();
+        for aid in old.visible_agents.into_keys() {
+            self.reconcile_agent_lease(hub, aid, now, false);
+        }
+    }
+
+    fn reconcile_agent_lease(
+        &self,
+        hub: &crate::Hub,
+        agent_id: ObjectId,
+        now: Instant,
+        refresh_if_stale: bool,
+    ) {
+        if !hub.is_agent_online(agent_id) {
+            return;
+        }
+        let ws_min = self.ws_min_for_agent(agent_id, now);
+        let mut send_params: Option<(u32, u32, bool)> = None;
+        if let Some(mut entry) = self.leases.get_mut(&agent_id) {
+            entry.live_requests.retain(|(_, exp)| *exp > now);
+            let (eff_iv, eff_ttl, standing) =
+                entry.effective(self.settings.live_interval_ms, ws_min, now);
+            let needs_refresh = refresh_if_stale && entry.needs_live_refresh(eff_iv, now);
+            if eff_iv != entry.last_sent_interval_ms || needs_refresh {
+                entry.record_sent(eff_iv, eff_ttl, now);
+                send_params = Some((eff_iv, eff_ttl, standing));
+            }
+        }
+        if let Some((iv, ttl, standing)) = send_params {
+            let _ = hub.send_to_agent(
+                agent_id,
+                ServerMsg::GpuLease {
+                    interval_ms: iv,
+                    ttl_ms: ttl,
+                    standing,
+                },
+            );
         }
     }
 
@@ -318,13 +603,14 @@ impl GpuManager {
             self.on_gpu_server_toggled(&state.rc_hub, agent_id, false, true);
             return;
         };
-        if !agent.gpu_server {
+        if !agent.gpu_server || agent.status == AgentStatus::Quarantined {
             self.on_gpu_server_toggled(&state.rc_hub, agent_id, false, true);
             return;
         }
         sanitize_report(&mut report);
         let now = DateTime::now();
-        let now_s = now.timestamp_millis() / 1000;
+        let now_ms = now.timestamp_millis();
+        let now_s = now_ms / 1000;
         let snap = GpuSnapshotDoc {
             agent_id,
             tenant_id,
@@ -347,19 +633,126 @@ impl GpuManager {
             n.notify_waiters();
         }
 
-        history::record_report_to_1m_bucket(
-            &state.core.db,
-            tenant_id,
-            agent_id,
-            &report,
-            now_s,
-            self.thresholds(),
-        )
-        .await;
+        // Push live host snapshot directly over WebSocket to authorized active
+        // GPU-page viewers (zero polling phase lag).
+        self.push_ws_report(state, agent_id, &agent, &snap, now_ms, now_s)
+            .await;
+
+        let synthetic_fault = matches!(
+            report.status,
+            GpuHostStatus::SamplerStalled | GpuHostStatus::Unavailable | GpuHostStatus::OffLocal
+        );
+        if !synthetic_fault {
+            let step_secs = self.credit_history_secs(agent_id, report.interval_ms, now_ms);
+            if step_secs > 0 {
+                history::record_report_to_1m_bucket_with_step(
+                    &state.core.db,
+                    tenant_id,
+                    agent_id,
+                    &report,
+                    now_s,
+                    self.thresholds(),
+                    step_secs,
+                )
+                .await;
+            }
+        }
 
         if self.settings.alerts {
             self.evaluate_and_deliver_report(state, tenant_id, agent_id, &agent, &report, now_s)
                 .await;
+        }
+    }
+
+    async fn push_ws_report(
+        &self,
+        state: &FleetState,
+        agent_id: ObjectId,
+        agent: &meshharbor_remote_control::models::Agent,
+        snap: &GpuSnapshotDoc,
+        now_ms: i64,
+        now_s: i64,
+    ) {
+        if self.ws_subs.is_empty() {
+            return;
+        }
+        let now_inst = Instant::now();
+        let targets: Vec<(String, ObjectId, ObjectId, &'static str, bool, u32)> = self
+            .ws_subs
+            .iter()
+            .filter_map(|entry| {
+                let sub = entry.value();
+                if sub.expires_at <= now_inst {
+                    return None;
+                }
+                let &(source, read_only) = sub.visible_agents.get(&agent_id)?;
+                Some((
+                    sub.connection_id.clone(),
+                    sub.user_id,
+                    sub.tenant_id,
+                    source,
+                    read_only,
+                    sub.interval_ms,
+                ))
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+
+        let thresholds = self.thresholds();
+        let mut projected: HashMap<(&'static str, bool, bool), routes::GpuHostFleetView> =
+            HashMap::new();
+        let mut revoked_any = false;
+        for (conn_id, user_id, tid, source, read_only, sub_iv) in targets {
+            if !routes::is_agent_visible_to_subscriber(state, tid, user_id, agent, source).await {
+                let mut drop_conn = false;
+                if let Some(mut sub) = self.ws_subs.get_mut(&conn_id) {
+                    sub.visible_agents.remove(&agent_id);
+                    drop_conn = sub.visible_agents.is_empty();
+                }
+                if drop_conn {
+                    self.ws_subs.remove(&conn_id);
+                }
+                revoked_any = true;
+                continue;
+            }
+            let live_requested = sub_iv > 0;
+            let host_view = projected
+                .entry((source, read_only, live_requested))
+                .or_insert_with(|| {
+                    routes::project_host_view(
+                        agent,
+                        source,
+                        read_only,
+                        true,
+                        Some(snap),
+                        now_ms,
+                        now_s,
+                        live_requested,
+                        thresholds,
+                        false,
+                    )
+                });
+            let msg = serde_json::json!({
+                "type": "gpu:update",
+                "data": {
+                    "tenant_id": tid.to_hex(),
+                    "host": host_view,
+                    "server_time_ms": now_ms,
+                    "live_interval_ms": sub_iv,
+                }
+            });
+            meshharbor_core::ws::dispatcher::send_to_connection_routed(
+                &state.core.ws_storage,
+                &state.core.redis_pubsub,
+                &conn_id,
+                &msg,
+            )
+            .await;
+        }
+        if revoked_any {
+            self.reconcile_agent_lease(&state.rc_hub, agent_id, Instant::now(), false);
         }
     }
 
@@ -529,16 +922,19 @@ impl GpuManager {
         if !self.settings.enabled {
             return;
         }
-        // Lease & offline-alert sweep
+        // Lease sweep (every 10 s so active live leases never starve across
+        // viewer step-downs or half-TTL jitter) + offline alerts (every 60 s).
         let st1 = state.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             tick.tick().await; // skip immediate tick at startup
+            let mut cycle: u64 = 0;
             loop {
                 tick.tick().await;
+                cycle = cycle.wrapping_add(1);
                 st1.gpu.sweep_leases(&st1.rc_hub);
-                if st1.gpu.settings.alerts {
+                if cycle.is_multiple_of(6) && st1.gpu.settings.alerts {
                     st1.gpu.sweep_offline_alerts(&st1).await;
                 }
             }
@@ -577,24 +973,10 @@ impl GpuManager {
 
     fn sweep_leases(&self, hub: &crate::Hub) {
         let now = Instant::now();
-        for mut entry in self.leases.iter_mut() {
-            let aid = *entry.key();
-            if !hub.is_agent_online(aid) {
-                continue;
-            }
-            let (eff_iv, eff_ttl, standing) = entry.effective(self.settings.live_interval_ms, now);
-            if eff_iv != entry.last_sent_interval_ms {
-                entry.last_sent_interval_ms = eff_iv;
-                entry.last_sent_at = now;
-                let _ = hub.send_to_agent(
-                    aid,
-                    ServerMsg::GpuLease {
-                        interval_ms: eff_iv,
-                        ttl_ms: eff_ttl,
-                        standing,
-                    },
-                );
-            }
+        self.ws_subs.retain(|_, sub| sub.expires_at > now);
+        let aids: Vec<ObjectId> = self.leases.iter().map(|e| *e.key()).collect();
+        for aid in aids {
+            self.reconcile_agent_lease(hub, aid, now, true);
         }
     }
 
@@ -779,30 +1161,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fr139_lease_slot_falls_back_from_live_to_standing_30s() {
+    fn fr139_lease_slot_merges_multi_viewer_intervals_and_falls_back_to_standing_30s() {
         let now = Instant::now();
-        let slot = LeaseSlot {
+        let mut slot = LeaseSlot {
             standing: true,
-            live_until: Some(now + Duration::from_secs(20)),
-            last_sent_interval_ms: 2000,
-            last_sent_at: now,
+            live_requests: Vec::new(),
+            last_sent_interval_ms: 30_000,
+            last_sent_until: None,
         };
-        let (iv, ttl, standing) = slot.effective(2000, now);
-        assert_eq!(iv, 2000);
+        slot.upsert_live(2000, now + Duration::from_secs(20), now);
+        slot.upsert_live(500, now + Duration::from_secs(10), now);
+        let (iv, ttl, standing) = slot.effective(1000, None, now);
+        assert_eq!(iv, 500, "fastest viewer cadence must win");
         assert!(ttl > 0);
         assert!(standing);
+        slot.record_sent(iv, ttl, now);
+        assert!(
+            slot.needs_live_refresh(iv, now),
+            "10 s short-lived lease must be eligible for refresh (< 15 s half-TTL)"
+        );
 
-        let (iv2, ttl2, standing2) = slot.effective(2000, now + Duration::from_secs(31));
+        // After the 500 ms viewer expires, fall back smoothly to the 2000 ms viewer.
+        let (iv_mid, _, _) = slot.effective(1000, None, now + Duration::from_secs(12));
+        assert_eq!(iv_mid, 2000);
+
+        // An active WS subscriber overrides with its faster 500 ms cadence.
+        let (iv_ws, _, _) = slot.effective(
+            1000,
+            Some((500, now + Duration::from_secs(30))),
+            now + Duration::from_secs(12),
+        );
+        assert_eq!(iv_ws, 500);
+
+        // After all viewers expire, fall back to 30 s standing.
+        let (iv2, ttl2, standing2) = slot.effective(1000, None, now + Duration::from_secs(31));
         assert_eq!(iv2, 30_000);
         assert_eq!(ttl2, 0);
         assert!(standing2);
 
+        // Server live_interval_ms == 0 disables live leases completely.
+        assert_eq!(
+            slot.effective(0, Some((500, now + Duration::from_secs(30))), now),
+            (30_000, 0, true)
+        );
+
         let unmarked = LeaseSlot {
             standing: false,
-            live_until: None,
+            live_requests: Vec::new(),
             last_sent_interval_ms: 0,
-            last_sent_at: now,
+            last_sent_until: None,
         };
-        assert_eq!(unmarked.effective(2000, now), (0, 0, false));
+        assert_eq!(unmarked.effective(1000, None, now), (0, 0, false));
+    }
+
+    #[test]
+    fn fr139_subsecond_history_credit_is_wall_clock_bounded_and_does_not_double_count() {
+        let mgr = GpuManager::new(GpuSettings::default());
+        let aid = ObjectId::new();
+        let mut t = 1_000_000i64;
+        // First 500 ms frame credits 500 ms -> 0 whole secs yet.
+        assert_eq!(mgr.credit_history_secs(aid, 500, t), 0);
+        // Duplicate same-ms burst must credit 0.
+        assert_eq!(mgr.credit_history_secs(aid, 500, t), 0);
+        // Early jitter frame at +400 ms credits 400 ms (total 900 ms) -> still 0, not 1!
+        t += 400;
+        assert_eq!(mgr.credit_history_secs(aid, 500, t), 0);
+        // Next +400 ms frame brings total to 1300 ms -> emits 1 sec, carries 300 ms.
+        t += 400;
+        assert_eq!(mgr.credit_history_secs(aid, 500, t), 1);
+        // Normal 1000 ms step -> 1300 ms -> emits 1 sec.
+        t += 1_000;
+        assert_eq!(mgr.credit_history_secs(aid, 1_000, t), 1);
+        // Standing 30 s step -> emits 30 secs.
+        t += 30_000;
+        assert_eq!(mgr.credit_history_secs(aid, 30_000, t), 30);
     }
 }

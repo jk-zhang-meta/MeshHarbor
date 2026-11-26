@@ -12,6 +12,7 @@
 pub mod amd;
 pub mod apple;
 pub mod ascend;
+pub mod ascend_dcmi;
 pub mod fake;
 pub mod intel;
 pub mod metrics;

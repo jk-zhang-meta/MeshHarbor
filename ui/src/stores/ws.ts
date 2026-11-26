@@ -14,6 +14,7 @@ import { useTenantStore } from './tenant'
 import { useOrgBadgesStore } from './orgBadges'
 import { useAgentStore } from './agents'
 import { useDeviceStore } from './devices'
+import { useGpuStore } from './gpu'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { callEndedByPlanMessage, callEndingSoonMessage } from '@/utils/meetingCap'
 import type { NameSync } from '@/utils/nameSync'
@@ -364,6 +365,12 @@ export const useWsStore = defineStore('ws', () => {
         roomStore.updateRoomCallStatus(cuData.room_id, cuData.conference_status, cuData.participant_count)
         break
       }
+      case 'gpu:subscribed':
+        useGpuStore().noteWsSubscribed(msg.data as never)
+        break
+      case 'gpu:update':
+        useGpuStore().applyWsHostUpdate(msg.data as never)
+        break
     }
   }
 

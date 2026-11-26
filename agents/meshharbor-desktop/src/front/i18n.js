@@ -933,7 +933,7 @@
       // GPU Servers (FR-139)
       'gpu.title': 'GPU Servers',
       'gpu.sub': 'Live utilization, VRAM, processes, and per-user GPU-hours across marked GPU servers.',
-      'gpu.liveToggle': 'Live (2s)',
+      'gpu.liveToggle': 'Live',
       'gpu.openWeb': 'History & alerts…',
       'gpu.kpi.hosts': 'Online hosts',
       'gpu.kpi.free': 'Free GPUs',
@@ -1903,7 +1903,7 @@
       // GPU 服务器 (FR-139)
       'gpu.title': 'GPU 服务器',
       'gpu.sub': '实时查看已标记 GPU 服务器的显卡利用率、显存、进程归属与按用户 GPU·时用量。',
-      'gpu.liveToggle': '实时刷新 (2s)',
+      'gpu.liveToggle': '实时',
       'gpu.openWeb': '历史与告警设置…',
       'gpu.kpi.hosts': '在线主机',
       'gpu.kpi.free': '空闲 GPU',

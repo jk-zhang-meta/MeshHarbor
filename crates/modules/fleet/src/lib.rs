@@ -761,6 +761,19 @@ impl Module for FleetState {
             .with_state(self.clone())
     }
 
+    fn ws(&self) -> meshharbor_core::WsRegistration {
+        meshharbor_core::WsRegistration {
+            handlers: vec![meshharbor_core::WsHandlerSpec {
+                role: meshharbor_core::Role::User,
+                namespace: "gpu",
+                handler: Arc::new(gpu::ws::GpuWs {
+                    state: self.clone(),
+                }),
+            }],
+            upgrades: Vec::new(),
+        }
+    }
+
     /// The twelve collections this module owns. The first eight specs are the
     /// ones the db crate's plan held before P5a, unchanged; `keep_busy_events`
     /// (FR-92 P7), `exec_pending` (FR-94), `enroll_token_issued` (FR-102 P3)

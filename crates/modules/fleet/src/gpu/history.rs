@@ -136,17 +136,21 @@ fn safe_user_key(user: &str) -> String {
     }
 }
 
-/// Record one inbound `GpuReport` into 1-minute `stats_gpu` buckets.
-pub async fn record_report_to_1m_bucket(
+/// Record one inbound `GpuReport` into 1-minute `stats_gpu` buckets using an
+/// explicit whole-second weight (`step_secs`, clamped to `1..=60`). Callers
+/// ingesting sub-second reports (e.g. 500 ms) should accumulate milliseconds
+/// until at least 1 s is credited so GPU·hours are never double-counted.
+pub async fn record_report_to_1m_bucket_with_step(
     db: &Database,
     tenant_id: ObjectId,
     agent_id: ObjectId,
     report: &GpuReport,
     now_s: i64,
     thresholds: GpuStateThresholds,
+    step_secs: u64,
 ) {
     let bucket_ts = DateTime::from_millis(floor_bucket_ms(now_s, 60));
-    let step_secs = (u64::from(report.interval_ms) / 1000).clamp(1, 60);
+    let step_secs = step_secs.clamp(1, 60);
     let coll = db.collection::<bson::Document>(COLL_1M);
 
     for g in &report.gpus {
@@ -302,8 +306,15 @@ pub async fn rollup_buckets(
         entry.samples = entry.samples.saturating_add(b.samples);
         entry.util_samples = entry.util_samples.saturating_add(b.util_samples);
         entry.util_sum += b.util_sum;
-        entry.util_wsum += b.util_wsum;
-        entry.util_secs = entry.util_secs.saturating_add(b.util_secs);
+        if b.util_secs > 0 {
+            entry.util_wsum += b.util_wsum;
+            entry.util_secs = entry.util_secs.saturating_add(b.util_secs);
+        } else if b.util_samples > 0 {
+            // Normalize legacy unweighted 1m buckets so mixing legacy and
+            // time-weighted buckets in one 1h/1d rollup never drops samples.
+            entry.util_wsum += b.util_sum;
+            entry.util_secs = entry.util_secs.saturating_add(u64::from(b.util_samples));
+        }
         entry.util_max = entry.util_max.max(b.util_max);
         entry.mem_samples = entry.mem_samples.saturating_add(b.mem_samples);
         entry.mem_used_sum += b.mem_used_sum;
@@ -319,9 +330,17 @@ pub async fn rollup_buckets(
         entry.power_sum += b.power_sum;
         entry.free_samples = entry.free_samples.saturating_add(b.free_samples);
         entry.held_idle_samples = entry.held_idle_samples.saturating_add(b.held_idle_samples);
-        entry.free_secs = entry.free_secs.saturating_add(b.free_secs);
-        entry.held_idle_secs = entry.held_idle_secs.saturating_add(b.held_idle_secs);
-        entry.sample_secs = entry.sample_secs.saturating_add(b.sample_secs);
+        if b.sample_secs > 0 {
+            entry.free_secs = entry.free_secs.saturating_add(b.free_secs);
+            entry.held_idle_secs = entry.held_idle_secs.saturating_add(b.held_idle_secs);
+            entry.sample_secs = entry.sample_secs.saturating_add(b.sample_secs);
+        } else if b.samples > 0 {
+            entry.free_secs = entry.free_secs.saturating_add(u64::from(b.free_samples));
+            entry.held_idle_secs = entry
+                .held_idle_secs
+                .saturating_add(u64::from(b.held_idle_samples));
+            entry.sample_secs = entry.sample_secs.saturating_add(u64::from(b.samples));
+        }
         for (u, r) in b.users {
             let ur = entry.users.entry(u).or_default();
             ur.held_secs = ur.held_secs.saturating_add(r.held_secs);

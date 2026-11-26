@@ -346,6 +346,7 @@ impl SelfView {
         live: bool,
         wait_ms: u32,
         hosts: &[String],
+        interval_ms: Option<u32>,
     ) -> Response {
         const VERB: &str = "gpu_fleet";
         let started = Instant::now();
@@ -356,6 +357,9 @@ impl SelfView {
         let mut params: Vec<(&'static str, String)> = Vec::new();
         if live {
             params.push(("live", "1".to_string()));
+            if let Some(iv) = interval_ms {
+                params.push(("interval_ms", iv.clamp(500, 10_000).to_string()));
+            }
         }
         if wait_ms > 0 {
             params.push(("wait_ms", wait_ms.min(3000).to_string()));

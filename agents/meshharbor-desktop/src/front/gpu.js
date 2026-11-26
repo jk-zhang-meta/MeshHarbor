@@ -13,7 +13,9 @@
   'use strict';
 
   const UUID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-  const LIVE_POLL_MS = 2000;
+  const CADENCE_OPTIONS = [500, 1000, 2000];
+  const DEFAULT_CADENCE_MS = 1000;
+  const CADENCE_STORAGE_KEY = 'mh.desktop.gpuCadenceMs';
   const CACHED_POLL_MS = 15000;
   const BACKOFF_MS = [10000, 30000, 60000];
   const DELTA_TTL_MS = 4500;
@@ -357,11 +359,22 @@
     return val === key && fallback ? fallback : val;
   };
 
+  function loadStoredCadence() {
+    try {
+      const raw = Number(root.localStorage && root.localStorage.getItem(CADENCE_STORAGE_KEY));
+      if (CADENCE_OPTIONS.includes(raw)) return raw;
+    } catch (_) {
+      /* storage unavailable */
+    }
+    return DEFAULT_CADENCE_MS;
+  }
+
   const st = {
     tab: 'fleet', // 'fleet' | 'users'
     filter: 'all',
     search: '',
     live: true,
+    cadenceMs: loadStoredCadence(),
     userRange: '24h',
     lastFleet: null,
     lastUsers: null,
@@ -378,6 +391,7 @@
     timer: null,
     tickTimer: null,
     copyTimer: null,
+    lastTrackAt: 0,
     prevHosts: new Map(), // agent_id -> snapshot summary for diffing
     cardDeltas: new Map(), // agent_id:uuid -> { utilDelta, memDeltaMb, stateChanged, at }
     recentChanges: [], // [{ at, cls, text }]
@@ -534,6 +548,9 @@
   function trackFleetChanges(page) {
     if (!page || !Array.isArray(page.hosts)) return;
     const now = Date.now();
+    // Suppress false diff bursts after a long sleep / hidden-window gap (> 30 s).
+    const emitTransitions = st.lastTrackAt > 0 && now - st.lastTrackAt <= 30000;
+    st.lastTrackAt = now;
     // Prune expired deltas
     for (const [k, d] of st.cardDeltas.entries()) {
       if (now - d.at > DELTA_TTL_MS) st.cardDeltas.delete(k);
@@ -561,7 +578,7 @@
         gpus: curGpus,
       });
 
-      if (!prev) continue;
+      if (!prev || !emitTransitions) continue;
       const nowOnline = Boolean(h.is_online && h.freshness !== 'offline');
       if (prev.is_online !== nowOnline) {
         pushChange(
@@ -1252,7 +1269,18 @@
     st.tickTimer = setInterval(() => {
       if (currentView() !== 'gpu' || document.hidden) return;
       updateTimestamp();
-      if (st.tab === 'fleet' && st.recentChanges.length) renderRecentChanges();
+      const now = Date.now();
+      let prunedDelta = false;
+      for (const [k, d] of st.cardDeltas.entries()) {
+        if (now - d.at > DELTA_TTL_MS) {
+          st.cardDeltas.delete(k);
+          prunedDelta = true;
+        }
+      }
+      if (st.tab === 'fleet') {
+        if (prunedDelta && st.lastFleet) renderFleet();
+        else if (st.recentChanges.length) renderRecentChanges();
+      }
     }, 1000);
   }
 
@@ -1272,8 +1300,11 @@
       delay = BACKOFF_MS[Math.min(failures - 1, BACKOFF_MS.length - 1)];
     } else if (st.tab === 'users') {
       delay = CACHED_POLL_MS;
+    } else if (!st.live || (st.lastFleet && st.lastFleet.live_interval_ms === 0)) {
+      delay = CACHED_POLL_MS;
     } else {
-      delay = st.live ? LIVE_POLL_MS : CACHED_POLL_MS;
+      const serverIv = st.lastFleet && st.lastFleet.live_interval_ms > 0 ? st.lastFleet.live_interval_ms : st.cadenceMs;
+      delay = Math.max(500, serverIv);
     }
     if (st.tab === 'users') st.usersNextRetryAt = failures > 0 ? Date.now() + delay : 0;
     else st.fleetNextRetryAt = failures > 0 ? Date.now() + delay : 0;
@@ -1292,6 +1323,7 @@
         live: st.live,
         waitMs: forceWait && st.live ? 1200 : 0,
         hosts: [],
+        intervalMs: st.live ? st.cadenceMs : null,
       });
       if (seq !== st.fleetSeq) return;
       trackFleetChanges(page);
@@ -1300,6 +1332,7 @@
       st.fleetFailures = 0;
       st.fleetNextRetryAt = 0;
       st.fleetError = null;
+      syncCadenceButtons();
       renderErrorBanner();
       renderFleet();
       updateTimestamp();
@@ -1309,7 +1342,7 @@
       st.fleetError = t('gpu.loadError', { err: parseErr(err) }, 'GPU telemetry unavailable: ' + parseErr(err));
       renderErrorBanner();
     } finally {
-      scheduleNext();
+      if (seq === st.fleetSeq) scheduleNext();
     }
   }
 
@@ -1335,11 +1368,14 @@
       st.usersError = t('gpu.loadError', { err: parseErr(err) }, 'GPU usage unavailable: ' + parseErr(err));
       renderErrorBanner();
     } finally {
-      scheduleNext();
+      if (seq === st.usersSeq) scheduleNext();
     }
   }
 
   function switchTab(next) {
+    st.fleetSeq += 1;
+    st.usersSeq += 1;
+    clearTimer();
     st.tab = next === 'users' ? 'users' : 'fleet';
     document.querySelectorAll('.gpu-tab').forEach((btn) => {
       const active = btn.dataset.gpuTab === st.tab;
@@ -1361,15 +1397,45 @@
     }
   }
 
+  function syncCadenceButtons() {
+    const standingForced = Boolean(st.lastFleet && st.lastFleet.live_interval_ms === 0);
+    document.querySelectorAll('#gpu-cadence .gpu-cadence-btn').forEach((btn) => {
+      const ms = Number(btn.dataset.gpuCadence);
+      const active = ms === st.cadenceMs;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      btn.disabled = !st.live || standingForced;
+    });
+  }
+
   function wire() {
     const liveToggle = $('gpu-live-toggle');
     if (liveToggle) {
       liveToggle.checked = st.live;
       liveToggle.addEventListener('change', () => {
         st.live = liveToggle.checked;
+        syncCadenceButtons();
         if (currentView() === 'gpu' && st.tab === 'fleet') void fetchFleet(true);
       });
     }
+
+    syncCadenceButtons();
+    document.querySelectorAll('#gpu-cadence .gpu-cadence-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const ms = Number(btn.dataset.gpuCadence);
+        if (!CADENCE_OPTIONS.includes(ms)) return;
+        st.cadenceMs = ms;
+        try {
+          if (root.localStorage) root.localStorage.setItem(CADENCE_STORAGE_KEY, String(ms));
+        } catch (_) {
+          /* ignore */
+        }
+        syncCadenceButtons();
+        if (currentView() === 'gpu' && st.tab === 'fleet' && st.live) {
+          void fetchFleet(false);
+        }
+      });
+    });
 
     const refreshBtn = $('gpu-btn-refresh');
     if (refreshBtn) {
@@ -1446,6 +1512,8 @@
         if (st.tab === 'users') void fetchUsers();
         else void fetchFleet(true);
       } else {
+        st.fleetSeq += 1;
+        st.usersSeq += 1;
         clearTimer();
         stopTickTimer();
       }

@@ -102,6 +102,7 @@ struct DavinciDevCard {
 
 #[cfg(target_os = "linux")]
 enum AscendMode {
+    Dcmi(super::ascend_dcmi::DcmiSession),
     Tool {
         smi_path: PathBuf,
         driver_version: Option<String>,
@@ -122,8 +123,8 @@ pub struct AscendBackend {
 }
 
 impl AscendBackend {
-    /// Initialize Ascend backend from `/dev/davinci*`, `npu-smi`, and already
-    /// scanned host PCIe accelerators.
+    /// Initialize Ascend backend from `libdcmi.so` (fast parallel C API, ~80 ms
+    /// for 8 cards), falling back to `npu-smi`, then `/dev/davinci*` + PCIe.
     pub fn try_init_with_pci(pci_devs: &[PciAccelerator]) -> (Option<Self>, Option<String>) {
         #[cfg(target_os = "linux")]
         {
@@ -136,6 +137,10 @@ impl AscendBackend {
 
             if davinci_nodes.is_empty() && !has_manager {
                 return (None, None);
+            }
+
+            if let Ok(dcmi) = super::ascend_dcmi::DcmiSession::try_init() {
+                return (Some(Self { mode: AscendMode::Dcmi(dcmi) }), None);
             }
 
             let smi_path = NPU_SMI_CANDIDATES
@@ -233,6 +238,7 @@ impl AscendBackend {
     pub fn driver_version(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
         match &self.mode {
+            AscendMode::Dcmi(dcmi) => dcmi.driver_version(),
             AscendMode::Tool { driver_version, .. } => driver_version.clone(),
             AscendMode::DeviceOnly { .. } => None,
         }
@@ -245,6 +251,7 @@ impl AscendBackend {
     pub fn status_detail(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
         match &self.mode {
+            AscendMode::Dcmi(_) => None,
             AscendMode::Tool { last_error, .. } => last_error.clone(),
             AscendMode::DeviceOnly { reason, .. } => Some(reason.clone()),
         }
@@ -257,6 +264,7 @@ impl AscendBackend {
     pub fn pci_bdfs(&self) -> Vec<String> {
         #[cfg(target_os = "linux")]
         match &self.mode {
+            AscendMode::Dcmi(dcmi) => dcmi.pci_bdfs(),
             AscendMode::Tool {
                 initial_cards,
                 boards,
@@ -283,6 +291,7 @@ impl AscendBackend {
     pub fn inventory(&self) -> GpuInventory {
         #[cfg(target_os = "linux")]
         match &self.mode {
+            AscendMode::Dcmi(dcmi) => dcmi.inventory(),
             AscendMode::Tool {
                 driver_version,
                 boards,
@@ -357,6 +366,7 @@ impl AscendBackend {
     ) -> (GpuHostStatus, Vec<GpuSample>) {
         #[cfg(target_os = "linux")]
         match &mut self.mode {
+            AscendMode::Dcmi(dcmi) => dcmi.sample(include_procs, proc_lookup),
             AscendMode::Tool {
                 smi_path,
                 boards,
@@ -616,6 +626,15 @@ fn build_ascend_uuid(c: &ParsedNpuCard, _board: Option<&AscendBoardInfo>) -> Str
 }
 
 #[cfg(any(target_os = "linux", test))]
+pub(super) fn ascend_free_mem_floor_mb(is_hbm: bool, mem_total_mb: Option<u32>) -> Option<u32> {
+    if is_hbm {
+        mem_total_mb.map(|tot| (tot / 12).clamp(2048, 6144))
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn build_samples(
     parsed: &ParsedNpuInfo,
     boards: &HashMap<(u16, u16), AscendBoardInfo>,
@@ -640,11 +659,7 @@ fn build_samples(
             // Preserve raw vendor health (`OK`, `Warning`, `Alarm`, `Critical`)
             // WITHOUT setting `lost = true` on a responding chip!
             let vendor_health = (!c.health.trim().is_empty()).then(|| c.health.trim().to_string());
-            let free_mem_floor_mb = if c.is_hbm {
-                c.mem_total_mb.map(|tot| (tot / 12).clamp(2048, 6144))
-            } else {
-                None
-            };
+            let free_mem_floor_mb = ascend_free_mem_floor_mb(c.is_hbm, c.mem_total_mb);
 
             let (procs_state, procs) = if !include_procs {
                 (ProcsState::Off, None)

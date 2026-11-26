@@ -37,6 +37,24 @@
       </div>
 
       <div class="nvitop-actions">
+        <div
+          v-if="!gpuStore.disabled && gpuStore.liveIntervalMs !== 0"
+          class="nvitop-cadence text-mono"
+          role="group"
+          :aria-label="t('mh.gpu.cadenceLabel')"
+        >
+          <button
+            v-for="ms in cadenceOptions"
+            :key="ms"
+            type="button"
+            class="nvitop-cadence-btn"
+            :class="{ 'is-active': gpuStore.requestedIntervalMs === ms }"
+            :aria-pressed="gpuStore.requestedIntervalMs === ms"
+            @click="gpuStore.setRequestedIntervalMs(ms)"
+          >
+            {{ fmtCadenceNum(ms) }}s
+          </button>
+        </div>
         <v-btn
           color="primary"
           variant="tonal"
@@ -258,7 +276,7 @@
                 <span class="nvitop-pill text-mono" :class="hostFreshnessBadge(host).cls">
                   {{ hostFreshnessBadge(host).label }}
                   <template v-if="!isHostOffline(host) && host.interval_ms">
-                    · {{ Math.max(1, Math.round(host.interval_ms / 1000)) }}s
+                    · {{ fmtCadenceNum(host.interval_ms) }}s
                   </template>
                 </span>
                 <span class="nvitop-pill nvitop-pill-vendor text-mono">
@@ -617,7 +635,12 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useGpuStore, type GpuCardDelta, type GpuLiveChange } from '@/stores/gpu'
+import {
+  GPU_CADENCE_OPTIONS,
+  useGpuStore,
+  type GpuCardDelta,
+  type GpuLiveChange,
+} from '@/stores/gpu'
 import {
   cardExportCmd,
   cardFaultReasons,
@@ -702,11 +725,23 @@ const retryCountdownSec = computed(() => {
   return Math.max(1, Math.ceil((gpuStore.nextRetryAt - nowTick.value) / 1000))
 })
 
+const cadenceOptions = GPU_CADENCE_OPTIONS
+
+function fmtCadenceNum(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '1'
+  return ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)
+}
+
 const liveHeartbeatLabel = computed(() => {
-  const cadence = Math.max(1, Math.round(gpuStore.liveIntervalMs / 1000))
-  if (!gpuStore.lastPollOkAt) return t('mh.gpu.liveCadence', { sec: cadence })
+  const cadence = fmtCadenceNum(gpuStore.liveIntervalMs)
+  if (!gpuStore.lastPollOkAt) {
+    return t(gpuStore.wsLive ? 'mh.gpu.liveWsCadence' : 'mh.gpu.liveCadence', { sec: cadence })
+  }
   const age = Math.max(0, Math.floor((nowTick.value - gpuStore.lastPollOkAt) / 1000))
-  return t('mh.gpu.liveHeartbeat', { sec: cadence, age: fmtAgeSecs(age) })
+  return t(gpuStore.wsLive ? 'mh.gpu.liveWsHeartbeat' : 'mh.gpu.liveHeartbeat', {
+    sec: cadence,
+    age: fmtAgeSecs(age),
+  })
 })
 
 function toggleKpiFilter(next: FilterKind) {
@@ -1323,7 +1358,43 @@ onBeforeUnmount(() => {
 .nvitop-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.nvitop-cadence {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--nv-border);
+  border-radius: 7px;
+  background: var(--nv-surface);
+  overflow: hidden;
+}
+
+.nvitop-cadence-btn {
+  border: none;
+  border-right: 1px solid var(--nv-border);
+  background: transparent;
+  color: var(--nv-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.nvitop-cadence-btn:last-child {
+  border-right: none;
+}
+
+.nvitop-cadence-btn:hover {
+  background: var(--nv-row-hover);
+  color: inherit;
+}
+
+.nvitop-cadence-btn.is-active {
+  background: var(--nv-cool-soft);
+  color: var(--nv-cool);
 }
 
 /* Clickable Instrument KPI Ribbon */

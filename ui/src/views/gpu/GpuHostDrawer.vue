@@ -28,7 +28,9 @@
           <div class="text-caption text-medium-emphasis text-mono">
             {{ host.os }} · {{ host.backend || '—' }}
             <template v-if="host.driver_version"> · drv {{ host.driver_version }}</template>
-            <template v-if="host.interval_ms"> · {{ Math.max(1, Math.round(host.interval_ms / 1000)) }}s</template>
+            <template v-if="host.interval_ms">
+              · {{ host.interval_ms % 1000 === 0 ? host.interval_ms / 1000 : (host.interval_ms / 1000).toFixed(1) }}s
+            </template>
           </div>
         </div>
         <v-spacer />

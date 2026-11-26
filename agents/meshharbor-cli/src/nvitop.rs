@@ -30,7 +30,7 @@ pub struct NvitopArgs {
     #[arg(value_name = "HOST")]
     pub hosts: Vec<String>,
 
-    /// Read the server's latest cached snapshot without requesting a live 2 s lease.
+    /// Read the server's latest cached snapshot without requesting a live lease.
     #[arg(long)]
     pub cached: bool,
 
@@ -38,9 +38,9 @@ pub struct NvitopArgs {
     #[arg(short = 'w', long)]
     pub watch: bool,
 
-    /// Refresh interval in seconds for `--watch` (default 2, minimum 1).
-    #[arg(long, default_value_t = 2)]
-    pub interval: u64,
+    /// Refresh interval in seconds for `--watch` (default 1.0, supports 0.5–60.0).
+    #[arg(short = 'i', long, default_value_t = 1.0)]
+    pub interval: f64,
 
     /// Enrollment label (`meshharbord org ls`; default: primary).
     #[arg(long)]
@@ -334,7 +334,7 @@ pub async fn run(args: NvitopArgs) -> Result<()> {
                 run_watch(
                     org_ref,
                     !args.cached,
-                    args.interval.clamp(1, 60),
+                    clamp_watch_interval_ms(args.interval),
                     &args.hosts,
                     lang,
                 )
@@ -384,6 +384,23 @@ fn map_directory_err(err: DirectoryError) -> anyhow::Error {
     }
 }
 
+/// Clamp `--interval` seconds into `[500, 60_000]` ms (defaults to `1000` ms on NaN/Inf).
+pub fn clamp_watch_interval_ms(secs: f64) -> u32 {
+    if !secs.is_finite() {
+        return 1_000;
+    }
+    (secs.clamp(0.5, 60.0) * 1000.0).round() as u32
+}
+
+/// Format a watch interval in milliseconds concisely (`500` -> `"0.5s"`, `1000` -> `"1s"`).
+pub fn format_interval_ms(ms: u32) -> String {
+    if ms.is_multiple_of(1000) {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{:.1}s", f64::from(ms) / 1000.0)
+    }
+}
+
 async fn run_oneshot(
     org: &str,
     live: bool,
@@ -396,7 +413,7 @@ async fn run_oneshot(
     })?;
     let wait_ms = if live { 2000 } else { 0 };
     let page = client
-        .gpu_fleet(org, live, wait_ms, hosts)
+        .gpu_fleet_with_interval(org, live, wait_ms, hosts, live.then_some(1000))
         .await
         .map_err(map_directory_err)?;
 
@@ -494,7 +511,7 @@ impl Drop for TerminalGuard {
 async fn run_watch(
     org: &str,
     live: bool,
-    interval_secs: u64,
+    interval_ms: u32,
     hosts: &[String],
     lang: Lang,
 ) -> Result<()> {
@@ -508,7 +525,9 @@ async fn run_watch(
 
     let _guard = TerminalGuard::enter()?;
     let color = color_enabled();
-    let interval = Duration::from_secs(interval_secs.max(1));
+    let clamped_ms = interval_ms.clamp(500, 60_000);
+    let interval = Duration::from_millis(u64::from(clamped_ms));
+    let lease_interval_ms = live.then_some(clamped_ms.clamp(500, 10_000));
 
     let mut page = GpuFleetPage::default();
     let mut last_err: Option<String> = None;
@@ -531,7 +550,10 @@ async fn run_watch(
         if Instant::now() >= next_refresh {
             let wait_ms = if first_fetch && live { 1500 } else { 0 };
             first_fetch = false;
-            match client.gpu_fleet(org, live, wait_ms, hosts).await {
+            match client
+                .gpu_fleet_with_interval(org, live, wait_ms, hosts, lease_interval_ms)
+                .await
+            {
                 Ok(p) => {
                     let has_prev = !prev_card_states.is_empty();
                     let mut next_states = std::collections::HashMap::new();
@@ -646,7 +668,7 @@ async fn run_watch(
             show_procs,
             &filter,
             filter_editing,
-            interval_secs,
+            clamped_ms,
             visible_hosts
                 .get(selected_host_idx)
                 .map(|h| host_label(h))
@@ -750,7 +772,7 @@ fn format_watch_footer(
     show_procs: bool,
     filter: &str,
     filter_editing: bool,
-    interval_secs: u64,
+    interval_ms: u32,
     selected: &str,
     width: usize,
 ) -> String {
@@ -765,21 +787,22 @@ fn format_watch_footer(
         } else {
             format!(" | /{filter}")
         };
+        let cadence = format_interval_ms(interval_ms);
         match lang {
             Lang::En => format!(
-                " q quit | / filter | s sort:{} | p procs:{} | Enter detail({}) | ? help | {}s{}",
+                " q quit | / filter | s sort:{} | p procs:{} | Enter detail({}) | ? help | {}{}",
                 sort.label(lang),
                 if show_procs { "on" } else { "off" },
                 selected,
-                interval_secs,
+                cadence,
                 f_part,
             ),
             Lang::Zh => format!(
-                " q 退出 | / 过滤 | s 排序:{} | p 进程:{} | Enter 详情({}) | ? 帮助 | {}s{}",
+                " q 退出 | / 过滤 | s 排序:{} | p 进程:{} | Enter 详情({}) | ? 帮助 | {}{}",
                 sort.label(lang),
                 if show_procs { "开" } else { "关" },
                 selected,
-                interval_secs,
+                cadence,
                 f_part,
             ),
         }
@@ -2004,5 +2027,20 @@ mod tests {
         assert!(rendered.contains("DRIVER MISSING"), "{rendered}");
         assert!(rendered.contains("Detected 2 NVIDIA GPUs without driver"), "{rendered}");
         assert!(rendered.contains("Xid 79 (GPU fell off the bus)"), "{rendered}");
+    }
+
+    #[test]
+    fn fr139_watch_interval_subsecond_clamp_and_format() {
+        assert_eq!(clamp_watch_interval_ms(0.5), 500);
+        assert_eq!(clamp_watch_interval_ms(0.1), 500);
+        assert_eq!(clamp_watch_interval_ms(1.0), 1_000);
+        assert_eq!(clamp_watch_interval_ms(2.5), 2_500);
+        assert_eq!(clamp_watch_interval_ms(120.0), 60_000);
+        assert_eq!(clamp_watch_interval_ms(f64::NAN), 1_000);
+
+        assert_eq!(format_interval_ms(500), "0.5s");
+        assert_eq!(format_interval_ms(1_000), "1s");
+        assert_eq!(format_interval_ms(1_500), "1.5s");
+        assert_eq!(format_interval_ms(2_000), "2s");
     }
 }

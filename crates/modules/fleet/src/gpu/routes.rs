@@ -246,6 +246,8 @@ pub struct FleetQuery {
     pub live: Option<String>,
     #[serde(default)]
     pub hosts: Option<String>,
+    #[serde(default)]
+    pub interval_ms: Option<u32>,
 }
 
 fn parse_live(raw: Option<&str>) -> bool {
@@ -291,16 +293,20 @@ pub async fn build_fleet_response(
     live: bool,
     wait_ms: u32,
     include_inventory: bool,
+    requested_interval_ms: Option<u32>,
 ) -> GpuFleetResponse {
     let agents_only: Vec<Agent> = entries.iter().map(|(a, _, _)| a.clone()).collect();
     let fresh_presence = crate::agent::agent_presence_batch(state, &agents_only).await;
+    let live_interval_ms = state.gpu.effective_viewer_interval_ms(requested_interval_ms);
 
     if live {
         let lease_targets: Vec<(ObjectId, bool)> = entries
             .iter()
             .filter_map(|(a, _, _)| a.id.map(|id| (id, a.capabilities.has_rpc(RpcCap::Gpu))))
             .collect();
-        state.gpu.request_live_leases(&state.rc_hub, &lease_targets);
+        state
+            .gpu
+            .request_live_leases_at(&state.rc_hub, &lease_targets, requested_interval_ms);
 
         if wait_ms > 0 {
             let online_targets: Vec<ObjectId> = lease_targets
@@ -318,7 +324,6 @@ pub async fn build_fleet_response(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let now_s = now_ms / 1000;
     let thresholds = state.gpu.thresholds();
-    let live_interval_ms = state.gpu.settings.live_interval_ms;
     let live_effective = live && live_interval_ms > 0;
 
     let mut hosts = Vec::with_capacity(entries.len());
@@ -457,7 +462,7 @@ fn inventory_cards(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn project_host_view(
+pub(super) fn project_host_view(
     agent: &Agent,
     source: &'static str,
     read_only: bool,
@@ -669,7 +674,7 @@ fn card_from_sample(
 /// - Org's marked permanent GPU servers (`source = "org"`)
 /// - Org's marked temporary/invited GPU servers authorized for `user_id` (`source = "invited"`)
 /// - Active received `DeviceShareGrant` GPU servers for `user_id` (`source = "shared"`, `read_only = true`)
-async fn visible_tenant_and_shared_gpu_agents(
+pub(super) async fn visible_tenant_and_shared_gpu_agents(
     state: &FleetState,
     tid: ObjectId,
     user_id: ObjectId,
@@ -751,6 +756,68 @@ async fn visible_tenant_and_shared_gpu_agents(
     Ok(entries)
 }
 
+/// Live authorization check before pushing a `gpu:update` WebSocket frame to a
+/// subscriber. Ensures revoked shares, kicked members, unassigned roles, ended
+/// device invites, or quarantined/unmarked devices stop receiving telemetry
+/// immediately (zero 30-45 s stale-cache leak window).
+pub(super) async fn is_agent_visible_to_subscriber(
+    state: &FleetState,
+    tid: ObjectId,
+    user_id: ObjectId,
+    agent: &Agent,
+    source: &'static str,
+) -> bool {
+    let Some(aid) = agent.id else {
+        return false;
+    };
+    if !agent.gpu_server
+        || agent.deleted_at.is_some()
+        || agent.status == meshharbor_remote_control::models::AgentStatus::Quarantined
+    {
+        return false;
+    }
+    match source {
+        "shared" => {
+            if meshharbor_core::device_share::require_enabled(&state.core).is_err() {
+                return false;
+            }
+            meshharbor_core::device_share::authorize_metadata_view(&state.core, user_id, aid, None)
+                .await
+                .is_ok_and(|access| access.agent.gpu_server)
+        }
+        "org" => {
+            agent.tenant_id == tid
+                && state
+                    .tenants
+                    .is_member(tid, user_id)
+                    .await
+                    .unwrap_or(false)
+        }
+        "invited" => {
+            if agent.tenant_id != tid {
+                return false;
+            }
+            let Ok(perms) = state.tenants.get_member_permissions(tid, user_id).await else {
+                return false;
+            };
+            if permissions::has(perms, permissions::MANAGE_AGENTS) {
+                return true;
+            }
+            let member_roles = state
+                .tenants
+                .member_role_ids(tid, user_id)
+                .await
+                .unwrap_or_default();
+            crate::device_invite::grant_for_agent(state, aid)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|g| g.allows(Some(user_id), &member_roles))
+        }
+        _ => false,
+    }
+}
+
 /// `GET /api/tenant/{tenant_id}/gpu/fleet?live=0|1&hosts=`
 pub async fn get_fleet(
     State(state): State<FleetState>,
@@ -769,7 +836,9 @@ pub async fn get_fleet(
         .filter(|(a, _, _)| matches_host_filter(a, &filter))
         .collect();
 
-    Ok(Json(build_fleet_response(&state, entries, live, 0, false).await))
+    Ok(Json(
+        build_fleet_response(&state, entries, live, 0, false, query.interval_ms).await,
+    ))
 }
 
 /// `GET /api/tenant/{tenant_id}/gpu/fleet/{agent_id}` — one GPU host in full + inventory.
@@ -790,7 +859,7 @@ pub async fn get_fleet_host(
         .find(|(a, _, _)| a.id == Some(aid))
         .ok_or_else(|| ApiError::NotFound("GPU server not found".to_string()))?;
 
-    let mut resp = build_fleet_response(&state, vec![found], live, 0, true).await;
+    let mut resp = build_fleet_response(&state, vec![found], live, 0, true, query.interval_ms).await;
     resp.hosts
         .pop()
         .map(Json)

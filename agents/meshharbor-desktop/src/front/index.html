@@ -572,10 +572,17 @@
             </p>
           </div>
           <div class="gpu-head-actions">
-            <label class="gpu-live-toggle" id="gpu-live-wrap">
-              <input type="checkbox" id="gpu-live-toggle" checked />
-              <span data-i18n="gpu.liveToggle">Live (2s)</span>
-            </label>
+            <div class="gpu-live-controls" id="gpu-live-wrap">
+              <label class="gpu-live-toggle">
+                <input type="checkbox" id="gpu-live-toggle" checked />
+                <span data-i18n="gpu.liveToggle">Live</span>
+              </label>
+              <div class="gpu-cadence-group mono" id="gpu-cadence" role="group" aria-label="Refresh cadence">
+                <button type="button" class="gpu-cadence-btn" data-gpu-cadence="500">0.5s</button>
+                <button type="button" class="gpu-cadence-btn active" data-gpu-cadence="1000">1s</button>
+                <button type="button" class="gpu-cadence-btn" data-gpu-cadence="2000">2s</button>
+              </div>
+            </div>
             <button type="button" id="gpu-btn-refresh" data-i18n="common.refresh">Refresh</button>
             <button type="button" id="gpu-btn-open-web" data-i18n="gpu.openWeb">History &amp; alerts…</button>
           </div>

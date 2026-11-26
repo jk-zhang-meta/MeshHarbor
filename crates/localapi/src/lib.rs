@@ -1735,6 +1735,8 @@ pub enum Request {
         wait_ms: u32,
         #[serde(default)]
         hosts: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interval_ms: Option<u32>,
     },
     /// FR-139 — per-Linux-user GPU·h usage table (`GET /api/agent/self/gpu/users`).
     GpuUsers {
@@ -3296,7 +3298,14 @@ pub trait LocalApiState: Send + Sync {
         }
     }
     /// FR-139 — fetch GPU fleet view from `/api/agent/self/gpu/fleet`.
-    async fn gpu_fleet(&self, _org: &str, _live: bool, _wait_ms: u32, _hosts: &[String]) -> Response {
+    async fn gpu_fleet(
+        &self,
+        _org: &str,
+        _live: bool,
+        _wait_ms: u32,
+        _hosts: &[String],
+        _interval_ms: Option<u32>,
+    ) -> Response {
         Response::Upstream {
             code: "unsupported".into(),
             message: "this node has no server connection to query GPU servers".into(),
@@ -3955,7 +3964,8 @@ where
                     live,
                     wait_ms,
                     hosts,
-                }) => state.gpu_fleet(&org, live, wait_ms, &hosts).await,
+                    interval_ms,
+                }) => state.gpu_fleet(&org, live, wait_ms, &hosts, interval_ms).await,
                 Ok(Request::GpuUsers { org, range }) => state.gpu_users(&org, &range).await,
                 Ok(req) => handle(&req, state),
                 Err(e) => Response::Error {
@@ -5574,11 +5584,25 @@ impl Client {
         wait_ms: u32,
         hosts: &[String],
     ) -> Result<GpuFleetPage, DirectoryError> {
+        self.gpu_fleet_with_interval(org, live, wait_ms, hosts, None)
+            .await
+    }
+
+    /// FR-139 — `Request::GpuFleet` with an explicit requested live cadence (`interval_ms`).
+    pub async fn gpu_fleet_with_interval(
+        &mut self,
+        org: &str,
+        live: bool,
+        wait_ms: u32,
+        hosts: &[String],
+        interval_ms: Option<u32>,
+    ) -> Result<GpuFleetPage, DirectoryError> {
         let req = Request::GpuFleet {
             org: org.to_string(),
             live,
             wait_ms,
             hosts: hosts.to_vec(),
+            interval_ms,
         };
         match self.request(&req).await? {
             Response::GpuFleet(page) => Ok(*page),

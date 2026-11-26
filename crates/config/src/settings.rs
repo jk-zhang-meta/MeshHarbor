@@ -79,7 +79,7 @@ pub struct GpuSettings {
     /// Master switch for GPU fleet endpoints, leases, and rollups. Default ON.
     #[serde(default = "gpu_default_true")]
     pub enabled: bool,
-    /// Live sampling cadence when a viewer is active (ms). Default 2000 ms.
+    /// Live sampling cadence when a viewer is active (ms). Default 1000 ms (1 s).
     #[serde(default = "gpu_default_live_interval_ms")]
     pub live_interval_ms: u32,
     /// Enable GPU alert evaluation (in-app + desktop companion). Default ON.
@@ -109,7 +109,7 @@ fn gpu_default_true() -> bool {
     true
 }
 fn gpu_default_live_interval_ms() -> u32 {
-    2000
+    1000
 }
 fn gpu_default_free_mem_max_mb() -> u32 {
     1024

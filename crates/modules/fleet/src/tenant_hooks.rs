@@ -50,10 +50,18 @@ impl TenantLifecycle for FleetTenantHooks {
                 crate::removal::kick(&self.state, id, self.state.settings.rc.removal_goodbye).await;
             }
         }
+        self.state.gpu.revoke_ws_for_tenant(&self.state.rc_hub, tenant_id);
         Ok(TenantArchived {
             devices_revoked,
             ..TenantArchived::default()
         })
+    }
+
+    async fn member_removed(&self, tenant_id: ObjectId, user_id: ObjectId) -> anyhow::Result<()> {
+        self.state
+            .gpu
+            .revoke_ws_for_member(&self.state.rc_hub, tenant_id, user_id);
+        Ok(())
     }
 }
 

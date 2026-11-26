@@ -18,11 +18,14 @@ assert.ok(!/\.outerHTML\b/.test(gpuSrc), 'gpu.js must never use outerHTML');
 assert.ok(!/insertAdjacentHTML/.test(gpuSrc), 'gpu.js must never use insertAdjacentHTML');
 assert.ok(gpuSrc.includes('waitMs:'), 'gpu.js must pass camelCase waitMs to cmd_gpu_fleet');
 assert.ok(!gpuSrc.includes('wait_ms:'), 'gpu.js must not pass snake_case wait_ms to Tauri command');
+assert.ok(gpuSrc.includes('intervalMs:'), 'gpu.js must pass camelCase intervalMs to cmd_gpu_fleet');
+assert.ok(!gpuSrc.includes('interval_ms:'), 'gpu.js must not pass snake_case interval_ms to Tauri command');
 
 // 2. Router & HTML wiring present.
 assert.ok(appSrc.includes("'gpu'"), 'app.js VIEWS must include gpu');
 assert.ok(htmlSrc.includes('data-view="gpu"'), 'index.html nav must include GPU Servers link');
 assert.ok(htmlSrc.includes('id="view-gpu"'), 'index.html must define #view-gpu section');
+assert.ok(htmlSrc.includes('data-gpu-cadence="500"'), 'index.html must expose 0.5s cadence option');
 assert.ok(htmlSrc.includes('<script src="gpu.js"></script>'), 'index.html must load gpu.js');
 
 // 3. UUID validation + shell-safe CUDA / Ascend / TPU export.

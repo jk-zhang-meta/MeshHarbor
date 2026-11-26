@@ -712,6 +712,8 @@ pub struct SelfGpuFleetQuery {
     pub wait_ms: Option<u32>,
     #[serde(default)]
     pub hosts: Option<String>,
+    #[serde(default)]
+    pub interval_ms: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -818,8 +820,15 @@ pub async fn gpu_fleet(
         .collect();
 
     Ok(Json(
-        meshharbor_mod_fleet::gpu::routes::build_fleet_response(fleet, entries, live, wait_ms, false)
-            .await,
+        meshharbor_mod_fleet::gpu::routes::build_fleet_response(
+            fleet,
+            entries,
+            live,
+            wait_ms,
+            false,
+            query.interval_ms,
+        )
+        .await,
     ))
 }
 

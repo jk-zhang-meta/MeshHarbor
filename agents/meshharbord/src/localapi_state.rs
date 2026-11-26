@@ -2441,9 +2441,16 @@ impl LocalApiState for DaemonState {
 
     /// FR-139 — live or cached GPU fleet view from `/api/agent/self/gpu/fleet`
     /// (and, on a Mac's per-user half, forwarded through the root half).
-    async fn gpu_fleet(&self, org: &str, live: bool, wait_ms: u32, hosts: &[String]) -> Response {
+    async fn gpu_fleet(
+        &self,
+        org: &str,
+        live: bool,
+        wait_ms: u32,
+        hosts: &[String],
+        interval_ms: Option<u32>,
+    ) -> Response {
         let own = match &self.self_view {
-            Some(view) => view.gpu_fleet(org, live, wait_ms, hosts).await,
+            Some(view) => view.gpu_fleet(org, live, wait_ms, hosts, interval_ms).await,
             None => Response::Upstream {
                 code: "unsupported".into(),
                 message: "this daemon was started without a server identity to ask".into(),
@@ -2455,6 +2462,7 @@ impl LocalApiState for DaemonState {
             live,
             wait_ms,
             hosts: hosts.to_vec(),
+            interval_ms,
         };
         crate::person_socket::or_machine_view(own, req).await
     }

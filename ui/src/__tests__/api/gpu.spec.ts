@@ -8,6 +8,7 @@ import {
   cardHasFault,
   cardHasWarning,
   cardRuntimeKind,
+  computeFleetSummary,
   hostHasFault,
   isCardEligibleFree,
   type GpuCardView,
@@ -169,5 +170,88 @@ describe('useGpuStore live changes, error persistence, and 503 vs 404', () => {
     vi.mocked(api.get).mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }))
     await store.refreshFleet('t1', true)
     expect(store.disabled).toBe(true)
+  })
+
+  it('supports sub-second cadence forwarding and real-time WS host merge with summary & age sync', async () => {
+    const store = useGpuStore()
+    store.setRequestedIntervalMs(500)
+
+    const hostA = makeHost({
+      agent_id: 'aid-1',
+      name: 'gpu-node-01',
+      seq: 10,
+      received_at_ms: 10_000,
+      age_ms: 500,
+      interval_ms: 500,
+      free_count: 0,
+      busy_count: 1,
+      gpus: [makeCard({ state: 'busy', util_pct: 75, mem_used_mb: 24_000 })],
+    })
+    const hostB = makeHost({
+      agent_id: 'aid-2',
+      name: 'gpu-node-02',
+      seq: 5,
+      received_at_ms: 5_000,
+      age_ms: 5_500,
+      interval_ms: 500,
+      free_count: 1,
+      busy_count: 0,
+      gpus: [makeCard({ uuid: 'GPU-0002', state: 'free', util_pct: 0, mem_used_mb: 0 })],
+    })
+    const initial = {
+      hosts: [hostA, hostB],
+      summary: computeFleetSummary([hostA, hostB]),
+      server_time_ms: 10_500,
+      live_interval_ms: 500,
+    }
+    vi.mocked(api.get).mockResolvedValueOnce(initial)
+    store.startLivePolling('t1')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(vi.mocked(api.get)).toHaveBeenCalledWith('/tenant/t1/gpu/fleet?live=1&interval_ms=500')
+
+    store.noteWsSubscribed({ tenant_id: 't1', interval_ms: 500, host_count: 2 })
+    expect(store.wsLive).toBe(true)
+    expect(store.liveIntervalMs).toBe(500)
+
+    // Out-of-order older seq with older timestamp must be ignored.
+    store.applyWsHostUpdate({
+      tenant_id: 't1',
+      host: { ...hostA, seq: 9, received_at_ms: 9_500, free_count: 1, busy_count: 0 },
+      server_time_ms: 11_000,
+      live_interval_ms: 500,
+    })
+    expect(store.hosts[0].seq).toBe(10)
+
+    // Real-time WS push for hostA frees the card and advances hostB's age accurately.
+    store.applyWsHostUpdate({
+      tenant_id: 't1',
+      host: {
+        ...hostA,
+        seq: 11,
+        received_at_ms: 11_000,
+        age_ms: 0,
+        free_count: 1,
+        busy_count: 0,
+        gpus: [makeCard({ state: 'free', util_pct: 0, mem_used_mb: 128 })],
+      },
+      server_time_ms: 11_000,
+      live_interval_ms: 500,
+    })
+    expect(store.summary.gpus_free).toBe(2)
+    expect(store.summary.gpus_busy).toBe(0)
+    expect(store.hosts.find((h) => h.agent_id === 'aid-2')?.age_ms).toBe(6_000)
+    expect(store.cardDeltas['aid-1:GPU-0001']?.utilDelta).toBe(-75)
+    expect(store.recentChanges[0]?.kind).toBe('card_state')
+
+    // A slower in-flight HTTP response with older seq must NOT regress hostA or emit inverted deltas.
+    vi.mocked(api.get).mockResolvedValueOnce(initial)
+    await store.refreshFleet('t1', true)
+    expect(store.hosts.find((h) => h.agent_id === 'aid-1')?.seq).toBe(11)
+    expect(store.summary.gpus_free).toBe(2)
+    expect(store.recentChanges).toHaveLength(1)
+
+    store.stopLivePolling()
   })
 })

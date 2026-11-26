@@ -433,6 +433,79 @@ export interface GpuFleetResponse {
   live_interval_ms?: number
 }
 
+export interface GpuWsSubscribedPayload {
+  tenant_id: string
+  interval_ms: number
+  host_count: number
+}
+
+export interface GpuWsUpdatePayload {
+  tenant_id: string
+  host: GpuHostView
+  server_time_ms: number
+  live_interval_ms?: number
+}
+
+/**
+ * Compute fleet summary counters from host projections using the exact same
+ * rules as the server's `accumulate_summary` so incremental WebSocket updates
+ * match full HTTP snapshots 1:1.
+ */
+export function computeFleetSummary(hosts: GpuHostView[]): GpuFleetSummary {
+  const sum: GpuFleetSummary = {
+    hosts_total: 0,
+    hosts_online: 0,
+    gpus_total: 0,
+    gpus_free: 0,
+    gpus_busy: 0,
+    gpus_held_idle: 0,
+    gpus_fault: 0,
+    gpus_warning: 0,
+    gpus_unknown: 0,
+    gpus_offline: 0,
+    fault_hosts: 0,
+    fault_cards: 0,
+  }
+  for (const view of hosts) {
+    sum.hosts_total += 1
+    if (view.is_online) sum.hosts_online += 1
+    sum.gpus_total += view.total_count
+
+    const hostOffline = !view.is_online || view.freshness === 'offline'
+    if (hostOffline) {
+      sum.gpus_offline = (sum.gpus_offline ?? 0) + view.total_count
+      continue
+    }
+
+    const faultCount = view.fault_count ?? 0
+    if (view.host_fault_severity != null || faultCount > 0) {
+      sum.fault_hosts = (sum.fault_hosts ?? 0) + 1
+    }
+    sum.fault_cards = (sum.fault_cards ?? 0) + faultCount
+
+    const hostCritical = view.host_fault_severity === 'critical'
+    for (const g of view.gpus) {
+      const cardCritical = g.fault_severity === 'critical'
+      const cardWarning = g.fault_severity === 'warning'
+      if (cardWarning) {
+        sum.gpus_warning = (sum.gpus_warning ?? 0) + 1
+      }
+      if (hostCritical || cardCritical) {
+        sum.gpus_fault += 1
+      } else if (g.state === 'free' && view.freshness === 'fresh' && !view.lagging) {
+        sum.gpus_free += 1
+      } else if (g.state === 'busy' || g.state === 'unattributed') {
+        sum.gpus_busy += 1
+      } else if (g.state === 'held_idle') {
+        sum.gpus_held_idle += 1
+      } else {
+        sum.gpus_unknown = (sum.gpus_unknown ?? 0) + 1
+      }
+    }
+  }
+  return sum
+}
+
 export interface GpuHistoryPoint {
   ts_ms: number
   samples: number
@@ -526,10 +599,13 @@ export function setAgentGpuServer(
 
 export function fetchGpuFleet(
   tenantId: string,
-  opts: { live?: boolean; hosts?: string[] } = {},
+  opts: { live?: boolean; hosts?: string[]; intervalMs?: number } = {},
 ): Promise<GpuFleetResponse> {
   const params = new URLSearchParams()
   if (opts.live) params.set('live', '1')
+  if (opts.live && opts.intervalMs && opts.intervalMs > 0) {
+    params.set('interval_ms', String(Math.round(opts.intervalMs)))
+  }
   if (opts.hosts?.length) params.set('hosts', opts.hosts.join(','))
   const qs = params.toString()
   return api.get(`/tenant/${tenantId}/gpu/fleet${qs ? `?${qs}` : ''}`)
@@ -539,8 +615,15 @@ export function fetchGpuHost(
   tenantId: string,
   agentId: string,
   live = true,
+  intervalMs?: number,
 ): Promise<GpuHostView> {
-  return api.get(`/tenant/${tenantId}/gpu/fleet/${agentId}${live ? '?live=1' : ''}`)
+  const params = new URLSearchParams()
+  if (live) params.set('live', '1')
+  if (live && intervalMs && intervalMs > 0) {
+    params.set('interval_ms', String(Math.round(intervalMs)))
+  }
+  const qs = params.toString()
+  return api.get(`/tenant/${tenantId}/gpu/fleet/${agentId}${qs ? `?${qs}` : ''}`)
 }
 
 export function fetchGpuHistory(

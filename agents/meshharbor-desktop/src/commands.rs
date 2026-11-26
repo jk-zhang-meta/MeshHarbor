@@ -4308,6 +4308,7 @@ pub async fn cmd_gpu_fleet(
     live: Option<bool>,
     wait_ms: Option<u32>,
     hosts: Option<Vec<String>>,
+    interval_ms: Option<u32>,
 ) -> Result<localapi::GpuFleetPage, String> {
     const SURFACE: &str = "gpu_fleet";
     let mut client = localapi::connect()
@@ -4315,11 +4316,12 @@ pub async fn cmd_gpu_fleet(
         .map_err(|e| directory_failure(SURFACE, "connect", e.into()))?;
     let host_list = hosts.unwrap_or_default();
     match client
-        .gpu_fleet(
+        .gpu_fleet_with_interval(
             org.as_deref().unwrap_or(""),
             live.unwrap_or(false),
             wait_ms.unwrap_or(0).min(3000),
             &host_list,
+            interval_ms.map(|v| v.clamp(500, 10_000)),
         )
         .await
     {

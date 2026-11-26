@@ -2383,6 +2383,11 @@ button.wl-skip:hover {
   gap: 8px;
   flex-wrap: wrap;
 }
+.gpu-live-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .gpu-live-toggle {
   display: inline-flex;
   align-items: center;
@@ -2394,6 +2399,36 @@ button.wl-skip:hover {
   border-radius: var(--mh-radius-sm);
   background: var(--bg-elev);
   cursor: pointer;
+}
+.gpu-cadence-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--mh-radius-sm);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.gpu-cadence-btn {
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.gpu-cadence-btn:last-child {
+  border-right: none;
+}
+.gpu-cadence-btn.active {
+  background: var(--primary-tint);
+  color: var(--primary);
+  font-weight: 600;
+}
+.gpu-cadence-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .gpu-summary-grid {
   display: grid;
