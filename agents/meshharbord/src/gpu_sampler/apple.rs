@@ -79,14 +79,20 @@ impl AppleBackend {
             // macOS 27 IOReport zero-guard: if both gpu freq & active ratio are
             // strictly 0 while power is also 0, treat util as None rather than
             // fabricating 0%.
-            let util_pct = if m.gpu_usage.0 == 0 && m.gpu_usage.1 <= 0.0 && m.gpu_power <= 0.0 {
-                None
-            } else {
-                Some((m.gpu_usage.1 * 100.0).clamp(0.0, 100.0).round() as u8)
-            };
-            let temp_c = (m.temp.gpu_temp_avg > 0.0).then(|| m.temp.gpu_temp_avg.round() as i16);
+            let util_pct =
+                if m.gpu_freq_mhz == 0 && m.gpu_active_ratio <= 0.0 && m.gpu_power <= 0.0 {
+                    None
+                } else {
+                    Some((m.gpu_active_ratio * 100.0).clamp(0.0, 100.0).round() as u8)
+                };
+            let temp_c = m
+                .temp
+                .gpu_temp_avg
+                .filter(|&t| t > 0.0)
+                .map(|t| t.round() as i16);
             let power_w = (m.gpu_power > 0.0).then(|| m.gpu_power.round() as u16);
-            let sm_clock_mhz = (m.gpu_usage.0 > 0).then_some(m.gpu_usage.0 as u16);
+            let sm_clock_mhz = (m.gpu_freq_mhz > 0)
+                .then(|| u16::try_from(m.gpu_freq_mhz).unwrap_or(u16::MAX));
             let mem_used_mb = (m.memory.ram_usage > 0)
                 .then(|| (m.memory.ram_usage / (1024 * 1024)) as u32);
             let mem_total_mb = (m.memory.ram_total > 0)

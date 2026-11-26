@@ -107,8 +107,9 @@ pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
     let mut out = HashMap::new();
     // Load `pdh.dll` strictly from System32 (`LOAD_LIBRARY_SEARCH_SYSTEM32`) so
     // a planted DLL in CWD/PATH can never be loaded inside a SYSTEM child.
+    use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{
-        FreeLibrary, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+        GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
     };
     let dll_w: Vec<u16> = "pdh.dll\0".encode_utf16().collect();
     // SAFETY: NUL-terminated UTF-16; System32-only search flag.

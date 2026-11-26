@@ -13,6 +13,7 @@
 //!   are dropped; unknown PIDs are ignored.
 
 use std::collections::HashMap;
+#[cfg(not(target_os = "macos"))]
 use std::ffi::OsStr;
 
 use meshharbor_remote_control::gpu::{

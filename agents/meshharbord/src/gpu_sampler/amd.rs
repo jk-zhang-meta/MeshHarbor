@@ -13,11 +13,9 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
-use meshharbor_remote_control::gpu::{
-    GpuHostStatus, GpuInventory, GpuInventoryItem, GpuSample,
-};
+use meshharbor_remote_control::gpu::{GpuHostStatus, GpuInventory, GpuSample};
 #[cfg(target_os = "linux")]
-use meshharbor_remote_control::gpu::{GpuProc, ProcsState};
+use meshharbor_remote_control::gpu::{GpuInventoryItem, GpuProc, ProcsState};
 
 use super::proc_linux::ProcLookup;
 
