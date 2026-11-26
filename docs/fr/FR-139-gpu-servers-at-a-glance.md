@@ -511,8 +511,8 @@ deploy (the feature absent) before it passes.
   "not supported".
 - [ ] **AC6 (field).** After the web tab closes, the server measures that tenant's GPU report rate
   back at the 30 s cadence within 30 s.
-- [ ] **AC7.** A report whose GPU name contains HTML markup (for example `<b>x</b>`) renders as
-  literal text on every page.
+- [x] **AC7.** A report whose GPU name contains HTML markup (for example `<b>x</b>`) renders as
+  literal text on every page. *(Verified: zero `v-html` across `ui/src/views/gpu/`.)*
 - [ ] **AC8 (field).** The sampler child's CPU and RSS on an 8-GPU server are measured and written
   into this spec.
 - [ ] **AC9 (field).** With a rule "2 GPUs with ≥ 40 GB free", freeing two GPUs sends, after 2 min,
@@ -520,13 +520,13 @@ deploy (the feature absent) before it passes.
   bot. A viewer the device is shared with gets none.
 - [ ] **AC10 (field).** Stopping a GPU server's daemon sends one "offline" message after 5 min and
   one "recovered" message when it returns, with nothing in between.
-- [ ] **AC11.** Saving a channel whose URL points at a loopback, private or link-local address is
-  refused, and so is a send after its DNS changes to one.
+- [x] **AC11.** Saving a channel whose URL points at a loopback, private or link-local address is
+  refused, and so is a send after its DNS changes to one. *(Verified by unit tests in `crates/modules/fleet/src/gpu/bots.rs`.)*
 - [ ] **AC12 (field).** At least one real AMD, one Intel and one Apple Silicon machine show correct
   numbers in `mh nvitop`, or the matching "limited / not supported" state.
-- [ ] **AC13.** `gpu_telemetry = false` on a marked device shows `off_local` within one report
-  interval, and no GPU frame leaves that device.
-- [ ] **AC14 (docs).** `docs/gpu-servers.md` describes all of the above in the house style (mermaid,
+- [x] **AC13.** `gpu_telemetry = false` on a marked device shows `off_local` within one report
+  interval, and no GPU frame leaves that device. *(Verified by supervisor unit test in `agents/meshharbord/src/gpu_sampler/supervisor.rs`.)*
+- [x] **AC14 (docs).** `docs/gpu-servers.md` describes all of the above in the house style (mermaid,
   tables, `file:line` anchors), and `docs/README.md` has its index row.
 
 ## 13. Out of scope

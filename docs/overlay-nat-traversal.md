@@ -906,3 +906,33 @@ up-front to relay; install skew converges via the re-upgrade tick; stale-srflx
 re-trickles; and a same-LAN pair / Phase A path / flag-unset default stay
 unchanged. See the P5 VM-field-test recipe for the enrollment + systemd
 mechanics.
+
+## 9. Topology-aware same-host and LAN probing (FR-140)
+
+FR-140 replaces static `/24` LAN assumptions with active, authenticated probing
+ordered by topological proximity (`loopback < subnet < routed LAN < public / srflx < relay`),
+riding `DirectTier::Lan` with a diagnostic `LanPathKind` (`loopback` | `subnet` | `routed`)
+so all existing on-link invariants and exit-route exemptions stay unchanged:
+
+```mermaid
+flowchart LR
+    P["candidates::plan_candidates"] --> LB["1. Same-host loopback<br/>(Windows + mirrored WSL2)"]
+    LB --> SUB["2. Netmask-aware subnet<br/>(/16..=/30 match)"]
+    SUB --> RT["3. Same-NAT routed RFC 1918<br/>(Disco pong required first)"]
+    RT --> PUB["4. Public / srflx / relay"]
+```
+
+- **Disco responder widening**: `CarrierPlane::disco_handle` replies to any
+  netmap-authorized non-`backbone_only` peer (not only already-installed peers),
+  enabling symmetric discovery before WireGuard promotion while keeping
+  `backbone_only` peers strictly isolated.
+- **Mirrored WSL2 (`VisibleLan`)**: Mirrored WSL2 guests never bind or advertise
+  host LAN addresses (`gather_lan_interfaces_named()` stays empty), preventing
+  host socket starvation and phantom self-candidates. Instead, `VisibleLan` feeds
+  visible prefixes strictly for outbound LAN matching over the wildcard `public_sock`.
+- **Same-host loopback**: Enabled on Windows hosts and mirrored WSL2 guests
+  (`OVERLAY_LOOPBACK_DIRECT`, default on; auto-skipped when `public_sock` is
+  `IP_UNICAST_IF`-pinned), probing the peer's public-dial port bands and loopback
+  addresses; exit-route exemption builders explicitly exclude loopback destinations.
+- **Kill switches**: `OVERLAY_CANDIDATE_DISCO`, `OVERLAY_LOOPBACK_DIRECT`,
+  `OVERLAY_WSL_MIRRORED_GUARD`.

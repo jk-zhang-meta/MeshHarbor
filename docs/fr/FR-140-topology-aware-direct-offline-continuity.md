@@ -141,7 +141,7 @@ flowchart TD
   `opk`, `net`, `verb`, expired, pre-`not_before`, clock skew, disabled `ssh`/`exec`, FR-127
   protected, missing/bad FR-129 TOTP, `via_service`, FR-90 ticketed, replayed `req_id`, routed
   source IP) fail closed with explicit reasons; `composition_tests` passes.
-- [ ] **AC4 (Docs).** `docs/overlay-nat-traversal.md`, `docs/overlay-communication.md`,
+- [x] **AC4 (Docs).** `docs/overlay-nat-traversal.md`, `docs/overlay-communication.md`,
   `docs/meshharbor-ssh.md`, `docs/security-baseline.md`, and `docs/README.md` document the new
   behavior with Mermaid diagrams and verified anchors.
 

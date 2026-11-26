@@ -447,10 +447,15 @@ the machine, on purpose.
 
 ## Deferred
 
-- **Overlay-direct transport.** `serve_connection` over `NsTcpStream` on a
-  netstack port, with server-minted grants pushed to the target (the
-  `OverlayRelayGrant` pattern), so there is no key distribution. Adds P2P
-  latency and server-independence.
+- **Overlay-direct transport (shipped in FR-140 Phase 3 for offline LAN fallback).**
+  When org `offline_access` (default **off**) is enabled and the central server
+  is unreachable, `mh exec` falls back to `p2pctl` on overlay TCP port `41642`
+  with strict `/32` WireGuard static-key ingress binding, mutual X25519+HMAC
+  `hello`, verb-scoped `"exec"` EdDSA capabilities (`crates/remote_control/src/offline_cap.rs:107`),
+  shared `exec::admit` local gates (`agents/meshharbord/src/exec.rs:165`;
+  `via_service` and FR-90 tickets always refused offline), atomic
+  `(origin, cap_jti, req_id, req_digest)` replay reservation before launch, and
+  bounded offline audit journaling uploaded on reconnect.
 - **Typed verb catalog.** Native cross-platform `NetDiag` / `LogGrep` /
   `FirewallRules` verbs promoted from whichever shell bundles prove themselves,
   plus exposing the existing `status` / `peers` / `ping` / `config` /

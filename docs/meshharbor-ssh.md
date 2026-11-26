@@ -1615,3 +1615,24 @@ russh has a real CVE history — CVE-2023-28113 (insufficient DH validation) and
 RUSTSEC-2026-0154 / CVE-2026-46673 (unbounded allocation, CVSS 7.5, fixed in
 0.60.3) — and releases fast. Pin it, watch it, and get `cargo audit` into CI
 before this ships enabled.
+
+## 7. Offline LAN fallback via Overlay P2P Control (FR-140 Phase 3)
+
+When an org opts into `offline_access` (default **off**) and the control plane is
+unreachable, `mh ssh` / `mh scp` / `mh sftp` fall back to the daemon's overlay
+P2P control plane (`p2pctl`, TCP port `41642` intercepted via `SplitTun::wrap_ports`
+with unconditional `/32` WireGuard static-key ingress binding):
+
+- **Shared admission**: Online WS grants and offline `p2pctl` grants both pass
+  through `ssh::admit_grant` (`agents/meshharbord/src/ssh.rs:3443`), enforcing
+  identical local gates (`ssh_enabled`, FR-127 `protected`, FR-129 TOTP,
+  `ssh_max_privilege`, `strictest_of` consent). `via_service` (FR-105) and FR-90
+  vault-ticketed requests are always refused offline.
+- **Mutual daemon proof & stateless capabilities**: Every `p2pctl` connection
+  performs a mutual X25519+HMAC `hello` bound to both peers' WireGuard static
+  keys before trusting host keys or transmitting capabilities. Capabilities are
+  verb-scoped (`"ssh"`) EdDSA JWTs minted by `OfflineCapSigner`
+  (`crates/remote_control/src/offline_cap.rs:107`) on prior online approvals,
+  bound to `(tid, net, tgt, org, opk, ceilings, jti)` and checked against
+  `offline_caps_not_before_ms`. Raw capabilities never cross LocalAPI.
+- **Kill switches**: `p2p_control_enabled` (device-side), org `offline_access` (default off).

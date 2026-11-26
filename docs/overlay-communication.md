@@ -1227,3 +1227,30 @@ The netns lab that validates these tiers blocks egress with a default-DROP
 Always add `iptables -I OUTPUT 1 -o meshharbor0 -j ACCEPT` inside the namespace, and
 pin `meshharbor.itachi.fans` in `/etc/netns/<ns>/hosts` — DNS via the systemd-resolved stub
 does not resolve inside a namespace.
+
+---
+
+## 11. WAN-independent offline LAN continuity (FR-140 Phase 2)
+
+When the central server or WAN is unreachable — including across a cold daemon
+boot — authorized LAN and same-host peers continue communicating over the
+WireGuard overlay using a locally verified netmap cache (`overlay_netmap_cache`,
+bounded by `overlay_netmap_cache_max_days`):
+
+- **Measured relay availability**: `TierAvailability.relay` is `true` iff the
+  control WS is attached, a DERP mux is connected, or a relay carrier/warm grant
+  is live. Online strict-zone nodes (FR-124) are unaffected; while offline
+  (`relay == false`), `PathMonitor` never emits `PathAction::Relay` and caps
+  direct-tier retry penalties at 10 s (reset immediately on OS network change).
+- **Authenticated cache**: Persisted atomically beside config
+  (`<config_dir>/overlay/netmap-<tenant>.json`, owner-only permissions) with
+  `HKDF-SHA256(wg_secret, "meshharbor/netmap-cache/v1" || tenant_id || node_id)`
+  MAC verification. Offline rewrites never extend `last_authoritative_at_ms`.
+- **Anti-resurrection & teardown hygiene**: Authority-reducing netmap diffs
+  (dropped peer, tighter `ingress_rules`, `backbone_only`, fewer routes, key
+  removal, raised `offline_caps_not_before_ms`) flush synchronously; `Goodbye`
+  and terminal `JoinRefused` delete the cache; HTTP 401 suspends cold seeding
+  without deleting.
+- **Zero-rebuild reattach**: Boot-time `seed_from_cache` brings up TUN/netstack,
+  MagicDNS, and direct LAN/loopback carriers; when the control WS reconnects, the
+  runtime re-attaches live without tearing down the TUN adapter.

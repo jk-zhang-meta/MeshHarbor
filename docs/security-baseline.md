@@ -751,3 +751,36 @@ Re-run: `bun audit` (ui) + `cargo audit` (buildhost, `~/.cargo/bin`).
 Device-side and updater gaps are tracked with their features:
 [installation.md](installation.md) (updater trust chain),
 [fr/README.md](fr/README.md) (everything in flight).
+
+---
+
+## 10 · FR-139 & FR-140 security controls
+
+- **FR-139 GPU telemetry boundaries** ([`gpu-servers.md`](gpu-servers.md)):
+  - Vendor driver libraries (`nvml-wrapper`, DRM sysfs, `macmon`, PDH) execute
+    solely in an isolated `meshharbord gpu-sampler` child process with
+    non-blocking reaping; a wedged driver cannot stall the daemon.
+  - Process attribution is strictly L1 (`/proc/<pid>/{status,comm,stat,cgroup}`):
+    command lines (`cmdline`) and environment (`environ`) are never read.
+  - `gpu_telemetry`, `gpu_processes`, and `gpu_metrics_listen` (strictly
+    loopback-only at config load and `ConfigSet`) are device-owned and
+    structurally refused in `DesiredConfig`.
+  - GPU alert rules and bot webhooks are strictly owner-only (never delivered to
+    device-share recipients), masked on read, and SSRF-hardened (HTTPS-only,
+    official host/path pinning, public-IP verification at save and send with
+    pinned resolved IPs and `redirect::Policy::none()`).
+  - LocalAPI `GpuFleet`, `GpuUsers`, and `GpuAlerts` are read-only and allowed
+    on `Scope::Person` (`localapi::person_may`) with the exact same server-side
+    visibility scope as `Devices`. All GPU Web views render node strings via Vue
+    interpolation only (**zero `v-html`**).
+- **FR-140 offline LAN & P2P control boundaries** ([`FR-140`](fr/FR-140-topology-aware-direct-offline-continuity.md)):
+  - Local netmap cache is MAC-protected with an HKDF-SHA256 key derived from the
+    node's WireGuard secret, flushes synchronously on authority-reducing diffs,
+    deletes on `Goodbye`/terminal refusal, and suspends on HTTP 401.
+  - Overlay `p2pctl` (`TCP 41642`) unconditionally requires exact `/32` source IP
+    == decrypting WireGuard static key (even in `RpfMode::Warn`), performs a
+    mutual X25519+HMAC `hello` before any trust, and gates offline `ssh`/`exec`
+    on org opt-in `offline_access` (default **off**), verb-scoped EdDSA
+    capabilities (`OfflineCapSigner`), shared local admission gates, atomic
+    `exec` replay reservation, and unconditional refusal of `via_service` and
+    FR-90 vault-ticketed requests.
