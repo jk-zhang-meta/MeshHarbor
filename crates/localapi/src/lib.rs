@@ -922,6 +922,10 @@ pub struct TierWhy {
 pub struct PeerCarrierDebug {
     /// Carrier tier: `lan` / `public` / `srflx` / `relay`.
     pub tier: String,
+    /// FR-139 — diagnostic sub-kind for `tier == "lan"`: `"loopback"`,
+    /// `"subnet"`, or `"routed"`. Omitted when absent or for non-LAN tiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// `true` = we initiated this flow (outbound dial / our allocation);
     /// `false` = adopted from the peer's authenticated inbound dial.
     pub initiated: bool,
@@ -6475,6 +6479,7 @@ mod tests {
         let mut p2 = p.clone();
         p2.debug = Some(PeerCarrierDebug {
             tier: "relay".into(),
+            path: None,
             initiated: true,
             hs_done: false,
             local: Some("94.130.141.74:10850".into()),
@@ -8165,6 +8170,7 @@ mod tests {
         }];
         p.debug = Some(PeerCarrierDebug {
             tier: "direct".into(),
+            path: None,
             initiated: true,
             hs_done: true,
             local: Some("192.0.2.10:41641".into()),

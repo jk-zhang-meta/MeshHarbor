@@ -3743,6 +3743,7 @@ mod tests {
         v.peers.push(p2);
         v.peers[0].debug = Some(PeerCarrierDebug {
             tier: "srflx".into(),
+            path: None,
             initiated: true,
             hs_done: true,
             local: None,
@@ -3757,6 +3758,7 @@ mod tests {
         });
         v.peers[1].debug = Some(PeerCarrierDebug {
             tier: "relay".into(),
+            path: None,
             initiated: false,
             hs_done: false,
             local: None,

@@ -51,6 +51,10 @@ pub(super) struct DirectCtx {
     /// peer reaches US on our per-interface PUBLIC socket, already advertised in
     /// `endpoints` since a public NIC IP passes `is_usable_lan_ipv4`).
     pub(super) public_sock: Option<Arc<UdpSocket>>,
+    /// FR-139 — true if `public_sock` is pinned via `IP_UNICAST_IF` (cannot route `127.0.0.1`).
+    pub(super) public_sock_pinned: bool,
+    /// FR-139 — whether this host may probe same-host `127.0.0.1` loopback candidates.
+    pub(super) loopback_eligible: bool,
     /// Phase C — the interface socket that owns our FIRST advertised srflx
     /// candidate (`srflx_endpoints[0]`), paired with that candidate string. To
     /// hole-punch a NAT'd peer we must dial its srflx from THIS socket, so our
@@ -272,6 +276,25 @@ pub(super) fn gather_lan_candidates(
                 && !out.iter().any(|c: &LanCandidate| c.dst == dst)
             {
                 out.push(LanCandidate::wildcard_subnet(dst));
+            }
+        }
+    }
+    // 3. Same-host loopback (`127.0.0.1`) candidates on Windows hosts and
+    //    Mirrored WSL2 guests via unpinned wildcard `public_sock` (Disco-gated).
+    if direct::loopback_direct_enabled()
+        && ctx.loopback_eligible
+        && !ctx.public_sock_pinned
+        && let Some(ps) = &ctx.public_sock
+    {
+        let my_pub_port = ps.local_addr().ok().map(|a| a.port());
+        for cand in super::super::candidates::loopback_candidates(
+            &cfg.lan_endpoints,
+            &cfg.srflx_endpoints,
+            my_pub_port,
+            direct::direct_port(),
+        ) {
+            if !out.iter().any(|c: &LanCandidate| c.dst == cand.dst) {
+                out.push(cand);
             }
         }
     }
@@ -1850,6 +1873,8 @@ impl OverlayRuntime {
                 visible_lan: v.visible_lan,
                 endpoints: v.endpoints,
                 public_sock: v.public_sock,
+                public_sock_pinned: v.public_sock_pinned,
+                loopback_eligible: direct::loopback_host_eligible(),
                 punch: None,
                 my_nat: None,
                 v6: v.v6,
@@ -1915,6 +1940,7 @@ impl OverlayRuntime {
         // tier (peer's public NIC) AND the srflx tier (peer's NAT mapping), so
         // it's bound when EITHER is on. Best-effort: a bind failure just leaves
         // both public-dial tiers off (relay still works).
+        let mut public_sock_pinned = false;
         let public_sock = if direct::public_direct_enabled() || direct::srflx_enabled() {
             // Stable-port twin on its OWN band: a wildcard bind collides with
             // the interface-specific LAN binds above on the same port (no
@@ -1933,6 +1959,7 @@ impl OverlayRuntime {
                     // of a full-tunnel corp VPN's captured default.
                     if let Some(ix) = direct::vpn_bypass_ifindex() {
                         direct::force_egress_interface(&s, ix);
+                        public_sock_pinned = true;
                         info!(
                             ifindex = ix,
                             "overlay: VPN-bypass — public-dial egress pinned to the physical uplink"
@@ -1965,6 +1992,8 @@ impl OverlayRuntime {
             visible_lan,
             endpoints,
             public_sock,
+            public_sock_pinned,
+            loopback_eligible: direct::loopback_host_eligible(),
             // Set after the startup srflx gather (Phase C) once we know which
             // interface socket owns our first advertised srflx candidate + the
             // NAT-type probe on it.
@@ -3371,6 +3400,16 @@ impl OverlayRuntime {
                     // (same rc.211 rule as the destructive installs).
                     relay_bq.invalidate(nid);
                     let off_link = matches!(p.tier, DirectTier::Public | DirectTier::Srflx);
+                    let lan_path_kind = (p.tier == DirectTier::Lan).then(|| {
+                        self.planner(|pl| pl.kind_for(&p.pubkey, p.dst))
+                            .unwrap_or_else(|| {
+                                if p.dst.ip().is_loopback() {
+                                    super::super::candidates::LanPathKind::Loopback
+                                } else {
+                                    super::super::candidates::LanPathKind::Subnet
+                                }
+                            })
+                    });
                     by_node.insert(
                         *nid,
                         Installed {
@@ -3379,6 +3418,7 @@ impl OverlayRuntime {
                             carrier_local: p.local,
                             carrier_dst: Some(p.dst),
                             public_direct_dst: off_link.then_some(p.dst),
+                            lan_path_kind,
                             ..Installed::base(p.pubkey, p.overlay_ip, p.tier, now)
                         },
                     );
@@ -3490,6 +3530,7 @@ impl OverlayRuntime {
                 initiated: true,
                 carrier_local: sock.local_addr().ok(),
                 carrier_dst: Some(dst),
+                lan_path_kind: Some(cand.kind),
                 ..Installed::base(
                     cfg.public_key,
                     cfg.overlay_ip,
@@ -5346,6 +5387,217 @@ mod tests {
             .await
             .expect("wildcard egress resolves to public_sock");
         assert!(Arc::ptr_eq(&egress, &public_sock));
+    }
+
+    /// FR-139 — two carrier planes on `127.0.0.1` with zero advertised
+    /// `lan_endpoints` discover each other via loopback Disco, promote
+    /// `tier=lan path=loopback`, exchange encrypted WireGuard data, and never
+    /// emit a loopback exit-route exemption. Also verifies `public_sock_pinned`
+    /// suppresses loopback candidates.
+    #[tokio::test]
+    async fn fr139_two_planes_on_loopback_discover_and_establish_lan_loopback_path() {
+        use crate::overlay::candidates::{CandidatePlanner, LanPathKind};
+        use crate::overlay::carrier_plane::CarrierPlane;
+        use crate::overlay::disco::Prober;
+
+        let kp_a = WgKeypair::generate();
+        let kp_b = WgKeypair::generate();
+        let (mut dev_a, _tun_rx_a) = WgDevice::new(kp_a.secret.clone());
+        let (mut dev_b, mut tun_rx_b) = WgDevice::new(kp_b.secret.clone());
+
+        let plane_a = CarrierPlane::new();
+        let plane_b = CarrierPlane::new();
+        let mut disco_rx_a = dev_a.take_disco_events().expect("disco rx a");
+        dev_a.set_plane(plane_a.attach(dev_a.plane_hooks()));
+        dev_b.set_plane(plane_b.attach(dev_b.plane_hooks()));
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_b = sock_b.local_addr().unwrap();
+        let _t_a = plane_a.adopt_socket(sock_a.clone());
+        let _t_b = plane_b.adopt_socket(sock_b.clone());
+
+        // Authorize peers in netmap (zero advertised lan_endpoints; B's port
+        // is learned from its srflx advert, exactly like Mirrored WSL2).
+        let mk_np = |kp: &WgKeypair, ip: &str, srflx: Vec<String>| NetmapPeer {
+            node_id: ObjectId::new(),
+            overlay_ip: ip.into(),
+            name: String::new(),
+            wg_public_key: kp.public_base64(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: srflx,
+            srflx_nat: Some("cone".into()),
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            supports_derp_floor: false,
+            supports_org_relay: false,
+            supports_overlay_echo: false,
+            relay_strategy: None,
+            prefer_relay_ms: None,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+            ingress_rules_preview: None,
+            backbone_only: false,
+        };
+        let np_b = mk_np(&kp_b, "100.64.0.2", vec![format!("198.51.100.9:{}", addr_b.port())]);
+        let np_a = mk_np(&kp_a, "100.64.0.1", vec![]);
+        dev_a.sync_peer_ingress(&HashMap::from([(np_b.node_id, np_b.clone())]));
+        dev_b.sync_peer_ingress(&HashMap::from([(np_a.node_id, np_a.clone())]));
+
+        let cfg_b = peer_config_from_netmap(&np_b).unwrap();
+        let ctx_a = DirectCtx {
+            public_sock: Some(sock_a.clone()),
+            loopback_eligible: true,
+            ..Default::default()
+        };
+
+        // Pinned public_sock must suppress loopback candidates.
+        let ctx_pinned = DirectCtx {
+            public_sock: Some(sock_a.clone()),
+            public_sock_pinned: true,
+            loopback_eligible: true,
+            ..Default::default()
+        };
+        assert!(
+            gather_lan_candidates(&ctx_pinned, &cfg_b).is_empty(),
+            "IP_UNICAST_IF-pinned public_sock must skip loopback probing"
+        );
+
+        let mut planner = CandidatePlanner::default();
+        let t0 = Instant::now();
+        // Silence -> loopback candidate requires Disco pong first.
+        assert!(
+            resolve_direct_candidates_with(
+                Some(&ctx_a),
+                &cfg_b,
+                CandidateRotation::default(),
+                Some(&planner),
+                t0,
+            )
+            .lan
+            .is_none()
+        );
+
+        let adv = gather_lan_candidates(&ctx_a, &cfg_b);
+        let target = adv
+            .iter()
+            .copied()
+            .find(|c| c.dst == addr_b)
+            .expect("B's loopback port must appear in loopback candidates");
+        assert_eq!(target.kind, LanPathKind::Loopback);
+
+        let mut prober = Prober::new();
+        let (nonce, frame) = prober.next_ping(&cfg_b.public_key, &kp_a.secret, &kp_a.public);
+        let sent_at = Instant::now();
+        sock_a.send_to(&frame, target.dst).await.unwrap();
+        planner.record_sent(nonce, cfg_b.public_key, target, sent_at);
+
+        let pong = tokio::time::timeout(Duration::from_secs(2), disco_rx_a.recv())
+            .await
+            .expect("disco pong arrived over 127.0.0.1")
+            .expect("channel open");
+        let hit = planner.on_pong(&pong).expect("loopback pong verified");
+        assert_eq!(hit.kind, LanPathKind::Loopback);
+
+        let chosen = resolve_direct_candidates_with(
+            Some(&ctx_a),
+            &cfg_b,
+            CandidateRotation::default(),
+            Some(&planner),
+            Instant::now(),
+        )
+        .lan
+        .expect("verified loopback candidate must be selected");
+        assert_eq!(chosen.dst, addr_b);
+        assert_eq!(chosen.kind, LanPathKind::Loopback);
+
+        // Install carriers and verify real WG packet delivery over 127.0.0.1.
+        dev_a
+            .add_direct_peer(
+                sock_a.clone(),
+                kp_b.public.to_bytes(),
+                Ipv4Addr::new(100, 64, 0, 2),
+                addr_b,
+                true,
+            )
+            .await;
+        dev_b
+            .add_direct_peer(
+                sock_b.clone(),
+                kp_a.public.to_bytes(),
+                Ipv4Addr::new(100, 64, 0, 1),
+                sock_a.local_addr().unwrap(),
+                false,
+            )
+            .await;
+        let mut pkt = vec![0u8; 28];
+        pkt[0] = 0x45;
+        pkt[2..4].copy_from_slice(&28u16.to_be_bytes());
+        pkt[9] = 17; // UDP
+        pkt[12..16].copy_from_slice(&[100, 64, 0, 1]);
+        pkt[16..20].copy_from_slice(&[100, 64, 0, 2]);
+        let sender_a = dev_a.sender();
+        for _ in 0..10 {
+            let _ = sender_a.send_ip_packet(&pkt).await;
+            if let Ok(Some(got)) =
+                tokio::time::timeout(Duration::from_millis(150), tun_rx_b.recv()).await
+            {
+                assert_eq!(got, pkt);
+                break;
+            }
+        }
+        assert!(
+            dev_a.peer_handshake_done(&kp_b.public.to_bytes()) == Some(true),
+            "WireGuard handshake over 127.0.0.1 must latch"
+        );
+
+        // Diagnostic view reports tier=lan, path=loopback, and exit exemptions
+        // never include 127.0.0.1.
+        let mut by_node = HashMap::new();
+        by_node.insert(
+            np_b.node_id,
+            Installed {
+                initiated: true,
+                hs_done: true,
+                carrier_local: sock_a.local_addr().ok(),
+                carrier_dst: Some(addr_b),
+                lan_path_kind: Some(chosen.kind),
+                ..Installed::base(
+                    kp_b.public.to_bytes(),
+                    Ipv4Addr::new(100, 64, 0, 2),
+                    DirectTier::Lan,
+                    Instant::now(),
+                )
+            },
+        );
+        let view = build_overlay_view(
+            "100.64.0.1",
+            &by_node,
+            &HashMap::from([(np_b.node_id, np_b)]),
+            &HashMap::new(),
+            Instant::now(),
+            1_700_000_000_000,
+            &HashMap::new(),
+        );
+        let dbg = view.peers[0].debug.as_ref().expect("carrier debug");
+        assert_eq!(dbg.tier, "lan");
+        assert_eq!(dbg.path.as_deref(), Some("loopback"));
+
+        let exemptions = exit_exemption_set(&[], &by_node);
+        assert!(
+            exemptions.iter().all(|ip| !ip.is_loopback()),
+            "loopback exit peer must never install a 127.0.0.1 exemption route"
+        );
+        assert!(exemptions.is_empty());
     }
 
     #[tokio::test]

@@ -220,6 +220,7 @@ mod tests {
             probes: Vec::new(),
             debug: kind.map(|k| PeerCarrierDebug {
                 tier: "relay".into(),
+                path: None,
                 initiated: true,
                 hs_done: true,
                 local: None,

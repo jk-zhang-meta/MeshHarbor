@@ -136,6 +136,9 @@ pub struct PlaneView {
     /// The wildcard public/srflx dialer at `stable_port + 256` (or `+768` in
     /// band 2), when either public-direct or srflx is enabled.
     pub public_sock: Option<Arc<UdpSocket>>,
+    /// FR-139 — true when `public_sock` was pinned to a physical NIC via
+    /// `IP_UNICAST_IF` (vpn-bypass), making it unusable for `127.0.0.1` loopback.
+    pub public_sock_pinned: bool,
     /// The advertised `ip:port` per LAN socket.
     pub endpoints: Vec<String>,
     pub my_ips: Vec<Ipv4Addr>,
@@ -153,6 +156,7 @@ pub struct PlaneView {
 struct PlaneBinds {
     socks: Vec<(Ipv4Addr, Arc<UdpSocket>)>,
     public_sock: Option<Arc<UdpSocket>>,
+    public_sock_pinned: bool,
     endpoints: Vec<String>,
     my_ips: Vec<Ipv4Addr>,
     my_lan_ifaces: Vec<direct::LanIface>,
@@ -566,6 +570,7 @@ impl CarrierPlane {
             info!("carrier plane: no bindable LAN interface; direct path off (relay only)");
             return None;
         }
+        let mut public_sock_pinned = false;
         let public_sock = if direct::public_direct_enabled() || direct::srflx_enabled() {
             let public_port = if stable_port != 0 {
                 stable_port + direct::PUBLIC_DIAL_PORT_OFFSET
@@ -578,6 +583,7 @@ impl CarrierPlane {
                 Some(s) => {
                     if let Some(ix) = direct::vpn_bypass_ifindex() {
                         direct::force_egress_interface(&s, ix);
+                        public_sock_pinned = true;
                     }
                     Some(Arc::new(s))
                 }
@@ -655,6 +661,7 @@ impl CarrierPlane {
         st.binds = Some(PlaneBinds {
             socks,
             public_sock,
+            public_sock_pinned,
             endpoints,
             my_ips,
             my_lan_ifaces: ifaces,
@@ -685,6 +692,7 @@ impl CarrierPlane {
         st.binds.as_ref().map(|b| PlaneView {
             socks: b.socks.clone(),
             public_sock: b.public_sock.clone(),
+            public_sock_pinned: b.public_sock_pinned,
             endpoints: b.endpoints.clone(),
             my_ips: b.my_ips.clone(),
             my_lan_ifaces: b.my_lan_ifaces.clone(),
@@ -2779,6 +2787,7 @@ mod tests {
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
             visible_lan: direct::VisibleLan::default(),
+            public_sock_pinned: false,
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -2881,6 +2890,7 @@ mod tests {
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
             visible_lan: direct::VisibleLan::default(),
+            public_sock_pinned: false,
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -3867,6 +3877,7 @@ mod tests {
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
             visible_lan: direct::VisibleLan::default(),
+            public_sock_pinned: false,
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -3986,6 +3997,7 @@ mod tests {
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
             visible_lan: direct::VisibleLan::default(),
+            public_sock_pinned: false,
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -4108,6 +4120,7 @@ mod tests {
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
             visible_lan: direct::VisibleLan::default(),
+            public_sock_pinned: false,
         });
 
         // Healthy STUN server for Org B.

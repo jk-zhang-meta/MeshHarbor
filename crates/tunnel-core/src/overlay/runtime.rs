@@ -594,6 +594,8 @@ struct Installed {
     /// cooldown (CC1) and the off-link handshake deadline. `Relay` for a coturn
     /// carrier, `Lan`/`Public`/`Srflx` for the three direct tiers.
     tier: DirectTier,
+    /// FR-139 — diagnostic sub-kind when `tier == DirectTier::Lan` (`loopback` / `subnet` / `routed`).
+    lan_path_kind: Option<super::candidates::LanPathKind>,
     /// rc.276 diagnostics — did WE initiate this carrier's flow (outbound dial /
     /// our own allocation), or was it adopted from an authenticated INBOUND
     /// dial (accept re-point / accepted-probe promote)? The winhost-a corp-VPN
@@ -675,6 +677,7 @@ impl Installed {
             reinit_recent: 0,
             reinit_window_from: now,
             tier,
+            lan_path_kind: None,
         }
     }
 }
@@ -2749,6 +2752,18 @@ fn build_overlay_view(
                         DirectTier::Relay => "relay",
                     }
                     .to_string(),
+                    path: (i.tier == DirectTier::Lan).then(|| {
+                        i.lan_path_kind
+                            .unwrap_or_else(|| {
+                                if i.carrier_dst.is_some_and(|d| d.ip().is_loopback()) {
+                                    super::candidates::LanPathKind::Loopback
+                                } else {
+                                    super::candidates::LanPathKind::Subnet
+                                }
+                            })
+                            .as_str()
+                            .to_string()
+                    }),
                     initiated: i.initiated,
                     hs_done: i.hs_done,
                     local: i.carrier_local.map(|a| a.to_string()),
@@ -3136,9 +3151,20 @@ impl OverlayRuntime {
                 back.push((*nid, DirectTier::Lan));
             }
             let Some(ctx) = direct_ctx else { continue };
-            // Probe LAN candidates for cold, relayed, and non-LAN-direct peers.
-            if inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan) {
-                let adv_lan = super::runtime::establish::gather_lan_candidates(ctx, &cfg);
+            // Probe LAN candidates for cold, relayed, and non-LAN-direct peers
+            // (and loopback upgrades for non-loopback LAN peers on eligible hosts).
+            let probe_loopback_only = inst.is_some_and(|i| {
+                i.is_direct
+                    && i.tier == DirectTier::Lan
+                    && i.lan_path_kind != Some(super::candidates::LanPathKind::Loopback)
+                    && ctx.loopback_eligible
+                    && !ctx.public_sock_pinned
+            });
+            if inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan) || probe_loopback_only {
+                let mut adv_lan = super::runtime::establish::gather_lan_candidates(ctx, &cfg);
+                if probe_loopback_only {
+                    adv_lan.retain(|c| c.kind == super::candidates::LanPathKind::Loopback);
+                }
                 let planned = self.planner(|pl| pl.plan_probes(cfg.public_key, &adv_lan, now));
                 for cand in planned {
                     let Some(sock) = super::runtime::establish::lan_egress_socket_for(

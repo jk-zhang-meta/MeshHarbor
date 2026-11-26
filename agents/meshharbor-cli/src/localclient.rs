@@ -4651,6 +4651,7 @@ mod display_name_tests {
 
         p.debug = Some(localapi::PeerCarrierDebug {
             tier: "lan".into(),
+            path: None,
             initiated: true,
             hs_done: true,
             local: None,

@@ -75,7 +75,6 @@ pub(crate) enum LanPathKind {
 }
 
 impl LanPathKind {
-    #[allow(dead_code)] // Surfaced on PeerCarrierDebug in Commit 6.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             LanPathKind::Loopback => "loopback",
@@ -141,7 +140,6 @@ impl LanCandidate {
         }
     }
 
-    #[allow(dead_code)] // Used by same-host loopback discovery (Commit 6).
     pub(crate) fn loopback(dst: SocketAddr) -> Self {
         Self {
             dst,
@@ -477,6 +475,15 @@ impl CandidatePlanner {
             .find(|c| !c.requires_disco && egress_ok(c.egress))
     }
 
+    /// Diagnostic [`LanPathKind`] for `(peer, dst)` if previously verified, or
+    /// `Some(Loopback)` when `dst` is a loopback address.
+    pub(crate) fn kind_for(&self, peer: &[u8; 32], dst: SocketAddr) -> Option<LanPathKind> {
+        if let Some(v) = self.peers.get(peer).and_then(|p| p.verified.get(&dst)) {
+            return Some(v.kind);
+        }
+        dst.ip().is_loopback().then_some(LanPathKind::Loopback)
+    }
+
     /// All currently verified LAN endpoints for `peer`, ordered best-first, for
     /// persisting into the local offline netmap cache.
     #[allow(dead_code)] // Consumed by netmap cache persistence (Commit 8).
@@ -523,6 +530,58 @@ impl CandidatePlanner {
             }
         }
     }
+}
+
+/// Maximum same-host loopback candidate ports probed per peer.
+const MAX_LOOPBACK_CANDIDATES: usize = 24;
+
+/// FR-139 — build bounded same-host `127.0.0.1:<port>` Disco candidates for a
+/// peer on Windows / Mirrored WSL2.
+///
+/// Order: peer's `lan_port + PUBLIC_DIAL_PORT_OFFSET` (Windows host's wildcard
+/// `public_sock`), peer's `srflx` ports (WSL2 guest's `public_sock` port), peer's
+/// raw `lan_endpoints` ports, then this node's public-dial port bands
+/// (`B+256..+263` and `B+768..+775`). Skips port `0` and `my_public_port`.
+/// Every returned candidate sets `requires_disco = true`.
+pub(crate) fn loopback_candidates(
+    lan_endpoints: &[String],
+    srflx_endpoints: &[String],
+    my_public_port: Option<u16>,
+    my_base_port: u16,
+) -> Vec<LanCandidate> {
+    let mut ports: Vec<u16> = Vec::new();
+    let mut push_port = |port: u16| {
+        if port == 0 || Some(port) == my_public_port || ports.contains(&port) {
+            return;
+        }
+        if ports.len() < MAX_LOOPBACK_CANDIDATES {
+            ports.push(port);
+        }
+    };
+    for ep in lan_endpoints {
+        if let Ok(SocketAddr::V4(sa)) = ep.trim().parse::<SocketAddr>() {
+            if let Some(pub_p) = sa.port().checked_add(super::direct::PUBLIC_DIAL_PORT_OFFSET) {
+                push_port(pub_p);
+            }
+            push_port(sa.port());
+        }
+    }
+    for ep in srflx_endpoints {
+        if let Ok(SocketAddr::V4(sa)) = ep.trim().parse::<SocketAddr>() {
+            push_port(sa.port());
+        }
+    }
+    if my_base_port != 0
+        && let Some(pub_base) = my_base_port.checked_add(super::direct::PUBLIC_DIAL_PORT_OFFSET)
+    {
+        for p in super::direct::direct_port_candidates(pub_base) {
+            push_port(p);
+        }
+    }
+    ports
+        .into_iter()
+        .map(|port| LanCandidate::loopback(SocketAddr::from((Ipv4Addr::LOCALHOST, port))))
+        .collect()
 }
 
 #[cfg(test)]

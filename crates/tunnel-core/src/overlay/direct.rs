@@ -117,7 +117,7 @@ pub fn direct_port_candidates(base: u16) -> impl Iterator<Item = u16> + Clone {
 /// (`MESHHARBORD_OVERLAY_DIRECT_PORT`; config key `overlay_direct_port`).
 ///
 /// Per-interface LAN sockets bind `(iface_ip, port)`; the public/srflx
-/// dialer binds `(0.0.0.0, port+1)` (a wildcard bind on the SAME port as a
+/// dialer binds `(0.0.0.0, port + PUBLIC_DIAL_PORT_OFFSET)` (a wildcard bind on the SAME port as a
 /// specific-IP bind fails without SO_REUSEADDR). `0` = ephemeral ports, the
 /// pre-rc.307 behavior.
 ///
@@ -805,6 +805,30 @@ pub fn wsl2_mirrored_networking() -> bool {
 /// half of the guard, which the bind used to drop along with the LAN set.
 pub fn wsl_mirrored_guest() -> bool {
     wsl_mirrored_guard_enabled() && wsl2_mirrored_networking()
+}
+
+/// FR-139 — `MESHHARBORD_OVERLAY_LOOPBACK_DIRECT` (default ON): allow same-host
+/// loopback (`127.0.0.1`) Disco discovery and direct WireGuard dialing between
+/// co-located agents on Windows hosts and Mirrored WSL2 guests.
+pub fn loopback_direct_enabled() -> bool {
+    crate::env::flag("OVERLAY_LOOPBACK_DIRECT", true)
+}
+
+/// FR-139 — whether this host platform can legitimately have co-located peers
+/// reachable over `127.0.0.1` (Windows hosts and Mirrored WSL2 guests).
+pub fn loopback_host_eligible() -> bool {
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        wsl_mirrored_guest()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        false
+    }
 }
 
 /// rc.275 hygiene — `true` when an interface must NOT be advertised as a LAN

@@ -263,6 +263,7 @@ pub(super) fn exit_exemption_set(
     // become exemption routes via the physical gateway. DERP's real transport
     // is the server WS, whose IPs are already in `server_ips`.
     set.retain(|ip| !ip.is_loopback());
+    debug_assert!(set.iter().all(|ip| !ip.is_loopback()));
     set
 }
 
