@@ -3378,6 +3378,219 @@ impl std::fmt::Display for GrantRejected {
     }
 }
 
+/// FR-139 — inputs to the shared device-side SSH grant admission gate
+/// ([`admit_grant`]), called by both `signaling.rs` (online WS) and
+/// `p2pctl.rs` (offline P2P).
+pub struct SshGrantAdmitInput {
+    pub grant_id: String,
+    pub public_key: String,
+    pub caller: String,
+    pub account_mode: String,
+    pub account: Option<String>,
+    pub expires_at_ms: u64,
+    pub session_secs: u64,
+    pub consent_mode: Option<meshharbor_remote_control::models::ConsentMode>,
+    pub via_service: bool,
+    /// `true` on the live control-WS leg; `false` on the offline P2P leg
+    /// (Windows SYSTEM-service claims require the server).
+    pub allow_via_service: bool,
+    pub one_command: bool,
+    pub two_factor_code: Option<String>,
+}
+
+/// Result of [`admit_grant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshGrantAdmitOutcome {
+    /// Grant recorded directly in the local SSH grant table.
+    Recorded,
+    /// Grant approved for hand-off to the Windows SYSTEM service (`ring_ssh`).
+    HandToService,
+    /// Grant refused by a device-side gate.
+    Refused(meshharbor_remote_control::models::SshGrantRefusal),
+    /// Build compiled without `ssh-server` feature.
+    UnsupportedBuild,
+}
+
+/// Shared device-side admission gate for SSH grants (online WS and offline P2P).
+pub fn admit_grant(
+    agent_cfg: &crate::config::AgentConfig,
+    input: SshGrantAdmitInput,
+) -> SshGrantAdmitOutcome {
+    use meshharbor_remote_control::models::SshGrantRefusal;
+
+    let SshGrantAdmitInput {
+        grant_id,
+        public_key,
+        caller,
+        account_mode,
+        account,
+        expires_at_ms,
+        session_secs,
+        consent_mode,
+        via_service,
+        allow_via_service,
+        one_command,
+        two_factor_code,
+    } = input;
+
+    // FR-129 — two-factor, checked before the grant is recorded or handed to
+    // the service, and only when SSH is on (a refused grant spends no code).
+    if agent_cfg.ssh_enabled
+        && let Err(r) = meshharbor_node_core::two_factor::check(two_factor_code.as_deref())
+    {
+        warn!(%grant_id, %caller, reason = r.wire(), "rc:ssh.grant refused — two-factor");
+        return SshGrantAdmitOutcome::Refused(SshGrantRefusal::from_two_factor(r.wire()));
+    }
+
+    #[cfg(feature = "ssh-server")]
+    {
+        if via_service {
+            if !allow_via_service {
+                warn!(
+                    %grant_id, %caller,
+                    "rc:ssh.grant for the SYSTEM service refused — offline path cannot claim from server"
+                );
+                return SshGrantAdmitOutcome::Refused(SshGrantRefusal::Other);
+            }
+            let refusal = if !agent_cfg.ssh_enabled {
+                Some((
+                    SshGrantRefusal::SshDisabled,
+                    "ssh_enabled is off on this device",
+                ))
+            } else if crate::ssh_service::disabled() {
+                Some((
+                    SshGrantRefusal::Other,
+                    "SSH through the SYSTEM service is switched off on this device",
+                ))
+            } else if account_mode == "daemon"
+                && agent_cfg.ssh_max_privilege.as_deref() == Some("console_user")
+            {
+                Some((
+                    SshGrantRefusal::Other,
+                    "ssh_max_privilege refuses sessions as SYSTEM on this device",
+                ))
+            } else {
+                None
+            };
+            let _ = (
+                public_key,
+                account,
+                consent_mode,
+                expires_at_ms,
+                session_secs,
+                one_command,
+            );
+            match refusal {
+                Some((refused, why)) => {
+                    warn!(%grant_id, %caller, why, "rc:ssh.grant for the SYSTEM service refused");
+                    SshGrantAdmitOutcome::Refused(refused)
+                }
+                None => SshGrantAdmitOutcome::HandToService,
+            }
+        } else {
+            if !agent_cfg.ssh_enabled {
+                warn!(
+                    %grant_id, %caller,
+                    "rc:ssh.grant refused — ssh_enabled is off on this device"
+                );
+                return SshGrantAdmitOutcome::Refused(SshGrantRefusal::SshDisabled);
+            }
+            match record_grant(
+                grant_id.clone(),
+                public_key,
+                caller.clone(),
+                account_mode,
+                account,
+                consent_mode,
+                expires_at_ms,
+                session_secs,
+                one_command,
+            ) {
+                Ok(()) => SshGrantAdmitOutcome::Recorded,
+                Err(e) => {
+                    warn!(%grant_id, %caller, %e, "rc:ssh.grant rejected");
+                    SshGrantAdmitOutcome::Refused(e.refusal())
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "ssh-server"))]
+    {
+        let _ = (
+            &public_key,
+            &account_mode,
+            &account,
+            consent_mode,
+            expires_at_ms,
+            session_secs,
+            via_service,
+            allow_via_service,
+            one_command,
+        );
+        warn!(
+            %grant_id, %caller,
+            "rc:ssh.grant ignored — this build lacks the `ssh-server` feature"
+        );
+        SshGrantAdmitOutcome::UnsupportedBuild
+    }
+}
+
+#[cfg(all(test, feature = "ssh-server"))]
+mod fr139_ssh_admit_tests {
+    use super::*;
+    use meshharbor_remote_control::models::SshGrantRefusal;
+
+    #[test]
+    fn fr139_ssh_admit_grant_refuses_disabled_and_offline_via_service_and_records_valid_grant() {
+        let mut cfg = crate::config::test_fixture();
+        cfg.ssh_enabled = false;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        // Build a valid temporary OpenSSH ed25519 public key.
+        let kp = russh::keys::ssh_key::private::PrivateKey::from(
+            russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[0x42u8; 32]),
+        );
+        let pub_openssh = kp.public_key().to_openssh().unwrap();
+
+        let mk = |via_service: bool, allow_via_service: bool| SshGrantAdmitInput {
+            grant_id: format!("g-{}", bson::oid::ObjectId::new().to_hex()),
+            public_key: pub_openssh.clone(),
+            caller: "operator (via peer)".into(),
+            account_mode: "daemon".into(),
+            account: None,
+            expires_at_ms: now_ms + 30_000,
+            session_secs: 300,
+            consent_mode: Some(meshharbor_remote_control::models::ConsentMode::Auto),
+            via_service,
+            allow_via_service,
+            one_command: false,
+            two_factor_code: None,
+        };
+
+        // 1. ssh_enabled=false -> SshDisabled.
+        assert_eq!(
+            admit_grant(&cfg, mk(false, false)),
+            SshGrantAdmitOutcome::Refused(SshGrantRefusal::SshDisabled)
+        );
+
+        // 2. Offline via_service -> refused fail-closed.
+        cfg.ssh_enabled = true;
+        assert_eq!(
+            admit_grant(&cfg, mk(true, false)),
+            SshGrantAdmitOutcome::Refused(SshGrantRefusal::Other)
+        );
+
+        // 3. Valid non-via_service grant -> Recorded in local table.
+        assert_eq!(
+            admit_grant(&cfg, mk(false, false)),
+            SshGrantAdmitOutcome::Recorded
+        );
+    }
+}
+
 /// Record an `rc:ssh.grant`.
 ///
 /// On `Ok` the grant is in `GRANTS` — the table the auth path reads — so a

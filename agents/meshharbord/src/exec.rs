@@ -114,6 +114,304 @@ impl StreamedOutcome {
     }
 }
 
+/// FR-139 — inputs to the shared device-side command admission gate
+/// ([`admit`]), called by both the online control-WS handler (`signaling.rs`)
+/// and the offline P2P control plane (`p2pctl.rs`).
+pub struct ExecAdmitInput {
+    pub request_id: String,
+    pub shell: String,
+    pub command: String,
+    pub timeout_ms: u64,
+    pub max_output_bytes: u64,
+    pub cwd: Option<String>,
+    pub caller: String,
+    pub consent_mode: Option<meshharbor_remote_control::models::ConsentMode>,
+    pub via_service: bool,
+    /// `true` on the live control-WS leg; `false` on the offline P2P leg
+    /// (Windows SYSTEM-service claims require the server).
+    pub allow_via_service: bool,
+    pub run_as: Option<String>,
+    pub two_factor_code: Option<String>,
+    /// Label shown on multi-org consent prompts (empty on single-org hosts).
+    pub prompt_org_label: String,
+}
+
+/// Services consulted by [`admit`] (live gate-4 flag, consent broker, native
+/// prompt indicator).
+pub struct ExecAdmitServices<'a> {
+    pub remote_cfg: &'a crate::remote_config::RemoteConfigServices,
+    pub consent_broker: &'a crate::consent::ConsentBroker,
+    pub indicator: &'a crate::indicator::ViewerIndicator,
+}
+
+/// An execution request that cleared all device-side gates (except the human
+/// consent decision, which the caller awaits on `consent_broker` with
+/// `consent_mode`).
+pub struct AdmittedExec {
+    pub req: ExecRequest,
+    pub consent_mode: crate::consent::Mode,
+    pub via_service: bool,
+}
+
+/// Shared device-side admission gate for remote command execution.
+///
+/// Enforces in order:
+/// 1. `via_service` platform & online-only availability
+/// 2. `run_as` parsing (unknown words refused fail-closed)
+/// 3. Live Gate 4 (`remote_cfg.exec_enabled()`)
+/// 4. FR-129 two-factor verification
+/// 5. Consent floor (`strictest_of(directive, consent_broker.mode())`) and
+///    prompt presentation when prompting is required
+pub fn admit(input: ExecAdmitInput, svc: &ExecAdmitServices<'_>) -> Result<AdmittedExec, String> {
+    let ExecAdmitInput {
+        request_id,
+        shell,
+        command,
+        timeout_ms,
+        max_output_bytes,
+        cwd,
+        caller,
+        consent_mode,
+        via_service,
+        allow_via_service,
+        run_as,
+        two_factor_code,
+        prompt_org_label,
+    } = input;
+
+    // FR-94 — a command meant for the SYSTEM service.
+    if via_service && !cfg!(windows) {
+        warn!(
+            %request_id, %caller,
+            "rc:rpc.exec via the SYSTEM service refused — not a Windows device"
+        );
+        return Err(
+            "this device cannot run commands through its SYSTEM service \
+             (update the agent)"
+                .to_string(),
+        );
+    }
+    if via_service && !allow_via_service {
+        warn!(
+            %request_id, %caller,
+            "rc:rpc.exec via the SYSTEM service refused — offline path cannot claim from server"
+        );
+        return Err(
+            "commands requiring the Windows SYSTEM service cannot run while offline".to_string(),
+        );
+    }
+
+    // FR-97 P5a — who runs it: unknown words refused fail-closed.
+    let run_as = match run_as.as_deref().map(crate::exec_service::run_as_of) {
+        None => RunAs::Daemon,
+        Some(Ok((who, _))) => who,
+        Some(Err(why)) => {
+            warn!(%request_id, %caller, %why, "rc:rpc.exec refused — unknown run_as");
+            return Err(why);
+        }
+    };
+
+    // Gate 4, read LIVE (docs/remote-config.md).
+    if !svc.remote_cfg.exec_enabled() {
+        warn!(
+            %request_id, %caller,
+            "rc:rpc.exec refused — exec_enabled is off on this device"
+        );
+        return Err(
+            "remote execution is disabled on this device \
+             (`mh config set exec_enabled true` to allow it)"
+                .to_string(),
+        );
+    }
+
+    // FR-129 — two-factor, checked after gate 4 and before consent prompt.
+    if let Err(r) = meshharbor_node_core::two_factor::check(two_factor_code.as_deref()) {
+        warn!(%request_id, %caller, reason = r.wire(), "rc:rpc.exec refused — two-factor");
+        return Err(format!("{}: {}", r.wire(), r.message()));
+    }
+
+    // Absent directive ⇒ prompt. Fail-safe for a gate that grants root.
+    let auto = matches!(
+        consent_mode,
+        Some(meshharbor_remote_control::models::ConsentMode::Auto)
+    );
+    let directive = if auto {
+        crate::consent::Mode::AutoGrant
+    } else {
+        crate::consent::Mode::Prompt {
+            timeout: crate::consent::DEFAULT_PROMPT_TIMEOUT,
+        }
+    };
+    let effective_consent = crate::consent::strictest_of(
+        Some(directive),
+        svc.consent_broker.mode(),
+        crate::consent::DEFAULT_PROMPT_TIMEOUT,
+    );
+
+    if matches!(effective_consent, crate::consent::Mode::Prompt { .. }) {
+        let shown = redactor().apply(&command);
+        let detail: String = shown.chars().take(512).collect();
+        let view = crate::indicator::PromptView {
+            session_hex: request_id.clone(),
+            title: "Command execution request".into(),
+            lead: format!("{caller} wants to run a command on this device."),
+            detail: detail.clone(),
+            permissions: String::new(),
+            org: prompt_org_label.clone(),
+            expires_at: std::time::Instant::now() + crate::consent::DEFAULT_PROMPT_TIMEOUT,
+        };
+        let native = svc.indicator.show_prompt(view.clone());
+        let prompt = crate::consent::PendingPrompt {
+            kind: crate::consent::PromptKind::Exec,
+            asked_by: &caller,
+            permissions: String::new(),
+            detail,
+            org: prompt_org_label,
+            timeout: crate::consent::DEFAULT_PROMPT_TIMEOUT,
+            surface: if native {
+                crate::consent::PromptSurface::Native
+            } else {
+                crate::consent::PromptSurface::Companion
+            },
+        };
+        if let Err(e) = svc.consent_broker.write_prompt(&request_id, &prompt) {
+            tracing::warn!(%request_id, %e, native, "could not write the .pending consent marker for this command");
+        }
+        if !native && tokio::runtime::Handle::try_current().is_ok() {
+            let ind = svc.indicator.clone();
+            tokio::spawn(async move {
+                if !crate::companion::ensure_running().await {
+                    ind.show_notification_prompt(view).await;
+                }
+            });
+        }
+    }
+
+    Ok(AdmittedExec {
+        req: ExecRequest {
+            request_id,
+            shell,
+            command,
+            timeout_ms,
+            max_output_bytes,
+            cwd,
+            caller,
+            run_as,
+            start_in_home: false,
+        },
+        consent_mode: effective_consent,
+        via_service,
+    })
+}
+
+#[cfg(test)]
+mod fr139_exec_admit_tests {
+    use super::*;
+
+    fn mk_input(via_service: bool, allow_via_service: bool, run_as: Option<&str>) -> ExecAdmitInput {
+        ExecAdmitInput {
+            request_id: "req-1".into(),
+            shell: "sh".into(),
+            command: "echo hi".into(),
+            timeout_ms: 5_000,
+            max_output_bytes: 1024,
+            cwd: None,
+            caller: "operator (via peer)".into(),
+            consent_mode: Some(meshharbor_remote_control::models::ConsentMode::Auto),
+            via_service,
+            allow_via_service,
+            run_as: run_as.map(str::to_string),
+            two_factor_code: None,
+            prompt_org_label: String::new(),
+        }
+    }
+
+    #[test]
+    fn fr139_exec_admit_enforces_exec_enabled_run_as_via_service_and_consent_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let disabled_cfg = crate::remote_config::RemoteConfigServices::new(
+            cfg_path.clone(),
+            Arc::new(tokio::sync::Mutex::new(())),
+            false,
+            false,
+        );
+        let enabled_cfg = crate::remote_config::RemoteConfigServices::new(
+            cfg_path,
+            Arc::new(tokio::sync::Mutex::new(())),
+            true,
+            false,
+        );
+        let broker_prompt = crate::consent::ConsentBroker::new(
+            crate::consent::Mode::Prompt {
+                timeout: crate::consent::DEFAULT_PROMPT_TIMEOUT,
+            },
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        let broker_auto = crate::consent::ConsentBroker::new(
+            crate::consent::Mode::AutoGrant,
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        let indicator = crate::indicator::ViewerIndicator::disabled();
+
+        // 1. Gate 4 off -> refused.
+        let err = admit(
+            mk_input(false, false, None),
+            &ExecAdmitServices {
+                remote_cfg: &disabled_cfg,
+                consent_broker: &broker_auto,
+                indicator: &indicator,
+            },
+        )
+        .err()
+        .expect("exec_enabled=false must refuse");
+        assert!(err.contains("remote execution is disabled"));
+
+        // 2. Offline via_service -> refused fail-closed.
+        assert!(
+            admit(
+                mk_input(true, false, None),
+                &ExecAdmitServices {
+                    remote_cfg: &enabled_cfg,
+                    consent_broker: &broker_auto,
+                    indicator: &indicator,
+                },
+            )
+            .is_err()
+        );
+
+        // 3. Unknown run_as -> refused fail-closed.
+        assert!(
+            admit(
+                mk_input(false, false, Some("bogus_identity")),
+                &ExecAdmitServices {
+                    remote_cfg: &enabled_cfg,
+                    consent_broker: &broker_auto,
+                    indicator: &indicator,
+                },
+            )
+            .is_err()
+        );
+
+        // 4. Device auto_grant_session=false (Prompt floor) overrides Auto directive.
+        let admitted = admit(
+            mk_input(false, false, None),
+            &ExecAdmitServices {
+                remote_cfg: &enabled_cfg,
+                consent_broker: &broker_prompt,
+                indicator: &indicator,
+            },
+        )
+        .expect("valid request admitted");
+        assert!(matches!(
+            admitted.consent_mode,
+            crate::consent::Mode::Prompt { .. }
+        ));
+    }
+}
+
 /// One execution request, already clamped by the server and re-clamped here.
 #[derive(Debug, Clone)]
 pub struct ExecRequest {

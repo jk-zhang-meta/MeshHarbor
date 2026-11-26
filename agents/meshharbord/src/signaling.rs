@@ -6625,43 +6625,35 @@ async fn handle_server_msg(
             run_as,
             two_factor_code,
         } => {
-            // FR-94 — a command meant for the SYSTEM service. Only a Windows
-            // build advertises `exec-system`, so a server should never send
-            // this anywhere else; if one does, refuse it here, before anyone
-            // is asked to approve it. It never runs in THIS process: that
-            // would be an identity nobody asked for (see `exec::RunAs`).
-            if via_service && !cfg!(windows) {
-                warn!(
-                    %request_id, %caller,
-                    "rc:rpc.exec via the SYSTEM service refused — not a Windows device"
-                );
-                let _ = outbound_tx
-                    .send(ClientMsg::RpcResult {
-                        request_id,
-                        exit_code: None,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        truncated: false,
-                        duration_ms: 0,
-                        error: Some(
-                            "this device cannot run commands through its SYSTEM service \
-                             (update the agent)"
-                                .to_string(),
-                        ),
-                    })
-                    .await;
-                return Ok(());
-            }
-            // FR-97 P5a — who runs it: the daemon, as Fleet RPC always has,
-            // unless the device's policy names the person at the screen,
-            // which the server sends only to a build advertising
-            // `console-user`. A word this build does not know is refused,
-            // before anyone is asked to approve it, never run as the daemon.
-            let run_as = match run_as.as_deref().map(crate::exec_service::run_as_of) {
-                None => crate::exec::RunAs::Daemon,
-                Some(Ok((who, _))) => who,
-                Some(Err(why)) => {
-                    warn!(%request_id, %caller, %why, "rc:rpc.exec refused — unknown run_as");
+            let prompt_org_label = if !ctx.is_primary || !agent_cfg.orgs.is_empty() {
+                ctx.label.clone()
+            } else {
+                String::new()
+            };
+            let admitted = match crate::exec::admit(
+                crate::exec::ExecAdmitInput {
+                    request_id: request_id.clone(),
+                    shell,
+                    command,
+                    timeout_ms,
+                    max_output_bytes,
+                    cwd,
+                    caller: caller.clone(),
+                    consent_mode,
+                    via_service,
+                    allow_via_service: true,
+                    run_as,
+                    two_factor_code: two_factor_code.map(|c| c.as_str().to_string()),
+                    prompt_org_label,
+                },
+                &crate::exec::ExecAdmitServices {
+                    remote_cfg,
+                    consent_broker,
+                    indicator,
+                },
+            ) {
+                Ok(a) => a,
+                Err(why) => {
                     let _ = outbound_tx
                         .send(ClientMsg::RpcResult {
                             request_id,
@@ -6676,163 +6668,14 @@ async fn handle_server_msg(
                     return Ok(());
                 }
             };
-            // Gate 4, read LIVE (docs/remote-config.md): a pushed change takes
-            // effect on the next command, with no restart — which is why
-            // this is the atomic and not the startup snapshot.
-            if !remote_cfg.exec_enabled() {
-                warn!(
-                    %request_id, %caller,
-                    "rc:rpc.exec refused — exec_enabled is off on this device"
-                );
-                // Always answer. A caller is blocked on this; silence would
-                // read as a hang rather than a refusal.
-                let _ = outbound_tx
-                    .send(ClientMsg::RpcResult {
-                        request_id,
-                        exit_code: None,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        truncated: false,
-                        duration_ms: 0,
-                        error: Some(
-                            "remote execution is disabled on this device \
-                             (`mh config set exec_enabled true` to allow it)"
-                                .to_string(),
-                        ),
-                    })
-                    .await;
-                return Ok(());
-            }
-            // FR-129 — two-factor, checked after gate 4 (a command the device would refuse
-            // anyway spends no code) and before anyone is asked to approve it. On the Windows
-            // service path this is the worker, before it rings: the service runs only what
-            // passed here.
-            if let Err(r) = meshharbor_node_core::two_factor::check(
-                two_factor_code.as_ref().map(|c| c.as_str()),
-            ) {
-                warn!(%request_id, %caller, reason = r.wire(), "rc:rpc.exec refused — two-factor");
-                let _ = outbound_tx
-                    .send(ClientMsg::RpcResult {
-                        request_id,
-                        exit_code: None,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        truncated: false,
-                        duration_ms: 0,
-                        error: Some(format!("{}: {}", r.wire(), r.message())),
-                    })
-                    .await;
-                return Ok(());
-            }
-
-            // Absent directive ⇒ prompt. Fail-safe for a gate that grants root.
-            let auto = matches!(
-                consent_mode,
-                Some(meshharbor_remote_control::models::ConsentMode::Auto)
-            );
-            let directive = if auto {
-                crate::consent::Mode::AutoGrant
-            } else {
-                crate::consent::Mode::Prompt {
-                    timeout: crate::consent::DEFAULT_PROMPT_TIMEOUT,
-                }
-            };
-            // FR-27 — same floor as the RC path: a device that set
-            // `auto_grant_session = false` is not overridden into auto-granting
-            // a command that runs as SYSTEM/root.
-            let consent_mode = crate::consent::strictest_of(
-                Some(directive),
-                consent_broker.mode(),
-                crate::consent::DEFAULT_PROMPT_TIMEOUT,
-            );
-
-            // FR-27 — exec has ALWAYS prompted through this broker and NEVER
-            // written a marker, so its prompt reached no UI: the only way to
-            // answer one was to find the request id in the daemon log and run
-            // the CLI inside 30 s. In practice that made a non-`auto`
-            // `exec_policy` unusable rather than strict.
-            //
-            // ⚠️ The command is redacted BEFORE it goes anywhere near a marker
-            // file that a GUI will render — same redactor that scrubs exec
-            // output leaving the host, for the same reason.
-            if matches!(consent_mode, crate::consent::Mode::Prompt { .. }) {
-                let shown = crate::exec::redactor().apply(&command);
-                let detail: String = shown.chars().take(512).collect();
-                // Same multi-org rule as the RC prompt: name the asking org
-                // only on a device that serves more than one, since on a
-                // single-org device there is nothing to disambiguate.
-                // `rc:rpc.exec` carries no tenant display name, so this
-                // loop's own label is the best available.
-                let org = if !ctx.is_primary || !agent_cfg.orgs.is_empty() {
-                    ctx.label.clone()
-                } else {
-                    String::new()
-                };
-                // Native panel first, exactly as for a screen-control request
-                // — and with the command in front of whoever is deciding,
-                // because "approve SSH-ish access" and "approve `rm -rf`
-                // running as SYSTEM" are not the same question.
-                let view = crate::indicator::PromptView {
-                    session_hex: request_id.clone(),
-                    title: "Command execution request".into(),
-                    lead: format!("{caller} wants to run a command on this device."),
-                    detail: detail.clone(),
-                    permissions: String::new(),
-                    org: org.clone(),
-                    expires_at: std::time::Instant::now() + crate::consent::DEFAULT_PROMPT_TIMEOUT,
-                };
-                let native = indicator.show_prompt(view.clone());
-                let prompt = crate::consent::PendingPrompt {
-                    kind: crate::consent::PromptKind::Exec,
-                    asked_by: &caller,
-                    permissions: String::new(),
-                    detail,
-                    org,
-                    timeout: crate::consent::DEFAULT_PROMPT_TIMEOUT,
-                    surface: if native {
-                        crate::consent::PromptSurface::Native
-                    } else {
-                        crate::consent::PromptSurface::Companion
-                    },
-                };
-                if let Err(e) = consent_broker.write_prompt(&request_id, &prompt) {
-                    tracing::warn!(%request_id, %e, native, "could not write the .pending consent marker for this command");
-                }
-                if !native {
-                    // FR-93 P6f — and where the companion cannot show it, a
-                    // desktop notification. In the background, as the
-                    // companion's start always was here: the command waits on
-                    // the broker below, not on its surfaces. The marker is not
-                    // rewritten for it, because by the time the notification
-                    // is up the question may be over, and a marker written
-                    // then would outlive it.
-                    let ind = indicator.clone();
-                    tokio::spawn(async move {
-                        if !crate::companion::ensure_running().await {
-                            ind.show_notification_prompt(view).await;
-                        }
-                    });
-                }
-            }
 
             let broker = consent_broker.clone();
             let outbound = outbound_tx.clone();
-            let req = crate::exec::ExecRequest {
-                request_id: request_id.clone(),
-                shell,
-                command,
-                timeout_ms,
-                max_output_bytes,
-                cwd,
-                caller: caller.clone(),
-                // Fleet RPC is privileged diagnostics by design — the whole
-                // point is `netsh`, route tables and service state. It runs
-                // as the daemon unless the policy named the person at the
-                // screen (FR-97 P5a, above).
-                run_as,
-                // Where it always started, or its `cwd` (FR-97 P5b is SSH's).
-                start_in_home: false,
-            };
+            let crate::exec::AdmittedExec {
+                req,
+                consent_mode,
+                via_service,
+            } = admitted;
             let ind = indicator.clone();
             tokio::spawn(async move {
                 // #2416 — as on the RC path: a question whose control socket
@@ -6938,153 +6781,68 @@ async fn handle_server_msg(
             one_command,
             two_factor_code,
         } => {
-            // FR-129 — two-factor, checked before the grant is recorded or handed to the
-            // service, and only when SSH is on (a refused grant spends no code).
-            if agent_cfg.ssh_enabled
-                && let Err(r) = meshharbor_node_core::two_factor::check(
-                    two_factor_code.as_ref().map(|c| c.as_str()),
-                )
-            {
-                warn!(%grant_id, %caller, reason = r.wire(), "rc:ssh.grant refused — two-factor");
-                let _ = outbound_tx
-                    .send(ClientMsg::SshGrantAck {
-                        grant_id,
-                        refused: Some(
-                            meshharbor_remote_control::models::SshGrantRefusal::from_two_factor(
-                                r.wire(),
-                            ),
-                        ),
-                    })
-                    .await;
-                return Ok(());
-            }
-            #[cfg(feature = "ssh-server")]
-            if via_service {
-                // FR-105 — a grant for this device's SYSTEM service never
-                // lands in the worker's table, where the worker's own server
-                // would honour it as the signed-in user. The service claims
-                // it with its own credential, and that claim is the server's
-                // acknowledgement; the worker only rings, and can refuse.
-                use meshharbor_remote_control::models::SshGrantRefusal;
-                let refusal = if !agent_cfg.ssh_enabled {
-                    // The person's half: their worker carries the port.
-                    Some((
-                        SshGrantRefusal::SshDisabled,
-                        "ssh_enabled is off on this device",
-                    ))
-                } else if crate::ssh_service::disabled() {
-                    Some((
-                        SshGrantRefusal::Other,
-                        "SSH through the SYSTEM service is switched off on this device",
-                    ))
-                } else if account_mode == "daemon"
-                    && agent_cfg.ssh_max_privilege.as_deref() == Some("console_user")
-                {
-                    // The person's own ceiling (M5), honoured as a refusal on
-                    // this path too.
-                    Some((
-                        SshGrantRefusal::Other,
-                        "ssh_max_privilege refuses sessions as SYSTEM on this device",
-                    ))
-                } else {
-                    None
-                };
-                if let Some((refused, why)) = refusal {
-                    warn!(%grant_id, %caller, why, "rc:ssh.grant for the SYSTEM service refused");
+            use crate::ssh::{SshGrantAdmitInput, SshGrantAdmitOutcome};
+            match crate::ssh::admit_grant(
+                agent_cfg,
+                SshGrantAdmitInput {
+                    grant_id: grant_id.clone(),
+                    public_key,
+                    caller: caller.clone(),
+                    account_mode,
+                    account,
+                    expires_at_ms,
+                    session_secs,
+                    consent_mode,
+                    via_service,
+                    allow_via_service: true,
+                    one_command,
+                    two_factor_code: two_factor_code.map(|c| c.as_str().to_string()),
+                },
+            ) {
+                SshGrantAdmitOutcome::Recorded => {
+                    let _ = outbound_tx
+                        .send(ClientMsg::SshGrantAck {
+                            grant_id,
+                            refused: None,
+                        })
+                        .await;
+                }
+                SshGrantAdmitOutcome::Refused(refused) => {
                     let _ = outbound_tx
                         .send(ClientMsg::SshGrantAck {
                             grant_id,
                             refused: Some(refused),
                         })
                         .await;
-                } else {
-                    // Off this loop: the service's claim is an HTTPS round trip.
-                    let tx = outbound_tx.clone();
-                    tokio::spawn(async move {
-                        match crate::exec_service::ring_ssh(&grant_id).await {
-                            Ok(()) => info!(
-                                %grant_id, %caller,
-                                "rc:ssh.grant handed to the SYSTEM service"
-                            ),
-                            Err(e) => {
-                                warn!(
-                                    %grant_id, %caller, %e,
-                                    "rc:ssh.grant refused — the SYSTEM service did not take it"
-                                );
-                                let _ = tx
-                                    .send(ClientMsg::SshGrantAck {
-                                        grant_id,
-                                        refused: Some(SshGrantRefusal::Other),
-                                    })
-                                    .await;
-                            }
-                        }
-                    });
                 }
-                // The service pulled what it needs from the server, its claim
-                // carrying `one_command` too; nothing here is the worker's to
-                // hold.
-                let _ = (
-                    public_key,
-                    account,
-                    consent_mode,
-                    expires_at_ms,
-                    session_secs,
-                    one_command,
-                );
-            } else {
-                use meshharbor_remote_control::models::SshGrantRefusal;
-                let refused = if !agent_cfg.ssh_enabled {
-                    warn!(
-                        %grant_id, %caller,
-                        "rc:ssh.grant refused — ssh_enabled is off on this device"
-                    );
-                    Some(SshGrantRefusal::SshDisabled)
-                } else {
-                    match crate::ssh::record_grant(
-                        grant_id.clone(),
-                        public_key,
-                        caller.clone(),
-                        account_mode,
-                        account,
-                        consent_mode,
-                        expires_at_ms,
-                        session_secs,
-                        one_command,
-                    ) {
-                        Ok(()) => None,
-                        Err(e) => {
-                            warn!(%grant_id, %caller, %e, "rc:ssh.grant rejected");
-                            Some(e.refusal())
-                        }
+                SshGrantAdmitOutcome::HandToService => {
+                    #[cfg(feature = "ssh-server")]
+                    {
+                        use meshharbor_remote_control::models::SshGrantRefusal;
+                        let tx = outbound_tx.clone();
+                        tokio::spawn(async move {
+                            match crate::exec_service::ring_ssh(&grant_id).await {
+                                Ok(()) => info!(
+                                    %grant_id, %caller,
+                                    "rc:ssh.grant handed to the SYSTEM service"
+                                ),
+                                Err(e) => {
+                                    warn!(
+                                        %grant_id, %caller, %e,
+                                        "rc:ssh.grant refused — the SYSTEM service did not take it"
+                                    );
+                                    let _ = tx
+                                        .send(ClientMsg::SshGrantAck {
+                                            grant_id,
+                                            refused: Some(SshGrantRefusal::Other),
+                                        })
+                                        .await;
+                                }
+                            }
+                        });
                     }
-                };
-                // Only NOW: on `None` the grant is already in the table the
-                // auth path reads, so "acknowledged" means "redeemable". Sent
-                // unconditionally — an older server cannot parse the frame and
-                // drops it at `debug!`, which costs one small frame per grant.
-                let _ = outbound_tx
-                    .send(ClientMsg::SshGrantAck { grant_id, refused })
-                    .await;
-            }
-            // No ack from this build: it advertises neither `ssh` nor
-            // `ssh-grant-ack`, so no server pushes it a grant or waits on one.
-            #[cfg(not(feature = "ssh-server"))]
-            {
-                let _ = (
-                    &public_key,
-                    &account_mode,
-                    &account,
-                    consent_mode,
-                    expires_at_ms,
-                    session_secs,
-                    via_service,
-                    one_command,
-                );
-                warn!(
-                    %grant_id, %caller,
-                    "rc:ssh.grant ignored — this build lacks the `ssh-server` feature"
-                );
+                }
+                SshGrantAdmitOutcome::UnsupportedBuild => {}
             }
         }
 
