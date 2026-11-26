@@ -1044,6 +1044,22 @@ const KEYS: &[KeyMeta] = &[
         description: "The TURN relay tier at all. Built-in default: on. Off means this host ignores every relay grant and never dials a coturn worker, so a pair with no direct path stays down instead of relaying. For a host whose traffic must stay inside its own region while the relay workers sit outside it. Env: MESHHARBORD_OVERLAY_TURN_RELAY. Restart required.",
     },
     KeyMeta {
+        key: "overlay_netmap_cache",
+        group: Group::Network,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "FR-139 signed local netmap cache for WAN-independent offline cold boot. Built-in default: on. Env: MESHHARBORD_OVERLAY_NETMAP_CACHE.",
+    },
+    KeyMeta {
+        key: "overlay_netmap_cache_max_days",
+        group: Group::Network,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "number",
+        description: "FR-139 maximum offline age (1-90 days) for the signed local netmap cache before cold boot refuses stale authority. Built-in default: 14. Env: MESHHARBORD_OVERLAY_NETMAP_CACHE_MAX_DAYS.",
+    },
+    KeyMeta {
         key: "overlay_shared_carrier",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2176,6 +2192,8 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "shared_encoder" => cfg.shared_encoder.map(fmt_bool),
         "overlay_relay_tls" => cfg.overlay_relay_tls.map(fmt_bool),
         "overlay_turn_relay" => cfg.overlay_turn_relay.map(fmt_bool),
+        "overlay_netmap_cache" => cfg.overlay_netmap_cache.map(fmt_bool),
+        "overlay_netmap_cache_max_days" => cfg.overlay_netmap_cache_max_days.map(|v| v.to_string()),
         "overlay_shared_carrier" => cfg.overlay_shared_carrier.map(fmt_bool),
         "overlay_roam" => cfg.overlay_roam.map(fmt_bool),
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog.map(fmt_bool),
@@ -2837,6 +2855,24 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "shared_encoder" => cfg.shared_encoder = parse_tribool(value)?,
         "overlay_relay_tls" => cfg.overlay_relay_tls = parse_tribool(value)?,
         "overlay_turn_relay" => cfg.overlay_turn_relay = parse_tribool(value)?,
+        "overlay_netmap_cache" => cfg.overlay_netmap_cache = parse_tribool(value)?,
+        "overlay_netmap_cache_max_days" => {
+            cfg.overlay_netmap_cache_max_days =
+                match value.map(str::trim).filter(|s| !s.is_empty()) {
+                    None => None,
+                    Some(v) => {
+                        let n: u32 = v.parse().map_err(|_| {
+                            format!("overlay_netmap_cache_max_days must be a number (got {v:?})")
+                        })?;
+                        if !(1..=90).contains(&n) {
+                            return Err(format!(
+                                "overlay_netmap_cache_max_days must be 1..=90 (got {n})"
+                            ));
+                        }
+                        Some(n)
+                    }
+                };
+        }
         "overlay_shared_carrier" => cfg.overlay_shared_carrier = parse_tribool(value)?,
         "overlay_roam" => cfg.overlay_roam = parse_tribool(value)?,
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog = parse_tribool(value)?,

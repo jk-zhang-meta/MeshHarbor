@@ -1490,7 +1490,7 @@ pub enum OverlayEvent {
     /// authoritatively without rebuilding TUN.
     CachedNetmap {
         self_ip: String,
-        network: OverlayNetworkInfo,
+        network: Box<OverlayNetworkInfo>,
         peers: Vec<NetmapPeer>,
         learned_endpoints: std::collections::BTreeMap<String, Vec<SocketAddr>>,
     },
@@ -17024,7 +17024,7 @@ mod org_upgrade_tests {
         evt_tx
             .send(OverlayEvent::CachedNetmap {
                 self_ip: "100.64.0.1".into(),
-                network: net.clone(),
+                network: Box::new(net.clone()),
                 peers: vec![peer_kept.clone(), peer_revoked.clone()],
                 learned_endpoints: std::collections::BTreeMap::new(),
             })

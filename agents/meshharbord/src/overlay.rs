@@ -273,6 +273,7 @@ impl OverlayEventTx {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn try_send(&self, evt: OverlayEvent) -> Result<(), OverlayEvent> {
         if self.is_closed() {
             return Err(evt);
@@ -289,6 +290,7 @@ impl OverlayEventTx {
         Ok(())
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn send_reliable(&self, evt: OverlayEvent) -> Result<(), OverlayEvent> {
         if self.is_closed() {
             return Err(evt);
@@ -862,6 +864,20 @@ impl OverlayEventTx {
 struct RuntimeSlot {
     fingerprint: RuntimeFingerprint,
     evt_tx: OverlayEventTx,
+    /// FR-139 — retained so `Reattach` repoints an existing SSH server's
+    /// `ActivitySink` onto the fresh control-WS sender and flushes offline
+    /// queued events.
+    activity_sink: Option<crate::ssh::ActivitySink>,
+}
+
+/// FR-139 — drop a tenant's persistent runtime slot (e.g. on `Goodbye` or
+/// terminal `OverlayJoinRefused`) so the offline overlay tears down once the
+/// current connection drops its handle.
+pub fn drop_runtime_slot(tenant_id: &str) {
+    RUNTIME_SLOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(tenant_id);
 }
 
 /// rc.307 (B) — the process-lifetime runtime slots. The overlay runtime used
@@ -961,8 +977,10 @@ fn shared_carrier_plane()
 /// the channel its control events arrive on. `None` when overlay is
 /// disabled or the node has no persisted WG key (generated at startup in
 /// `main`, so a missing one here means a misconfiguration).
+#[allow(clippy::too_many_arguments)]
 pub async fn maybe_start(
     cfg: &AgentConfig,
+    config_path: &std::path::Path,
     // FR-103 — this enrollment's LIVE token. The DERP dialer below outlives
     // the connection that built it (the runtime persists across reconnects),
     // so it reads this per dial rather than keeping a copy.
@@ -1023,14 +1041,18 @@ pub async fn maybe_start(
                 (
                     s.evt_tx.clone(),
                     s.fingerprint.lan_ips == fingerprint.lan_ips,
+                    s.activity_sink.clone(),
                 )
             })
     };
-    if let Some((evt_tx, lan_ips_same)) = existing {
+    if let Some((evt_tx, lan_ips_same, activity_sink)) = existing {
         match evt_tx.send_reliable(OverlayEvent::Reattach {
             outbound: outbound.clone(),
         }) {
             Ok(()) => {
+                if let Some(sink) = activity_sink {
+                    sink.repoint(outbound.clone());
+                }
                 if lan_ips_same {
                     info!("overlay: re-attached the persistent node runtime (carriers intact)");
                 } else {
@@ -1102,6 +1124,7 @@ pub async fn maybe_start(
     // the OS-TUN, per-org and netstack factories identically, so SSH behaves the
     // same on a server, a multi-org host and a locked-down corp laptop.
     // No-op (and byte-for-byte the old path) unless `ssh_enabled` is on.
+    let activity_sink_for_slot = services.activity.clone();
     let tun_factory = crate::ssh::maybe_intercept(tun_factory, cfg, services);
     // P5 exit-node client — resolve the coordination server's IPs NOW, while the
     // uplink is still clean (before any split-default is installed), so exit
@@ -1171,7 +1194,9 @@ pub async fn maybe_start(
             None
         };
 
+    let snapshot_sink = crate::overlay_cache::snapshot_sink(config_path, cfg, &keypair);
     let rt = OverlayRuntime::new_relay(keypair, outbound, tun_factory, OVERLAY_MTU)
+        .with_netmap_snapshot_sink(snapshot_sink)
         // FR-40 — the epoch persisted next to the key, bumped per rotation;
         // sent as `key_epoch` on the join.
         .with_key_epoch(cfg.overlay_wg_key_epoch)
@@ -1217,8 +1242,71 @@ pub async fn maybe_start(
             RuntimeSlot {
                 fingerprint,
                 evt_tx: evt_tx.clone(),
+                activity_sink: activity_sink_for_slot,
             },
         );
+    Some(evt_tx)
+}
+
+/// FR-139 — cold-boot the overlay runtime from the verified signed local netmap
+/// cache BEFORE the first control-WS connection succeeds.
+///
+/// Registers the persistent runtime in `RUNTIME_SLOTS` with a closed outbound
+/// sender and feeds [`OverlayEvent::CachedNetmap`] so TUN, MagicDNS, local SSH
+/// interception, and direct LAN/loopback probing come up immediately even with
+/// zero WAN connectivity. When the control WS later connects, `maybe_start`
+/// finds the existing slot, sends [`OverlayEvent::Reattach`], repoints the SSH
+/// [`ActivitySink`], and reconciles authoritatively without rebuilding TUN.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_from_cache(
+    cfg: &AgentConfig,
+    config_path: &std::path::Path,
+    token: crate::token_slot::TokenSlot,
+    peer_view: watch::Sender<OverlayView>,
+    derp_ticket_slot: crate::relay_probe::DerpTicketSlot,
+    services: crate::ssh::SessionServices,
+) -> Option<OverlayEventTx> {
+    if !cfg.overlay_enabled {
+        return None;
+    }
+    let keypair = cfg
+        .overlay_wg_secret_key
+        .as_deref()
+        .and_then(WgKeypair::from_secret_base64)?;
+    let cached = crate::overlay_cache::load_verified(config_path, cfg, &keypair)?;
+    let learned_endpoints = tunnel_core::overlay::netmap_cache::learned_socket_addrs(&cached);
+
+    let (closed_tx, closed_rx) = mpsc::channel(1);
+    drop(closed_rx);
+
+    let evt_tx = maybe_start(
+        cfg,
+        config_path,
+        token,
+        closed_tx,
+        peer_view,
+        derp_ticket_slot,
+        services,
+    )
+    .await?;
+
+    if evt_tx
+        .send_reliable(OverlayEvent::CachedNetmap {
+            self_ip: cached.self_ip,
+            network: Box::new(cached.network),
+            peers: cached.peers,
+            learned_endpoints,
+        })
+        .is_err()
+    {
+        warn!(tenant = %cfg.tenant_id, "overlay cache: failed to deliver CachedNetmap to cold-boot runtime");
+        return None;
+    }
+    info!(
+        tenant = %cfg.tenant_id,
+        revision = cached.last_authoritative_revision,
+        "overlay: cold-booted persistent runtime from signed local netmap cache"
+    );
     Some(evt_tx)
 }
 

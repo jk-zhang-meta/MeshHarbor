@@ -260,14 +260,25 @@ pub enum Asker {
     Worker(crate::ssh_service::ConsentRelay),
 }
 
+/// Maximum offline SSH activity events buffered while the control-WS is
+/// detached, flushed on the next [`ActivitySink::repoint`].
+const MAX_OFFLINE_ACTIVITY_QUEUE: usize = 256;
+
+struct ActivitySinkInner {
+    tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
+    queued: std::collections::VecDeque<meshharbor_remote_control::signaling::ClientMsg>,
+}
+
 /// Fire-and-forget reporter for [`SshActivityKind`] events (P8).
 ///
-/// Holds the gate as well as the channel so no call site has to remember to
-/// check it: with `ssh_activity_log = false` the constructor returns `None`
-/// and every `report` becomes a no-op at the type level.
+/// Holds the gate as well as a re-pointable outbound channel (FR-139) so an
+/// in-process SSH server born during an offline cold boot or an earlier WS
+/// session buffers events while detached and flushes them on reconnect.
+/// With `ssh_activity_log = false` the constructor returns `None` and every
+/// `report` becomes a no-op at the type level.
 #[derive(Clone)]
 pub struct ActivitySink {
-    tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
+    inner: std::sync::Arc<std::sync::Mutex<ActivitySinkInner>>,
 }
 
 impl ActivitySink {
@@ -276,12 +287,38 @@ impl ActivitySink {
         cfg: &crate::config::AgentConfig,
         tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
     ) -> Option<Self> {
-        cfg.ssh_activity_log.then_some(Self { tx })
+        cfg.ssh_activity_log.then(|| Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(ActivitySinkInner {
+                tx,
+                queued: std::collections::VecDeque::new(),
+            })),
+        })
     }
 
-    /// Report one event. Never blocks and never fails a session: a full
-    /// outbound queue means the connection is already struggling, and losing
-    /// a log line is strictly better than stalling the shell that produced it.
+    /// FR-139 — swap the underlying control-WS sender on reconnect/reattach and
+    /// flush any bounded events buffered while offline.
+    pub fn repoint(
+        &self,
+        new_tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
+    ) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.tx = new_tx;
+        while let Some(msg) = guard.queued.pop_front() {
+            match guard.tx.try_send(msg) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(m))
+                | Err(tokio::sync::mpsc::error::TrySendError::Closed(m)) => {
+                    guard.queued.push_front(m);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Report one event. Never blocks and never fails a session: while detached
+    /// (`Closed`), events queue up to [`MAX_OFFLINE_ACTIVITY_QUEUE`] for upload
+    /// on the next [`Self::repoint`]; if a live queue is full, dropping a log
+    /// line is strictly better than stalling the shell that produced it.
     pub fn report(
         &self,
         grant_id: Option<String>,
@@ -301,8 +338,18 @@ impl ActivitySink {
             exit_code,
             allowed,
         };
-        if self.tx.try_send(msg).is_err() {
-            debug!("ssh: activity report dropped (outbound queue full or closed)");
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.tx.try_send(msg) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(m)) => {
+                if guard.queued.len() >= MAX_OFFLINE_ACTIVITY_QUEUE {
+                    guard.queued.pop_front();
+                }
+                guard.queued.push_back(m);
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                debug!("ssh: activity report dropped (outbound queue full)");
+            }
         }
     }
 }
@@ -5531,6 +5578,42 @@ mod tests {
 
         cfg.ssh_activity_log = true;
         assert!(super::ActivitySink::new(&cfg, tx).is_some());
+    }
+
+    #[tokio::test]
+    async fn fr139_activity_sink_queues_while_offline_and_flushes_on_repoint() {
+        let (closed_tx, closed_rx) = tokio::sync::mpsc::channel(4);
+        drop(closed_rx);
+        let mut cfg = crate::config::test_fixture();
+        cfg.ssh_activity_log = true;
+        let sink = super::ActivitySink::new(&cfg, closed_tx).expect("opted in");
+
+        sink.report(
+            Some("offline-grant-1".into()),
+            "ssh:OfflineUser@100.64.0.2:1",
+            SshActivityKind::Exec,
+            Some("id".into()),
+            Some(0),
+            true,
+        );
+
+        let (live_tx, mut live_rx) = tokio::sync::mpsc::channel(4);
+        sink.repoint(live_tx);
+
+        let flushed = live_rx
+            .try_recv()
+            .expect("queued offline activity must flush on repoint");
+        match flushed {
+            meshharbor_remote_control::signaling::ClientMsg::SshActivity {
+                grant_id,
+                detail,
+                ..
+            } => {
+                assert_eq!(grant_id.as_deref(), Some("offline-grant-1"));
+                assert_eq!(detail.as_deref(), Some("id"));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
     }
 
     #[tokio::test]

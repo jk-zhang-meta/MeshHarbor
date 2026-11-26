@@ -1130,6 +1130,31 @@ pub async fn run(
     // FR-103 — the previous attempt was a recovery's prompt retry (see the
     // `AuthRejected` arm): a second refusal in a row waits out the ladder.
     let mut recovered_last = false;
+    // FR-139 — cold-boot the persistent overlay runtime from the verified
+    // signed local netmap cache BEFORE the first control-WS connect attempt,
+    // so LAN direct paths, MagicDNS, and local SSH interception come up
+    // immediately even when the machine starts with no WAN connectivity.
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    if !ctx.unenrolled {
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        let _ = crate::overlay::seed_from_cache(
+            &cfg,
+            remote_cfg.config_path(),
+            ctx.token.clone(),
+            overlay_view_tx.clone(),
+            derp_ticket_slot.clone(),
+            crate::ssh::SessionServices {
+                power_activity: Some(crate::power::shared_activity().clone()),
+                asker: crate::ssh::Asker::Here {
+                    broker: consent_broker.clone(),
+                    indicator: indicator.clone(),
+                },
+                activity: crate::ssh::ActivitySink::new(&cfg, closed_tx),
+            },
+        )
+        .await;
+    }
     loop {
         if *shutdown.borrow() {
             info!("shutdown signalled; exiting signaling loop");
@@ -1196,6 +1221,10 @@ pub async fn run(
                 }
             }
             Err(ConnectError::AuthRejected) => {
+                // FR-139 — suspend cold-boot cache seeding in memory without
+                // deleting the cache file while the server refuses our token.
+                #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                crate::overlay_cache::suspend_cache(&cfg.tenant_id);
                 // FR-130 — a refused token: the device's credential is gone,
                 // so the sessions it kept go with it.
                 table.close_all("token_refused").await;
@@ -1263,6 +1292,11 @@ pub async fn run(
                 }
             }
             Err(ConnectError::FatalGoodbye { reason, message }) => {
+                #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                {
+                    crate::overlay_cache::delete_cache(remote_cfg.config_path(), &cfg.tenant_id);
+                    crate::overlay::drop_runtime_slot(&cfg.tenant_id);
+                }
                 // Multi-org P1: a SECONDARY org's goodbye (row deleted /
                 // policy refused in THAT org) terminates only its own loop.
                 // No sentinel (primary-owned), no exit-route purge (the
@@ -2295,6 +2329,7 @@ async fn connect_once(
     } else {
         let start = crate::overlay::maybe_start(
             cfg,
+            remote_cfg.config_path(),
             ctx.token.clone(),
             outbound_tx.clone(),
             overlay_view_tx.clone(),
@@ -2552,6 +2587,7 @@ async fn connect_once(
                     );
                     overlay_evt_tx = crate::overlay::maybe_start(
                         cfg,
+                        remote_cfg.config_path(),
                         ctx.token.clone(),
                         outbound_tx.clone(),
                         overlay_view_tx.clone(),
@@ -2608,6 +2644,7 @@ async fn connect_once(
                     );
                     overlay_evt_tx = crate::overlay::maybe_start(
                         cfg,
+                        remote_cfg.config_path(),
                         ctx.token.clone(),
                         outbound_tx.clone(),
                         overlay_view_tx.clone(),
@@ -3565,6 +3602,17 @@ async fn connect_once(
                             // Phase 3b: route `rc:overlay.*` to the node
                             // runtime; everything else falls through to the
                             // normal dispatch below.
+                            #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                            if let ServerMsg::OverlayJoinRefused { reason, .. } = &parsed
+                                && !reason.is_retryable()
+                            {
+                                // FR-139 — terminal join refusal revokes local offline cache.
+                                crate::overlay_cache::delete_cache(
+                                    remote_cfg.config_path(),
+                                    &cfg.tenant_id,
+                                );
+                                crate::overlay::drop_runtime_slot(&cfg.tenant_id);
+                            }
                             #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
                             let parsed = match &overlay_evt_tx {
                                 Some(tx) => match crate::overlay::intercept(tx, parsed, ctx.is_primary, &cfg.agent_id, &cfg.tenant_id) {
@@ -5667,6 +5715,14 @@ async fn handle_server_msg(
             pending_permissions.clear();
             return match reason {
                 AgentCloseReason::AgentDeleted | AgentCloseReason::PolicyRejected => {
+                    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                    {
+                        crate::overlay_cache::delete_cache(
+                            remote_cfg.config_path(),
+                            &agent_cfg.tenant_id,
+                        );
+                        crate::overlay::drop_runtime_slot(&agent_cfg.tenant_id);
+                    }
                     Err(ConnectError::FatalGoodbye { reason, message })
                 }
                 AgentCloseReason::ReplacedByNewerConnection => {

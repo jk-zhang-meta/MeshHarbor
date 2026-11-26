@@ -955,6 +955,11 @@ pub struct AgentConfig {
     /// `overlay_derp = false` it then carries direct paths only).
     #[serde(default)]
     pub overlay_turn_relay: Option<bool>,
+    /// FR-139 — signed local netmap cache for WAN-independent offline cold boot
+    /// (`MESHHARBORD_OVERLAY_NETMAP_CACHE`). Built-in default: on. `false`
+    /// disables both writing and cold-seeding from the signed local netmap cache.
+    #[serde(default)]
+    pub overlay_netmap_cache: Option<bool>,
     /// Multi-org v2 shared carrier plane — ONE process-wide direct-socket
     /// set shared by every org's engine, inbound demultiplexed by WireGuard
     /// receiver index (`MESHHARBORD_OVERLAY_SHARED_CARRIER`). Retires the
@@ -1098,6 +1103,10 @@ pub struct AgentConfig {
     /// back to an ephemeral port with a WARN, restoring the old behavior.
     #[serde(default)]
     pub overlay_direct_port: Option<u32>,
+    /// FR-139 — maximum age in days for the signed local netmap cache
+    /// (`MESHHARBORD_OVERLAY_NETMAP_CACHE_MAX_DAYS`, 1..=90). Built-in default: 14.
+    #[serde(default)]
+    pub overlay_netmap_cache_max_days: Option<u32>,
     /// The overlay NIC's IPv4 interface metric, Windows only
     /// (`MESHHARBORD_OVERLAY_IFACE_METRIC`). Built-in default: **0** — the
     /// route war's decisive lever. Windows ranks routes by route metric +
@@ -3097,6 +3106,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_derp_floor: None,
         overlay_stun_urls: None,
         overlay_turn_relay: None,
+        overlay_netmap_cache: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,
@@ -3147,6 +3157,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_route_metric0: None,
         overlay_route_win: None,
         overlay_direct_port: None,
+        overlay_netmap_cache_max_days: None,
         overlay_iface_metric: None,
         local_turn: None,
         dns_aaaa: None,
@@ -3353,7 +3364,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 97] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 98] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3437,6 +3448,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 97]
         ("OVERLAY_NETMON", cfg.overlay_netmon),
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),
         ("OVERLAY_TURN_RELAY", cfg.overlay_turn_relay),
+        ("OVERLAY_NETMAP_CACHE", cfg.overlay_netmap_cache),
         ("OVERLAY_SHARED_CARRIER", cfg.overlay_shared_carrier),
         ("OVERLAY_ROAM", cfg.overlay_roam),
         ("OVERLAY_PLANE_WATCHDOG", cfg.overlay_plane_watchdog),
@@ -3475,7 +3487,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 97]
 
 /// rc.280 — numeric twin of [`env_bridge_bools`] (decimal strings on the
 /// same fallback map).
-pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 35] {
+pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 36] {
     [
         (
             "OVERLAY_NETSTACK_TCP_RX_BUF",
@@ -3526,6 +3538,10 @@ pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 3
         ("SCALE_THREADS", cfg.scale_threads),
         ("RC_MAX_SESSIONS", cfg.rc_max_sessions),
         ("OVERLAY_DIRECT_PORT", cfg.overlay_direct_port),
+        (
+            "OVERLAY_NETMAP_CACHE_MAX_DAYS",
+            cfg.overlay_netmap_cache_max_days,
+        ),
         ("RELAY_SERVER_PORT", cfg.relay_server_port),
     ]
 }

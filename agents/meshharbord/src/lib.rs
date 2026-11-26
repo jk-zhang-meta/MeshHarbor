@@ -132,6 +132,8 @@ pub mod notify;
 pub mod org_join;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 pub mod overlay;
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+pub mod overlay_cache;
 pub mod overlay_supervision;
 pub mod peer;
 /// FR-100 P1a — this enrollment's device key: made here, kept in its own file
