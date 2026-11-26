@@ -3954,15 +3954,34 @@ pub fn validate_gpu_backends_deny(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn env_flag_disabled(key: &str) -> bool {
+    std::env::var(key).ok().is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
 impl AgentConfig {
     /// FR-139 — effective local GPU telemetry switch (default ON).
+    /// Either `gpu_telemetry = false` in TOML OR `MESHHARBORD_GPU_TELEMETRY=0|false|no|off`
+    /// disables local GPU telemetry collection.
     pub fn gpu_telemetry_enabled(&self) -> bool {
-        self.gpu_telemetry.unwrap_or(true)
+        if self.gpu_telemetry == Some(false) || env_flag_disabled("MESHHARBORD_GPU_TELEMETRY") {
+            return false;
+        }
+        true
     }
 
     /// FR-139 — effective local per-process GPU attribution switch (default ON).
+    /// Either `gpu_processes = false` in TOML OR `MESHHARBORD_GPU_PROCESSES=0|false|no|off`
+    /// disables per-process attribution.
     pub fn gpu_processes_enabled(&self) -> bool {
-        self.gpu_processes.unwrap_or(true)
+        if self.gpu_processes == Some(false) || env_flag_disabled("MESHHARBORD_GPU_PROCESSES") {
+            return false;
+        }
+        true
     }
 }
 

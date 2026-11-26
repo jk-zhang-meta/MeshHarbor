@@ -8,7 +8,7 @@ pub mod bots;
 pub mod history;
 pub mod routes;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -41,6 +41,10 @@ pub struct GpuSnapshotDoc {
     pub tenant_id: ObjectId,
     pub received_at: DateTime,
     pub report: GpuReport,
+    /// Cross-replica claim timestamp for the current offline outage alert.
+    /// Cleared automatically whenever a fresh report is persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_alerted_at: Option<DateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +57,8 @@ struct LeaseSlot {
 
 impl LeaseSlot {
     fn effective(&self, live_interval_ms: u32, now: Instant) -> (u32, u32, bool) {
-        if let Some(until) = self.live_until
+        if live_interval_ms > 0
+            && let Some(until) = self.live_until
             && until > now
         {
             let rem_ms = until.saturating_duration_since(now).as_millis() as u32;
@@ -148,6 +153,9 @@ impl GpuManager {
             self.on_agent_connected(hub, agent_id, true, true);
         } else {
             self.leases.remove(&agent_id);
+            if let Ok(mut eval) = self.evaluator.try_lock() {
+                eval.remove_host(agent_id);
+            }
             let _ = hub.send_to_agent(
                 agent_id,
                 ServerMsg::GpuLease {
@@ -162,8 +170,9 @@ impl GpuManager {
     /// Merge a 30 s live viewer lease across all listed online marked agents.
     /// Emits `rc:gpu.lease` ONLY when the effective interval changes or the
     /// live lease is within 10 s of expiry (no frame spam across N viewers).
+    /// Setting `live_interval_ms == 0` disables live sampling entirely.
     pub fn request_live_leases(&self, hub: &crate::Hub, agents: &[(ObjectId, bool)]) {
-        if !self.settings.enabled {
+        if !self.settings.enabled || self.settings.live_interval_ms == 0 {
             return;
         }
         let now = Instant::now();
@@ -237,35 +246,57 @@ impl GpuManager {
     }
 
     /// Persist static `rc:agent.gpu_inventory` onto `Agent.gpu_inventory`.
+    /// Refuses unmarked or deleted devices and pushes a stop lease so multi-replica
+    /// unmarks always converge on the connection-owning pod.
     pub async fn handle_inventory(
         &self,
         state: &FleetState,
         agent_id: ObjectId,
-        inventory: GpuInventory,
+        mut inventory: GpuInventory,
     ) {
         if !self.settings.enabled {
             return;
         }
+        let Ok(agent) = state.agents.base.find_by_id(agent_id).await else {
+            return;
+        };
+        if agent.deleted_at.is_some() || !agent.gpu_server {
+            self.on_gpu_server_toggled(&state.rc_hub, agent_id, false, true);
+            return;
+        }
+        sanitize_inventory(&mut inventory);
         if let Err(e) = state.agents.set_gpu_inventory(agent_id, &inventory).await {
             tracing::debug!(%agent_id, %e, "gpu_inventory persist failed");
         }
     }
 
     /// Handle an inbound `rc:agent.gpu_report`:
-    /// 1. Stamp server receive time & upsert `gpu_snapshot`
-    /// 2. Wake `wait_ms` waiters
-    /// 3. Feed 1-min history bucket (`stats_gpu`)
-    /// 4. Evaluate owner-only alerts & deliver (in-app, companion `rc:gpu.alert`, bots)
+    /// 0. Enforce live `agent.gpu_server == true` (pushes stop lease if unmarked
+    ///    on another replica so collection never continues after unmark)
+    /// 1. Sanitize device-supplied strings & UUIDs at ingest
+    /// 2. Stamp server receive time & upsert `gpu_snapshot`
+    /// 3. Wake `wait_ms` waiters
+    /// 4. Feed 1-min history bucket (`stats_gpu`)
+    /// 5. Evaluate owner-only alerts & deliver (in-app, companion `rc:gpu.alert`, bots)
     pub async fn handle_report(
         &self,
         state: &FleetState,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        report: GpuReport,
+        mut report: GpuReport,
     ) {
         if !self.settings.enabled {
             return;
         }
+        let Ok(agent) = state.agents.find_live_in_tenant(tenant_id, agent_id).await else {
+            self.on_gpu_server_toggled(&state.rc_hub, agent_id, false, true);
+            return;
+        };
+        if !agent.gpu_server {
+            self.on_gpu_server_toggled(&state.rc_hub, agent_id, false, true);
+            return;
+        }
+        sanitize_report(&mut report);
         let now = DateTime::now();
         let now_s = now.timestamp_millis() / 1000;
         let snap = GpuSnapshotDoc {
@@ -273,6 +304,7 @@ impl GpuManager {
             tenant_id,
             received_at: now,
             report: report.clone(),
+            offline_alerted_at: None,
         };
         if let Err(e) = state
             .core
@@ -300,7 +332,7 @@ impl GpuManager {
         .await;
 
         if self.settings.alerts {
-            self.evaluate_and_deliver_report(state, tenant_id, agent_id, &report, now_s)
+            self.evaluate_and_deliver_report(state, tenant_id, agent_id, &agent, &report, now_s)
                 .await;
         }
     }
@@ -310,15 +342,10 @@ impl GpuManager {
         state: &FleetState,
         tenant_id: ObjectId,
         agent_id: ObjectId,
+        agent: &meshharbor_remote_control::models::Agent,
         report: &GpuReport,
         now_s: i64,
     ) {
-        let Ok(agent) = state.agents.find_live_in_tenant(tenant_id, agent_id).await else {
-            return;
-        };
-        if !agent.gpu_server {
-            return;
-        }
         let owner_id = agent.owner_user_id;
         // Owner-only invariant (D4): owner must STILL be a tenant member!
         if !state.tenants.is_member(tenant_id, owner_id).await.unwrap_or(false) {
@@ -333,7 +360,7 @@ impl GpuManager {
 
         let fired = {
             let mut eval = self.evaluator.lock().await;
-            eval.evaluate_report(agent_id, host_name, report, now_s, &self.settings, &rule)
+            eval.evaluate_report(tenant_id, agent_id, host_name, report, now_s, &self.settings, &rule)
         };
         if !fired.is_empty() {
             self.deliver_alerts(state, tenant_id, agent_id, owner_id, &rule.lang, fired)
@@ -373,27 +400,34 @@ impl GpuManager {
             Vec::new()
         };
 
-        // Find owner's online agents in this tenant that support `RpcCap::GpuAlerts`
-        // AND have a live desktop companion (`companion_version.is_some()`).
-        let owner_companion_agents: Vec<ObjectId> = state
-            .agents
-            .base
-            .find_many(
-                doc! {
-                    "tenant_id": tenant_id,
-                    "owner_user_id": owner_id,
-                    "deleted_at": null,
-                    "companion_version": { "$exists": true, "$ne": bson::Bson::Null },
-                },
-                None,
-            )
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|a| a.capabilities.has_rpc(RpcCap::GpuAlerts))
-            .filter_map(|a| a.id)
-            .filter(|id| state.rc_hub.is_agent_online(*id))
-            .collect();
+        // Find owner's online PERMANENT agents in this tenant that support
+        // `RpcCap::GpuAlerts` AND have a live desktop companion. Temporary /
+        // invited devices are enrolled under the inviter's `owner_user_id` and
+        // MUST be excluded (fail closed if the lookup fails).
+        let owner_companion_agents: Vec<ObjectId> =
+            match crate::device_invite::temporary_agent_ids_in_tenant(state, tenant_id).await {
+                Ok(temp_ids) => state
+                    .agents
+                    .base
+                    .find_many(
+                        doc! {
+                            "tenant_id": tenant_id,
+                            "owner_user_id": owner_id,
+                            "deleted_at": null,
+                            "ephemeral": { "$ne": true },
+                            "companion_version": { "$exists": true, "$ne": bson::Bson::Null },
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|a| a.capabilities.has_rpc(RpcCap::GpuAlerts))
+                    .filter_map(|a| a.id)
+                    .filter(|id| !temp_ids.contains(id) && state.rc_hub.is_agent_online(*id))
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
 
         for alert in fired {
             let title = if is_zh {
@@ -447,10 +481,17 @@ impl GpuManager {
                 );
             }
 
-            // 3. Bot channels (10 s coalescing + retries).
+            // 3. Bot channels (10 s coalescing + retries, re-loaded per attempt).
             for ch in &channels {
-                self.bots
-                    .enqueue(state.core.db.clone(), ch.clone(), alert.item.clone());
+                if let Some(cid) = ch.id {
+                    self.bots.enqueue(
+                        state.core.db.clone(),
+                        cid,
+                        tenant_id,
+                        owner_id,
+                        alert.item.clone(),
+                    );
+                }
             }
         }
     }
@@ -532,7 +573,9 @@ impl GpuManager {
     }
 
     async fn sweep_offline_alerts(&self, state: &FleetState) {
-        let now_s = chrono::Utc::now().timestamp();
+        let now_dt = DateTime::now();
+        let now_s = now_dt.timestamp_millis() / 1000;
+        let cutoff = DateTime::from_millis(now_s.saturating_sub(300).saturating_mul(1000));
         let Ok(agents) = state
             .agents
             .base
@@ -541,7 +584,16 @@ impl GpuManager {
         else {
             return;
         };
+        let active_ids: HashSet<ObjectId> = agents.iter().filter_map(|a| a.id).collect();
+        {
+            let mut eval = self.evaluator.lock().await;
+            eval.prune_stale_hosts(&active_ids);
+        }
         let fresh = crate::agent::agent_presence_batch(state, &agents).await;
+        let snap_coll = state
+            .core
+            .db
+            .collection::<GpuSnapshotDoc>(SNAPSHOT_COLLECTION);
         for a in agents {
             let Some(aid) = a.id else { continue };
             let redis_fresh = fresh.contains(&aid);
@@ -566,11 +618,27 @@ impl GpuManager {
                 .unwrap_or(&a.name);
             let fired = {
                 let mut eval = self.evaluator.lock().await;
-                eval.evaluate_offline(aid, host_name, now_s, &self.settings, &rule)
+                eval.evaluate_offline(a.tenant_id, aid, host_name, now_s, &self.settings, &rule)
             };
             if let Some(alert) = fired {
-                self.deliver_alerts(state, a.tenant_id, aid, owner_id, &rule.lang, vec![alert])
-                    .await;
+                // Atomically claim this offline transition across replicas on
+                // `gpu_snapshot` so at most one pod delivers the outage alert.
+                let claimed = snap_coll
+                    .find_one_and_update(
+                        doc! {
+                            "_id": aid,
+                            "offline_alerted_at": null,
+                            "received_at": { "$lte": cutoff },
+                        },
+                        doc! { "$set": { "offline_alerted_at": now_dt } },
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                if claimed.is_some() {
+                    self.deliver_alerts(state, a.tenant_id, aid, owner_id, &rule.lang, vec![alert])
+                        .await;
+                }
             }
         }
     }
@@ -587,6 +655,71 @@ pub async fn load_rule(
         .ok()
         .flatten()
         .unwrap_or_else(|| alerts::GpuAlertRule::default_for(tenant_id, user_id))
+}
+
+/// Strip ASCII/Unicode control characters and cap length on device-reported strings.
+fn sanitize_text(raw: &str, max_chars: usize) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn sanitize_opt_text(opt: &mut Option<String>, max_chars: usize) {
+    if let Some(s) = opt.as_mut() {
+        *s = sanitize_text(s, max_chars);
+    }
+}
+
+/// Validate a GPU UUID to a safe identifier charset `[A-Za-z0-9._:-]{1..=128}`
+/// so shell/clipboard exports and terminal tables can never receive injections.
+fn sanitize_gpu_uuid(raw: &str, idx: u16) -> String {
+    let clean: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+        .take(128)
+        .collect();
+    if clean.is_empty() {
+        format!("gpu-{idx}")
+    } else {
+        clean
+    }
+}
+
+fn sanitize_inventory(inv: &mut GpuInventory) {
+    sanitize_opt_text(&mut inv.backend, 32);
+    sanitize_opt_text(&mut inv.driver_version, 64);
+    inv.gpus.truncate(64);
+    for g in &mut inv.gpus {
+        g.uuid = sanitize_gpu_uuid(&g.uuid, g.idx);
+        g.name = sanitize_text(&g.name, 128);
+        sanitize_opt_text(&mut g.pci_bus, 32);
+    }
+}
+
+fn sanitize_report(rep: &mut GpuReport) {
+    sanitize_opt_text(&mut rep.backend, 32);
+    sanitize_opt_text(&mut rep.driver_version, 64);
+    rep.gpus.truncate(64);
+    for g in &mut rep.gpus {
+        g.uuid = sanitize_gpu_uuid(&g.uuid, g.idx);
+        sanitize_opt_text(&mut g.name, 128);
+        sanitize_opt_text(&mut g.pci_bus, 32);
+        if let Some(th) = g.throttle.as_mut() {
+            th.truncate(16);
+            for item in th.iter_mut() {
+                *item = sanitize_text(item, 32);
+            }
+        }
+        if let Some(procs) = g.procs.as_mut() {
+            procs.truncate(64);
+            for p in procs.iter_mut() {
+                sanitize_opt_text(&mut p.user, 64);
+                sanitize_opt_text(&mut p.name, 64);
+                sanitize_opt_text(&mut p.container, 32);
+            }
+        }
+    }
 }
 
 /// Load latest `gpu_snapshot` documents for a batch of agent IDs.

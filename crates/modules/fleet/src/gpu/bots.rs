@@ -133,13 +133,17 @@ pub fn mask_webhook_url(raw: &str) -> String {
 }
 
 /// Return `true` iff `ip` is globally routable (not loopback, private, CGNAT,
-/// link-local, multicast, documentation, broadcast, ULA, or IPv4-mapped private).
+/// link-local, multicast, documentation, broadcast, ULA, IPv4-mapped/compatible
+/// non-public, or NAT64).
 pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return is_public_v4(mapped);
+            }
+            if let Some(compat) = v6.to_ipv4() {
+                return is_public_v4(compat);
             }
             is_public_v6(v6)
         }
@@ -191,6 +195,10 @@ fn is_public_v6(v6: Ipv6Addr) -> bool {
     }
     // Documentation 2001:db8::/32
     if segs[0] == 0x2001 && segs[1] == 0x0db8 {
+        return false;
+    }
+    // NAT64 well-known prefix 64:ff9b::/96 and local-use 64:ff9b:1::/48
+    if segs[0] == 0x0064 && segs[1] == 0xff9b {
         return false;
     }
     true
@@ -320,6 +328,16 @@ pub fn dingtalk_sign(timestamp_ms: i64, secret: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
 }
 
+/// Generic HTTPS webhook HMAC-SHA256 signature covering BOTH timestamp and the
+/// serialized JSON body (`base64(HMAC-SHA256(key = secret, msg = "{timestamp_ms}\n{body}"))`).
+pub fn webhook_body_sign(timestamp_ms: i64, body: &serde_json::Value, secret: &str) -> String {
+    let body_json = serde_json::to_string(body).unwrap_or_default();
+    let msg = format!("{timestamp_ms}\n{body_json}");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(msg.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+}
+
 /// Percent-encode a DingTalk base64 signature (`+`, `/`, `=`).
 pub fn url_encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
@@ -432,7 +450,7 @@ pub fn build_bot_payload(
                 "count": items.len(),
             });
             if let Some(secret) = channel.secret.as_deref().filter(|s| !s.is_empty()) {
-                let sig = dingtalk_sign(now_ms, secret);
+                let sig = webhook_body_sign(now_ms, &obj, secret);
                 obj["signature"] = serde_json::json!(sig);
             }
             obj
@@ -442,8 +460,66 @@ pub fn build_bot_payload(
     Ok((url, payload))
 }
 
+/// Read at most `max_bytes` from an HTTP response stream to prevent unbounded
+/// server memory allocation on hostile or misbehaving webhooks.
+async fn read_bounded_body(mut resp: reqwest::Response, max_bytes: usize) -> String {
+    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes.min(4096));
+    while buf.len() < max_bytes {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = (max_bytes - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+                if take < chunk.len() {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Inspect provider-specific JSON error envelopes returned on HTTP 200.
+fn check_provider_body(kind: BotKind, body: &str) -> Result<(), String> {
+    if matches!(kind, BotKind::Webhook) || body.trim().is_empty() {
+        return Ok(());
+    }
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Ok(());
+    };
+    match kind {
+        BotKind::Feishu => {
+            if let Some(code) = val.get("code").and_then(|v| v.as_i64())
+                && code != 0
+            {
+                let msg = val.get("msg").and_then(|v| v.as_str()).unwrap_or("error");
+                return Err(format!("feishu rejected webhook (code {code}): {msg}"));
+            }
+            if let Some(code) = val.get("StatusCode").and_then(|v| v.as_i64())
+                && code != 0
+            {
+                let msg = val
+                    .get("StatusMessage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("error");
+                return Err(format!("feishu rejected webhook (StatusCode {code}): {msg}"));
+            }
+        }
+        BotKind::Dingtalk | BotKind::Wecom => {
+            if let Some(code) = val.get("errcode").and_then(|v| v.as_i64())
+                && code != 0
+            {
+                let msg = val.get("errmsg").and_then(|v| v.as_str()).unwrap_or("error");
+                return Err(format!("bot provider rejected webhook (errcode {code}): {msg}"));
+            }
+        }
+        BotKind::Webhook => {}
+    }
+    Ok(())
+}
+
 /// Deliver once to `channel` with fresh DNS validation, pinned resolved IPs,
-/// and `redirect::Policy::none()`.
+/// `.no_proxy()`, and `redirect::Policy::none()`.
 pub async fn send_once(channel: &GpuAlertChannel, items: &[BotAlertItem]) -> Result<(), String> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let (url, payload) = build_bot_payload(channel, items, now_ms)?;
@@ -453,28 +529,29 @@ pub async fn send_once(channel: &GpuAlertChannel, items: &[BotAlertItem]) -> Res
         .ok_or_else(|| "missing webhook host".to_string())?;
 
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(host, &addrs)
         .build()
-        .map_err(|e| format!("http client build failed: {e}"))?;
+        .map_err(|e| format!("http client build failed: {}", e.without_url()))?;
 
     let resp = client
         .post(url)
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("webhook send failed: {e}"))?;
+        .map_err(|e| format!("webhook send failed: {}", e.without_url()))?;
     let status = resp.status();
     if status.is_redirection() {
         return Err(format!("webhook redirected ({status}), refused for SSRF safety"));
     }
+    let body = read_bounded_body(resp, 8 * 1024).await;
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(200).collect();
         return Err(format!("webhook HTTP {status}: {snippet}"));
     }
-    Ok(())
+    check_provider_body(channel.kind, &body)
 }
 
 /// Per-channel 10 s coalescing & retry dispatcher (`5 s / 30 s / 120 s`).
@@ -484,13 +561,19 @@ pub struct BotDispatcher {
 }
 
 impl BotDispatcher {
-    pub fn enqueue(&self, db: Database, channel: GpuAlertChannel, item: BotAlertItem) {
-        let Some(cid) = channel.id else { return };
+    pub fn enqueue(
+        &self,
+        db: Database,
+        channel_id: ObjectId,
+        tenant_id: ObjectId,
+        owner_id: ObjectId,
+        item: BotAlertItem,
+    ) {
         let pending = self.pending.clone();
         tokio::spawn(async move {
             let spawn_flusher = {
                 let mut map = pending.lock().await;
-                let entry = map.entry(cid).or_default();
+                let entry = map.entry(channel_id).or_default();
                 let first = entry.is_empty();
                 entry.push(item);
                 first
@@ -502,42 +585,63 @@ impl BotDispatcher {
             tokio::time::sleep(Duration::from_secs(10)).await;
             let batch = {
                 let mut map = pending.lock().await;
-                map.remove(&cid).unwrap_or_default()
+                map.remove(&channel_id).unwrap_or_default()
             };
             if batch.is_empty() {
                 return;
             }
-            deliver_with_retries(&db, &channel, &batch).await;
+            deliver_with_retries(&db, channel_id, tenant_id, owner_id, &batch).await;
         });
     }
 }
 
-async fn deliver_with_retries(db: &Database, channel: &GpuAlertChannel, batch: &[BotAlertItem]) {
+async fn deliver_with_retries(
+    db: &Database,
+    channel_id: ObjectId,
+    tenant_id: ObjectId,
+    owner_id: ObjectId,
+    batch: &[BotAlertItem],
+) {
     let delays = [
         Duration::from_secs(0),
         Duration::from_secs(5),
         Duration::from_secs(30),
         Duration::from_secs(120),
     ];
+    let coll = db.collection::<GpuAlertChannel>(COLLECTION);
     let mut last_err: Option<String> = None;
+    let mut attempted = false;
     for delay in delays {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        match send_once(channel, batch).await {
+        // Reload and re-authorize the live channel config before every send or
+        // retry so edits, disables, or deletions take effect immediately.
+        let Ok(Some(live_ch)) = coll
+            .find_one(doc! {
+                "_id": channel_id,
+                "tenant_id": tenant_id,
+                "user_id": owner_id,
+                "enabled": true,
+            })
+            .await
+        else {
+            return;
+        };
+        attempted = true;
+        match send_once(&live_ch, batch).await {
             Ok(()) => {
                 last_err = None;
                 break;
             }
             Err(e) => {
-                tracing::warn!(channel = ?channel.id, kind = ?channel.kind, error = %e, "gpu bot delivery attempt failed");
+                tracing::warn!(channel = %channel_id, kind = ?live_ch.kind, error = %e, "gpu bot delivery attempt failed");
                 last_err = Some(e);
             }
         }
     }
 
-    if let Some(cid) = channel.id {
-        let coll = db.collection::<GpuAlertChannel>(COLLECTION);
+    if attempted {
         let update = match last_err {
             None => doc! {
                 "$set": {
@@ -553,7 +657,12 @@ async fn deliver_with_retries(db: &Database, channel: &GpuAlertChannel, batch: &
                 },
             },
         };
-        let _ = coll.update_one(doc! { "_id": cid }, update).await;
+        let _ = coll
+            .update_one(
+                doc! { "_id": channel_id, "tenant_id": tenant_id, "user_id": owner_id },
+                update,
+            )
+            .await;
     }
 }
 

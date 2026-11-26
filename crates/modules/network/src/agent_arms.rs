@@ -345,6 +345,28 @@ async fn maybe_mint_ssh_offline_cap(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let mut cap_exp = now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS);
+    let mut max_session_secs = ssh_limits::MAX_SESSION_SECS;
+    for check_aid in [origin_agent_id, target_id] {
+        match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, check_aid).await {
+            Ok(None) => {}
+            Ok(Some(grant)) => {
+                let until_secs = (grant.access_until.timestamp_millis().max(0) / 1000) as u64;
+                if until_secs <= now_secs {
+                    return None;
+                }
+                cap_exp = cap_exp.min(until_secs);
+                max_session_secs = max_session_secs.min(until_secs.saturating_sub(now_secs));
+            }
+            Err(_) => {
+                // Fail closed when temporary-invitation status cannot be confirmed.
+                return None;
+            }
+        }
+    }
+    if max_session_secs == 0 {
+        return None;
+    }
     let claims = OfflineCapClaims {
         aud: OFFLINE_CAP_AUDIENCE.to_string(),
         verb: VERB_SSH.to_string(),
@@ -356,10 +378,10 @@ async fn maybe_mint_ssh_offline_cap(
         caller: caller_display.to_string(),
         jti: ObjectId::new().to_hex(),
         iat: now_secs,
-        exp: now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS),
+        exp: cap_exp,
         ssh_account_mode: Some(spec.account_mode.wire().to_string()),
         ssh_account: spec.account,
-        ssh_max_session_secs: Some(ssh_limits::MAX_SESSION_SECS),
+        ssh_max_session_secs: Some(max_session_secs),
         exec_shells: None,
         exec_run_as: None,
         exec_max_timeout_ms: None,

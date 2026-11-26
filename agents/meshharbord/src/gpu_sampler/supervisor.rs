@@ -28,7 +28,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -105,7 +105,8 @@ pub struct GpuSupervisor {
     gpu_processes: Arc<AtomicBool>,
     latest_inventory: Arc<RwLock<Option<GpuInventory>>>,
     latest_report: Arc<RwLock<Option<GpuReport>>>,
-    alerts: Arc<Mutex<VecDeque<GpuAlertWire>>>,
+    alerts: Arc<Mutex<VecDeque<(u64, GpuAlertWire)>>>,
+    local_alert_seq: Arc<AtomicU64>,
     unreaped_child: Arc<AtomicBool>,
     timings: SupervisorTimings,
     child_exe_override: Option<PathBuf>,
@@ -137,6 +138,7 @@ impl GpuSupervisor {
             latest_inventory: Arc::new(RwLock::new(None)),
             latest_report: Arc::new(RwLock::new(None)),
             alerts: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_ALERT_RING))),
+            local_alert_seq: Arc::new(AtomicU64::new(0)),
             unreaped_child: Arc::new(AtomicBool::new(false)),
             timings: SupervisorTimings::default(),
             child_exe_override: None,
@@ -145,8 +147,17 @@ impl GpuSupervisor {
     }
 
     /// Wake the supervisor after local config flags (`gpu_telemetry` /
-    /// `gpu_processes`) change.
+    /// `gpu_processes`) change. Clears cached inventory/report immediately when
+    /// local telemetry is disabled so no stale GPU/host metrics leak.
     pub fn notify_config_changed(&self) {
+        if !self.gpu_telemetry.load(Ordering::Relaxed) {
+            if let Ok(mut slot) = self.latest_inventory.write() {
+                *slot = None;
+            }
+            if let Ok(mut slot) = self.latest_report.write() {
+                *slot = None;
+            }
+        }
         self.notify.notify_one();
     }
 
@@ -226,28 +237,40 @@ impl GpuSupervisor {
         self.notify.notify_one();
     }
 
-    /// Record an inbound `ServerMsg::GpuAlert` into the ring buffer for LocalAPI.
-    pub fn record_alert(&self, alert: GpuAlertWire) {
+    /// Record an inbound `ServerMsg::GpuAlert` into the ring buffer for LocalAPI,
+    /// assigning a daemon-local monotonic sequence cursor so server restarts,
+    /// replica changes, or multi-org alert streams never stall or suppress tray
+    /// notifications.
+    pub fn record_alert(&self, mut alert: GpuAlertWire) {
+        let remote_seq = alert.seq;
         if let Ok(mut ring) = self.alerts.lock() {
-            // Avoid duplicates by seq if delivered across multiple orgs.
-            if ring.iter().any(|a| a.seq == alert.seq && a.at == alert.at) {
+            // Avoid duplicates if delivered across multiple orgs or retries.
+            if ring.iter().any(|(rseq, a)| {
+                *rseq == remote_seq && a.at == alert.at && a.title == alert.title && a.body == alert.body
+            }) {
                 return;
             }
+            let local_seq = self.local_alert_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            alert.seq = local_seq;
             if ring.len() >= MAX_ALERT_RING {
                 ring.pop_front();
             }
-            ring.push_back(alert);
+            ring.push_back((remote_seq, alert));
         }
     }
 
     /// Read alerts strictly newer than `after_seq` for LocalAPI `GpuAlerts`.
+    /// If the caller's cursor exceeds this daemon's current local counter (e.g.
+    /// after a daemon restart), returns the full ring so clients self-recover.
     pub fn alerts_after(&self, after_seq: u64) -> Vec<GpuAlertWire> {
+        let current = self.local_alert_seq.load(Ordering::Relaxed);
+        let eff_after = if after_seq > current { 0 } else { after_seq };
         self.alerts
             .lock()
             .map(|ring| {
                 ring.iter()
-                    .filter(|a| a.seq > after_seq)
-                    .cloned()
+                    .filter(|(_, a)| a.seq > eff_after)
+                    .map(|(_, a)| a.clone())
                     .collect()
             })
             .unwrap_or_default()
@@ -356,7 +379,7 @@ impl GpuSupervisor {
     }
 
     async fn run_loop(&self, mut shutdown_rx: watch::Receiver<bool>) {
-        let mut host_sampler = HostLoadSampler::new();
+        let mut host_sampler: Option<Arc<Mutex<HostLoadSampler>>> = None;
         let mut consecutive_failures: u32 = 0;
         let mut backoff_until: Option<Instant> = None;
         let mut synthetic_seq: u64 = 0;
@@ -383,15 +406,22 @@ impl GpuSupervisor {
                 continue;
             }
 
-            // Local kill switch (`gpu_telemetry = false`): NEVER spawn a child!
+            // Local kill switch (`gpu_telemetry = false`): NEVER spawn a child
+            // and NEVER sample or transmit host CPU/RAM/disk/net metrics.
             if !self.gpu_telemetry.load(Ordering::Relaxed) {
-                if need_inv {
-                    self.fanout_inventory(GpuInventory {
-                        backend: None,
-                        driver_version: None,
-                        gpus: Vec::new(),
-                        status: GpuHostStatus::OffLocal,
-                    });
+                let off_inv = GpuInventory {
+                    backend: None,
+                    driver_version: None,
+                    gpus: Vec::new(),
+                    status: GpuHostStatus::OffLocal,
+                };
+                let stale_inv = self
+                    .latest_inventory
+                    .read()
+                    .ok()
+                    .is_some_and(|g| g.as_ref().is_some_and(|i| i.status != GpuHostStatus::OffLocal));
+                if need_inv || stale_inv {
+                    self.fanout_inventory(off_inv);
                 }
                 if let Some(iv) = active_iv {
                     synthetic_seq += 1;
@@ -401,12 +431,41 @@ impl GpuSupervisor {
                         status: GpuHostStatus::OffLocal,
                         backend: None,
                         driver_version: None,
-                        host: host_sampler.sample(),
+                        host: HostLoad::default(),
+                        gpus: Vec::new(),
+                    };
+                    self.fanout_report(rep, false);
+                } else if let Ok(mut slot) = self.latest_report.write() {
+                    *slot = None;
+                }
+                let sleep_for = Duration::from_millis(u64::from(active_iv.unwrap_or(5_000)));
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() { break; }
+                    }
+                    _ = self.notify.notified() => {}
+                    _ = tokio::time::sleep(sleep_for) => {}
+                }
+                continue;
+            }
+
+            // Latched circuit breaker: once consecutive failures reach the ceiling,
+            // stay `Unavailable` and stop spawning children until daemon restart.
+            if consecutive_failures >= self.timings.max_consecutive_failures {
+                if let Some(iv) = active_iv {
+                    synthetic_seq += 1;
+                    let rep = GpuReport {
+                        seq: synthetic_seq,
+                        interval_ms: iv,
+                        status: GpuHostStatus::Unavailable,
+                        backend: None,
+                        driver_version: None,
+                        host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
                     self.fanout_report(rep, false);
                 }
-                let sleep_for = Duration::from_millis(u64::from(active_iv.unwrap_or(5_000)));
+                let sleep_for = Duration::from_millis(u64::from(active_iv.unwrap_or(30_000)));
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
                         if *shutdown_rx.borrow() { break; }
@@ -428,7 +487,7 @@ impl GpuSupervisor {
                         status: GpuHostStatus::DriverHung,
                         backend: None,
                         driver_version: None,
-                        host: host_sampler.sample(),
+                        host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
                     self.fanout_report(rep, true);
@@ -460,7 +519,7 @@ impl GpuSupervisor {
                         status,
                         backend: None,
                         driver_version: None,
-                        host: host_sampler.sample(),
+                        host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
                     self.fanout_report(rep, false);
@@ -502,7 +561,7 @@ impl GpuSupervisor {
                         status,
                         backend: None,
                         driver_version: None,
-                        host: host_sampler.sample(),
+                        host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
                     self.fanout_report(rep, true);
@@ -531,7 +590,7 @@ impl GpuSupervisor {
                         status,
                         backend: None,
                         driver_version: None,
-                        host: host_sampler.sample(),
+                        host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
                     self.fanout_report(rep, true);
@@ -542,16 +601,16 @@ impl GpuSupervisor {
 
     async fn run_child_session(
         &self,
-        host_sampler: &mut HostLoadSampler,
+        host_sampler: &mut Option<Arc<Mutex<HostLoadSampler>>>,
         shutdown_rx: &mut watch::Receiver<bool>,
         synthetic_seq: &mut u64,
     ) -> ChildOutcome {
         let exe = match &self.child_exe_override {
             Some(p) => p.clone(),
-            None => match std::env::current_exe() {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(%e, "gpu-sampler: cannot resolve current_exe");
+            None => match own_executable() {
+                Some(p) => p,
+                None => {
+                    tracing::warn!("gpu-sampler: cannot resolve current executable path");
                     return ChildOutcome::Failed;
                 }
             },
@@ -676,7 +735,7 @@ impl GpuSupervisor {
                                 Ok(ChildFrame::Report { mut report }) => {
                                     last_frame_at = Instant::now();
                                     *synthetic_seq = (*synthetic_seq).max(report.seq);
-                                    report.host = host_sampler.sample();
+                                    report.host = sample_host_load_nonblocking(host_sampler).await;
                                     self.fanout_report(report, false);
                                 }
                                 Err(e) => {
@@ -757,10 +816,101 @@ fn compute_backoff(timings: SupervisorTimings, failures: u32) -> Duration {
         .min(timings.backoff_cap)
 }
 
-/// Parent-side `sysinfo` host-load collector (no GPU driver calls).
+/// This daemon's binary on disk. An in-place upgrade replaces the binary while
+/// the daemon is running, causing Linux `/proc/self/exe` to report
+/// `<path> (deleted)`; stripping that suffix resolves the newly installed file.
+fn own_executable() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if exe.is_file() {
+        return Some(exe);
+    }
+    let s = exe.to_str()?;
+    let installed = PathBuf::from(s.strip_suffix(" (deleted)")?);
+    installed.is_file().then_some(installed)
+}
+
+/// Sample host CPU/RAM/root-disk/network load lazily on a blocking worker with
+/// a bounded 2 s timeout so slow `/proc` or filesystem calls never block tokio
+/// workers or daemon shutdown.
+async fn sample_host_load_nonblocking(
+    slot: &mut Option<Arc<Mutex<HostLoadSampler>>>,
+) -> HostLoad {
+    let sampler = slot
+        .get_or_insert_with(|| Arc::new(Mutex::new(HostLoadSampler::new())))
+        .clone();
+    match tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            let mut guard = sampler.lock().unwrap_or_else(|e| e.into_inner());
+            guard.sample()
+        }),
+    )
+    .await
+    {
+        Ok(Ok(load)) => load,
+        _ => HostLoad::default(),
+    }
+}
+
+/// Stat ONLY the root filesystem (`/` on Unix, `C:\` on Windows) instead of
+/// enumerating all mounted filesystems via `sysinfo::Disks`, which would hang
+/// on unresponsive NFS, Lustre, GPFS, or FUSE mounts.
+fn sample_root_disk_gb() -> (Option<f32>, Option<f32>) {
+    #[cfg(unix)]
+    {
+        // SAFETY: `statvfs` writes into a zero-initialized `libc::statvfs` for `"/"`.
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::statvfs(c"/".as_ptr(), &mut st) };
+        if rc == 0 {
+            let frsize = if st.f_frsize > 0 {
+                st.f_frsize as u64
+            } else {
+                st.f_bsize as u64
+            };
+            let total_bytes = (st.f_blocks as u64).saturating_mul(frsize);
+            let avail_bytes = (st.f_bavail as u64).saturating_mul(frsize);
+            if total_bytes > 0 {
+                let total = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let used =
+                    total_bytes.saturating_sub(avail_bytes) as f64 / (1024.0 * 1024.0 * 1024.0);
+                return (Some(used as f32), Some(total as f32));
+            }
+        }
+        (None, None)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        let root_w: Vec<u16> = "C:\\\0".encode_utf16().collect();
+        let mut free_avail: u64 = 0;
+        let mut total_bytes: u64 = 0;
+        let mut total_free: u64 = 0;
+        // SAFETY: valid NUL-terminated UTF-16 path and writable u64 pointers.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                root_w.as_ptr(),
+                &mut free_avail,
+                &mut total_bytes,
+                &mut total_free,
+            )
+        };
+        if ok != 0 && total_bytes > 0 {
+            let total = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let used = total_bytes.saturating_sub(free_avail) as f64 / (1024.0 * 1024.0 * 1024.0);
+            return (Some(used as f32), Some(total as f32));
+        }
+        (None, None)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        (None, None)
+    }
+}
+
+/// Parent-side `sysinfo` host-load collector (no GPU driver calls, no all-mount
+/// `statvfs` scans).
 struct HostLoadSampler {
     sys: sysinfo::System,
-    disks: sysinfo::Disks,
     networks: sysinfo::Networks,
     last_net_at: Instant,
 }
@@ -770,11 +920,9 @@ impl HostLoadSampler {
         let mut sys = sysinfo::System::new();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
-        let disks = sysinfo::Disks::new_with_refreshed_list();
         let networks = sysinfo::Networks::new_with_refreshed_list();
         Self {
             sys,
-            disks,
             networks,
             last_net_at: Instant::now(),
         }
@@ -783,7 +931,6 @@ impl HostLoadSampler {
     fn sample(&mut self) -> HostLoad {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
-        self.disks.refresh(true);
         self.networks.refresh(true);
 
         let dt = self.last_net_at.elapsed().as_secs_f64().max(0.1);
@@ -803,25 +950,7 @@ impl HostLoadSampler {
         let swap_total_mb = Some(self.sys.total_swap() / (1024 * 1024));
         let swap_used_mb = Some(self.sys.used_swap() / (1024 * 1024));
 
-        // Root disk (`/` on Unix, `C:\` on Windows, else largest mounted disk).
-        let root_disk = self
-            .disks
-            .list()
-            .iter()
-            .find(|d| {
-                let m = d.mount_point().to_string_lossy();
-                m == "/" || m.eq_ignore_ascii_case("c:\\")
-            })
-            .or_else(|| self.disks.list().first());
-        let (disk_root_used_gb, disk_root_total_gb) = match root_disk {
-            Some(d) if d.total_space() > 0 => {
-                let total = d.total_space() as f64 / (1024.0 * 1024.0 * 1024.0);
-                let used = d.total_space().saturating_sub(d.available_space()) as f64
-                    / (1024.0 * 1024.0 * 1024.0);
-                (Some(used as f32), Some(total as f32))
-            }
-            _ => (None, None),
-        };
+        let (disk_root_used_gb, disk_root_total_gb) = sample_root_disk_gb();
 
         let mut rx_bytes: u64 = 0;
         let mut tx_bytes: u64 = 0;

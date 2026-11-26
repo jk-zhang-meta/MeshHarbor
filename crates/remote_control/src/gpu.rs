@@ -286,9 +286,9 @@ impl Default for GpuStateThresholds {
 ///
 /// Rule (FR-139 §7.2):
 /// - `!ws_online` -> `Offline` immediately
-/// - `age < 2 * interval` -> `Fresh`
-/// - `2 * interval <= age < 5 * interval` -> `Stale`
-/// - `age >= 5 * interval` -> `Offline`
+/// - `age < max(3 * interval, 90 s)` -> `Fresh`
+/// - `age < max(5 * interval, 150 s)` -> `Stale`
+/// - `age >= max(5 * interval, 150 s)` -> `Offline`
 pub fn compute_freshness(
     ws_online: bool,
     received_at_s: Option<i64>,
@@ -303,9 +303,11 @@ pub fn compute_freshness(
     };
     let age_ms = now_s.saturating_sub(recv).max(0) as u64 * 1000;
     let iv = u64::from(interval_ms.max(1000));
-    if age_ms < iv.saturating_mul(2) {
+    let fresh_cutoff_ms = iv.saturating_mul(3).max(90_000);
+    let stale_cutoff_ms = iv.saturating_mul(5).max(150_000);
+    if age_ms < fresh_cutoff_ms {
         GpuFreshness::Fresh
-    } else if age_ms < iv.saturating_mul(5) {
+    } else if age_ms < stale_cutoff_ms {
         GpuFreshness::Stale
     } else {
         GpuFreshness::Offline
@@ -386,10 +388,19 @@ mod tests {
     fn fr139_freshness_respects_ws_and_server_receive_time() {
         assert_eq!(compute_freshness(false, Some(1000), 1001, 30_000), GpuFreshness::Offline);
         assert_eq!(compute_freshness(true, None, 1001, 30_000), GpuFreshness::Offline);
-        assert_eq!(compute_freshness(true, Some(1000), 1059, 30_000), GpuFreshness::Fresh);
-        assert_eq!(compute_freshness(true, Some(1000), 1060, 30_000), GpuFreshness::Stale);
+        // 30 s interval -> 90 s Fresh cutoff, 150 s Stale cutoff
+        assert_eq!(compute_freshness(true, Some(1000), 1089, 30_000), GpuFreshness::Fresh);
+        assert_eq!(compute_freshness(true, Some(1000), 1090, 30_000), GpuFreshness::Stale);
         assert_eq!(compute_freshness(true, Some(1000), 1149, 30_000), GpuFreshness::Stale);
         assert_eq!(compute_freshness(true, Some(1000), 1150, 30_000), GpuFreshness::Offline);
+        // 2 s live lease ending -> 90 s / 150 s floors prevent false offline flash
+        assert_eq!(compute_freshness(true, Some(1000), 1030, 2_000), GpuFreshness::Fresh);
+        assert_eq!(compute_freshness(true, Some(1000), 1100, 2_000), GpuFreshness::Stale);
+        assert_eq!(compute_freshness(true, Some(1000), 1150, 2_000), GpuFreshness::Offline);
+        // Larger 60 s interval scales proportionally (180 s / 300 s)
+        assert_eq!(compute_freshness(true, Some(1000), 1179, 60_000), GpuFreshness::Fresh);
+        assert_eq!(compute_freshness(true, Some(1000), 1180, 60_000), GpuFreshness::Stale);
+        assert_eq!(compute_freshness(true, Some(1000), 1300, 60_000), GpuFreshness::Offline);
     }
 
     #[test]

@@ -185,12 +185,12 @@
               </span>
               <v-spacer />
               <span v-if="host.host" class="text-caption text-medium-emphasis d-none d-sm-inline">
-                CPU {{ host.host.cpu_pct ?? '—' }}%
+                CPU {{ host.host.cpu_pct != null ? Math.round(host.host.cpu_pct) : '—' }}%
                 <template v-if="host.host.mem_used_mb != null && host.host.mem_total_mb != null">
                   · RAM {{ fmtGiB(host.host.mem_used_mb) }}/{{ fmtGiB(host.host.mem_total_mb) }}G
                 </template>
-                <template v-if="host.host.root_used_pct != null">
-                  · Disk {{ host.host.root_used_pct }}%
+                <template v-if="diskUsedPct(host.host) != null">
+                  · Disk {{ diskUsedPct(host.host) }}%
                 </template>
               </span>
               <v-btn
@@ -235,11 +235,11 @@
                     <td>
                       <v-chip
                         size="x-small"
-                        :color="stateColor(g.state)"
+                        :color="cardHasFault(g) ? 'purple' : stateColor(g.state)"
                         variant="flat"
                         class="font-weight-bold"
                       >
-                        {{ stateLabel(g.state) }}
+                        {{ cardHasFault(g) ? t('mh.gpu.state.fault') : stateLabel(g.state) }}
                       </v-chip>
                     </td>
                     <td>
@@ -247,7 +247,7 @@
                       <v-progress-linear
                         v-if="g.mem_total_mb && g.mem_used_mb != null"
                         :model-value="Math.min(100, (g.mem_used_mb / g.mem_total_mb) * 100)"
-                        :color="stateColor(g.state)"
+                        :color="cardHasFault(g) ? 'purple' : stateColor(g.state)"
                         height="5"
                         rounded
                       />
@@ -268,22 +268,24 @@
                           :key="p.pid"
                           class="text-caption text-mono"
                         >
-                          <span class="font-weight-medium">{{ p.user || `uid:${p.uid ?? '?'}` }}</span>
+                          <span class="font-weight-medium">{{ p.user || '—' }}</span>
                           <span class="text-medium-emphasis"> #{{ p.pid }}</span>
                           <span v-if="p.mem_mb != null"> {{ p.mem_mb }}M</span>
-                          <span v-if="p.cmd" class="text-medium-emphasis"> {{ p.cmd }}</span>
+                          <span v-if="p.name" class="text-medium-emphasis"> {{ p.name }}</span>
+                          <span v-if="p.container" class="text-medium-emphasis"> [{{ p.container }}]</span>
                         </div>
                         <div v-if="g.procs.length > 3" class="text-caption text-medium-emphasis">
                           +{{ g.procs.length - 3 }} {{ t('mh.gpu.moreProcs') }}
                         </div>
                       </template>
-                      <span v-else-if="g.procs_state === 'off_local'" class="text-caption text-medium-emphasis">
+                      <span v-else-if="g.procs_state === 'off'" class="text-caption text-medium-emphasis">
                         {{ t('mh.gpu.procsOffLocal') }}
                       </span>
                       <span v-else class="text-caption text-medium-emphasis">—</span>
                     </td>
                     <td>
                       <v-btn
+                        v-if="isSafeCudaUuid(g.uuid)"
                         :icon="copiedUuid === g.uuid ? 'mdi-check' : 'mdi-content-copy'"
                         size="x-small"
                         variant="text"
@@ -325,7 +327,17 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useGpuStore } from '@/stores/gpu'
-import type { GpuCardView, GpuFreshness, GpuHostView, GpuState } from '@/api/gpu'
+import {
+  cardHasFault,
+  hostHasFault,
+  isSafeCudaUuid,
+  shellQuoteSingle,
+  type GpuCardView,
+  type GpuFreshness,
+  type GpuHostLoad,
+  type GpuHostView,
+  type GpuState,
+} from '@/api/gpu'
 import GpuHostDrawer from './GpuHostDrawer.vue'
 import GpuUsersTab from './GpuUsersTab.vue'
 import GpuFindDialog from './GpuFindDialog.vue'
@@ -369,6 +381,13 @@ function fmtVram(g: GpuCardView): string {
   return '—'
 }
 
+function diskUsedPct(load: GpuHostLoad): number | null {
+  if (load.disk_root_used_gb != null && load.disk_root_total_gb != null && load.disk_root_total_gb > 0) {
+    return Math.min(100, Math.max(0, Math.round((load.disk_root_used_gb / load.disk_root_total_gb) * 100)))
+  }
+  return null
+}
+
 // Color-blind-safe palette paired with explicit state words (never bare dots).
 function stateColor(s: GpuState): string {
   switch (s) {
@@ -377,10 +396,8 @@ function stateColor(s: GpuState): string {
     case 'busy':
       return 'amber-darken-2'
     case 'held_idle':
-    case 'unattributed_busy':
+    case 'unattributed':
       return 'deep-orange'
-    case 'fault':
-      return 'purple'
     default:
       return 'grey'
   }
@@ -391,7 +408,7 @@ function stateLabel(s: GpuState): string {
 }
 
 function freshnessColor(f: GpuFreshness): string {
-  if (f === 'live') return 'info'
+  if (f === 'fresh') return 'info'
   if (f === 'stale') return 'warning'
   return 'grey'
 }
@@ -402,9 +419,13 @@ const filteredHosts = computed(() => {
     if (stateFilter.value === 'invited' && h.source !== 'invited') return false
     if (stateFilter.value === 'shared' && h.source !== 'shared') return false
     if (stateFilter.value === 'free' && !h.gpus.some((g) => g.state === 'free')) return false
-    if (stateFilter.value === 'busy' && !h.gpus.some((g) => g.state === 'busy')) return false
+    if (
+      stateFilter.value === 'busy' &&
+      !h.gpus.some((g) => g.state === 'busy' || g.state === 'unattributed')
+    )
+      return false
     if (stateFilter.value === 'held_idle' && !h.gpus.some((g) => g.state === 'held_idle')) return false
-    if (stateFilter.value === 'fault' && !h.gpus.some((g) => g.state === 'fault')) return false
+    if (stateFilter.value === 'fault' && !hostHasFault(h)) return false
     if (!q) return true
     if (hostTitle(h).toLowerCase().includes(q) || h.name.toLowerCase().includes(q)) return true
     return h.gpus.some(
@@ -412,7 +433,10 @@ const filteredHosts = computed(() => {
         (g.name || '').toLowerCase().includes(q) ||
         g.uuid.toLowerCase().includes(q) ||
         (g.procs || []).some(
-          (p) => (p.user || '').toLowerCase().includes(q) || (p.cmd || '').toLowerCase().includes(q),
+          (p) =>
+            (p.user || '').toLowerCase().includes(q) ||
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.container || '').toLowerCase().includes(q),
         ),
     )
   })
@@ -438,8 +462,11 @@ async function openDrawer(host: GpuHostView) {
 }
 
 async function copyCuda(uuid: string) {
+  if (!isSafeCudaUuid(uuid)) return
   try {
-    await navigator.clipboard.writeText(`export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${uuid}`)
+    await navigator.clipboard.writeText(
+      `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(uuid)}`,
+    )
     copiedUuid.value = uuid
     setTimeout(() => {
       if (copiedUuid.value === uuid) copiedUuid.value = null

@@ -218,9 +218,32 @@ pub struct FreeGpuSelection {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct HostExport {
+    pub agent_id: String,
     pub host: String,
     pub cuda_visible_devices: String,
     pub export_cmd: String,
+}
+
+/// Validate a reported GPU identifier before placing it into a shell export.
+/// Accepts standard NVML/MIG/PCI UUID characters only; rejects whitespace,
+/// quotes, shell metacharacters, and control bytes.
+pub fn is_safe_cuda_device_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
+}
+
+/// Wrap `val` in POSIX single quotes, escaping embedded single quotes safely.
+pub fn shell_single_quote(val: &str) -> String {
+    format!("'{}'", val.replace('\'', "'\\''"))
+}
+
+fn card_has_fault(g: &GpuCardView) -> bool {
+    g.lost
+        || g.ecc_uncorrected.is_some_and(|e| e > 0)
+        || g.xid_errors.as_ref().is_some_and(|x| !x.is_empty())
 }
 
 /// Entry point called from `cli::run_from`.
@@ -714,7 +737,7 @@ pub fn select_free_gpus(
         let mut qualifying: Vec<FreeGpuPick> = h
             .gpus
             .iter()
-            .filter(|g| g.state == "free" && !g.lost)
+            .filter(|g| g.state == "free" && !g.lost && is_safe_cuda_device_id(&g.uuid))
             .filter_map(|g| {
                 let free_mb = match (g.mem_total_mb, g.mem_used_mb) {
                     (Some(tot), Some(used)) => Some(tot.saturating_sub(used)),
@@ -788,22 +811,42 @@ pub fn select_free_gpus(
         bail!("{msg}");
     }
 
-    // Group exports by host while preserving selection order.
+    // Group exports by `agent_id` (not display name) so distinct hosts sharing
+    // a display name never collapse into one invalid CUDA_VISIBLE_DEVICES list.
+    let mut name_counts: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
+    for g in &picked {
+        name_counts
+            .entry(g.host.as_str())
+            .or_default()
+            .insert(g.agent_id.as_str());
+    }
     let mut exports: Vec<HostExport> = Vec::new();
     for g in &picked {
-        if let Some(ex) = exports.iter_mut().find(|e| e.host == g.host) {
+        if let Some(ex) = exports.iter_mut().find(|e| e.agent_id == g.agent_id) {
             ex.cuda_visible_devices.push(',');
             ex.cuda_visible_devices.push_str(&g.uuid);
             ex.export_cmd = format!(
                 "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
-                ex.cuda_visible_devices
+                shell_single_quote(&ex.cuda_visible_devices)
             );
         } else {
             let devs = g.uuid.clone();
+            let ambiguous = name_counts
+                .get(g.host.as_str())
+                .is_some_and(|ids| ids.len() > 1);
+            let label = if ambiguous {
+                let short_id: String = g.agent_id.chars().take(8).collect();
+                format!("{} ({short_id})", g.host)
+            } else {
+                g.host.clone()
+            };
             exports.push(HostExport {
-                host: g.host.clone(),
+                agent_id: g.agent_id.clone(),
+                host: label,
                 export_cmd: format!(
-                    "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={devs}"
+                    "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
+                    shell_single_quote(&devs)
                 ),
                 cuda_visible_devices: devs,
             });
@@ -861,7 +904,12 @@ fn filtered_sorted_hosts<'a>(
                                 .unwrap_or("")
                                 .to_ascii_lowercase()
                                 .contains(&needle)
-                                || p.cmd
+                                || p.name
+                                    .as_deref()
+                                    .unwrap_or("")
+                                    .to_ascii_lowercase()
+                                    .contains(&needle)
+                                || p.container
                                     .as_deref()
                                     .unwrap_or("")
                                     .to_ascii_lowercase()
@@ -914,19 +962,23 @@ fn max_temp(h: &GpuHostView) -> i16 {
         .unwrap_or(i16::MIN)
 }
 
-fn state_word(state: &str, lang: Lang) -> &'static str {
+fn state_word(state: &str, fault: bool, lang: Lang) -> &'static str {
+    if fault {
+        return match lang {
+            Lang::En => "FAULT",
+            Lang::Zh => "故障",
+        };
+    }
     match (state, lang) {
         ("free", Lang::En) => "FREE",
         ("busy", Lang::En) => "BUSY",
         ("held_idle", Lang::En) => "IDLE!",
-        ("unattributed_busy", Lang::En) => "UNATTR",
-        ("fault", Lang::En) => "FAULT",
+        ("unattributed", Lang::En) => "UNATTR",
         (_, Lang::En) => "UNK",
         ("free", Lang::Zh) => "空闲",
         ("busy", Lang::Zh) => "忙碌",
         ("held_idle", Lang::Zh) => "占空!",
-        ("unattributed_busy", Lang::Zh) => "未归属",
-        ("fault", Lang::Zh) => "故障",
+        ("unattributed", Lang::Zh) => "未归属",
         (_, Lang::Zh) => "未知",
     }
 }
@@ -939,15 +991,17 @@ fn paint(text: &str, code: &str, color: bool) -> String {
     }
 }
 
-fn paint_state(state: &str, lang: Lang, color: bool) -> String {
+fn paint_state(state: &str, fault: bool, lang: Lang, color: bool) -> String {
     // Color-blind-safe palette: cyan/blue for FREE, orange/yellow for BUSY/IDLE!,
     // bright magenta for FAULT, dim gray for UNK.
-    let word = pad_right(state_word(state, lang), 6);
+    let word = pad_right(state_word(state, fault, lang), 6);
+    if fault {
+        return paint(&word, "1;35", color);
+    }
     match state {
         "free" => paint(&word, "1;36", color),
         "busy" => paint(&word, "33", color),
-        "held_idle" | "unattributed_busy" => paint(&word, "1;33", color),
-        "fault" => paint(&word, "1;35", color),
+        "held_idle" | "unattributed" => paint(&word, "1;33", color),
         _ => paint(&word, "90", color),
     }
 }
@@ -1031,10 +1085,18 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         return out;
     }
 
+    let now_s = if page.server_time_ms > 0 {
+        page.server_time_ms / 1000
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    };
     for h in hosts {
         out.push('\n');
         let fresh_tag = match (h.freshness.as_str(), opts.lang) {
-            ("live", _) => "",
+            ("fresh", _) => "",
             ("stale", Lang::En) => " [STALE]",
             ("stale", Lang::Zh) => " [陈旧]",
             ("offline", Lang::En) => " [OFFLINE]",
@@ -1042,18 +1104,18 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             _ => "",
         };
         let status_tag = if h.status != "ok" && !h.status.is_empty() {
-            format!(" [{}]", h.status)
+            format!(" [{}]", sanitize_term(&h.status))
         } else {
             String::new()
         };
         let drv = h
             .driver_version
             .as_deref()
-            .map(|d| format!(" drv {d}"))
+            .map(|d| format!(" drv {}", sanitize_term(d)))
             .unwrap_or_default();
         let host_line = format!(
             "{}{}{}{} ({}/{} free{})",
-            host_label(h),
+            sanitize_term(host_label(h)),
             source_badge(h, opts.lang),
             fresh_tag,
             status_tag,
@@ -1072,22 +1134,24 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         if let Some(load) = &h.host {
             let cpu = load
                 .cpu_pct
-                .map(|c| format!("CPU {c}%"))
+                .map(|c| format!("CPU {c:.0}%"))
                 .unwrap_or_else(|| "CPU —".into());
             let load1 = load
-                .load_1m
+                .load1
                 .map(|l| format!(" load {l:.2}"))
                 .unwrap_or_default();
             let ram = match (load.mem_used_mb, load.mem_total_mb) {
                 (Some(u), Some(t)) => {
-                    format!(" RAM {:.1}/{:.1}G", f64::from(u) / 1024.0, f64::from(t) / 1024.0)
+                    format!(" RAM {:.1}/{:.1}G", u as f64 / 1024.0, t as f64 / 1024.0)
                 }
                 _ => String::new(),
             };
-            let disk = load
-                .root_used_pct
-                .map(|d| format!(" disk {d}%"))
-                .unwrap_or_default();
+            let disk = match (load.disk_root_used_gb, load.disk_root_total_gb) {
+                (Some(u), Some(t)) if t > 0.0 => {
+                    format!(" disk {:.0}%", (u / t * 100.0).clamp(0.0, 100.0))
+                }
+                _ => String::new(),
+            };
             let summary = format!("  {cpu}{load1}{ram}{disk}");
             out.push_str(&paint(&truncate_width(&summary, opts.width), "90", opts.color));
             out.push('\n');
@@ -1104,7 +1168,10 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         let name_col = opts.width.saturating_sub(54).clamp(12, 26);
         let expanded = opts.expanded_host.as_deref() == Some(h.agent_id.as_str());
         for g in &h.gpus {
-            let gname = truncate_width(g.name.as_deref().unwrap_or("GPU"), name_col);
+            let gname = truncate_width(
+                &sanitize_term(g.name.as_deref().unwrap_or("GPU")),
+                name_col,
+            );
             let util = g
                 .util_pct
                 .map(|u| format!("{u:>3}%"))
@@ -1119,7 +1186,7 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                 (Some(w), None) => format!("{w:>3}W"),
                 _ => "—".into(),
             };
-            let state_cell = paint_state(&g.state, opts.lang, opts.color);
+            let state_cell = paint_state(&g.state, card_has_fault(g), opts.lang, opts.color);
             let row = format!(
                 "  #{:<2} {}  {}  {}  {:>11}  {}  {:>8}",
                 g.idx,
@@ -1135,9 +1202,9 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
 
             if expanded {
                 let mut extras = Vec::new();
-                extras.push(format!("uuid={}", g.uuid));
+                extras.push(format!("uuid={}", sanitize_term(&g.uuid)));
                 if let Some(bus) = &g.pci_bus {
-                    extras.push(format!("pci={bus}"));
+                    extras.push(format!("pci={}", sanitize_term(bus)));
                 }
                 if let Some(fan) = g.fan_pct {
                     extras.push(format!("fan={fan}%"));
@@ -1158,7 +1225,8 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                 if let Some(th) = &g.throttle
                     && !th.is_empty()
                 {
-                    extras.push(format!("throttle={}", th.join(",")));
+                    let clean_th: Vec<String> = th.iter().map(|s| sanitize_term(s)).collect();
+                    extras.push(format!("throttle={}", clean_th.join(",")));
                 }
                 let detail = format!("      {}", extras.join("  "));
                 out.push_str(&paint(&truncate_width(&detail, opts.width), "90", opts.color));
@@ -1168,25 +1236,33 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             if opts.show_procs {
                 if let Some(procs) = &g.procs {
                     for p in procs {
-                        let user = p.user.as_deref().unwrap_or("—");
+                        let user = sanitize_term(p.user.as_deref().unwrap_or("—"));
                         let mem = p
                             .mem_mb
                             .map(|m| format!("{m}M"))
                             .unwrap_or_else(|| "—".into());
-                        let cmd = p.cmd.as_deref().unwrap_or("—");
-                        let age = format_age(p.age_s);
+                        let name = sanitize_term(p.name.as_deref().unwrap_or("—"));
+                        let age_s = p
+                            .started_at
+                            .filter(|&st| st > 0 && now_s >= st)
+                            .map(|st| (now_s - st) as u64);
+                        let age = format_age(age_s);
+                        let label = match p.container.as_deref() {
+                            Some(c) if !c.is_empty() => format!("{name} [{}]", sanitize_term(c)),
+                            _ => name,
+                        };
                         let pline = format!(
                             "      pid {:<7} {:<12} {:>7} {:>6}  {}",
                             p.pid,
-                            truncate_width(user, 12),
+                            truncate_width(&user, 12),
                             mem,
                             age,
-                            cmd
+                            label
                         );
                         out.push_str(&truncate_width(&pline, opts.width));
                         out.push('\n');
                     }
-                } else if g.procs_state == "off_local" {
+                } else if g.procs_state == "off" {
                     let note = match opts.lang {
                         Lang::En => "      (process list disabled locally on this host)",
                         Lang::Zh => "      （该主机本地已关闭进程明细上报）",
@@ -1247,10 +1323,16 @@ pub fn render_users_table(page: &GpuUsersPage, color: bool, lang: Lang, width: u
         } else {
             format!("{}M", u.live_mem_mb)
         };
-        let hosts_str = u.hosts.join(",");
+        let hosts_str = u
+            .hosts
+            .iter()
+            .map(|h| sanitize_term(h))
+            .collect::<Vec<_>>()
+            .join(",");
+        let clean_user = sanitize_term(&u.user);
         let line = format!(
             "{}  {:>9.2}  {:>9.2}  {:>9}  {:>9}  {}",
-            pad_right(&truncate_width(&u.user, 14), 14),
+            pad_right(&truncate_width(&clean_user, 14), 14),
             u.held_gpu_hours,
             u.busy_gpu_hours,
             u.live_gpus,
@@ -1261,6 +1343,12 @@ pub fn render_users_table(page: &GpuUsersPage, color: bool, lang: Lang, width: u
         out.push('\n');
     }
     out
+}
+
+/// Strip ASCII and Unicode C0/C1 control characters (including ANSI ESC/CSI)
+/// from untrusted device-reported strings before printing to a terminal.
+fn sanitize_term(raw: &str) -> String {
+    raw.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Pure renderer for `mh nvitop free`.
@@ -1282,16 +1370,16 @@ pub fn render_free_selection(sel: &FreeGpuSelection, color: bool, lang: Lang) ->
         };
         out.push_str(&format!(
             "  {}  #{}  {}  {}  {}\n",
-            g.host,
+            sanitize_term(&g.host),
             g.idx,
-            g.name.as_deref().unwrap_or("GPU"),
+            sanitize_term(g.name.as_deref().unwrap_or("GPU")),
             free_str,
-            g.uuid
+            sanitize_term(&g.uuid)
         ));
     }
     out.push('\n');
     for ex in &sel.exports {
-        out.push_str(&format!("# {}\n{}\n", ex.host, ex.export_cmd));
+        out.push_str(&format!("# {}\n{}\n", sanitize_term(&ex.host), ex.export_cmd));
     }
     out
 }
@@ -1353,7 +1441,7 @@ mod tests {
                     source: "org".into(),
                     read_only: false,
                     is_online: true,
-                    freshness: "live".into(),
+                    freshness: "fresh".into(),
                     status: "ok".into(),
                     backend: Some("nvml".into()),
                     driver_version: Some("550.90".into()),
@@ -1364,15 +1452,19 @@ mod tests {
                     held_idle_count: 0,
                     total_count: 2,
                     host: Some(GpuHostLoadView {
-                        cpu_pct: Some(22),
-                        load_1m: Some(1.5),
+                        cpu_pct: Some(22.5),
+                        load1: Some(1.5),
+                        load5: None,
+                        load15: None,
+                        cpu_count: Some(32),
                         mem_used_mb: Some(65_536),
                         mem_total_mb: Some(262_144),
                         swap_used_mb: None,
                         swap_total_mb: None,
-                        root_used_pct: Some(42),
-                        net_rx_mbps: None,
-                        net_tx_mbps: None,
+                        disk_root_used_gb: Some(210.0),
+                        disk_root_total_gb: Some(500.0),
+                        net_rx_bps: None,
+                        net_tx_bps: None,
                     }),
                     gpus: vec![
                         GpuCardView {
@@ -1426,11 +1518,13 @@ mod tests {
                             procs: Some(vec![GpuProcView {
                                 pid: 4242,
                                 user: Some("alice".into()),
-                                uid: Some(1000),
+                                name: Some("python3".into()),
                                 mem_mb: Some(61_440),
-                                cmd: Some("python train.py".into()),
-                                age_s: Some(3900),
-                                kind: Some("c".into()),
+                                sm_pct: Some(96),
+                                cpu_pct: Some(15.2),
+                                started_at: Some(1_759_996_100),
+                                container: None,
+                                kind: Some("compute".into()),
                             }]),
                         },
                     ],
@@ -1443,7 +1537,7 @@ mod tests {
                     source: "shared".into(),
                     read_only: true,
                     is_online: true,
-                    freshness: "live".into(),
+                    freshness: "fresh".into(),
                     status: "ok".into(),
                     backend: Some("nvml".into()),
                     driver_version: Some("550.90".into()),
@@ -1544,7 +1638,7 @@ mod tests {
         assert!(
             sel1.exports[0]
                 .export_cmd
-                .contains("CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=GPU-AAAA-0000")
+                .contains("CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES='GPU-AAAA-0000'")
         );
 
         // Request 2 GPUs on same host (no min-free) -> must pick shared-node-b's 2 free 4090s.
@@ -1558,6 +1652,22 @@ mod tests {
 
         // Request 2 GPUs with >= 40G free -> only 1 qualifies -> must error (non-zero exit).
         assert!(select_free_gpus(&page, 2, 40 * 1024, false, Lang::En).is_err());
+
+        // Hostile shell-injection UUID must be refused; duplicate host names split by agent_id.
+        let mut dup_page = sample_page();
+        dup_page.hosts[0].gpus[0].uuid = "GPU-0; rm -rf /".into();
+        assert!(!is_safe_cuda_device_id(&dup_page.hosts[0].gpus[0].uuid));
+        let safe_sel = select_free_gpus(&dup_page, 1, 0, false, Lang::En).unwrap();
+        assert_eq!(safe_sel.gpus[0].uuid, "GPU-BBBB-0000");
+
+        let mut same_name = sample_page();
+        same_name.hosts[0].display_name = Some("gpu-box".into());
+        same_name.hosts[1].display_name = Some("gpu-box".into());
+        let split_sel = select_free_gpus(&same_name, 3, 0, false, Lang::En).unwrap();
+        assert_eq!(split_sel.exports.len(), 2);
+        assert_ne!(split_sel.exports[0].agent_id, split_sel.exports[1].agent_id);
+        assert!(split_sel.exports[0].host.contains("aid1"));
+        assert!(split_sel.exports[1].host.contains("aid2"));
     }
 
     #[test]
@@ -1569,7 +1679,7 @@ mod tests {
         assert!(text.contains("BUSY"));
         assert!(text.contains("[shared RO]"));
         assert!(text.contains("alice"));
-        assert!(text.contains("python train.py"));
+        assert!(text.contains("python3"));
         assert!(!text.contains('○') && !text.contains('●'));
     }
 

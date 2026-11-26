@@ -8,19 +8,63 @@
 //! instance names into `pid -> MiB`. Best-effort: returns an empty map if PDH
 //! counters are disabled or unavailable.
 
-#[cfg(windows)]
 use std::collections::HashMap;
 
-/// Parse a PDH GPU Process Memory instance name (`pid_1234_luid_0x0_...`) into its PID.
-pub fn parse_pdh_gpu_instance_pid(instance: &str) -> Option<u32> {
+/// Parse a PDH GPU Process Memory instance name
+/// (`pid_1234_luid_0x00000000_0x00010A4C_phys_0`) into `(pid, adapter_luid)`.
+pub fn parse_pdh_gpu_instance(instance: &str) -> Option<(u32, String)> {
     let rest = instance.strip_prefix("pid_")?;
-    let digits = rest.split('_').next()?;
-    digits.parse::<u32>().ok()
+    let mut parts = rest.split('_');
+    let pid = parts.next()?.parse::<u32>().ok()?;
+    let luid = if let Some(idx) = rest.find("_luid_") {
+        let after = &rest[idx + "_luid_".len()..];
+        let segs: Vec<&str> = after.split('_').take(2).collect();
+        if segs.len() == 2 {
+            format!("{}_{}", segs[0], segs[1])
+        } else {
+            after.to_string()
+        }
+    } else {
+        "unknown".to_string()
+    };
+    Some((pid, luid))
 }
 
-/// Query `\GPU Process Memory(*)\Dedicated Usage` via dynamically loaded `pdh.dll`.
+/// Parse just the PID from a PDH GPU Process Memory instance name.
+pub fn parse_pdh_gpu_instance_pid(instance: &str) -> Option<u32> {
+    parse_pdh_gpu_instance(instance).map(|(pid, _)| pid)
+}
+
+/// Resolve per-process dedicated VRAM from `(pid, adapter_luid) -> MiB` ONLY
+/// when the attribution is unambiguous (single adapter for this PID AND the
+/// PID is only seen on a single GPU). Multi-GPU processes return `None`
+/// (unknown) instead of inflating per-card and per-user VRAM.
+#[allow(dead_code)] // Used on Windows WDDM NVML fallback and unit tests.
+pub fn lookup_unambiguous_vram_mb(
+    by_pid_luid: &HashMap<(u32, String), u32>,
+    pid: u32,
+    pid_gpu_count: usize,
+) -> Option<u32> {
+    if pid_gpu_count > 1 {
+        return None;
+    }
+    let mut found: Option<u32> = None;
+    for ((p, _luid), &mb) in by_pid_luid {
+        if *p == pid {
+            if found.is_some() {
+                // Process holds VRAM on >1 adapters -> ambiguous without LUID match.
+                return None;
+            }
+            found = Some(mb);
+        }
+    }
+    found
+}
+
+/// Query `\GPU Process Memory(*)\Dedicated Usage` via dynamically loaded `pdh.dll`,
+/// keyed by `(pid, adapter_luid)` to avoid summing across multiple GPUs.
 #[cfg(windows)]
-pub fn sample_process_vram_mb() -> HashMap<u32, u32> {
+pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
     use std::ffi::{c_void, OsStr};
     use std::os::windows::ffi::OsStrExt;
 
@@ -61,26 +105,57 @@ pub fn sample_process_vram_mb() -> HashMap<u32, u32> {
     const PDH_MORE_DATA: PdhStatus = 0x8000_07D2u32 as i32;
 
     let mut out = HashMap::new();
-    let Ok(lib) = (unsafe { libloading::Library::new("pdh.dll") }) else {
-        return out;
+    // Load `pdh.dll` strictly from System32 (`LOAD_LIBRARY_SEARCH_SYSTEM32`) so
+    // a planted DLL in CWD/PATH can never be loaded inside a SYSTEM child.
+    use windows_sys::Win32::System::LibraryLoader::{
+        FreeLibrary, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
     };
-    let (open_q, add_c, collect, get_arr, close_q) = unsafe {
-        let Ok(open_q) = lib.get::<FnOpenQuery>(b"PdhOpenQueryW\0") else {
+    let dll_w: Vec<u16> = "pdh.dll\0".encode_utf16().collect();
+    // SAFETY: NUL-terminated UTF-16; System32-only search flag.
+    let module =
+        unsafe { LoadLibraryExW(dll_w.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    if module.is_null() {
+        return out;
+    }
+    struct LibGuard(windows_sys::Win32::Foundation::HMODULE);
+    impl Drop for LibGuard {
+        fn drop(&mut self) {
+            // SAFETY: module came from LoadLibraryExW and is freed once.
+            unsafe { FreeLibrary(self.0) };
+        }
+    }
+    let _lib_guard = LibGuard(module);
+    let (open_q, add_c, collect, get_arr, close_q): (
+        FnOpenQuery,
+        FnAddCounter,
+        FnCollect,
+        FnGetArray,
+        FnCloseQuery,
+    ) = unsafe {
+        let Some(p_open) = GetProcAddress(module, c"PdhOpenQueryW".as_ptr().cast()) else {
             return out;
         };
-        let Ok(add_c) = lib.get::<FnAddCounter>(b"PdhAddEnglishCounterW\0") else {
+        let Some(p_add) = GetProcAddress(module, c"PdhAddEnglishCounterW".as_ptr().cast()) else {
             return out;
         };
-        let Ok(collect) = lib.get::<FnCollect>(b"PdhCollectQueryData\0") else {
+        let Some(p_collect) = GetProcAddress(module, c"PdhCollectQueryData".as_ptr().cast()) else {
             return out;
         };
-        let Ok(get_arr) = lib.get::<FnGetArray>(b"PdhGetFormattedCounterArrayW\0") else {
+        let Some(p_arr) =
+            GetProcAddress(module, c"PdhGetFormattedCounterArrayW".as_ptr().cast())
+        else {
             return out;
         };
-        let Ok(close_q) = lib.get::<FnCloseQuery>(b"PdhCloseQuery\0") else {
+        let Some(p_close) = GetProcAddress(module, c"PdhCloseQuery".as_ptr().cast()) else {
             return out;
         };
-        (*open_q, *add_c, *collect, *get_arr, *close_q)
+        (
+            std::mem::transmute::<_, FnOpenQuery>(p_open),
+            std::mem::transmute::<_, FnAddCounter>(p_add),
+            std::mem::transmute::<_, FnCollect>(p_collect),
+            std::mem::transmute::<_, FnGetArray>(p_arr),
+            std::mem::transmute::<_, FnCloseQuery>(p_close),
+        )
     };
 
     let mut query: *mut c_void = std::ptr::null_mut();
@@ -125,11 +200,11 @@ pub fn sample_process_vram_mb() -> HashMap<u32, u32> {
                     }
                     let slice = unsafe { std::slice::from_raw_parts(item.sz_name, len) };
                     let name = String::from_utf16_lossy(slice);
-                    if let Some(pid) = parse_pdh_gpu_instance_pid(&name) {
+                    if let Some((pid, luid)) = parse_pdh_gpu_instance(&name) {
                         let bytes = unsafe { item.fmt_value.val.large_value }.max(0) as u64;
                         let mb = (bytes / (1024 * 1024)) as u32;
                         if mb > 0 {
-                            *out.entry(pid).or_insert(0) += mb;
+                            *out.entry((pid, luid)).or_insert(0) += mb;
                         }
                     }
                 }
@@ -149,9 +224,21 @@ mod tests {
     #[test]
     fn fr139_pdh_instance_pid_parser() {
         assert_eq!(
+            parse_pdh_gpu_instance("pid_4812_luid_0x00000000_0x00010A4C_phys_0"),
+            Some((4812, "0x00000000_0x00010A4C".to_string()))
+        );
+        assert_eq!(
             parse_pdh_gpu_instance_pid("pid_4812_luid_0x00000000_0x00010A4C_phys_0"),
             Some(4812)
         );
         assert_eq!(parse_pdh_gpu_instance_pid("_Total"), None);
+
+        let mut map = HashMap::new();
+        map.insert((100, "0x0_0x1".to_string()), 4096);
+        assert_eq!(lookup_unambiguous_vram_mb(&map, 100, 1), Some(4096));
+        // Multi-GPU PID must return None (unknown) rather than double-counting.
+        assert_eq!(lookup_unambiguous_vram_mb(&map, 100, 2), None);
+        map.insert((100, "0x0_0x2".to_string()), 2048);
+        assert_eq!(lookup_unambiguous_vram_mb(&map, 100, 1), None);
     }
 }

@@ -251,8 +251,8 @@ pub fn run_child() -> anyhow::Result<()> {
 
     let mut tracker = SamplerTracker::new();
     let mut seq: u64 = 0;
-    let mut last_emit = Instant::now() - Duration::from_secs(3600);
-    let mut last_internal = Instant::now() - Duration::from_secs(3600);
+    let mut last_emit: Option<Instant> = None;
+    let mut last_internal: Option<Instant> = None;
 
     loop {
         let state = ctrl
@@ -276,17 +276,22 @@ pub fn run_child() -> anyhow::Result<()> {
         let internal_every = emit_every.min(Duration::from_secs(5));
 
         let now_inst = Instant::now();
-        let need_emit = now_inst.duration_since(last_emit) >= emit_every;
-        let need_internal = now_inst.duration_since(last_internal) >= internal_every;
+        let need_emit = last_emit.is_none_or(|t| now_inst.duration_since(t) >= emit_every);
+        let need_internal =
+            last_internal.is_none_or(|t| now_inst.duration_since(t) >= internal_every);
 
         if !need_emit && !need_internal {
-            let rem_emit = emit_every.saturating_sub(now_inst.duration_since(last_emit));
-            let rem_int = internal_every.saturating_sub(now_inst.duration_since(last_internal));
+            let rem_emit = last_emit
+                .map(|t| emit_every.saturating_sub(now_inst.duration_since(t)))
+                .unwrap_or(Duration::ZERO);
+            let rem_int = last_internal
+                .map(|t| internal_every.saturating_sub(now_inst.duration_since(t)))
+                .unwrap_or(Duration::ZERO);
             std::thread::sleep(rem_emit.min(rem_int).min(Duration::from_millis(100)));
             continue;
         }
 
-        last_internal = now_inst;
+        last_internal = Some(now_inst);
         let now_s = chrono::Utc::now().timestamp();
 
         let report = match &mut backend {
@@ -415,7 +420,7 @@ pub fn run_child() -> anyhow::Result<()> {
         };
 
         if need_emit {
-            last_emit = now_inst;
+            last_emit = Some(now_inst);
             let current_inv = fake::inventory_from_report(&report);
             if current_inv != last_inventory {
                 last_inventory = current_inv.clone();

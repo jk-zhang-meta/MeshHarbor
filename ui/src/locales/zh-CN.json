@@ -3827,7 +3827,7 @@
         "sharedRo": "共享（只读）"
       },
       "freshness": {
-        "live": "实时",
+        "fresh": "实时",
         "stale": "陈旧",
         "offline": "离线"
       },
@@ -3835,7 +3835,7 @@
         "free": "空闲",
         "busy": "忙碌",
         "held_idle": "占空!",
-        "unattributed_busy": "未归属",
+        "unattributed": "未归属",
         "fault": "故障",
         "unknown": "未知"
       },
@@ -3895,7 +3895,7 @@
       },
       "bots": {
         "title": "我的机器人渠道",
-        "intro": "添加个人 Webhook 机器人（飞书、钉钉、企业微信、Slack、Discord、Telegram 或通用 HTTPS Webhook）。保存后凭证会自动脱敏。",
+        "intro": "添加个人 Webhook 机器人（飞书/Lark、钉钉、企业微信或通用 HTTPS Webhook）。保存后凭证会自动脱敏。",
         "add": "添加机器人",
         "addTitle": "添加 GPU 告警机器人",
         "webhookUrl": "HTTPS Webhook 地址",

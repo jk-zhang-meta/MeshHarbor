@@ -30,17 +30,20 @@
         <v-card v-if="host.host" variant="tonal" class="pa-3 mb-3">
           <div class="text-subtitle-2 mb-1">{{ t('mh.gpu.drawer.hostLoad') }}</div>
           <div class="d-flex flex-wrap ga-3 text-caption text-mono">
-            <span>CPU: {{ host.host.cpu_pct ?? '—' }}%</span>
-            <span v-if="host.host.load_1m != null">Load: {{ host.host.load_1m.toFixed(2) }}</span>
+            <span>CPU: {{ host.host.cpu_pct != null ? Math.round(host.host.cpu_pct) : '—' }}%</span>
+            <span v-if="host.host.load1 != null">Load: {{ host.host.load1.toFixed(2) }}</span>
             <span v-if="host.host.mem_used_mb != null && host.host.mem_total_mb != null">
               RAM: {{ (host.host.mem_used_mb / 1024).toFixed(1) }}/{{ (host.host.mem_total_mb / 1024).toFixed(1) }} GiB
             </span>
             <span v-if="host.host.swap_total_mb">
               Swap: {{ ((host.host.swap_used_mb ?? 0) / 1024).toFixed(1) }}/{{ (host.host.swap_total_mb / 1024).toFixed(1) }} GiB
             </span>
-            <span v-if="host.host.root_used_pct != null">Disk: {{ host.host.root_used_pct }}%</span>
-            <span v-if="host.host.net_rx_mbps != null || host.host.net_tx_mbps != null">
-              Net: ↓{{ (host.host.net_rx_mbps ?? 0).toFixed(1) }} ↑{{ (host.host.net_tx_mbps ?? 0).toFixed(1) }} Mbps
+            <span v-if="host.host.disk_root_used_gb != null && host.host.disk_root_total_gb != null && host.host.disk_root_total_gb > 0">
+              Disk: {{ Math.round((host.host.disk_root_used_gb / host.host.disk_root_total_gb) * 100) }}%
+              ({{ host.host.disk_root_used_gb.toFixed(0) }}/{{ host.host.disk_root_total_gb.toFixed(0) }}G)
+            </span>
+            <span v-if="host.host.net_rx_bps != null || host.host.net_tx_bps != null">
+              Net: ↓{{ (((host.host.net_rx_bps ?? 0) * 8) / 1e6).toFixed(1) }} ↑{{ (((host.host.net_tx_bps ?? 0) * 8) / 1e6).toFixed(1) }} Mbps
             </span>
           </div>
         </v-card>
@@ -115,7 +118,7 @@
           </div>
           <div v-if="g.procs?.length">
             <div v-for="p in g.procs" :key="p.pid" class="text-caption text-mono">
-              pid {{ p.pid }} · {{ p.user || `uid:${p.uid ?? '?'}` }} · {{ p.mem_mb ?? 0 }} MiB · {{ p.cmd || '—' }}
+              pid {{ p.pid }} · {{ p.user || '—' }} · {{ p.mem_mb ?? 0 }} MiB · {{ p.name || '—' }}<template v-if="p.container"> [{{ p.container }}]</template>
             </div>
           </div>
         </v-card>

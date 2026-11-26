@@ -9010,7 +9010,7 @@ mod tests {
     /// right on the devices that already exist.
     #[test]
     fn the_only_prefix_related_verbs_are_the_deliberate_ones() {
-        const KNOWN: [(RpcCap, RpcCap); 24] = [
+        const KNOWN: [(RpcCap, RpcCap); 25] = [
             (RpcCap::Ssh, RpcCap::SshConsent),
             (RpcCap::Config, RpcCap::ConfigReport),
             // MeshHarbor #20 — "runs managed forwards in userspace" is not
@@ -9078,6 +9078,9 @@ mod tests {
             // FR-90 P3-8 — nor "holds a session's grant to one command".
             // Locked by `ssh_does_not_imply_ssh_one_command`.
             (RpcCap::Ssh, RpcCap::SshOneCommand),
+            // FR-139 — "reports GPU telemetry" is not "receives companion GPU
+            // alerts". Locked by `gpu_does_not_imply_gpu_alerts`.
+            (RpcCap::Gpu, RpcCap::GpuAlerts),
         ];
         for a in RpcCap::ALL {
             for b in RpcCap::ALL {
@@ -9122,6 +9125,29 @@ mod tests {
             ..Default::default()
         };
         assert!(both.has_rpc(RpcCap::Config) && both.has_rpc(RpcCap::ConfigReport));
+    }
+
+    #[test]
+    fn gpu_does_not_imply_gpu_alerts() {
+        let gpu_only = AgentCaps {
+            rpc: vec!["gpu".into()],
+            ..Default::default()
+        };
+        assert!(gpu_only.has_rpc(RpcCap::Gpu));
+        assert!(!gpu_only.has_rpc(RpcCap::GpuAlerts));
+
+        let alerts_only = AgentCaps {
+            rpc: vec!["gpu-alerts".into()],
+            ..Default::default()
+        };
+        assert!(!alerts_only.has_rpc(RpcCap::Gpu));
+        assert!(alerts_only.has_rpc(RpcCap::GpuAlerts));
+
+        let both = AgentCaps {
+            rpc: vec!["gpu".into(), "gpu-alerts".into()],
+            ..Default::default()
+        };
+        assert!(both.has_rpc(RpcCap::Gpu) && both.has_rpc(RpcCap::GpuAlerts));
     }
 
     #[test]

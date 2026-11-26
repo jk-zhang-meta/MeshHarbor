@@ -691,12 +691,30 @@ impl DaemonState {
         };
 
         let mut rows: Vec<DeviceRowLite> = Vec::new();
-        let self_name = self.name.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if matches_query(&self_name, &self.node_id, view.self_ip.as_deref()) {
+        let primary_name = self.name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let (self_id, self_name) = if is_primary {
+            (self.node_id.clone(), primary_name)
+        } else {
+            let sec_id = self
+                .orgs
+                .as_ref()
+                .and_then(|o| o.lock().ok())
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|r| r.label == label && r.enabled)
+                        .map(|r| r.agent_id.clone())
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| tenant_id.clone());
+            let sec_name =
+                crate::p2pctl::tenant_self_name(&tenant_id).unwrap_or(primary_name);
+            (sec_id, sec_name)
+        };
+        if matches_query(&self_name, &self_id, view.self_ip.as_deref()) {
             let rdp = crate::rdp_caps::current();
             rows.push(DeviceRowLite {
                 kind: "agent".into(),
-                id: self.node_id.clone(),
+                id: self_id,
                 name: self_name,
                 display_name: None,
                 os: std::env::consts::OS.to_string(),
@@ -743,20 +761,19 @@ impl DaemonState {
             let futs = probe_targets.into_iter().map(|ip| {
                 let tid = tenant_id.clone();
                 async move {
-                    let info =
-                        crate::p2pctl::query_device_info(&tid, ip, Duration::from_millis(750))
-                            .await;
+                    let info = tokio::time::timeout(
+                        Duration::from_millis(800),
+                        crate::p2pctl::query_device_info(&tid, ip, Duration::from_millis(750)),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
                     (ip, info)
                 }
             });
-            if let Ok(results) =
-                tokio::time::timeout(Duration::from_millis(800), futures::future::join_all(futs))
-                    .await
-            {
-                for (ip, info) in results {
-                    if let Some(info) = info {
-                        probed.insert(ip, info);
-                    }
+            for (ip, info) in futures::future::join_all(futs).await {
+                if let Some(info) = info {
+                    probed.insert(ip, info);
                 }
             }
         }

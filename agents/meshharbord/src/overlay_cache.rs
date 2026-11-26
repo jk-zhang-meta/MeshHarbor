@@ -40,26 +40,43 @@ use crate::config::AgentConfig;
 
 /// Default debounce delay for non-urgent netmap / learned-endpoint cache writes.
 const WRITE_DEBOUNCE: Duration = Duration::from_secs(30);
+/// Upper bound on total debounce delay under continuous non-urgent updates so
+/// learned endpoints and clock floors still flush periodically.
+const MAX_DEBOUNCE_WAIT: Duration = Duration::from_secs(120);
 
 struct TenantWriteState {
     last_authoritative_at_ms: u64,
     last_authoritative_revision: u64,
     monotonic_clock_floor_ms: u64,
     generation: u64,
+    first_dirty_at: Option<std::time::Instant>,
     pending_timer: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Default)]
 struct CacheRegistry {
     writers: HashMap<String, TenantWriteState>,
+    /// Per-tenant I/O mutex serializing final generation checks, atomic
+    /// renames, suspension marker updates, and deletions so a delayed debounced
+    /// writer can never resurrect a revoked/deleted cache.
+    io_locks: HashMap<String, Arc<Mutex<()>>>,
     /// Tenants whose control-WS auth was rejected (HTTP 401). Cold cache
-    /// seeding is skipped while present, without deleting the file on disk.
+    /// seeding is skipped while present (also persisted as `.suspended`),
+    /// without deleting the cache file on disk.
     suspended: HashSet<String>,
 }
 
 fn registry() -> &'static Mutex<CacheRegistry> {
     static REG: OnceLock<Mutex<CacheRegistry>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(CacheRegistry::default()))
+}
+
+fn tenant_io_lock(tenant_id: &str) -> Arc<Mutex<()>> {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    reg.io_locks
+        .entry(tenant_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 fn now_epoch_ms() -> u64 {
@@ -88,6 +105,16 @@ pub fn cache_path(config_path: &Path, tenant_id: &str) -> Option<PathBuf> {
     Some(dir.join(format!("netmap-{}.json", sanitize_tenant_id(tenant_id))))
 }
 
+/// Persisted auth-suspension marker path alongside the cache file:
+/// `<config_dir>/overlay/netmap-<tenant>.suspended`.
+fn suspend_marker_path_for_cache(cache_file: &Path) -> PathBuf {
+    cache_file.with_extension("suspended")
+}
+
+fn suspend_marker_path(config_path: &Path, tenant_id: &str) -> Option<PathBuf> {
+    cache_path(config_path, tenant_id).map(|p| suspend_marker_path_for_cache(&p))
+}
+
 /// Whether the signed local netmap cache is enabled by config + env.
 pub fn cache_enabled(cfg: &AgentConfig) -> bool {
     if cfg.overlay_netmap_cache == Some(false) {
@@ -108,31 +135,55 @@ pub fn max_cache_age_ms(cfg: &AgentConfig) -> u64 {
 }
 
 /// Suspend offline cache seeding for `tenant_id` (HTTP 401 `AuthRejected`)
-/// without deleting the cache file on disk.
-pub fn suspend_cache(tenant_id: &str) {
-    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if reg.suspended.insert(tenant_id.to_string()) {
+/// both in memory and via a persisted owner-only marker file without deleting
+/// the cache file on disk.
+pub fn suspend_cache(config_path: &Path, tenant_id: &str) {
+    let io_lock = tenant_io_lock(tenant_id);
+    let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let inserted = {
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        reg.suspended.insert(tenant_id.to_string())
+    };
+    if let Some(marker) = suspend_marker_path(config_path, tenant_id)
+        && let Err(e) = write_private_atomic(&marker, b"auth_rejected\n")
+    {
+        warn!(tenant = %tenant_id, path = %marker.display(), %e, "overlay cache: failed to persist auth-suspension marker");
+    }
+    if inserted {
         warn!(tenant = %tenant_id, "overlay cache: suspended cold-boot seeding after auth refusal");
     }
 }
 
 /// Lift auth suspension for `tenant_id` after successful authentication or live
 /// authoritative netmap receipt.
-pub fn unsuspend_cache(tenant_id: &str) {
-    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    reg.suspended.remove(tenant_id);
+pub fn unsuspend_cache(config_path: &Path, tenant_id: &str) {
+    let io_lock = tenant_io_lock(tenant_id);
+    let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        reg.suspended.remove(tenant_id);
+    }
+    if let Some(marker) = suspend_marker_path(config_path, tenant_id) {
+        let _ = std::fs::remove_file(marker);
+    }
 }
 
 /// Whether `tenant_id` is currently auth-suspended from cold-boot cache seeding.
-pub fn is_suspended(tenant_id: &str) -> bool {
-    let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-    reg.suspended.contains(tenant_id)
+pub fn is_suspended(config_path: &Path, tenant_id: &str) -> bool {
+    let mem = {
+        let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        reg.suspended.contains(tenant_id)
+    };
+    mem || suspend_marker_path(config_path, tenant_id).is_some_and(|p| p.exists())
 }
 
-/// Cancel any pending debounced write and delete the on-disk cache file for
-/// `tenant_id` (called on `Goodbye` and terminal `OverlayJoinRefused`).
+/// Cancel any pending debounced write and delete the on-disk cache file (and
+/// any suspension marker) for `tenant_id` (called on `Goodbye` and terminal
+/// `OverlayJoinRefused`).
 pub fn delete_cache(config_path: &Path, tenant_id: &str) {
     crate::p2pctl::clear_tenant_directory(tenant_id);
+    let io_lock = tenant_io_lock(tenant_id);
+    let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
     {
         let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(mut st) = reg.writers.remove(tenant_id)
@@ -141,6 +192,9 @@ pub fn delete_cache(config_path: &Path, tenant_id: &str) {
             h.abort();
         }
         reg.suspended.remove(tenant_id);
+    }
+    if let Some(marker) = suspend_marker_path(config_path, tenant_id) {
+        let _ = std::fs::remove_file(marker);
     }
     let Some(path) = cache_path(config_path, tenant_id) else {
         return;
@@ -173,7 +227,7 @@ fn load_verified_at(
     if !cache_enabled(cfg) {
         return None;
     }
-    if is_suspended(&cfg.tenant_id) {
+    if is_suspended(config_path, &cfg.tenant_id) {
         warn!(tenant = %cfg.tenant_id, "overlay cache: skipping cold seed while tenant auth is suspended");
         return None;
     }
@@ -215,6 +269,7 @@ fn load_verified_at(
                     last_authoritative_revision: payload.last_authoritative_revision,
                     monotonic_clock_floor_ms: payload.monotonic_clock_floor_ms.max(now_ms),
                     generation: 0,
+                    first_dirty_at: None,
                     pending_timer: None,
                 });
             entry.last_authoritative_at_ms = payload.last_authoritative_at_ms;
@@ -277,7 +332,7 @@ fn handle_snapshot(
     now_ms: u64,
     debounce: Duration,
 ) {
-    let (payload, urgent_flush, gen_now) = {
+    let (payload, urgent_flush, effective_debounce, gen_now, authoritative) = {
         let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
         if snap.authoritative {
             reg.suspended.remove(tenant_id);
@@ -290,6 +345,7 @@ fn handle_snapshot(
                 last_authoritative_revision: 0,
                 monotonic_clock_floor_ms: now_ms,
                 generation: 0,
+                first_dirty_at: None,
                 pending_timer: None,
             });
         if snap.authoritative {
@@ -306,6 +362,15 @@ fn handle_snapshot(
         if let Some(prev) = st.pending_timer.take() {
             prev.abort();
         }
+        let effective_debounce = if snap.urgent_flush || debounce.is_zero() {
+            st.first_dirty_at = None;
+            Duration::ZERO
+        } else {
+            let first = *st.first_dirty_at.get_or_insert_with(std::time::Instant::now);
+            let max_wait = MAX_DEBOUNCE_WAIT.max(debounce);
+            let remaining = max_wait.saturating_sub(first.elapsed());
+            debounce.min(remaining)
+        };
         let payload = NetmapCachePayload {
             schema_version: CACHE_SCHEMA_VERSION,
             tenant_id: tenant_id.to_string(),
@@ -319,8 +384,21 @@ fn handle_snapshot(
             monotonic_clock_floor_ms: st.monotonic_clock_floor_ms,
             learned_endpoints: snap.learned_endpoints,
         };
-        (payload, snap.urgent_flush, gen_now)
+        (
+            payload,
+            snap.urgent_flush,
+            effective_debounce,
+            gen_now,
+            snap.authoritative,
+        )
     };
+
+    if authoritative {
+        let marker = suspend_marker_path_for_cache(path);
+        let io_lock = tenant_io_lock(tenant_id);
+        let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::remove_file(marker);
+    }
 
     let id = CacheIdentity {
         tenant_id,
@@ -342,10 +420,35 @@ fn handle_snapshot(
         }
     };
 
-    if urgent_flush || debounce.is_zero() || tokio::runtime::Handle::try_current().is_err() {
+    if urgent_flush
+        || effective_debounce.is_zero()
+        || tokio::runtime::Handle::try_current().is_err()
+    {
+        let io_lock = tenant_io_lock(tenant_id);
+        let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let still_current = {
+            let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            reg.writers
+                .get(tenant_id)
+                .is_some_and(|st| st.generation == gen_now)
+        };
+        if !still_current {
+            return;
+        }
         if let Err(e) = write_private_atomic(path, &bytes) {
             warn!(tenant = %tenant_id, path = %path.display(), %e, "overlay cache: synchronous flush failed");
+            // Fail closed on authority-reducing writes: never leave a stale
+            // broader-permission cache file on disk if we cannot replace it.
+            if urgent_flush {
+                let _ = std::fs::remove_file(path);
+            }
         } else {
+            let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(st) = reg.writers.get_mut(tenant_id)
+                && st.generation == gen_now
+            {
+                st.first_dirty_at = None;
+            }
             debug!(
                 tenant = %tenant_id,
                 urgent_flush,
@@ -359,7 +462,9 @@ fn handle_snapshot(
     let path_owned = path.to_path_buf();
     let tenant_owned = tenant_id.to_string();
     let timer = tokio::spawn(async move {
-        tokio::time::sleep(debounce).await;
+        tokio::time::sleep(effective_debounce).await;
+        let io_lock = tenant_io_lock(&tenant_owned);
+        let _io = io_lock.lock().unwrap_or_else(|e| e.into_inner());
         let still_current = {
             let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
             reg.writers
@@ -372,6 +477,12 @@ fn handle_snapshot(
         if let Err(e) = write_private_atomic(&path_owned, &bytes) {
             warn!(tenant = %tenant_owned, path = %path_owned.display(), %e, "overlay cache: debounced write failed");
         } else {
+            let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(st) = reg.writers.get_mut(&tenant_owned)
+                && st.generation == gen_now
+            {
+                st.first_dirty_at = None;
+            }
             debug!(tenant = %tenant_owned, "overlay cache: debounced snapshot persisted");
         }
     });
@@ -686,13 +797,24 @@ mod tests {
         );
         assert!(path.exists());
 
-        // HTTP 401 suspends seeding without deleting file.
-        suspend_cache(&tenant);
+        // HTTP 401 suspends seeding both in memory and across restarts without deleting file.
+        suspend_cache(&cfg_path, &tenant);
         assert!(load_verified_at(&cfg_path, &cfg, &kp, t0 + 1_000).is_none());
         assert!(path.exists(), "401 must NOT delete the cache file");
 
+        // Simulate daemon restart (in-memory suspended set cleared): persisted marker still blocks seeding.
+        registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .suspended
+            .remove(&tenant);
+        assert!(
+            load_verified_at(&cfg_path, &cfg, &kp, t0 + 1_500).is_none(),
+            "persisted .suspended marker must survive restart"
+        );
+
         // Auth recovery re-enables seeding.
-        unsuspend_cache(&tenant);
+        unsuspend_cache(&cfg_path, &tenant);
         assert!(load_verified_at(&cfg_path, &cfg, &kp, t0 + 2_000).is_some());
 
         // Goodbye / terminal refusal deletes the cache file.

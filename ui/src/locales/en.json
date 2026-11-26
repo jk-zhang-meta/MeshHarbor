@@ -3827,7 +3827,7 @@
         "sharedRo": "Shared (read-only)"
       },
       "freshness": {
-        "live": "LIVE",
+        "fresh": "LIVE",
         "stale": "STALE",
         "offline": "OFFLINE"
       },
@@ -3835,7 +3835,7 @@
         "free": "FREE",
         "busy": "BUSY",
         "held_idle": "IDLE!",
-        "unattributed_busy": "UNATTR",
+        "unattributed": "UNATTR",
         "fault": "FAULT",
         "unknown": "UNK"
       },
@@ -3895,7 +3895,7 @@
       },
       "bots": {
         "title": "My Bot Channels",
-        "intro": "Add personal webhook bots (Feishu, DingTalk, WeCom, Slack, Discord, Telegram, or HTTPS webhook). Credentials are masked after save.",
+        "intro": "Add personal webhook bots (Feishu/Lark, DingTalk, WeCom, or generic HTTPS webhook). Credentials are masked after save.",
         "add": "Add Bot",
         "addTitle": "Add GPU Alert Bot",
         "webhookUrl": "HTTPS Webhook URL",

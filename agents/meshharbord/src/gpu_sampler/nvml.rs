@@ -51,6 +51,35 @@ impl Drop for NvmlBackend {
     }
 }
 
+/// Locate `nvml.dll` exclusively inside Windows `System32` using
+/// `LOAD_LIBRARY_SEARCH_SYSTEM32` so a DLL planted in CWD or PATH can never be
+/// loaded by the SYSTEM `gpu-sampler` child.
+#[cfg(windows)]
+fn resolve_windows_system32_nvml() -> Option<std::path::PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetModuleFileNameW, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    };
+
+    let dll: Vec<u16> = "nvml.dll\0".encode_utf16().collect();
+    // SAFETY: `dll` is NUL-terminated UTF-16; `LOAD_LIBRARY_SEARCH_SYSTEM32`
+    // restricts search strictly to System32. NVML is intentionally never
+    // unloaded across the lifetime of the child process.
+    let module = unsafe { LoadLibraryExW(dll.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    if module.is_null() {
+        return None;
+    }
+    let mut buf = vec![0u16; 512];
+    // SAFETY: `module` is valid and `buf` holds `buf.len()` UTF-16 elements.
+    let len = unsafe { GetModuleFileNameW(module, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if len == 0 || len >= buf.len() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(OsString::from_wide(&buf[..len]));
+    path.is_file().then_some(path)
+}
+
 pub enum NvmlInitOutcome {
     Ready(Box<NvmlBackend>),
     Status(GpuHostStatus),
@@ -59,43 +88,64 @@ pub enum NvmlInitOutcome {
 
 impl NvmlBackend {
     pub fn try_init() -> NvmlInitOutcome {
+        // macOS has no NVIDIA NVML driver; never dlopen bare leaf names there.
+        #[cfg(target_os = "macos")]
+        {
+            return NvmlInitOutcome::NotPresent;
+        }
+
+        // On Windows, `meshharbord gpu-sampler` runs as SYSTEM. Loading bare
+        // `"nvml.dll"` falls through to CWD and PATH when no NVIDIA driver is
+        // installed (DLL hijacking). Resolve strictly from System32 via
+        // `LOAD_LIBRARY_SEARCH_SYSTEM32` and pass the verified absolute path.
         #[cfg(windows)]
-        let candidates: &[&str] = &["nvml.dll"];
-        #[cfg(not(windows))]
-        let candidates: &[&str] = &[
+        let candidates: Vec<std::path::PathBuf> = match resolve_windows_system32_nvml() {
+            Some(p) => vec![p],
+            None => return NvmlInitOutcome::NotPresent,
+        };
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        let candidates: Vec<std::path::PathBuf> = [
             "libnvidia-ml.so.1",
             "/usr/lib/wsl/lib/libnvidia-ml.so.1",
             "libnvidia-ml.so",
-        ];
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
 
-        let mut last_err: Option<NvmlError> = None;
-        for path in candidates {
-            match Nvml::builder().lib_path(OsStr::new(path)).init() {
-                Ok(nvml) => {
-                    let driver_version = nvml.sys_driver_version().ok();
-                    let is_wsl = detect_wsl2();
-                    return NvmlInitOutcome::Ready(Box::new(Self {
-                        nvml: Some(nvml),
-                        driver_version,
-                        is_wsl,
-                        last_util_ts: HashMap::new(),
-                    }));
-                }
-                Err(NvmlError::LibRmVersionMismatch) => {
-                    return NvmlInitOutcome::Status(GpuHostStatus::DriverRebootPending);
-                }
-                Err(NvmlError::DriverNotLoaded) => {
-                    last_err = Some(NvmlError::DriverNotLoaded);
-                }
-                Err(e) => {
-                    last_err = Some(e);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut last_err: Option<NvmlError> = None;
+            for path in &candidates {
+                match Nvml::builder().lib_path(OsStr::new(path)).init() {
+                    Ok(nvml) => {
+                        let driver_version = nvml.sys_driver_version().ok();
+                        let is_wsl = detect_wsl2();
+                        return NvmlInitOutcome::Ready(Box::new(Self {
+                            nvml: Some(nvml),
+                            driver_version,
+                            is_wsl,
+                            last_util_ts: HashMap::new(),
+                        }));
+                    }
+                    Err(NvmlError::LibRmVersionMismatch) => {
+                        return NvmlInitOutcome::Status(GpuHostStatus::DriverRebootPending);
+                    }
+                    Err(NvmlError::DriverNotLoaded) => {
+                        last_err = Some(NvmlError::DriverNotLoaded);
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
                 }
             }
-        }
 
-        match last_err {
-            Some(NvmlError::DriverNotLoaded) => NvmlInitOutcome::Status(GpuHostStatus::DriverMissing),
-            _ => NvmlInitOutcome::NotPresent,
+            match last_err {
+                Some(NvmlError::DriverNotLoaded) => {
+                    NvmlInitOutcome::Status(GpuHostStatus::DriverMissing)
+                }
+                _ => NvmlInitOutcome::NotPresent,
+            }
         }
     }
 
@@ -165,7 +215,7 @@ impl NvmlBackend {
         &mut self,
         include_procs: bool,
         proc_lookup: &ProcLookup,
-        #[cfg(windows)] pdh_vram: &HashMap<u32, u32>,
+        #[cfg(windows)] pdh_vram: &HashMap<(u32, String), u32>,
     ) -> (GpuHostStatus, Vec<GpuSample>) {
         let Some(nvml) = self.nvml.as_ref() else {
             return (GpuHostStatus::Unavailable, Vec::new());
@@ -297,7 +347,11 @@ impl NvmlBackend {
                             UsedGpuMemory::Unavailable => {
                                 #[cfg(windows)]
                                 {
-                                    pdh_vram.get(&p.pid).copied()
+                                    super::windows_pdh::lookup_unambiguous_vram_mb(
+                                        pdh_vram,
+                                        p.pid,
+                                        usize::try_from(count).unwrap_or(2),
+                                    )
                                 }
                                 #[cfg(not(windows))]
                                 {
@@ -333,7 +387,11 @@ impl NvmlBackend {
                             UsedGpuMemory::Unavailable => {
                                 #[cfg(windows)]
                                 {
-                                    pdh_vram.get(&p.pid).copied()
+                                    super::windows_pdh::lookup_unambiguous_vram_mb(
+                                        pdh_vram,
+                                        p.pid,
+                                        usize::try_from(count).unwrap_or(2),
+                                    )
                                 }
                                 #[cfg(not(windows))]
                                 {

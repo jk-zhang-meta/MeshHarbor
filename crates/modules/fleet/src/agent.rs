@@ -538,15 +538,17 @@ pub async fn enroll_agent(
             jti = %claims.jti, "fleet: signed enrollment approved relay serving");
     }
     // FR-139 — single-use enroll tokens and temporary device invites carrying
-    // `gpu_server = true` mark the device as a GPU server immediately on enroll.
+    // `gpu_server = true` mark the device as a GPU server immediately on enroll
+    // (fail closed if the write fails or misses the live row).
     if claims.gpu_server || invite.as_ref().is_some_and(|i| i.gpu_server) {
-        if let Err(e) = state.agents.set_gpu_server(tid, agent_id, true).await {
-            tracing::warn!(tenant = %tid, agent = %agent_id, error = %e,
-                "fr-139: failed to mark enrolled device as gpu_server");
-        } else {
-            tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
-                "fr-139: enrollment credential marked device as gpu_server");
+        let marked = state.agents.set_gpu_server(tid, agent_id, true).await?;
+        if !marked {
+            return Err(ApiError::ServiceUnavailable(
+                "Device changed while stamping GPU server flag; retry enrollment".into(),
+            ));
         }
+        tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
+            "fr-139: enrollment credential marked device as gpu_server");
     }
     if let Some(ip) = observed_public_ip {
         let _ = state
@@ -692,11 +694,14 @@ async fn enroll_agent_ephemeral(
         .ok_or_else(|| ApiError::Internal("agent missing _id".to_string()))?;
 
     // FR-139 — reusable enrollment keys tagged with `gpu_server = true` mark
-    // every ephemeral device they mint as a GPU server.
-    if key.gpu_server
-        && let Err(e) = state.agents.set_gpu_server(tid, agent_id, true).await
-    {
-        tracing::warn!(%agent_id, %key_id, %e, "fr-139: failed to mark ephemeral device as gpu_server");
+    // every ephemeral device they mint as a GPU server (fail closed on miss).
+    if key.gpu_server {
+        let marked = state.agents.set_gpu_server(tid, agent_id, true).await?;
+        if !marked {
+            return Err(ApiError::ServiceUnavailable(
+                "Ephemeral device could not be marked as a GPU server".into(),
+            ));
+        }
     }
 
     // Control 4 — the per-use audit row: the record that outlives the device

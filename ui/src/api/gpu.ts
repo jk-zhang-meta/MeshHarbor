@@ -6,35 +6,30 @@ export type GpuState =
   | 'free'
   | 'busy'
   | 'held_idle'
-  | 'unattributed_busy'
-  | 'fault'
+  | 'unattributed'
   | 'unknown'
 
-export type GpuFreshness = 'live' | 'stale' | 'offline'
+export type GpuFreshness = 'fresh' | 'stale' | 'offline'
 
 export type GpuHostStatus =
   | 'ok'
-  | 'off_local'
-  | 'driver_hung'
-  | 'sampler_stalled'
-  | 'unavailable'
   | 'no_gpu'
-  | 'unsupported'
+  | 'driver_missing'
+  | 'driver_reboot_pending'
+  | 'limited'
+  | 'off_local'
+  | 'sampler_stalled'
+  | 'driver_hung'
+  | 'unavailable'
+  | 'unknown'
 
-export type GpuProcsState = 'ok' | 'off_local' | 'unsupported' | 'error'
+export type GpuProcsState = 'ok' | 'partial' | 'off' | 'unsupported' | 'unknown'
 
 export type GpuHostSource = 'org' | 'invited' | 'shared'
 
 export type GpuRange = '24h' | '7d' | '30d'
 
-export type GpuBotKind =
-  | 'feishu'
-  | 'dingtalk'
-  | 'wecom'
-  | 'slack'
-  | 'discord'
-  | 'telegram'
-  | 'generic'
+export type GpuBotKind = 'feishu' | 'dingtalk' | 'wecom' | 'webhook'
 
 export interface GpuInventoryCard {
   uuid: string
@@ -47,9 +42,10 @@ export interface GpuInventoryCard {
 }
 
 export interface GpuInventory {
-  backend: string
+  backend?: string | null
   driver_version?: string | null
   gpus: GpuInventoryCard[]
+  status?: GpuHostStatus
 }
 
 export interface GpuShareSummary {
@@ -61,23 +57,52 @@ export interface GpuShareSummary {
 export interface GpuProc {
   pid: number
   user?: string | null
-  uid?: number | null
+  name?: string | null
   mem_mb?: number | null
-  cmd?: string | null
-  age_s?: number | null
+  sm_pct?: number | null
+  cpu_pct?: number | null
+  started_at?: number | null
+  container?: string | null
   kind?: string | null
 }
 
 export interface GpuHostLoad {
   cpu_pct?: number | null
-  load_1m?: number | null
+  load1?: number | null
+  load5?: number | null
+  load15?: number | null
+  cpu_count?: number | null
   mem_used_mb?: number | null
   mem_total_mb?: number | null
   swap_used_mb?: number | null
   swap_total_mb?: number | null
-  root_used_pct?: number | null
-  net_rx_mbps?: number | null
-  net_tx_mbps?: number | null
+  disk_root_used_gb?: number | null
+  disk_root_total_gb?: number | null
+  net_rx_bps?: number | null
+  net_tx_bps?: number | null
+}
+
+const SAFE_CUDA_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
+
+export function isSafeCudaUuid(uuid: string): boolean {
+  return SAFE_CUDA_ID_RE.test(uuid)
+}
+
+export function shellQuoteSingle(val: string): string {
+  return `'${val.replace(/'/g, "'\\''")}'`
+}
+
+export function cardHasFault(g: GpuCardView): boolean {
+  return Boolean(
+    g.lost ||
+      (g.ecc_uncorrected != null && g.ecc_uncorrected > 0) ||
+      (g.xid_errors && g.xid_errors.length > 0),
+  )
+}
+
+export function hostHasFault(h: GpuHostView): boolean {
+  const badStatus = h.status !== 'ok' && h.status !== 'no_gpu' && h.status !== 'limited'
+  return badStatus || h.gpus.some((g) => cardHasFault(g))
 }
 
 export interface GpuCardView {
@@ -193,29 +218,31 @@ export interface GpuAlertRule {
 export interface GpuAlertChannel {
   id: string
   kind: GpuBotKind
-  name: string
-  masked_url: string
+  label: string
+  webhook_masked: string
   has_secret: boolean
-  chat_id?: string | null
   enabled: boolean
   include_users: boolean
-  lang?: string | null
+  lang: string
   last_error?: string | null
   last_sent_at?: string | null
+  created_at?: string
 }
 
 export interface CreateGpuChannelReq {
   kind: GpuBotKind
-  name: string
-  url: string
+  label: string
+  webhook_url: string
   secret?: string
-  chat_id?: string
   include_users?: boolean
   lang?: string
+  enabled?: boolean
 }
 
 export interface PatchGpuChannelReq {
-  name?: string
+  label?: string
+  webhook_url?: string
+  secret?: string
   enabled?: boolean
   include_users?: boolean
   lang?: string

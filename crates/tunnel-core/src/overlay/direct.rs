@@ -229,10 +229,16 @@ pub struct LanIface {
 }
 
 impl LanIface {
-    /// Clamp an OS netmask to `/16..=/30` so malformed `/8` or host `/32`
-    /// masks neither over-match unrelated networks nor collapse valid LANs.
+    /// Clamp an OS netmask to `/16..=/30` so malformed `/8` masks don't
+    /// over-match unrelated networks, while host `/31`–`/32` or zero masks
+    /// fall back to `/24` (preserving sibling-LAN discovery on /32 NICs).
     pub fn clamped_prefix(netmask: Ipv4Addr) -> u8 {
-        u32::from(netmask).leading_ones().clamp(16, 30) as u8
+        let ones = u32::from(netmask).leading_ones();
+        if ones == 0 || ones >= 31 {
+            24
+        } else {
+            ones.clamp(16, 30) as u8
+        }
     }
 
     pub fn from_ip_default_24(ip: Ipv4Addr) -> Self {
@@ -4141,12 +4147,12 @@ wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
 
     #[test]
     fn fr139_netmask_aware_lan_matching_and_routed_same_nat() {
-        // Clamping: /8 clamps to /16; /32 clamps to /30.
+        // Clamping: /8 clamps to /16; /32 falls back to /24.
         assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 0, 0, 0)), 16);
         assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 252, 0)), 22);
         assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 254, 0)), 23);
         assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 240)), 28);
-        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 255)), 30);
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 255)), 24);
 
         // /22 matches across adjacent third octets.
         let slash22 = LanIface {

@@ -42,9 +42,13 @@ pub struct GpuBucketDoc {
     #[serde(default)]
     pub samples: u32,
     #[serde(default)]
+    pub util_samples: u32,
+    #[serde(default)]
     pub util_sum: f64,
     #[serde(default)]
     pub util_max: u8,
+    #[serde(default)]
+    pub mem_samples: u32,
     #[serde(default)]
     pub mem_used_sum: f64,
     #[serde(default)]
@@ -53,6 +57,8 @@ pub struct GpuBucketDoc {
     pub mem_total_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temp_max: Option<i16>,
+    #[serde(default)]
+    pub power_samples: u32,
     #[serde(default)]
     pub power_sum: f64,
     #[serde(default)]
@@ -140,12 +146,15 @@ pub async fn record_report_to_1m_bucket(
             "sample_secs": step_secs as i64,
         };
         if let Some(u) = g.util_pct {
+            inc.insert("util_samples", 1i32);
             inc.insert("util_sum", f64::from(u));
         }
         if let Some(m) = g.mem_used_mb {
+            inc.insert("mem_samples", 1i32);
             inc.insert("mem_used_sum", f64::from(m));
         }
         if let Some(p) = g.power_w {
+            inc.insert("power_samples", 1i32);
             inc.insert("power_sum", f64::from(p));
         }
         if state == GpuState::Free {
@@ -217,7 +226,8 @@ pub async fn record_report_to_1m_bucket(
 }
 
 /// Roll up completed source buckets into coarser destination buckets (`1m -> 1h`
-/// or `1h -> 1d`). Idempotent via replace/upsert on `(tenant_id, agent_id, uuid, ts)`.
+/// or `1h -> 1d`). Scans ONLY complete, boundary-aligned destination windows so
+/// partial slices never overwrite historical totals.
 pub async fn rollup_buckets(
     db: &Database,
     src_coll: &str,
@@ -226,12 +236,21 @@ pub async fn rollup_buckets(
     since_s: i64,
     until_s: i64,
 ) -> Result<usize, mongodb::error::Error> {
+    let start_s = if since_s.rem_euclid(dst_step_s) == 0 {
+        since_s
+    } else {
+        (since_s.div_euclid(dst_step_s) + 1) * dst_step_s
+    };
+    let end_s = until_s.div_euclid(dst_step_s) * dst_step_s;
+    if end_s <= start_s {
+        return Ok(0);
+    }
     let src = db.collection::<GpuBucketDoc>(src_coll);
     let mut cur = src
         .find(doc! {
             "ts": {
-                "$gte": DateTime::from_millis(since_s * 1000),
-                "$lt": DateTime::from_millis(until_s * 1000),
+                "$gte": DateTime::from_millis(start_s * 1000),
+                "$lt": DateTime::from_millis(end_s * 1000),
             }
         })
         .await?;
@@ -247,12 +266,15 @@ pub async fn rollup_buckets(
             uuid: b.uuid.clone(),
             ts: DateTime::from_millis(dst_ms),
             samples: 0,
+            util_samples: 0,
             util_sum: 0.0,
             util_max: 0,
+            mem_samples: 0,
             mem_used_sum: 0.0,
             mem_used_max: 0,
             mem_total_mb: b.mem_total_mb,
             temp_max: b.temp_max,
+            power_samples: 0,
             power_sum: 0.0,
             free_samples: 0,
             held_idle_samples: 0,
@@ -260,8 +282,10 @@ pub async fn rollup_buckets(
             users: HashMap::new(),
         });
         entry.samples = entry.samples.saturating_add(b.samples);
+        entry.util_samples = entry.util_samples.saturating_add(b.util_samples);
         entry.util_sum += b.util_sum;
         entry.util_max = entry.util_max.max(b.util_max);
+        entry.mem_samples = entry.mem_samples.saturating_add(b.mem_samples);
         entry.mem_used_sum += b.mem_used_sum;
         entry.mem_used_max = entry.mem_used_max.max(b.mem_used_max);
         if entry.mem_total_mb.is_none() {
@@ -271,6 +295,7 @@ pub async fn rollup_buckets(
             (Some(a), Some(c)) => Some(a.max(c)),
             (a, c) => a.or(c),
         };
+        entry.power_samples = entry.power_samples.saturating_add(b.power_samples);
         entry.power_sum += b.power_sum;
         entry.free_samples = entry.free_samples.saturating_add(b.free_samples);
         entry.held_idle_samples = entry.held_idle_samples.saturating_add(b.held_idle_samples);
@@ -297,6 +322,7 @@ pub async fn rollup_buckets(
 }
 
 /// Query time-series history for one `(agent_id, uuid)` over `1h | 24h | 7d | 30d`.
+/// When `uuid` is `None`, aggregates cards by timestamp into one host-wide series.
 pub async fn query_history(
     db: &Database,
     tenant_id: ObjectId,
@@ -313,12 +339,13 @@ pub async fn query_history(
         _ => (COLL_1M, now_s - 24 * 3600),
     };
 
+    let uuid_filter = uuid.map(str::trim).filter(|s| !s.is_empty());
     let mut filter = doc! {
         "tenant_id": tenant_id,
         "agent_id": agent_id,
         "ts": { "$gte": DateTime::from_millis(since_s * 1000) },
     };
-    if let Some(u) = uuid.filter(|s| !s.trim().is_empty()) {
+    if let Some(u) = uuid_filter {
         filter.insert("uuid", u);
     }
 
@@ -327,31 +354,107 @@ pub async fn query_history(
         .find(filter)
         .sort(doc! { "ts": 1 })
         .await?;
-    let mut out = Vec::new();
-    while let Some(b) = cur.try_next().await? {
-        let n = f64::from(b.samples.max(1));
-        out.push(GpuHistoryPoint {
-            ts_ms: b.ts.timestamp_millis(),
-            samples: b.samples,
-            util_avg: (b.samples > 0).then(|| (b.util_sum / n) as f32),
-            util_max: b.util_max,
-            mem_used_avg_mb: (b.samples > 0).then(|| (b.mem_used_sum / n).round() as u32),
-            mem_used_max_mb: b.mem_used_max,
-            mem_total_mb: b.mem_total_mb,
-            temp_max_c: b.temp_max,
-            power_avg_w: (b.samples > 0 && b.power_sum > 0.0).then(|| (b.power_sum / n) as f32),
-            free_ratio: (f64::from(b.free_samples) / n) as f32,
-            held_idle_ratio: (f64::from(b.held_idle_samples) / n) as f32,
-        });
+
+    if uuid_filter.is_some() {
+        let mut out = Vec::new();
+        while let Some(b) = cur.try_next().await? {
+            let n = f64::from(b.samples.max(1));
+            out.push(GpuHistoryPoint {
+                ts_ms: b.ts.timestamp_millis(),
+                samples: b.samples,
+                util_avg: (b.util_samples > 0)
+                    .then(|| (b.util_sum / f64::from(b.util_samples)) as f32),
+                util_max: b.util_max,
+                mem_used_avg_mb: (b.mem_samples > 0)
+                    .then(|| (b.mem_used_sum / f64::from(b.mem_samples)).round() as u32),
+                mem_used_max_mb: b.mem_used_max,
+                mem_total_mb: b.mem_total_mb,
+                temp_max_c: b.temp_max,
+                power_avg_w: (b.power_samples > 0)
+                    .then(|| (b.power_sum / f64::from(b.power_samples)) as f32),
+                free_ratio: (f64::from(b.free_samples) / n) as f32,
+                held_idle_ratio: (f64::from(b.held_idle_samples) / n) as f32,
+            });
+        }
+        return Ok(out);
     }
+
+    // All-GPUs view: aggregate per-card buckets at each timestamp into one
+    // host-wide series (mean util across cards, summed VRAM/power, max temp).
+    #[derive(Default)]
+    struct TsAgg {
+        samples: u32,
+        util_samples: u32,
+        util_sum: f64,
+        util_max: u8,
+        mem_used_avg_sum: f64,
+        has_mem_used: bool,
+        mem_used_max_sum: u32,
+        mem_total_sum: u32,
+        has_mem_total: bool,
+        temp_max: Option<i16>,
+        power_avg_sum: f64,
+        has_power: bool,
+        free_samples: u32,
+        held_idle_samples: u32,
+    }
+    let mut by_ts: std::collections::BTreeMap<i64, TsAgg> = std::collections::BTreeMap::new();
+    while let Some(b) = cur.try_next().await? {
+        let a = by_ts.entry(b.ts.timestamp_millis()).or_default();
+        a.samples = a.samples.saturating_add(b.samples);
+        a.util_samples = a.util_samples.saturating_add(b.util_samples);
+        a.util_sum += b.util_sum;
+        a.util_max = a.util_max.max(b.util_max);
+        if b.mem_samples > 0 {
+            a.mem_used_avg_sum += b.mem_used_sum / f64::from(b.mem_samples);
+            a.has_mem_used = true;
+        }
+        a.mem_used_max_sum = a.mem_used_max_sum.saturating_add(b.mem_used_max);
+        if let Some(mt) = b.mem_total_mb {
+            a.mem_total_sum = a.mem_total_sum.saturating_add(mt);
+            a.has_mem_total = true;
+        }
+        a.temp_max = match (a.temp_max, b.temp_max) {
+            (Some(x), Some(y)) => Some(x.max(y)),
+            (x, y) => x.or(y),
+        };
+        if b.power_samples > 0 {
+            a.power_avg_sum += b.power_sum / f64::from(b.power_samples);
+            a.has_power = true;
+        }
+        a.free_samples = a.free_samples.saturating_add(b.free_samples);
+        a.held_idle_samples = a.held_idle_samples.saturating_add(b.held_idle_samples);
+    }
+
+    let out = by_ts
+        .into_iter()
+        .map(|(ts_ms, a)| {
+            let n = f64::from(a.samples.max(1));
+            GpuHistoryPoint {
+                ts_ms,
+                samples: a.samples,
+                util_avg: (a.util_samples > 0)
+                    .then(|| (a.util_sum / f64::from(a.util_samples)) as f32),
+                util_max: a.util_max,
+                mem_used_avg_mb: a.has_mem_used.then(|| a.mem_used_avg_sum.round() as u32),
+                mem_used_max_mb: a.mem_used_max_sum,
+                mem_total_mb: a.has_mem_total.then_some(a.mem_total_sum),
+                temp_max_c: a.temp_max,
+                power_avg_w: a.has_power.then_some(a.power_avg_sum as f32),
+                free_ratio: (f64::from(a.free_samples) / n) as f32,
+                held_idle_ratio: (f64::from(a.held_idle_samples) / n) as f32,
+            }
+        })
+        .collect();
     Ok(out)
 }
 
-/// Aggregate per-Linux-user GPU·h held/busy over `24h | 7d | 30d` plus live snapshot summary.
+/// Aggregate per-Linux-user GPU·h held/busy over `24h | 7d | 30d` plus live
+/// snapshot summary across authorized `(owner_tenant_id, host_label)` agents
+/// (supporting cross-tenant shared GPU servers).
 pub async fn query_users(
     db: &Database,
-    tenant_id: ObjectId,
-    visible_agents: &HashMap<ObjectId, String>,
+    visible_agents: &HashMap<ObjectId, (ObjectId, String)>,
     range: &str,
     live_reports: &HashMap<ObjectId, GpuReport>,
 ) -> Result<Vec<GpuUserSummary>, mongodb::error::Error> {
@@ -363,22 +466,33 @@ pub async fn query_users(
         _ => (COLL_1M, now_s - 24 * 3600),
     };
 
-    let agent_ids: Vec<ObjectId> = visible_agents.keys().copied().collect();
+    let mut by_owner_tenant: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+    for (&aid, &(owner_tid, _)) in visible_agents {
+        by_owner_tenant.entry(owner_tid).or_default().push(aid);
+    }
     let mut acc: HashMap<String, (u64, u64, u32, u64, HashSet<String>)> = HashMap::new();
 
-    if !agent_ids.is_empty() {
+    if !by_owner_tenant.is_empty() {
+        let or_clauses: Vec<bson::Document> = by_owner_tenant
+            .into_iter()
+            .map(|(owner_tid, ids)| {
+                doc! {
+                    "tenant_id": owner_tid,
+                    "agent_id": { "$in": ids },
+                }
+            })
+            .collect();
         let mut cur = db
             .collection::<GpuBucketDoc>(coll_name)
             .find(doc! {
-                "tenant_id": tenant_id,
-                "agent_id": { "$in": &agent_ids },
+                "$or": or_clauses,
                 "ts": { "$gte": DateTime::from_millis(since_s * 1000) },
             })
             .await?;
         while let Some(b) = cur.try_next().await? {
             let host = visible_agents
                 .get(&b.agent_id)
-                .cloned()
+                .map(|(_, name)| name.clone())
                 .unwrap_or_else(|| b.agent_id.to_hex());
             for (u, r) in b.users {
                 let entry = acc.entry(u).or_default();
@@ -391,13 +505,9 @@ pub async fn query_users(
 
     // Overlay live snapshot counts (active GPUs & VRAM per user right now).
     for (aid, rep) in live_reports {
-        if !visible_agents.contains_key(aid) {
+        let Some((_, host)) = visible_agents.get(aid) else {
             continue;
-        }
-        let host = visible_agents
-            .get(aid)
-            .cloned()
-            .unwrap_or_else(|| aid.to_hex());
+        };
         for g in &rep.gpus {
             let Some(procs) = &g.procs else { continue };
             let mut card_users: HashMap<String, u64> = HashMap::new();
@@ -461,12 +571,15 @@ mod tests {
             uuid: "GPU-0001".to_string(),
             ts: DateTime::from_millis(1_762_700_040_000),
             samples: 12,
+            util_samples: 10,
             util_sum: 780.0,
             util_max: 98,
+            mem_samples: 12,
             mem_used_sum: 240_000.0,
             mem_used_max: 24_000,
             mem_total_mb: Some(24_576),
             temp_max: Some(74),
+            power_samples: 11,
             power_sum: 3600.0,
             free_samples: 2,
             held_idle_samples: 1,
@@ -480,12 +593,15 @@ mod tests {
             "uuid",
             "ts",
             "samples",
+            "util_samples",
             "util_sum",
             "util_max",
+            "mem_samples",
             "mem_used_sum",
             "mem_used_max",
             "mem_total_mb",
             "temp_max",
+            "power_samples",
             "power_sum",
             "free_samples",
             "held_idle_samples",

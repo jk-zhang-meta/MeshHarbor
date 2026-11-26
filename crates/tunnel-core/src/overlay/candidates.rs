@@ -56,6 +56,12 @@ pub(crate) const CANDIDATE_PROBE_MIN_SPACING: Duration = Duration::from_secs(4);
 /// Maximum unverified inbound hints retained per peer.
 const MAX_HINTS_PER_PEER: usize = 8;
 
+/// Maximum verified endpoints retained per peer.
+const MAX_VERIFIED_PER_PEER: usize = 32;
+
+/// Maximum `last_sent` pacing entries tracked globally before pruning stale rows.
+const MAX_LAST_SENT_ENTRIES: usize = 512;
+
 /// Maximum outstanding candidate nonces tracked globally.
 const MAX_PENDING_PROBES: usize = 512;
 
@@ -266,6 +272,24 @@ impl CandidatePlanner {
             self.pending.insert(pong.nonce, pending);
             return None;
         }
+        // FR-140 — reject any candidate pong whose authenticated `observed`
+        // source address falls inside the overlay CGNAT range (`100.64.0.0/10`),
+        // or loopback for a routed LAN candidate. That stops routed RFC 1918
+        // probes from verifying back through the overlay's own TUN and flapping.
+        if let Some(obs) = pong.observed {
+            let is_overlay_cgnat = match obs.ip() {
+                std::net::IpAddr::V4(v4) => {
+                    let o = v4.octets();
+                    o[0] == 100 && (64..=127).contains(&o[1])
+                }
+                std::net::IpAddr::V6(_) => false,
+            };
+            if is_overlay_cgnat
+                || (pending.cand.kind == LanPathKind::Routed && obs.ip().is_loopback())
+            {
+                return None;
+            }
+        }
         let rtt_ms = pong
             .at
             .saturating_duration_since(pending.sent_at)
@@ -280,6 +304,19 @@ impl CandidatePlanner {
             Some(v) if !newly_verified => v.rtt_ms * 0.7 + rtt_ms * 0.3,
             _ => rtt_ms,
         };
+        peer_state
+            .verified
+            .retain(|_, v| pong.at.saturating_duration_since(v.last_pong) <= VERIFIED_PATH_TTL);
+        if !peer_state.verified.contains_key(&pending.cand.dst)
+            && peer_state.verified.len() >= MAX_VERIFIED_PER_PEER
+            && let Some(oldest) = peer_state
+                .verified
+                .iter()
+                .min_by_key(|(_, v)| v.last_pong)
+                .map(|(k, _)| *k)
+        {
+            peer_state.verified.remove(&oldest);
+        }
         peer_state.verified.insert(
             pending.cand.dst,
             VerifiedPath {
@@ -334,6 +371,8 @@ impl CandidatePlanner {
         if let Some(p) = self.peers.get_mut(&peer) {
             p.hints
                 .retain(|_, h| now.saturating_duration_since(h.seen_at) <= LEARNED_HINT_TTL);
+            p.verified
+                .retain(|_, v| now.saturating_duration_since(v.last_pong) <= VERIFIED_PATH_TTL);
             for (&dst, h) in &p.hints {
                 let hint_cand = LanCandidate {
                     dst,
@@ -345,7 +384,6 @@ impl CandidatePlanner {
                 merged.entry(dst).or_insert((hint_cand, false));
             }
             for (&dst, v) in &p.verified {
-                let fresh = now.saturating_duration_since(v.last_pong) <= VERIFIED_PATH_TTL;
                 let ver_cand = LanCandidate {
                     dst,
                     egress: v.egress,
@@ -356,12 +394,15 @@ impl CandidatePlanner {
                 merged
                     .entry(dst)
                     .and_modify(|(_, was_ver)| {
-                        if fresh {
-                            *was_ver = true;
-                        }
+                        *was_ver = true;
                     })
-                    .or_insert((ver_cand, fresh));
+                    .or_insert((ver_cand, true));
             }
+        }
+        if self.last_sent.len() > MAX_LAST_SENT_ENTRIES {
+            self.last_sent.retain(|_, t| {
+                now.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING
+            });
         }
 
         let mut list: Vec<(LanCandidate, bool)> = merged
@@ -397,6 +438,11 @@ impl CandidatePlanner {
         at: Instant,
     ) {
         self.last_sent.insert((peer, cand.dst), at);
+        if self.last_sent.len() > MAX_LAST_SENT_ENTRIES {
+            self.last_sent.retain(|_, t| {
+                at.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING
+            });
+        }
         self.pending.insert(
             nonce,
             PendingProbe {
@@ -811,5 +857,46 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn fr140_routed_candidate_rejects_pong_observed_from_overlay_cgnat_or_loopback() {
+        let mut planner = CandidatePlanner::default();
+        let peer = [11u8; 32];
+        let t0 = Instant::now();
+        let routed = LanCandidate::routed(LanEgress::Wildcard, sa("10.20.0.9:43648"));
+
+        // Pong whose observed source IP is inside 100.64.0.0/10 (overlay TUN) is rejected.
+        planner.record_sent([1; 8], peer, routed, t0);
+        let overlay_loop_pong = DiscoInbound {
+            sender: peer,
+            nonce: [1; 8],
+            src: routed.dst,
+            observed: Some(sa("100.64.0.10:43648")),
+            at: t0 + Duration::from_millis(2),
+        };
+        assert!(planner.on_pong(&overlay_loop_pong).is_none());
+
+        // Routed candidate pong with loopback observed source is rejected.
+        planner.record_sent([2; 8], peer, routed, t0);
+        let lo_pong = DiscoInbound {
+            sender: peer,
+            nonce: [2; 8],
+            src: routed.dst,
+            observed: Some(sa("127.0.0.1:43648")),
+            at: t0 + Duration::from_millis(2),
+        };
+        assert!(planner.on_pong(&lo_pong).is_none());
+
+        // Legitimate RFC 1918 observed source verifies cleanly.
+        planner.record_sent([3; 8], peer, routed, t0);
+        let legit_pong = DiscoInbound {
+            sender: peer,
+            nonce: [3; 8],
+            src: routed.dst,
+            observed: Some(sa("10.10.0.5:43648")),
+            at: t0 + Duration::from_millis(2),
+        };
+        assert!(planner.on_pong(&legit_pong).is_some());
     }
 }

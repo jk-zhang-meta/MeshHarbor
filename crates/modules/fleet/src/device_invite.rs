@@ -944,14 +944,28 @@ pub async fn redeem(
     }
     let inviter = inviter_display(&state, row.inviter_user_id).await;
     let org = org_display(&state, row.tenant_id).await;
-    if let Some((aid, _)) = attach_to {
+    if let Some((aid, attached_agent)) = attach_to {
         // FR-139 — if this invite carries `gpu_server = true`, mark the
-        // attached device as a GPU server so it shows up in GPU fleet views.
-        if row.gpu_server
-            && let Err(e) = state.agents.set_gpu_server(row.tenant_id, aid, true).await
-        {
-            tracing::warn!(invite = %row.id, agent = %aid, error = %e,
-                "device-invite: failed to stamp gpu_server on attached device");
+        // attached device as a GPU server (fail closed) and push its standing
+        // GPU lease immediately if already online.
+        if row.gpu_server {
+            let marked = state
+                .agents
+                .set_gpu_server(row.tenant_id, aid, true)
+                .await?;
+            if !marked {
+                return Err(ApiError::ServiceUnavailable(
+                    "Attached device could not be marked as a GPU server".into(),
+                ));
+            }
+            state.gpu.on_gpu_server_toggled(
+                &state.rc_hub,
+                aid,
+                true,
+                attached_agent
+                    .capabilities
+                    .has_rpc(meshharbor_remote_control::models::RpcCap::Gpu),
+            );
         }
         // The new inviter's devices learn of it on the re-fan; the live gates
         // already admit them. A failed re-fan only delays that visibility.

@@ -26,13 +26,22 @@ use super::bots::BotAlertItem;
 
 pub const RULES_COLLECTION: &str = "gpu_alert_rules";
 
+/// Maximum distinct GPU UUIDs tracked per host inside [`AlertEvaluator`].
+const MAX_CARDS_PER_HOST: usize = 64;
+/// Maximum cooldown keys retained per host inside [`AlertEvaluator`].
+const MAX_COOLDOWNS_PER_HOST: usize = 256;
+
+fn gpu_host_link(tenant_id: ObjectId, agent_id: ObjectId) -> String {
+    format!("/tenant/{}/gpu?host={}", tenant_id.to_hex(), agent_id.to_hex())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuAlertRule {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
     pub tenant_id: ObjectId,
     pub user_id: ObjectId,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     /// Fire when at least `N` GPUs on a host are continuously free for 2 min.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,8 +73,8 @@ impl GpuAlertRule {
             id: None,
             tenant_id,
             user_id,
-            enabled: true,
-            free_gpus_min: Some(1),
+            enabled: false,
+            free_gpus_min: None,
             free_min_mem_gb: None,
             held_idle_alert: true,
             fault_alert: true,
@@ -113,9 +122,21 @@ pub struct AlertEvaluator {
 }
 
 impl AlertEvaluator {
+    /// Remove all tracked state for a host (e.g. unmarked or deleted).
+    pub fn remove_host(&mut self, agent_id: ObjectId) {
+        self.hosts.remove(&agent_id);
+    }
+
+    /// Evict retired hosts no longer present in the marked GPU fleet.
+    pub fn prune_stale_hosts(&mut self, active: &HashSet<ObjectId>) {
+        self.hosts.retain(|aid, _| active.contains(aid));
+    }
+
     /// Evaluate one fresh report against `rule` and return any newly fired edges.
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_report(
         &mut self,
+        tenant_id: ObjectId,
         agent_id: ObjectId,
         host_name: &str,
         report: &GpuReport,
@@ -125,6 +146,10 @@ impl AlertEvaluator {
     ) -> Vec<FiredAlert> {
         let mut fired = Vec::new();
         let host = self.hosts.entry(agent_id).or_default();
+        let host_link = gpu_host_link(tenant_id, agent_id);
+        // Prune expired cooldown entries to keep per-host memory strictly bounded.
+        host.cooldowns
+            .retain(|_, ts| now_s.saturating_sub(*ts) < settings.cooldown_secs);
 
         // Receiving a report clears any pending/active offline state.
         if host.offline_active && rule.enabled && rule.machine_alert {
@@ -139,7 +164,7 @@ impl AlertEvaluator {
                         body_en: format!("GPU telemetry resumed on {host_name}."),
                         body_zh: format!("{host_name} 的 GPU 遥测已恢复。"),
                         users_summary: None,
-                        link: "/gpu".into(),
+                        link: host_link.clone(),
                     },
                 });
             }
@@ -183,7 +208,7 @@ impl AlertEvaluator {
                                 body_en: format!("Host {host_name} reported status {}.", st.wire()),
                                 body_zh: format!("主机 {host_name} 报告状态 {}。", st.wire()),
                                 users_summary: None,
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -200,7 +225,7 @@ impl AlertEvaluator {
                             body_en: format!("Host {host_name} recovered from {}.", prev.wire()),
                             body_zh: format!("主机 {host_name} 已从 {} 恢复。", prev.wire()),
                             users_summary: None,
-                            link: "/gpu".into(),
+                            link: host_link.clone(),
                         },
                     });
                 }
@@ -209,8 +234,9 @@ impl AlertEvaluator {
 
         // 2. GPU count drop (only when status == Ok so a stalled sampler doesn't
         // double-fire as a count drop).
+        let capped_gpus = &report.gpus[..report.gpus.len().min(MAX_CARDS_PER_HOST)];
         if rule.fault_alert && report.status == GpuHostStatus::Ok {
-            let cur_count = report.gpus.len();
+            let cur_count = capped_gpus.len();
             if let Some(prev_count) = host.last_gpu_count {
                 if cur_count < prev_count && !host.count_drop_active {
                     host.count_drop_active = true;
@@ -225,7 +251,7 @@ impl AlertEvaluator {
                                 body_en: format!("Visible GPUs on {host_name} dropped from {prev_count} to {cur_count}."),
                                 body_zh: format!("{host_name} 可见 GPU 数量从 {prev_count} 降至 {cur_count}。"),
                                 users_summary: None,
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -241,8 +267,10 @@ impl AlertEvaluator {
         // 3. Per-card edges: free count, held_idle, faults (lost / ECC / remapped / Xid / throttle).
         let min_free_mb = rule.free_min_mem_gb.unwrap_or(0).saturating_mul(1024);
         let mut qualifying_free: u16 = 0;
+        let mut present_uuids: HashSet<String> = HashSet::with_capacity(capped_gpus.len());
 
-        for g in &report.gpus {
+        for g in capped_gpus {
+            present_uuids.insert(g.uuid.clone());
             let st = classify_gpu_state(report.status, g, now_s, thresholds);
             if st == GpuState::Free {
                 let avail_mb = g
@@ -283,7 +311,7 @@ impl AlertEvaluator {
                                     settings.held_idle_secs / 60
                                 ),
                                 users_summary: users_str.clone(),
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -307,7 +335,7 @@ impl AlertEvaluator {
                                 body_en: format!("NVML reported GPU_LOST for {card_label} on {host_name}."),
                                 body_zh: format!("{host_name} 上的 {card_label} 报告掉卡 (GPU_LOST)。"),
                                 users_summary: None,
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -330,7 +358,7 @@ impl AlertEvaluator {
                                     body_en: format!("Uncorrected ECC errors increased on {host_name} {card_label}."),
                                     body_zh: format!("{host_name} {card_label} 出现新的不可纠正 ECC 错误。"),
                                     users_summary: users_str.clone(),
-                                    link: "/gpu".into(),
+                                    link: host_link.clone(),
                                 },
                             });
                         }
@@ -353,7 +381,7 @@ impl AlertEvaluator {
                                     body_en: format!("Remapped memory rows increased on {host_name} {card_label}."),
                                     body_zh: format!("{host_name} {card_label} 显存重映射行数增加。"),
                                     users_summary: None,
-                                    link: "/gpu".into(),
+                                    link: host_link.clone(),
                                 },
                             });
                         }
@@ -381,7 +409,7 @@ impl AlertEvaluator {
                                 body_en: format!("Xid error(s) [{list}] observed on {host_name} {card_label}."),
                                 body_zh: format!("{host_name} {card_label} 检测到 Xid 错误 [{list}]。"),
                                 users_summary: users_str.clone(),
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -405,7 +433,7 @@ impl AlertEvaluator {
                                     body_en: format!("{card_label} throttled for > 60 s ({} °C).", g.temp_c.unwrap_or(0)),
                                     body_zh: format!("{card_label} 已持续降频超过 60 秒（当前 {} °C）。", g.temp_c.unwrap_or(0)),
                                     users_summary: users_str.clone(),
-                                    link: "/gpu".into(),
+                                    link: host_link.clone(),
                                 },
                             });
                         }
@@ -418,6 +446,9 @@ impl AlertEvaluator {
 
             host.cards.insert(g.uuid.clone(), card);
         }
+
+        // Evict disappeared cards so churning/malicious UUID reports cannot leak memory.
+        host.cards.retain(|uuid, _| present_uuids.contains(uuid));
 
         // 4. Free-GPU rule with continuous `free_hold_secs` (default 2 min) hold.
         if let Some(need) = rule.free_gpus_min.filter(|n| *n > 0) {
@@ -443,7 +474,7 @@ impl AlertEvaluator {
                                     settings.free_hold_secs
                                 ),
                                 users_summary: None,
-                                link: "/gpu".into(),
+                                link: host_link.clone(),
                             },
                         });
                     }
@@ -460,6 +491,7 @@ impl AlertEvaluator {
     /// Server timer check for hosts that have been offline > 5 minutes.
     pub fn evaluate_offline(
         &mut self,
+        tenant_id: ObjectId,
         agent_id: ObjectId,
         host_name: &str,
         now_s: i64,
@@ -470,6 +502,8 @@ impl AlertEvaluator {
             return None;
         }
         let host = self.hosts.entry(agent_id).or_default();
+        host.cooldowns
+            .retain(|_, ts| now_s.saturating_sub(*ts) < settings.cooldown_secs);
         let since = *host.offline_since.get_or_insert(now_s);
         if !host.offline_active && now_s.saturating_sub(since) >= 300 {
             host.offline_active = true;
@@ -484,7 +518,7 @@ impl AlertEvaluator {
                         body_en: format!("{host_name} has been offline for > 5 minutes."),
                         body_zh: format!("{host_name} 已离线超过 5 分钟。"),
                         users_summary: None,
-                        link: "/gpu".into(),
+                        link: gpu_host_link(tenant_id, agent_id),
                     },
                 });
             }
@@ -498,6 +532,19 @@ fn can_fire(host: &mut HostTrack, key: &str, now_s: i64, cooldown_secs: i64) -> 
         && now_s.saturating_sub(last) < cooldown_secs
     {
         return false;
+    }
+    if host.cooldowns.len() >= MAX_COOLDOWNS_PER_HOST {
+        host.cooldowns
+            .retain(|_, ts| now_s.saturating_sub(*ts) < cooldown_secs);
+        if host.cooldowns.len() >= MAX_COOLDOWNS_PER_HOST
+            && let Some(oldest) = host
+                .cooldowns
+                .iter()
+                .min_by_key(|(_, ts)| **ts)
+                .map(|(k, _)| k.clone())
+        {
+            host.cooldowns.remove(&oldest);
+        }
     }
     host.cooldowns.insert(key.to_string(), now_s);
     true
@@ -554,19 +601,24 @@ mod tests {
         let tid = ObjectId::new();
         let uid = ObjectId::new();
         let settings = GpuSettings::default();
-        let rule = GpuAlertRule::default_for(tid, uid);
+        let mut rule = GpuAlertRule::default_for(tid, uid);
+        assert!(!rule.enabled, "alert rule must default opt-in");
+        assert!(rule.free_gpus_min.is_none());
+        rule.enabled = true;
+        rule.free_gpus_min = Some(1);
         let rep = free_report();
 
         // t=0: starts hold timer, no alert yet
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
         // t=60: still under 120s hold
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1060, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1060, &settings, &rule).is_empty());
         // t=120: fires once!
-        let f = eval.evaluate_report(aid, "gpu-01", &rep, 1120, &settings, &rule);
+        let f = eval.evaluate_report(tid, aid, "gpu-01", &rep, 1120, &settings, &rule);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].event_key, "free:available");
+        assert!(f[0].item.link.starts_with(&format!("/tenant/{}/gpu", tid.to_hex())));
         // t=150: stays free -> edge already active -> does NOT repeat
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1150, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1150, &settings, &rule).is_empty());
 
         // Busy briefly, then free again within 10 min cooldown -> suppressed!
         let mut busy = rep.clone();
@@ -578,14 +630,14 @@ mod tests {
             mem_mb: Some(40_000),
             ..Default::default()
         }]);
-        assert!(eval.evaluate_report(aid, "gpu-01", &busy, 1200, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1250, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1400, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &busy, 1200, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1250, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1400, &settings, &rule).is_empty());
 
         // Past 10 min cooldown -> fires again!
-        assert!(eval.evaluate_report(aid, "gpu-01", &busy, 1750, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1800, &settings, &rule).is_empty());
-        let f2 = eval.evaluate_report(aid, "gpu-01", &rep, 1925, &settings, &rule);
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &busy, 1750, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1800, &settings, &rule).is_empty());
+        let f2 = eval.evaluate_report(tid, aid, "gpu-01", &rep, 1925, &settings, &rule);
         assert_eq!(f2.len(), 1);
     }
 
@@ -597,23 +649,24 @@ mod tests {
         let uid = ObjectId::new();
         let settings = GpuSettings::default();
         let mut rule = GpuAlertRule::default_for(tid, uid);
+        rule.enabled = true;
         rule.free_gpus_min = None;
 
         let mut rep = free_report();
         rep.gpus[0].ecc_uncorrected = Some(0);
         rep.gpus[0].throttle = Some(vec!["thermal".into()]);
-        assert!(eval.evaluate_report(aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
+        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
 
         // ECC increases + throttle > 60s
         rep.gpus[0].ecc_uncorrected = Some(2);
-        let f = eval.evaluate_report(aid, "gpu-01", &rep, 1065, &settings, &rule);
+        let f = eval.evaluate_report(tid, aid, "gpu-01", &rep, 1065, &settings, &rule);
         let keys: Vec<&str> = f.iter().map(|x| x.event_key.as_str()).collect();
         assert!(keys.contains(&"fault:ecc:GPU-0"), "{keys:?}");
         assert!(keys.contains(&"fault:throttle:GPU-0"), "{keys:?}");
 
         // Offline > 5 min
-        assert!(eval.evaluate_offline(aid, "gpu-01", 2000, &settings, &rule).is_none());
-        let off = eval.evaluate_offline(aid, "gpu-01", 2305, &settings, &rule);
+        assert!(eval.evaluate_offline(tid, aid, "gpu-01", 2000, &settings, &rule).is_none());
+        let off = eval.evaluate_offline(tid, aid, "gpu-01", 2305, &settings, &rule);
         assert!(off.is_some());
         assert_eq!(off.unwrap().event_key, "machine:offline");
     }

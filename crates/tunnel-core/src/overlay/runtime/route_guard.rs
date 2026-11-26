@@ -485,6 +485,11 @@ pub(super) struct ExitRoutingState {
     /// and the exit carries only what the front dials. Reported in
     /// [`ExitNodeStatus::socks5_port`].
     pub(super) socks5_port: Option<u16>,
+    /// FR-140 — true while the runtime was cold-booted from the signed local
+    /// netmap cache and has not yet received an authoritative live netmap.
+    /// Exit routing is withheld until the first live netmap confirms approval
+    /// and server exemption IPs can be resolved cleanly.
+    pub(super) awaiting_first_live_netmap: bool,
 }
 
 /// Surface a duplicate/HA subnet claim — NEVER silently. When two or more live
@@ -655,6 +660,37 @@ impl OverlayRuntime {
         let Some(selector) = self.exit_node.as_deref() else {
             return; // not an exit-node client — inert
         };
+
+        // FR-140 — never engage split-default exit routing from an offline
+        // cached netmap before the first live netmap and server-IP pin.
+        if state.awaiting_first_live_netmap {
+            if state.split_default_installed {
+                self.teardown_exit_routing(wg, tun, by_node, current_peers, state)
+                    .await;
+            }
+            note_withheld(
+                state,
+                selector,
+                "awaiting first authoritative live netmap before engaging exit routing",
+            );
+            return;
+        }
+
+        // Withhold when no coordination-server IPs are known (e.g. DNS failed
+        // during cold offline boot): an empty exemption set must never let
+        // `all(...)` pass vacuously and self-wedge the control plane.
+        if self.exit_server_ips.is_empty() {
+            if state.split_default_installed {
+                self.teardown_exit_routing(wg, tun, by_node, current_peers, state)
+                    .await;
+            }
+            note_withheld(
+                state,
+                selector,
+                "coordination server IPs unresolved — withholding exit routing to avoid a self-wedge",
+            );
+            return;
+        }
 
         // The chosen exit must be present, reachable-with-a-live-carrier, AND an
         // admin-approved exit node. Any miss → withdraw the capture, record the

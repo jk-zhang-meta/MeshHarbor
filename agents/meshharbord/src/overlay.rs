@@ -1055,6 +1055,22 @@ pub async fn maybe_start(
                 if let Some(sink) = activity_sink {
                     sink.repoint(outbound.clone());
                 }
+                // FR-140 — if this runtime was cold-seeded offline before DNS
+                // was reachable, refresh coordination-server exemption IPs now
+                // so exit routing can safely engage after the live netmap lands.
+                if cfg.overlay_exit_node.is_some() {
+                    let mut ips = resolve_server_ips(&cfg.server_url).await;
+                    if !ips.is_empty() {
+                        for ip in
+                            meshharbor_node_core::management_path::entry_ips(&cfg.management_entries)
+                        {
+                            if !ips.contains(&ip) {
+                                ips.push(ip);
+                            }
+                        }
+                        let _ = evt_tx.send_reliable(OverlayEvent::ExitServerIps(ips));
+                    }
+                }
                 crate::p2pctl::drain_offline_audit_on_reconnect(config_path, &cfg.tenant_id);
                 if lan_ips_same {
                     info!("overlay: re-attached the persistent node runtime (carriers intact)");
@@ -1128,6 +1144,7 @@ pub async fn maybe_start(
     // same on a server, a multi-org host and a locked-down corp laptop.
     // No-op (and byte-for-byte the old path) unless `ssh_enabled` is on.
     let activity_sink_for_slot = services.activity.clone();
+    let control_ws_attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let p2p_ctx = crate::p2pctl::enabled(cfg).then(|| {
         crate::p2pctl::ServerCtx::new(
             cfg,
@@ -1135,7 +1152,9 @@ pub async fn maybe_start(
             services.clone(),
             remote_cfg.clone(),
         )
+        .with_control_ws_attached(control_ws_attached.clone())
     });
+    let p2pctl_supported = cfg!(feature = "overlay-netstack") && p2p_ctx.is_some();
     let tun_factory = crate::ssh::maybe_intercept(tun_factory, cfg, services, p2p_ctx);
     // P5 exit-node client — resolve the coordination server's IPs NOW, while the
     // uplink is still clean (before any split-default is installed), so exit
@@ -1226,6 +1245,8 @@ pub async fn maybe_start(
         }));
     let rt = OverlayRuntime::new_relay(keypair, outbound, tun_factory, OVERLAY_MTU)
         .with_netmap_snapshot_sink(snapshot_sink)
+        .with_p2pctl_supported(p2pctl_supported)
+        .with_control_ws_attached(control_ws_attached)
         // FR-40 — the epoch persisted next to the key, bumped per rotation;
         // sent as `key_epoch` on the join.
         .with_key_epoch(cfg.overlay_wg_key_epoch)
@@ -1330,12 +1351,28 @@ pub async fn seed_from_cache(
     )
     .await?;
 
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let local_max_ms = crate::overlay_cache::max_cache_age_ms(cfg);
+    let net_max_ms = cached
+        .network
+        .offline_max_age_s
+        .filter(|&s| s > 0)
+        .map(|s| s.saturating_mul(1_000));
+    let effective_max_ms = net_max_ms.map_or(local_max_ms, |m| m.min(local_max_ms));
+    let age_ms = now_ms.saturating_sub(cached.last_authoritative_at_ms);
+    let remaining_ttl = Some(std::time::Duration::from_millis(
+        effective_max_ms.saturating_sub(age_ms),
+    ));
     if evt_tx
         .send_reliable(OverlayEvent::CachedNetmap {
             self_ip: cached.self_ip,
             network: Box::new(cached.network),
             peers: cached.peers,
             learned_endpoints,
+            remaining_ttl,
         })
         .is_err()
     {

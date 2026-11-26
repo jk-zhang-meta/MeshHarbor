@@ -1493,6 +1493,9 @@ pub enum OverlayEvent {
         network: Box<OverlayNetworkInfo>,
         peers: Vec<NetmapPeer>,
         learned_endpoints: std::collections::BTreeMap<String, Vec<SocketAddr>>,
+        /// Remaining cache lifetime before the signed snapshot reaches its
+        /// max-age ceiling (`None` when unbounded in unit tests).
+        remaining_ttl: Option<Duration>,
     },
     PathTrial(meshharbor_remote_control::signaling::ServerMsg),
     /// Incremental update.
@@ -1524,6 +1527,10 @@ pub enum OverlayEvent {
     Reattach {
         outbound: mpsc::Sender<ClientMsg>,
     },
+    /// FR-140 — refreshed coordination-server exemption IPs resolved on
+    /// control-WS reattach (needed when a cold cache-seeded boot started offline
+    /// without DNS and had empty `exit_server_ips`).
+    ExitServerIps(Vec<IpAddr>),
     /// Coturn creds for a relay leg to `peer_node_id` (relay mode only).
     /// `pair_key` is the server's symmetric `sorted(a,b)` key — both ends
     /// receive an identical value and use it to pick the same coturn worker.
@@ -2649,11 +2656,17 @@ pub struct OverlayRuntime {
     /// `ControlDetached` / closed channel and restored on `Reattach` / live
     /// `Netmap`. Combined with `RelayCoordinator::has_live_derp_or_warm()` to
     /// measure `TierAvailability.relay`.
-    control_ws_attached: std::sync::atomic::AtomicBool,
+    control_ws_attached: Arc<std::sync::atomic::AtomicBool>,
     /// FR-139 — optional agent callback invoked whenever authoritative netmap
     /// state or learned direct endpoints change so the local signed cache stays
     /// fresh (and flushes synchronously on authority reduction).
     netmap_snapshot_sink: Option<NetmapSnapshotSink>,
+    /// FR-140 — whether this build + runtime actually mounted the intercepted
+    /// `p2pctl` listener on TCP 41642.
+    p2pctl_supported: bool,
+    /// FR-140 — round-robin cursor across peers in `disco_round` so early peers
+    /// cannot starve later peers under the 50/s global candidate-probe budget.
+    disco_peer_cursor: std::sync::atomic::AtomicUsize,
 }
 
 /// FR-139 — state handed to the agent's local signed netmap-cache writer
@@ -2912,8 +2925,10 @@ impl OverlayRuntime {
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
-            control_ws_attached: std::sync::atomic::AtomicBool::new(true),
+            control_ws_attached: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             netmap_snapshot_sink: None,
+            p2pctl_supported: false,
+            disco_peer_cursor: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -2955,9 +2970,28 @@ impl OverlayRuntime {
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
-            control_ws_attached: std::sync::atomic::AtomicBool::new(true),
+            control_ws_attached: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             netmap_snapshot_sink: None,
+            p2pctl_supported: false,
+            disco_peer_cursor: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// FR-140 — declare whether this runtime actually serves the intercepted
+    /// `p2pctl` listener on TCP 41642 (`overlay-netstack` + enabled).
+    pub fn with_p2pctl_supported(mut self, supported: bool) -> Self {
+        self.p2pctl_supported = supported;
+        self
+    }
+
+    /// FR-140 — share the live control-WS attachment flag with `p2pctl` so
+    /// offline capabilities are refused while this host is actually online.
+    pub fn with_control_ws_attached(
+        mut self,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.control_ws_attached = flag;
+        self
     }
 
     /// FR-139 — attach a callback notified on authoritative netmap / delta
@@ -3252,9 +3286,18 @@ impl OverlayRuntime {
         }
         // A2 + FR-139 — probe direct candidate paths for cold, relayed, and
         // non-LAN peers. Candidate LAN probes go through `CandidatePlanner`
-        // (respecting the global 50 pings/s budget and testing multi-homed,
-        // routed, loopback, and learned-hint endpoints before WireGuard dials).
-        for (nid, np) in current_peers {
+        // (respecting the global 50 pings/s budget and rotating peer order
+        // round-robin so early peers never starve later peers).
+        let mut peer_order: Vec<(&ObjectId, &NetmapPeer)> = current_peers.iter().collect();
+        peer_order.sort_by_key(|(nid, _)| **nid);
+        if !peer_order.is_empty() {
+            let start = self
+                .disco_peer_cursor
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                % peer_order.len();
+            peer_order.rotate_left(start);
+        }
+        for (nid, np) in peer_order {
             if !np.reachable || np.backbone_only {
                 continue;
             }
@@ -3636,11 +3679,10 @@ impl OverlayRuntime {
             // Data-probe — this build's engine answers the overlay-native
             // echo inline (wired in `process_inbound`), so advertise it.
             supports_overlay_echo: true,
-            // FR-139 — unified overlay P2P control plane (`p2pctl`, TCP 41642).
-            // Advertised only when enabled on this node so pre-FR-139 peers or
-            // nodes that disabled `p2p_control_enabled` are never dialed on
-            // TCP 41642.
-            supports_p2pctl: crate::env::flag("P2P_CONTROL_ENABLED", true),
+            // FR-140 — unified overlay P2P control plane (`p2pctl`, TCP 41642).
+            // Advertised ONLY when this build & runtime actually mounted the
+            // intercepted TCP 41642 listener and `P2P_CONTROL_ENABLED` is on.
+            supports_p2pctl: self.p2pctl_supported && crate::env::flag("P2P_CONTROL_ENABLED", true),
             // FR-19 P4b — advertised only with `overlay_org_relay` on: the
             // server pushes `relay_session` frames only to a node that says it
             // can act on them, and a session on a build that cannot is a black
@@ -3751,6 +3793,7 @@ impl OverlayRuntime {
             mut server_path_trial_v1,
             seeded_from_cache,
             initial_learned,
+            cached_remaining_ttl,
         ) = loop {
             let event = tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
@@ -3804,6 +3847,7 @@ impl OverlayRuntime {
                         path_trial_v1,
                         false,
                         std::collections::BTreeMap::new(),
+                        None,
                     );
                 }
                 Some(OverlayEvent::CachedNetmap {
@@ -3811,6 +3855,7 @@ impl OverlayRuntime {
                     network,
                     peers,
                     learned_endpoints,
+                    remaining_ttl,
                 }) => {
                     self.control_ws_attached
                         .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -3831,6 +3876,7 @@ impl OverlayRuntime {
                         false,
                         true,
                         learned_endpoints,
+                        remaining_ttl,
                     );
                 }
                 // rc.307 (B) — the session died before the first netmap:
@@ -3875,6 +3921,10 @@ impl OverlayRuntime {
                 Some(OverlayEvent::OrgRelaySession { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::OrgRelayRevoke { .. }) => continue,  // pre-netmap; ignore
                 Some(OverlayEvent::OrgRelayCandidates { .. }) => continue, // no membership yet
+                Some(OverlayEvent::ExitServerIps(ips)) => {
+                    self.exit_server_ips = ips;
+                    continue;
+                }
                 Some(OverlayEvent::RebuildDirect) => continue,          // pre-netmap; no plane yet
                 None => return,
             }
@@ -3894,6 +3944,8 @@ impl OverlayRuntime {
             .collect();
         let mut awaiting_first_live_netmap = seeded_from_cache;
         let mut control_detached_at: Option<Instant> = seeded_from_cache.then(Instant::now);
+        let mut cached_offline_deadline: Option<Instant> =
+            cached_remaining_ttl.map(|ttl| Instant::now() + ttl);
         let mut offline_continuity_expired = false;
         let mut post_join_retry_attempt: u32 = 0;
         let mut post_join_retry: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
@@ -4616,6 +4668,10 @@ impl OverlayRuntime {
             epoch: 0,
             tx: alloc_tx,
         };
+        // P0 (FR-140 / pre-existing): load peer ingress ACLs & disco_authorized
+        // BEFORE installing peers so BOTH cold CachedNetmap boots and initial
+        // live netmaps enforce overlay ACLs from packet 1.
+        wg.sync_peer_ingress(&current_peers);
         self.note_prefer_relay_rows(&prefer, &first_peers);
         self.install_peers(
             &mut wg,
@@ -4668,6 +4724,7 @@ impl OverlayRuntime {
             dns_target: Some(dns_target),
             dns_bound,
             socks5_port: self.netstack_socks,
+            awaiting_first_live_netmap: seeded_from_cache,
             ..Default::default()
         };
         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state)
@@ -5241,49 +5298,69 @@ impl OverlayRuntime {
                 // switch the peer to relay (with a cooldown so the next netmap
                 // doesn't immediately re-upgrade it to direct).
                 () = async {
-                    match (control_detached_at, offline_continuity_max_age()) {
-                        (Some(detached_at), Some(max_age)) if !offline_continuity_expired => {
-                            tokio::time::sleep_until(tokio::time::Instant::from_std(
-                                detached_at + max_age,
-                            ))
-                            .await
+                    let deadline = if offline_continuity_expired {
+                        None
+                    } else {
+                        let mut dl = cached_offline_deadline;
+                        if let Some(detached_at) = control_detached_at {
+                            if let Some(env_max) = offline_continuity_max_age() {
+                                let cand = detached_at + env_max;
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
+                            if let Some(secs) = network.offline_max_age_s.filter(|&s| s > 0) {
+                                let cand = detached_at + Duration::from_secs(secs);
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
                         }
-                        _ => std::future::pending::<()>().await,
+                        dl
+                    };
+                    match deadline {
+                        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+                        None => std::future::pending::<()>().await,
                     }
                 } => {
-                    if let (Some(detached_at), Some(max_age)) =
-                        (control_detached_at, offline_continuity_max_age())
-                        && !offline_continuity_expired
-                    {
-                        offline_continuity_expired = true;
-                        warn!(
-                            detached_ms = detached_at.elapsed().as_millis(),
-                            max_ms = max_age.as_millis(),
-                            "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
-                        );
-                        let mut all_ids: Vec<ObjectId> = by_node
-                            .keys()
-                            .chain(upgrade_probes.keys())
-                            .chain(current_peers.keys())
-                            .copied()
-                            .collect();
-                        all_ids.sort_unstable();
-                        all_ids.dedup();
-                        for nid in all_ids {
-                            invalidate_org_bind_identity(&nid, &mut org_q, &mut relay);
-                            self.evict_peer(
-                                nid, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
-                                &mut alloc_q, &mut upgrade_probes, &mut current_peers,
-                                &mut relay_refresh_cooldown,
-                            ).await;
+                    if !offline_continuity_expired {
+                        let mut dl = cached_offline_deadline;
+                        if let Some(detached_at) = control_detached_at {
+                            if let Some(env_max) = offline_continuity_max_age() {
+                                let cand = detached_at + env_max;
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
+                            if let Some(secs) = network.offline_max_age_s.filter(|&s| s > 0) {
+                                let cand = detached_at + Duration::from_secs(secs);
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
                         }
-                        org_discovery.invalidate();
-                        wg.sync_peer_ingress(&current_peers);
-                        if let Some(names) = &dns_names {
-                            sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                        if dl.is_some_and(|at| Instant::now() >= at) {
+                            offline_continuity_expired = true;
+                            warn!(
+                                detached_ms = control_detached_at.map(|d| d.elapsed().as_millis()).unwrap_or(0),
+                                "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
+                            );
+                            let mut all_ids: Vec<ObjectId> = by_node
+                                .keys()
+                                .chain(upgrade_probes.keys())
+                                .chain(current_peers.keys())
+                                .copied()
+                                .collect();
+                            all_ids.sort_unstable();
+                            all_ids.dedup();
+                            for nid in all_ids {
+                                invalidate_org_bind_identity(&nid, &mut org_q, &mut relay);
+                                self.evict_peer(
+                                    nid, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                                    &mut alloc_q, &mut upgrade_probes, &mut current_peers,
+                                    &mut relay_refresh_cooldown,
+                                ).await;
+                            }
+                            org_discovery.invalidate();
+                            wg.sync_peer_ingress(&current_peers);
+                            if let Some(names) = &dns_names {
+                                sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                            }
+                            self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         }
-                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }
                 }
                 _ = fallback.tick() => {
@@ -5295,15 +5372,28 @@ impl OverlayRuntime {
                             info!("overlay: control-WS channel closed — entering offline continuity window");
                         }
                     }
-                    if let (Some(detached_at), Some(max_age)) =
-                        (control_detached_at, offline_continuity_max_age())
+                    let fallback_deadline = if offline_continuity_expired {
+                        None
+                    } else {
+                        let mut dl = cached_offline_deadline;
+                        if let Some(detached_at) = control_detached_at {
+                            if let Some(env_max) = offline_continuity_max_age() {
+                                let cand = detached_at + env_max;
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
+                            if let Some(secs) = network.offline_max_age_s.filter(|&s| s > 0) {
+                                let cand = detached_at + Duration::from_secs(secs);
+                                dl = Some(dl.map_or(cand, |cur| cur.min(cand)));
+                            }
+                        }
+                        dl
+                    };
+                    if fallback_deadline.is_some_and(|at| Instant::now() >= at)
                         && !offline_continuity_expired
-                        && detached_at.elapsed() >= max_age
                     {
                         offline_continuity_expired = true;
                         warn!(
-                            detached_ms = detached_at.elapsed().as_millis(),
-                            max_ms = max_age.as_millis(),
+                            detached_ms = control_detached_at.map(|d| d.elapsed().as_millis()).unwrap_or(0),
                             "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
                         );
                         let mut all_ids: Vec<ObjectId> = by_node
@@ -6359,6 +6449,17 @@ impl OverlayRuntime {
                     // Re-sync: a full netmap is the reconcile point — today it
                     // arrives on every rc.307 re-join (reattach), and the arm
                     // below applies it AUTHORITATIVELY against live state.
+                    Some(OverlayEvent::ExitServerIps(ips)) => {
+                        self.exit_server_ips = ips;
+                        self.reconcile_exit_routing(
+                            &mut wg,
+                            &tun,
+                            &by_node,
+                            &current_peers,
+                            &mut exit_state,
+                        )
+                        .await;
+                    }
                     Some(OverlayEvent::CachedNetmap { .. }) => {
                         debug!("overlay: ignoring late CachedNetmap after netmap already active");
                     }
@@ -6412,6 +6513,7 @@ impl OverlayRuntime {
                             continue;
                         }
                         awaiting_first_live_netmap = false;
+                        exit_state.awaiting_first_live_netmap = false;
                         // A full netmap is an authoritative full-table replacement
                         // for the newly attached control-WS session (possibly on a
                         // pod whose wall clock is slightly behind the previous pod
@@ -6425,6 +6527,7 @@ impl OverlayRuntime {
                             .collect();
                         self.control_ws_attached.store(true, std::sync::atomic::Ordering::Relaxed);
                         control_detached_at = None;
+                        cached_offline_deadline = None;
                         offline_continuity_expired = false;
                         post_join_retry = None;
                         post_join_retry_attempt = 0;
@@ -6453,6 +6556,10 @@ impl OverlayRuntime {
                         network.cidrs = new_network.cidrs.clone();
                         network.nameservers = new_network.nameservers.clone();
                         network.auth_revision = applied_auth_revision;
+                        network.network_id = new_network.network_id;
+                        network.offline_cap_keys = new_network.offline_cap_keys.clone();
+                        network.offline_caps_not_before_ms = new_network.offline_caps_not_before_ms;
+                        network.offline_max_age_s = new_network.offline_max_age_s;
                         if let Some(status) = &mut self.dns_status {
                             status.self_name = network.self_name.clone();
                             status.self_name_revision = network.self_name_revision.clone();
@@ -17060,6 +17167,7 @@ mod org_upgrade_tests {
                 network: Box::new(net.clone()),
                 peers: vec![peer_kept.clone(), peer_revoked.clone()],
                 learned_endpoints: std::collections::BTreeMap::new(),
+                remaining_ttl: None,
             })
             .await
             .unwrap();

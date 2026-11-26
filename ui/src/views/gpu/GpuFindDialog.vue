@@ -43,7 +43,7 @@
 
         <template v-if="picks.length">
           <v-list density="compact" class="mb-3 border rounded">
-            <v-list-item v-for="p in picks" :key="`${p.host}-${p.uuid}`">
+            <v-list-item v-for="p in picks" :key="`${p.agentId}-${p.uuid}`">
               <v-list-item-title class="text-mono text-body-2">
                 {{ p.host }} · #{{ p.idx }} · {{ p.name || 'GPU' }}
               </v-list-item-title>
@@ -53,17 +53,17 @@
             </v-list-item>
           </v-list>
 
-          <div v-for="ex in exports" :key="ex.host" class="mb-2">
+          <div v-for="ex in exports" :key="ex.agentId" class="mb-2">
             <div class="text-caption font-weight-medium mb-1">{{ ex.host }}</div>
             <div class="d-flex align-center ga-2 pa-2 rounded bg-surface-variant">
               <code class="text-caption flex-grow-1 text-break">{{ ex.cmd }}</code>
               <v-btn
                 size="x-small"
                 variant="tonal"
-                :prepend-icon="copiedHost === ex.host ? 'mdi-check' : 'mdi-content-copy'"
-                @click="copyCmd(ex.host, ex.cmd)"
+                :prepend-icon="copiedHost === ex.agentId ? 'mdi-check' : 'mdi-content-copy'"
+                @click="copyCmd(ex.agentId, ex.cmd)"
               >
-                {{ copiedHost === ex.host ? t('mh.gpu.find.copied') : t('mh.gpu.find.copy') }}
+                {{ copiedHost === ex.agentId ? t('mh.gpu.find.copied') : t('mh.gpu.find.copy') }}
               </v-btn>
             </div>
           </div>
@@ -80,7 +80,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { GpuHostView } from '@/api/gpu'
+import { isSafeCudaUuid, shellQuoteSingle, type GpuHostView } from '@/api/gpu'
 
 const props = defineProps<{
   modelValue: boolean
@@ -96,6 +96,7 @@ const sameHost = ref(true)
 const copiedHost = ref<string | null>(null)
 
 interface Pick {
+  agentId: string
   host: string
   idx: number
   uuid: string
@@ -107,20 +108,21 @@ interface Pick {
 const picks = computed<Pick[]>(() => {
   const minMb = Math.max(0, (minFreeGb.value || 0) * 1024)
   const want = Math.max(1, Math.floor(count.value || 1))
-  const byHost: Array<{ host: string; cards: Pick[] }> = []
+  const byHost: Array<{ agentId: string; host: string; cards: Pick[] }> = []
 
   for (const h of props.hosts) {
     if (!h.is_online || h.freshness === 'offline' || h.status !== 'ok') continue
     const label = h.display_name?.trim() || h.name
     const cards: Pick[] = []
     for (const g of h.gpus) {
-      if (g.state !== 'free' || g.lost) continue
+      if (g.state !== 'free' || g.lost || !isSafeCudaUuid(g.uuid)) continue
       const freeMb =
         g.mem_total_mb != null && g.mem_used_mb != null
           ? Math.max(0, g.mem_total_mb - g.mem_used_mb)
           : 0
       if (minMb > 0 && freeMb < minMb) continue
       cards.push({
+        agentId: h.agent_id,
         host: label,
         idx: g.idx,
         uuid: g.uuid,
@@ -130,7 +132,7 @@ const picks = computed<Pick[]>(() => {
       })
     }
     cards.sort((a, b) => a.idx - b.idx)
-    if (cards.length) byHost.push({ host: label, cards })
+    if (cards.length) byHost.push({ agentId: h.agent_id, host: label, cards })
   }
 
   if (sameHost.value) {
@@ -144,16 +146,25 @@ const picks = computed<Pick[]>(() => {
 })
 
 const exports = computed(() => {
-  const map = new Map<string, string[]>()
+  const nameToIds = new Map<string, Set<string>>()
+  const map = new Map<string, { host: string; uuids: string[] }>()
   for (const p of picks.value) {
-    const arr = map.get(p.host) ?? []
-    arr.push(p.uuid)
-    map.set(p.host, arr)
+    const ids = nameToIds.get(p.host) ?? new Set<string>()
+    ids.add(p.agentId)
+    nameToIds.set(p.host, ids)
+    const entry = map.get(p.agentId) ?? { host: p.host, uuids: [] }
+    entry.uuids.push(p.uuid)
+    map.set(p.agentId, entry)
   }
-  return Array.from(map.entries()).map(([host, uuids]) => ({
-    host,
-    cmd: `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${uuids.join(',')}`,
-  }))
+  return Array.from(map.entries()).map(([agentId, { host, uuids }]) => {
+    const ambiguous = (nameToIds.get(host)?.size ?? 0) > 1
+    const label = ambiguous ? `${host} (${agentId.slice(0, 8)})` : host
+    return {
+      agentId,
+      host: label,
+      cmd: `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(uuids.join(','))}`,
+    }
+  })
 })
 
 async function copyCmd(host: string, cmd: string) {

@@ -840,25 +840,31 @@ pub async fn gpu_users(
     }
     let range = query.range.as_deref().unwrap_or("24h");
     let entries = self_visible_gpu_agents(&state, fleet, &agent).await?;
-    let mut visible_map: HashMap<bson::oid::ObjectId, String> = HashMap::new();
+    let agents_only: Vec<meshharbor_remote_control::models::Agent> =
+        entries.iter().map(|(a, _, _)| a.clone()).collect();
+    let mut visible_map: HashMap<bson::oid::ObjectId, (bson::oid::ObjectId, String)> =
+        HashMap::new();
     for (a, _, _) in &entries {
         if let Some(id) = a.id {
             visible_map.insert(
                 id,
-                a.display_name
-                    .clone()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| a.name.clone()),
+                (
+                    a.tenant_id,
+                    a.display_name
+                        .clone()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| a.name.clone()),
+                ),
             );
         }
     }
     let ids: Vec<bson::oid::ObjectId> = visible_map.keys().copied().collect();
     let snaps = meshharbor_mod_fleet::gpu::load_snapshots(&fleet.core.db, &ids).await;
-    let live_reports: HashMap<bson::oid::ObjectId, meshharbor_remote_control::gpu::GpuReport> =
-        snaps.into_iter().map(|(k, v)| (k, v.report)).collect();
+    let live_reports =
+        meshharbor_mod_fleet::gpu::routes::filter_live_gpu_reports(fleet, &agents_only, snaps)
+            .await;
     let users = meshharbor_mod_fleet::gpu::history::query_users(
         &fleet.core.db,
-        agent.tenant_id,
         &visible_map,
         range,
         &live_reports,

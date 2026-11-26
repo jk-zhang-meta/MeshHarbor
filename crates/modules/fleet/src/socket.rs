@@ -1733,6 +1733,29 @@ async fn maybe_mint_exec_offline_cap(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    let mut cap_exp = now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS);
+    let mut max_timeout_ms = exec_limits::MAX_TIMEOUT_MS;
+    for check_aid in [origin_agent_id, target_id] {
+        match crate::device_invite::grant_for_agent(state, check_aid).await {
+            Ok(None) => {}
+            Ok(Some(grant)) => {
+                let until_secs = (grant.access_until.timestamp_millis().max(0) / 1000) as u64;
+                if until_secs <= now_secs {
+                    return None;
+                }
+                cap_exp = cap_exp.min(until_secs);
+                let rem_ms = until_secs.saturating_sub(now_secs).saturating_mul(1000);
+                max_timeout_ms = max_timeout_ms.min(rem_ms);
+            }
+            Err(_) => {
+                // Fail closed when temporary-invitation status cannot be confirmed.
+                return None;
+            }
+        }
+    }
+    if max_timeout_ms == 0 {
+        return None;
+    }
     let claims = OfflineCapClaims {
         aud: OFFLINE_CAP_AUDIENCE.to_string(),
         verb: VERB_EXEC.to_string(),
@@ -1744,13 +1767,13 @@ async fn maybe_mint_exec_offline_cap(
         caller: caller_display.to_string(),
         jti: bson::oid::ObjectId::new().to_hex(),
         iat: now_secs,
-        exp: now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS),
+        exp: cap_exp,
         ssh_account_mode: None,
         ssh_account: None,
         ssh_max_session_secs: None,
         exec_shells: Some(policy.shells),
         exec_run_as: Some(policy.run_as.wire().to_string()),
-        exec_max_timeout_ms: Some(exec_limits::MAX_TIMEOUT_MS),
+        exec_max_timeout_ms: Some(max_timeout_ms),
         consent_mode: Some(consent.to_string()),
     };
     match state.core.offline_cap.mint(&claims) {

@@ -513,39 +513,43 @@ async fn visible_tenant_and_shared_gpu_agents(
         }
     }
 
-    // Active received DeviceShareGrants pointing to live `gpu_server = true` devices.
+    // Active received DeviceShareGrants (`device_share_grants`) pointing to
+    // live `gpu_server = true` devices that pass the FULL device-share policy
+    // (approved/verified recipient, non-quarantined device, active unarchived
+    // org, admitted verified owner still a member, live matching grant).
     if meshharbor_core::device_share::require_enabled(&state.core).is_ok() {
         let now = DateTime::now();
-        if let Ok(mut cur) = state
-            .core
-            .db
-            .collection::<bson::Document>("device_shares")
+        let share_dao = meshharbor_services::dao::device_share::DeviceShareDao::new(&state.core.db);
+        if let Ok(mut cur) = share_dao
+            .base
+            .collection()
             .find(doc! {
                 "recipient_user_id": user_id,
                 "revoked_at": null,
+                "created_at": { "$lte": now },
                 "expires_at": { "$gt": now },
             })
             .await
         {
-            let mut shared_ids: Vec<ObjectId> = Vec::new();
-            while let Ok(Some(d)) = cur.try_next().await {
-                if let Ok(did) = d.get_object_id("device_id")
-                    && !seen.contains(&did)
-                {
-                    shared_ids.push(did);
+            let mut candidate_grants: Vec<(ObjectId, Option<ObjectId>)> = Vec::new();
+            let mut queued_devices: HashSet<ObjectId> = HashSet::new();
+            while let Ok(Some(grant)) = cur.try_next().await {
+                if !seen.contains(&grant.device_id) && queued_devices.insert(grant.device_id) {
+                    candidate_grants.push((grant.device_id, grant.id));
                 }
             }
-            if !shared_ids.is_empty()
-                && let Ok(shared_agents) = state.agents.base.find_by_ids(&shared_ids).await
-            {
-                for a in shared_agents {
-                    if a.deleted_at.is_none()
-                        && a.gpu_server
-                        && let Some(aid) = a.id
-                        && seen.insert(aid)
-                    {
-                        entries.push((a, "shared", true));
-                    }
+            for (device_id, grant_id) in candidate_grants {
+                if let Ok(access) = meshharbor_core::device_share::authorize_metadata_view(
+                    &state.core,
+                    user_id,
+                    device_id,
+                    grant_id,
+                )
+                .await
+                    && access.agent.gpu_server
+                    && seen.insert(device_id)
+                {
+                    entries.push((access.agent, "shared", true));
                 }
             }
         }
@@ -654,6 +658,30 @@ pub struct UsersQuery {
     pub range: Option<String>,
 }
 
+/// Keep only snapshots belonging to online agents whose snapshot freshness is
+/// not `Offline`, so disconnected GPU servers never show stale "live" VRAM.
+pub async fn filter_live_gpu_reports(
+    state: &FleetState,
+    agents: &[Agent],
+    snaps: HashMap<ObjectId, GpuSnapshotDoc>,
+) -> HashMap<ObjectId, meshharbor_remote_control::gpu::GpuReport> {
+    let fresh_presence = crate::agent::agent_presence_batch(state, agents).await;
+    let now_s = chrono::Utc::now().timestamp();
+    let mut live = HashMap::new();
+    for a in agents {
+        let Some(aid) = a.id else { continue };
+        let Some(snap) = snaps.get(&aid) else { continue };
+        let redis_fresh = fresh_presence.contains(&aid);
+        let (_, is_online) = crate::agent::derive_agent_presence(state, a, redis_fresh);
+        let recv_s = snap.received_at.timestamp_millis() / 1000;
+        let freshness = compute_freshness(is_online, Some(recv_s), now_s, snap.report.interval_ms);
+        if freshness != GpuFreshness::Offline {
+            live.insert(aid, snap.report.clone());
+        }
+    }
+    live
+}
+
 /// `GET /api/tenant/{tenant_id}/gpu/users?range=24h|7d|30d`
 pub async fn get_users(
     State(state): State<FleetState>,
@@ -666,26 +694,27 @@ pub async fn get_users(
     let range = query.range.as_deref().unwrap_or("24h");
 
     let entries = visible_tenant_and_shared_gpu_agents(&state, tid, auth.user_id).await?;
-    let mut visible_map: HashMap<ObjectId, String> = HashMap::new();
+    let agents_only: Vec<Agent> = entries.iter().map(|(a, _, _)| a.clone()).collect();
+    let mut visible_map: HashMap<ObjectId, (ObjectId, String)> = HashMap::new();
     for (a, _, _) in &entries {
         if let Some(id) = a.id {
             visible_map.insert(
                 id,
-                a.display_name
-                    .clone()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| a.name.clone()),
+                (
+                    a.tenant_id,
+                    a.display_name
+                        .clone()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| a.name.clone()),
+                ),
             );
         }
     }
     let ids: Vec<ObjectId> = visible_map.keys().copied().collect();
     let snaps = load_snapshots(&state.core.db, &ids).await;
-    let live_reports: HashMap<ObjectId, meshharbor_remote_control::gpu::GpuReport> = snaps
-        .into_iter()
-        .map(|(k, v)| (k, v.report))
-        .collect();
+    let live_reports = filter_live_gpu_reports(&state, &agents_only, snaps).await;
 
-    let users = history::query_users(&state.core.db, tid, &visible_map, range, &live_reports)
+    let users = history::query_users(&state.core.db, &visible_map, range, &live_reports)
         .await
         .map_err(|e| ApiError::Internal(format!("GPU users query failed: {e}")))?;
 
@@ -1020,7 +1049,7 @@ pub async fn test_channel(
         body_en: "This is a test alert from MeshHarbor GPU Servers.".into(),
         body_zh: "这是一条来自 MeshHarbor GPU 服务器的测试告警。".into(),
         users_summary: None,
-        link: "/gpu".into(),
+        link: format!("/tenant/{}/gpu", tid.to_hex()),
     };
     send_once(&ch, &[item])
         .await

@@ -36,7 +36,7 @@ pub async fn authorize(
 ) -> Result<SharedDeviceAccess, ApiError> {
     tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        authorize_inner(core, recipient, device, None, operation),
+        authorize_inner(core, recipient, device, None, Some(operation)),
     )
     .await
     .map_err(|_| ApiError::ServiceUnavailable("Device share authorization timed out".into()))?
@@ -57,8 +57,33 @@ pub async fn authorize_grant(
             // Match the missing-row DAO response without revealing grant existence.
             return Err(ApiError::NotFound("Resource not found".into()));
         }
-        authorize_inner(core, recipient, grant.device_id, Some(grant_id), operation).await
+        authorize_inner(
+            core,
+            recipient,
+            grant.device_id,
+            Some(grant_id),
+            Some(operation),
+        )
+        .await
     })
+    .await
+    .map_err(|_| ApiError::ServiceUnavailable("Device share authorization timed out".into()))?
+}
+/// Enforce the full device-share policy (enabled, approved/verified recipient,
+/// live non-quarantined device, active unarchived org, admitted verified owner
+/// still a member, live matching grant) without restricting to one operation.
+/// Used by read-only shared metadata & GPU fleet views so revoked/orphaned/
+/// quarantined/archived shares lose visibility immediately.
+pub async fn authorize_metadata_view(
+    core: &Core,
+    recipient: ObjectId,
+    device: ObjectId,
+    grant_id: Option<ObjectId>,
+) -> Result<SharedDeviceAccess, ApiError> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        authorize_inner(core, recipient, device, grant_id, None),
+    )
     .await
     .map_err(|_| ApiError::ServiceUnavailable("Device share authorization timed out".into()))?
 }
@@ -71,7 +96,7 @@ async fn authorize_inner(
     recipient: ObjectId,
     device: ObjectId,
     grant_id: Option<ObjectId>,
-    operation: DeviceShareOperation,
+    operation: Option<DeviceShareOperation>,
 ) -> Result<SharedDeviceAccess, ApiError> {
     require_enabled(core)?;
     let user = core.users.base.find_by_id(recipient).await?;
@@ -84,7 +109,7 @@ async fn authorize_inner(
     // This native shared-SSH path has no MFA challenge/proof. Reject required
     // MFA rather than treating an ordinary access JWT as second-factor proof.
     // Reached by metadata, WS upgrade and live lease PDP, including legacy files.
-    if operation == DeviceShareOperation::Ssh
+    if operation == Some(DeviceShareOperation::Ssh)
         && (user.is_mfa_enabled || tenant.settings.mfa_required)
     {
         return Err(ApiError::Forbidden(
@@ -119,7 +144,7 @@ async fn authorize_inner(
             && grant.owner_user_id == agent.owner_user_id
             && grant.tenant_id == agent.tenant_id
             && grant.live_at(now)
-            && grant.allows(operation)
+            && operation.is_none_or(|op| grant.allows(op))
         {
             return Ok(SharedDeviceAccess { grant, agent });
         }

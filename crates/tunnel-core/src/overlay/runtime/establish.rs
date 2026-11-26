@@ -317,9 +317,10 @@ pub(super) fn classify_inbound_lan_hint(
     };
     let ip = *sa.ip();
     if ip.is_loopback() {
-        return ctx
-            .public_sock
-            .is_some()
+        return (direct::loopback_direct_enabled()
+            && ctx.loopback_eligible
+            && !ctx.public_sock_pinned
+            && ctx.public_sock.is_some())
             .then_some((LanEgress::Wildcard, LanPathKind::Loopback));
     }
     if !direct::is_usable_lan_ipv4(ip) || ctx.all_self_ips().contains(&ip) {

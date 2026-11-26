@@ -190,14 +190,41 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
             .filter_map(|u| u.id.map(|id| (id, u.username)))
             .collect()
     };
+    let now = bson::DateTime::now();
+    // Enforce the full device-share policy for every live GPU grant so
+    // quarantined devices, archived orgs, removed owners, or unapproved
+    // recipients never see live GPU inventory/summaries on `ShareView`.
+    let mut authorized_gpu_grants: std::collections::HashSet<ObjectId> =
+        std::collections::HashSet::new();
+    for g in &grants {
+        if g.live_at(now)
+            && let Some(gid) = g.id
+            && agent_map
+                .get(&g.device_id)
+                .is_some_and(|a| a.deleted_at.is_none() && a.gpu_server)
+            && meshharbor_core::device_share::authorize_metadata_view(
+                core,
+                g.recipient_user_id,
+                g.device_id,
+                Some(gid),
+            )
+            .await
+            .is_ok()
+        {
+            authorized_gpu_grants.insert(gid);
+        }
+    }
     Ok(grants
         .into_iter()
         .map(|g| {
+            let gid = g.id;
             let (device, owner, recipient) = (g.device_id, g.owner_user_id, g.recipient_user_id);
             let mut view = ShareView::from(g);
             if let Some(a) = agent_map.get(&device) {
                 view.device_name = Some(a.name.clone());
-                if a.gpu_server {
+                // Only attach live GPU inventory & summary while the grant is
+                // live and passes the full device-share policy check.
+                if gid.is_some_and(|id| authorized_gpu_grants.contains(&id)) && a.gpu_server {
                     view.gpu_server = true;
                     view.gpu_inventory = a.gpu_inventory.clone();
                     view.gpu_summary = gpu_summaries.get(&device).cloned().or_else(|| {

@@ -33,7 +33,7 @@ use std::path::Path;
 use std::time::Duration;
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use std::io::Write as _;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -80,6 +80,16 @@ const DEVICE_INFO_CACHE_TTL: Duration = Duration::from_secs(15);
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 const MAX_OFFLINE_AUDIT_BYTES: u64 = 512 * 1024;
 
+/// Maximum concurrent p2pctl connections allowed from a single peer overlay IP
+/// before/after handshake so one peer cannot exhaust tasks.
+#[cfg(feature = "overlay-netstack")]
+const MAX_CONNS_PER_PEER: usize = 8;
+
+/// Maximum pre-capability refusal audit entries written per peer IP per minute
+/// so an unprivileged peer cannot fill the 512 KiB audit journal with noise.
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+const MAX_REFUSAL_AUDIT_PER_PEER_PER_MIN: usize = 10;
+
 /// Maximum persisted exec replay reservations per tenant before pruning oldest.
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 const MAX_REPLAY_ENTRIES: usize = 4096;
@@ -124,7 +134,7 @@ pub struct TenantDirectory {
     pub peers_by_ip: HashMap<Ipv4Addr, PeerEntry>,
     pub peers: Vec<PeerEntry>,
     pub socks_port: Option<u16>,
-    info_cache: HashMap<Ipv4Addr, (Instant, P2pDeviceInfo)>,
+    info_cache: HashMap<(Ipv4Addr, String), (Instant, P2pDeviceInfo)>,
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -263,17 +273,142 @@ struct ReplayRecord {
     req_id: String,
     req_digest: String,
     ts_ms: u64,
+    #[serde(default)]
+    exp_ms: u64,
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 type ReplayKey = (String, String, String);
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-type ReplayMap = HashMap<PathBuf, HashSet<ReplayKey>>;
+type ReplayMap = HashMap<PathBuf, HashMap<ReplayKey, u64>>;
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 fn replay_lock() -> &'static Mutex<ReplayMap> {
     static LOCK: OnceLock<Mutex<ReplayMap>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn audit_io_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn valid_wire_request_id(raw: &str) -> bool {
+    !raw.is_empty()
+        && raw.len() <= 64
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn truncate_utf8_to_bytes(s: &mut String, max_bytes: usize) -> bool {
+    if s.len() <= max_bytes {
+        return false;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    true
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn fit_exec_resp_to_frame(mut resp: P2pResp) -> P2pResp {
+    use meshharbor_remote_control::p2pctl::P2P_CTL_MAX_FRAME_BYTES;
+    const SAFE_BUDGET: usize = P2P_CTL_MAX_FRAME_BYTES - 512;
+    // Shrink stdout/stderr iteratively so JSON escaping overhead is also accounted for.
+    for _ in 0..8 {
+        let cur_len = match serde_json::to_vec(&resp) {
+            Ok(v) => v.len(),
+            Err(_) => break,
+        };
+        if cur_len <= SAFE_BUDGET {
+            break;
+        }
+        let excess = cur_len - SAFE_BUDGET + 256;
+        let P2pResp::Exec {
+            stdout,
+            stderr,
+            truncated,
+            ..
+        } = &mut resp
+        else {
+            break;
+        };
+        let total_out = stdout.len() + stderr.len();
+        if total_out == 0 {
+            break;
+        }
+        let trim_stdout = (excess * stdout.len()).div_ceil(total_out).min(stdout.len());
+        let trim_stderr = excess.saturating_sub(trim_stdout).min(stderr.len());
+        if trim_stdout > 0 {
+            let target = stdout.len().saturating_sub(trim_stdout);
+            truncate_utf8_to_bytes(stdout, target);
+            *truncated = true;
+        }
+        if trim_stderr > 0 {
+            let target = stderr.len().saturating_sub(trim_stderr);
+            truncate_utf8_to_bytes(stderr, target);
+            *truncated = true;
+        }
+    }
+    resp
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn compact_replay_journal(path: &Path, live: &HashMap<ReplayKey, u64>, now_ms: u64) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if ensure_private_dir(parent).is_err() {
+        return;
+    }
+    let tmp = path.with_extension(format!(
+        "jsonl.tmp.{}.{}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let Ok(mut f) = opts.open(&tmp) else {
+        return;
+    };
+    let mut ok = true;
+    for ((org, jti, req_id), &exp_ms) in live {
+        if exp_ms <= now_ms {
+            continue;
+        }
+        let rec = ReplayRecord {
+            org: org.clone(),
+            jti: jti.clone(),
+            req_id: req_id.clone(),
+            req_digest: String::new(),
+            ts_ms: now_ms,
+            exp_ms,
+        };
+        if let Ok(line) = serde_json::to_string(&rec)
+            && writeln!(f, "{line}").is_err()
+        {
+            ok = false;
+            break;
+        }
+    }
+    if ok && f.sync_all().is_ok() {
+        drop(f);
+        let _ = std::fs::rename(&tmp, path);
+    } else {
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -339,6 +474,7 @@ fn exec_request_digest(shell: &str, command: &str, timeout_ms: u64) -> String {
 /// `(org, jti, req_id)` was already reserved in this run or before a crash,
 /// preventing replay and crash-retry double execution.
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+#[allow(clippy::too_many_arguments)]
 fn reserve_offline_exec_once(
     config_path: &Path,
     tenant_id: &str,
@@ -346,25 +482,51 @@ fn reserve_offline_exec_once(
     jti: &str,
     req_id: &str,
     req_digest: &str,
+    cap_exp_ms: u64,
 ) -> Result<(), String> {
+    const FALLBACK_REPLAY_TTL_MS: u64 = 24 * 3600 * 1000;
     let path = replay_file_path(config_path, tenant_id)
         .ok_or_else(|| "cannot resolve offline exec replay journal path".to_string())?;
+    let now_ms = now_unix_ms();
+    let eff_exp_ms = cap_exp_ms.max(now_ms.saturating_add(60_000));
     let mut map = replay_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let set = map.entry(path.clone()).or_insert_with(|| {
-        let mut loaded = HashSet::new();
+    let mut loaded_had_expired = false;
+    let entries = map.entry(path.clone()).or_insert_with(|| {
+        let mut loaded = HashMap::new();
         if let Ok(raw) = std::fs::read_to_string(&path) {
             for line in raw.lines() {
                 if let Ok(rec) = serde_json::from_str::<ReplayRecord>(line) {
-                    loaded.insert((rec.org, rec.jti, rec.req_id));
+                    let rec_exp = if rec.exp_ms > 0 {
+                        rec.exp_ms
+                    } else {
+                        rec.ts_ms.saturating_add(FALLBACK_REPLAY_TTL_MS)
+                    };
+                    if rec_exp > now_ms {
+                        loaded.insert((rec.org, rec.jti, rec.req_id), rec_exp);
+                    } else {
+                        loaded_had_expired = true;
+                    }
                 }
             }
         }
         loaded
     });
+    let before = entries.len();
+    entries.retain(|_, exp| *exp > now_ms);
+    let pruned = loaded_had_expired || entries.len() < before;
+    if pruned {
+        compact_replay_journal(&path, entries, now_ms);
+    }
     let key = (org.to_string(), jti.to_string(), req_id.to_string());
-    if set.contains(&key) {
+    if entries.contains_key(&key) {
         return Err(
             "duplicate or replayed offline exec request_id — refused to prevent double execution"
+                .into(),
+        );
+    }
+    if entries.len() >= MAX_REPLAY_ENTRIES {
+        return Err(
+            "offline exec replay reservation table is full — retry after older capabilities expire"
                 .into(),
         );
     }
@@ -373,17 +535,14 @@ fn reserve_offline_exec_once(
         jti: jti.to_string(),
         req_id: req_id.to_string(),
         req_digest: req_digest.to_string(),
-        ts_ms: now_unix_ms(),
+        ts_ms: now_ms,
+        exp_ms: eff_exp_ms,
     };
     let line = serde_json::to_string(&rec).map_err(|e| format!("encode replay record: {e}"))?;
     let mut f = open_private_append(&path)?;
     writeln!(f, "{line}").map_err(|e| format!("write replay record: {e}"))?;
     f.sync_all().map_err(|e| format!("sync replay record: {e}"))?;
-    if set.len() >= MAX_REPLAY_ENTRIES {
-        // Bound memory while keeping the newest record inserted.
-        set.clear();
-    }
-    set.insert(key);
+    entries.insert(key, eff_exp_ms);
     Ok(())
 }
 
@@ -404,19 +563,44 @@ pub struct OfflineAuditEntry {
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-fn append_offline_audit(config_path: &Path, entry: &OfflineAuditEntry) {
+fn refusal_audit_rate_lock() -> &'static Mutex<HashMap<Ipv4Addr, (Instant, usize)>> {
+    static LOCK: OnceLock<Mutex<HashMap<Ipv4Addr, (Instant, usize)>>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn allow_refusal_audit(peer_ip: Ipv4Addr) -> bool {
+    let now = Instant::now();
+    let mut map = refusal_audit_rate_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.retain(|_, (since, _)| now.saturating_duration_since(*since) < Duration::from_secs(60));
+    let entry = map.entry(peer_ip).or_insert((now, 0));
+    if now.saturating_duration_since(entry.0) >= Duration::from_secs(60) {
+        *entry = (now, 0);
+    }
+    if entry.1 >= MAX_REFUSAL_AUDIT_PER_PEER_PER_MIN {
+        return false;
+    }
+    entry.1 += 1;
+    true
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn append_offline_audit(config_path: &Path, entry: &OfflineAuditEntry) -> Result<(), String> {
     let Some(path) = audit_file_path(config_path, &entry.tenant_id) else {
-        return;
+        return Err("cannot resolve offline audit journal path".into());
     };
+    let _guard = audit_io_lock().lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(meta) = std::fs::metadata(&path)
         && meta.len() >= MAX_OFFLINE_AUDIT_BYTES
     {
         warn!(
             tenant = %entry.tenant_id,
             path = %path.display(),
-            "p2pctl: offline audit journal reached 512 KiB cap; dropping oldest/overflow write"
+            "p2pctl: offline audit journal reached 512 KiB cap; refusing further writes until control-WS reconnect drains it"
         );
-        return;
+        return Err("offline audit journal reached 512 KiB capacity — reconnect control-WS to flush".into());
     }
     let mut redacted = entry.clone();
     redacted.detail = crate::exec::redactor()
@@ -424,49 +608,88 @@ fn append_offline_audit(config_path: &Path, entry: &OfflineAuditEntry) {
         .chars()
         .take(512)
         .collect();
-    let Ok(line) = serde_json::to_string(&redacted) else {
-        return;
-    };
-    match open_private_append(&path) {
-        Ok(mut f) => {
-            if let Err(e) = writeln!(f, "{line}").and_then(|()| f.sync_all()) {
-                warn!(tenant = %entry.tenant_id, %e, "p2pctl: failed to append offline audit entry");
-            }
-        }
-        Err(e) => warn!(tenant = %entry.tenant_id, %e, "p2pctl: failed to open offline audit journal"),
+    let line = serde_json::to_string(&redacted)
+        .map_err(|e| format!("encode offline audit entry: {e}"))?;
+    let mut f = open_private_append(&path)?;
+    writeln!(f, "{line}")
+        .and_then(|()| f.sync_all())
+        .map_err(|e| {
+            warn!(tenant = %entry.tenant_id, %e, "p2pctl: failed to append offline audit entry");
+            format!("write offline audit entry: {e}")
+        })?;
+    Ok(())
+}
+
+/// Best-effort audit helper for pre-cap refusals, rate-limited per peer IP so
+/// unprivileged peers cannot exhaust the 512 KiB audit journal.
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn append_refusal_audit_rate_limited(
+    config_path: &Path,
+    peer_ip: Ipv4Addr,
+    entry: &OfflineAuditEntry,
+) {
+    if allow_refusal_audit(peer_ip) {
+        let _ = append_offline_audit(config_path, entry);
     }
 }
 
-/// Drain and log any pending offline audit entries when the control-WS
-/// reconnects, removing the local journal file once drained.
+/// Atomically rotate and drain any pending offline audit journal segments when
+/// the control-WS reconnects so concurrent appends are never lost.
 pub fn drain_offline_audit_on_reconnect(config_path: &Path, tenant_id: &str) -> usize {
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     {
         let Some(path) = audit_file_path(config_path, tenant_id) else {
             return 0;
         };
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return 0;
+        let rotated = {
+            let _guard = audit_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+            let mut segments: Vec<PathBuf> = Vec::new();
+            let prefix = format!("offline-audit-{}.jsonl.draining.", sanitize_component(tenant_id));
+            if let Some(dir) = path.parent()
+                && let Ok(rd) = std::fs::read_dir(dir)
+            {
+                for ent in rd.flatten() {
+                    if let Some(name) = ent.file_name().to_str()
+                        && name.starts_with(&prefix)
+                    {
+                        segments.push(ent.path());
+                    }
+                }
+            }
+            let draining = path.with_extension(format!(
+                "jsonl.draining.{}.{}",
+                std::process::id(),
+                rand::random::<u32>()
+            ));
+            if std::fs::rename(&path, &draining).is_ok() {
+                segments.push(draining);
+            }
+            segments
         };
         let mut count = 0usize;
-        for line in raw.lines() {
-            if let Ok(entry) = serde_json::from_str::<OfflineAuditEntry>(line) {
-                info!(
-                    tenant = %entry.tenant_id,
-                    verb = %entry.verb,
-                    caller = %entry.caller,
-                    origin = %entry.origin_agent_id,
-                    cap_jti = %entry.cap_jti,
-                    request_id = %entry.request_id,
-                    allowed = entry.allowed,
-                    detail = %entry.detail,
-                    ts_ms = entry.ts_ms,
-                    "p2pctl: drained offline audit entry on reconnect"
-                );
-                count += 1;
+        for seg in rotated {
+            let Ok(raw) = std::fs::read_to_string(&seg) else {
+                continue;
+            };
+            for line in raw.lines() {
+                if let Ok(entry) = serde_json::from_str::<OfflineAuditEntry>(line) {
+                    info!(
+                        tenant = %entry.tenant_id,
+                        verb = %entry.verb,
+                        caller = %entry.caller,
+                        origin = %entry.origin_agent_id,
+                        cap_jti = %entry.cap_jti,
+                        request_id = %entry.request_id,
+                        allowed = entry.allowed,
+                        detail = %entry.detail,
+                        ts_ms = entry.ts_ms,
+                        "p2pctl: drained offline audit entry on reconnect"
+                    );
+                    count += 1;
+                }
             }
+            let _ = std::fs::remove_file(&seg);
         }
-        let _ = std::fs::remove_file(&path);
         count
     }
     #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
@@ -518,7 +741,7 @@ pub fn update_tenant_directory(
         .unwrap_or_default();
     let info_cache = prev_cache
         .into_iter()
-        .filter(|(ip, _)| by_ip.contains_key(ip))
+        .filter(|((ip, pk), _)| by_ip.get(ip).is_some_and(|p| p.wg_public_key == *pk))
         .collect();
     guard.insert(
         tenant_id.to_string(),
@@ -610,6 +833,23 @@ pub fn lookup_by_target(tenant_id: &str, target: &str) -> Option<PeerEntry> {
     })
 }
 
+/// Tenant self-name from the live/cached `PeerDirectory`, if known.
+pub fn tenant_self_name(tenant_id: &str) -> Option<String> {
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    {
+        let guard = peer_directory().lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(tenant_id)
+            .and_then(|d| d.network.self_name.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+    #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+    {
+        let _ = tenant_id;
+        None
+    }
+}
+
 /// Tenant ACL mode string from the live/cached `PeerDirectory`, if known.
 pub fn tenant_acl_mode(tenant_id: &str) -> Option<String> {
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -642,6 +882,10 @@ pub struct ServerCtx {
     pub net_override: Option<(String, OverlayNetworkInfo)>,
     /// Optional wall-clock override (Unix seconds) for deterministic unit tests.
     pub now_secs_override: Option<u64>,
+    /// Shared live control-WS attachment flag from `OverlayRuntime`. When `true`,
+    /// offline capabilities are refused so server-side revocations cannot be
+    /// bypassed while the target itself is online.
+    pub control_ws_attached: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -663,7 +907,22 @@ impl ServerCtx {
             peer_override: None,
             net_override: None,
             now_secs_override: None,
+            control_ws_attached: None,
         }
+    }
+
+    pub fn with_control_ws_attached(
+        mut self,
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.control_ws_attached = Some(flag);
+        self
+    }
+
+    fn is_control_ws_attached(&self) -> bool {
+        self.control_ws_attached
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn lookup_peer(&self, peer_ip: Ipv4Addr) -> Option<PeerEntry> {
@@ -697,6 +956,25 @@ pub async fn accept_loop(
     mut listener: tunnel_core::overlay::netstack::NsListener,
     ctx: ServerCtx,
 ) {
+    struct PeerConnGuard {
+        counts: Arc<Mutex<HashMap<Ipv4Addr, usize>>>,
+        peer_ip: Ipv4Addr,
+    }
+    impl Drop for PeerConnGuard {
+        fn drop(&mut self) {
+            let mut g = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(n) = g.get_mut(&self.peer_ip) {
+                if *n <= 1 {
+                    g.remove(&self.peer_ip);
+                } else {
+                    *n -= 1;
+                }
+            }
+        }
+    }
+
+    let per_peer_conns: Arc<Mutex<HashMap<Ipv4Addr, usize>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     info!(
         port = P2P_CTL_PORT,
         tenant = %ctx.tenant_id,
@@ -707,8 +985,27 @@ pub async fn accept_loop(
             std::net::IpAddr::V4(v4) => v4,
             std::net::IpAddr::V6(_) => continue,
         };
+        let admitted = {
+            let mut g = per_peer_conns.lock().unwrap_or_else(|e| e.into_inner());
+            let count = g.entry(peer_ip).or_insert(0);
+            if *count >= MAX_CONNS_PER_PEER {
+                false
+            } else {
+                *count += 1;
+                true
+            }
+        };
+        if !admitted {
+            debug!(%peer_ip, "p2pctl: per-peer concurrent connection cap reached — dropping");
+            continue;
+        }
+        let guard = PeerConnGuard {
+            counts: per_peer_conns.clone(),
+            peer_ip,
+        };
         let ctx = ctx.clone();
         tokio::spawn(async move {
+            let _conn_guard = guard;
             if let Err(e) = serve_conn(stream, peer_ip, ctx).await {
                 debug!(%peer_ip, err = %e, "p2pctl: connection closed");
             }
@@ -739,8 +1036,16 @@ fn parse_consent_mode(raw: Option<&str>) -> Option<ConsentMode> {
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-fn default_host_shell() -> &'static str {
-    if cfg!(windows) { "powershell" } else { "sh" }
+fn resolve_host_shell(requested: &str) -> String {
+    use meshharbor_remote_control::models::{ExecPolicy, OsKind};
+    let os = if cfg!(windows) {
+        OsKind::Windows
+    } else if cfg!(target_os = "macos") {
+        OsKind::Macos
+    } else {
+        OsKind::Linux
+    };
+    ExecPolicy::resolve_shell(requested, os)
 }
 
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
@@ -786,6 +1091,14 @@ fn handle_offline_ssh_grant(
         two_factor: tf,
     };
 
+    if ctx.is_control_ws_attached() {
+        return err_resp(
+            "target control-WS is online; use online SSH authorization instead of offline capability"
+                .into(),
+            None,
+        );
+    }
+
     let Some((self_ip, network)) = ctx.current_network() else {
         return err_resp("overlay network state unavailable".into(), None);
     };
@@ -808,8 +1121,9 @@ fn handle_offline_ssh_grant(
     ) {
         Ok(c) => c,
         Err(why) => {
-            append_offline_audit(
+            append_refusal_audit_rate_limited(
                 ctx.remote_cfg.config_path(),
+                peer.overlay_ip,
                 &OfflineAuditEntry {
                     ts_ms: now_unix_ms(),
                     tenant_id: ctx.tenant_id.clone(),
@@ -849,6 +1163,25 @@ fn handle_offline_ssh_grant(
     let expires_at_ms = now_unix_ms().saturating_add(OFFLINE_SSH_GRANT_REDEEM_MS);
     let consent_mode = parse_consent_mode(claims.consent_mode.as_deref());
 
+    // Fail closed if the offline audit journal is full or unwritable BEFORE
+    // admitting an SSH grant into the daemon.
+    if let Err(why) = append_offline_audit(
+        ctx.remote_cfg.config_path(),
+        &OfflineAuditEntry {
+            ts_ms: now_unix_ms(),
+            tenant_id: ctx.tenant_id.clone(),
+            verb: "ssh_grant".into(),
+            caller: claims.caller.clone(),
+            origin_agent_id: claims.org.clone(),
+            cap_jti: claims.jti.clone(),
+            request_id: request_id.to_string(),
+            allowed: true,
+            detail: format!("admitting grant_id={grant_id} session_secs={session_secs}"),
+        },
+    ) {
+        return err_resp(why, None);
+    }
+
     let outcome = crate::ssh::admit_grant(
         &ctx.cfg,
         crate::ssh::SshGrantAdmitInput {
@@ -869,20 +1202,6 @@ fn handle_offline_ssh_grant(
 
     match outcome {
         crate::ssh::SshGrantAdmitOutcome::Recorded => {
-            append_offline_audit(
-                ctx.remote_cfg.config_path(),
-                &OfflineAuditEntry {
-                    ts_ms: now_unix_ms(),
-                    tenant_id: ctx.tenant_id.clone(),
-                    verb: "ssh_grant".into(),
-                    caller: claims.caller,
-                    origin_agent_id: claims.org,
-                    cap_jti: claims.jti,
-                    request_id: request_id.to_string(),
-                    allowed: true,
-                    detail: format!("grant_id={grant_id} session_secs={session_secs}"),
-                },
-            );
             let host_pk = crate::ssh::host_public_key(&ctx.cfg);
             P2pResp::SshGrant {
                 address: Some(self_ip),
@@ -898,7 +1217,7 @@ fn handle_offline_ssh_grant(
             let reason = r.deny_reason();
             let tf = reason.two_factor().map(str::to_string);
             let msg = reason.message().to_string();
-            append_offline_audit(
+            let _ = append_offline_audit(
                 ctx.remote_cfg.config_path(),
                 &OfflineAuditEntry {
                     ts_ms: now_unix_ms(),
@@ -946,6 +1265,13 @@ async fn handle_offline_exec(
         error: Some(msg),
     };
 
+    if ctx.is_control_ws_attached() {
+        return err_resp(
+            "target control-WS is online; use online exec authorization instead of offline capability"
+                .into(),
+        );
+    }
+
     let Some((_self_ip, network)) = ctx.current_network() else {
         return err_resp("overlay network state unavailable".into());
     };
@@ -968,8 +1294,9 @@ async fn handle_offline_exec(
     ) {
         Ok(c) => c,
         Err(why) => {
-            append_offline_audit(
+            append_refusal_audit_rate_limited(
                 ctx.remote_cfg.config_path(),
+                peer.overlay_ip,
                 &OfflineAuditEntry {
                     ts_ms: now_unix_ms(),
                     tenant_id: ctx.tenant_id.clone(),
@@ -986,12 +1313,13 @@ async fn handle_offline_exec(
         }
     };
 
-    // Enforce exec shell allowlist ceiling from capability claims.
-    let effective_shell = if shell.trim().is_empty() || shell.eq_ignore_ascii_case("auto") {
-        default_host_shell().to_string()
-    } else {
-        shell.trim().to_string()
-    };
+    if !valid_wire_request_id(&request_id) {
+        return err_resp("invalid request_id format".into());
+    }
+
+    // Enforce exec shell allowlist ceiling from capability claims using the
+    // exact same `ExecPolicy::resolve_shell` mapping as online exec.
+    let effective_shell = resolve_host_shell(&shell);
     if let Some(ref allowed_shells) = claims.exec_shells
         && !allowed_shells.is_empty()
         && !allowed_shells
@@ -1002,7 +1330,7 @@ async fn handle_offline_exec(
             "shell {:?} is not permitted by this offline capability (allowed: {:?})",
             effective_shell, allowed_shells
         );
-        append_offline_audit(
+        let _ = append_offline_audit(
             ctx.remote_cfg.config_path(),
             &OfflineAuditEntry {
                 ts_ms: now_unix_ms(),
@@ -1032,13 +1360,47 @@ async fn handle_offline_exec(
         }
     };
 
+    // Atomic persisted replay/crash-retry reservation BEFORE any consent-prompt
+    // or indicator side effect so a duplicate `request_id` can never rewrite or
+    // interfere with an active prompt.
+    let digest = exec_request_digest(&effective_shell, &command, clamped_timeout);
+    if let Err(why) = reserve_offline_exec_once(
+        ctx.remote_cfg.config_path(),
+        &ctx.tenant_id,
+        &claims.org,
+        &claims.jti,
+        &request_id,
+        &digest,
+        claims.exp.saturating_mul(1000),
+    ) {
+        let _ = append_offline_audit(
+            ctx.remote_cfg.config_path(),
+            &OfflineAuditEntry {
+                ts_ms: now_unix_ms(),
+                tenant_id: ctx.tenant_id.clone(),
+                verb: "exec".into(),
+                caller: claims.caller,
+                origin_agent_id: claims.org,
+                cap_jti: claims.jti,
+                request_id,
+                allowed: false,
+                detail: why.clone(),
+            },
+        );
+        return err_resp(why);
+    }
+
+    // Never pass peer-supplied `request_id` into consent broker filenames: use
+    // a freshly generated target-local identifier for consent/indicator state.
+    let local_consent_id = format!("p2p-{}", bson::oid::ObjectId::new().to_hex());
+
     let admitted = match crate::exec::admit(
         crate::exec::ExecAdmitInput {
-            request_id: request_id.clone(),
+            request_id: local_consent_id.clone(),
             shell: effective_shell.clone(),
             command: command.clone(),
             timeout_ms: clamped_timeout,
-            max_output_bytes: 0,
+            max_output_bytes: 40 * 1024,
             cwd: None,
             caller: claims.caller.clone(),
             consent_mode: parse_consent_mode(claims.consent_mode.as_deref()),
@@ -1056,7 +1418,7 @@ async fn handle_offline_exec(
     ) {
         Ok(a) => a,
         Err(why) => {
-            append_offline_audit(
+            let _ = append_offline_audit(
                 ctx.remote_cfg.config_path(),
                 &OfflineAuditEntry {
                     ts_ms: now_unix_ms(),
@@ -1074,18 +1436,13 @@ async fn handle_offline_exec(
         }
     };
 
-    // Atomic persisted replay/crash-retry reservation BEFORE launching command.
-    let digest = exec_request_digest(&effective_shell, &command, clamped_timeout);
-    if let Err(why) = reserve_offline_exec_once(
-        ctx.remote_cfg.config_path(),
-        &ctx.tenant_id,
-        &claims.org,
-        &claims.jti,
-        &request_id,
-        &digest,
-    ) {
-        indicator.hide_prompt(&request_id);
-        append_offline_audit(
+    let decision = consent_broker
+        .request_with_mode(&local_consent_id, admitted.consent_mode)
+        .await;
+    indicator.hide_prompt(&local_consent_id);
+    if !decision.granted() {
+        let why = format!("the operator at this device did not approve the command ({decision:?})");
+        let _ = append_offline_audit(
             ctx.remote_cfg.config_path(),
             &OfflineAuditEntry {
                 ts_ms: now_unix_ms(),
@@ -1102,33 +1459,29 @@ async fn handle_offline_exec(
         return err_resp(why);
     }
 
-    let decision = consent_broker
-        .request_with_mode(&request_id, admitted.consent_mode)
-        .await;
-    indicator.hide_prompt(&request_id);
-    if !decision.granted() {
-        let why = format!("the operator at this device did not approve the command ({decision:?})");
-        append_offline_audit(
-            ctx.remote_cfg.config_path(),
-            &OfflineAuditEntry {
-                ts_ms: now_unix_ms(),
-                tenant_id: ctx.tenant_id.clone(),
-                verb: "exec".into(),
-                caller: claims.caller,
-                origin_agent_id: claims.org,
-                cap_jti: claims.jti,
-                request_id,
-                allowed: false,
-                detail: why.clone(),
-            },
-        );
+    // Fail closed if we cannot persist the pre-execution audit record (e.g.
+    // journal full at 512 KiB or disk unwritable).
+    if let Err(why) = append_offline_audit(
+        ctx.remote_cfg.config_path(),
+        &OfflineAuditEntry {
+            ts_ms: now_unix_ms(),
+            tenant_id: ctx.tenant_id.clone(),
+            verb: "exec".into(),
+            caller: claims.caller.clone(),
+            origin_agent_id: claims.org.clone(),
+            cap_jti: claims.jti.clone(),
+            request_id: request_id.clone(),
+            allowed: true,
+            detail: format!("launching shell={} cmd={}", effective_shell, command),
+        },
+    ) {
         return err_resp(why);
     }
 
     let outcome = crate::exec::shared()
         .run(admitted.req, &crate::exec::redactor())
         .await;
-    append_offline_audit(
+    let _ = append_offline_audit(
         ctx.remote_cfg.config_path(),
         &OfflineAuditEntry {
             ts_ms: now_unix_ms(),
@@ -1145,14 +1498,14 @@ async fn handle_offline_exec(
             ),
         },
     );
-    P2pResp::Exec {
+    fit_exec_resp_to_frame(P2pResp::Exec {
         exit_code: outcome.exit_code,
         stdout: outcome.stdout,
         stderr: outcome.stderr,
         truncated: outcome.truncated,
         duration_ms: outcome.duration_ms,
         error: outcome.error,
-    }
+    })
 }
 
 /// Serve one `p2pctl` connection after `SplitTun` accepted it.
@@ -1533,7 +1886,8 @@ pub async fn query_device_info(
             if !peer.supports_p2pctl || peer.backbone_only {
                 return None;
             }
-            if let Some((at, info)) = dir.info_cache.get(&peer_ip)
+            let cache_key = (peer_ip, peer.wg_public_key.clone());
+            if let Some((at, info)) = dir.info_cache.get(&cache_key)
                 && at.elapsed() < DEVICE_INFO_CACHE_TTL
             {
                 return Some(info.clone());
@@ -1561,8 +1915,14 @@ pub async fn query_device_info(
         {
             Ok(P2pResp::DeviceInfo(info)) => {
                 let mut guard = peer_directory().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(dir) = guard.get_mut(tenant_id) {
-                    dir.info_cache.insert(peer_ip, (Instant::now(), info.clone()));
+                if let Some(dir) = guard.get_mut(tenant_id)
+                    && dir
+                        .peers_by_ip
+                        .get(&peer_ip)
+                        .is_some_and(|cur| cur.wg_public_key == peer.wg_public_key)
+                {
+                    dir.info_cache
+                        .insert((peer_ip, peer.wg_public_key.clone()), (Instant::now(), info.clone()));
                 }
                 Some(info)
             }
@@ -1895,6 +2255,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mint_cap(
         signer: &OfflineCapSigner,
         verb: &str,
@@ -2515,9 +2876,49 @@ mod tests {
             }
         }
 
-        // 4. Offline audit journal recorded all 3 attempts and drains cleanly on reconnect!
+        // 4. Online target control-WS MUST refuse offline_cap exec so server-side
+        // revocations cannot be bypassed while the target is online.
+        {
+            let online_ctx = ctx
+                .clone()
+                .with_control_ws_attached(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+            let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+            let srv = tokio::spawn(serve_conn(server_io, origin_ip, online_ctx));
+            let resp = exchange_on_stream(
+                client_io,
+                tid,
+                &origin_kp,
+                &target_kp.public_base64(),
+                &target_kp.public.to_bytes(),
+                P2pReq::Exec {
+                    offline_cap: cap.clone(),
+                    request_id: "req-online-block".into(),
+                    shell: "sh".into(),
+                    command: "echo should_not_run".into(),
+                    timeout_ms: 5_000,
+                    two_factor_code: None,
+                },
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+            srv.await.unwrap().unwrap();
+            match resp {
+                P2pResp::Exec { error, .. } => {
+                    assert!(
+                        error.unwrap_or_default().contains("control-WS is online"),
+                        "online target must refuse offline_cap"
+                    );
+                }
+                other => panic!("expected online-refused Exec error, got {other:?}"),
+            }
+        }
+
+        // 5. Offline audit journal recorded all 4 entries (1 shell refusal,
+        // 1 pre-exec launch record, 1 completion record, 1 replay refusal) and
+        // drains cleanly on reconnect.
         let drained = drain_offline_audit_on_reconnect(&cfg_path, tid);
-        assert_eq!(drained, 3);
+        assert_eq!(drained, 4);
         assert_eq!(drain_offline_audit_on_reconnect(&cfg_path, tid), 0);
     }
 }

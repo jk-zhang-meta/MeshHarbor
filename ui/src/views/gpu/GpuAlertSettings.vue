@@ -91,13 +91,13 @@
             <tbody>
               <tr v-for="ch in gpuStore.channels" :key="ch.id">
                 <td>
-                  <div class="font-weight-medium">{{ ch.name }}</div>
+                  <div class="font-weight-medium">{{ ch.label }}</div>
                   <v-chip v-if="ch.last_error" size="x-small" color="error" variant="tonal" class="mt-1">
                     {{ ch.last_error }}
                   </v-chip>
                 </td>
                 <td><v-chip size="x-small" variant="tonal">{{ ch.kind }}</v-chip></td>
-                <td class="text-caption text-mono">{{ ch.masked_url }}</td>
+                <td class="text-caption text-mono">{{ ch.webhook_masked }}</td>
                 <td>
                   <v-switch
                     :model-value="ch.enabled"
@@ -150,14 +150,14 @@
           class="mb-2"
         />
         <v-text-field
-          v-model="chForm.name"
+          v-model="chForm.label"
           density="compact"
           variant="outlined"
           :label="t('mh.gpu.bots.col.name')"
           class="mb-2"
         />
         <v-text-field
-          v-model="chForm.url"
+          v-model="chForm.webhook_url"
           density="compact"
           variant="outlined"
           :label="t('mh.gpu.bots.webhookUrl')"
@@ -165,20 +165,12 @@
           class="mb-2"
         />
         <v-text-field
-          v-if="chForm.kind === 'feishu' || chForm.kind === 'dingtalk'"
+          v-if="chForm.kind === 'feishu' || chForm.kind === 'dingtalk' || chForm.kind === 'webhook'"
           v-model="chForm.secret"
           type="password"
           density="compact"
           variant="outlined"
           :label="t('mh.gpu.bots.secret')"
-          class="mb-2"
-        />
-        <v-text-field
-          v-if="chForm.kind === 'telegram'"
-          v-model="chForm.chat_id"
-          density="compact"
-          variant="outlined"
-          :label="t('mh.gpu.bots.chatId')"
           class="mb-2"
         />
         <v-checkbox
@@ -220,7 +212,7 @@ const gpuStore = useGpuStore()
 
 const ruleForm = reactive({
   enabled: false,
-  free_gpus_min: 1 as number | null,
+  free_gpus_min: null as number | null,
   free_min_mem_gb: null as number | null,
   held_idle_alert: true,
   fault_alert: true,
@@ -241,17 +233,14 @@ const providerChoices: Array<{ value: GpuBotKind; title: string }> = [
   { value: 'feishu', title: 'Feishu / Lark (飞书)' },
   { value: 'dingtalk', title: 'DingTalk (钉钉)' },
   { value: 'wecom', title: 'WeCom (企业微信)' },
-  { value: 'slack', title: 'Slack' },
-  { value: 'discord', title: 'Discord' },
-  { value: 'telegram', title: 'Telegram' },
-  { value: 'generic', title: 'Generic HTTPS Webhook' },
+  { value: 'webhook', title: 'Generic HTTPS Webhook' },
 ]
 
 watch(
   () => gpuStore.alertRule,
   (r) => {
     ruleForm.enabled = r.enabled
-    ruleForm.free_gpus_min = r.free_gpus_min ?? 1
+    ruleForm.free_gpus_min = r.free_gpus_min ?? null
     ruleForm.free_min_mem_gb = r.free_min_mem_gb ?? null
     ruleForm.held_idle_alert = r.held_idle_alert
     ruleForm.fault_alert = r.fault_alert
@@ -266,10 +255,18 @@ async function saveRules() {
   ruleSaved.value = false
   ruleError.value = null
   try {
+    const freeMin =
+      typeof ruleForm.free_gpus_min === 'number' && Number.isFinite(ruleForm.free_gpus_min) && ruleForm.free_gpus_min > 0
+        ? Math.floor(ruleForm.free_gpus_min)
+        : null
+    const minMemGb =
+      typeof ruleForm.free_min_mem_gb === 'number' && Number.isFinite(ruleForm.free_min_mem_gb) && ruleForm.free_min_mem_gb > 0
+        ? Math.floor(ruleForm.free_min_mem_gb)
+        : null
     await gpuStore.updateAlertRule(props.tenantId, {
       enabled: ruleForm.enabled,
-      free_gpus_min: ruleForm.free_gpus_min || null,
-      free_min_mem_gb: ruleForm.free_min_mem_gb || null,
+      free_gpus_min: freeMin,
+      free_min_mem_gb: minMemGb,
       held_idle_alert: ruleForm.held_idle_alert,
       fault_alert: ruleForm.fault_alert,
       machine_alert: ruleForm.machine_alert,
@@ -291,10 +288,9 @@ const botFeedback = ref<{ ok: boolean; msg: string } | null>(null)
 
 const chForm = reactive({
   kind: 'feishu' as GpuBotKind,
-  name: '',
-  url: '',
+  label: '',
+  webhook_url: '',
   secret: '',
-  chat_id: '',
   include_users: false,
   lang: 'zh',
 })
@@ -302,10 +298,9 @@ const chForm = reactive({
 function openAddChannel() {
   addError.value = null
   chForm.kind = 'feishu'
-  chForm.name = ''
-  chForm.url = ''
+  chForm.label = ''
+  chForm.webhook_url = ''
   chForm.secret = ''
-  chForm.chat_id = ''
   chForm.include_users = false
   chForm.lang = 'zh'
   addOpen.value = true
@@ -317,12 +312,12 @@ async function submitAdd() {
   try {
     await gpuStore.addChannel(props.tenantId, {
       kind: chForm.kind,
-      name: chForm.name.trim(),
-      url: chForm.url.trim(),
+      label: chForm.label.trim(),
+      webhook_url: chForm.webhook_url.trim(),
       secret: chForm.secret.trim() || undefined,
-      chat_id: chForm.chat_id.trim() || undefined,
       include_users: chForm.include_users,
       lang: chForm.lang,
+      enabled: true,
     })
     addOpen.value = false
   } catch (e) {
@@ -346,7 +341,7 @@ async function testChannel(ch: GpuAlertChannel) {
   try {
     const res = await gpuStore.sendTestChannel(props.tenantId, ch.id)
     botFeedback.value = res.ok
-      ? { ok: true, msg: t('mh.gpu.bots.testOk', { name: ch.name }) }
+      ? { ok: true, msg: t('mh.gpu.bots.testOk', { name: ch.label }) }
       : { ok: false, msg: res.error || t('mh.gpu.bots.testFail') }
   } catch (e) {
     botFeedback.value = { ok: false, msg: (e as Error).message }

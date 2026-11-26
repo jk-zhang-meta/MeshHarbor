@@ -5294,7 +5294,7 @@
           {
             "op": "drop_index_if_present",
             "index": "network_id_1",
-            "why": "multi-block schema \u2014 one-block-per-network guard removed"
+            "why": "multi-block schema — one-block-per-network guard removed"
           }
         ],
         "indexes": [

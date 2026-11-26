@@ -44,7 +44,7 @@ export const useGpuStore = defineStore('gpu', () => {
 
   const alertRule = ref<GpuAlertRule>({
     enabled: false,
-    free_gpus_min: 1,
+    free_gpus_min: null,
     free_min_mem_gb: null,
     held_idle_alert: true,
     fault_alert: true,

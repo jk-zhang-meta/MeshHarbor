@@ -1212,6 +1212,8 @@ pub async fn run(
                         prior_auth_failures = auth_failures,
                         "auth recovered; clearing attention sentinel"
                     );
+                    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+                    crate::overlay_cache::unsuspend_cache(remote_cfg.config_path(), &cfg.tenant_id);
                     // Multi-org P1: sentinels are primary-owned (no per-org
                     // files) — a secondary's recovery must not clear one.
                     if ctx.is_primary {
@@ -1221,10 +1223,14 @@ pub async fn run(
                 }
             }
             Err(ConnectError::AuthRejected) => {
-                // FR-139 — suspend cold-boot cache seeding in memory without
-                // deleting the cache file while the server refuses our token.
+                // FR-139 — persist auth-suspension marker without deleting the
+                // cache file AND stop any already-seeded overlay runtime + clear
+                // its p2pctl directory while the server refuses our token.
                 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-                crate::overlay_cache::suspend_cache(&cfg.tenant_id);
+                {
+                    crate::overlay_cache::suspend_cache(remote_cfg.config_path(), &cfg.tenant_id);
+                    crate::overlay::drop_runtime_slot(&cfg.tenant_id);
+                }
                 // FR-130 — a refused token: the device's credential is gone,
                 // so the sessions it kept go with it.
                 table.close_all("token_refused").await;
@@ -2282,10 +2288,10 @@ async fn connect_once(
         crate::hive::on_connected(outbound_tx.clone());
     }
     let _sink_guard = tunnel_hub.publish_sink(outbound_tx.clone());
-    // FR-139 — register this org's WS with the host-wide GPU supervisor so it
-    // receives static `rc:agent.gpu_inventory` and leased `rc:agent.gpu_report`
-    // frames; drops automatically when the socket closes.
-    let _gpu_guard = (!ctx.unenrolled)
+    // FR-139 — GPU telemetry & host-load reporting belong strictly to the
+    // primary organization (data is host-global; secondary orgs must neither
+    // read host Linux usernames/processes nor inject desktop tray alerts).
+    let _gpu_guard = (ctx.is_primary && !ctx.unenrolled)
         .then(|| remote_cfg.gpu().register_org_guard(&cfg.tenant_id, outbound_tx.clone()));
     // FR-43 P2b — point the delegation channel at THIS connection's outbound
     // queue, so a worker's `SdpAnswer` / `Ice` reach the server.
@@ -5750,18 +5756,26 @@ async fn handle_server_msg(
         ServerMsg::AgentResumeWindow { secs } => {
             peers.set_window(secs);
         }
-        // FR-139 — GPU telemetry lease & owner desktop alert fan-in.
+        // FR-139 — GPU telemetry lease & owner desktop alert fan-in (primary org only).
         ServerMsg::GpuLease {
             interval_ms,
             ttl_ms,
             standing,
         } => {
-            remote_cfg
-                .gpu()
-                .apply_lease(&agent_cfg.tenant_id, interval_ms, ttl_ms, standing);
+            if ctx.is_primary {
+                remote_cfg
+                    .gpu()
+                    .apply_lease(&agent_cfg.tenant_id, interval_ms, ttl_ms, standing);
+            } else {
+                debug!("ignoring rc:gpu.lease from secondary organization");
+            }
         }
         ServerMsg::GpuAlert { alert } => {
-            remote_cfg.gpu().record_alert(*alert);
+            if ctx.is_primary {
+                remote_cfg.gpu().record_alert(*alert);
+            } else {
+                debug!("ignoring rc:gpu.alert from secondary organization");
+            }
         }
         // FR-130 — the server accepted a kept session's claim: it goes on
         // under its own id, every sender it holds pointed at this connection.
@@ -8505,17 +8519,19 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool, entry_eligible: bool) -> Age
             .wire()
             .to_owned(),
     );
-    // FR-139 — GPU telemetry & desktop-companion alert verbs.
-    caps.rpc.push(
-        meshharbor_remote_control::models::RpcCap::Gpu
-            .wire()
-            .to_owned(),
-    );
-    caps.rpc.push(
-        meshharbor_remote_control::models::RpcCap::GpuAlerts
-            .wire()
-            .to_owned(),
-    );
+    // FR-139 — GPU telemetry & desktop-companion alert verbs (primary org only).
+    if is_primary {
+        caps.rpc.push(
+            meshharbor_remote_control::models::RpcCap::Gpu
+                .wire()
+                .to_owned(),
+        );
+        caps.rpc.push(
+            meshharbor_remote_control::models::RpcCap::GpuAlerts
+                .wire()
+                .to_owned(),
+        );
+    }
     caps.two_factor = meshharbor_node_core::two_factor::active();
     // FR-138 — report whether the OS IPv4/IPv6 default route currently sits on a VPN/virtual
     // interface so the server holds last_clean_zone_id instead of following the VPN exit.
