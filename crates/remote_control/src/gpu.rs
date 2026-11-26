@@ -205,6 +205,13 @@ pub struct GpuSample {
     /// Unix seconds since util stayed continuously below 5%.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_since: Option<i64>,
+    /// Optional backend-reported idle firmware memory floor (MiB) for
+    /// accelerators that reserve baseline HBM even with zero running processes
+    /// (e.g. Huawei Ascend 910B reserves ~3.4 GiB out of 64 GiB). Server caps
+    /// this to <= 12.5% of total memory and applies it only when `procs_state == Ok`,
+    /// zero processes are running, and utilization is below `idle_util_pct`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_mem_floor_mb: Option<u32>,
     #[serde(default)]
     pub procs_state: ProcsState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -334,10 +341,33 @@ pub fn classify_gpu_state(
     let Some(mem_used) = sample.mem_used_mb else {
         return GpuState::Unknown;
     };
-    let procs_empty = sample.procs.as_ref().is_none_or(|p| p.is_empty());
+    let procs_slice = sample.procs.as_deref().unwrap_or(&[]);
+    let procs_empty = procs_slice.is_empty();
     let has_procs = !procs_empty;
 
-    if mem_used > t.free_mem_max_mb {
+    // Effective free-memory ceiling: default 1 GiB, or for accelerators with
+    // verified idle firmware HBM reservation (e.g. Huawei Ascend 910B ~3.4 GiB
+    // out of 64 GiB), allow up to the backend-declared floor capped at 12.5% of
+    // total memory — strictly when process listing succeeded with ZERO processes
+    // and utilization is below `idle_util_pct`.
+    let effective_free_max_mb = if sample.procs_state == ProcsState::Ok
+        && procs_empty
+        && sample.util_pct.is_some_and(|u| u < t.idle_util_pct)
+    {
+        if let Some(floor) = sample.free_mem_floor_mb {
+            let cap = sample
+                .mem_total_mb
+                .map(|tot| (tot / 8).min(8192))
+                .unwrap_or(4096);
+            t.free_mem_max_mb.max(floor.min(cap))
+        } else {
+            t.free_mem_max_mb
+        }
+    } else {
+        t.free_mem_max_mb
+    };
+
+    if mem_used > effective_free_max_mb {
         if sample.procs_state == ProcsState::Ok && procs_empty {
             return GpuState::Unattributed;
         }
@@ -350,12 +380,23 @@ pub fn classify_gpu_state(
         return GpuState::Busy;
     }
 
-    // Memory <= threshold (1 GiB): free ONLY when no processes are present and
-    // either procs are visible (`Ok`/`Partial`) or unsupported (Apple unified /
-    // when utilization is also low). If `procs_state == Off`, we cannot claim
-    // "no processes" unless utilization is 0/low, so check `has_procs` first.
+    // Memory <= free ceiling: free when no compute/blocking processes are
+    // present. Ignore benign idle display-compositor graphics processes
+    // (e.g. Xorg / gdm holding ~4 MiB VRAM with 0% utilization and zero compute
+    // processes) so idle desktop-attached training cards classify as Free.
     if has_procs {
-        return GpuState::Busy;
+        let only_idle_graphics = procs_slice
+            .iter()
+            .all(|p| p.kind.as_deref() == Some("graphics"))
+            && procs_slice
+                .iter()
+                .map(|p| u64::from(p.mem_mb.unwrap_or(0)))
+                .sum::<u64>()
+                <= u64::from(t.free_mem_max_mb)
+            && sample.util_pct.is_none_or(|u| u < t.idle_util_pct);
+        if !only_idle_graphics {
+            return GpuState::Busy;
+        }
     }
     if sample.procs_state == ProcsState::Off || sample.procs_state == ProcsState::Unsupported {
         // Without process list, only mark Free if util is known and < idle_util_pct.
@@ -463,6 +504,63 @@ mod tests {
         assert_eq!(
             classify_gpu_state(GpuHostStatus::Limited, &s_free, now, t),
             GpuState::Unknown
+        );
+
+        // Benign idle Xorg/gdm graphics process (4 MiB, 0% util, no compute) -> Free
+        let s_xorg_idle = GpuSample {
+            uuid: "GPU-xorg".into(),
+            mem_used_mb: Some(4),
+            mem_total_mb: Some(49_140),
+            util_pct: Some(0),
+            procs_state: ProcsState::Ok,
+            procs: Some(vec![GpuProc {
+                pid: 5648,
+                user: Some("gdm".into()),
+                name: Some("Xorg".into()),
+                mem_mb: Some(4),
+                kind: Some("graphics".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_xorg_idle, now, t), GpuState::Free);
+
+        // Low-VRAM compute process (even 200 MiB, 0% util) -> Busy (NOT Free)
+        let s_small_compute = GpuSample {
+            procs: Some(vec![GpuProc {
+                pid: 777,
+                user: Some("alice".into()),
+                name: Some("python".into()),
+                mem_mb: Some(200),
+                kind: Some("compute".into()),
+                ..Default::default()
+            }]),
+            mem_used_mb: Some(200),
+            ..s_xorg_idle.clone()
+        };
+        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_small_compute, now, t), GpuState::Busy);
+
+        // Huawei Ascend 910B idle firmware HBM baseline (3445/65536 MiB, 0% AICore, 0 procs) -> Free
+        let s_ascend_free = GpuSample {
+            uuid: "ASCEND-2-0-0000:81:00.0".into(),
+            mem_used_mb: Some(3445),
+            mem_total_mb: Some(65_536),
+            util_pct: Some(0),
+            free_mem_floor_mb: Some(5461),
+            procs_state: ProcsState::Ok,
+            procs: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_ascend_free, now, t), GpuState::Free);
+
+        // Ascend with large unattributed HBM (20000 MiB, 0 procs) -> STILL Unattributed
+        let s_ascend_unattr = GpuSample {
+            mem_used_mb: Some(20_000),
+            ..s_ascend_free
+        };
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_ascend_unattr, now, t),
+            GpuState::Unattributed
         );
     }
 }

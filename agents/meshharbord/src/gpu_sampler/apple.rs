@@ -120,6 +120,7 @@ impl AppleBackend {
                 mig: false,
                 lost: false,
                 idle_since: None,
+                free_mem_floor_mb: None,
                 procs_state: ProcsState::Unsupported,
                 procs: None,
             };

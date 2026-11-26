@@ -9,6 +9,7 @@
 
 pub mod amd;
 pub mod apple;
+pub mod ascend;
 pub mod fake;
 pub mod intel;
 pub mod metrics;
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use self::amd::AmdBackend;
 use self::apple::AppleBackend;
+use self::ascend::AscendBackend;
 use self::fake::{FakeBackend, FakeStep};
 use self::intel::IntelBackend;
 use self::nvml::{NvmlBackend, NvmlInitOutcome};
@@ -80,6 +82,7 @@ enum ActiveBackend {
         amd: Option<AmdBackend>,
         intel: Option<IntelBackend>,
         apple: Option<AppleBackend>,
+        ascend: Option<AscendBackend>,
     },
 }
 
@@ -129,6 +132,11 @@ fn init_backend() -> anyhow::Result<ActiveBackend> {
     } else {
         AppleBackend::try_init()
     };
+    let ascend = if denied.contains("ascend") || denied.contains("npu") {
+        None
+    } else {
+        AscendBackend::try_init()
+    };
 
     Ok(ActiveBackend::Hardware {
         nvml,
@@ -136,6 +144,7 @@ fn init_backend() -> anyhow::Result<ActiveBackend> {
         amd,
         intel,
         apple,
+        ascend,
     })
 }
 
@@ -323,6 +332,7 @@ pub fn run_child() -> anyhow::Result<()> {
                 amd,
                 intel,
                 apple,
+                ascend,
             } => {
                 let proc_lookup = if state.include_procs {
                     ProcLookup::new()
@@ -401,6 +411,24 @@ pub fn run_child() -> anyhow::Result<()> {
                     }
                 }
 
+                if let Some(asc) = ascend.as_ref() {
+                    backend_names.push("ascend");
+                    if driver_version.is_none() {
+                        driver_version = asc.driver_version();
+                    }
+                    let (st, mut samples) = asc.sample(state.include_procs, &proc_lookup);
+                    if !samples.is_empty() {
+                        let offset = gpus.len() as u16;
+                        for (i, s) in samples.iter_mut().enumerate() {
+                            s.idx = offset + i as u16;
+                        }
+                        if matches!(host_status, GpuHostStatus::NoGpu) {
+                            host_status = st;
+                        }
+                        gpus.append(&mut samples);
+                    }
+                }
+
                 tracker.update(&mut gpus, now_s);
                 seq += 1;
                 GpuReport {
@@ -452,6 +480,7 @@ fn collect_inventory(backend: &ActiveBackend) -> GpuInventory {
             amd,
             intel,
             apple,
+            ascend,
         } => {
             let mut gpus = Vec::new();
             let mut names = Vec::new();
@@ -497,6 +526,21 @@ fn collect_inventory(backend: &ActiveBackend) -> GpuInventory {
             if let Some(ap) = apple {
                 let inv = ap.inventory();
                 names.push("apple");
+                let offset = gpus.len() as u16;
+                for (i, mut g) in inv.gpus.into_iter().enumerate() {
+                    g.idx = offset + i as u16;
+                    gpus.push(g);
+                }
+                if matches!(status, GpuHostStatus::NoGpu) && !gpus.is_empty() {
+                    status = inv.status;
+                }
+            }
+            if let Some(asc) = ascend {
+                let inv = asc.inventory();
+                names.push("ascend");
+                if driver_version.is_none() {
+                    driver_version = inv.driver_version;
+                }
                 let offset = gpus.len() as u16;
                 for (i, mut g) in inv.gpus.into_iter().enumerate() {
                     g.idx = offset + i as u16;

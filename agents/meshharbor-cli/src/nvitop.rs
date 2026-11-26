@@ -823,15 +823,27 @@ pub fn select_free_gpus(
     }
     let mut exports: Vec<HostExport> = Vec::new();
     for g in &picked {
+        let is_ascend = g.uuid.starts_with("ASCEND-");
+        let token = if is_ascend {
+            g.idx.to_string()
+        } else {
+            g.uuid.clone()
+        };
+        let format_cmd = |val: &str, ascend: bool| {
+            if ascend {
+                format!("export ASCEND_RT_VISIBLE_DEVICES={}", shell_single_quote(val))
+            } else {
+                format!(
+                    "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
+                    shell_single_quote(val)
+                )
+            }
+        };
         if let Some(ex) = exports.iter_mut().find(|e| e.agent_id == g.agent_id) {
             ex.cuda_visible_devices.push(',');
-            ex.cuda_visible_devices.push_str(&g.uuid);
-            ex.export_cmd = format!(
-                "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
-                shell_single_quote(&ex.cuda_visible_devices)
-            );
+            ex.cuda_visible_devices.push_str(&token);
+            ex.export_cmd = format_cmd(&ex.cuda_visible_devices, is_ascend);
         } else {
-            let devs = g.uuid.clone();
             let ambiguous = name_counts
                 .get(g.host.as_str())
                 .is_some_and(|ids| ids.len() > 1);
@@ -844,11 +856,8 @@ pub fn select_free_gpus(
             exports.push(HostExport {
                 agent_id: g.agent_id.clone(),
                 host: label,
-                export_cmd: format!(
-                    "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
-                    shell_single_quote(&devs)
-                ),
-                cuda_visible_devices: devs,
+                export_cmd: format_cmd(&token, is_ascend),
+                cuda_visible_devices: token,
             });
         }
     }
