@@ -8,7 +8,7 @@ MeshHarbor lets an organization mark any permanent or invited device as a **GPU 
 flowchart TB
     subgraph host["GPU Server Host"]
         CHILD["meshharbord gpu-sampler<br/>(isolated child: NVML / AMD / Intel / Apple / PDH / Fake)"]
-        SUP["GpuSupervisor (parent)<br/>one child per host · non-blocking reaper<br/>HostLoad (sysinfo) · multi-org fan-out"]
+        SUP["GpuSupervisor (parent)<br/>one child per host · non-blocking reaper<br/>HostLoad (sysinfo, root-only) · primary org"]
         PROM["Optional loopback /metrics<br/>(gpu_metrics_listen)"]
         CHILD -->|"JSONL stdout frames"| SUP
         SUP -->|"control stdin (interval, procs, deny)"| CHILD
@@ -19,7 +19,7 @@ flowchart TB
         MGR["GpuManager<br/>standing 30 s + live 2 s leases"]
         EVAL["AlertEvaluator<br/>edge-triggered, 2 min hold, 10 min cooldown"]
         HIST["History & Rollups<br/>stats_gpu (1m/7d) · 1h/90d · 1d/730d"]
-        BOT["Bot Delivery<br/>Feishu/DingTalk/WeCom/Slack/Discord/Telegram/HTTPS<br/>SSRF-pinned + masked creds"]
+        BOT["Bot Delivery<br/>Feishu/Lark · DingTalk · WeCom · HTTPS Webhook<br/>SSRF-pinned + masked creds"]
         MGR --> EVAL
         MGR --> HIST
         EVAL --> BOT
@@ -61,7 +61,7 @@ All vendor libraries and sysfs/PDH/IOKit probes execute exclusively inside `mesh
 
 ### Hung-Driver & Failure Isolation
 
-- **One child per host**: `GpuSupervisor` runs at the minimum active lease interval across all connected orgs and fans out `rc:agent.gpu_inventory` and `rc:agent.gpu_report` per org at each org's leased cadence.
+- **One child per host (primary org only)**: GPU telemetry, host-load metrics, and desktop alert fan-in run strictly on the daemon's primary organization connection (because GPU processes and host load are host-global; secondary orgs cannot read host usernames or inject OS notifications).
 - **Non-blocking deadline & reap**: If a child misses its frame deadline (`max(3 * interval, 10 s)`), the supervisor calls `start_kill()` and hands the child handle to a detached background reaper task without ever blocking on `child.wait()`. If a previous child remains stuck in uninterruptible D-state, the supervisor refuses to spawn a second child and emits `GpuHostStatus::DriverHung`.
 - **Bounded backoff**: `30 s → 60 s → 120 s → 240 s → 300 s`, reporting `SamplerStalled` while backing off and `Unavailable` after 5 consecutive failures.
 - **L1-only process attribution**: On Linux, `/proc/<pid>/{status,comm,stat,cgroup}` resolves `uid`, Linux username (`/etc/passwd`), short `comm` name (never `/proc/<pid>/cmdline` or `environ`), process age, and container short ID from cgroup v1/v2.
@@ -71,15 +71,15 @@ All vendor libraries and sysfs/PDH/IOKit probes execute exclusively inside `mesh
 Pure server/wire helpers live in `crates/remote_control/src/gpu.rs` (`compute_freshness` at `:292`, `classify_gpu_state` at `:323`):
 
 - **Freshness** is computed strictly from server receive time (`now - received_at_ms`), never the agent's wall clock:
-  - `live`: `age <= max(3 * interval_ms, 90 s)`
-  - `stale`: `age <= max(5 * interval_ms, 150 s)`
+  - `fresh`: `age < max(3 * interval_ms, 90 s)`
+  - `stale`: `age < max(5 * interval_ms, 150 s)`
   - `offline`: beyond `stale` or agent disconnected
 - **Card states** (never conflating `None` with `0`):
-  - `fault`: `lost == true`, `ecc_uncorrected > 0`, non-empty `xid_errors`, or sustained thermal/HW throttle
+  - Fault indicators (derived alongside state): `lost == true`, `ecc_uncorrected > 0`, non-empty `xid_errors`, or sustained thermal/HW throttle
   - `unknown`: host status `!= ok` or missing VRAM/utilization readings
-  - `unattributed_busy`: VRAM above free threshold while `procs` is empty/off-local (never reported as `free`)
-  - `held_idle`: VRAM above threshold with utilization `<= 5%` continuously for `>= 30 min`
-  - `busy`: VRAM above threshold or utilization `> 5%`
+  - `unattributed`: VRAM above free threshold while `procs_state == ok` and `procs` is empty (never reported as `free`)
+  - `held_idle`: VRAM above threshold with utilization `< 5%` continuously for `>= 30 min`
+  - `busy`: VRAM above threshold or utilization `>= 5%`
   - `free`: below VRAM & utilization thresholds with no active compute processes
 
 ## 4. Storage, History Rollups & Alerts
@@ -95,8 +95,8 @@ All 6 collections are owned by `FleetModule::indexes()` (`crates/modules/fleet/s
 | `gpu_alert_rules` | Per-user personal alert rules | Unique `(tenant_id, user_id)` |
 | `gpu_alert_channels` | Per-user personal bot webhooks (masked on read) | `(tenant_id, user_id, created_at: -1)` |
 
-- **Owner-only alerts** (`crates/modules/fleet/src/gpu/alerts.rs:111`): Edge-triggered per `(user, host, event)` with 2-minute continuous free hold, 10-minute per-(host, event) cooldown, 3-minute Xid coalescing, and 5-minute offline grace. Delivered only to the rule owner via in-app `NotificationType::GpuAlert`, desktop companion `rc:gpu.alert`, and the owner's enabled bot channels (`crates/modules/fleet/src/gpu/mod.rs:70`). Shared-device recipients receive zero alerts.
-- **SSRF-hardened bots** (`crates/modules/fleet/src/gpu/bots.rs:201`): HTTPS-only, official host/path pinning for Feishu/DingTalk/WeCom/Slack/Discord/Telegram, public-IP validation at both save and send time with DNS pinning and `redirect::Policy::none()`, Feishu & DingTalk HMAC-SHA256 signing, 10 s message coalescing, and 5 s / 30 s / 120 s retries.
+- **Owner-only alerts** (`crates/modules/fleet/src/gpu/alerts.rs:111`): Edge-triggered per `(user, host, event)` with 2-minute continuous free hold, 10-minute per-(host, event) cooldown, 3-minute Xid coalescing, and 5-minute offline grace. Delivered only to the rule owner via in-app `NotificationType::GpuAlert`, desktop companion `rc:gpu.alert` on the owner's non-temporary/non-ephemeral devices, and the owner's enabled bot channels (`crates/modules/fleet/src/gpu/mod.rs:70`). Shared-device recipients receive zero alerts.
+- **SSRF-hardened bots** (`crates/modules/fleet/src/gpu/bots.rs:201`): HTTPS-only, official host/path pinning for Feishu/Lark, DingTalk, and WeCom plus generic HTTPS webhooks, public-IP validation (including IPv4-mapped/compatible and NAT64 rejection) at both save and send time with DNS pinning, `.no_proxy()`, and `redirect::Policy::none()`, Feishu/DingTalk/generic-body HMAC-SHA256 signing, 10 s message coalescing, and 5 s / 30 s / 120 s retries.
 
 ## 5. Surfaces & Configuration
 
@@ -111,7 +111,7 @@ All 6 collections are owned by `FleetModule::indexes()` (`crates/modules/fleet/s
   - `GET /api/agent/self/gpu/fleet?live=0|1&wait_ms=0..3000&hosts=` and `GET /api/agent/self/gpu/users?range=`
 - **CLI**: `mh nvitop` (alias `mh gpu`) — one-shot, `--cached`, `-w/--watch` (DEC 2026 synchronized output, `NO_COLOR`, `unicode-width`), `--json`, `mh nvitop users`, and `mh nvitop free [-n N] [--min-free 40G] [--same-host]`.
 - **Web SPA**: `/tenant/:tenantId/gpu` (`ui/src/views/gpu/GpuServersView.vue`), live 2 s visibility-gated polling, `TimeSeriesChart` history drawer, zero `v-html`.
-- **Desktop Companion**: dynamic `GPU: N/M free` tray line (hidden when 0 GPU servers; 30 s / 5 min backoff) + 15 s LocalAPI `GpuAlerts` poller raising native OS notifications (`agents/meshharbor-desktop/src/tray.rs`).
+- **Desktop Companion (`meshharbor-desktop`)**: built-in **GPU Servers** sidebar view (`#/gpu`, [gpu.js](file:///root/.agent-work/runtime/meshharbor-fr139/repo/agents/meshharbor-desktop/src/front/gpu.js) — live 2 s visibility-gated fleet cards, host load, L1 process attribution, one-click `CUDA_VISIBLE_DEVICES` copy, and 24h/7d/30d per-user GPU·h table via LocalAPI `GpuFleet`/`GpuUsers`), dynamic `GPU: N/M free` tray line opening `#/gpu` (hidden when 0 GPU servers; 30 s / 5 min backoff), plus 15 s LocalAPI `GpuAlerts` poller raising native OS notifications (`agents/meshharbor-desktop/src/tray.rs`).
 - **Kill switches & device-local controls**:
   - Server: `MESHHARBOR__GPU__ENABLED`, `MESHHARBOR__GPU__LIVE_INTERVAL_MS`, `MESHHARBOR__GPU__ALERTS`, `MESHHARBOR__GPU__BOTS`.
   - Device-owned (structurally refused in `DesiredConfig`): `gpu_telemetry` (live), `gpu_processes` (live), `gpu_metrics_listen` (strict loopback validation, `agents/meshharbord/src/gpu_sampler/metrics.rs:94`).

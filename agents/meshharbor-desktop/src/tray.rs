@@ -942,32 +942,9 @@ fn check_updates<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// FR-139 — open the primary org's GPU Servers page in the default browser
-/// (falling back to the authenticated dashboard if tenant/server is unknown).
+/// FR-139 — open the Desktop Client's built-in GPU Servers view (`#/gpu`).
 fn open_gpu_servers<R: Runtime>(app: &AppHandle<R>) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let target_url = async {
-            let server = crate::commands::server_origin().await.ok()?;
-            let mut client = meshharbor_localapi::connect().await.ok()?;
-            let status = client.status().await.ok()?;
-            let tid = status.tenant_id.filter(|s| !s.trim().is_empty())?;
-            let base = server.trim_end_matches('/');
-            Some(format!("{base}/tenant/{tid}/gpu"))
-        }
-        .await;
-        if let Some(url) = target_url {
-            use tauri_plugin_shell::ShellExt as _;
-            #[allow(deprecated)]
-            let opened = app.shell().open(&url, None);
-            if let Err(err) = opened {
-                tracing::warn!(%err, "tray: failed to open GPU servers URL");
-                open_meshharbor_web(&app);
-            }
-        } else {
-            open_meshharbor_web(&app);
-        }
-    });
+    show_window(app, "/gpu");
 }
 
 /// Compute `(visible, label)` for the FR-139 GPU tray item.
@@ -1022,12 +999,17 @@ fn spawn_gpu_watch<R: Runtime>(menu: Menu<R>, item: MenuItem<R>) {
 
 /// Filter incoming GPU alert items, advancing `last_seq` monotonically and
 /// skipping stale historical alerts (> 5 min old) on the very first poll.
+/// Automatically resets `last_seq` if the daemon restarted with a lower local
+/// sequence counter.
 fn select_new_gpu_alerts(
     items: &[meshharbor_localapi::GpuAlertItem],
     last_seq: &mut u64,
     first_poll: bool,
     now_s: i64,
 ) -> Vec<meshharbor_localapi::GpuAlertItem> {
+    if !items.is_empty() && items.iter().all(|i| i.seq < *last_seq) {
+        *last_seq = 0;
+    }
     let mut out = Vec::new();
     for item in items {
         if item.seq <= *last_seq {
@@ -1131,8 +1113,8 @@ mod tests {
     #[test]
     fn fr139_gpu_menu_state_hides_when_zero_and_formats_bilingual() {
         let empty = meshharbor_localapi::GpuFleetPage::default();
-        assert_eq!(gpu_menu_state(None, tray_i18n::Lang::En).0, false);
-        assert_eq!(gpu_menu_state(Some(&empty), tray_i18n::Lang::En).0, false);
+        assert!(!gpu_menu_state(None, tray_i18n::Lang::En).0);
+        assert!(!gpu_menu_state(Some(&empty), tray_i18n::Lang::En).0);
 
         let mut active = meshharbor_localapi::GpuFleetPage::default();
         active.summary.hosts_total = 2;

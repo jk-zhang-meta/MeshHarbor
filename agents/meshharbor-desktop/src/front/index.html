@@ -36,6 +36,21 @@
           </svg>
           <span data-i18n="nav.devices">Devices</span>
         </a>
+        <a href="#/gpu" data-view="gpu">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+            <rect x="9" y="9" width="6" height="6"></rect>
+            <line x1="9" y1="1" x2="9" y2="4"></line>
+            <line x1="15" y1="1" x2="15" y2="4"></line>
+            <line x1="9" y1="20" x2="9" y2="23"></line>
+            <line x1="15" y1="20" x2="15" y2="23"></line>
+            <line x1="20" y1="9" x2="23" y2="9"></line>
+            <line x1="20" y1="15" x2="23" y2="15"></line>
+            <line x1="1" y1="9" x2="4" y2="9"></line>
+            <line x1="1" y1="15" x2="4" y2="15"></line>
+          </svg>
+          <span data-i18n="nav.gpu">GPU Servers</span>
+        </a>
         <a href="#/account" data-view="account">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="7" r="4"></circle><path d="M4 22v-3a8 8 0 0 1 16 0v3"></path></svg>
           <span data-i18n="nav.account">My devices &amp; sharing</span>
@@ -547,6 +562,114 @@
       </section>
 
       <!-- Tunnels -->
+      <!-- GPU Servers (FR-139) -->
+      <section id="view-gpu" class="view" hidden>
+        <div class="view-head gpu-head">
+          <div>
+            <h2 data-i18n="gpu.title">GPU Servers</h2>
+            <p class="view-sub" style="margin-bottom: 0" data-i18n="gpu.sub">
+              Live utilization, VRAM, processes, and per-user GPU-hours across marked GPU servers.
+            </p>
+          </div>
+          <div class="gpu-head-actions">
+            <label class="gpu-live-toggle">
+              <input type="checkbox" id="gpu-live-toggle" checked />
+              <span data-i18n="gpu.liveToggle">Live (2s)</span>
+            </label>
+            <button type="button" id="gpu-btn-refresh" data-i18n="common.refresh">Refresh</button>
+            <button type="button" id="gpu-btn-open-web" data-i18n="gpu.openWeb">History &amp; alerts…</button>
+          </div>
+        </div>
+
+        <div id="gpu-summary" class="gpu-summary-grid">
+          <div class="gpu-kpi">
+            <div class="gpu-kpi-label" data-i18n="gpu.kpi.hosts">Online hosts</div>
+            <div class="gpu-kpi-val mono" id="gpu-kpi-hosts">0 / 0</div>
+          </div>
+          <div class="gpu-kpi gpu-kpi-free">
+            <div class="gpu-kpi-label" data-i18n="gpu.kpi.free">Free GPUs</div>
+            <div class="gpu-kpi-val mono" id="gpu-kpi-free">0 / 0</div>
+          </div>
+          <div class="gpu-kpi gpu-kpi-busy">
+            <div class="gpu-kpi-label" data-i18n="gpu.kpi.busy">Busy</div>
+            <div class="gpu-kpi-val mono" id="gpu-kpi-busy">0</div>
+          </div>
+          <div class="gpu-kpi gpu-kpi-held">
+            <div class="gpu-kpi-label" data-i18n="gpu.kpi.held">Held idle</div>
+            <div class="gpu-kpi-val mono" id="gpu-kpi-held">0</div>
+          </div>
+          <div class="gpu-kpi gpu-kpi-fault">
+            <div class="gpu-kpi-label" data-i18n="gpu.kpi.fault">Fault</div>
+            <div class="gpu-kpi-val mono" id="gpu-kpi-fault">0</div>
+          </div>
+        </div>
+
+        <div class="gpu-tabs" role="tablist">
+          <button type="button" class="gpu-tab active" data-gpu-tab="fleet" role="tab" aria-selected="true" data-i18n="gpu.tab.fleet">Fleet</button>
+          <button type="button" class="gpu-tab" data-gpu-tab="users" role="tab" aria-selected="false" data-i18n="gpu.tab.users">Usage by user</button>
+          <span class="gpu-updated muted small" id="gpu-updated"></span>
+        </div>
+
+        <div id="gpu-error" class="banner banner-warn" hidden>
+          <span id="gpu-error-msg"></span>
+        </div>
+
+        <div id="gpu-copy-toast" class="banner banner-ok" hidden>
+          <span id="gpu-copy-toast-msg" class="mono small"></span>
+        </div>
+
+        <!-- Fleet sub-view -->
+        <div id="gpu-panel-fleet">
+          <div class="gpu-toolbar">
+            <input type="search" id="gpu-search" data-i18n-placeholder="gpu.searchPlaceholder" placeholder="Search host, GPU model, user, process…" />
+            <div class="gpu-filters" id="gpu-filters">
+              <button type="button" class="gpu-filter active" data-gpu-filter="all" data-i18n="gpu.filter.all">All</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="free" data-i18n="gpu.filter.free">Free</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="busy" data-i18n="gpu.filter.busy">Busy</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="held_idle" data-i18n="gpu.filter.heldIdle">Held idle</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="fault" data-i18n="gpu.filter.fault">Fault</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="offline" data-i18n="gpu.filter.offline">Offline</button>
+            </div>
+          </div>
+          <div id="gpu-empty" class="card gpu-empty" hidden>
+            <strong id="gpu-empty-title" data-i18n="gpu.empty.title">No marked GPU servers</strong>
+            <p class="muted small" id="gpu-empty-body" data-i18n="gpu.empty.body">
+              Mark any device as a GPU server in the web console (or via an enrollment token, key, or temporary invite) to see live cards here.
+            </p>
+          </div>
+          <div id="gpu-hosts" class="gpu-hosts"></div>
+        </div>
+
+        <!-- Users sub-view -->
+        <div id="gpu-panel-users" hidden>
+          <div class="gpu-toolbar">
+            <div class="gpu-filters" id="gpu-user-ranges">
+              <button type="button" class="gpu-filter active" data-gpu-range="24h">24h</button>
+              <button type="button" class="gpu-filter" data-gpu-range="7d">7d</button>
+              <button type="button" class="gpu-filter" data-gpu-range="30d">30d</button>
+            </div>
+          </div>
+          <div class="card gpu-users-card">
+            <div id="gpu-users-empty" class="muted small" hidden data-i18n="gpu.users.empty">
+              No attributed GPU usage recorded in this window.
+            </div>
+            <table id="gpu-users-table" class="gpu-table" hidden>
+              <thead>
+                <tr>
+                  <th data-i18n="gpu.users.colUser">User</th>
+                  <th class="num" data-i18n="gpu.users.colHeld">Held (GPU·h)</th>
+                  <th class="num" data-i18n="gpu.users.colBusy">Busy (GPU·h)</th>
+                  <th class="num" data-i18n="gpu.users.colLiveGpus">Live GPUs</th>
+                  <th class="num" data-i18n="gpu.users.colLiveVram">Live VRAM</th>
+                  <th data-i18n="gpu.users.colHosts">Hosts</th>
+                </tr>
+              </thead>
+              <tbody id="gpu-users-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section id="view-tunnels" class="view" hidden>
         <div class="view-head"><h2 data-i18n="tn.title">Routes</h2></div>
         <p class="view-sub" data-i18n="tn.sub">
@@ -1360,6 +1483,7 @@
     <script src="vendor/pmtiles.js"></script>
     <script src="network-map.js"></script>
     <script src="devices.js"></script>
+    <script src="gpu.js"></script>
     <script src="account.js"></script>
     <script src="tunnels.js"></script>
     <script src="recordings.js"></script>

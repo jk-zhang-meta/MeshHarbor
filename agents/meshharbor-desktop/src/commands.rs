@@ -4301,6 +4301,77 @@ pub async fn cmd_mesh(org: Option<String>) -> Result<localapi::MeshView, String>
     }
 }
 
+/// FR-139 — live GPU servers fleet snapshot via LocalAPI (`GpuFleet`).
+#[tauri::command]
+pub async fn cmd_gpu_fleet(
+    org: Option<String>,
+    live: Option<bool>,
+    wait_ms: Option<u32>,
+    hosts: Option<Vec<String>>,
+) -> Result<localapi::GpuFleetPage, String> {
+    const SURFACE: &str = "gpu_fleet";
+    let mut client = localapi::connect()
+        .await
+        .map_err(|e| directory_failure(SURFACE, "connect", e.into()))?;
+    let host_list = hosts.unwrap_or_default();
+    match client
+        .gpu_fleet(
+            org.as_deref().unwrap_or(""),
+            live.unwrap_or(false),
+            wait_ms.unwrap_or(0).min(3000),
+            &host_list,
+        )
+        .await
+    {
+        Ok(page) => {
+            refresh_ok(SURFACE);
+            Ok(page)
+        }
+        Err(e) => Err(directory_failure(SURFACE, "gpu_fleet", e)),
+    }
+}
+
+/// FR-139 — per-Linux-user GPU·h usage table via LocalAPI (`GpuUsers`).
+#[tauri::command]
+pub async fn cmd_gpu_users(
+    org: Option<String>,
+    range: Option<String>,
+) -> Result<localapi::GpuUsersPage, String> {
+    const SURFACE: &str = "gpu_users";
+    let mut client = localapi::connect()
+        .await
+        .map_err(|e| directory_failure(SURFACE, "connect", e.into()))?;
+    let range = range.unwrap_or_else(|| "24h".to_string());
+    match client.gpu_users(org.as_deref().unwrap_or(""), &range).await {
+        Ok(page) => {
+            refresh_ok(SURFACE);
+            Ok(page)
+        }
+        Err(e) => Err(directory_failure(SURFACE, "gpu_users", e)),
+    }
+}
+
+/// FR-139 — open the full Web GPU Servers page (history charts & alert/bot
+/// rules) for the primary organization in the user's browser.
+#[tauri::command]
+pub async fn cmd_open_gpu_web(app: tauri::AppHandle) -> Result<(), String> {
+    let server = server_origin().await?;
+    let mut client = localapi::connect()
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let status = client.status().await.map_err(|e| format!("status: {e}"))?;
+    let base = server.trim_end_matches('/');
+    let url = match status.tenant_id.filter(|s| !s.trim().is_empty()) {
+        Some(tid) => format!("{base}/tenant/{tid}/gpu"),
+        None => base.to_string(),
+    };
+    use tauri_plugin_shell::ShellExt as _;
+    #[allow(deprecated)]
+    app.shell()
+        .open(&url, None)
+        .map_err(|e| format!("open browser: {e}"))
+}
+
 // ─── refresh failures: said once, on the page and in the log ───────
 
 /// One line naming WHAT failed (`stage`) and HOW — the io error kind and,

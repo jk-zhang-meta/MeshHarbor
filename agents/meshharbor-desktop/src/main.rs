@@ -232,6 +232,10 @@ fn main() {
             // FR-84 D5c — the Devices page's grid and mesh.
             commands::cmd_devices,
             commands::cmd_mesh,
+            // FR-139 — the GPU Servers view (fleet telemetry + per-user usage).
+            commands::cmd_gpu_fleet,
+            commands::cmd_gpu_users,
+            commands::cmd_open_gpu_web,
             // FR-84 D6 — the Welcome tour and the login start.
             first_run::cmd_launch_intent,
             first_run::cmd_desktop_state,
