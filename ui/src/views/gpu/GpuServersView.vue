@@ -412,8 +412,7 @@
                     <div class="nvitop-model-wrap">
                       <span class="nvitop-model">{{ shortModel(g.name) }}</span>
                       <span class="nvitop-submeta text-mono">
-                        <template v-if="g.pci_bus">{{ g.pci_bus }}</template>
-                        <template v-else>{{ g.uuid.slice(0, 14) }}</template>
+                        <span>{{ shortCardSubmeta(g) }}</span>
                         <span v-if="g.mig" class="nvitop-tag">MIG</span>
                         <span v-if="g.unified" class="nvitop-tag">Unified</span>
                         <span v-if="g.presence_only" class="nvitop-tag">{{ t('mh.gpu.presenceOnly') }}</span>
@@ -440,7 +439,7 @@
                         />
                         <div class="nvitop-bar-ticks" aria-hidden="true" />
                         <span class="nvitop-bar-overlay">
-                          <span>
+                          <span class="nvitop-bar-chip">
                             {{ fmtVramCompact(g) }}
                             <span
                               v-if="cardDeltaFor(host, g)?.memDeltaMb"
@@ -450,9 +449,11 @@
                               {{ cardDeltaFor(host, g)!.memDeltaMb > 0 ? '▲' : '▼' }}{{ (Math.abs(cardDeltaFor(host, g)!.memDeltaMb) / 1024).toFixed(1) }}G
                             </span>
                           </span>
-                          <span v-if="vramPct(g) != null">{{ vramPct(g) }}%</span>
                         </span>
                       </div>
+                      <span class="nvitop-bar-pct">
+                        {{ vramPct(g) != null ? `${vramPct(g)}%` : '—' }}
+                      </span>
                     </div>
 
                     <!-- Compute / AICore / TPU Bar -->
@@ -465,17 +466,23 @@
                           :style="{ width: `${clampPct(g.util_pct)}%` }"
                         />
                         <div class="nvitop-bar-ticks" aria-hidden="true" />
-                        <span class="nvitop-bar-overlay nvitop-bar-overlay-end">
-                          <span>{{ g.util_pct != null ? `${g.util_pct}%` : '—' }}</span>
-                          <span
-                            v-if="cardDeltaFor(host, g)?.utilDelta"
-                            class="nvitop-delta"
-                            :class="(cardDeltaFor(host, g)!.utilDelta > 0) ? 'delta-up' : 'delta-down'"
-                          >
-                            {{ cardDeltaFor(host, g)!.utilDelta > 0 ? '▲' : '▼' }}{{ Math.abs(cardDeltaFor(host, g)!.utilDelta) }}%
+                        <span
+                          v-if="cardDeltaFor(host, g)?.utilDelta"
+                          class="nvitop-bar-overlay nvitop-bar-overlay-end"
+                        >
+                          <span class="nvitop-bar-chip">
+                            <span
+                              class="nvitop-delta"
+                              :class="(cardDeltaFor(host, g)!.utilDelta > 0) ? 'delta-up' : 'delta-down'"
+                            >
+                              {{ cardDeltaFor(host, g)!.utilDelta > 0 ? '▲' : '▼' }}{{ Math.abs(cardDeltaFor(host, g)!.utilDelta) }}%
+                            </span>
                           </span>
                         </span>
                       </div>
+                      <span class="nvitop-bar-pct">
+                        {{ g.util_pct != null ? `${g.util_pct}%` : '—' }}
+                      </span>
                     </div>
                   </div>
 
@@ -1040,6 +1047,15 @@ function visibleProcs(g: GpuCardView): GpuProc[] {
 function toggleExpandProcs(uuid: string) {
   if (expandedProcs.has(uuid)) expandedProcs.delete(uuid)
   else expandedProcs.add(uuid)
+}
+
+function shortCardSubmeta(g: GpuCardView): string {
+  if (g.pci_bus && g.pci_bus.trim()) return g.pci_bus.trim()
+  const u = g.uuid || ''
+  const bdfMatch = u.match(/[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]/)
+  if (bdfMatch) return bdfMatch[0]
+  if (u.length <= 18) return u
+  return `${u.slice(0, 8)}…${u.slice(-6)}`
 }
 
 function stateLabel(s: GpuState): string {
@@ -1901,14 +1917,34 @@ onBeforeUnmount(() => {
   position: relative;
   z-index: 1;
   height: 100%;
-  padding: 0 7px;
+  padding: 0 5px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 6px;
   font-size: 0.72rem;
   font-weight: 650;
-  text-shadow: 0 0 6px rgba(var(--v-theme-surface), 0.85);
+}
+
+.nvitop-bar-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 15px;
+  background: rgba(var(--v-theme-surface), 0.78);
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.nvitop-bar-pct {
+  font-size: 0.74rem;
+  font-weight: 700;
+  min-width: 34px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--v-theme-on-surface));
+  opacity: 0.88;
 }
 
 .nvitop-bar-overlay-end {
