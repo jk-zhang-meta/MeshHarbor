@@ -66,6 +66,10 @@ pub struct DeviceRow {
     pub zone_source: Option<ZoneSource>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub default_route_vpn: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_server: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_inventory: Option<meshharbor_remote_control::gpu::GpuInventory>,
 }
 #[derive(Serialize)]
 pub struct DevicePage {
@@ -101,6 +105,10 @@ struct StoredDevice {
     capabilities: meshharbor_remote_control::models::AgentCaps,
     #[serde(default)]
     peer_relay_policy: PeerRelayPolicy,
+    #[serde(default)]
+    gpu_server: bool,
+    #[serde(default)]
+    gpu_inventory: Option<meshharbor_remote_control::gpu::GpuInventory>,
 }
 #[derive(Deserialize)]
 struct Count {
@@ -182,7 +190,7 @@ pub async fn list(
                 "_id":1,"name":1,"display_name":1,"os":1,"status":1,"tenant_id":1,
                 "machine_id":1,"public_ip":1,"physical_public_ip":1,"physical_seen_at":1,
                 "last_clean_zone_id":1,"country_code":1,"pinned_zone_id":1,
-                "capabilities":1,"peer_relay_policy":1
+                "capabilities":1,"peer_relay_policy":1,"gpu_server":1,"gpu_inventory":1
             }}],
         "count":[{"$count":"total"}]
     }});
@@ -379,6 +387,8 @@ pub async fn list(
                 effective_zone_name,
                 zone_source,
                 default_route_vpn,
+                gpu_server: a.gpu_server,
+                gpu_inventory: a.gpu_inventory,
             }
         })
         .collect();

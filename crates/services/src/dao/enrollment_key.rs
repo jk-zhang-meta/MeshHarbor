@@ -67,6 +67,31 @@ impl EnrollmentKeyDao {
         expires_at: DateTime,
         ephemeral_ttl_secs: Option<u64>,
     ) -> DaoResult<EnrollmentKey> {
+        self.create_with_gpu(
+            tenant_id,
+            jti,
+            label,
+            created_by,
+            max_uses,
+            expires_at,
+            ephemeral_ttl_secs,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_with_gpu(
+        &self,
+        tenant_id: ObjectId,
+        jti: String,
+        label: String,
+        created_by: ObjectId,
+        max_uses: i64,
+        expires_at: DateTime,
+        ephemeral_ttl_secs: Option<u64>,
+        gpu_server: bool,
+    ) -> DaoResult<EnrollmentKey> {
         let now = DateTime::now();
         let key = EnrollmentKey {
             id: None,
@@ -79,7 +104,7 @@ impl EnrollmentKeyDao {
             expires_at,
             revoked_at: None,
             ephemeral_ttl_secs,
-            gpu_server: false,
+            gpu_server,
             last_used_at: None,
             created_at: now,
             updated_at: now,

@@ -152,6 +152,10 @@ pub struct DeviceInviteRow {
     /// a device with no live grant left admits nobody.
     #[serde(default)]
     pub removal_pending: bool,
+    /// FR-139 — when `true`, the invited device inherits `Agent.gpu_server = true`
+    /// upon enrollment/attachment and appears in authorized GPU fleet views.
+    #[serde(default)]
+    pub gpu_server: bool,
 }
 
 /// An organization the invited machine belongs to by its own enrollment.
@@ -253,6 +257,8 @@ pub struct Create {
     label: Option<String>,
     #[serde(default)]
     allow_role_ids: Vec<String>,
+    #[serde(default)]
+    gpu_server: bool,
 }
 
 #[derive(Deserialize)]
@@ -421,6 +427,7 @@ fn row_view(r: &DeviceInviteRow) -> Value {
         "ended_by": r.ended_by.map(|x| x.to_hex()),
         "converted": r.converted,
         "attached": r.attached,
+        "gpu_server": r.gpu_server,
         "renewals": r.renewals.iter().map(|x| json!({
             "at_ms": x.at.timestamp_millis(),
             "by": x.by.to_hex(),
@@ -530,6 +537,7 @@ pub async fn create(
             device_proof_hash: None,
             hosts: Vec::new(),
             removal_pending: false,
+            gpu_server: body.gpu_server,
         };
         if c.insert_one(&row).await.is_ok() {
             tracing::info!(invite = %row.id, tenant = %tid, inviter = %auth.user_id,
@@ -937,6 +945,14 @@ pub async fn redeem(
     let inviter = inviter_display(&state, row.inviter_user_id).await;
     let org = org_display(&state, row.tenant_id).await;
     if let Some((aid, _)) = attach_to {
+        // FR-139 — if this invite carries `gpu_server = true`, mark the
+        // attached device as a GPU server so it shows up in GPU fleet views.
+        if row.gpu_server
+            && let Err(e) = state.agents.set_gpu_server(row.tenant_id, aid, true).await
+        {
+            tracing::warn!(invite = %row.id, agent = %aid, error = %e,
+                "device-invite: failed to stamp gpu_server on attached device");
+        }
         // The new inviter's devices learn of it on the re-fan; the live gates
         // already admit them. A failed re-fan only delays that visibility.
         if let Err(e) = state.hooks.agent_updated(row.tenant_id, aid).await {
@@ -958,17 +974,19 @@ pub async fn redeem(
                 "access_until_ms": row.access_until.timestamp_millis(),
                 "inviter": inviter,
                 "org": org,
+                "gpu_server": row.gpu_server,
             }),
         ));
     }
     let (token, jti) = state
         .auth
-        .issue_enrollment_token_with_relay(
+        .issue_enrollment_token_with_options(
             row.inviter_user_id,
             row.tenant_id,
             ENROLLMENT_TTL_SECS,
             false,
             false,
+            row.gpu_server,
         )
         .map_err(|_| ApiError::ServiceUnavailable("Could not mint an enrollment token".into()))?;
     // Fail closed: an enrollment that cannot be recognised as temporary would
@@ -1003,6 +1021,7 @@ pub async fn redeem(
             "access_until_ms": row.access_until.timestamp_millis(),
             "inviter": inviter,
             "org": org,
+            "gpu_server": row.gpu_server,
         }),
     ))
 }
@@ -1927,6 +1946,7 @@ pub async fn create_bound(
         device_proof_hash: None,
         hosts: Vec::new(),
         removal_pending: false,
+        gpu_server: agent.gpu_server,
     };
     storage(coll!(state).insert_one(&row).await)?;
     tracing::info!(invite = %row.id, tenant = %tenant_id, agent = %agent_id, by = %by,
@@ -2363,6 +2383,7 @@ mod tests {
             device_proof_hash: None,
             hosts: Vec::new(),
             removal_pending: false,
+            gpu_server: false,
         }
     }
 

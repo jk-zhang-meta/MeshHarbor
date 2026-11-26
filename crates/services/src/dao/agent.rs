@@ -701,6 +701,59 @@ impl AgentDao {
             .await
     }
 
+    /// FR-139 — mark or unmark an agent as a GPU server (tenant-scoped).
+    pub async fn set_gpu_server(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        gpu_server: bool,
+    ) -> DaoResult<bool> {
+        let res = self
+            .base
+            .collection()
+            .update_one(
+                doc! { "_id": agent_id, "tenant_id": tenant_id, "deleted_at": null },
+                doc! { "$set": {
+                    "gpu_server": gpu_server,
+                    "updated_at": DateTime::now(),
+                } },
+            )
+            .await?;
+        Ok(res.matched_count > 0)
+    }
+
+    /// FR-139 — persist latest static GPU inventory reported by `rc:agent.gpu_inventory`.
+    pub async fn set_gpu_inventory(
+        &self,
+        agent_id: ObjectId,
+        inventory: &meshharbor_remote_control::gpu::GpuInventory,
+    ) -> DaoResult<bool> {
+        let inv_bson = bson::to_bson(inventory).unwrap_or(bson::Bson::Null);
+        self.base
+            .update_by_id(
+                agent_id,
+                doc! { "$set": {
+                    "gpu_inventory": inv_bson,
+                    "updated_at": DateTime::now(),
+                } },
+            )
+            .await
+    }
+
+    /// FR-139 — list all live marked GPU servers in a tenant.
+    pub async fn list_gpu_servers_in_tenant(&self, tenant_id: ObjectId) -> DaoResult<Vec<Agent>> {
+        self.base
+            .find_many(
+                doc! {
+                    "tenant_id": tenant_id,
+                    "gpu_server": true,
+                    "deleted_at": null,
+                },
+                Some(doc! { "name": 1 }),
+            )
+            .await
+    }
+
     /// Phase A-1 graceful shutdown: bulk-offline the agents whose WSs
     /// this pod held (belt-and-braces behind the per-socket teardowns).
     pub async fn mark_status_many(&self, ids: &[ObjectId], status: AgentStatus) -> DaoResult<u64> {

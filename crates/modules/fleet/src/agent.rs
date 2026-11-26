@@ -50,6 +50,8 @@ pub struct EnrollmentTokenResponse {
     pub anchor: bool,
     /// This credential explicitly approves its enrolled device as an org relay.
     pub relay_server: bool,
+    /// FR-139 — automatically mark the enrolled device as a GPU server.
+    pub gpu_server: bool,
 }
 
 /// Optional body for `POST …/agent/enroll-token`. The dashboard (and every
@@ -65,6 +67,9 @@ pub struct EnrollmentTokenRequest {
     /// approving a relay through the per-device policy API. Default off.
     #[serde(default)]
     pub relay_server: bool,
+    /// FR-139 — automatically mark the enrolled device as a GPU server.
+    #[serde(default)]
+    pub gpu_server: bool,
 }
 
 impl EnrollmentTokenRequest {
@@ -126,12 +131,14 @@ pub async fn issue_enrollment_token(
     }
     let anchor = requested.anchor;
     let relay_server = requested.relay_server;
-    let (token, jti) = state.auth.issue_enrollment_token_with_relay(
+    let gpu_server = requested.gpu_server;
+    let (token, jti) = state.auth.issue_enrollment_token_with_options(
         auth.user_id,
         tid,
         ENROLLMENT_TTL_SECS,
         anchor,
         relay_server,
+        gpu_server,
     )?;
     // FR-102 P3 — the issuance on record (the jti, never the token), so the
     // digest can say how many tokens were minted and how many enrolled.
@@ -163,6 +170,7 @@ pub async fn issue_enrollment_token(
         jti,
         anchor,
         relay_server,
+        gpu_server,
     }))
 }
 
@@ -529,6 +537,17 @@ pub async fn enroll_agent(
         tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
             jti = %claims.jti, "fleet: signed enrollment approved relay serving");
     }
+    // FR-139 — single-use enroll tokens and temporary device invites carrying
+    // `gpu_server = true` mark the device as a GPU server immediately on enroll.
+    if claims.gpu_server || invite.as_ref().is_some_and(|i| i.gpu_server) {
+        if let Err(e) = state.agents.set_gpu_server(tid, agent_id, true).await {
+            tracing::warn!(tenant = %tid, agent = %agent_id, error = %e,
+                "fr-139: failed to mark enrolled device as gpu_server");
+        } else {
+            tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
+                "fr-139: enrollment credential marked device as gpu_server");
+        }
+    }
     if let Some(ip) = observed_public_ip {
         let _ = state
             .agents
@@ -671,6 +690,14 @@ async fn enroll_agent_ephemeral(
     let agent_id = agent
         .id
         .ok_or_else(|| ApiError::Internal("agent missing _id".to_string()))?;
+
+    // FR-139 — reusable enrollment keys tagged with `gpu_server = true` mark
+    // every ephemeral device they mint as a GPU server.
+    if key.gpu_server
+        && let Err(e) = state.agents.set_gpu_server(tid, agent_id, true).await
+    {
+        tracing::warn!(%agent_id, %key_id, %e, "fr-139: failed to mark ephemeral device as gpu_server");
+    }
 
     // Control 4 — the per-use audit row: the record that outlives the device
     // row (which will hard-delete). Best-effort — the atomic claim above is
@@ -1021,6 +1048,13 @@ pub struct AgentResponse {
     pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub default_route_vpn: bool,
+    /// FR-139 — whether this device is marked as a GPU server.
+    #[serde(default)]
+    pub gpu_server: bool,
+    /// FR-139 — latest static GPU hardware inventory (populated even on unmarked
+    /// devices so the Devices page can hint "4x A100 detected — mark as GPU server").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_inventory: Option<meshharbor_remote_control::gpu::GpuInventory>,
 }
 
 /// FR-40 — one device's overlay-key rotation as the dashboard reads it:
@@ -2148,6 +2182,8 @@ fn to_agent_response(
         effective_zone_name,
         zone_source,
         default_route_vpn,
+        gpu_server: a.gpu_server,
+        gpu_inventory: a.gpu_inventory,
     }
 }
 

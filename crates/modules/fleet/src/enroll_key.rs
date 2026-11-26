@@ -123,6 +123,9 @@ pub struct MintKeyRequest {
     /// `60..=7 d`. Absent = the server default at reap time.
     #[serde(default)]
     pub ephemeral_ttl_secs: Option<u64>,
+    /// FR-139 — automatically mark devices enrolled with this key as GPU servers.
+    #[serde(default)]
+    pub gpu_server: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,6 +140,7 @@ pub struct MintKeyResponse {
     pub expires_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral_ttl_secs: Option<u64>,
+    pub gpu_server: bool,
 }
 
 /// `POST /api/tenant/{tid}/agent/enroll-key` — mint a reusable ephemeral key.
@@ -187,7 +191,7 @@ pub async fn mint_key(
     let jti = uuid::Uuid::new_v4().simple().to_string();
     let key_row = state
         .enrollment_keys
-        .create(
+        .create_with_gpu(
             tid,
             jti.clone(),
             label,
@@ -195,6 +199,7 @@ pub async fn mint_key(
             max_uses,
             expires_at,
             ttl,
+            body.gpu_server,
         )
         .await?;
     let key_id = key_row
@@ -226,6 +231,7 @@ pub async fn mint_key(
             .try_to_rfc3339_string()
             .unwrap_or_default(),
         ephemeral_ttl_secs: key_row.ephemeral_ttl_secs,
+        gpu_server: key_row.gpu_server,
     }))
 }
 
@@ -242,6 +248,7 @@ pub struct KeyRow {
     pub revoked_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral_ttl_secs: Option<u64>,
+    pub gpu_server: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<String>,
     pub created_at: String,
@@ -277,6 +284,7 @@ pub async fn list_keys(
             expires_at: fmt(k.expires_at),
             revoked_at: k.revoked_at.map(fmt),
             ephemeral_ttl_secs: k.ephemeral_ttl_secs,
+            gpu_server: k.gpu_server,
             last_used_at: k.last_used_at.map(fmt),
             created_at: fmt(k.created_at),
         })

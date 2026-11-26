@@ -40,6 +40,9 @@ pub enum NotificationType {
     /// organization by a person signed in at it. Sent to the org's device
     /// admins; it names the device and nothing of the other organization.
     DeviceMoved,
+    /// FR-139 — owner-only GPU server alert (GPU became free, held-idle, fault,
+    /// or machine offline/driver problem). Older pods read as `Other`.
+    GpuAlert,
     /// A type this build does not know — a newer server's — read as itself
     /// rather than refused, so one new kind of notification cannot fail a
     /// user's whole list on an older pod mid-roll.
@@ -73,6 +76,10 @@ mod tests {
         assert_eq!(
             bson::to_bson(&NotificationType::DeviceMoved).unwrap(),
             bson::Bson::String("device_moved".into())
+        );
+        assert_eq!(
+            bson::to_bson(&NotificationType::GpuAlert).unwrap(),
+            bson::Bson::String("gpu_alert".into())
         );
         let doc = bson::doc! { "t": "quorum_reached" };
         #[derive(Deserialize)]

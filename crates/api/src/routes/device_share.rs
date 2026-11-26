@@ -46,6 +46,14 @@ pub struct CreateShare {
     #[serde(default)]
     pub ssh_account: Option<String>,
 }
+/// FR-139 — live GPU summary carried by default on shared GPU server rows.
+#[derive(Serialize, Clone)]
+pub struct ShareGpuSummary {
+    pub gpu_total: usize,
+    pub gpu_free: usize,
+    pub status: meshharbor_remote_control::gpu::GpuHostStatus,
+}
+
 #[derive(Serialize)]
 pub struct ShareView {
     pub id: String,
@@ -68,6 +76,13 @@ pub struct ShareView {
     pub owner_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_username: Option<String>,
+    /// FR-139 — carried by default whenever the shared device is marked as a GPU server.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_server: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_inventory: Option<meshharbor_remote_control::gpu::GpuInventory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_summary: Option<ShareGpuSummary>,
 }
 impl From<DeviceShareGrant> for ShareView {
     fn from(g: DeviceShareGrant) -> Self {
@@ -86,10 +101,13 @@ impl From<DeviceShareGrant> for ShareView {
             device_name: None,
             owner_username: None,
             recipient_username: None,
+            gpu_server: false,
+            gpu_inventory: None,
+            gpu_summary: None,
         }
     }
 }
-/// Attach device and account names to share records in two batched reads.
+/// Attach device, GPU metadata, and account names to share records in batched reads.
 async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareView>, ApiError> {
     let devices: Vec<ObjectId> = grants
         .iter()
@@ -103,7 +121,8 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let device_names: HashMap<ObjectId, String> = if devices.is_empty() {
+    let agent_map: HashMap<ObjectId, meshharbor_remote_control::models::Agent> = if devices.is_empty()
+    {
         HashMap::new()
     } else {
         AgentDao::new(&core.db)
@@ -111,9 +130,55 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
             .find_by_ids(&devices)
             .await?
             .into_iter()
-            .filter_map(|a| a.id.map(|id| (id, a.name)))
+            .filter_map(|a| a.id.map(|id| (id, a)))
             .collect()
     };
+    let gpu_device_ids: Vec<ObjectId> = agent_map
+        .iter()
+        .filter(|(_, a)| a.gpu_server)
+        .map(|(id, _)| *id)
+        .collect();
+    let mut gpu_summaries: HashMap<ObjectId, ShareGpuSummary> = HashMap::new();
+    if !gpu_device_ids.is_empty()
+        && let Ok(mut cur) = core
+            .db
+            .collection::<bson::Document>("gpu_snapshot")
+            .find(doc! { "_id": { "$in": &gpu_device_ids } })
+            .await
+    {
+        use futures::TryStreamExt as _;
+        let now_s = chrono::Utc::now().timestamp();
+        let thresholds = meshharbor_remote_control::gpu::GpuStateThresholds::default();
+        while let Ok(Some(d)) = cur.try_next().await {
+            if let Ok(aid) = d.get_object_id("_id")
+                && let Ok(rep_bson) = d.get_document("report")
+                && let Ok(rep) =
+                    bson::from_document::<meshharbor_remote_control::gpu::GpuReport>(rep_bson.clone())
+            {
+                let gpu_total = rep.gpus.len();
+                let gpu_free = rep
+                    .gpus
+                    .iter()
+                    .filter(|g| {
+                        meshharbor_remote_control::gpu::classify_gpu_state(
+                            rep.status,
+                            g,
+                            now_s,
+                            thresholds,
+                        ) == meshharbor_remote_control::gpu::GpuState::Free
+                    })
+                    .count();
+                gpu_summaries.insert(
+                    aid,
+                    ShareGpuSummary {
+                        gpu_total,
+                        gpu_free,
+                        status: rep.status,
+                    },
+                );
+            }
+        }
+    }
     let usernames: HashMap<ObjectId, String> = if people.is_empty() {
         HashMap::new()
     } else {
@@ -130,7 +195,20 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
         .map(|g| {
             let (device, owner, recipient) = (g.device_id, g.owner_user_id, g.recipient_user_id);
             let mut view = ShareView::from(g);
-            view.device_name = device_names.get(&device).cloned();
+            if let Some(a) = agent_map.get(&device) {
+                view.device_name = Some(a.name.clone());
+                if a.gpu_server {
+                    view.gpu_server = true;
+                    view.gpu_inventory = a.gpu_inventory.clone();
+                    view.gpu_summary = gpu_summaries.get(&device).cloned().or_else(|| {
+                        a.gpu_inventory.as_ref().map(|inv| ShareGpuSummary {
+                            gpu_total: inv.gpus.len(),
+                            gpu_free: 0,
+                            status: inv.status,
+                        })
+                    });
+                }
+            }
             view.owner_username = usernames.get(&owner).cloned();
             view.recipient_username = usernames.get(&recipient).cloned();
             view

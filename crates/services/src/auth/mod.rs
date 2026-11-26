@@ -102,6 +102,11 @@ pub struct EnrollmentClaims {
     /// approve the device as an org relay. Never a device-supplied role.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relay_server: bool,
+    /// FR-139 — when `true`, the enrolled device is automatically marked
+    /// `Agent.gpu_server = true` (carried by GPU-tagged enroll tokens and
+    /// device invitations).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_server: bool,
 }
 
 /// Claims carried by a remote-control agent token (aud = agent).
@@ -630,6 +635,27 @@ impl AuthService {
         anchor: bool,
         relay_server: bool,
     ) -> Result<(String, String), AuthError> {
+        self.issue_enrollment_token_with_options(
+            admin_user_id,
+            tenant_id,
+            ttl_secs,
+            anchor,
+            relay_server,
+            false,
+        )
+    }
+
+    /// Mint a single-use enrollment token with optional anchor, relay-server,
+    /// and FR-139 `gpu_server` flags.
+    pub fn issue_enrollment_token_with_options(
+        &self,
+        admin_user_id: ObjectId,
+        tenant_id: ObjectId,
+        ttl_secs: u64,
+        anchor: bool,
+        relay_server: bool,
+        gpu_server: bool,
+    ) -> Result<(String, String), AuthError> {
         let now = Utc::now();
         let jti = uuid_v4_hex();
         let claims = EnrollmentClaims {
@@ -642,6 +668,7 @@ impl AuthService {
             jti: jti.clone(),
             anchor,
             relay_server,
+            gpu_server,
         };
         let token = encode(&self.header(), &claims, &self.signing.encoding)
             .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
@@ -680,6 +707,7 @@ impl AuthService {
             // Reusable keys grant neither host anchoring nor relay approval.
             anchor: false,
             relay_server: false,
+            gpu_server: false,
         };
         encode(&self.header(), &claims, &self.signing.encoding)
             .map_err(|e| AuthError::InvalidToken(e.to_string()))

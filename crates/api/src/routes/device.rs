@@ -153,6 +153,10 @@ pub struct DeviceRow {
     pub zone_source: Option<meshharbor_remote_control::models::ZoneSource>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub default_route_vpn: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu_server: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_inventory: Option<meshharbor_remote_control::gpu::GpuInventory>,
 }
 
 /// GET /api/tenant/{tenant_id}/device — membership-gated like every other
@@ -564,6 +568,8 @@ pub(crate) fn agent_row(
         effective_zone_name,
         zone_source,
         default_route_vpn,
+        gpu_server: a.gpu_server,
+        gpu_inventory: a.gpu_inventory,
     }
 }
 
@@ -642,6 +648,8 @@ pub(crate) fn client_row(
         effective_zone_name,
         zone_source,
         default_route_vpn: false,
+        gpu_server: false,
+        gpu_inventory: None,
     }
 }
 

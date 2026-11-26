@@ -67,6 +67,80 @@ pub struct Settings {
     /// FR-115 P4a — the relay allowance on DERP. Absent ⇒ off.
     #[serde(default)]
     pub relay_allowance: RelayAllowanceSettings,
+    /// FR-139 — GPU servers at a glance (`MESHHARBOR__GPU__*`). Absent ⇒ on
+    /// with documented defaults.
+    #[serde(default)]
+    pub gpu: GpuSettings,
+}
+
+/// FR-139 — `[gpu]`, env `MESHHARBOR__GPU__*`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct GpuSettings {
+    /// Master switch for GPU fleet endpoints, leases, and rollups. Default ON.
+    #[serde(default = "gpu_default_true")]
+    pub enabled: bool,
+    /// Live sampling cadence when a viewer is active (ms). Default 2000 ms.
+    #[serde(default = "gpu_default_live_interval_ms")]
+    pub live_interval_ms: u32,
+    /// Enable GPU alert evaluation (in-app + desktop companion). Default ON.
+    #[serde(default = "gpu_default_true")]
+    pub alerts: bool,
+    /// Enable GPU bot channel delivery (Feishu/DingTalk/WeCom/Webhook). Default ON.
+    #[serde(default = "gpu_default_true")]
+    pub bots: bool,
+    /// Free-VRAM ceiling in MiB (default 1024).
+    #[serde(default = "gpu_default_free_mem_max_mb")]
+    pub free_mem_max_mb: u32,
+    /// Utilization percentage threshold for idle classification (default 5).
+    #[serde(default = "gpu_default_idle_util_pct")]
+    pub idle_util_pct: u8,
+    /// Continuous idle duration (seconds) before `held_idle` (default 1800 = 30 min).
+    #[serde(default = "gpu_default_held_idle_secs")]
+    pub held_idle_secs: i64,
+    /// Continuous free duration (seconds) before free-GPU alert fires (default 120).
+    #[serde(default = "gpu_default_free_hold_secs")]
+    pub free_hold_secs: i64,
+    /// Per-(host, event) alert cooldown in seconds (default 600 = 10 min).
+    #[serde(default = "gpu_default_cooldown_secs")]
+    pub cooldown_secs: i64,
+}
+
+fn gpu_default_true() -> bool {
+    true
+}
+fn gpu_default_live_interval_ms() -> u32 {
+    2000
+}
+fn gpu_default_free_mem_max_mb() -> u32 {
+    1024
+}
+fn gpu_default_idle_util_pct() -> u8 {
+    5
+}
+fn gpu_default_held_idle_secs() -> i64 {
+    1800
+}
+fn gpu_default_free_hold_secs() -> i64 {
+    120
+}
+fn gpu_default_cooldown_secs() -> i64 {
+    600
+}
+
+impl Default for GpuSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            live_interval_ms: gpu_default_live_interval_ms(),
+            alerts: true,
+            bots: true,
+            free_mem_max_mb: gpu_default_free_mem_max_mb(),
+            idle_util_pct: gpu_default_idle_util_pct(),
+            held_idle_secs: gpu_default_held_idle_secs(),
+            free_hold_secs: gpu_default_free_hold_secs(),
+            cooldown_secs: gpu_default_cooldown_secs(),
+        }
+    }
 }
 
 /// FR-90 P3-1 — `[vault]`, env `MESHHARBOR__VAULT__*`.
