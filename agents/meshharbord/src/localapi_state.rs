@@ -620,6 +620,218 @@ impl DaemonState {
         self
     }
 
+    /// FR-139 — resolve `(connected, tenant_id)` for a requested org label
+    /// (`""` / `"primary"` → primary enrollment; otherwise an enabled secondary
+    /// enrollment in `self.orgs`). Returns `None` for unknown or disabled orgs
+    /// so `SelfView` reports `unknown_org` / `org_disabled` unchanged.
+    fn org_connection_and_tenant(&self, org: &str) -> Option<(bool, String)> {
+        let label = org.trim();
+        let is_primary =
+            label.is_empty() || label.eq_ignore_ascii_case(crate::config::PRIMARY_ORG_LABEL);
+        if is_primary {
+            let tid = self.tenant_id.clone()?;
+            return Some((self.connected.load(Ordering::Relaxed), tid));
+        }
+        let rows = self.orgs.as_ref()?.lock().ok()?;
+        let row = rows.iter().find(|r| r.label == label && r.enabled)?;
+        if row.tenant_id.is_empty() {
+            return None;
+        }
+        Some((
+            row.connected.load(Ordering::Relaxed),
+            row.tenant_id.clone(),
+        ))
+    }
+
+    /// FR-139 — synthesize a [`tunnel_core::localapi::DevicesPage`] while the
+    /// org's coordination server is unreachable, combining the live direct
+    /// overlay view with authenticated `p2pctl::query_device_info` probes
+    /// (bounded to 800 ms so `mh rdp`'s 1500 ms resolver never times out).
+    async fn synthesize_offline_devices_page(
+        &self,
+        org: &str,
+        query: &tunnel_core::localapi::DevicesQuery,
+    ) -> Option<tunnel_core::localapi::DevicesPage> {
+        use std::net::Ipv4Addr;
+        use tunnel_core::localapi::{DeviceRowLite, DevicesPage};
+
+        let (_connected, tenant_id) = self.org_connection_and_tenant(org)?;
+        let label = org.trim();
+        let is_primary =
+            label.is_empty() || label.eq_ignore_ascii_case(crate::config::PRIMARY_ORG_LABEL);
+        let view = if is_primary {
+            self.overlay.borrow().clone()
+        } else {
+            let views = self.org_views.as_ref()?.lock().ok()?;
+            views.iter().find(|(l, _)| l == label)?.1.borrow().clone()
+        };
+
+        let direct_peers: Vec<PeerInfo> = view
+            .peers
+            .into_iter()
+            .filter(|p| p.connection == ConnectionType::Direct)
+            .collect();
+        if direct_peers.is_empty() && view.self_ip.is_none() {
+            return None;
+        }
+
+        let needle = query
+            .q
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase);
+        let matches_query = |name: &str, id: &str, ip: Option<&str>| -> bool {
+            let Some(ref n) = needle else {
+                return true;
+            };
+            name.to_ascii_lowercase().contains(n)
+                || id.to_ascii_lowercase().contains(n)
+                || ip.is_some_and(|addr| addr.to_ascii_lowercase().contains(n))
+        };
+
+        let mut rows: Vec<DeviceRowLite> = Vec::new();
+        let self_name = self.name.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if matches_query(&self_name, &self.node_id, view.self_ip.as_deref()) {
+            let rdp = crate::rdp_caps::current();
+            rows.push(DeviceRowLite {
+                kind: "agent".into(),
+                id: self.node_id.clone(),
+                name: self_name,
+                display_name: None,
+                os: std::env::consts::OS.to_string(),
+                version: self.version.clone(),
+                presence: "offline".into(),
+                is_online: false,
+                last_seen_at: String::new(),
+                overlay_ip: view.self_ip.clone(),
+                overlay_node_id: None,
+                magic_dns_name: None,
+                magic_dns_fqdn: None,
+                tags: Vec::new(),
+                reachable: true,
+                ephemeral: self.ephemeral,
+                is_self: true,
+                rdp_available: Some(rdp.available),
+                rdp_port: rdp.port,
+                rdp_cert_sha256: rdp.cert_sha256,
+                rdp_mesh_reachable: Some(rdp.available),
+                ..Default::default()
+            });
+        }
+
+        // Filter direct peers by `query.q` BEFORE probing p2pctl so targeted
+        // lookups (like `mh rdp` passing `q = dial_ip`) probe only 1 peer.
+        let matching_peers: Vec<PeerInfo> = direct_peers
+            .into_iter()
+            .filter(|p| {
+                let id_for_match = p.agent_id.as_deref().unwrap_or(&p.node_id);
+                matches_query(&p.name, id_for_match, p.overlay_ip.as_deref())
+                    || matches_query(&p.name, &p.node_id, p.overlay_ip.as_deref())
+            })
+            .collect();
+
+        // Concurrently probe up to 8 matching peers with an 800 ms total cap.
+        let probe_targets: Vec<Ipv4Addr> = matching_peers
+            .iter()
+            .filter_map(|p| p.overlay_ip.as_deref()?.parse::<Ipv4Addr>().ok())
+            .take(8)
+            .collect();
+        let mut probed: HashMap<Ipv4Addr, meshharbor_remote_control::p2pctl::P2pDeviceInfo> =
+            HashMap::new();
+        if !probe_targets.is_empty() {
+            let futs = probe_targets.into_iter().map(|ip| {
+                let tid = tenant_id.clone();
+                async move {
+                    let info =
+                        crate::p2pctl::query_device_info(&tid, ip, Duration::from_millis(750))
+                            .await;
+                    (ip, info)
+                }
+            });
+            if let Ok(results) =
+                tokio::time::timeout(Duration::from_millis(800), futures::future::join_all(futs))
+                    .await
+            {
+                for (ip, info) in results {
+                    if let Some(info) = info {
+                        probed.insert(ip, info);
+                    }
+                }
+            }
+        }
+
+        for p in matching_peers {
+            let info = p
+                .overlay_ip
+                .as_deref()
+                .and_then(|s| s.parse::<Ipv4Addr>().ok())
+                .and_then(|ip| probed.get(&ip));
+            let id = p.agent_id.clone().unwrap_or_else(|| p.node_id.clone());
+            rows.push(DeviceRowLite {
+                kind: "agent".into(),
+                id,
+                name: p.name.clone(),
+                display_name: None,
+                os: info.map(|i| i.os.clone()).unwrap_or_default(),
+                version: info.map(|i| i.version.clone()).unwrap_or_default(),
+                presence: "online".into(),
+                is_online: true,
+                last_seen_at: String::new(),
+                overlay_ip: p.overlay_ip.clone(),
+                overlay_node_id: Some(p.node_id.clone()),
+                magic_dns_name: None,
+                magic_dns_fqdn: None,
+                tags: Vec::new(),
+                reachable: true,
+                ephemeral: false,
+                is_self: false,
+                rdp_available: info.and_then(|i| i.rdp_available),
+                rdp_port: info.and_then(|i| i.rdp_port),
+                rdp_cert_sha256: info.and_then(|i| i.rdp_cert_sha256.clone()),
+                rdp_mesh_reachable: info.and_then(|i| i.rdp_available),
+                ..Default::default()
+            });
+        }
+
+        let total = rows.len() as u64;
+        let per_page = if query.per_page == 0 {
+            50
+        } else {
+            query.per_page.clamp(1, 100)
+        };
+        let page = query.page.max(1);
+        let total_pages = if total == 0 {
+            1
+        } else {
+            total.div_ceil(per_page)
+        };
+        let start = ((page - 1) * per_page) as usize;
+        let items: Vec<DeviceRowLite> = rows
+            .into_iter()
+            .skip(start)
+            .take(per_page as usize)
+            .collect();
+        let org_out = if is_primary {
+            crate::config::PRIMARY_ORG_LABEL.to_string()
+        } else {
+            label.to_string()
+        };
+        Some(DevicesPage {
+            org: org_out,
+            items,
+            total,
+            page,
+            per_page,
+            total_pages,
+            overlay: "ok".into(),
+            acl_mode: crate::p2pctl::tenant_acl_mode(&tenant_id)
+                .unwrap_or_else(|| "unknown".into()),
+            self_node_id: None,
+            org_name: None,
+        })
+    }
+
     /// Resolve a `ping` target — a literal overlay IP (either family) or a peer
     /// **name** — against the live mesh view. Mirrors the netstack SOCKS
     /// front's resolver (bare label / first DNS label), but reads the view
@@ -951,12 +1163,16 @@ impl LocalApiState for DaemonState {
     }
 
     fn peers(&self) -> Vec<PeerInfo> {
-        // A peer list from a dropped connection is misleading — the carriers are
-        // gone. Report none until reconnected + re-synced.
-        if !self.connected.load(Ordering::Relaxed) {
-            return Vec::new();
-        }
+        // FR-139 — when control WS is down, relayed carriers are stale/gone,
+        // but active Direct LAN/loopback carriers continue flowing through the
+        // persistent overlay runtime. Retain only live `Direct` peers while
+        // disconnected so `mh peers`, `mh rdp`, and Companion see reachable
+        // local peers without reporting dead relay peers.
+        let primary_connected = self.connected.load(Ordering::Relaxed);
         let mut peers = self.overlay.borrow().peers.clone();
+        if !primary_connected {
+            peers.retain(|p| p.connection == ConnectionType::Direct);
+        }
         // Multi-org — append every SECONDARY org's mesh, labelled. Each org
         // runs its own overlay engine with a DISJOINT peer set and address
         // space, so without the label a merged list is ambiguous (the same
@@ -967,17 +1183,32 @@ impl LocalApiState for DaemonState {
             && let Ok(views) = views.lock()
             && !views.is_empty()
         {
-            let primary_label = self
+            let (primary_label, sec_conn_map): (String, HashMap<String, bool>) = self
                 .orgs
                 .as_ref()
                 .and_then(|o| o.lock().ok())
-                .and_then(|rows| rows.iter().find(|r| r.primary).map(|r| r.label.clone()))
-                .unwrap_or_else(|| "primary".to_string());
+                .map(|rows| {
+                    let pl = rows
+                        .iter()
+                        .find(|r| r.primary)
+                        .map(|r| r.label.clone())
+                        .unwrap_or_else(|| "primary".to_string());
+                    let map = rows
+                        .iter()
+                        .map(|r| (r.label.clone(), r.connected.load(Ordering::Relaxed)))
+                        .collect();
+                    (pl, map)
+                })
+                .unwrap_or_else(|| ("primary".to_string(), HashMap::new()));
             for p in &mut peers {
                 p.org = primary_label.clone();
             }
             for (label, rx) in views.iter() {
+                let sec_connected = sec_conn_map.get(label).copied().unwrap_or(primary_connected);
                 let mut org_peers = rx.borrow().peers.clone();
+                if !sec_connected {
+                    org_peers.retain(|p| p.connection == ConnectionType::Direct);
+                }
                 for p in &mut org_peers {
                     p.org = label.clone();
                 }
@@ -986,7 +1217,9 @@ impl LocalApiState for DaemonState {
         }
         // P3b-3: overlay a peer as `Tunnel` when its WG carrier is down and the
         // daemon reaches its backing agent via a live tunnel flow.
-        apply_tunnel_override(&mut peers, &self.tunnel_hub.active_flow_agent_ids());
+        if primary_connected {
+            apply_tunnel_override(&mut peers, &self.tunnel_hub.active_flow_agent_ids());
+        }
         // P3b-3: fill `rtt_ms` from the ICMP prober cache (netstack nodes via
         // the userspace pinger; OS-TUN nodes via `OsPinger` since P8-cosmetics).
         // A stale entry (peer stopped answering) is dropped so the column fades
@@ -2111,7 +2344,28 @@ impl LocalApiState for DaemonState {
     /// ([`crate::person_socket::or_machine_view`]).
     async fn devices(&self, org: &str, query: &tunnel_core::localapi::DevicesQuery) -> Response {
         let own = match &self.self_view {
-            Some(view) => view.devices(org, query).await,
+            Some(view) => {
+                // FR-139 — when this org's control WS is known offline, skip
+                // the 5 s HTTP connect timeout and synthesize the DevicesPage
+                // directly from live direct overlay peers + authenticated
+                // `p2pctl::query_device_info` so `mh rdp` (1.5 s budget) and
+                // Companion stay fast without WAN.
+                if let Some((connected, _tenant)) = self.org_connection_and_tenant(org)
+                    && !connected
+                    && let Some(page) = self.synthesize_offline_devices_page(org, query).await
+                {
+                    Response::Devices(Box::new(page))
+                } else {
+                    let resp = view.devices(org, query).await;
+                    if matches!(resp, Response::Upstream { ref code, .. } if code == "server_unreachable")
+                        && let Some(page) = self.synthesize_offline_devices_page(org, query).await
+                    {
+                        Response::Devices(Box::new(page))
+                    } else {
+                        resp
+                    }
+                }
+            }
             None => Response::Upstream {
                 code: "unsupported".into(),
                 message: "this daemon was started without a server identity to ask".into(),
@@ -2952,6 +3206,96 @@ mod tests {
 
         // Flows are empty on the agent side in P1.
         assert!(st.flows().is_empty());
+    }
+
+    #[test]
+    fn fr139_peers_retain_direct_peers_while_offline_and_drop_relay_peers() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let mut v = view();
+        let mut direct_peer = v.peers[0].clone();
+        direct_peer.node_id = "peer-direct".into();
+        direct_peer.agent_id = Some("agent-direct".into());
+        direct_peer.name = "lan-peer".into();
+        direct_peer.overlay_ip = Some("100.64.0.9".into());
+        direct_peer.connection = ConnectionType::Direct;
+        v.peers.push(direct_peer);
+        let (_tx, rx) = watch::channel(v);
+        let st = DaemonState::new(
+            "aid".into(),
+            "host".into(),
+            DaemonMode::Service,
+            Some("tid".into()),
+            connected,
+            rx,
+            consent_broker("fr139-direct-peers"),
+            None,
+            crate::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            empty_rtt_cache(),
+        );
+        let offline_peers = st.peers();
+        assert_eq!(offline_peers.len(), 1);
+        assert_eq!(offline_peers[0].node_id, "peer-direct");
+        assert_eq!(offline_peers[0].connection, ConnectionType::Direct);
+    }
+
+    #[tokio::test]
+    async fn fr139_offline_devices_synthesizes_direct_peers_without_5s_http_timeout() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let mut v = view();
+        let mut direct_peer = v.peers[0].clone();
+        direct_peer.node_id = "peer-direct-2".into();
+        direct_peer.agent_id = Some("agent-direct-2".into());
+        direct_peer.name = "studio-lan".into();
+        direct_peer.overlay_ip = Some("100.64.0.42".into());
+        direct_peer.connection = ConnectionType::Direct;
+        v.peers.push(direct_peer);
+        let (_tx, rx) = watch::channel(v);
+        let registry: crate::self_view::OrgHttpRegistry =
+            Arc::new(Mutex::new(vec![crate::self_view::OrgHttp {
+                label: "primary".into(),
+                server_url: "https://192.0.2.1:9".into(),
+                token: crate::token_slot::TokenSlot::new("tok"),
+                primary: true,
+                enabled: true,
+            }]));
+        let st = DaemonState::new(
+            "aid".into(),
+            "host".into(),
+            DaemonMode::Service,
+            Some("tid-offline-dev".into()),
+            connected,
+            rx,
+            consent_broker("fr139-offline-dev"),
+            None,
+            crate::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            empty_rtt_cache(),
+        )
+        .with_org_http(registry);
+
+        let q = tunnel_core::localapi::DevicesQuery {
+            page: 1,
+            per_page: 50,
+            q: Some("100.64.0.42".into()),
+            sort: None,
+            dir: None,
+        };
+        let started = Instant::now();
+        let resp = st.devices("", &q).await;
+        // Must bypass SelfView's 5 s HTTP connect timeout while disconnected.
+        assert!(
+            started.elapsed() < Duration::from_millis(1200),
+            "offline devices() took too long: {:?}",
+            started.elapsed()
+        );
+        match resp {
+            Response::Devices(page) => {
+                assert_eq!(page.items.len(), 1);
+                assert_eq!(page.items[0].name, "studio-lan");
+                assert_eq!(page.items[0].overlay_ip.as_deref(), Some("100.64.0.42"));
+                assert!(page.items[0].reachable);
+            }
+            other => panic!("expected synthesized Devices page, got {other:?}"),
+        }
     }
 
     #[test]

@@ -2618,6 +2618,12 @@ pub enum ClientMsg {
         /// the rest. Absent from an older node ⇒ `false` ⇒ ICMP.
         #[serde(default)]
         supports_overlay_echo: bool,
+        /// FR-139 — this node serves the authenticated overlay P2P control
+        /// plane (`p2pctl` on TCP port 41642). Echoed per-peer in the netmap
+        /// (and cached locally) so origins never dial `41642` on pre-FR-139
+        /// peers where an unprivileged local listener could squat on the port.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_p2pctl: bool,
         /// FR-19 — this node UNDERSTANDS `rc:overlay.relay_session` /
         /// `rc:overlay.relay_revoke` and the `org-relay` verdict. The server
         /// never pushes those to a node that has not said so: an unknown
@@ -6814,6 +6820,11 @@ pub struct NetmapPeer {
     /// the rest. Pre-capability server/peer ⇒ `false` ⇒ ICMP.
     #[serde(default)]
     pub supports_overlay_echo: bool,
+    /// FR-139 — echoed from `ClientMsg::OverlayJoin::supports_p2pctl` (and
+    /// preserved in the signed local netmap cache). Default `false` for
+    /// pre-FR-139 peers so origins never dial `41642` on legacy hosts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_p2pctl: bool,
     /// Phase A (overlay v3) — this peer advertised the DERP always-on floor
     /// (its `/derp` mux is permanently open + registered). A pair is floored
     /// at birth only when BOTH ends carry this. Pre-floor server/peer ⇒
@@ -12009,6 +12020,7 @@ mod tests {
             supports_derp: true,
             supports_forced_derp: true,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             supports_org_relay_multi_candidate: false,
             supports_org_relay_discovery_cursor: false,
@@ -12769,6 +12781,7 @@ mod tests {
                 supports_derp_floor: false,
                 supports_org_relay: false,
                 supports_overlay_echo: false,
+                supports_p2pctl: false,
                 relay_strategy: Some(RelayStrategyWire::SingleRelayDialer),
                 prefer_relay_ms: None,
                 routes: vec!["10.0.0.0/24".into()],

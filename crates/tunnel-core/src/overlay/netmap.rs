@@ -87,6 +87,10 @@ pub struct PeerConfig {
     /// carrier data-probe uses the engine echo toward such peers and the
     /// ICMP echo toward the rest. Pre-capability peer ⇒ `false` ⇒ ICMP.
     pub supports_overlay_echo: bool,
+    /// FR-139 — the peer runs the overlay-intercepted `p2pctl` server on TCP
+    /// port `41642`. Origins gate dialing on this bit so a legacy node or a
+    /// node with `p2p_control_enabled = false` is never probed on `41642`.
+    pub supports_p2pctl: bool,
     /// U2 — the server's relay-tier verdict for this edge, or `None` when the
     /// server didn't stamp one (pre-U2 server, or either end unflagged). When
     /// present AND our own `server_relay_strategy_enabled()` is on, the
@@ -136,6 +140,7 @@ pub fn peer_config_from_netmap(peer: &NetmapPeer) -> Option<PeerConfig> {
         supports_forced_derp: peer.supports_forced_derp,
         supports_derp_floor: peer.supports_derp_floor,
         supports_overlay_echo: peer.supports_overlay_echo,
+        supports_p2pctl: peer.supports_p2pctl,
         relay_strategy: peer.relay_strategy,
         relay_home: peer.relay_home.clone(),
         warm_relay_endpoint: peer.warm_relay_endpoint.clone(),
@@ -171,6 +176,7 @@ mod tests {
             supports_derp_floor: false,
             supports_org_relay: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             relay_strategy: None,
             prefer_relay_ms: None,
             routes: vec![],

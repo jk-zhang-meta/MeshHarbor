@@ -364,6 +364,7 @@ pub async fn enroll_with_existing_identity(
         overlay_stun_urls: None,
         overlay_turn_relay: None,
         overlay_netmap_cache: None,
+        p2p_control_enabled: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,

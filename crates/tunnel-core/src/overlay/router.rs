@@ -219,6 +219,10 @@ impl LocalScope {
     pub fn is_self_dst(&self, dst: Option<Ipv4Addr>) -> bool {
         matches!((self.self_ip, dst), (Some(a), Some(b)) if a == b)
     }
+
+    pub fn has_self_ip(&self) -> bool {
+        self.self_ip.is_some()
+    }
 }
 
 /// Why a decapsulated packet's source address failed the reverse-path check.
@@ -736,6 +740,20 @@ impl Router {
             active.insert(best_cidr, *winner);
         }
         Some(*winner)
+    }
+
+    /// FR-139 — strict exact `/32` peer-source verification for the overlay
+    /// P2P control plane (`P2P_CTL_PORT = 41642`).
+    ///
+    /// Returns `true` ONLY when `src` maps directly to `from` in the exact
+    /// per-peer `/32` table (`by_ip`) — refusing spoofed peer IPs, unknown
+    /// sources, AND routed subnet sources behind a subnet router.
+    pub fn is_exact_peer_src(&self, from: &[u8; 32], src: IpAddr) -> bool {
+        let v4 = match src {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(v6) => embedded_v4_of_overlay_v6(v6),
+        };
+        v4.is_some_and(|ip| self.by_ip.get(&ip) == Some(from))
     }
 
     /// P4 / B5 — **reverse-path check**: may the peer `from` originate a packet

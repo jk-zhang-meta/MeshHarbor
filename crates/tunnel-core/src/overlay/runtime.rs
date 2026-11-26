@@ -3636,6 +3636,11 @@ impl OverlayRuntime {
             // Data-probe — this build's engine answers the overlay-native
             // echo inline (wired in `process_inbound`), so advertise it.
             supports_overlay_echo: true,
+            // FR-139 — unified overlay P2P control plane (`p2pctl`, TCP 41642).
+            // Advertised only when enabled on this node so pre-FR-139 peers or
+            // nodes that disabled `p2p_control_enabled` are never dialed on
+            // TCP 41642.
+            supports_p2pctl: crate::env::flag("P2P_CONTROL_ENABLED", true),
             // FR-19 P4b — advertised only with `overlay_org_relay` on: the
             // server pushes `relay_session` frames only to a node that says it
             // can act on them, and a session on a build that cannot is a black
@@ -7854,6 +7859,7 @@ mod tests {
             supports_derp_floor: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -8270,6 +8276,7 @@ mod tests {
             supports_forced_derp: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -8471,6 +8478,7 @@ mod tests {
                 supports_forced_derp: false,
                 caps: None,
                 supports_overlay_echo: false,
+                supports_p2pctl: false,
                 supports_org_relay: false,
                 relay_strategy: None,
                 prefer_relay_ms: None,
@@ -11770,6 +11778,7 @@ mod tests {
                 supports_derp_floor: false,
                 caps: None,
                 supports_overlay_echo: false,
+                supports_p2pctl: false,
                 supports_org_relay: false,
                 relay_strategy: None,
                 prefer_relay_ms: None,
@@ -12030,6 +12039,7 @@ mod tests {
             supports_derp_floor: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -12692,6 +12702,7 @@ mod tests {
             prefer_relay_ms: None,
             backbone_only: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             routes: vec![],
             agent_id: None,
@@ -13080,6 +13091,7 @@ mod tests {
             supports_derp_floor: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -13258,6 +13270,7 @@ mod tests {
             supports_derp_floor: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -15225,6 +15238,7 @@ mod org_upgrade_tests {
             supports_forced_derp: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             relay_strategy: None,
             prefer_relay_ms: None,
@@ -16494,6 +16508,7 @@ mod org_upgrade_tests {
             prefer_relay_ms: None,
             backbone_only: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             routes: vec![],
             agent_id: None,
@@ -16983,6 +16998,7 @@ mod org_upgrade_tests {
             prefer_relay_ms: Some(30_000),
             backbone_only: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_derp_floor: false,
             routes: vec![],
             agent_id: None,
@@ -17012,6 +17028,7 @@ mod org_upgrade_tests {
             prefer_relay_ms: None,
             backbone_only: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_derp_floor: false,
             routes: vec![],
             agent_id: None,

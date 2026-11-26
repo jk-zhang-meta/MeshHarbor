@@ -878,6 +878,7 @@ pub fn drop_runtime_slot(tenant_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(tenant_id);
+    crate::p2pctl::clear_tenant_directory(tenant_id);
 }
 
 /// rc.307 (B) — the process-lifetime runtime slots. The overlay runtime used
@@ -1125,7 +1126,9 @@ pub async fn maybe_start(
     // same on a server, a multi-org host and a locked-down corp laptop.
     // No-op (and byte-for-byte the old path) unless `ssh_enabled` is on.
     let activity_sink_for_slot = services.activity.clone();
-    let tun_factory = crate::ssh::maybe_intercept(tun_factory, cfg, services);
+    let p2p_ctx = crate::p2pctl::enabled(cfg)
+        .then(|| crate::p2pctl::ServerCtx::new(cfg, keypair.clone(), services.clone()));
+    let tun_factory = crate::ssh::maybe_intercept(tun_factory, cfg, services, p2p_ctx);
     // P5 exit-node client — resolve the coordination server's IPs NOW, while the
     // uplink is still clean (before any split-default is installed), so exit
     // routing can exempt them. Only when this node opts into an exit node.
@@ -1194,7 +1197,25 @@ pub async fn maybe_start(
             None
         };
 
-    let snapshot_sink = crate::overlay_cache::snapshot_sink(config_path, cfg, &keypair);
+    let disk_sink = crate::overlay_cache::snapshot_sink(config_path, cfg, &keypair);
+    let dir_tenant = cfg.tenant_id.clone();
+    let dir_agent = cfg.agent_id.clone();
+    let dir_kp = keypair.clone();
+    let snapshot_sink: Option<tunnel_core::overlay::runtime::NetmapSnapshotSink> =
+        Some(Arc::new(move |snap| {
+            crate::p2pctl::update_tenant_directory(
+                &dir_tenant,
+                &dir_agent,
+                &dir_kp,
+                &snap.self_ip,
+                &snap.network,
+                &snap.peers,
+                effective_socks_port,
+            );
+            if let Some(ref sink) = disk_sink {
+                sink(snap);
+            }
+        }));
     let rt = OverlayRuntime::new_relay(keypair, outbound, tun_factory, OVERLAY_MTU)
         .with_netmap_snapshot_sink(snapshot_sink)
         // FR-40 — the epoch persisted next to the key, bumped per rotation;
@@ -1275,6 +1296,16 @@ pub async fn seed_from_cache(
         .and_then(WgKeypair::from_secret_base64)?;
     let cached = crate::overlay_cache::load_verified(config_path, cfg, &keypair)?;
     let learned_endpoints = tunnel_core::overlay::netmap_cache::learned_socket_addrs(&cached);
+    crate::p2pctl::update_tenant_directory(
+        &cfg.tenant_id,
+        &cfg.agent_id,
+        &keypair,
+        &cached.self_ip,
+        &cached.network,
+        &cached.peers,
+        netstack_socks_port(cfg)
+            .or_else(|| crate::overlay_supervision::effective_socks5_port(&cfg.tenant_id)),
+    );
 
     let (closed_tx, closed_rx) = mpsc::channel(1);
     drop(closed_rx);

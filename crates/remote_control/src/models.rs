@@ -7132,6 +7132,10 @@ pub struct OverlayNode {
     /// `false` ⇒ peers probe it with ICMP.
     #[serde(default)]
     pub supports_overlay_echo: bool,
+    /// FR-139 — this node serves the authenticated overlay P2P control plane
+    /// (`p2pctl` on TCP port 41642). Absent on older rows ⇒ `false`.
+    #[serde(default)]
+    pub supports_p2pctl: bool,
     /// FR-19 — this node understands `rc:overlay.relay_session` /
     /// `rc:overlay.relay_revoke` and the `org-relay` verdict (advertised on
     /// join, echoed per-peer in the netmap). The server never pushes those to a

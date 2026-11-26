@@ -129,6 +129,7 @@ async fn b3_overlay_node_record_applied_auth_revision_is_cas_monotonic() {
             supports_server_relay_strategy: true,
             supports_derp_floor: true,
             supports_overlay_echo: true,
+            supports_p2pctl: false,
             supports_org_relay: true,
             advertised_routes: vec![],
             route_offer_withheld: None,

@@ -1117,43 +1117,79 @@ impl Ingress {
         // `tun_tx.send().await` below.
         let routing_dst = Router::dst_of_ip_packet(packet);
         let off = self.mode == RpfMode::Off;
-        let (verdict, in_scope, rules, preview_rules, reply) = {
+        let (verdict, in_scope, rules, preview_rules, reply, p2pctl_spoofed) = {
             let g = self.send.0.read().unwrap();
-            let rules = g.ingress_acls.get(&self.peer).cloned();
-            let preview_rules = if rules.is_none() {
-                g.ingress_acls_preview.get(&self.peer).cloned()
+            // FR-139 — UNCONDITIONAL exact `/32` WG-key source gate for the
+            // overlay P2P control plane (`P2P_CTL_PORT = 41642`). Enforced even
+            // under `RpfMode::Warn` or `RpfMode::Off`, refusing spoofed peer
+            // IPs and routed subnet sources behind a subnet router. Fail-closed
+            // if `self_ip` has not yet been installed. Tenant inbound WG ACLs
+            // (`rules`) still apply below when enforcing.
+            let p2pctl_spoofed = (!g.scope.has_self_ip() || g.scope.is_self_dst(routing_dst))
+                && parse_l4(packet).is_some_and(|l4| {
+                    l4.dst_port == Some(meshharbor_remote_control::p2pctl::P2P_CTL_PORT)
+                })
+                && !g.router.is_exact_peer_src(&self.peer, src);
+            if p2pctl_spoofed {
+                (RpfVerdict::Deny(super::router::RpfDeny::OtherPeer), true, None, None, false, true)
             } else {
-                None
-            };
-            if off && rules.is_none() && preview_rules.is_none() {
-                return (true, false);
-            }
-            // #18 — a packet addressed to THIS node is judged by the rules too,
-            // unless it belongs to a flow already admitted (a reply).
-            let reply = (rules.is_some() || preview_rules.is_some())
-                && g.scope.is_self_dst(routing_dst)
-                && match rules.as_ref() {
-                    Some(rules) => super::ingress::timed_reply_permitted(
-                        packet,
-                        rules,
-                        &g.flows,
-                        mono_ms_now(),
-                        super::ingress::wall_ms_now(),
-                    ),
-                    None => super::ingress::admitted_reply(packet, &g.flows, mono_ms_now()),
-                };
-            (
-                if off {
-                    RpfVerdict::Allow
+                let rules = g.ingress_acls.get(&self.peer).cloned();
+                let preview_rules = if rules.is_none() {
+                    g.ingress_acls_preview.get(&self.peer).cloned()
                 } else {
-                    g.router.rpf_check(&self.peer, src)
-                },
-                off || g.scope.permits_dst(routing_dst),
-                rules,
-                preview_rules,
-                reply,
-            )
+                    None
+                };
+                if off && rules.is_none() && preview_rules.is_none() {
+                    return (true, false);
+                }
+                // #18 — a packet addressed to THIS node is judged by the rules too,
+                // unless it belongs to a flow already admitted (a reply).
+                let reply = (rules.is_some() || preview_rules.is_some())
+                    && g.scope.is_self_dst(routing_dst)
+                    && match rules.as_ref() {
+                        Some(rules) => super::ingress::timed_reply_permitted(
+                            packet,
+                            rules,
+                            &g.flows,
+                            mono_ms_now(),
+                            super::ingress::wall_ms_now(),
+                        ),
+                        None => super::ingress::admitted_reply(packet, &g.flows, mono_ms_now()),
+                    };
+                (
+                    if off {
+                        RpfVerdict::Allow
+                    } else {
+                        g.router.rpf_check(&self.peer, src)
+                    },
+                    off || g.scope.permits_dst(routing_dst),
+                    rules,
+                    preview_rules,
+                    reply,
+                    false,
+                )
+            }
         };
+        if p2pctl_spoofed {
+            let denied = self.stats.rx_denied.fetch_add(1, Ordering::Relaxed) + 1;
+            let now = mono_ms_now();
+            let last = self.stats.rpf_logged_at.load(Ordering::Relaxed);
+            if (last == 0 || now.saturating_sub(last) >= RPF_LOG_THROTTLE_MS)
+                && self
+                    .stats
+                    .rpf_logged_at
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                let peer = short_key(&self.peer);
+                warn!(
+                    %peer, %src, port = meshharbor_remote_control::p2pctl::P2P_CTL_PORT,
+                    rx_denied = denied,
+                    "overlay p2pctl: DROPPED inbound packet whose source is not the decrypting peer's exact /32 overlay IP"
+                );
+            }
+            return (false, false);
+        }
         if let Some(preview) = preview_rules
             && in_scope
             && !reply
@@ -8214,6 +8250,7 @@ mod tests {
             supports_org_relay: false,
             caps: None,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             relay_strategy: None,
             prefer_relay_ms: None,
             routes: vec![],
@@ -8326,6 +8363,108 @@ mod tests {
             .unwrap();
         assert_eq!(&got[20..], b"spoof");
         assert_eq!(dev_b.peer_rx_denied(&pk_a), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fr139_p2pctl_port_enforces_exact_32_src_even_under_rpf_warn_and_refuses_routed_subnet() {
+        fn synthetic_tcp_ipv4(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16) -> Vec<u8> {
+            let total_len: u16 = 40;
+            let mut pkt = vec![0u8; 40];
+            pkt[0] = 0x45;
+            pkt[2..4].copy_from_slice(&total_len.to_be_bytes());
+            pkt[8] = 64;
+            pkt[9] = 6; // TCP
+            pkt[12..16].copy_from_slice(&src.octets());
+            pkt[16..20].copy_from_slice(&dst.octets());
+            pkt[20..22].copy_from_slice(&sport.to_be_bytes());
+            pkt[22..24].copy_from_slice(&dport.to_be_bytes());
+            pkt[32] = 0x50; // data offset = 5 (20 bytes)
+            pkt[33] = 0x02; // SYN
+            pkt
+        }
+
+        let port = meshharbor_remote_control::p2pctl::P2P_CTL_PORT;
+        let (dev_a, mut dev_b, mut rx_b, pk_a) = rpf_pair(RpfMode::Warn).await;
+        dev_b.set_local_scope(Some(IP_B), &[]);
+        let pk_b = dev_b.public().to_bytes();
+        // Give peer A an approved routed subnet 192.168.77.0/24.
+        dev_b.set_peer_subnets(
+            pk_a,
+            &[crate::overlay::router::Cidr::parse("192.168.77.0/24").unwrap()],
+        );
+
+        // 1. Spoofed source to P2P_CTL_PORT MUST be DROPPED even under RpfMode::Warn!
+        let spoofed = Ipv4Addr::new(100, 64, 0, 99);
+        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(spoofed, IP_B, 55000, port)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), rx_b.recv())
+                .await
+                .is_err(),
+            "spoofed src to p2pctl port must be unconditionally dropped even under RpfMode::Warn"
+        );
+
+        // 2. Routed subnet source behind peer A MUST ALSO be dropped for P2P_CTL_PORT!
+        let routed_lan = Ipv4Addr::new(192, 168, 77, 42);
+        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(routed_lan, IP_B, 55001, port)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), rx_b.recv())
+                .await
+                .is_err(),
+            "routed subnet src to p2pctl port must be dropped"
+        );
+
+        // 3. Exact /32 overlay IP of peer A IS permitted (when tenant ACL allows).
+        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(IP_A, IP_B, 55002, port)).await;
+        let got = tokio::time::timeout(Duration::from_secs(3), rx_b.recv())
+            .await
+            .expect("exact /32 peer src to p2pctl port must be delivered")
+            .unwrap();
+        assert_eq!(&got[12..16], &IP_A.octets());
+
+        // 4. Tenant inbound WG ACL under `enforce` (`Some(vec![])`) STILL denies port 41642!
+        let mut peers_map = HashMap::new();
+        let np = meshharbor_remote_control::signaling::NetmapPeer {
+            node_id: bson::oid::ObjectId::new(),
+            overlay_ip: IP_A.to_string(),
+            name: "peer-a".into(),
+            wg_public_key: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                pk_a,
+            ),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            supports_org_relay: false,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            relay_strategy: None,
+            prefer_relay_ms: None,
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_p2pctl: false,
+            supports_derp_floor: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: Some(vec![]),
+            ingress_rules_preview: None,
+        };
+        peers_map.insert(np.node_id, np);
+        dev_b.sync_peer_ingress(&peers_map);
+        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(IP_A, IP_B, 55003, port)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), rx_b.recv())
+                .await
+                .is_err(),
+            "p2pctl port must remain subject to tenant inbound WG ACL under enforce"
+        );
     }
 
     /// The `NoRoute` subset counter splits exactly: a source NOBODY owns

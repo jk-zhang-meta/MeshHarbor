@@ -1060,6 +1060,14 @@ const KEYS: &[KeyMeta] = &[
         description: "FR-139 maximum offline age (1-90 days) for the signed local netmap cache before cold boot refuses stale authority. Built-in default: 14. Env: MESHHARBORD_OVERLAY_NETMAP_CACHE_MAX_DAYS.",
     },
     KeyMeta {
+        key: "p2p_control_enabled",
+        group: Group::Network,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "FR-139 overlay-intercepted P2P control plane (TCP 41642) for offline device_info, SSH grant, and exec. Built-in default: on. Env: MESHHARBORD_P2P_CONTROL_ENABLED.",
+    },
+    KeyMeta {
         key: "overlay_shared_carrier",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2194,6 +2202,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_turn_relay" => cfg.overlay_turn_relay.map(fmt_bool),
         "overlay_netmap_cache" => cfg.overlay_netmap_cache.map(fmt_bool),
         "overlay_netmap_cache_max_days" => cfg.overlay_netmap_cache_max_days.map(|v| v.to_string()),
+        "p2p_control_enabled" => cfg.p2p_control_enabled.map(fmt_bool),
         "overlay_shared_carrier" => cfg.overlay_shared_carrier.map(fmt_bool),
         "overlay_roam" => cfg.overlay_roam.map(fmt_bool),
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog.map(fmt_bool),
@@ -2873,6 +2882,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
                     }
                 };
         }
+        "p2p_control_enabled" => cfg.p2p_control_enabled = parse_tribool(value)?,
         "overlay_shared_carrier" => cfg.overlay_shared_carrier = parse_tribool(value)?,
         "overlay_roam" => cfg.overlay_roam = parse_tribool(value)?,
         "overlay_plane_watchdog" => cfg.overlay_plane_watchdog = parse_tribool(value)?,

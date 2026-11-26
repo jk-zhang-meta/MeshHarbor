@@ -248,6 +248,7 @@ async fn a_device_moved_by_a_person_from_another_org_leaves_with_a_record_and_a_
             supports_server_relay_strategy: false,
             supports_derp_floor: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             advertised_routes: vec![],
             route_offer_withheld: None,

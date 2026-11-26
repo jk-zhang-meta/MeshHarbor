@@ -767,6 +767,7 @@ mod tests {
             supports_server_relay_strategy: false,
             supports_derp_floor: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             advertised_routes: vec![],
             approved_routes: vec![],

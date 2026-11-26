@@ -97,6 +97,7 @@ pub struct NewOverlayNode {
     pub supports_server_relay_strategy: bool,
     pub supports_derp_floor: bool,
     pub supports_overlay_echo: bool,
+    pub supports_p2pctl: bool,
     pub supports_org_relay: bool,
     pub advertised_routes: Vec<String>,
     /// FR-97 P0b — the join's word on why `advertised_routes` is empty
@@ -259,6 +260,7 @@ impl OverlayNodeDao {
             supports_server_relay_strategy,
             supports_derp_floor,
             supports_overlay_echo,
+            supports_p2pctl,
             supports_org_relay,
             advertised_routes,
             route_offer_withheld,
@@ -380,6 +382,7 @@ impl OverlayNodeDao {
             supports_server_relay_strategy,
             supports_derp_floor,
             supports_overlay_echo,
+            supports_p2pctl,
             supports_org_relay,
             // Phase 1 — the node's claimed routes; nothing approved until an
             // admin acts, so a fresh node routes for no one.
@@ -425,6 +428,7 @@ impl OverlayNodeDao {
         supports_server_relay_strategy: bool,
         supports_derp_floor: bool,
         supports_overlay_echo: bool,
+        supports_p2pctl: bool,
         supports_org_relay: bool,
         advertised_routes: &[String],
         route_offer_withheld: Option<&str>,
@@ -538,6 +542,7 @@ impl OverlayNodeDao {
                 // doc: adding the field HERE is load-bearing (a doc!{} miss
                 // is not a compile error and silently never persists).
                 "supports_overlay_echo": supports_overlay_echo,
+                "supports_p2pctl": supports_p2pctl,
                 "supports_org_relay": supports_org_relay,
                 "status": bson::to_bson(&AgentStatus::Online).unwrap(),
                 "last_seen_at": now,

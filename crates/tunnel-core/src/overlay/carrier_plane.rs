@@ -4267,6 +4267,7 @@ mod tests {
             supports_derp_floor: false,
             supports_org_relay: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             relay_strategy: None,
             prefer_relay_ms: None,
             routes: vec![],

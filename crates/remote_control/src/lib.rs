@@ -47,6 +47,9 @@ pub mod hive;
 pub mod management_entry;
 pub mod models;
 pub mod net_inventory;
+/// FR-139 — Unified overlay P2P control plane (`p2pctl`, port 41642) framing
+/// and mutual X25519+HMAC hello proof helpers.
+pub mod p2pctl;
 pub mod permissions;
 pub mod serde_helpers;
 /// FR-101 P1b — how an agent or the CLI reaches its server: over TLS.

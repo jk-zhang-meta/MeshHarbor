@@ -382,21 +382,23 @@ pub fn maybe_intercept(
     inner: tunnel_core::overlay::runtime::TunFactory,
     cfg: &crate::config::AgentConfig,
     services: SessionServices,
+    p2p_ctx: Option<crate::p2pctl::ServerCtx>,
 ) -> tunnel_core::overlay::runtime::TunFactory {
     use std::sync::Arc;
 
+    use meshharbor_remote_control::p2pctl::P2P_CTL_PORT;
     use tunnel_core::overlay::split_tun::{SplitTun, warn_if_os_listener};
     use tunnel_core::overlay::tun::TunIo;
 
-    if !cfg.ssh_enabled {
+    if !cfg.ssh_enabled && p2p_ctx.is_none() {
         return inner;
     }
-    let port = cfg.effective_ssh_port();
+    let ssh_port = cfg.ssh_enabled.then(|| cfg.effective_ssh_port());
     // FR-105 — on Windows, the SYSTEM service's port too: carried to the
     // service's pipe, never served here. Not when the kill switch is set, nor
     // when this node's own port is configured onto it.
     #[cfg(all(windows, feature = "ssh-server"))]
-    let service = {
+    let service = ssh_port.and_then(|port| {
         use meshharbor_remote_control::models::ssh_limits::SERVICE_PORT;
         if crate::ssh_service::disabled() {
             None
@@ -410,27 +412,33 @@ pub fn maybe_intercept(
         } else {
             Some((SERVICE_PORT, services.clone()))
         }
-    };
+    });
     // Resolve what we serve ONCE, here, rather than per connection: parsing the
     // host key and the authorized-key list is where an operator's typo shows
     // up, and it should surface at start-up in the daemon log, not as a silent
     // per-connection failure the caller sees as a dropped socket.
-    let ctx = build_ctx(cfg, services);
+    let ctx = ssh_port.map(|_| build_ctx(cfg, services));
     Box::new(move |ip, nm, mtu| {
         let ctx = ctx.clone();
+        let p2p_ctx = p2p_ctx.clone();
         let dev = inner(ip, nm, mtu)?;
-        // Loud about the one case where switching this on changes who answers
-        // an address that already had a server: `devbox` (sshd bound to the
-        // overlay IP) and the Linux boxes (sshd on `0.0.0.0:22`).
-        warn_if_os_listener(ip, port);
-
+        let mut ports: Vec<u16> = Vec::with_capacity(3);
+        if let Some(port) = ssh_port {
+            // Loud about the one case where switching this on changes who answers
+            // an address that already had a server: `devbox` (sshd bound to the
+            // overlay IP) and the Linux boxes (sshd on `0.0.0.0:22`).
+            warn_if_os_listener(ip, port);
+            ports.push(port);
+        }
         #[cfg(all(windows, feature = "ssh-server"))]
-        let ports: Vec<u16> = match &service {
-            Some((service_port, _)) => vec![port, *service_port],
-            None => vec![port],
-        };
-        #[cfg(not(all(windows, feature = "ssh-server")))]
-        let ports = [port];
+        if let Some((service_port, _)) = &service
+            && !ports.contains(service_port)
+        {
+            ports.push(*service_port);
+        }
+        if p2p_ctx.is_some() && !ports.contains(&P2P_CTL_PORT) {
+            ports.push(P2P_CTL_PORT);
+        }
         let split =
             SplitTun::wrap_ports(dev, ip, crate::overlay::netmask_to_prefix(nm), mtu, &ports);
 
@@ -457,20 +465,39 @@ pub fn maybe_intercept(
         // once to open the listener, then keep only the listener — which ends
         // by itself when the stack goes away, so the task cannot outlive the
         // session it belongs to.
-        let weak = Arc::downgrade(&split);
-        tokio::spawn(async move {
-            let listener = {
-                let Some(dev) = weak.upgrade() else { return };
-                match dev.listen().await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        warn!(%e, port, "ssh: could not listen on the intercepted overlay port");
-                        return;
+        if let (Some(port), Some(ctx)) = (ssh_port, ctx) {
+            let weak = Arc::downgrade(&split);
+            tokio::spawn(async move {
+                let listener = {
+                    let Some(dev) = weak.upgrade() else { return };
+                    match dev.listen_on(port).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            warn!(%e, port, "ssh: could not listen on the intercepted overlay port");
+                            return;
+                        }
                     }
-                }
-            };
-            accept_loop(listener, port, ctx).await;
-        });
+                };
+                accept_loop(listener, port, ctx).await;
+            });
+        }
+
+        if let Some(p2p_ctx) = p2p_ctx {
+            let weak = Arc::downgrade(&split);
+            tokio::spawn(async move {
+                let listener = {
+                    let Some(dev) = weak.upgrade() else { return };
+                    match dev.listen_on(P2P_CTL_PORT).await {
+                        Ok(l) => l,
+                        Err(e) => {
+                            warn!(%e, port = P2P_CTL_PORT, "p2pctl: could not listen on intercepted overlay port");
+                            return;
+                        }
+                    }
+                };
+                crate::p2pctl::accept_loop(listener, p2p_ctx).await;
+            });
+        }
 
         Ok(split as Arc<dyn TunIo>)
     })
@@ -483,6 +510,7 @@ pub fn maybe_intercept(
     inner: tunnel_core::overlay::runtime::TunFactory,
     cfg: &crate::config::AgentConfig,
     _services: SessionServices,
+    _p2p_ctx: Option<crate::p2pctl::ServerCtx>,
 ) -> tunnel_core::overlay::runtime::TunFactory {
     if cfg.ssh_enabled {
         warn!(
@@ -3438,7 +3466,7 @@ pub fn admit_grant(
     if agent_cfg.ssh_enabled
         && let Err(r) = meshharbor_node_core::two_factor::check(two_factor_code.as_deref())
     {
-        warn!(%grant_id, %caller, reason = r.wire(), "rc:ssh.grant refused — two-factor");
+        tracing::warn!(%grant_id, %caller, reason = r.wire(), "rc:ssh.grant refused — two-factor");
         return SshGrantAdmitOutcome::Refused(SshGrantRefusal::from_two_factor(r.wire()));
     }
 
@@ -3528,7 +3556,7 @@ pub fn admit_grant(
             allow_via_service,
             one_command,
         );
-        warn!(
+        tracing::warn!(
             %grant_id, %caller,
             "rc:ssh.grant ignored — this build lacks the `ssh-server` feature"
         );

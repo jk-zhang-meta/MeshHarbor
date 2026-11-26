@@ -132,6 +132,7 @@ pub fn is_suspended(tenant_id: &str) -> bool {
 /// Cancel any pending debounced write and delete the on-disk cache file for
 /// `tenant_id` (called on `Goodbye` and terminal `OverlayJoinRefused`).
 pub fn delete_cache(config_path: &Path, tenant_id: &str) {
+    crate::p2pctl::clear_tenant_directory(tenant_id);
     {
         let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(mut st) = reg.writers.remove(tenant_id)
@@ -496,6 +497,7 @@ mod tests {
             prefer_relay_ms: None,
             backbone_only: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_derp_floor: false,
             routes: vec![],
             agent_id: None,

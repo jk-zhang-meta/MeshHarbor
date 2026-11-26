@@ -107,6 +107,7 @@ pub async fn relay_overlay_msg_from_node(
             supports_server_relay_strategy,
             supports_derp_floor,
             supports_overlay_echo,
+            supports_p2pctl,
             supports_org_relay,
             supports_org_relay_multi_candidate,
             supports_org_relay_discovery_cursor,
@@ -137,6 +138,7 @@ pub async fn relay_overlay_msg_from_node(
                 supports_server_relay_strategy,
                 supports_derp_floor,
                 supports_overlay_echo,
+                supports_p2pctl,
                 supports_org_relay,
                 supports_org_relay_multi_candidate,
                 supports_org_relay_discovery_cursor,
@@ -516,6 +518,7 @@ async fn handle_overlay_join(
     supports_server_relay_strategy: bool,
     supports_derp_floor: bool,
     supports_overlay_echo: bool,
+    supports_p2pctl: bool,
     supports_org_relay: bool,
     supports_org_relay_multi_candidate: bool,
     supports_org_relay_discovery_cursor: bool,
@@ -723,6 +726,7 @@ async fn handle_overlay_join(
                     supports_server_relay_strategy,
                     supports_derp_floor,
                     supports_overlay_echo,
+                    supports_p2pctl,
                     supports_org_relay,
                     &advertised_routes,
                     route_offer_withheld.as_deref(),
@@ -861,6 +865,7 @@ async fn handle_overlay_join(
                         supports_server_relay_strategy,
                         supports_derp_floor,
                         supports_overlay_echo,
+                        supports_p2pctl,
                         supports_org_relay,
                         advertised_routes: advertised_routes.clone(),
                         route_offer_withheld: route_offer_withheld.clone(),
@@ -5970,6 +5975,7 @@ fn to_netmap_peer(node: &OverlayNode, reachable: bool) -> NetmapPeer {
         // Data-probe — echo the peer's overlay-native-echo capability so
         // probers pick the engine echo over ICMP for capable peers.
         supports_overlay_echo: node.supports_overlay_echo,
+        supports_p2pctl: node.supports_p2pctl,
         supports_org_relay: node.supports_org_relay,
         // Only routes the admin APPROVED and the device still ADVERTISES reach
         // peers (FR-97 P0b, `OverlayNode::effective_routes`): an approval
@@ -6727,6 +6733,7 @@ mod tests {
             supports_server_relay_strategy: false,
             supports_derp_floor: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             supports_org_relay: false,
             advertised_routes: vec![],
             approved_routes: vec![],

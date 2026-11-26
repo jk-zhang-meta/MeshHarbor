@@ -616,6 +616,7 @@ mod tests {
             prefer_relay_ms: Some(60_000),
             backbone_only,
             supports_overlay_echo: true,
+            supports_p2pctl: false,
             supports_derp_floor: true,
             routes: vec!["10.20.0.0/24".into()],
             agent_id: None,

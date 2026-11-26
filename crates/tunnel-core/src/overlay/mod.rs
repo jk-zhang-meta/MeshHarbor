@@ -146,14 +146,19 @@ impl WgKeypair {
         Self { secret, public }
     }
 
+    /// Reconstruct from raw 32-byte Curve25519 secret bytes.
+    pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
+        let secret = StaticSecret::from(bytes);
+        let public = PublicKey::from(&secret);
+        Self { secret, public }
+    }
+
     /// Reconstruct from a base64-encoded 32-byte secret (e.g. read back
     /// from config on restart).
     pub fn from_secret_base64(s: &str) -> Option<Self> {
         let raw = B64.decode(s.trim()).ok()?;
         let bytes: [u8; 32] = raw.try_into().ok()?;
-        let secret = StaticSecret::from(bytes);
-        let public = PublicKey::from(&secret);
-        Some(Self { secret, public })
+        Some(Self::from_secret_bytes(bytes))
     }
 
     /// base64 of the 32-byte secret — for persisting to secure storage.
@@ -164,6 +169,13 @@ impl WgKeypair {
     /// base64 of the 32-byte public key — what the netmap distributes.
     pub fn public_base64(&self) -> String {
         encode_public(&self.public)
+    }
+
+    /// X25519 static Diffie-Hellman shared secret with `peer_public`.
+    pub fn dh(&self, peer_public: &[u8; 32]) -> [u8; 32] {
+        self.secret
+            .diffie_hellman(&PublicKey::from(*peer_public))
+            .to_bytes()
     }
 }
 

@@ -3548,6 +3548,7 @@ mod tests {
             supports_forced_derp: false,
             supports_derp_floor: false,
             supports_overlay_echo: false,
+            supports_p2pctl: false,
             relay_strategy: None,
             relay_home: None,
             warm_relay_endpoint: None,

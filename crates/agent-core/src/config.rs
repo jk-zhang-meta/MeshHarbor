@@ -960,6 +960,10 @@ pub struct AgentConfig {
     /// disables both writing and cold-seeding from the signed local netmap cache.
     #[serde(default)]
     pub overlay_netmap_cache: Option<bool>,
+    /// FR-140 — unified overlay P2P control plane (`p2pctl` on TCP port 41642)
+    /// (`MESHHARBORD_P2P_CONTROL_ENABLED`). Built-in default: on.
+    #[serde(default)]
+    pub p2p_control_enabled: Option<bool>,
     /// Multi-org v2 shared carrier plane — ONE process-wide direct-socket
     /// set shared by every org's engine, inbound demultiplexed by WireGuard
     /// receiver index (`MESHHARBORD_OVERLAY_SHARED_CARRIER`). Retires the
@@ -3107,6 +3111,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_stun_urls: None,
         overlay_turn_relay: None,
         overlay_netmap_cache: None,
+        p2p_control_enabled: None,
         overlay_org_relay: None,
         overlay_netcheck: None,
         relay_server_enabled: None,
@@ -3364,7 +3369,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 98] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 99] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3449,6 +3454,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 98]
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),
         ("OVERLAY_TURN_RELAY", cfg.overlay_turn_relay),
         ("OVERLAY_NETMAP_CACHE", cfg.overlay_netmap_cache),
+        ("P2P_CONTROL_ENABLED", cfg.p2p_control_enabled),
         ("OVERLAY_SHARED_CARRIER", cfg.overlay_shared_carrier),
         ("OVERLAY_ROAM", cfg.overlay_roam),
         ("OVERLAY_PLANE_WATCHDOG", cfg.overlay_plane_watchdog),
