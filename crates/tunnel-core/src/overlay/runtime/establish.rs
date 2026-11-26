@@ -94,16 +94,14 @@ pub(super) fn direct_endpoints_changed(old: &NetmapPeer, new: &NetmapPeer) -> bo
 /// on top. Endpoint / feature-flag / hairpin checks are availability, never
 /// score. Pure reads.
 pub(super) struct DirectCandidates {
-    /// Same-subnet LAN endpoint (highest-priority tier): (our matching
-    /// interface IP, the peer's dst). rc.204 — scans the provenance-pure
-    /// `lan_endpoints` bucket (the peer's join-time NIC sockets), NOT the
-    /// `endpoints` union: the union also carries the peer's trickled
-    /// coturn-RELAYED addresses, and on this fleet the coturn workers ride
-    /// the hosts' own public IPs, so a fleet host same-/24-matched a peer's
-    /// *relay allocation* and "LAN"-dialed coturn forever (field-observed
-    /// 2026-07-21: buildhost dialing DEVBOX's relayed 94.130.141.74:* as a LAN
-    /// endpoint).
-    pub(super) lan: Option<(Ipv4Addr, std::net::SocketAddr)>,
+    /// Best LAN-tier candidate (loopback / same-subnet / routed LAN).
+    /// rc.204 — advertised endpoints come strictly from the provenance-pure
+    /// `lan_endpoints` bucket (never the `endpoints` union that carries
+    /// trickled coturn-RELAYED addresses). FR-139 — upgraded from a single
+    /// first-match tuple to [`super::super::candidates::LanCandidate`] so
+    /// Disco-verified paths (including learned hints, Mirrored WSL wildcard
+    /// LAN dials, routed LANs, and loopback) share one typed seam.
+    pub(super) lan: Option<super::super::candidates::LanCandidate>,
     /// Phase A — the peer's PUBLIC NIC endpoint (its join-time bucket),
     /// dialable WITHOUT STUN because the peer's NIC holds a public IP.
     /// Dialed over the shared `public_sock` (arbitrary egress is fine — the
@@ -188,16 +186,107 @@ pub(super) fn standby_tee_decision(
         || standby_tee_wanted(poke, answered, capable, now)
 }
 
+/// FR-139 — enumerate all advertised LAN candidates for `cfg` against `ctx`.
+/// Multi-homed peers can advertise several subnets; returning every match lets
+/// Disco validate and rank them instead of committing blindly to `[0]`.
+pub(super) fn gather_lan_candidates(
+    ctx: &DirectCtx,
+    cfg: &PeerConfig,
+) -> Vec<super::super::candidates::LanCandidate> {
+    use super::super::candidates::LanCandidate;
+    if cfg.backbone_only {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for ep in &cfg.lan_endpoints {
+        let Ok(std::net::SocketAddr::V4(sa)) = ep.trim().parse::<std::net::SocketAddr>() else {
+            continue;
+        };
+        if !direct::is_usable_lan_ipv4(*sa.ip()) || ctx.my_ips.contains(sa.ip()) {
+            continue;
+        }
+        if let Some(local) = ctx
+            .my_ips
+            .iter()
+            .find(|me| direct::same_subnet_24(**me, *sa.ip()))
+        {
+            let cand = LanCandidate::subnet(*local, std::net::SocketAddr::V4(sa));
+            if !out.iter().any(|c: &LanCandidate| c.dst == cand.dst) {
+                out.push(cand);
+            }
+        }
+    }
+    out
+}
+
+/// FR-139 — classify an authenticated inbound Disco ping source into a
+/// `(LanEgress, LanPathKind)` candidate hint, or `None` if not a local/LAN
+/// source we have an egress socket for.
+pub(super) fn classify_inbound_lan_hint(
+    ctx: &DirectCtx,
+    src: std::net::SocketAddr,
+) -> Option<(
+    super::super::candidates::LanEgress,
+    super::super::candidates::LanPathKind,
+)> {
+    use super::super::candidates::{LanEgress, LanPathKind};
+    let std::net::SocketAddr::V4(sa) = src else {
+        return None;
+    };
+    let ip = *sa.ip();
+    if ip.is_loopback() {
+        return ctx
+            .public_sock
+            .is_some()
+            .then_some((LanEgress::Wildcard, LanPathKind::Loopback));
+    }
+    if !direct::is_usable_lan_ipv4(ip) || ctx.my_ips.contains(&ip) {
+        return None;
+    }
+    if let Some(local) = ctx
+        .my_ips
+        .iter()
+        .find(|me| direct::same_subnet_24(**me, ip))
+    {
+        return Some((LanEgress::Owned(*local), LanPathKind::Subnet));
+    }
+    if !direct::is_public_v4(ip) && ctx.public_sock.is_some() {
+        return Some((LanEgress::Wildcard, LanPathKind::Routed));
+    }
+    None
+}
+
 pub(super) fn resolve_direct_candidates(
     direct_ctx: Option<&DirectCtx>,
     cfg: &PeerConfig,
     rot: CandidateRotation,
 ) -> DirectCandidates {
+    resolve_direct_candidates_with(direct_ctx, cfg, rot, None, Instant::now())
+}
+
+pub(super) fn resolve_direct_candidates_with(
+    direct_ctx: Option<&DirectCtx>,
+    cfg: &PeerConfig,
+    rot: CandidateRotation,
+    planner: Option<&super::super::candidates::CandidatePlanner>,
+    now: Instant,
+) -> DirectCandidates {
     // MeshHarbor #21 — a cross-border peer is never dialed directly, whatever
     // a candidate list might say.
     let direct_ctx = direct_ctx.filter(|_| !cfg.backbone_only);
-    let lan = direct_ctx
-        .and_then(|ctx| direct::pick_same_subnet_endpoint(&ctx.my_ips, &cfg.lan_endpoints));
+    let lan = direct_ctx.and_then(|ctx| {
+        let advertised = gather_lan_candidates(ctx, cfg);
+        match planner {
+            Some(p) => p.best_lan(
+                &cfg.public_key,
+                &advertised,
+                &ctx.my_ips,
+                ctx.public_sock.is_some(),
+                now,
+            ),
+            None => advertised.into_iter().find(|c| !c.requires_disco),
+        }
+    });
     let public = direct_ctx.and_then(|ctx| {
         (direct::public_direct_enabled() && ctx.public_sock.is_some())
             .then(|| {
@@ -317,6 +406,23 @@ pub(super) async fn lan_egress_socket(
         direct::force_egress_interface(&sock, ix);
     }
     Some(sock)
+}
+
+/// FR-139 — resolve the egress socket for any [`super::super::candidates::LanEgress`]:
+/// per-interface socket (with bind-by-route) for `Owned(local_ip)`, or the
+/// shared wildcard `public_sock` for `Wildcard` (Mirrored WSL outbound LAN and
+/// same-host loopback).
+pub(super) async fn lan_egress_socket_for(
+    ctx: &DirectCtx,
+    egress: super::super::candidates::LanEgress,
+    dst: std::net::SocketAddr,
+) -> Option<Arc<UdpSocket>> {
+    match egress {
+        super::super::candidates::LanEgress::Owned(local_ip) => {
+            lan_egress_socket(ctx, local_ip, dst).await
+        }
+        super::super::candidates::LanEgress::Wildcard => ctx.public_sock.clone(),
+    }
 }
 
 /// rc.208 — an in-flight make-before-break upgrade probe. The candidate direct
@@ -1815,6 +1921,7 @@ impl OverlayRuntime {
     ) -> Option<Installed> {
         let removed = by_node.remove(&node_id);
         if let Some(e) = &removed {
+            self.planner(|pl| pl.forget_peer(&e.pubkey));
             let old_subnets: Vec<crate::overlay::router::Cidr> = if os_route == PeerRoute::Drop {
                 wg.peer_subnets(&e.pubkey)
                     .into_iter()
@@ -2132,13 +2239,15 @@ impl OverlayRuntime {
                     lan: s.mon.strikes(&np.node_id, DirectTier::Lan),
                 })
                 .unwrap_or_default();
-            let cands = resolve_direct_candidates(direct_ctx, &cfg, rot);
+            let cands = self.planner(|pl| {
+                resolve_direct_candidates_with(direct_ctx, &cfg, rot, Some(pl), now)
+            });
             // FR-33 P2 — a LAN candidate inside a captured prefix is a dial
             // the OS has already said it will misroute; hand the verdict to
             // the monitor so `decide` never proposes it and `why` names it.
-            let lan_captured = cands.lan.is_some_and(|(_, dst)| match dst {
+            let lan_captured = cands.lan.is_some_and(|c| match c.dst {
                 std::net::SocketAddr::V4(sa) => {
-                    lan_captures.iter().any(|c| c.contains_v4(*sa.ip()))
+                    !sa.ip().is_loopback() && lan_captures.iter().any(|cap| cap.contains_v4(*sa.ip()))
                 }
                 std::net::SocketAddr::V6(_) => false,
             });
@@ -2238,6 +2347,7 @@ impl OverlayRuntime {
             // pending direct probe or non-backbone relay state before
             // establishing the backbone org-relay path.
             if cfg.backbone_only {
+                self.planner(|pl| pl.forget_peer(&cfg.public_key));
                 if let Some(pr) = upgrade_probes.remove(&np.node_id) {
                     wg.drop_direct_probe(&pr.pubkey).await;
                     self.shadow(|s| s.mon.on_probe_aborted(&np.node_id));
@@ -2439,11 +2549,10 @@ impl OverlayRuntime {
                         // (`sweep_upgrade_probes` promotes tier-agnostically).
                         let probe_target = match target {
                             DirectTier::Lan => {
-                                if let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
-                                {
-                                    lan_egress_socket(ctx, local_ip, dst)
+                                if let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst) {
+                                    lan_egress_socket_for(ctx, cand.egress, cand.dst)
                                         .await
-                                        .map(|s| (s, dst))
+                                        .map(|s| (s, cand.dst))
                                 } else {
                                     None
                                 }
@@ -2526,12 +2635,10 @@ impl OverlayRuntime {
                         if let Some(target) = upward_target {
                             let probe_target = match target {
                                 DirectTier::Lan => {
-                                    if let (Some(ctx), Some((local_ip, dst))) =
-                                        (direct_ctx, direct_dst)
-                                    {
-                                        lan_egress_socket(ctx, local_ip, dst)
+                                    if let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst) {
+                                        lan_egress_socket_for(ctx, cand.egress, cand.dst)
                                             .await
-                                            .map(|s| (s, dst))
+                                            .map(|s| (s, cand.dst))
                                     } else {
                                         None
                                     }
@@ -2608,12 +2715,11 @@ impl OverlayRuntime {
                         // destructive path. Skip if a probe is already in flight.
                         let probe_target = if wg.has_direct_probe(&pk) {
                             None
-                        } else if let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
-                        {
-                            // LAN tier — bind-by-route egress selection (Phase 1).
-                            lan_egress_socket(ctx, local_ip, dst)
+                        } else if let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst) {
+                            // LAN tier — bind-by-route egress selection (Phase 1) + FR-139 wildcard egress.
+                            lan_egress_socket_for(ctx, cand.egress, cand.dst)
                                 .await
-                                .map(|s| (s, dst, DirectTier::Lan))
+                                .map(|s| (s, cand.dst, DirectTier::Lan))
                         } else if let (Some(ctx), Some(dst)) = (direct_ctx, phase_a_dst) {
                             ctx.public_sock
                                 .clone()
@@ -2665,7 +2771,8 @@ impl OverlayRuntime {
                     // relay down first, then handshakes over the (unproven) direct
                     // path. Kept as the default until make-before-break is
                     // field-proven per-host.
-                    if let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst) {
+                    if let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst) {
+                        let dst = cand.dst;
                         record(
                             "install_peers:upgrade",
                             path::PathAction::Install(DirectTier::Lan),
@@ -2678,7 +2785,7 @@ impl OverlayRuntime {
                         // rc.211 — a direct carrier supersedes any relay build
                         // still in flight for this peer; drop it on arrival.
                         relay_bq.invalidate(&np.node_id);
-                        self.install_direct(wg, by_node, tun, ctx, np.node_id, &cfg, local_ip, dst)
+                        self.install_direct(wg, by_node, tun, ctx, np.node_id, &cfg, cand)
                             .await;
                     } else if let (Some(ctx), Some(dst)) = (direct_ctx, phase_a_dst) {
                         record(
@@ -2898,8 +3005,9 @@ impl OverlayRuntime {
                             && !self
                                 .shadow(|s| s.mon.forced_derp_active(&np.node_id, now))
                                 .unwrap_or(false)
-                            && let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
-                            && let Some(sock) = lan_egress_socket(ctx, local_ip, dst).await
+                            && let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst)
+                            && let Some(sock) =
+                                lan_egress_socket_for(ctx, cand.egress, cand.dst).await
                         {
                             record(
                                 "install_peers:birth",
@@ -2911,7 +3019,7 @@ impl OverlayRuntime {
                                 np.node_id,
                                 &cfg,
                                 sock,
-                                dst,
+                                cand.dst,
                                 DirectTier::Lan,
                                 now,
                             )
@@ -2953,12 +3061,9 @@ impl OverlayRuntime {
                             // fallback chain quietly (the monitor holds Keep
                             // while a probe runs; no compare on this pass).
                             lan_probing = true;
-                        } else if let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
-                            && let Some(sock) = ctx
-                                .socks
-                                .iter()
-                                .find(|(ip, _)| *ip == local_ip)
-                                .map(|(_, s)| s.clone())
+                        } else if let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst)
+                            && let Some(sock) =
+                                lan_egress_socket_for(ctx, cand.egress, cand.dst).await
                         {
                             record(
                                 "install_peers:fresh",
@@ -2970,7 +3075,7 @@ impl OverlayRuntime {
                                 np.node_id,
                                 &cfg,
                                 sock,
-                                dst,
+                                cand.dst,
                                 DirectTier::Lan,
                                 now,
                             )
@@ -2979,7 +3084,7 @@ impl OverlayRuntime {
                         }
                     }
                     if !lan_probing
-                        && let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
+                        && let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst)
                     {
                         record(
                             "install_peers:fresh",
@@ -2994,7 +3099,7 @@ impl OverlayRuntime {
                         // rc.211 — a direct carrier supersedes any relay build
                         // still in flight for this peer; drop it on arrival.
                         relay_bq.invalidate(&np.node_id);
-                        self.install_direct(wg, by_node, tun, ctx, np.node_id, &cfg, local_ip, dst)
+                        self.install_direct(wg, by_node, tun, ctx, np.node_id, &cfg, cand)
                             .await;
                     } else if let (Some(ctx), Some(dst)) = (direct_ctx, phase_a_dst) {
                         if !lan_probing {
@@ -3283,15 +3388,14 @@ impl OverlayRuntime {
         ctx: &DirectCtx,
         node_id: ObjectId,
         cfg: &PeerConfig,
-        local_ip: Ipv4Addr,
-        dst: std::net::SocketAddr,
+        cand: super::super::candidates::LanCandidate,
     ) {
+        let dst = cand.dst;
         // Use the socket bound to the interface that shares the peer's subnet
-        // (rc.143) so send/receive stay on the right NIC past a full-tunnel VPN.
-        // With `OVERLAY_BIND_BY_ROUTE` on, `lan_egress_socket` instead consults
-        // the OS route table per-destination and re-pins the socket fresh.
-        let Some(sock) = lan_egress_socket(ctx, local_ip, dst).await else {
-            warn!(peer = %node_id, %local_ip, "overlay: no socket bound for the matching LAN interface; skipping direct");
+        // (rc.143) so send/receive stay on the right NIC past a full-tunnel VPN,
+        // or the shared wildcard dialer for Mirrored WSL / loopback (FR-139).
+        let Some(sock) = lan_egress_socket_for(ctx, cand.egress, dst).await else {
+            warn!(peer = %node_id, egress = ?cand.egress, "overlay: no socket bound for the matching LAN egress; skipping direct");
             return;
         };
         // P3 PR-A — record the install (switch time + the F2 LAN marker).
@@ -4136,6 +4240,7 @@ impl OverlayRuntime {
         // 6. Every direct-tier measurement was made through sockets that no
         //    longer exist — reset that evidence (relay evidence survives).
         self.shadow(|s| s.mon.on_local_rebuild());
+        self.planner(|pl| pl.on_local_rebuild());
         Some(stun_rx)
     }
 
@@ -5051,9 +5156,9 @@ mod tests {
         );
         assert_eq!(
             on_link.lan,
-            Some((
+            Some(crate::overlay::candidates::LanCandidate::subnet(
                 Ipv4Addr::new(192, 168, 68, 126),
-                "192.168.68.4:43648".parse().unwrap()
+                "192.168.68.4:43648".parse().unwrap(),
             ))
         );
         let off_link = resolve_direct_candidates(

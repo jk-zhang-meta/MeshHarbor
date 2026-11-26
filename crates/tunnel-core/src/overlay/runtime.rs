@@ -2628,6 +2628,9 @@ pub struct OverlayRuntime {
     /// attach it to the peer view. Measurement only: nothing in the selector
     /// reads this.
     disco_paths: std::sync::Mutex<Vec<super::disco::PathSample>>,
+    /// FR-139 — Disco-validated direct-path candidate planner (pure state
+    /// machine behind an uncontended sync mutex, accessed via [`Self::planner`]).
+    candidate_planner: std::sync::Mutex<super::candidates::CandidatePlanner>,
 }
 
 /// Opens the node's `/derp` WS (the agent owns `server_url` + the token +
@@ -2847,6 +2850,7 @@ impl OverlayRuntime {
             carrier_plane: None,
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
+            candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
         }
     }
 
@@ -2887,7 +2891,21 @@ impl OverlayRuntime {
             carrier_plane: None,
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
+            candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
         }
+    }
+
+    /// FR-139 — run a short synchronous closure against the candidate planner
+    /// (guard never crosses an `.await`).
+    pub(super) fn planner<T>(
+        &self,
+        f: impl FnOnce(&mut super::candidates::CandidatePlanner) -> T,
+    ) -> T {
+        let mut g = self
+            .candidate_planner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        f(&mut g)
     }
 
     /// P3 PR-A (re-scoped by PR-E) — run a SYNC closure against the path
@@ -3052,13 +3070,34 @@ impl OverlayRuntime {
         if !crate::overlay::direct::disco_probe_enabled() {
             return back;
         }
+        let now = Instant::now();
+        // FR-139 — drain authenticated inbound Disco ping sources as bounded
+        // candidate hints (never promoted without a fresh source-matched pong).
+        if let Some(ctx) = direct_ctx {
+            for (pk, src) in wg.sender().take_inbound_disco_pings() {
+                if let Some((egress, kind)) =
+                    super::runtime::establish::classify_inbound_lan_hint(ctx, src)
+                {
+                    self.planner(|pl| pl.on_inbound_ping(pk, src, egress, kind, now));
+                }
+            }
+        } else {
+            let _ = wg.sender().take_inbound_disco_pings();
+        }
         // Absorb replies first so this round's verdicts reflect the last one.
+        let mut newly_verified_lan: Vec<[u8; 32]> = Vec::new();
         if let Some(rx) = rx.as_mut() {
             while let Ok(p) = rx.try_recv() {
                 path_trials.active_pong(&p);
                 birthday.on_pong(&p);
                 prober.on_pong(&p);
                 prefer.on_pong(&p, by_node);
+                if let Some(hit) = self.planner(|pl| pl.on_pong(&p))
+                    && hit.newly_verified
+                    && !newly_verified_lan.contains(&hit.peer)
+                {
+                    newly_verified_lan.push(hit.peer);
+                }
             }
         }
         let revived = prober.take_revived();
@@ -3076,52 +3115,65 @@ impl OverlayRuntime {
                 probed.entry(e.pubkey).or_default().push(dst);
             }
         }
-        // A2 — probe the CANDIDATE paths of peers parked on a relay.
-        //
-        // Until now the loop above was the whole prober, and it walks only
-        // carriers that are ALREADY direct. So the one question an operator
-        // actually asks — "this pair is on relay; would the LAN path work?" —
-        // was the one question disco could not answer, and answering it took a
-        // tcpdump on one host and log archaeology on the other (2026-08-26,
-        // neo16 ↔ MacBook, same Wi-Fi).
-        //
-        // This is measurement, NOT a dial: a disco ping is a stateless echo
-        // the peer answers to the packet's OBSERVED SOURCE, so it neither
-        // creates a carrier nor disturbs the relay one in use, and unlike a
-        // WireGuard handshake its reply cannot be routed to a stale endpoint.
-        // Nothing reads the result to make a decision — that is still C3/C6.
+        // A2 + FR-139 — probe direct candidate paths for cold, relayed, and
+        // non-LAN peers. Candidate LAN probes go through `CandidatePlanner`
+        // (respecting the global 50 pings/s budget and testing multi-homed,
+        // routed, loopback, and learned-hint endpoints before WireGuard dials).
         for (nid, np) in current_peers {
-            let Some(inst) = by_node.get(nid) else {
+            if !np.reachable || np.backbone_only {
                 continue;
-            };
-            if inst.is_direct {
-                continue; // covered above, over the path it actually uses
             }
             let Some(cfg) = super::netmap::peer_config_from_netmap(np) else {
                 continue;
             };
-            // Rotation 0 on purpose: the prober measures the PRIMARY candidate
-            // of each tier. Rotating here would sample a different endpoint
-            // every round and never accumulate a loss window on any of them,
-            // which is the opposite of what a loss window is for.
-            let cands = super::runtime::establish::resolve_direct_candidates(
-                direct_ctx,
-                &cfg,
-                Default::default(),
-            );
+            let inst = by_node.get(nid);
+            // Newly Disco-verified LAN path for a cold, relayed, or non-LAN peer:
+            // lift suppression and schedule an immediate walk.
+            if newly_verified_lan.contains(&cfg.public_key)
+                && inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan)
+                && !back.contains(&(*nid, DirectTier::Lan))
+            {
+                back.push((*nid, DirectTier::Lan));
+            }
             let Some(ctx) = direct_ctx else { continue };
-            // The LAN candidate carries the local interface IP to egress from,
-            // which is why it is shaped differently from the other two.
-            let lan = match cands.lan {
-                Some((local_ip, dst)) => {
-                    super::runtime::establish::lan_egress_socket(ctx, local_ip, dst)
-                        .await
-                        .map(|s| (dst, s))
+            // Probe LAN candidates for cold, relayed, and non-LAN-direct peers.
+            if inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan) {
+                let adv_lan = super::runtime::establish::gather_lan_candidates(ctx, &cfg);
+                let planned = self.planner(|pl| pl.plan_probes(cfg.public_key, &adv_lan, now));
+                for cand in planned {
+                    let Some(sock) = super::runtime::establish::lan_egress_socket_for(
+                        ctx,
+                        cand.egress,
+                        cand.dst,
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let (nonce, frame) =
+                        prober.next_ping(&cfg.public_key, &self.keypair.secret, &self.keypair.public);
+                    let sent_at = Instant::now();
+                    if sock.send_to(&frame, cand.dst).await.is_ok() {
+                        prober.sent_at(cfg.public_key, cand.dst, nonce, sent_at);
+                        self.planner(|pl| pl.record_sent(nonce, cfg.public_key, cand, sent_at));
+                        probed.entry(cfg.public_key).or_default().push(cand.dst);
+                    }
                 }
-                None => None,
-            };
+            }
+            // Existing A2 Public/Srflx measurement probes for peers parked on relay.
+            if inst.is_none_or(|i| i.is_direct) {
+                continue;
+            }
+            let cands = self.planner(|pl| {
+                super::runtime::establish::resolve_direct_candidates_with(
+                    direct_ctx,
+                    &cfg,
+                    Default::default(),
+                    Some(pl),
+                    now,
+                )
+            });
             for (tier, pair) in [
-                (DirectTier::Lan, lan),
                 (
                     DirectTier::Public,
                     cands.public.zip(ctx.public_sock.clone()),
@@ -3134,7 +3186,9 @@ impl OverlayRuntime {
                 let Some((dst, sock)) = pair else { continue };
                 // A relayed peer's public/srflx candidate answering again is
                 // the cue to probe it now (LAN keeps its own spacing, P8).
-                if tier != DirectTier::Lan && revived.contains(&(cfg.public_key, dst)) {
+                if revived.contains(&(cfg.public_key, dst))
+                    && !back.contains(&(*nid, tier))
+                {
                     back.push((*nid, tier));
                 }
                 let (nonce, frame) =
@@ -3177,8 +3231,15 @@ impl OverlayRuntime {
             *g = prober.paths();
         }
         // Forget peers that left, so the table can't grow without bound.
-        let live: std::collections::HashSet<[u8; 32]> =
+        // Keep both installed carriers AND current netmap peers (cold peers
+        // are probed before their first carrier is installed).
+        let mut live: std::collections::HashSet<[u8; 32]> =
             by_node.values().map(|e| e.pubkey).collect();
+        for np in current_peers.values() {
+            if let Some(cfg) = super::netmap::peer_config_from_netmap(np) {
+                live.insert(cfg.public_key);
+            }
+        }
         for s in prober.paths() {
             if !live.contains(&s.peer) {
                 prober.forget(&s.peer);

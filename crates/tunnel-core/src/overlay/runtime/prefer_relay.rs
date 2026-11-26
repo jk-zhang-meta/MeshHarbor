@@ -592,9 +592,9 @@ impl OverlayRuntime {
         };
         let cands = resolve_direct_candidates(direct_ctx, &cfg, Default::default());
         let lan = match cands.lan {
-            Some((local_ip, dst)) => lan_egress_socket(ctx, local_ip, dst)
+            Some(cand) => lan_egress_socket_for(ctx, cand.egress, cand.dst)
                 .await
-                .map(|s| (dst, s)),
+                .map(|s| (cand.dst, s)),
             None => None,
         };
         let mut went = false;
