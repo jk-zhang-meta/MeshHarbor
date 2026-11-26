@@ -149,12 +149,31 @@ pub struct NetworkTenantHooks {
 
 #[async_trait]
 impl TenantLifecycle for NetworkTenantHooks {
-    async fn member_removed(&self, tenant_id: ObjectId, _user_id: ObjectId) -> anyhow::Result<()> {
+    async fn member_removed(&self, tenant_id: ObjectId, user_id: ObjectId) -> anyhow::Result<()> {
         crate::overlay::publish_and_refan_tenant_authority(
             &self.state,
             tenant_id,
             true,
             "member_removed",
+        )
+        .await;
+        let principal_hex = user_id.to_hex();
+        let _ = self.state.fleet.rc_hub.push_ssh_revoke_org_scoped(
+            tenant_id,
+            "principal",
+            Some(principal_hex.clone()),
+            None,
+            Some("member_removed".to_string()),
+        );
+        meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
+            &self.state.fleet,
+            "ssh_revoke",
+            serde_json::json!({
+                "tenant_id": tenant_id.to_hex(),
+                "scope": "principal",
+                "principal": principal_hex,
+                "reason": "member_removed",
+            }),
         )
         .await;
         Ok(())

@@ -5735,6 +5735,9 @@ export function useRemoteControl(
   /** FR-130 — a frame the `<video>` element presented (the view's frame
    *  callback): that path's half of `rc.resume`'s `gap_ms`. */
   function notePaint(nowMs: number = performance.now()) {
+    if (restartingDevice.value) {
+      restartingDevice.value = null
+    }
     const closed = videoPaintMark.painted(nowMs)
     if (closed && holdGapPath === 'video') holdGap?.closed(closed.gapMs)
   }
@@ -9859,6 +9862,7 @@ export function useRemoteControl(
     // FR-130 — a hold this failure ends, and nothing left to replace.
     endHold('error')
     replacesId = null
+    clearRestartContinuity()
     error.value = message
     errorCode.value = code ?? attemptErrorCode ?? null
     phase.value = 'error'
@@ -10235,6 +10239,9 @@ export function useRemoteControl(
     // falls back to the URL inside expectedOrgTid().
     orgId?: string,
   ) {
+    if (!isReconnect) {
+      clearRestartContinuity()
+    }
     // The reconnect path is allowed to drive `connect` while phase ==
     // 'reconnecting'; user-initiated calls must still be blocked from
     // re-entering an active session.
@@ -10630,7 +10637,12 @@ export function useRemoteControl(
       if (state === 'connected') {
         markConnect('pc_connected')
         phase.value = 'connected'
-        clearRestartContinuity()
+        // FR-141 — clear `continuesFromId` once the new peer is connected so it
+        // is never re-sent, while keeping `restartingDevice` visible until the
+        // first frame actually paints (`notePaint` / `hasMedia`) so the viewer
+        // never flashes a blank black stage between ICE connected and first paint.
+        continuesFromId = null
+        continuesUntilMs = 0
         // FR-130 — a resumable session that goes live while this page's socket
         // is down is held from here: its return asks for it back.
         if (ws.status !== 'connected') hold.socketDown()

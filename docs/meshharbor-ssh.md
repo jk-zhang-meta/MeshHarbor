@@ -1647,13 +1647,13 @@ the user explicitly exits (`exit`, `Ctrl-D`, or double `Ctrl-C` during recovery)
   lightweight detached child process outside `meshharbord`'s cgroup/service tree
   (Linux `systemd-run --scope` / `setsid`, macOS `setsid`, Windows detached job),
   holding a 4 MiB byte ring buffer and a VT100 terminal screen model
-  (`crates/agent-core/src/pty_resume/vt.rs`) for lossless replay or clean screen
+  (`crates/agent-core/src/pty_resume/seq.rs`) for lossless replay or clean screen
   snapshot recovery after long gaps.
 - **Zero-secret child & mutual HKDF/HMAC re-attach**: The PTY host stores only its
   signed `SessionDescriptor` + 32-byte `seal` (`ssh-resume.key`, HKDF label
   `fr141/seal/v1`). On restart, the new `meshharbord` adopts live hosts over local
   IPC, re-verifies every descriptor against local policy, and authenticates re-attaching
-  clients with fresh mutual nonces over the `meshharbor-pty-resume@meshharbor.io`
+  clients with fresh mutual nonces over the `meshharbor-pty@v1`
   SSH subsystem (`agents/meshharbord/src/ssh_persist/subsystem.rs`).
 - **Humanized recovery UX**: While disconnected or while the target daemon is
   restarting/updating, `mh ssh` preserves the remote terminal screen and draws a

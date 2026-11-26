@@ -4615,10 +4615,15 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         two_factor_code: Option<crate::models::Confidential>,
         /// FR-141 — whether the target may open/attach a resumable persistent
-        /// PTY session (`meshharbor-pty-v1`) for this grant. Sent only to
+        /// PTY session (`meshharbor-pty@v1`) for this grant. Sent only to
         /// devices advertising `RpcCap::SshResume`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resume_allowed: bool,
+        /// FR-141 — immutable server user ID (`ObjectId` hex) for the caller,
+        /// used as the persistent session `principal` key so principal-scoped
+        /// revocations match reliably even if display names change or collide.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal_id: Option<String>,
     },
 
     /// FR-141 — server-ordered revocation of persistent SSH sessions on a
@@ -9408,6 +9413,7 @@ mod tests {
             via_service: false,
             one_command,
             resume_allowed: false,
+            principal_id: None,
         };
         let v = serde_json::to_value(grant(false)).unwrap();
         assert!(v.get("one_command").is_none(), "a person's grant: {v}");

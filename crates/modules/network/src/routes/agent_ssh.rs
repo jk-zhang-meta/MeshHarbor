@@ -634,6 +634,7 @@ async fn decide(
         via_service,
         one_command: session.is_some(),
         resume_allowed,
+        principal_id: Some(caller.user_id.to_hex()),
     };
 
     // FR-105 — the service PULLS the grant with its own credential, so it is
@@ -1246,15 +1247,27 @@ pub async fn set_policy(
         account_mode = ?policy.account_mode,
         "ssh: device policy updated"
     );
-    if policy.mode == SshMode::Off {
-        let aid = agent.id.unwrap_or_default();
+    let aid = agent.id.unwrap_or_default();
+    let old_policy = &agent.ssh_policy;
+    let revoke_whole_agent = policy.mode == SshMode::Off
+        || policy.account_mode != old_policy.account_mode
+        || policy.account != old_policy.account
+        || (old_policy.allowed_user_ids.is_empty() && !policy.allowed_user_ids.is_empty())
+        || (policy.allowed_role_ids != old_policy.allowed_role_ids
+            && !policy.allowed_role_ids.is_empty());
+    if revoke_whole_agent {
+        let reason = if policy.mode == SshMode::Off {
+            "ssh_policy_disabled"
+        } else {
+            "ssh_policy_restricted"
+        };
         let _ = state.fleet.rc_hub.push_ssh_revoke_agent(
             tid,
             aid,
             "org",
             None,
             None,
-            Some("ssh_policy_disabled".to_string()),
+            Some(reason.to_string()),
         );
         meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
             &state.fleet,
@@ -1263,10 +1276,38 @@ pub async fn set_policy(
                 "tenant_id": tid.to_hex(),
                 "agent_id": aid.to_hex(),
                 "scope": "org",
-                "reason": "ssh_policy_disabled",
+                "reason": reason,
             }),
         )
         .await;
+    } else if !old_policy.allowed_user_ids.is_empty() && !policy.allowed_user_ids.is_empty() {
+        for removed_uid in old_policy
+            .allowed_user_ids
+            .iter()
+            .filter(|uid| !policy.allowed_user_ids.contains(uid))
+        {
+            let principal_hex = removed_uid.to_hex();
+            let _ = state.fleet.rc_hub.push_ssh_revoke_agent(
+                tid,
+                aid,
+                "principal",
+                Some(principal_hex.clone()),
+                None,
+                Some("ssh_policy_user_removed".to_string()),
+            );
+            meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
+                &state.fleet,
+                "ssh_revoke",
+                serde_json::json!({
+                    "tenant_id": tid.to_hex(),
+                    "agent_id": aid.to_hex(),
+                    "scope": "principal",
+                    "principal": principal_hex,
+                    "reason": "ssh_policy_user_removed",
+                }),
+            )
+            .await;
+        }
     }
     Ok(Json(body))
 }

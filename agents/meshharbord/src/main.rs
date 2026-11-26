@@ -2844,14 +2844,14 @@ async fn daemon_main() -> Result<()> {
                 let _ = meshharbord::ssh_persist::init_state_dir(
                     &meshharbord::ssh_persist::state_dir(),
                 );
-                let _ = meshharbord::ssh_persist::adopt_all(|_| Ok(())).await;
                 match action.as_str() {
                     "list" => {
-                        let list = meshharbord::ssh_persist::list_sessions();
+                        let list = meshharbord::ssh_persist::list_sessions_readonly().await;
                         println!("{}", serde_json::to_string_pretty(&list)?);
                         Ok(())
                     }
                     "kill" => {
+                        let _ = meshharbord::ssh_persist::adopt_all(|_| Ok(())).await;
                         let sid = target.ok_or_else(|| {
                             anyhow::anyhow!("usage: meshharbord ssh-sessions kill <sid>")
                         })?;
@@ -2866,6 +2866,7 @@ async fn daemon_main() -> Result<()> {
                         Ok(())
                     }
                     "kill-all" => {
+                        let _ = meshharbord::ssh_persist::adopt_all(|_| Ok(())).await;
                         let n = meshharbord::ssh_persist::terminate_all(
                             meshharbor_node_core::pty_resume::TerminateReason::UserCancelled,
                             false,
@@ -5435,6 +5436,7 @@ async fn run_cmd(
             tracing::warn!(%e, "fr141: could not initialize ssh-persist state dir");
         } else {
             let ssh_enabled = cfg.ssh_enabled;
+            let resume_enabled = meshharbord::ssh_persist::resume_enabled_globally();
             let deny_daemon = cfg.ssh_max_privilege.as_deref() == Some("console_user");
             let joined_orgs: std::collections::HashSet<String> = cfg
                 .orgs
@@ -5442,8 +5444,20 @@ async fn run_cmd(
                 .map(|o| o.tenant_id.clone())
                 .chain(std::iter::once(cfg.tenant_id.clone()))
                 .collect();
+            let authorized_fps: std::collections::HashSet<String> = cfg
+                .ssh_authorized_keys
+                .iter()
+                .filter_map(|line| russh::keys::ssh_key::PublicKey::from_openssh(line).ok())
+                .map(|k| {
+                    k.fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+                        .to_string()
+                })
+                .collect();
             let two_factor_on = meshharbor_node_core::two_factor::active();
             let adopted = meshharbord::ssh_persist::adopt_all(|desc| {
+                if !resume_enabled {
+                    return Err("persistent SSH resume is disabled on this device".into());
+                }
                 if !ssh_enabled {
                     return Err("ssh_enabled is false".into());
                 }
@@ -5458,8 +5472,13 @@ async fn run_cmd(
                 {
                     return Err("ssh_max_privilege forbids daemon identity".into());
                 }
-                if desc.key_list_auth && two_factor_on {
-                    return Err("two-factor authentication is now enabled".into());
+                if desc.key_list_auth {
+                    if two_factor_on {
+                        return Err("two-factor authentication is now enabled".into());
+                    }
+                    if !authorized_fps.contains(&desc.client_key_fp) {
+                        return Err("client key was removed from ssh_authorized_keys".into());
+                    }
                 }
                 Ok(())
             })

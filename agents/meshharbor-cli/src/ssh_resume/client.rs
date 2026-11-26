@@ -7,7 +7,7 @@
 //! keystrokes up to 64 KiB for exact-once delivery, reconnects transparently
 //! across Wi-Fi/VPN drops and target daemon self-updates, and falls back to
 //! classic `pty-req + shell` on the SAME authenticated connection when talking
-//! to older targets (< 0.4.219).
+//! to older targets (< 0.4.219) or grants that disallow resume.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crossterm::terminal;
 use meshharbor_node_core::pty_resume::{
     MAX_C2S_QUEUE_BYTES, MAX_DATA_CHUNK, NoticeKind, RefuseReason, STREAM_STDIN, STREAM_STDOUT,
     SUBSYSTEM_NAME, SessionMode,
-    frame::{AttachFrame, FrameDecoder, OpenFrame, WireFrame},
+    frame::{AttachFrame, AttachedFrame, FrameDecoder, OpenFrame, WireFrame},
     now_unix_ms,
     proof::{compute_client_proof, verify_server_proof},
     seq::{C2sClientQueue, VtScreenTracker},
@@ -28,6 +28,7 @@ use rand::RngCore;
 use russh::keys::ssh_key::{PrivateKey, PublicKey};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::escape::{FilterAction, InputFilter};
 use super::overlay::{OverlayReason, prefers_zh, render_banner_ansi, restore_title_ansi};
@@ -38,7 +39,16 @@ const PING_EVERY: Duration = Duration::from_secs(2);
 const SUSPECT_AFTER: Duration = Duration::from_secs(6);
 const HARD_DROP_AFTER: Duration = Duration::from_secs(20);
 const OVERLAY_SHOW_DELAY: Duration = Duration::from_secs(1);
+const DIAL_ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONSECUTIVE_AUTH_REJECTS: u32 = 3;
+const FAST_CADENCE_MAX_ATTEMPTS: usize = 30;
 const BACKOFF_MS: &[u64] = &[0, 250, 500, 1000, 2000, 4000, 5000];
+
+/// Escape sequence emitted on exit/detach to reset mouse tracking, bracketed
+/// paste, alternate screen, cursor visibility, and SGR attributes so a TUI
+/// left active on disconnect never poisons the user's local shell.
+const TERMINAL_RESET_SEQ: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m";
 
 /// Transport stream accepted by `russh::client::connect_stream` (OS TCP or SOCKS5).
 trait OverlayStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -81,7 +91,7 @@ impl RawModeGuard {
             self.active = false;
             let _ = terminal::disable_raw_mode();
             let mut out = std::io::stdout();
-            let _ = out.write_all(b"\x1b[?25h\x1b[0m");
+            let _ = out.write_all(TERMINAL_RESET_SEQ);
             let _ = out.write_all(&restore_title_ansi(&self.device));
             let _ = out.flush();
         }
@@ -104,7 +114,37 @@ pub struct OpenParams {
     pub session_key: PrivateKey,
     pub command: Option<String>,
     pub ephemeral: bool,
+    pub resume_allowed: bool,
 }
+
+enum ConnectError {
+    HostKeyMismatch(String),
+    AuthRejected(String),
+    Transient(String),
+}
+
+impl ConnectError {
+    fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            Self::HostKeyMismatch(s) | Self::AuthRejected(s) | Self::Transient(s) => anyhow!("{s}"),
+        }
+    }
+}
+
+enum AttachError {
+    HostKeyMismatch(String),
+    AuthRejected(String),
+    Transient(String),
+    TerminalRefused(RefuseReason),
+}
+
+type AttachSuccess = (
+    russh::client::Handle<PinnedHostKey>,
+    russh::Channel<russh::client::Msg>,
+    FrameDecoder,
+    AttachedFrame,
+);
+type AttachResult = std::result::Result<AttachSuccess, AttachError>;
 
 /// Dial the target over OS-TUN or the local daemon's SOCKS5 netstack front.
 async fn dial_target(
@@ -145,8 +185,10 @@ async fn connect_and_auth(
     expected_host_key: &PublicKey,
     session_key: &PrivateKey,
     timeout: Duration,
-) -> Result<russh::client::Handle<PinnedHostKey>> {
-    let stream = dial_target(address, port, socks_port, timeout).await?;
+) -> std::result::Result<russh::client::Handle<PinnedHostKey>, ConnectError> {
+    let stream = dial_target(address, port, socks_port, timeout)
+        .await
+        .map_err(|e| ConnectError::Transient(e.to_string()))?;
     let mismatch = Arc::new(AtomicBool::new(false));
     let handler = PinnedHostKey {
         expected: expected_host_key.clone(),
@@ -159,9 +201,11 @@ async fn connect_and_auth(
     let mut handle = match russh::client::connect_stream(config, stream, handler).await {
         Ok(h) => h,
         Err(_) if mismatch.load(Ordering::SeqCst) => {
-            bail!("HOST KEY MISMATCH — refusing to connect (pinned key verification failed)")
+            return Err(ConnectError::HostKeyMismatch(
+                "HOST KEY MISMATCH — refusing to connect (pinned key verification failed)".into(),
+            ));
         }
-        Err(e) => return Err(anyhow!("SSH handshake failed: {e}")),
+        Err(e) => return Err(ConnectError::Transient(format!("SSH handshake failed: {e}"))),
     };
 
     let hash = handle
@@ -176,15 +220,41 @@ async fn connect_and_auth(
             russh::keys::PrivateKeyWithHashAlg::new(Arc::new(session_key.clone()), hash),
         )
         .await
-        .context("SSH publickey authentication")?;
+        .map_err(|e| ConnectError::Transient(format!("SSH publickey authentication: {e}")))?;
     if !auth.success() {
-        bail!("authentication rejected by target");
+        return Err(ConnectError::AuthRejected(
+            "authentication rejected by target".into(),
+        ));
     }
     Ok(handle)
 }
 
+/// Decide whether a `WireFrame::Refused` received during initial `Open` should
+/// fall back seamlessly to a classic shell on the same authenticated connection
+/// (never bypassing explicit operator consent denial).
+fn open_refusal_allows_classic_fallback(reason: &RefuseReason) -> bool {
+    match reason {
+        RefuseReason::Busy { .. } | RefuseReason::Internal { .. } => true,
+        RefuseReason::Policy { detail } => {
+            let lower = detail.to_ascii_lowercase();
+            let is_consent_or_exec_deny = lower.contains("denied")
+                || lower.contains("declined")
+                || lower.contains("consent")
+                || lower.contains("ssh_max_privilege")
+                || lower.contains("ssh_account_mode");
+            !is_consent_or_exec_deny
+                && (lower.contains("disabled")
+                    || lower.contains("not allow")
+                    || lower.contains("not permit")
+                    || lower.contains("not support")
+                    || lower.contains("unavailable"))
+        }
+        _ => false,
+    }
+}
+
 /// Run a fresh interactive resumable session (with seamless classic fallback on
-/// older targets on the exact same authenticated connection!).
+/// older targets or non-resumable grants on the exact same authenticated connection!).
 pub async fn run_open(params: OpenParams) -> Result<i32> {
     let expected_host_key = PublicKey::from_openssh(params.host_pubkey.trim())
         .context("parsing target SSH host public key")?;
@@ -205,11 +275,20 @@ pub async fn run_open(params: OpenParams) -> Result<i32> {
         &params.session_key,
         Duration::from_secs(15),
     )
-    .await?;
+    .await
+    .map_err(ConnectError::into_anyhow)?;
 
     let (cols, rows) = current_tty_size();
     let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
     let env_vars = collect_local_env();
+
+    // If the grant itself does not permit resumable SSH (older target, SYSTEM
+    // service port, offline P2P grant, or policy disabled), skip subsystem
+    // negotiation and open a classic interactive shell directly on this handle.
+    if !params.resume_allowed {
+        return run_classic_fallback(handle, &params.device, &term, cols, rows, params.command)
+            .await;
+    }
 
     let mut channel = handle
         .channel_open_session()
@@ -227,51 +306,85 @@ pub async fn run_open(params: OpenParams) -> Result<i32> {
         // mint a second grant (single-use key, avoids re-prompting consent/2FA!).
         let zh = prefers_zh();
         let notice = if zh {
-            "meshharbor: 目标设备版本暂不支持断线恢复，已回退为经典交互会话（请升级目标 meshharbord 至 0.4.219+）。\r\n"
+            "meshharbor: 目标设备当前未启用断线恢复，已回退为经典交互会话。\r\n"
         } else {
-            "meshharbor: target does not support resumable SSH yet; falling back to classic interactive shell (upgrade target to 0.4.219+).\r\n"
+            "meshharbor: target did not accept resumable SSH; falling back to classic interactive shell.\r\n"
         };
         let _ = std::io::stderr().write_all(format!("\x1b[2m{notice}\x1b[0m").as_bytes());
-        return run_classic_fallback(handle, &params.device, &term, cols, rows, params.command).await;
+        return run_classic_fallback(handle, &params.device, &term, cols, rows, params.command)
+            .await;
     }
 
     // Read server `Hello`.
     let mut decoder = FrameDecoder::new();
-    let _hello = match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(10)).await? {
-        Some(WireFrame::Hello(h)) => h,
-        other => bail!("unexpected initial frame from target: {other:?}"),
-    };
+    let _hello =
+        match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(10)).await? {
+            Some(WireFrame::Hello(h)) => h,
+            other => bail!("unexpected initial frame from target: {other:?}"),
+        };
 
     // Send `Open`.
     send_wire_to_channel(
         &channel,
         &WireFrame::Open(OpenFrame {
             mode: SessionMode::Pty,
-            term,
+            term: term.clone(),
             cols,
             rows,
-            command: params.command,
+            command: params.command.clone(),
             env: env_vars,
         }),
     )
     .await?;
 
     // Wait for `Opened` (allows up to 35 s if target prompts operator consent).
-    let opened = match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(35)).await? {
-        Some(WireFrame::Opened(o)) => o,
-        Some(WireFrame::Refused(reason)) => {
-            bail!("target refused resumable session: {}", format_refuse(&reason, prefers_zh()));
-        }
-        other => bail!("unexpected reply to Open: {other:?}"),
-    };
+    let opened =
+        match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(35)).await? {
+            Some(WireFrame::Opened(o)) => o,
+            Some(WireFrame::Refused(reason)) if open_refusal_allows_classic_fallback(&reason) => {
+                let zh = prefers_zh();
+                let why = format_refuse(&reason, zh);
+                let msg = if zh {
+                    format!(
+                        "\x1b[2mmeshharbor: 无法启动断线恢复会话（{why}），已回退为经典交互会话。\x1b[0m\r\n"
+                    )
+                } else {
+                    format!(
+                        "\x1b[2mmeshharbor: resumable session unavailable ({why}); falling back to classic shell.\x1b[0m\r\n"
+                    )
+                };
+                let _ = std::io::stderr().write_all(msg.as_bytes());
+                let _ = channel.close().await;
+                return run_classic_fallback(
+                    handle,
+                    &params.device,
+                    &term,
+                    cols,
+                    rows,
+                    params.command,
+                )
+                .await;
+            }
+            Some(WireFrame::Refused(reason)) => {
+                bail!(
+                    "target refused resumable session: {}",
+                    format_refuse(&reason, prefers_zh())
+                );
+            }
+            other => bail!("unexpected reply to Open: {other:?}"),
+        };
 
     if !opened.persist.survives_restart {
         let zh = prefers_zh();
         let why = opened.persist.reason.as_deref().unwrap_or("unknown");
         let msg = if zh {
-            format!("\x1b[2mmeshharbor: 当前会话支持断网恢复，但受环境限制({why})无法跨目标服务重启保留。\x1b[0m\r\n")
+            format!(
+                "\x1b[2mmeshharbor: 当前会话支持断网恢复，但受环境限制({why})无法跨目标服务重启保留。\x1b[0m\r\n"
+            )
         } else {
-            format!("\x1b[2mmeshharbor: network resume active; target cannot survive daemon restart ({why}).\x1b[0m\r\n")
+            format!(
+                "\x1b[2mmeshharbor: network resume active; target cannot survive daemon restart ({why}).\x1b[0m\r\n"
+            )
         };
         let _ = std::io::stderr().write_all(msg.as_bytes());
     }
@@ -343,6 +456,9 @@ pub async fn run_resume(device: &str, prefix: Option<&str>) -> Result<i32> {
 }
 
 /// Terminate a stored remote persistent session (`mh ssh <dev> --kill <id>`).
+/// Waits for host exit confirmation (`WireFrame::Exited`) or a terminal refusal
+/// before deleting the local store record so a dropped `Terminate` never hides
+/// a still-running remote session.
 pub async fn run_kill(device: &str, prefix: &str) -> Result<i32> {
     let stored = store::find_by_prefix(device, Some(prefix))?;
     let expected_host_key = PublicKey::from_openssh(stored.host_pubkey.trim())?;
@@ -365,14 +481,46 @@ pub async fn run_kill(device: &str, prefix: &str) -> Result<i32> {
         &client_key_fp,
         80,
         24,
+        Some(stored.last_rx),
     )
     .await
     {
-        Ok((handle, channel, _dec, _attached)) => {
-            let _ = send_wire_to_channel(&channel, &WireFrame::Terminate).await;
+        Ok((handle, mut channel, mut dec, _attached)) => {
+            send_wire_to_channel(&channel, &WireFrame::Terminate)
+                .await
+                .context("sending Terminate to remote session")?;
+
+            // Wait up to 4 s for confirmed `Exited` (skipping any queued replay data).
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+            let mut confirmed = false;
+            while tokio::time::Instant::now() < deadline {
+                let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match read_wire_from_channel(&mut channel, &mut dec, rem).await {
+                    Ok(Some(WireFrame::Exited(_))) => {
+                        confirmed = true;
+                        break;
+                    }
+                    Ok(Some(WireFrame::Refused(r))) if r.is_terminal() => {
+                        confirmed = true;
+                        break;
+                    }
+                    Ok(Some(_)) => continue,
+                    Ok(None) | Err(_) => break,
+                }
+            }
             let _ = handle
                 .disconnect(russh::Disconnect::ByApplication, "", "")
                 .await;
+            if !confirmed {
+                bail!(
+                    "sent Terminate to {} ({}), but connection closed before exit confirmation — \
+                     local record kept so you can retry `mh ssh {} --kill {}`",
+                    stored.device,
+                    stored.sid.short_hex(),
+                    stored.device,
+                    stored.sid.short_hex()
+                );
+            }
             store::delete(&stored.sid);
             println!(
                 "terminated remote SSH session {} on {}",
@@ -380,6 +528,14 @@ pub async fn run_kill(device: &str, prefix: &str) -> Result<i32> {
                 stored.device
             );
             Ok(0)
+        }
+        Err(AttachError::HostKeyMismatch(e)) => bail!("{e}"),
+        Err(AttachError::AuthRejected(e)) => {
+            bail!(
+                "target {} rejected session key for {}: {e}",
+                stored.device,
+                stored.sid.short_hex()
+            )
         }
         Err(AttachError::TerminalRefused(RefuseReason::Ended { status })) => {
             store::delete(&stored.sid);
@@ -400,14 +556,13 @@ pub async fn run_kill(device: &str, prefix: &str) -> Result<i32> {
             Ok(0)
         }
         Err(AttachError::Transient(e)) => {
-            bail!("could not reach {} to terminate session {}: {e}", stored.device, stored.sid.short_hex())
+            bail!(
+                "could not reach {} to terminate session {}: {e}",
+                stored.device,
+                stored.sid.short_hex()
+            )
         }
     }
-}
-
-enum AttachError {
-    Transient(String),
-    TerminalRefused(RefuseReason),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -420,15 +575,41 @@ async fn dial_and_attach(
     client_key_fp: &str,
     cols: u16,
     rows: u16,
-) -> std::result::Result<
-    (
-        russh::client::Handle<PinnedHostKey>,
-        russh::Channel<russh::client::Msg>,
-        FrameDecoder,
-        meshharbor_node_core::pty_resume::frame::AttachedFrame,
-    ),
-    AttachError,
-> {
+    last_rx_override: Option<u64>,
+) -> AttachResult {
+    match tokio::time::timeout(
+        DIAL_ATTACH_TIMEOUT,
+        dial_and_attach_inner(
+            stored,
+            expected_host_key,
+            session_key,
+            resume_secret,
+            host_key_fp,
+            client_key_fp,
+            cols,
+            rows,
+            last_rx_override,
+        ),
+    )
+    .await
+    {
+        Ok(res) => res,
+        Err(_) => Err(AttachError::Transient("reconnect attach timed out".into())),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dial_and_attach_inner(
+    stored: &StoredSession,
+    expected_host_key: &PublicKey,
+    session_key: &PrivateKey,
+    resume_secret: &[u8; 32],
+    host_key_fp: &str,
+    client_key_fp: &str,
+    cols: u16,
+    rows: u16,
+    last_rx_override: Option<u64>,
+) -> AttachResult {
     let handle = connect_and_auth(
         &stored.address,
         stored.port,
@@ -438,7 +619,11 @@ async fn dial_and_attach(
         Duration::from_secs(5),
     )
     .await
-    .map_err(|e| AttachError::Transient(e.to_string()))?;
+    .map_err(|e| match e {
+        ConnectError::HostKeyMismatch(m) => AttachError::HostKeyMismatch(m),
+        ConnectError::AuthRejected(m) => AttachError::AuthRejected(m),
+        ConnectError::Transient(m) => AttachError::Transient(m),
+    })?;
 
     let mut channel = handle
         .channel_open_session()
@@ -479,13 +664,14 @@ async fn dial_and_attach(
         client_key_fp,
     );
 
+    let req_last_rx = last_rx_override.unwrap_or(stored.last_rx);
     send_wire_to_channel(
         &channel,
         &WireFrame::Attach(AttachFrame {
             session_id: stored.sid,
             client_nonce,
             proof,
-            last_rx: stored.last_rx,
+            last_rx: req_last_rx,
             last_rx_stderr: 0,
             c2s_next: stored.c2s_next,
             cols,
@@ -523,6 +709,53 @@ async fn dial_and_attach(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn spawn_dial_task(
+    stored: &StoredSession,
+    expected_host_key: &PublicKey,
+    session_key: &PrivateKey,
+    resume_secret: [u8; 32],
+    host_key_fp: &str,
+    client_key_fp: &str,
+    cols: u16,
+    rows: u16,
+    last_rx_override: Option<u64>,
+) -> JoinHandle<AttachResult> {
+    let stored = stored.clone();
+    let expected_host_key = expected_host_key.clone();
+    let session_key = session_key.clone();
+    let host_key_fp = host_key_fp.to_string();
+    let client_key_fp = client_key_fp.to_string();
+    tokio::spawn(async move {
+        dial_and_attach(
+            &stored,
+            &expected_host_key,
+            &session_key,
+            &resume_secret,
+            &host_key_fp,
+            &client_key_fp,
+            cols,
+            rows,
+            last_rx_override,
+        )
+        .await
+    })
+}
+
+async fn poll_opt_join(opt: &mut Option<JoinHandle<AttachResult>>) -> AttachResult {
+    match opt {
+        Some(jh) => {
+            let res = jh.await;
+            *opt = None;
+            match res {
+                Ok(r) => r,
+                Err(e) => Err(AttachError::Transient(format!("dial task failed: {e}"))),
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
 enum ConnState {
     Attached {
         handle: russh::client::Handle<PinnedHostKey>,
@@ -530,6 +763,7 @@ enum ConnState {
         decoder: FrameDecoder,
         last_rx_at: Instant,
         last_ping_at: Instant,
+        suspect_dial: Option<JoinHandle<AttachResult>>,
     },
     Reconnecting {
         reason: OverlayReason,
@@ -537,7 +771,22 @@ enum ConnState {
         attempt: usize,
         next_try_at: Instant,
         fast_cadence: bool,
+        in_flight: Option<JoinHandle<AttachResult>>,
     },
+}
+
+fn clear_overlay_if_visible(
+    overlay_visible: &mut bool,
+    shadow_vt: &mut VtScreenTracker,
+    device: &str,
+) {
+    if *overlay_visible {
+        if let Some(restore) = shadow_vt.render_top_row_restore() {
+            write_stdout_all(&restore);
+        }
+        write_stdout_all(&restore_title_ansi(device));
+        *overlay_visible = false;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -562,6 +811,14 @@ async fn run_interactive_loop(
     let mut filter = InputFilter::new();
     let mut raw_guard = RawModeGuard::enter(&stored.device);
 
+    // Cold `--resume` starts in a fresh CLI process whose terminal screen is
+    // blank and whose local `c2s_queue` starts at seq 0: on the very first
+    // attach we request `last_rx = 0` (full screen replay/snapshot) and rebase
+    // `c2s_queue` to the host's reported `c2s_acked` so zero keystrokes are
+    // ever dropped by host deduplication!
+    let mut cold_resume = initial.is_none();
+    let mut consecutive_auth_rejects: u32 = 0;
+
     // Spawn local stdin reader thread so reads never stall async timers/reconnect.
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
     spawn_stdin_reader(stdin_tx);
@@ -578,6 +835,7 @@ async fn run_interactive_loop(
             decoder,
             last_rx_at: now,
             last_ping_at: now,
+            suspect_dial: None,
         },
         None => ConnState::Reconnecting {
             reason: OverlayReason::NetworkReconnecting,
@@ -585,6 +843,7 @@ async fn run_interactive_loop(
             attempt: 0,
             next_try_at: now,
             fast_cadence: false,
+            in_flight: None,
         },
     };
 
@@ -603,6 +862,7 @@ async fn run_interactive_loop(
                 decoder,
                 last_rx_at,
                 last_ping_at,
+                suspect_dial,
             } => {
                 // Drain any already-buffered frames in `decoder` first.
                 let mut drop_to_reconnect: Option<OverlayReason> = None;
@@ -611,27 +871,42 @@ async fn run_interactive_loop(
                 while let Ok(Some(frame)) = decoder.next_wire() {
                     *last_rx_at = Instant::now();
                     match frame {
-                        WireFrame::Data { stream, seq, bytes }
-                            if stream == STREAM_STDOUT
-                                && seq + bytes.len() as u64 > stored.last_rx =>
-                        {
-                            let skip = stored.last_rx.saturating_sub(seq) as usize;
-                            if skip < bytes.len() {
-                                let fresh = &bytes[skip..];
-                                shadow_vt.process(fresh);
-                                write_stdout_all(fresh);
-                                stored.last_rx = seq + bytes.len() as u64;
-                                let _ = send_wire_to_channel(
-                                    channel,
-                                    &WireFrame::Ack {
-                                        stream: STREAM_STDOUT,
-                                        upto: stored.last_rx,
-                                    },
-                                )
-                                .await;
+                        WireFrame::Data { stream, seq, bytes } if stream == STREAM_STDOUT => {
+                            if seq > stored.last_rx {
+                                // Never skip a stdout sequence gap — trigger
+                                // clean lossless replay from `stored.last_rx`!
+                                drop_to_reconnect = Some(OverlayReason::NetworkReconnecting);
+                                break;
+                            }
+                            if seq.saturating_add(bytes.len() as u64) > stored.last_rx {
+                                let skip = stored.last_rx.saturating_sub(seq) as usize;
+                                if skip < bytes.len() {
+                                    clear_overlay_if_visible(
+                                        &mut overlay_visible,
+                                        &mut shadow_vt,
+                                        &stored.device,
+                                    );
+                                    let fresh = &bytes[skip..];
+                                    shadow_vt.process(fresh);
+                                    write_stdout_all(fresh);
+                                    stored.last_rx = seq.saturating_add(bytes.len() as u64);
+                                    let _ = send_wire_to_channel(
+                                        channel,
+                                        &WireFrame::Ack {
+                                            stream: STREAM_STDOUT,
+                                            upto: stored.last_rx,
+                                        },
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         WireFrame::Snapshot { at_seq, bytes, .. } => {
+                            clear_overlay_if_visible(
+                                &mut overlay_visible,
+                                &mut shadow_vt,
+                                &stored.device,
+                            );
                             shadow_vt.process(&bytes);
                             write_stdout_all(&bytes);
                             stored.last_rx = at_seq;
@@ -651,7 +926,13 @@ async fn run_interactive_loop(
                         WireFrame::Ping { t_ms } => {
                             let _ = send_wire_to_channel(channel, &WireFrame::Pong { t_ms }).await;
                         }
-                        WireFrame::Pong { .. } => {}
+                        WireFrame::Pong { .. } => {
+                            clear_overlay_if_visible(
+                                &mut overlay_visible,
+                                &mut shadow_vt,
+                                &stored.device,
+                            );
+                        }
                         WireFrame::Notice(NoticeKind::TargetRestarting {
                             reason,
                             to_version,
@@ -666,6 +947,12 @@ async fn run_interactive_loop(
                             break;
                         }
                         WireFrame::Notice(NoticeKind::Superseded) => {
+                            if suspect_dial.is_some() {
+                                // Our own make-before-break redial won on the
+                                // host; transition cleanly without exiting 0!
+                                drop_to_reconnect = Some(OverlayReason::NetworkReconnecting);
+                                break;
+                            }
                             post_exit_msg = Some(if zh {
                                 "meshharbor: 该会话已被新的连接接管。".into()
                             } else {
@@ -694,10 +981,8 @@ async fn run_interactive_loop(
                             if !ephemeral {
                                 store::delete(&stored.sid);
                             }
-                            post_exit_msg = Some(format!(
-                                "meshharbor: {}",
-                                format_refuse(&reason, zh)
-                            ));
+                            post_exit_msg =
+                                Some(format!("meshharbor: {}", format_refuse(&reason, zh)));
                             exit_now = Some(match reason {
                                 RefuseReason::Ended { status } => status.ssh_exit_code(),
                                 _ => 255,
@@ -709,6 +994,9 @@ async fn run_interactive_loop(
                 }
 
                 if let Some(code) = exit_now {
+                    if let Some(jh) = suspect_dial.take() {
+                        jh.abort();
+                    }
                     exit_code = code;
                     let _ = handle
                         .disconnect(russh::Disconnect::ByApplication, "", "")
@@ -716,6 +1004,9 @@ async fn run_interactive_loop(
                     break;
                 }
                 if let Some(reason) = drop_to_reconnect {
+                    if let Some(jh) = suspect_dial.take() {
+                        jh.abort();
+                    }
                     let fast = matches!(
                         reason,
                         OverlayReason::TargetUpdating { .. } | OverlayReason::TargetRestarting
@@ -723,17 +1014,70 @@ async fn run_interactive_loop(
                     if !ephemeral {
                         let _ = store::save(&stored);
                     }
+                    let _ = handle
+                        .disconnect(russh::Disconnect::ByApplication, "", "")
+                        .await;
                     state = ConnState::Reconnecting {
                         reason,
                         disconnected_at: Instant::now(),
                         attempt: 0,
-                        next_try_at: Instant::now() + Duration::from_millis(if fast { 800 } else { 0 }),
+                        next_try_at: Instant::now()
+                            + Duration::from_millis(if fast { 800 } else { 0 }),
                         fast_cadence: fast,
+                        in_flight: None,
                     };
                     continue;
                 }
 
+                let has_suspect_dial = suspect_dial.is_some();
+                let queue_has_room = !c2s_queue.is_full();
+
                 tokio::select! {
+                    res = poll_opt_join(suspect_dial), if has_suspect_dial => {
+                        match res {
+                            Ok((new_h, new_ch, new_dec, attached_info)) => {
+                                consecutive_auth_rejects = 0;
+                                c2s_queue.ack(attached_info.c2s_acked);
+                                stored.c2s_next = c2s_queue.next_seq();
+                                for (seq, chunk) in c2s_queue.unacked_chunks(MAX_DATA_CHUNK) {
+                                    let _ = send_wire_to_channel(
+                                        &new_ch,
+                                        &WireFrame::Data { stream: STREAM_STDIN, seq, bytes: chunk },
+                                    ).await;
+                                }
+                                let _ = send_wire_to_channel(&new_ch, &WireFrame::Resize { cols, rows }).await;
+                                clear_overlay_if_visible(&mut overlay_visible, &mut shadow_vt, &stored.device);
+                                let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+                                state = ConnState::Attached {
+                                    handle: new_h,
+                                    channel: new_ch,
+                                    decoder: new_dec,
+                                    last_rx_at: Instant::now(),
+                                    last_ping_at: Instant::now(),
+                                    suspect_dial: None,
+                                };
+                            }
+                            Err(AttachError::HostKeyMismatch(msg)) => {
+                                post_exit_msg = Some(format!("meshharbor: {msg}"));
+                                exit_code = 255;
+                                let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+                                break;
+                            }
+                            Err(AttachError::TerminalRefused(ref_reason)) => {
+                                if !ephemeral {
+                                    store::delete(&stored.sid);
+                                }
+                                exit_code = match &ref_reason {
+                                    RefuseReason::Ended { status } => status.ssh_exit_code(),
+                                    _ => 255,
+                                };
+                                post_exit_msg = Some(format!("meshharbor: {}", format_refuse(&ref_reason, zh)));
+                                let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+                                break;
+                            }
+                            Err(AttachError::AuthRejected(_) | AttachError::Transient(_)) => {}
+                        }
+                    }
                     msg = channel.wait() => {
                         match msg {
                             Some(russh::ChannelMsg::Data { data }) => {
@@ -744,6 +1088,9 @@ async fn run_interactive_loop(
                                 *last_rx_at = Instant::now();
                             }
                             None | Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::Close) => {
+                                if let Some(jh) = suspect_dial.take() {
+                                    jh.abort();
+                                }
                                 if !ephemeral {
                                     let _ = store::save(&stored);
                                 }
@@ -753,12 +1100,13 @@ async fn run_interactive_loop(
                                     attempt: 0,
                                     next_try_at: Instant::now(),
                                     fast_cadence: false,
+                                    in_flight: None,
                                 };
                             }
                             _ => {}
                         }
                     }
-                    Some(raw) = stdin_rx.recv() => {
+                    Some(raw) = stdin_rx.recv(), if queue_has_room => {
                         let actions = filter.feed(&raw, true, Instant::now());
                         let mut should_break = false;
                         for act in actions {
@@ -778,24 +1126,66 @@ async fn run_interactive_loop(
                                     }
                                 }
                                 FilterAction::Detach => {
-                                    let _ = send_wire_to_channel(channel, &WireFrame::Detach).await;
-                                    if !ephemeral {
+                                    if ephemeral {
+                                        // Ephemeral sessions have no saved resume record:
+                                        // terminate cleanly instead of orphaning on target.
+                                        let _ = send_wire_to_channel(channel, &WireFrame::Terminate).await;
+                                        let _ = read_wire_from_channel(
+                                            channel,
+                                            decoder,
+                                            Duration::from_millis(1500),
+                                        )
+                                        .await;
+                                        post_exit_msg = Some(if zh {
+                                            "meshharbor: 已结束临时（--ephemeral）SSH 会话。".into()
+                                        } else {
+                                            "meshharbor: terminated ephemeral SSH session.".into()
+                                        });
+                                    } else {
+                                        let _ = send_wire_to_channel(channel, &WireFrame::Detach).await;
                                         let _ = store::save(&stored);
+                                        post_exit_msg = Some(format_detach_hint(&stored, zh));
                                     }
-                                    post_exit_msg = Some(format_detach_hint(&stored, zh));
                                     exit_code = 0;
                                     should_break = true;
                                     break;
                                 }
                                 FilterAction::Terminate => {
                                     let _ = send_wire_to_channel(channel, &WireFrame::Terminate).await;
-                                    if !ephemeral {
+                                    let mut confirmed = false;
+                                    let dl = tokio::time::Instant::now() + Duration::from_secs(2);
+                                    while tokio::time::Instant::now() < dl {
+                                        let rem = dl.saturating_duration_since(tokio::time::Instant::now());
+                                        match read_wire_from_channel(channel, decoder, rem).await {
+                                            Ok(Some(WireFrame::Exited(_))) => {
+                                                confirmed = true;
+                                                break;
+                                            }
+                                            Ok(Some(_)) => continue,
+                                            Ok(None) | Err(_) => break,
+                                        }
+                                    }
+                                    if confirmed && !ephemeral {
                                         store::delete(&stored.sid);
                                     }
-                                    post_exit_msg = Some(if zh {
-                                        "meshharbor: 已结束远端 SSH 会话。".into()
+                                    post_exit_msg = Some(if confirmed {
+                                        if zh {
+                                            "meshharbor: 已结束远端 SSH 会话。".into()
+                                        } else {
+                                            "meshharbor: remote SSH session terminated.".into()
+                                        }
+                                    } else if zh {
+                                        format!(
+                                            "meshharbor: 已发送结束指令但未收到退出确认，可运行 `mh ssh {} --kill {}` 确认。",
+                                            stored.device,
+                                            stored.sid.short_hex()
+                                        )
                                     } else {
-                                        "meshharbor: remote SSH session terminated.".into()
+                                        format!(
+                                            "meshharbor: terminate sent without exit confirmation; run `mh ssh {} --kill {}` to verify.",
+                                            stored.device,
+                                            stored.sid.short_hex()
+                                        )
                                     });
                                     exit_code = 0;
                                     should_break = true;
@@ -813,6 +1203,9 @@ async fn run_interactive_loop(
                             }
                         }
                         if should_break {
+                            if let Some(jh) = suspect_dial.take() {
+                                jh.abort();
+                            }
                             let _ = handle
                                 .disconnect(russh::Disconnect::ByApplication, "", "")
                                 .await;
@@ -829,20 +1222,26 @@ async fn run_interactive_loop(
                         let now = Instant::now();
                         let silent = now.saturating_duration_since(*last_rx_at);
                         if silent >= HARD_DROP_AFTER {
+                            if let Some(jh) = suspect_dial.take() {
+                                jh.abort();
+                            }
                             if !ephemeral {
                                 let _ = store::save(&stored);
                             }
+                            let _ = handle
+                                .disconnect(russh::Disconnect::ByApplication, "", "")
+                                .await;
                             state = ConnState::Reconnecting {
                                 reason: OverlayReason::NetworkReconnecting,
                                 disconnected_at: now,
                                 attempt: 0,
                                 next_try_at: now,
                                 fast_cadence: false,
+                                in_flight: None,
                             };
                             continue;
                         }
                         if silent >= SUSPECT_AFTER {
-                            // Paint subtle suspect overlay and attempt make-before-break dial!
                             let bar = render_banner_ansi(
                                 &stored.device,
                                 &OverlayReason::LinkSuspect,
@@ -855,39 +1254,19 @@ async fn run_interactive_loop(
                             write_stdout_all(&bar);
                             overlay_visible = true;
 
-                            if let Ok((new_h, new_ch, new_dec, attached_info)) = dial_and_attach(
-                                &stored,
-                                &expected_host_key,
-                                &session_key,
-                                &resume_secret,
-                                &host_key_fp,
-                                &client_key_fp,
-                                cols,
-                                rows,
-                            ).await {
-                                c2s_queue.ack(attached_info.c2s_acked);
-                                for (seq, chunk) in c2s_queue.unacked_chunks(MAX_DATA_CHUNK) {
-                                    let _ = send_wire_to_channel(
-                                        &new_ch,
-                                        &WireFrame::Data { stream: STREAM_STDIN, seq, bytes: chunk },
-                                    ).await;
-                                }
-                                let _ = send_wire_to_channel(&new_ch, &WireFrame::Resize { cols, rows }).await;
-                                if overlay_visible {
-                                    if let Some(restore) = shadow_vt.render_top_row_restore() {
-                                        write_stdout_all(&restore);
-                                    }
-                                    write_stdout_all(&restore_title_ansi(&stored.device));
-                                    overlay_visible = false;
-                                }
-                                state = ConnState::Attached {
-                                    handle: new_h,
-                                    channel: new_ch,
-                                    decoder: new_dec,
-                                    last_rx_at: Instant::now(),
-                                    last_ping_at: Instant::now(),
-                                };
-                                continue;
+                            // Non-blocking make-before-break redial task!
+                            if suspect_dial.is_none() {
+                                *suspect_dial = Some(spawn_dial_task(
+                                    &stored,
+                                    &expected_host_key,
+                                    &session_key,
+                                    resume_secret,
+                                    &host_key_fp,
+                                    &client_key_fp,
+                                    cols,
+                                    rows,
+                                    None,
+                                ));
                             }
                         } else if now.saturating_duration_since(*last_ping_at) >= PING_EVERY {
                             *last_ping_at = now;
@@ -907,8 +1286,12 @@ async fn run_interactive_loop(
                 attempt,
                 next_try_at,
                 fast_cadence,
+                in_flight,
             } => {
                 if now_unix_ms() >= stored.deadline_ms {
+                    if let Some(jh) = in_flight.take() {
+                        jh.abort();
+                    }
                     if !ephemeral {
                         store::delete(&stored.sid);
                     }
@@ -945,23 +1328,40 @@ async fn run_interactive_loop(
                 }
 
                 let wait_until = tokio::time::Instant::from_std(*next_try_at);
+                let dialing = in_flight.is_some();
+
                 tokio::select! {
-                    _ = tokio::time::sleep_until(wait_until) => {
-                        match dial_and_attach(
+                    _ = tokio::time::sleep_until(wait_until), if !dialing => {
+                        let rx_override = if cold_resume { Some(0) } else { None };
+                        *in_flight = Some(spawn_dial_task(
                             &stored,
                             &expected_host_key,
                             &session_key,
-                            &resume_secret,
+                            resume_secret,
                             &host_key_fp,
                             &client_key_fp,
                             cols,
                             rows,
-                        )
-                        .await
-                        {
+                            rx_override,
+                        ));
+                    }
+                    res = poll_opt_join(in_flight), if dialing => {
+                        match res {
                             Ok((new_h, new_ch, new_dec, attached_info)) => {
+                                consecutive_auth_rejects = 0;
                                 filter.clear_ctrl_c_arm();
-                                c2s_queue.ack(attached_info.c2s_acked);
+                                if cold_resume {
+                                    cold_resume = false;
+                                    // Reset local rx cursor to 0 so replayed bytes /
+                                    // snapshot from host paint onto the fresh terminal.
+                                    stored.last_rx = 0;
+                                    // Rebase c2s seq to host's `c2s_acked` so new
+                                    // input is NEVER dropped by host dedup!
+                                    c2s_queue.rebase(attached_info.c2s_acked);
+                                } else {
+                                    c2s_queue.ack(attached_info.c2s_acked);
+                                }
+                                stored.c2s_next = c2s_queue.next_seq();
                                 for (seq, chunk) in c2s_queue.unacked_chunks(MAX_DATA_CHUNK) {
                                     let _ = send_wire_to_channel(
                                         &new_ch,
@@ -978,21 +1378,39 @@ async fn run_interactive_loop(
                                     &WireFrame::Resize { cols, rows },
                                 )
                                 .await;
-                                // Seamlessly repaint original top row from shadow vt100!
-                                if overlay_visible {
-                                    if let Some(restore) = shadow_vt.render_top_row_restore() {
-                                        write_stdout_all(&restore);
-                                    }
-                                    write_stdout_all(&restore_title_ansi(&stored.device));
-                                    overlay_visible = false;
-                                }
+                                clear_overlay_if_visible(&mut overlay_visible, &mut shadow_vt, &stored.device);
                                 state = ConnState::Attached {
                                     handle: new_h,
                                     channel: new_ch,
                                     decoder: new_dec,
                                     last_rx_at: Instant::now(),
                                     last_ping_at: Instant::now(),
+                                    suspect_dial: None,
                                 };
+                            }
+                            Err(AttachError::HostKeyMismatch(msg)) => {
+                                post_exit_msg = Some(format!("meshharbor: {msg}"));
+                                exit_code = 255;
+                                break;
+                            }
+                            Err(AttachError::AuthRejected(msg)) => {
+                                consecutive_auth_rejects = consecutive_auth_rejects.saturating_add(1);
+                                if consecutive_auth_rejects >= MAX_CONSECUTIVE_AUTH_REJECTS {
+                                    if !ephemeral {
+                                        store::delete(&stored.sid);
+                                    }
+                                    post_exit_msg = Some(if zh {
+                                        format!("meshharbor: 目标设备连续拒绝会话凭证（{msg}），会话已失效或已被撤销。")
+                                    } else {
+                                        format!("meshharbor: target rejected session key {consecutive_auth_rejects} times ({msg}); session expired or revoked.")
+                                    });
+                                    exit_code = 255;
+                                    break;
+                                }
+                                *attempt = attempt.saturating_add(1);
+                                let base_ms = BACKOFF_MS[(*attempt).min(BACKOFF_MS.len() - 1)];
+                                let jitter = now_unix_ms() % 150;
+                                *next_try_at = Instant::now() + Duration::from_millis(base_ms + jitter);
                             }
                             Err(AttachError::TerminalRefused(ref_reason)) => {
                                 if !ephemeral {
@@ -1010,13 +1428,12 @@ async fn run_interactive_loop(
                             }
                             Err(AttachError::Transient(_)) => {
                                 *attempt = attempt.saturating_add(1);
-                                let base_ms = if *fast_cadence {
+                                let base_ms = if *fast_cadence && *attempt <= FAST_CADENCE_MAX_ATTEMPTS {
                                     1000
                                 } else {
                                     BACKOFF_MS[(*attempt).min(BACKOFF_MS.len() - 1)]
                                 };
-                                // Small deterministic jitter (0..150 ms).
-                                let jitter = (now_unix_ms() % 150) as u64;
+                                let jitter = now_unix_ms() % 150;
                                 *next_try_at = Instant::now() + Duration::from_millis(base_ms + jitter);
                             }
                         }
@@ -1027,11 +1444,14 @@ async fn run_interactive_loop(
                         for act in actions {
                             match act {
                                 FilterAction::Forward(bytes) => {
-                                    let _ = c2s_queue.push(&bytes);
-                                    stored.c2s_next = c2s_queue.next_seq();
+                                    if c2s_queue.push(&bytes).is_some() {
+                                        stored.c2s_next = c2s_queue.next_seq();
+                                    } else {
+                                        // 64 KiB offline input queue full: audible bell.
+                                        write_stdout_all(b"\x07");
+                                    }
                                 }
                                 FilterAction::CtrlCFirstQueued => {
-                                    // Immediately repaint banner with double-Ctrl-C warning!
                                     let bar = render_banner_ansi(
                                         &stored.device,
                                         reason,
@@ -1048,8 +1468,14 @@ async fn run_interactive_loop(
                                     c2s_queue.drop_trailing_ctrl_c();
                                     if !ephemeral {
                                         let _ = store::save(&stored);
+                                        post_exit_msg = Some(format_detach_hint(&stored, zh));
+                                    } else {
+                                        post_exit_msg = Some(if zh {
+                                            "meshharbor: 已退出本地临时（--ephemeral）会话。".into()
+                                        } else {
+                                            "meshharbor: exited local ephemeral session.".into()
+                                        });
                                     }
-                                    post_exit_msg = Some(format_detach_hint(&stored, zh));
                                     exit_code = 0;
                                     should_break = true;
                                     break;
@@ -1057,8 +1483,14 @@ async fn run_interactive_loop(
                                 FilterAction::Detach => {
                                     if !ephemeral {
                                         let _ = store::save(&stored);
+                                        post_exit_msg = Some(format_detach_hint(&stored, zh));
+                                    } else {
+                                        post_exit_msg = Some(if zh {
+                                            "meshharbor: 已退出本地临时（--ephemeral）会话。".into()
+                                        } else {
+                                            "meshharbor: exited local ephemeral session.".into()
+                                        });
                                     }
-                                    post_exit_msg = Some(format_detach_hint(&stored, zh));
                                     exit_code = 0;
                                     should_break = true;
                                     break;
@@ -1092,6 +1524,9 @@ async fn run_interactive_loop(
                             }
                         }
                         if should_break {
+                            if let Some(jh) = in_flight.take() {
+                                jh.abort();
+                            }
                             break;
                         }
                     }
@@ -1119,7 +1554,7 @@ async fn run_interactive_loop(
 }
 
 /// Classic `pty-req + shell` fallback on an ALREADY-authenticated `russh` handle
-/// (used when a target daemon < 0.4.219 refuses `meshharbor-pty@v1`).
+/// (used when a target daemon < 0.4.219 or policy refuses `meshharbor-pty@v1`).
 async fn run_classic_fallback(
     handle: russh::client::Handle<PinnedHostKey>,
     device: &str,
@@ -1137,8 +1572,14 @@ async fn run_classic_fallback(
         .await
         .context("requesting classic PTY")?;
     match command {
-        Some(cmd) => channel.exec(true, cmd).await.context("starting classic exec")?,
-        None => channel.request_shell(true).await.context("starting classic shell")?,
+        Some(cmd) => channel
+            .exec(true, cmd)
+            .await
+            .context("starting classic exec")?,
+        None => channel
+            .request_shell(true)
+            .await
+            .context("starting classic shell")?,
     }
 
     let mut raw_guard = RawModeGuard::enter(device);
@@ -1147,7 +1588,7 @@ async fn run_classic_fallback(
     let (resize_tx, mut resize_rx) = mpsc::channel::<(u16, u16)>(16);
     spawn_resize_watcher(resize_tx, cols, rows);
 
-    let mut exit_code: i32 = 0;
+    let mut exit_code: Option<i32> = None;
     loop {
         tokio::select! {
             msg = channel.wait() => {
@@ -1158,7 +1599,10 @@ async fn run_classic_fallback(
                         let _ = std::io::stderr().flush();
                     }
                     Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
-                        exit_code = exit_status as i32;
+                        exit_code = Some(exit_status as i32);
+                    }
+                    Some(russh::ChannelMsg::ExitSignal { signal_name, .. }) => {
+                        exit_code = Some(128 + ssh_sig_to_num(&signal_name));
                     }
                     None | Some(russh::ChannelMsg::Close) => break,
                     _ => {}
@@ -1179,13 +1623,34 @@ async fn run_classic_fallback(
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
-    Ok(exit_code)
+    // Match OpenSSH: abnormal EOF without exit-status/exit-signal returns 255.
+    Ok(exit_code.unwrap_or(255))
+}
+
+fn ssh_sig_to_num(sig: &russh::Sig) -> i32 {
+    match sig {
+        russh::Sig::HUP => 1,
+        russh::Sig::INT => 2,
+        russh::Sig::QUIT => 3,
+        russh::Sig::ILL => 4,
+        russh::Sig::ABRT => 6,
+        russh::Sig::FPE => 8,
+        russh::Sig::KILL => 9,
+        russh::Sig::USR1 => 10,
+        russh::Sig::SEGV => 11,
+        russh::Sig::PIPE => 13,
+        russh::Sig::ALRM => 14,
+        russh::Sig::TERM => 15,
+        russh::Sig::Custom(name) if name == "USR2" => 12,
+        russh::Sig::Custom(_) => 15,
+    }
 }
 
 async fn wait_subsystem_accepted(channel: &mut russh::Channel<russh::client::Msg>) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_secs(5), channel.wait()).await {
+        let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(rem, channel.wait()).await {
             Ok(Some(russh::ChannelMsg::Success)) => return true,
             Ok(Some(russh::ChannelMsg::Failure))
             | Ok(Some(russh::ChannelMsg::Close))

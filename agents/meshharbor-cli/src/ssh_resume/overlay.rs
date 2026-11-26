@@ -132,10 +132,12 @@ pub fn render_banner_ansi(
         "\x1b[0;1;30;43m"
     };
     let mut out = Vec::with_capacity(text.len() + title.len() + 64);
-    out.extend_from_slice(b"\x1b[?25l\x1b[1;1H");
+    // Save/restore cursor via DEC ESC 7 / ESC 8 so painting the top-row overlay
+    // never leaves the cursor stranded on row 1 if live output resumes.
+    out.extend_from_slice(b"\x1b7\x1b[?25l\x1b[1;1H");
     out.extend_from_slice(style.as_bytes());
     out.extend_from_slice(text.as_bytes());
-    out.extend_from_slice(b"\x1b[0m");
+    out.extend_from_slice(b"\x1b[0m\x1b8");
     out.extend_from_slice(format!("\x1b]2;{title}\x07").as_bytes());
     out
 }

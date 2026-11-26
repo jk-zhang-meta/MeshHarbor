@@ -242,6 +242,7 @@ fn measure_persist_status(scope_unit: Option<&str>) -> PersistStatus {
 enum InternalEvent {
     PtyOutput(Vec<u8>),
     PtyExited(ExitStatusInfo),
+    StdinAck { conn_id: u64, upto: u64 },
     ConnDropped(u64),
     ClientFrame { conn_id: u64, frame: IpcFrame },
 }
@@ -259,6 +260,9 @@ struct HostCore {
     vt: VtScreenTracker,
     dedup: C2sHostDedup,
     pty_handle: Option<crate::pty::PtyHandle>,
+    /// Bounded non-blocking channel to dedicated PTY stdin writer task so full
+    /// PTY stdin buffers NEVER stall `Terminate` or deadline ticks!
+    stdin_tx: Option<mpsc::Sender<(u64, u64, Vec<u8>)>>,
     pty_kill_tx: Option<tokio::sync::oneshot::Sender<u32>>,
     child_pid: Option<u32>,
     exit_status: Option<ExitStatusInfo>,
@@ -272,6 +276,9 @@ struct HostCore {
     orphan_since: Option<Instant>,
     /// When the child process exited (for exit linger TTL).
     exited_since: Option<Instant>,
+    /// Client requested `WireFrame::Terminate`; exit host right after delivering `Exited`.
+    terminating_for_client: bool,
+    terminating_deadline: Option<Instant>,
     /// Monotonic deadline mirroring wall-clock `descriptor.deadline_ms`.
     deadline_at: Instant,
     deadline_warned: bool,
@@ -304,6 +311,7 @@ impl HostCore {
             vt: VtScreenTracker::new(80, 24, 1000),
             dedup: C2sHostDedup::new(),
             pty_handle: None,
+            stdin_tx: None,
             pty_kill_tx: None,
             child_pid: None,
             exit_status: None,
@@ -312,6 +320,8 @@ impl HostCore {
             detached_since: Some(Instant::now()),
             orphan_since: Some(Instant::now()),
             exited_since: None,
+            terminating_for_client: false,
+            terminating_deadline: None,
             deadline_at: Instant::now() + deadline_dur,
             deadline_warned: false,
             detach_ttl,
@@ -352,10 +362,24 @@ impl HostCore {
         }
     }
 
-    fn send_to_active(&self, frame: IpcFrame) {
-        if let Some((_, tx)) = &self.active_attach {
-            let _ = tx.try_send(frame);
+    /// Send to the active viewer; if its channel is saturated or closed, drop
+    /// that lagging attachment cleanly (never silently skip stdout or Exited
+    /// frames!) so the viewer reconnects and replays losslessly from `last_rx`.
+    fn send_to_active(&mut self, frame: IpcFrame) {
+        if let Some((conn_id, tx)) = &self.active_attach
+            && tx.try_send(frame).is_err()
+        {
+            let cid = *conn_id;
+            self.active_attach = None;
+            self.detached_since = Some(Instant::now());
+            self.conns.remove(&cid);
         }
+    }
+
+    fn is_active_conn(&self, conn_id: u64) -> bool {
+        self.active_attach
+            .as_ref()
+            .is_some_and(|(id, _)| *id == conn_id)
     }
 
     fn handle_spawn(&mut self, conn_id: u64, spec: SpawnSpec, ev_tx: &mpsc::Sender<InternalEvent>) {
@@ -395,8 +419,26 @@ impl HostCore {
 
         let pid = pty.child_pid().unwrap_or(0);
         self.child_pid = Some(pid);
-        self.pty_handle = Some(pty.handle());
+        let pty_handle = pty.handle();
+        let write_handle = pty_handle.clone();
+        self.pty_handle = Some(pty_handle);
         self.state = HostState::Running;
+
+        // Dedicated non-blocking stdin writer task: writes to PTY slave without
+        // ever stalling `HostCore` control/terminate/deadline processing!
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<(u64, u64, Vec<u8>)>(256);
+        self.stdin_tx = Some(stdin_tx);
+        let ack_tx = ev_tx.clone();
+        tokio::spawn(async move {
+            while let Some((cid, upto, bytes)) = stdin_rx.recv().await {
+                if !bytes.is_empty() && write_handle.write_all(&bytes).await.is_err() {
+                    break;
+                }
+                let _ = ack_tx
+                    .send(InternalEvent::StdinAck { conn_id: cid, upto })
+                    .await;
+            }
+        });
 
         // Spawn reader + waiter task owning `pty` so kill signal works cleanly.
         let (kill_tx, mut kill_rx) = tokio::sync::oneshot::channel::<u32>();
@@ -404,12 +446,10 @@ impl HostCore {
         let out_tx = ev_tx.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 16 * 1024];
-            let mut killed = false;
-            loop {
+            let exit_code: u32 = loop {
                 tokio::select! {
                     biased;
                     grace = &mut kill_rx => {
-                        killed = true;
                         let grace_ms = grace.unwrap_or(1500);
                         #[cfg(unix)]
                         {
@@ -418,33 +458,31 @@ impl HostCore {
                                 Duration::from_millis(u64::from(grace_ms.min(5000))),
                                 pty.wait(),
                             ).await;
-                            let _ = pty.terminate_and_wait().await;
+                            break pty.terminate_and_wait().await.unwrap_or(143);
                         }
                         #[cfg(windows)]
                         {
                             let _ = grace_ms;
-                            let _ = pty.terminate_and_wait().await;
+                            break pty.terminate_and_wait().await.unwrap_or(1);
                         }
-                        break;
                     }
                     res = pty.read(&mut buf) => {
                         match res {
-                            Ok(0) | Err(_) => break,
+                            Ok(0) | Err(_) => break pty.wait().await,
                             Ok(n) => {
                                 if out_tx.send(InternalEvent::PtyOutput(buf[..n].to_vec())).await.is_err() {
-                                    break;
+                                    break pty.wait().await;
                                 }
                             }
                         }
                     }
                 }
-            }
-            if !killed {
-                let code = pty.wait().await;
-                let _ = out_tx
-                    .send(InternalEvent::PtyExited(ExitStatusInfo::from_ssh_u32(code)))
-                    .await;
-            }
+            };
+            let _ = out_tx
+                .send(InternalEvent::PtyExited(ExitStatusInfo::from_ssh_u32(
+                    exit_code,
+                )))
+                .await;
         });
 
         self.send_to_conn(conn_id, IpcFrame::Spawned(SpawnedFrame { child_pid: pid }));
@@ -472,12 +510,13 @@ impl HostCore {
         let (cols, rows) = clamp_dims(req.cols, req.rows);
         let can_replay = self.ring.can_replay_from(req.last_rx);
         let gap_bytes = self.ring.gap_from(req.last_rx);
+        let max_snap_bytes = meshharbor_node_core::pty_resume::MAX_FRAME_BYTES.saturating_sub(1024);
         let (replay_kind, snapshot_payload) = if can_replay {
             (ReplayKind::Bytes, None)
         } else if req.snapshot_allowed && self.vt.is_healthy() {
             match self.vt.build_snapshot(gap_bytes, offline_secs) {
-                Some(snap) => (ReplayKind::Snapshot, Some(snap)),
-                None => (ReplayKind::Bytes, None),
+                Some(snap) if snap.len() <= max_snap_bytes => (ReplayKind::Snapshot, Some(snap)),
+                _ => (ReplayKind::Bytes, None),
             }
         } else {
             (ReplayKind::Bytes, None)
@@ -489,19 +528,30 @@ impl HostCore {
             gap_bytes,
             c2s_acked: self.dedup.next_expected(),
         });
-        let _ = tx.try_send(IpcFrame::Wire(attached));
+        if tx.try_send(IpcFrame::Wire(attached)).is_err() {
+            self.conns.remove(&conn_id);
+            self.detached_since = Some(Instant::now());
+            return;
+        }
 
         match snapshot_payload {
             Some(bytes) => {
                 let alt = self.vt.is_alternate_screen();
                 let (vt_cols, vt_rows) = self.vt.size();
-                let _ = tx.try_send(IpcFrame::Wire(WireFrame::Snapshot {
-                    at_seq: self.ring.head_offset(),
-                    alt_screen: alt,
-                    cols: vt_cols,
-                    rows: vt_rows,
-                    bytes,
-                }));
+                if tx
+                    .try_send(IpcFrame::Wire(WireFrame::Snapshot {
+                        at_seq: self.ring.head_offset(),
+                        alt_screen: alt,
+                        cols: vt_cols,
+                        rows: vt_rows,
+                        bytes,
+                    }))
+                    .is_err()
+                {
+                    self.conns.remove(&conn_id);
+                    self.detached_since = Some(Instant::now());
+                    return;
+                }
                 // Force SIGWINCH redraw in alternate-screen TUI apps (vim/htop/nvitop).
                 if alt && let Some(handle) = &self.pty_handle {
                     let tweak = if cols > 2 { cols - 1 } else { cols + 1 };
@@ -513,11 +563,18 @@ impl HostCore {
                 if let Some(missed) = self.ring.read_from(start) {
                     let mut seq = start;
                     for chunk in missed.chunks(MAX_DATA_CHUNK) {
-                        let _ = tx.try_send(IpcFrame::Wire(WireFrame::Data {
-                            stream: STREAM_STDOUT,
-                            seq,
-                            bytes: chunk.to_vec(),
-                        }));
+                        if tx
+                            .try_send(IpcFrame::Wire(WireFrame::Data {
+                                stream: STREAM_STDOUT,
+                                seq,
+                                bytes: chunk.to_vec(),
+                            }))
+                            .is_err()
+                        {
+                            self.conns.remove(&conn_id);
+                            self.detached_since = Some(Instant::now());
+                            return;
+                        }
                         seq = seq.saturating_add(chunk.len() as u64);
                     }
                 }
@@ -530,32 +587,53 @@ impl HostCore {
             let _ = handle.resize(crate::pty::WinSize { cols, rows });
         }
 
-        if let Some(status) = &self.exit_status {
-            let _ = tx.try_send(IpcFrame::Wire(WireFrame::Exited(status.clone())));
+        if let Some(status) = &self.exit_status
+            && tx
+                .try_send(IpcFrame::Wire(WireFrame::Exited(status.clone())))
+                .is_err()
+        {
+            self.conns.remove(&conn_id);
+            self.detached_since = Some(Instant::now());
+            return;
         }
 
         self.active_attach = Some((conn_id, tx));
     }
 
-    async fn handle_wire(&mut self, conn_id: u64, wf: WireFrame) -> bool {
+    fn handle_wire(&mut self, conn_id: u64, wf: WireFrame) -> bool {
+        let is_active = self.is_active_conn(conn_id);
         match wf {
-            WireFrame::Data { stream, seq, bytes } if stream == STREAM_STDIN => {
-                let fresh = self.dedup.accept(seq, &bytes).to_vec();
-                if !fresh.is_empty()
-                    && let Some(handle) = &self.pty_handle
-                {
-                    let _ = handle.write_all(&fresh).await;
+            WireFrame::Data { stream, seq, bytes } if stream == STREAM_STDIN && is_active => {
+                if let Some(tx) = &self.stdin_tx {
+                    if let Ok(permit) = tx.try_reserve() {
+                        let fresh = self.dedup.accept(seq, &bytes).to_vec();
+                        let upto = self.dedup.next_expected();
+                        if fresh.is_empty() {
+                            drop(permit);
+                            self.send_to_conn(
+                                conn_id,
+                                IpcFrame::Wire(WireFrame::Ack {
+                                    stream: STREAM_STDIN,
+                                    upto,
+                                }),
+                            );
+                        } else {
+                            permit.send((conn_id, upto, fresh));
+                        }
+                    }
+                } else {
+                    self.send_to_conn(
+                        conn_id,
+                        IpcFrame::Wire(WireFrame::Ack {
+                            stream: STREAM_STDIN,
+                            upto: self.dedup.next_expected(),
+                        }),
+                    );
                 }
-                self.send_to_conn(
-                    conn_id,
-                    IpcFrame::Wire(WireFrame::Ack {
-                        stream: STREAM_STDIN,
-                        upto: self.dedup.next_expected(),
-                    }),
-                );
             }
             WireFrame::Ack { stream, upto }
                 if stream == STREAM_STDOUT
+                    && is_active
                     && self.state == HostState::Exited
                     && upto >= self.ring.head_offset() =>
             {
@@ -563,7 +641,7 @@ impl HostCore {
                 // exit, the host can exit cleanly without lingering.
                 return true;
             }
-            WireFrame::Resize { cols, rows } => {
+            WireFrame::Resize { cols, rows } if is_active => {
                 let (cols, rows) = clamp_dims(cols, rows);
                 self.vt.resize(cols, rows);
                 if let Some(handle) = &self.pty_handle {
@@ -573,18 +651,18 @@ impl HostCore {
             WireFrame::Ping { t_ms } => {
                 self.send_to_conn(conn_id, IpcFrame::Wire(WireFrame::Pong { t_ms }));
             }
-            WireFrame::Detach
-                if self
-                    .active_attach
-                    .as_ref()
-                    .is_some_and(|(id, _)| *id == conn_id) =>
-            {
+            WireFrame::Detach if is_active => {
                 self.active_attach = None;
                 self.detached_since = Some(Instant::now());
             }
-            WireFrame::Terminate => {
+            WireFrame::Terminate if is_active => {
+                if let Some(status) = self.exit_status.clone() {
+                    self.send_to_active(IpcFrame::Wire(WireFrame::Exited(status)));
+                    return true;
+                }
+                self.terminating_for_client = true;
+                self.terminating_deadline = Some(Instant::now() + Duration::from_secs(2));
                 self.terminate_child(1500);
-                return true;
             }
             _ => {}
         }
@@ -592,6 +670,7 @@ impl HostCore {
     }
 
     fn terminate_child(&mut self, grace_ms: u32) {
+        self.stdin_tx = None;
         if let Some(kill_tx) = self.pty_kill_tx.take() {
             let _ = kill_tx.send(grace_ms);
         }
@@ -678,7 +757,7 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                 }
                 let conn_id = next_id;
                 next_id += 1;
-                let (out_tx, out_rx) = mpsc::channel::<IpcFrame>(256);
+                let (out_tx, out_rx) = mpsc::channel::<IpcFrame>(512);
                 if new_conn_tx.send((conn_id, out_tx)).await.is_err() {
                     break;
                 }
@@ -712,7 +791,7 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                 }
                 let conn_id = next_id;
                 next_id += 1;
-                let (out_tx, out_rx) = mpsc::channel::<IpcFrame>(256);
+                let (out_tx, out_rx) = mpsc::channel::<IpcFrame>(512);
                 if new_conn_tx.send((conn_id, out_tx)).await.is_err() {
                     break;
                 }
@@ -755,7 +834,21 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                         core.exit_status = Some(status.clone());
                         core.exited_since = Some(Instant::now());
                         core.pty_handle = None;
+                        core.stdin_tx = None;
                         core.send_to_active(IpcFrame::Wire(WireFrame::Exited(status)));
+                        if core.terminating_for_client {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            break;
+                        }
+                    }
+                    InternalEvent::StdinAck { conn_id, upto } => {
+                        core.send_to_conn(
+                            conn_id,
+                            IpcFrame::Wire(WireFrame::Ack {
+                                stream: STREAM_STDIN,
+                                upto,
+                            }),
+                        );
                     }
                     InternalEvent::ConnDropped(conn_id) => {
                         core.conns.remove(&conn_id);
@@ -793,7 +886,7 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                                 core.handle_attach(conn_id, req);
                             }
                             IpcFrame::Wire(wf) => {
-                                let should_exit = core.handle_wire(conn_id, wf).await;
+                                let should_exit = core.handle_wire(conn_id, wf);
                                 if should_exit {
                                     break;
                                 }
@@ -804,6 +897,9 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                 }
             }
             _ = tick.tick() => {
+                if core.terminating_deadline.is_some_and(|d| Instant::now() >= d) {
+                    break;
+                }
                 if core.should_expire().is_some() {
                     core.terminate_child(1500);
                     break;

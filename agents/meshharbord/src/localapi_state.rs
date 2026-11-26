@@ -2369,6 +2369,7 @@ impl LocalApiState for DaemonState {
             expires_at_ms: answer.expires_at_ms,
             error: answer.error,
             two_factor: answer.two_factor,
+            resume: answer.resume,
         }
     }
 

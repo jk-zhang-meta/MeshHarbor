@@ -380,6 +380,10 @@ pub(crate) struct RecordMeta {
     /// `Some(window)` = the session was consented on the host, so a
     /// recording asks again; `None` = auto-granted.
     prompt_window: Option<Duration>,
+    /// FR-141 — whether this session was approved by owner-side consent (`Email`/`Push`).
+    owner_side_approved: bool,
+    /// FR-141 — bitmask of host-approved `FeaturePolicy::Ask` features.
+    approved_ask_bits: u8,
 }
 
 /// What the agent puts on the wire for a resolved host consent prompt.
@@ -1589,6 +1593,22 @@ pub async fn run(
                         },
                         _ = shutdown.changed() => {
                             if *shutdown.borrow() {
+                                let live_rc_ids = table.live_session_ids();
+                                if !live_rc_ids.is_empty() {
+                                    if let Err(e) =
+                                        crate::rc_continuity::save_active_for_restart(&live_rc_ids)
+                                    {
+                                        warn!(%e, "fr141: failed to persist rc-continuity during backoff shutdown");
+                                    }
+                                    let to_ver = crate::ssh_persist::pending_update_version();
+                                    table
+                                        .notify_restart_before_shutdown(
+                                            5_000,
+                                            to_ver.as_deref(),
+                                            Duration::from_millis(120),
+                                        )
+                                        .await;
+                                }
                                 table.close_all(ConnExit::Shutdown.label()).await;
                                 close_side(&mut side, ConnExit::Shutdown.label()).await;
                                 return Ok(());
@@ -3468,6 +3488,8 @@ async fn connect_once(
                                         )
                                         .ok()?,
                                         prompt_window: r.prompt_window_ms.map(Duration::from_millis),
+                                        owner_side_approved: false,
+                                        approved_ask_bits: 0,
                                     })
                                 });
                                 // #1882 — the daemon's overlay decision, with its
@@ -4512,31 +4534,47 @@ async fn handle_server_msg(
             }
             // FR-141 — check whether this request continues a recently live
             // session interrupted by a graceful daemon restart (single-use,
-            // <= 120 s, same org & controller, no permission/audio escalation).
-            let continued = if let Some(prev_sid) = continues
+            // <= 120 s, same org & controller, no permission/audio escalation,
+            // identical 2FA enrollment assurance, and compatible consent authority).
+            let current_two_factor_fp = meshharbor_node_core::two_factor::enrollment_fingerprint();
+            let requires_owner_side_consent = matches!(
+                consent_mode,
+                Some(meshharbor_remote_control::models::ConsentMode::Email)
+                    | Some(meshharbor_remote_control::models::ConsentMode::Push)
+            );
+            let matched_continuity = if let Some(prev_sid) = continues
                 && shared_lease.is_none()
                 && external.is_none()
             {
-                let pre_mask = crate::session_policy::mask(
+                let prior_ask_bits = crate::rc_continuity::peek_approved_ask_bits(
+                    prev_sid,
+                    &agent_cfg.tenant_id,
+                    controller_user_id,
+                );
+                let pre_mask = crate::session_policy::mask_with_prior_ask_approvals(
                     permissions,
                     audio_enabled,
                     session_policy,
                     crate::session_policy::device_policy(),
                     false,
+                    prior_ask_bits,
                 );
                 let pre_audio = pre_mask.audio_enabled
                     && audio_enabled
                     && !crate::encode::caps::detect().audio.is_empty();
-                crate::rc_continuity::take_matching(
+                crate::rc_continuity::take_matching(crate::rc_continuity::MatchRequest {
                     prev_sid,
-                    &agent_cfg.tenant_id,
+                    org_id: &agent_cfg.tenant_id,
                     controller_user_id,
-                    pre_mask.permissions.bits(),
-                    pre_audio,
-                )
+                    requested_permissions_bits: pre_mask.permissions.bits(),
+                    requested_audio: pre_audio,
+                    current_two_factor_fp: current_two_factor_fp.as_deref(),
+                    requires_owner_side_consent,
+                })
             } else {
-                false
+                None
             };
+            let continued = matched_continuity.is_some();
             // FR-129 — a device with two-factor on asks for a code on every session, checked
             // HERE by the daemon before anything else: the centre only relayed it. A share
             // link's or an outsider's session has nobody with the device's authenticator app,
@@ -4853,7 +4891,10 @@ async fn handle_server_msg(
             // prompt the person here answers, which then names it. The hub has
             // stripped what the org refuses already; this is the half that
             // holds when it did not.
-            let masked = crate::session_policy::mask(
+            let prior_ask_bits = matched_continuity
+                .as_ref()
+                .map_or(0, |m| m.approved_ask_bits);
+            let masked = crate::session_policy::mask_with_prior_ask_approvals(
                 permissions,
                 audio_enabled,
                 session_policy,
@@ -4862,6 +4903,7 @@ async fn handle_server_msg(
                     consent_mode,
                     matches!(effective_mode, crate::consent::Mode::Prompt { .. }),
                 ),
+                prior_ask_bits,
             );
             if !masked.refused.is_empty() || !masked.ask.is_empty() {
                 info!(
@@ -4880,18 +4922,43 @@ async fn handle_server_msg(
             pending_audio.insert(session_id, audio_negotiated);
             let features_line =
                 crate::session_policy::consent_line(&masked.ask).unwrap_or_default();
-            // FR-85 P3b — a recording's prompt follows the session's own: a
-            // session consented ON THE HOST asks the host again (same window)
-            // before it may record; an auto-granted one does not ask, its
-            // owner having opted into remote recording on the device.
-            let record_prompt_window = match effective_mode {
+            // FR-85 P3b / FR-141 — preserve independent host recording approval
+            // across restart: never clear `record_prompt_window` solely because
+            // desktop continuation resolved as `AutoGrant`.
+            let current_record_prompt_window = match crate::consent::strictest_of(
+                directed_mode,
+                consent_broker.mode(),
+                host_window,
+            ) {
                 crate::consent::Mode::AutoGrant => None,
                 crate::consent::Mode::Prompt { timeout } => Some(timeout),
             };
+            let prior_record_prompt_window = matched_continuity
+                .as_ref()
+                .and_then(|m| m.record_prompt_window_ms)
+                .map(Duration::from_millis);
+            let record_prompt_window = match (prior_record_prompt_window, current_record_prompt_window)
+            {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let approved_ask_bits = prior_ask_bits
+                | masked.ask.iter().fold(0u8, |acc, f| {
+                    acc | match f {
+                        crate::session_policy::Feature::Clipboard => {
+                            crate::rc_continuity::ASK_BIT_CLIPBOARD
+                        }
+                        crate::session_policy::Feature::Files => crate::rc_continuity::ASK_BIT_FILES,
+                        crate::session_policy::Feature::Audio => crate::rc_continuity::ASK_BIT_AUDIO,
+                    }
+                });
+            let owner_side_approved = requires_owner_side_consent;
             if let Some(meta) = pending_session_meta.get_mut(&session_id) {
                 meta.3 = Some(RecordMeta {
                     controller_user_id,
                     prompt_window: record_prompt_window,
+                    owner_side_approved,
+                    approved_ask_bits,
                 });
                 meta.7 = pending_file_child_parent.clone();
             }
@@ -5639,13 +5706,25 @@ async fn handle_server_msg(
             if !external
                 && let Some(rm) = &record_meta
             {
-                crate::rc_continuity::register_active(
+                let cur_2fa_fp = if meshharbor_node_core::two_factor::admitted(&session_id.to_hex())
+                {
+                    meshharbor_node_core::two_factor::enrollment_fingerprint()
+                } else {
+                    None
+                };
+                crate::rc_continuity::register_active(crate::rc_continuity::ActiveRcSession {
                     session_id,
-                    agent_cfg.tenant_id.clone(),
-                    rm.controller_user_id,
-                    permissions.bits(),
+                    org_id: agent_cfg.tenant_id.clone(),
+                    controller_user_id: rm.controller_user_id,
+                    permissions_bits: permissions.bits(),
                     audio_enabled,
-                );
+                    two_factor_fingerprint: cur_2fa_fp,
+                    owner_side_approved: rm.owner_side_approved,
+                    record_prompt_window_ms: rm
+                        .prompt_window
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+                    approved_ask_bits: rm.approved_ask_bits,
+                });
             }
             // 2026-07-27 — first live session engages the GPU-clock pin
             // (opt-in, `MESHHARBORD_GPU_CLOCK_PIN`; no-op otherwise).
@@ -6886,6 +6965,7 @@ async fn handle_server_msg(
             one_command,
             two_factor_code,
             resume_allowed,
+            principal_id,
         } => {
             use crate::ssh::{SshGrantAdmitInput, SshGrantAdmitOutcome};
             match crate::ssh::admit_grant(
@@ -6903,6 +6983,8 @@ async fn handle_server_msg(
                     allow_via_service: true,
                     one_command,
                     two_factor_code: two_factor_code.map(|c| c.as_str().to_string()),
+                    org_id: Some(agent_cfg.tenant_id.clone()),
+                    principal_id,
                     resume_allowed: Some(resume_allowed),
                 },
             ) {

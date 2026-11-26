@@ -4105,6 +4105,25 @@ impl Hub {
     /// `tenant_id` connected to THIS pod (e.g. when org `remote_ssh_enabled` is
     /// switched off). Returns how many agents received the frame.
     pub fn push_ssh_revoke_org(&self, tenant_id: ObjectId, reason: &str) -> usize {
+        self.push_ssh_revoke_org_scoped(
+            tenant_id,
+            "org",
+            None,
+            None,
+            Some(reason.to_string()),
+        )
+    }
+
+    /// FR-141 — push a scoped `rc:ssh.revoke` (`"org"`, `"principal"`, etc.) to
+    /// every `ssh-resume`-capable agent in `tenant_id` connected to THIS pod.
+    pub fn push_ssh_revoke_org_scoped(
+        &self,
+        tenant_id: ObjectId,
+        scope: &str,
+        principal: Option<String>,
+        sid: Option<String>,
+        reason: Option<String>,
+    ) -> usize {
         let targets: Vec<ObjectId> = self
             .inner
             .agents
@@ -4118,10 +4137,10 @@ impl Hub {
                 self.send_to_agent(
                     *id,
                     ServerMsg::SshRevoke {
-                        scope: "org".into(),
-                        principal: None,
-                        sid: None,
-                        reason: Some(reason.to_string()),
+                        scope: scope.to_string(),
+                        principal: principal.clone(),
+                        sid: sid.clone(),
+                        reason: reason.clone(),
                     },
                 )
                 .is_ok()

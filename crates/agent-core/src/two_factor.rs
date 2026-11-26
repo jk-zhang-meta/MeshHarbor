@@ -401,6 +401,16 @@ impl Engine {
             _ => None,
         }
     }
+
+    /// FR-141 — opaque fingerprint of the current 2FA enrollment (`None` when off).
+    /// Changes whenever 2FA is turned on, disabled, or re-enrolled with a new secret.
+    pub fn enrollment_fingerprint(&self) -> Option<String> {
+        match self.load() {
+            Loaded::Off => None,
+            Loaded::On(s) => Some(digest(&format!("fr141-2fa:{}:{}", s.secret, s.enabled_at))),
+            Loaded::Unreadable => Some("unreadable".to_string()),
+        }
+    }
 }
 
 static ENGINE: OnceLock<Mutex<Engine>> = OnceLock::new();
@@ -439,6 +449,11 @@ fn unix_now() -> u64 {
 /// Two-factor is on for this device.
 pub fn active() -> bool {
     with(|e| e.active()).unwrap_or(false)
+}
+
+/// FR-141 — opaque fingerprint of the active two-factor enrollment, or `None` when off.
+pub fn enrollment_fingerprint() -> Option<String> {
+    with(|e| e.enrollment_fingerprint()).flatten()
 }
 
 /// Check the code a way in carried. `Ok` when two-factor is off (or never initialised: a

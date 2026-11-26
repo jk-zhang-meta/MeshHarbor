@@ -1197,7 +1197,11 @@ fn handle_offline_ssh_grant(
             allow_via_service: false,
             one_command: false,
             two_factor_code,
-            resume_allowed: None,
+            org_id: Some(ctx.tenant_id.clone()),
+            principal_id: None,
+            // Offline P2P grants have no live server revocation channel; do not
+            // open persistent resumable sessions on offline grants.
+            resume_allowed: Some(false),
         },
     );
 
@@ -2045,6 +2049,7 @@ pub async fn ssh_session_offline(
                 expires_at_ms,
                 error,
                 two_factor,
+                resume: false,
             },
             Ok(P2pResp::Error { message, .. }) => Response::Error { message },
             Ok(_) => Response::Error {

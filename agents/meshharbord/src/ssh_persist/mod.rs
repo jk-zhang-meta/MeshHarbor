@@ -21,7 +21,7 @@ use meshharbor_node_core::pty_resume::TerminateReason;
 use meshharbor_node_core::pty_resume::{
     PersistStatus, RefuseReason, SessionDescriptor, SessionId,
     ipc::{
-        AttachStartFrame, DaemonDetachingFrame, HostHelloFrame, HostState, IpcFrame, SpawnSpec,
+        AttachStartFrame, DaemonDetachingFrame, HostHelloFrame, IpcFrame, SpawnSpec,
         TerminateFrame,
     },
     now_unix_ms,
@@ -84,6 +84,7 @@ pub struct SessionEntry {
     pub job_name: Option<String>,
     pub child_pid: Option<u32>,
     pub attached: bool,
+    pub attach_gen: u64,
     pub last_detached_ms: u64,
 }
 
@@ -101,6 +102,10 @@ struct RegistryState {
     state_dir: Option<PathBuf>,
     master: Option<MasterKey>,
     sessions: HashMap<SessionId, SessionEntry>,
+    /// Per-session supervisor IPC keepalive cancellations so healthy detached
+    /// sessions keep `conns` non-empty while `meshharbord` is alive (and the
+    /// 10-minute fail-closed orphan timer fires ONLY when the daemon dies).
+    keepalives: HashMap<SessionId, tokio_util::sync::CancellationToken>,
     /// Keyed by `(org_id, client_key_fp)` -> tombstone so late clients receive
     /// an exact `Refused::Ended` / `Refused::Revoked` instead of ambiguous auth fail.
     tombstones: HashMap<(String, String), Tombstone>,
@@ -182,6 +187,19 @@ pub fn master_key() -> Result<MasterKey, String> {
         .ok_or_else(|| "ssh-resume master key unavailable".to_string())
 }
 
+/// Fast pre-check used by `ssh.rs::subsystem_request` before sending
+/// `channel_success` so a broken/read-only state dir triggers clean classic
+/// SSH fallback on the same authenticated connection.
+#[cfg(feature = "ssh-server")]
+pub fn ensure_state_dir_ready() -> bool {
+    master_key().is_ok()
+}
+
+#[cfg(not(feature = "ssh-server"))]
+pub fn ensure_state_dir_ready() -> bool {
+    false
+}
+
 #[cfg(feature = "ssh-server")]
 pub fn state_dir() -> PathBuf {
     let g = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -190,27 +208,7 @@ pub fn state_dir() -> PathBuf {
 
 #[cfg(feature = "ssh-server")]
 fn default_state_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("MESHHARBORD_SSH_PERSIST_DIR")
-        && !p.trim().is_empty()
-    {
-        return PathBuf::from(p.trim());
-    }
-    #[cfg(unix)]
-    {
-        let is_root = unsafe { libc::geteuid() } == 0;
-        if is_root {
-            return PathBuf::from("/run/meshharbor");
-        }
-        if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR")
-            && !xdg.trim().is_empty()
-        {
-            return PathBuf::from(xdg).join("meshharbor");
-        }
-    }
-    crate::config::default_config_path()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("/tmp/meshharbor"))
+    crate::rc_continuity::platform_runtime_state_dir()
 }
 
 static PENDING_UPDATE_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -269,6 +267,9 @@ pub enum ResumeLookup {
 /// tombstone in `org_id`. Called by `ssh.rs::auth_publickey` after `take_grant_for`.
 #[cfg(feature = "ssh-server")]
 pub fn lookup_resume_key(org_id: &str, client_key_fp: &str) -> ResumeLookup {
+    if !resume_enabled_globally() {
+        return ResumeLookup::None;
+    }
     let now = now_unix_ms();
     let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
     // Prune expired tombstones.
@@ -345,6 +346,7 @@ pub fn list_sessions() -> Vec<PersistentSessionInfo> {
 #[cfg(feature = "ssh-server")]
 pub struct SpawnedPersistent {
     pub entry: SessionEntry,
+    pub attach_gen: u64,
     pub resume_secret: Zeroizing<[u8; 32]>,
     pub stream: HostIpcStream,
 }
@@ -499,7 +501,7 @@ pub async fn spawn_session(
 
     let entry = SessionEntry {
         sid,
-        endpoint,
+        endpoint: endpoint.clone(),
         descriptor,
         descriptor_json,
         seal,
@@ -508,6 +510,7 @@ pub async fn spawn_session(
         job_name: hello.job_name,
         child_pid,
         attached: true,
+        attach_gen: 1,
         last_detached_ms: now_unix_ms(),
     };
     reg()
@@ -515,6 +518,7 @@ pub async fn spawn_session(
         .unwrap_or_else(|e| e.into_inner())
         .sessions
         .insert(sid, entry.clone());
+    start_keepalive_monitor(sid, endpoint);
 
     info!(
         sid = %sid.short_hex(),
@@ -526,6 +530,7 @@ pub async fn spawn_session(
 
     Ok(SpawnedPersistent {
         entry,
+        attach_gen: 1,
         resume_secret,
         stream,
     })
@@ -535,6 +540,7 @@ pub async fn spawn_session(
 #[cfg(feature = "ssh-server")]
 pub struct AttachedPersistent {
     pub entry: SessionEntry,
+    pub attach_gen: u64,
     pub stream: HostIpcStream,
 }
 
@@ -550,11 +556,17 @@ pub async fn verify_and_attach(
     client_proof: &[u8; 32],
     host_key_fp: &str,
     client_key_fp: &str,
+    client_key_in_authorized_list: bool,
     last_rx: u64,
     c2s_next_client: u64,
     cols: u16,
     rows: u16,
 ) -> Result<AttachedPersistent, RefuseReason> {
+    if !resume_enabled_globally() {
+        return Err(RefuseReason::Policy {
+            detail: "persistent SSH sessions are disabled on this device".into(),
+        });
+    }
     let now = now_unix_ms();
     let entry = {
         let g = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -577,12 +589,20 @@ pub async fn verify_and_attach(
         return Err(RefuseReason::Expired);
     }
 
-    // Re-check 2FA vs key-list auth at resume time.
-    if entry.descriptor.key_list_auth && meshharbor_node_core::two_factor::active() {
-        let _ = terminate_entry(&entry, TerminateReason::PolicyChanged).await;
-        return Err(RefuseReason::Revoked {
-            detail: "two-factor authentication is now enabled; key-list session revoked".into(),
-        });
+    // Re-check 2FA and ssh_authorized_keys membership at resume time.
+    if entry.descriptor.key_list_auth {
+        if meshharbor_node_core::two_factor::active() {
+            let _ = terminate_entry(&entry, TerminateReason::PolicyChanged).await;
+            return Err(RefuseReason::Revoked {
+                detail: "two-factor authentication is now enabled; key-list session revoked".into(),
+            });
+        }
+        if !client_key_in_authorized_list {
+            let _ = terminate_entry(&entry, TerminateReason::PolicyChanged).await;
+            return Err(RefuseReason::Revoked {
+                detail: "client key was removed from ssh_authorized_keys".into(),
+            });
+        }
     }
 
     // Re-check client key fingerprint matches descriptor.
@@ -605,19 +625,25 @@ pub async fn verify_and_attach(
     }
 
     let server_proof = compute_server_proof(&secret, sid, client_nonce, server_nonce);
+    // Always derive endpoint deterministically from state_dir + sid rather than
+    // trusting any external path.
+    let endpoint = endpoint_for(&state_dir(), sid);
 
-    let mut stream = connect_host_once(&entry.endpoint, Duration::from_secs(2))
+    let mut stream = connect_host_once(&endpoint, Duration::from_secs(2))
         .await
         .map_err(|_| {
-            // Host died unexpectedly — remove stale entry.
-            remove_entry_as_ended(&entry, None);
+            // Host died unexpectedly — remove stale entry and leave a tombstone
+            // so late clients receive a clean terminal refusal.
+            remove_entry_with_reason(&entry, RefuseReason::UnknownSession);
             RefuseReason::UnknownSession
         })?;
 
     let hello = read_host_hello(&mut stream, Duration::from_secs(2))
         .await
         .map_err(|e| RefuseReason::Internal { detail: e })?;
-    if !verify_descriptor_seal(&master, &hello.descriptor_json, &hello.seal) {
+    if hello.descriptor_json != entry.descriptor_json
+        || !verify_descriptor_seal(&master, &hello.descriptor_json, &hello.seal)
+    {
         let _ = IpcFrame::Terminate(TerminateFrame {
             reason: TerminateReason::Revoked,
             grace_ms: 500,
@@ -644,21 +670,33 @@ pub async fn verify_and_attach(
         detail: format!("send AttachStart: {e}"),
     })?;
 
-    {
+    let attach_gen = {
         let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(e) = g.sessions.get_mut(sid) {
+            e.attach_gen = e.attach_gen.saturating_add(1);
             e.attached = true;
+            e.attach_gen
+        } else {
+            1
         }
-    }
+    };
 
-    Ok(AttachedPersistent { entry, stream })
+    Ok(AttachedPersistent {
+        entry,
+        attach_gen,
+        stream,
+    })
 }
 
-/// Mark a session as detached (client connection dropped or user sent `~d`).
+/// Mark a session as detached ONLY if `attach_gen` still matches the active
+/// attachment generation (so a superseded relay closing late never flips a
+/// newer live attachment to detached!).
 #[cfg(feature = "ssh-server")]
-pub fn mark_detached(sid: &SessionId) {
+pub fn mark_detached(sid: &SessionId, attach_gen: u64) {
     let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(e) = g.sessions.get_mut(sid) {
+    if let Some(e) = g.sessions.get_mut(sid)
+        && e.attach_gen == attach_gen
+    {
         e.attached = false;
         e.last_detached_ms = now_unix_ms();
     }
@@ -668,6 +706,9 @@ pub fn mark_detached(sid: &SessionId) {
 #[cfg(feature = "ssh-server")]
 pub fn mark_ended(sid: &SessionId, status: meshharbor_node_core::pty_resume::ExitStatusInfo) {
     let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tok) = g.keepalives.remove(sid) {
+        tok.cancel();
+    }
     if let Some(entry) = g.sessions.remove(sid) {
         g.tombstones.insert(
             (entry.descriptor.org_id, entry.descriptor.client_key_fp),
@@ -681,30 +722,11 @@ pub fn mark_ended(sid: &SessionId, status: meshharbor_node_core::pty_resume::Exi
 }
 
 #[cfg(feature = "ssh-server")]
-fn remove_entry_as_ended(
-    entry: &SessionEntry,
-    status: Option<meshharbor_node_core::pty_resume::ExitStatusInfo>,
-) {
+fn remove_entry_with_reason(entry: &SessionEntry, reason: RefuseReason) {
     let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
-    g.sessions.remove(&entry.sid);
-    if let Some(st) = status {
-        g.tombstones.insert(
-            (
-                entry.descriptor.org_id.clone(),
-                entry.descriptor.client_key_fp.clone(),
-            ),
-            Tombstone {
-                sid: entry.sid,
-                reason: RefuseReason::Ended { status: st },
-                deadline_ms: entry.descriptor.deadline_ms,
-            },
-        );
+    if let Some(tok) = g.keepalives.remove(&entry.sid) {
+        tok.cancel();
     }
-}
-
-#[cfg(feature = "ssh-server")]
-fn remove_entry_as_revoked(entry: &SessionEntry, detail: &str) {
-    let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
     g.sessions.remove(&entry.sid);
     g.tombstones.insert(
         (
@@ -713,12 +735,127 @@ fn remove_entry_as_revoked(entry: &SessionEntry, detail: &str) {
         ),
         Tombstone {
             sid: entry.sid,
-            reason: RefuseReason::Revoked {
-                detail: detail.to_string(),
-            },
+            reason,
             deadline_ms: entry.descriptor.deadline_ms,
         },
     );
+}
+
+#[cfg(feature = "ssh-server")]
+fn remove_entry_as_revoked(entry: &SessionEntry, detail: &str) {
+    remove_entry_with_reason(
+        entry,
+        RefuseReason::Revoked {
+            detail: detail.to_string(),
+        },
+    );
+}
+
+/// Spawn a lightweight supervisor IPC keepalive connection to `endpoint` so
+/// `ssh-pty-host`'s `conns` stays non-empty while `meshharbord` is healthy.
+/// When `meshharbord` crashes or stops, the OS closes this socket and the host
+/// starts its 10-minute fail-closed orphan timer.
+#[cfg(feature = "ssh-server")]
+fn start_keepalive_monitor(sid: SessionId, endpoint: String) {
+    let tok = tokio_util::sync::CancellationToken::new();
+    {
+        let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = g.keepalives.insert(sid, tok.clone()) {
+            old.cancel();
+        }
+    }
+    tokio::spawn(async move {
+        let Ok(mut stream) = connect_host_once(&endpoint, Duration::from_secs(2)).await else {
+            return;
+        };
+        if read_host_hello(&mut stream, Duration::from_secs(2)).await.is_err() {
+            return;
+        }
+        let mut iv = tokio::time::interval(Duration::from_secs(30));
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        iv.tick().await;
+        loop {
+            tokio::select! {
+                _ = tok.cancelled() => break,
+                _ = iv.tick() => {
+                    let ping = IpcFrame::Ping { t_ms: now_unix_ms() };
+                    if ping.write_to(&mut stream).await.is_err() {
+                        break;
+                    }
+                    match tokio::time::timeout(Duration::from_secs(5), IpcFrame::read_from(&mut stream)).await {
+                        Ok(Ok(Some(IpcFrame::Pong { .. }))) => {}
+                        _ => break,
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Read-only inspection of live persistent SSH sessions on disk (used by
+/// `meshharbord ssh-sessions list`). Never deletes bootstrap files, unlinks
+/// sockets, or terminates running hosts.
+#[cfg(feature = "ssh-server")]
+pub async fn list_sessions_readonly() -> Vec<PersistentSessionInfo> {
+    let Ok(master) = master_key() else {
+        return Vec::new();
+    };
+    let base_dir = state_dir();
+    let dir = sessions_dir_for(&base_dir);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ent in entries.flatten() {
+        let path = ent.path();
+        let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        #[cfg(unix)]
+        let sid_hex = match fname.strip_suffix(".sock") {
+            Some(h) => h,
+            None => continue,
+        };
+        #[cfg(windows)]
+        let sid_hex = match fname.strip_suffix(".pipe") {
+            Some(h) => h,
+            None => continue,
+        };
+        let Ok(expected_sid) = SessionId::from_hex(sid_hex) else {
+            continue;
+        };
+        let endpoint = endpoint_for(&base_dir, &expected_sid);
+        let Ok(mut stream) = connect_host_once(&endpoint, Duration::from_secs(1)).await else {
+            continue;
+        };
+        let Ok(hello) = read_host_hello(&mut stream, Duration::from_secs(1)).await else {
+            continue;
+        };
+        if !verify_descriptor_seal(&master, &hello.descriptor_json, &hello.seal) {
+            continue;
+        }
+        let Ok(desc) = serde_json::from_slice::<SessionDescriptor>(&hello.descriptor_json) else {
+            continue;
+        };
+        if desc.sid != expected_sid {
+            continue;
+        }
+        out.push(PersistentSessionInfo {
+            sid: desc.sid.to_hex(),
+            org_id: desc.org_id,
+            principal: desc.principal,
+            client_key_fp: desc.client_key_fp,
+            created_ms: desc.created_ms,
+            deadline_ms: desc.deadline_ms,
+            attached: hello.attached,
+            survives_restart: hello.persist.survives_restart,
+            persist_reason: hello.persist.reason,
+            child_pid: hello.child_pid,
+            scope_unit: hello.scope_unit,
+        });
+    }
+    out.sort_by_key(|s| s.created_ms);
+    out
 }
 
 /// Boot-time adoption: scan `ssh-sessions/` for surviving `ssh-pty-host`
@@ -732,7 +869,8 @@ where
     let Ok(master) = master_key() else {
         return 0;
     };
-    let dir = sessions_dir_for(&state_dir());
+    let base_dir = state_dir();
+    let dir = sessions_dir_for(&base_dir);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return 0;
     };
@@ -746,23 +884,28 @@ where
             continue;
         };
 
-        // Clean up any leftover bootstrap temp files older than 30 s.
+        // Only clean up stale `.boot.json` files older than 30 s so a concurrent
+        // spawn is never disrupted.
         if fname.ends_with(".boot.json") {
-            let _ = std::fs::remove_file(&path);
+            let is_stale = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|mtime| mtime.elapsed().ok())
+                .is_some_and(|age| age >= Duration::from_secs(30));
+            if is_stale {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
 
         #[cfg(unix)]
-        let (sid_hex, endpoint) = match fname.strip_suffix(".sock") {
-            Some(h) => (h.to_string(), path.to_string_lossy().into_owned()),
+        let sid_hex = match fname.strip_suffix(".sock") {
+            Some(h) => h.to_string(),
             None => continue,
         };
         #[cfg(windows)]
-        let (sid_hex, endpoint) = match fname.strip_suffix(".pipe") {
-            Some(h) => (
-                h.to_string(),
-                std::fs::read_to_string(&path).unwrap_or_else(|_| format!(r"\\.\pipe\meshharbor-ssh-{h}")),
-            ),
+        let sid_hex = match fname.strip_suffix(".pipe") {
+            Some(h) => h.to_string(),
             None => continue,
         };
 
@@ -770,15 +913,25 @@ where
             let _ = std::fs::remove_file(&path);
             continue;
         };
+        let endpoint = endpoint_for(&base_dir, &expected_sid);
 
-        let Ok(mut stream) = connect_host_once(&endpoint, Duration::from_secs(2)).await else {
-            // Stale socket/marker from a host that already exited.
-            let _ = std::fs::remove_file(&path);
-            continue;
+        let mut stream = match connect_host_once_io(&endpoint, Duration::from_secs(2)).await {
+            Ok(s) => s,
+            Err(kind) => {
+                // Only unlink socket/marker when the OS confirms no listener is bound.
+                if matches!(
+                    kind,
+                    std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                ) {
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
         };
 
         let Ok(hello) = read_host_hello(&mut stream, Duration::from_secs(2)).await else {
             let _ = send_terminate(&mut stream, TerminateReason::HostUnresponsive, 500).await;
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
             let _ = std::fs::remove_file(&path);
             continue;
         };
@@ -787,7 +940,8 @@ where
         if !verify_descriptor_seal(&master, &hello.descriptor_json, &hello.seal) {
             warn!(sid = %expected_sid.short_hex(), "ssh-persist: killing host with invalid seal");
             let _ = send_terminate(&mut stream, TerminateReason::Revoked, 500).await;
-            stop_os_handle(hello.scope_unit.as_deref());
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
+            stop_os_handle(hello.scope_unit.clone()).await;
             let _ = std::fs::remove_file(&path);
             continue;
         }
@@ -795,33 +949,55 @@ where
         // 2. Parse descriptor and check sid matches filename.
         let Ok(desc) = serde_json::from_slice::<SessionDescriptor>(&hello.descriptor_json) else {
             let _ = send_terminate(&mut stream, TerminateReason::Revoked, 500).await;
-            stop_os_handle(hello.scope_unit.as_deref());
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
+            stop_os_handle(hello.scope_unit.clone()).await;
             continue;
         };
         if desc.sid != expected_sid {
             warn!("ssh-persist: killing host with mismatched sid/endpoint");
             let _ = send_terminate(&mut stream, TerminateReason::Revoked, 500).await;
-            stop_os_handle(hello.scope_unit.as_deref());
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
+            stop_os_handle(hello.scope_unit.clone()).await;
             continue;
         }
 
-        // 3. Deadline + device-local gate re-check.
+        // 3. Deadline + device-local gate re-check (leave tombstones so returning
+        // clients stop retrying immediately with an exact reason).
         if now >= desc.deadline_ms {
             let _ = send_terminate(&mut stream, TerminateReason::Expired, 500).await;
-            stop_os_handle(hello.scope_unit.as_deref());
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
+            stop_os_handle(hello.scope_unit.clone()).await;
+            reg().lock().unwrap_or_else(|e| e.into_inner()).tombstones.insert(
+                (desc.org_id.clone(), desc.client_key_fp.clone()),
+                Tombstone {
+                    sid: desc.sid,
+                    reason: RefuseReason::Expired,
+                    deadline_ms: desc.deadline_ms.max(now.saturating_add(300_000)),
+                },
+            );
             continue;
         }
         if let Err(why) = gate_allows(&desc) {
             warn!(sid = %desc.sid.short_hex(), %why, "ssh-persist: terminating adopted host disallowed by current policy");
             let _ = send_terminate(&mut stream, TerminateReason::PolicyChanged, 1000).await;
-            stop_os_handle(hello.scope_unit.as_deref());
+            let _ = wait_stream_eof(&mut stream, Duration::from_millis(1200)).await;
+            stop_os_handle(hello.scope_unit.clone()).await;
+            reg().lock().unwrap_or_else(|e| e.into_inner()).tombstones.insert(
+                (desc.org_id.clone(), desc.client_key_fp.clone()),
+                Tombstone {
+                    sid: desc.sid,
+                    reason: RefuseReason::Revoked { detail: why },
+                    deadline_ms: desc.deadline_ms,
+                },
+            );
             continue;
         }
 
-        // 4. Register valid surviving host (exited hosts also registered so returning client gets Exited!).
+        // 4. Register valid surviving host (including exited hosts lingering for
+        // output replay + exit-code delivery) and arm daemon keepalive monitor.
         let entry = SessionEntry {
             sid: desc.sid,
-            endpoint,
+            endpoint: endpoint.clone(),
             descriptor: desc,
             descriptor_json: hello.descriptor_json,
             seal: hello.seal,
@@ -830,18 +1006,16 @@ where
             job_name: hello.job_name,
             child_pid: hello.child_pid,
             attached: false,
+            attach_gen: 0,
             last_detached_ms: now,
         };
-        if hello.state == HostState::Exited
-            && let Some(status) = hello.exit_status
-        {
-            remove_entry_as_ended(&entry, Some(status));
-        }
+        let sid = entry.sid;
         reg()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .sessions
-            .insert(entry.sid, entry);
+            .insert(sid, entry);
+        start_keepalive_monitor(sid, endpoint);
         adopted += 1;
     }
 
@@ -1073,15 +1247,25 @@ pub async fn terminate_all(reason: TerminateReason, rotate_key: bool) -> Result<
 
 #[cfg(feature = "ssh-server")]
 async fn terminate_entry(entry: &SessionEntry, reason: TerminateReason) -> Result<(), String> {
-    remove_entry_as_revoked(entry, &format!("{reason:?}"));
-    if let Ok(mut stream) = connect_host_once(&entry.endpoint, Duration::from_secs(1)).await {
+    let endpoint = endpoint_for(&state_dir(), &entry.sid);
+    let reason_wire = match reason {
+        TerminateReason::Expired => RefuseReason::Expired,
+        _ => RefuseReason::Revoked {
+            detail: format!("{reason:?}"),
+        },
+    };
+    remove_entry_with_reason(entry, reason_wire);
+    if let Ok(mut stream) = connect_host_once(&endpoint, Duration::from_secs(1)).await {
         let _ = read_host_hello(&mut stream, Duration::from_millis(500)).await;
         let _ = send_terminate(&mut stream, reason, 1500).await;
+        // Wait briefly for host to exit cleanly before forcing OS kill / unlinking socket.
+        let _ = wait_stream_eof(&mut stream, Duration::from_secs(2)).await;
     }
-    stop_os_handle(entry.scope_unit.as_deref());
+    stop_os_handle(entry.scope_unit.clone()).await;
     #[cfg(unix)]
     {
-        let _ = std::fs::remove_file(&entry.endpoint);
+        // Only unlink after termination attempt; ignore NotFound if host already cleaned up.
+        let _ = std::fs::remove_file(&endpoint);
     }
     #[cfg(windows)]
     {
@@ -1089,6 +1273,20 @@ async fn terminate_entry(entry: &SessionEntry, reason: TerminateReason) -> Resul
         let _ = std::fs::remove_file(marker);
     }
     Ok(())
+}
+
+#[cfg(feature = "ssh-server")]
+async fn wait_stream_eof(stream: &mut HostIpcStream, budget: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + budget;
+    while tokio::time::Instant::now() < deadline {
+        let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(rem, IpcFrame::read_from(stream)).await {
+            Ok(Ok(None)) | Ok(Err(_)) => return true,
+            Ok(Ok(Some(_))) => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 #[cfg(feature = "ssh-server")]
@@ -1119,13 +1317,16 @@ async fn read_host_hello(
 }
 
 #[cfg(feature = "ssh-server")]
-async fn connect_host_once(endpoint: &str, timeout: Duration) -> Result<HostIpcStream, String> {
+async fn connect_host_once_io(
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<HostIpcStream, std::io::ErrorKind> {
     #[cfg(unix)]
     {
         tokio::time::timeout(timeout, tokio::net::UnixStream::connect(endpoint))
             .await
-            .map_err(|_| "uds connect timed out".to_string())?
-            .map_err(|e| format!("uds connect {endpoint}: {e}"))
+            .map_err(|_| std::io::ErrorKind::TimedOut)?
+            .map_err(|e| e.kind())
     }
     #[cfg(windows)]
     {
@@ -1135,13 +1336,22 @@ async fn connect_host_once(endpoint: &str, timeout: Duration) -> Result<HostIpcS
             match ClientOptions::new().open(endpoint) {
                 Ok(c) => return Ok(c),
                 Err(e) if std::time::Instant::now() < deadline => {
-                    let _ = e;
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return Err(e.kind());
+                    }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                Err(e) => return Err(format!("open pipe {endpoint}: {e}")),
+                Err(e) => return Err(e.kind()),
             }
         }
     }
+}
+
+#[cfg(feature = "ssh-server")]
+async fn connect_host_once(endpoint: &str, timeout: Duration) -> Result<HostIpcStream, String> {
+    connect_host_once_io(endpoint, timeout)
+        .await
+        .map_err(|k| format!("connect {endpoint}: {k:?}"))
 }
 
 #[cfg(feature = "ssh-server")]
@@ -1206,19 +1416,22 @@ fn find_systemd_run() -> Option<&'static str> {
 }
 
 #[cfg(feature = "ssh-server")]
-fn stop_os_handle(scope_unit: Option<&str>) {
+async fn stop_os_handle(scope_unit: Option<String>) {
     #[cfg(target_os = "linux")]
     if let Some(unit) = scope_unit {
-        let mut cmd = std::process::Command::new("systemctl");
-        if unsafe { libc::geteuid() } != 0 {
-            cmd.arg("--user");
-        }
-        let _ = cmd
-            .args(["stop", unit])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let _ = tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("systemctl");
+            if unsafe { libc::geteuid() } != 0 {
+                cmd.arg("--user");
+            }
+            let _ = cmd
+                .args(["kill", "-s", "KILL", "--no-block", &unit])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        })
+        .await;
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1255,6 +1468,9 @@ fn write_private_json<T: Serialize>(path: &Path, val: &T) -> std::io::Result<()>
 #[doc(hidden)]
 pub fn reset_in_memory_registry_for_restart_simulation() {
     let mut g = reg().lock().unwrap_or_else(|e| e.into_inner());
+    for (_, tok) in g.keepalives.drain() {
+        tok.cancel();
+    }
     g.sessions.clear();
     g.tombstones.clear();
     g.master = None;
@@ -1301,7 +1517,13 @@ fn spawn_detached_host(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
             match cmd.spawn() {
-                Ok(_child) => return Ok(()),
+                Ok(mut child) => {
+                    // Reap launcher child in background so it never sits as a zombie.
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    return Ok(());
+                }
                 Err(e) => {
                     debug!(%e, "ssh-persist: systemd-run --scope failed; falling back to setsid");
                 }
@@ -1365,9 +1587,13 @@ fn spawn_unix_setsid(exe: &Path, meta_path: &Path) -> Result<(), String> {
             Ok(())
         });
     }
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("spawn setsid ssh-pty-host: {e}"))
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn setsid ssh-pty-host: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(all(windows, feature = "ssh-server"))]

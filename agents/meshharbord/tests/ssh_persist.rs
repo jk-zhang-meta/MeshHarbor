@@ -139,7 +139,7 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
     let c_nonce = [0xBB; 32];
     let bad_proof = [0x00; 32];
     let err = meshharbord::ssh_persist::verify_and_attach(
-        org_id, &sid, &s_nonce, &c_nonce, &bad_proof, host_fp, client_fp, last_rx, 0, 80, 24,
+        org_id, &sid, &s_nonce, &c_nonce, &bad_proof, host_fp, client_fp, false, last_rx, 0, 80, 24,
     )
     .await
     .err()
@@ -156,6 +156,7 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
         &good_proof,
         host_fp,
         client_fp,
+        false,
         last_rx,
         0,
         80,

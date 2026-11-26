@@ -171,6 +171,14 @@ impl C2sClientQueue {
         self.acked_seq = clamped;
     }
 
+    /// Rebase a cold-reattaching CLI process's sequence numbers to the host's
+    /// reported `c2s_acked` so newly typed input (and any bytes typed locally
+    /// while waiting for cold reattach) starts strictly at `seq` instead of 0.
+    pub fn rebase(&mut self, seq: u64) {
+        self.acked_seq = seq;
+        self.next_seq = seq.saturating_add(self.buf.len() as u64);
+    }
+
     /// Return all unacknowledged bytes split into `(seq, chunk)` pairs <= `max_chunk`.
     pub fn unacked_chunks(&self, max_chunk: usize) -> Vec<(u64, Vec<u8>)> {
         let step = max_chunk.max(1);
@@ -607,6 +615,19 @@ mod tests {
         cli.push(&[0x03]).unwrap();
         assert!(cli.drop_trailing_ctrl_c());
         assert_eq!(cli.buffered_len(), 0);
+
+        // Cold `--resume` process starts at 0, buffers pre-attach input, then
+        // rebases to host's `c2s_acked` without losing a single byte!
+        let mut cold_cli = C2sClientQueue::new(1024);
+        cold_cli.push(b"pwd\n").unwrap();
+        cold_cli.rebase(host.next_expected());
+        let mut cold_applied = Vec::new();
+        for (seq, chunk) in cold_cli.unacked_chunks(16) {
+            cold_applied.extend_from_slice(host.accept(seq, &chunk));
+        }
+        assert_eq!(cold_applied, b"pwd\n");
+        cold_cli.ack(host.next_expected());
+        assert_eq!(cold_cli.buffered_len(), 0);
     }
 
     #[test]

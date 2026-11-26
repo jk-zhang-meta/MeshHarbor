@@ -2091,6 +2091,10 @@ pub enum Response {
         /// `_locked`): the caller asks the person for a code.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         two_factor: Option<String>,
+        /// FR-141 — `true` when this grant allows persistent resumable SSH PTYs
+        /// (`meshharbor-pty@v1`). Additive; older daemons omit it (`false`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume: bool,
     },
     /// FR-84 D4 — answer to [`Request::EncoderCaps`].
     EncoderCaps(EncoderCapsSummary),

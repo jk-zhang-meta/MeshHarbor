@@ -375,6 +375,7 @@ pub(crate) fn real_end_hook(indicator: crate::indicator::ViewerIndicator) -> End
         #[cfg(not(feature = "recording"))]
         let _ = end;
         indicator.hide_session(session_id.to_hex());
+        crate::rc_continuity::unregister_active(session_id);
     })
 }
 

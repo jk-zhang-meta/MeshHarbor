@@ -32,6 +32,8 @@ pub struct SubsystemContext {
     pub agent_id: String,
     pub host_key_fp: String,
     pub client_key_fp: String,
+    pub client_key_in_authorized_list: bool,
+    pub classic_counted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub via_service: bool,
     pub peer: std::net::SocketAddr,
     /// `Some` if the connection authenticated as a fresh grant or key-list session;
@@ -52,6 +54,7 @@ pub struct OpenAuthContext {
     pub consent_sentinel: Option<String>,
     pub asker: crate::ssh::Asker,
     pub session_secs: u64,
+    pub deadline: Option<tokio::time::Instant>,
     pub resume_allowed: Option<bool>,
     pub key_list_auth: bool,
 }
@@ -116,7 +119,10 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 let _ = ctx.handle.close(ctx.channel).await;
                 return;
             };
-            if !resume_enabled_globally() || auth.resume_allowed == Some(false) {
+            if ctx.via_service
+                || !resume_enabled_globally()
+                || !(auth.key_list_auth || auth.resume_allowed == Some(true))
+            {
                 let _ = send_wire(
                     &ctx.handle,
                     ctx.channel,
@@ -177,7 +183,27 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
 
             let sid = SessionId::generate();
             let now = now_unix_ms();
-            let ttl_secs = ssh_limits::clamp_session_secs(auth.session_secs);
+            // Compute remaining lifetime from the resolved grant deadline so
+            // delayed subsystem opens never reset or extend the session clock!
+            let ttl_secs = match auth.deadline {
+                Some(dl) => {
+                    let now_inst = tokio::time::Instant::now();
+                    if dl <= now_inst {
+                        let _ = send_wire(
+                            &ctx.handle,
+                            ctx.channel,
+                            &WireFrame::Refused(RefuseReason::Expired),
+                        )
+                        .await;
+                        let _ = ctx.handle.close(ctx.channel).await;
+                        return;
+                    }
+                    dl.saturating_duration_since(now_inst)
+                        .as_secs()
+                        .clamp(1, ssh_limits::MAX_SESSION_SECS)
+                }
+                None => ssh_limits::clamp_session_secs(auth.session_secs),
+            };
             let deadline_ms = now.saturating_add(ttl_secs * 1000);
             let detach_ttl_ms = ttl_secs * 1000;
             let orphan_ttl_ms = DEFAULT_ORPHAN_TTL_SECS * 1000;
@@ -244,6 +270,7 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 }
             };
 
+            let attach_gen = spawned.attach_gen;
             let opened = WireFrame::Opened(OpenedFrame {
                 session_id: sid,
                 resume_secret: *spawned.resume_secret,
@@ -253,8 +280,14 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 ring_bytes: DEFAULT_RING_BYTES as u32,
             });
             if send_wire(&ctx.handle, ctx.channel, &opened).await.is_err() {
-                mark_detached(&sid);
+                mark_detached(&sid, attach_gen);
                 return;
+            }
+            // FR-96 P2b: only release the classic connection hold when the
+            // session actually survives daemon restart (containers / degraded
+            // hosts stay counted so auto-update holds off while active!).
+            if spawned.entry.persist.survives_restart {
+                crate::ssh::release_classic_connection_slot(&ctx.classic_counted);
             }
 
             if let Some((sink, grant_id, caller)) = &ctx.activity {
@@ -283,7 +316,7 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
             .await
             .is_err()
             {
-                mark_detached(&sid);
+                mark_detached(&sid, attach_gen);
                 let _ = ctx.handle.close(ctx.channel).await;
                 return;
             }
@@ -295,16 +328,28 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
             {
                 Ok(Ok(Some(IpcFrame::Wire(WireFrame::Attached(_))))) => {}
                 _ => {
-                    mark_detached(&sid);
+                    mark_detached(&sid, attach_gen);
                     let _ = ctx.handle.close(ctx.channel).await;
                     return;
                 }
             }
 
-            relay_loop(sid, stream, in_rx, decoder, ctx).await;
+            relay_loop(sid, attach_gen, stream, in_rx, decoder, ctx).await;
         }
 
         WireFrame::Attach(attach) => {
+            if ctx.via_service || !resume_enabled_globally() {
+                let _ = send_wire(
+                    &ctx.handle,
+                    ctx.channel,
+                    &WireFrame::Refused(RefuseReason::Policy {
+                        detail: "resumable SSH is disabled by policy on this device".into(),
+                    }),
+                )
+                .await;
+                let _ = ctx.handle.close(ctx.channel).await;
+                return;
+            }
             // If auth matched a tombstone, deliver exact terminal reason now.
             if let Some(ResumeLookup::Tombstone { reason, .. }) = ctx.resume_only {
                 let _ = send_wire(&ctx.handle, ctx.channel, &WireFrame::Refused(reason)).await;
@@ -333,6 +378,7 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 &attach.proof,
                 &ctx.host_key_fp,
                 &ctx.client_key_fp,
+                ctx.client_key_in_authorized_list,
                 attach.last_rx,
                 attach.c2s_next,
                 attach.cols,
@@ -354,6 +400,10 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 }
             };
 
+            if attached.entry.persist.survives_restart {
+                crate::ssh::release_classic_connection_slot(&ctx.classic_counted);
+            }
+
             info!(
                 peer = %ctx.peer,
                 sid = %attach.session_id.short_hex(),
@@ -373,7 +423,15 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 );
             }
 
-            relay_loop(attach.session_id, attached.stream, in_rx, decoder, ctx).await;
+            relay_loop(
+                attach.session_id,
+                attached.attach_gen,
+                attached.stream,
+                in_rx,
+                decoder,
+                ctx,
+            )
+            .await;
         }
 
         _ => {
@@ -392,33 +450,61 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
 
 async fn relay_loop(
     sid: SessionId,
+    attach_gen: u64,
     stream: HostIpcStream,
     mut in_rx: mpsc::Receiver<Vec<u8>>,
     mut decoder: FrameDecoder,
     ctx: SubsystemContext,
 ) {
     let (mut ipc_rd, mut ipc_wr) = tokio::io::split(stream);
-    let mut terminated_or_exited = false;
+    // Dedicated reader task makes `tokio::select!` 100% cancel-safe (partial
+    // `IpcFrame::read_from` reads can NEVER be cancelled mid-frame!).
+    let (ipc_tx, mut ipc_rx) = mpsc::channel::<IpcFrame>(128);
+    let ipc_reader = tokio::spawn(async move {
+        while let Ok(Some(frame)) = IpcFrame::read_from(&mut ipc_rd).await {
+            if ipc_tx.send(frame).await.is_err() {
+                break;
+            }
+        }
+    });
 
-    loop {
+    let mut terminated_or_exited = false;
+    let mut superseded_flag = false;
+
+    'outer: loop {
         // First drain any already-buffered client frames from `decoder`.
         while let Ok(Some(wf)) = decoder.next_wire() {
             let is_detach = matches!(wf, WireFrame::Detach);
             let is_term = matches!(wf, WireFrame::Terminate);
             if IpcFrame::Wire(wf).write_to(&mut ipc_wr).await.is_err() {
-                mark_detached(&sid);
-                let _ = ctx.handle.close(ctx.channel).await;
-                return;
+                break 'outer;
             }
             if is_detach {
                 debug!(sid = %sid.short_hex(), "ssh-persist: client detached cleanly");
-                mark_detached(&sid);
-                let _ = ctx.handle.close(ctx.channel).await;
-                return;
+                break 'outer;
             }
             if is_term {
-                let _ = ctx.handle.close(ctx.channel).await;
-                return;
+                // Wait briefly for the host to confirm child termination with
+                // `WireFrame::Exited` so `mh ssh --kill` / `~.` get confirmed exit.
+                let wait_until = tokio::time::Instant::now() + Duration::from_secs(3);
+                while tokio::time::Instant::now() < wait_until {
+                    let rem = wait_until.saturating_duration_since(tokio::time::Instant::now());
+                    match tokio::time::timeout(rem, ipc_rx.recv()).await {
+                        Ok(Some(IpcFrame::Wire(WireFrame::Exited(st)))) => {
+                            mark_ended(&sid, st.clone());
+                            terminated_or_exited = true;
+                            let _ = send_wire(&ctx.handle, ctx.channel, &WireFrame::Exited(st))
+                                .await;
+                            break;
+                        }
+                        Ok(Some(IpcFrame::Wire(other))) => {
+                            let _ = send_wire(&ctx.handle, ctx.channel, &other).await;
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                break 'outer;
             }
         }
 
@@ -437,9 +523,9 @@ async fn relay_loop(
                     None => break,
                 }
             }
-            frame = IpcFrame::read_from(&mut ipc_rd) => {
+            frame = ipc_rx.recv() => {
                 match frame {
-                    Ok(Some(IpcFrame::Wire(wf))) => {
+                    Some(IpcFrame::Wire(wf)) => {
                         let superseded = matches!(
                             wf,
                             WireFrame::Notice(meshharbor_node_core::pty_resume::NoticeKind::Superseded)
@@ -452,18 +538,20 @@ async fn relay_loop(
                             break;
                         }
                         if superseded {
+                            superseded_flag = true;
                             break;
                         }
                     }
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => break,
+                    Some(_) => {}
+                    None => break,
                 }
             }
         }
     }
 
-    if !terminated_or_exited {
-        mark_detached(&sid);
+    ipc_reader.abort();
+    if !terminated_or_exited && !superseded_flag {
+        mark_detached(&sid, attach_gen);
     }
     let _ = ctx.handle.close(ctx.channel).await;
 }

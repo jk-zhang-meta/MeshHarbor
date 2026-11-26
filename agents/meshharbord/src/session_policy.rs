@@ -133,6 +133,20 @@ pub fn mask(
     device: SessionPolicy,
     person_asked: bool,
 ) -> Masked {
+    mask_with_prior_ask_approvals(permissions, audio_enabled, org, device, person_asked, 0)
+}
+
+/// FR-141 — same as [`mask`], additionally honouring `prior_ask_bits` for
+/// features the host already approved on the pre-restart session (still strictly
+/// enforcing `FeaturePolicy::Off` if policy turned the feature off since).
+pub fn mask_with_prior_ask_approvals(
+    permissions: Permissions,
+    audio_enabled: bool,
+    org: Option<SessionPolicy>,
+    device: SessionPolicy,
+    person_asked: bool,
+    prior_ask_bits: u8,
+) -> Masked {
     let org = org.unwrap_or_default();
     let mut out = Masked {
         permissions,
@@ -140,10 +154,25 @@ pub fn mask(
         ask: Vec::new(),
         refused: Vec::new(),
     };
-    for (feature, org_p, device_p) in [
-        (Feature::Clipboard, org.clipboard, device.clipboard),
-        (Feature::Files, org.files, device.files),
-        (Feature::Audio, org.audio, device.audio),
+    for (feature, org_p, device_p, ask_bit) in [
+        (
+            Feature::Clipboard,
+            org.clipboard,
+            device.clipboard,
+            crate::rc_continuity::ASK_BIT_CLIPBOARD,
+        ),
+        (
+            Feature::Files,
+            org.files,
+            device.files,
+            crate::rc_continuity::ASK_BIT_FILES,
+        ),
+        (
+            Feature::Audio,
+            org.audio,
+            device.audio,
+            crate::rc_continuity::ASK_BIT_AUDIO,
+        ),
     ] {
         let asked_for = match feature {
             Feature::Clipboard => out.permissions.contains(Permissions::CLIPBOARD),
@@ -161,6 +190,7 @@ pub fn mask(
                 out.ask.push(feature);
                 None
             }
+            FeaturePolicy::Ask if (prior_ask_bits & ask_bit) != 0 => None,
             FeaturePolicy::Ask => Some("needs_consent"),
         };
         if let Some(why) = why {

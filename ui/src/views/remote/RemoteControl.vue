@@ -1187,7 +1187,7 @@
            frame visible under a soft non-blocking recovery banner instead of blanking
            out the stage while auto-reconnecting with `continues_from`. -->
       <div
-        v-else-if="rc.restartingDevice.value && ['reconnecting', 'requesting', 'awaiting_consent', 'negotiating'].includes(rc.phase.value)"
+        v-else-if="rc.restartingDevice.value && ['reconnecting', 'requesting', 'negotiating'].includes(rc.phase.value)"
         class="rc-restart-stage"
         data-testid="rc-restart-recovery"
       >
@@ -1325,6 +1325,34 @@
         @dragleave.prevent.stop="onStageDragLeave"
         @drop.prevent.stop="onStageDrop"
       >
+        <!-- FR-141 — keep the frozen pre-restart frame & soft banner over the
+             live renderer until the first replacement frame actually paints so
+             there is zero blank-stage flash after ICE connects. -->
+        <div
+          v-if="rc.restartingDevice.value && !rc.hasMedia.value"
+          class="rc-restart-stage rc-restart-stage-overlay"
+          data-testid="rc-restart-recovery-awaiting-frame"
+        >
+          <img
+            v-if="frozenFrameUrl"
+            :src="frozenFrameUrl"
+            alt=""
+            class="rc-restart-frozen-frame"
+          />
+          <div class="rc-restart-banner">
+            <v-progress-circular indeterminate size="20" width="2" color="warning" class="mr-3 flex-shrink-0" />
+            <div class="rc-restart-banner-text">
+              <div class="text-body-2 font-weight-medium">
+                {{ rc.restartingDevice.value.toVersion
+                  ? t('remote.viewer.stage.restartingToVersion', { version: rc.restartingDevice.value.toVersion })
+                  : t('remote.viewer.stage.restartingTitle') }}
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                {{ t('remote.viewer.stage.restartingBody', { n: Math.max(1, rc.reconnectAttempt.value) }) }}
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- Classic render path: <video> bound to the remote MediaStream.
              Used unless the viewer opted into the WebCodecs path AND
              the browser supports it. We still render the <video>
@@ -5395,7 +5423,15 @@ watch(
   () => rc.phase.value,
   (p) => {
     if (p === 'reconnecting' || p === 'error') void refreshAgentStatus()
-    if (p === 'connected' || p === 'idle' || p === 'closed' || p === 'error') {
+    if (p === 'idle' || p === 'closed' || p === 'error') {
+      frozenFrameUrl.value = null
+    }
+  },
+)
+watch(
+  () => rc.hasMedia.value,
+  (has) => {
+    if (has && rc.phase.value === 'connected') {
       frozenFrameUrl.value = null
     }
   },
@@ -5986,6 +6022,11 @@ onBeforeUnmount(() => {
   justify-content: center;
   overflow: hidden;
   background: #0b0b0b;
+}
+.rc-restart-stage-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
 }
 .rc-restart-frozen-frame {
   width: 100%;

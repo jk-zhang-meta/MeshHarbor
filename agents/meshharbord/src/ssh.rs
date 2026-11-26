@@ -1113,16 +1113,18 @@ pub(crate) mod sshd {
                 consent_mode,
                 session_secs,
                 one_command,
+                org_id,
+                principal_id,
                 resume_allowed,
                 deadline,
             } = grant;
-            // Two fields were spent BEFORE resolution, and that is their
-            // decision: `public_key` is how `take_grant_for` found this grant
-            // (auth logged its fingerprint), and `deadline` is the redemption
-            // window `prune` already enforced. Consumed here so the
+            // Three fields were spent BEFORE resolution, and that is their
+            // decision: `public_key` and `org_id` are how `take_grant_for`
+            // matched this grant to the listener's org, and `deadline` is the
+            // redemption window `prune` already enforced. Consumed here so the
             // destructure stays exhaustive and a NEW field cannot borrow this
             // line as precedent for being dropped.
-            let _ = (public_key, deadline);
+            let _ = (public_key, deadline, org_id);
 
             // The ceiling REFUSES rather than downgrading. A caller who asked
             // for root and silently got a user shell has been told something
@@ -1158,7 +1160,7 @@ pub(crate) mod sshd {
                 deadline: Some(
                     tokio::time::Instant::now() + std::time::Duration::from_secs(clamped_secs),
                 ),
-                principal: caller.clone(),
+                principal: principal_id.unwrap_or_else(|| caller.clone()),
                 caller: format!("ssh:{caller}@{peer}"),
                 one_command,
                 session_secs: clamped_secs,
@@ -1315,13 +1317,16 @@ pub(crate) mod sshd {
         used: OneCommandUse,
         /// FR-141 — SHA-256 fingerprint of the authenticated client key.
         client_key_fp: Option<String>,
+        /// FR-141 — whether the authenticated client key is currently present
+        /// in `ctx.authorized` (re-checked on key-list session resume).
+        client_key_in_authorized_list: bool,
         /// FR-141 — `Some` when authenticated as `ConnClass::ResumeOnly` (may
         /// ONLY open one channel and request `meshharbor-pty@v1` -> `Attach`).
         resume_only: Option<crate::ssh_persist::ResumeLookup>,
         resume_channel_opened: bool,
-        /// Counts in `CLASSIC_CONNECTIONS` until dropped or upgraded to
-        /// `meshharbor-pty@v1`.
-        classic_counted: bool,
+        /// Counts in `CLASSIC_CONNECTIONS` until dropped or upgraded to a
+        /// restart-survivable `meshharbor-pty@v1` session.
+        classic_counted: Arc<std::sync::atomic::AtomicBool>,
     }
 
     /// FR-90 P3-8-2a — a one-command session's one channel and one `exec`.
@@ -1371,16 +1376,10 @@ pub(crate) mod sshd {
                 asker,
                 used: OneCommandUse::default(),
                 client_key_fp: None,
+                client_key_in_authorized_list: false,
                 resume_only: None,
                 resume_channel_opened: false,
-                classic_counted: true,
-            }
-        }
-
-        fn mark_persistent(&mut self) {
-            if self.classic_counted {
-                self.classic_counted = false;
-                super::CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                classic_counted: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             }
         }
 
@@ -2043,10 +2042,7 @@ pub(crate) mod sshd {
     /// runtime either.
     impl Drop for Handler {
         fn drop(&mut self) {
-            if self.classic_counted {
-                self.classic_counted = false;
-                super::CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            super::release_classic_connection_slot(&self.classic_counted);
             self.cancellation().cancel();
             self.report(SshActivityKind::SessionClose, None, None, true);
             for (_, abort) in self.exec_aborts.drain() {
@@ -2076,6 +2072,11 @@ pub(crate) mod sshd {
             {
                 return Ok(Auth::reject());
             }
+            let listed = self
+                .ctx
+                .authorized
+                .iter()
+                .any(|k| k.key_data() == key.key_data());
             let grant = if self.shared_stream {
                 if !self.stream_grant.as_ref().is_some_and(|g| {
                     g.deadline > std::time::Instant::now()
@@ -2086,7 +2087,7 @@ pub(crate) mod sshd {
                 }
                 self.stream_grant.take()
             } else {
-                super::take_grant_for(key)
+                super::take_grant_for(key, &self.ctx.org_id)
             };
             if let Some(grant) = grant {
                 info!(
@@ -2096,6 +2097,7 @@ pub(crate) mod sshd {
                     "ssh: authenticated (server grant)"
                 );
                 self.client_key_fp = Some(fingerprint);
+                self.client_key_in_authorized_list = listed;
                 // Resolving HERE — not lazily at each request — is the P5
                 // design: one place turns a grant into what a session may do,
                 // and the request handlers can only read the result.
@@ -2122,19 +2124,21 @@ pub(crate) mod sshd {
             // in THIS org before falling through to key-list auth. A key that
             // matches here is admitted as `ResumeOnly` — it may ONLY open one
             // channel and request `meshharbor-pty@v1` -> `Attach`.
-            match crate::ssh_persist::lookup_resume_key(&self.ctx.org_id, &fingerprint) {
-                lookup @ (crate::ssh_persist::ResumeLookup::Live(_)
-                | crate::ssh_persist::ResumeLookup::Tombstone { .. }) => {
-                    info!(
-                        peer = %self.peer, %user, %fingerprint,
-                        "ssh: authenticated (FR-141 resume-only)"
-                    );
-                    self.client_key_fp = Some(fingerprint);
-                    self.resume_only = Some(lookup);
-                    self.mark_persistent();
-                    return Ok(Auth::Accept);
+            if !self.ctx.via_service && crate::ssh_persist::resume_enabled_globally() {
+                match crate::ssh_persist::lookup_resume_key(&self.ctx.org_id, &fingerprint) {
+                    lookup @ (crate::ssh_persist::ResumeLookup::Live(_)
+                    | crate::ssh_persist::ResumeLookup::Tombstone { .. }) => {
+                        info!(
+                            peer = %self.peer, %user, %fingerprint,
+                            "ssh: authenticated (FR-141 resume-only)"
+                        );
+                        self.client_key_fp = Some(fingerprint);
+                        self.client_key_in_authorized_list = listed;
+                        self.resume_only = Some(lookup);
+                        return Ok(Auth::Accept);
+                    }
+                    crate::ssh_persist::ResumeLookup::None => {}
                 }
-                crate::ssh_persist::ResumeLookup::None => {}
             }
             // FR-129 — a key from the device-owned list opens a session with no grant, so no
             // code: on a two-factor device only a grant (which carried a code the device
@@ -2150,17 +2154,13 @@ pub(crate) mod sshd {
             // `PublicKey` itself: the parsed value carries the trailing
             // comment, so the same key recorded with a different comment would
             // not be equal.
-            let listed = self
-                .ctx
-                .authorized
-                .iter()
-                .any(|k| k.key_data() == key.key_data());
             if listed {
                 info!(
                     peer = %self.peer, %user, %fingerprint,
                     "ssh: authenticated (ssh_authorized_keys)"
                 );
                 self.client_key_fp = Some(fingerprint);
+                self.client_key_in_authorized_list = true;
                 self.policy = Some(ResolvedSessionPolicy::from_key_list(
                     &self.ctx, user, self.peer,
                 ));
@@ -2658,7 +2658,52 @@ pub(crate) mod sshd {
                 );
             }
             if name == meshharbor_node_core::pty_resume::SUBSYSTEM_NAME {
-                self.mark_persistent();
+                // Gate BEFORE `channel_success` so ineligible sessions (SYSTEM
+                // service, disabled resume, grants without `resume_allowed`,
+                // broken state dir) receive a clean SSH channel failure and
+                // `mh ssh` falls back to classic shell on the SAME handle!
+                if self.ctx.via_service {
+                    return refuse(
+                        session,
+                        channel,
+                        self.peer,
+                        name,
+                        "resumable SSH is not supported on the SYSTEM service port.",
+                    );
+                }
+                if !crate::ssh_persist::resume_enabled_globally() {
+                    return refuse(
+                        session,
+                        channel,
+                        self.peer,
+                        name,
+                        "resumable SSH is disabled on this device.",
+                    );
+                }
+                if self.resume_only.is_none() {
+                    let allowed = self
+                        .policy
+                        .as_ref()
+                        .is_some_and(|p| p.key_list_auth || p.resume_allowed == Some(true));
+                    if !allowed {
+                        return refuse(
+                            session,
+                            channel,
+                            self.peer,
+                            name,
+                            "this grant does not permit resumable SSH sessions.",
+                        );
+                    }
+                }
+                if !crate::ssh_persist::ensure_state_dir_ready() {
+                    return refuse(
+                        session,
+                        channel,
+                        self.peer,
+                        name,
+                        "persistent SSH session storage is unavailable on this device.",
+                    );
+                }
                 let open_auth = self.policy.as_ref().map(|p| {
                     crate::ssh_persist::subsystem::OpenAuthContext {
                         principal: p.principal.clone(),
@@ -2668,6 +2713,7 @@ pub(crate) mod sshd {
                         consent_sentinel: p.consent_sentinel.clone(),
                         asker: self.asker.clone(),
                         session_secs: p.session_secs,
+                        deadline: p.deadline,
                         resume_allowed: p.resume_allowed,
                         key_list_auth: p.key_list_auth,
                     }
@@ -2687,6 +2733,8 @@ pub(crate) mod sshd {
                     agent_id: self.ctx.agent_id.clone(),
                     host_key_fp: self.ctx.host_fingerprint.clone(),
                     client_key_fp: self.client_key_fp.clone().unwrap_or_default(),
+                    client_key_in_authorized_list: self.client_key_in_authorized_list,
+                    classic_counted: self.classic_counted.clone(),
                     via_service: self.ctx.via_service,
                     peer: self.peer,
                     open_auth,
@@ -3501,6 +3549,11 @@ pub struct Grant {
     /// not the client: the daemon that holds the key could ask for anything a
     /// key may ask for.
     pub one_command: bool,
+    /// FR-141 — org/tenant ID that minted this grant (enforced on multi-org
+    /// redemption so Org B's listener can never redeem Org A's grant).
+    pub org_id: Option<String>,
+    /// FR-141 — immutable server user ID hex for revocation matching.
+    pub principal_id: Option<String>,
     /// FR-141 — optional server policy override for persistent resumable SSH.
     pub resume_allowed: Option<bool>,
     /// LOCAL deadline after which this grant is dead.
@@ -3535,9 +3588,20 @@ impl Grant {
             consent_mode,
             session_secs,
             one_command: false,
+            org_id: None,
+            principal_id: None,
             resume_allowed: Some(false),
             deadline,
         }
+    }
+}
+
+/// FR-141 — decrement `CLASSIC_CONNECTIONS` at most once for a connection that
+/// is either dropping or upgrading into a restart-survivable persistent PTY.
+#[cfg(feature = "ssh-server")]
+pub(crate) fn release_classic_connection_slot(counted: &std::sync::atomic::AtomicBool) {
+    if counted.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3619,8 +3683,12 @@ pub struct SshGrantAdmitInput {
     pub allow_via_service: bool,
     pub one_command: bool,
     pub two_factor_code: Option<String>,
+    /// FR-141 — tenant/org ID that issued this grant (multi-org isolation).
+    pub org_id: Option<String>,
+    /// FR-141 — immutable server user ID hex for revocation matching.
+    pub principal_id: Option<String>,
     /// FR-141 — whether the server grant permits persistent resumable SSH PTYs.
-    /// `None` = legacy / offline P2P (defer to local device capability).
+    /// Must be `Some(true)` to open a grant-backed persistent PTY session.
     pub resume_allowed: Option<bool>,
 }
 
@@ -3657,6 +3725,8 @@ pub fn admit_grant(
         allow_via_service,
         one_command,
         two_factor_code,
+        org_id,
+        principal_id,
         resume_allowed,
     } = input;
 
@@ -3706,6 +3776,8 @@ pub fn admit_grant(
                 expires_at_ms,
                 session_secs,
                 one_command,
+                org_id,
+                principal_id,
                 resume_allowed,
             );
             match refusal {
@@ -3733,6 +3805,8 @@ pub fn admit_grant(
                 expires_at_ms,
                 session_secs,
                 one_command,
+                org_id,
+                principal_id,
                 resume_allowed,
             ) {
                 Ok(()) => SshGrantAdmitOutcome::Recorded,
@@ -3756,6 +3830,8 @@ pub fn admit_grant(
             via_service,
             allow_via_service,
             one_command,
+            org_id,
+            principal_id,
             resume_allowed,
         );
         tracing::warn!(
@@ -3798,6 +3874,8 @@ mod fr139_ssh_admit_tests {
             allow_via_service,
             one_command: false,
             two_factor_code: None,
+            org_id: None,
+            principal_id: None,
             resume_allowed: Some(true),
         };
 
@@ -3852,10 +3930,12 @@ pub fn record_grant(
         session_secs,
         one_command,
         None,
+        None,
+        Some(false),
     )
 }
 
-/// Record an `rc:ssh.grant` with explicit FR-141 `resume_allowed` policy.
+/// Record an `rc:ssh.grant` with explicit org/principal binding and FR-141 `resume_allowed` policy.
 #[cfg(feature = "ssh-server")]
 #[allow(clippy::too_many_arguments)]
 pub fn record_grant_ex(
@@ -3868,6 +3948,8 @@ pub fn record_grant_ex(
     expires_at_ms: u64,
     session_secs: u64,
     one_command: bool,
+    org_id: Option<String>,
+    principal_id: Option<String>,
     resume_allowed: Option<bool>,
 ) -> Result<(), GrantRejected> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -3901,6 +3983,8 @@ pub fn record_grant_ex(
         consent_mode,
         session_secs: ssh_limits::clamp_session_secs(session_secs),
         one_command,
+        org_id,
+        principal_id,
         resume_allowed,
         deadline: Instant::now() + window,
     };
@@ -3941,16 +4025,17 @@ fn prune(grants: &mut Vec<Grant>) {
     });
 }
 
-/// Consume the live grant admitting `key`, if any. Single use: a redeemed
-/// grant is gone, so a captured public key cannot be replayed into a second
-/// session.
+/// Consume the live grant admitting `key` for `listener_org_id`, if any.
+/// Single use and tenant-scoped: a grant issued for Org A can never be redeemed
+/// on Org B's listener on a multi-org device.
 #[cfg(feature = "ssh-server")]
-fn take_grant_for(key: &russh::keys::ssh_key::PublicKey) -> Option<Grant> {
+fn take_grant_for(key: &russh::keys::ssh_key::PublicKey, listener_org_id: &str) -> Option<Grant> {
     let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
     prune(&mut grants);
     let idx = grants.iter().position(|g| {
-        russh::keys::ssh_key::PublicKey::from_openssh(&g.public_key)
-            .is_ok_and(|k| k.key_data() == key.key_data())
+        g.org_id.as_deref().is_none_or(|o| o == listener_org_id)
+            && russh::keys::ssh_key::PublicKey::from_openssh(&g.public_key)
+                .is_ok_and(|k| k.key_data() == key.key_data())
     })?;
     Some(grants.remove(idx))
 }
@@ -5127,6 +5212,8 @@ mod tests {
             consent_mode: consent,
             session_secs,
             one_command: false,
+            org_id: None,
+            principal_id: None,
             resume_allowed: None,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
         }
@@ -5652,7 +5739,7 @@ mod tests {
         grant_for_with_consent(&line, 30_000, Some(ConsentMode::Prompt)).unwrap();
 
         let parsed = russh::keys::ssh_key::PublicKey::from_openssh(&line).unwrap();
-        let taken = super::take_grant_for(&parsed).expect("the grant is redeemable");
+        let taken = super::take_grant_for(&parsed, "any-org").expect("the grant is redeemable");
         assert_eq!(taken.consent_mode, Some(ConsentMode::Prompt));
         let _ = key;
     }

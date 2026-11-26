@@ -1096,6 +1096,8 @@ pub struct SshGrant {
     /// itself; the caller must refuse rather than connect unverified.
     pub host_pubkey: Option<String>,
     pub error: Option<String>,
+    /// FR-141 — whether this grant permits persistent resumable SSH PTYs.
+    pub resume: bool,
 }
 
 /// Ask the local daemon for a single-use SSH grant on `node`.
@@ -1136,6 +1138,7 @@ async fn ssh_session_once(
             host_pubkey,
             error,
             two_factor,
+            resume,
             ..
         } => Ok((
             SshGrant {
@@ -1143,6 +1146,7 @@ async fn ssh_session_once(
                 port,
                 host_pubkey,
                 error,
+                resume,
             },
             two_factor,
         )),

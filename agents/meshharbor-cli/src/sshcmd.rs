@@ -94,6 +94,7 @@ pub async fn run_with_options(
             session_key: key,
             command,
             ephemeral,
+            resume_allowed: grant.resume,
         })
         .await;
     }

@@ -153,9 +153,12 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                     info!(tenant = %tid, agent = %aid, scope, ?reason, "rc ctrl: ssh_revoke applied to agent from another pod");
                 }
             } else {
-                let n = hub.push_ssh_revoke_org(
+                let n = hub.push_ssh_revoke_org_scoped(
                     tid,
-                    reason.as_deref().unwrap_or("org_ssh_disabled"),
+                    scope,
+                    principal,
+                    sid,
+                    reason.clone().or_else(|| Some("org_ssh_disabled".to_string())),
                 );
                 if n > 0 {
                     info!(tenant = %tid, scope, ?reason, agents = n, "rc ctrl: ssh_revoke applied to org agents from another pod");

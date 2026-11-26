@@ -252,6 +252,9 @@ describe('FR-141 remote desktop restart continuity', () => {
     await vi.advanceTimersByTimeAsync(10)
     rig.pc().setState('connected')
     expect(rig.rc.phase.value).toBe('connected')
+    // Frozen frame stays active until first replacement frame paints.
+    expect(rig.rc.restartingDevice.value).not.toBeNull()
+    rig.rc.notePaint()
     expect(rig.rc.restartingDevice.value).toBeNull()
   })
 
