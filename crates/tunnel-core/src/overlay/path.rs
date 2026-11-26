@@ -208,6 +208,9 @@ pub(crate) const MAX_FAILURES_SRFLX: u32 = 3;
 /// F2 — the scoreless LAN probe-spacing pin: never propose a LAN attempt
 /// within this of the previous one, independent of every score and penalty.
 pub(crate) const LAN_PROBE_SPACING: Duration = Duration::from_secs(60);
+/// FR-139 — maximum direct retry penalty half-life and LAN retry spacing when
+/// no relay path is available (truly offline / WAN-less).
+pub(crate) const OFFLINE_DIRECT_RETRY_CAP: Duration = Duration::from_secs(10);
 /// Global in-flight probe cap (structural bound; the per-peer bound is one —
 /// `WgDevice::probes` is keyed by pubkey and the monitor mirrors it).
 pub(crate) const PROBE_CAP: usize = 16;
@@ -298,6 +301,15 @@ fn lan_spacing(p: &PeerPath, lan_off: bool, now: Instant) -> Duration {
         )
     } else {
         LAN_PROBE_SPACING
+    }
+}
+
+fn lan_spacing_for(p: &PeerPath, lan_off: bool, relay_available: bool, now: Instant) -> Duration {
+    let base = lan_spacing(p, lan_off, now);
+    if relay_available {
+        base
+    } else {
+        base.min(OFFLINE_DIRECT_RETRY_CAP)
     }
 }
 
@@ -555,11 +567,27 @@ const DIRECT_TIERS: [DirectTier; 3] = [DirectTier::Lan, DirectTier::Public, Dire
 /// the runtime's endpoint/flag/hairpin checks, WITHOUT the cooldown gates
 /// (cooling is the monitor's own penalty plane). Availability is eligibility
 /// input, never score: a tier with no endpoint simply isn't on the ballot.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct TierAvailability {
     pub(crate) lan: bool,
     pub(crate) public: bool,
     pub(crate) srflx: bool,
+    /// FR-139 — measured relay availability (`control_ws_attached ||
+    /// derp_mux_alive || live_relay_or_warm_grant`). False ONLY when all three
+    /// are absent so online strict-zone / symmetric-NAT nodes keep legacy
+    /// behavior verbatim.
+    pub(crate) relay: bool,
+}
+
+impl Default for TierAvailability {
+    fn default() -> Self {
+        Self {
+            lan: false,
+            public: false,
+            srflx: false,
+            relay: true,
+        }
+    }
 }
 
 impl TierAvailability {
@@ -568,7 +596,7 @@ impl TierAvailability {
             DirectTier::Lan => self.lan,
             DirectTier::Public => self.public,
             DirectTier::Srflx => self.srflx,
-            DirectTier::Relay => true,
+            DirectTier::Relay => self.relay,
         }
     }
 }
@@ -648,7 +676,6 @@ impl Hysteresis {
 
 /// The path monitor: per-peer two-plane state + the decision function.
 /// Owned by the overlay loop; single-threaded; pure of I/O and clocks.
-#[derive(Default)]
 pub(crate) struct PathMonitor {
     peers: HashMap<ObjectId, PeerPath>,
     /// Global in-flight probe count (bounds [`decide`]'s Probe proposals).
@@ -662,6 +689,24 @@ pub(crate) struct PathMonitor {
     /// F3c kill switch (`OVERLAY_FAST_RETURN_EXTEND=0`): the lane lapses
     /// [`FAST_RETURN_WINDOW`] after the conviction, with no backoff.
     fast_return_extend_off: bool,
+    /// FR-139 — measured relay availability (`true` by default). While `false`
+    /// (truly offline / WAN-less), direct retry penalties and LAN spacing are
+    /// capped at [`OFFLINE_DIRECT_RETRY_CAP`] (10 s) and `PathAction::Relay`
+    /// is never proposed.
+    relay_available: bool,
+}
+
+impl Default for PathMonitor {
+    fn default() -> Self {
+        Self {
+            peers: HashMap::new(),
+            probes_in_flight: 0,
+            fast_return_off: false,
+            fast_return_lan_off: false,
+            fast_return_extend_off: false,
+            relay_available: true,
+        }
+    }
 }
 
 impl PathMonitor {
@@ -683,6 +728,11 @@ impl PathMonitor {
     pub(crate) fn with_fast_return_extend(mut self, enabled: bool) -> Self {
         self.fast_return_extend_off = !enabled;
         self
+    }
+
+    /// FR-139 — update measured relay availability.
+    pub(crate) fn set_relay_available(&mut self, available: bool) {
+        self.relay_available = available;
     }
 
     // -- evidence events -----------------------------------------------------
@@ -733,11 +783,14 @@ impl PathMonitor {
         // never climbs the ladder: a healed path is retried about once a
         // minute however long the outage ran. Its strike still rotates the
         // dial candidate.
-        let half_life = if shadow && mbb {
+        let mut half_life = if shadow && mbb {
             H_ORDINARY
         } else {
             suppression_half_life(tier, t.fails, mbb)
         };
+        if !self.relay_available {
+            half_life = half_life.min(OFFLINE_DIRECT_RETRY_CAP);
+        }
         t.penalty = Some(Penalty {
             w: weight(tier),
             half_life,
@@ -1418,14 +1471,16 @@ impl PathMonitor {
             // `upgrade_probes` intact and the fresh walk ignored it, so a
             // late promote could clobber the fresh carrier).
             return match incumbent {
-                Incumbent::None => PathAction::Relay,
+                Incumbent::None if avail.relay => PathAction::Relay,
                 _ => PathAction::Keep,
             };
         }
 
+        let relay_ok = self.relay_available && avail.relay;
         let lan_spaced_out = state.is_some_and(|p| {
             p.last_lan_attempt.is_some_and(|t| {
-                now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+                now.saturating_duration_since(t)
+                    < lan_spacing_for(p, self.fast_return_lan_off, relay_ok, now)
             })
         });
 
@@ -1467,13 +1522,26 @@ impl PathMonitor {
             // Cap-full → Relay: the carrier comes first, the probe can wait
             // for the relay→direct upgrade arm once a slot frees.
             (Incumbent::None, Some((DirectTier::Lan, _))) if mbb => {
+                if !avail.relay && !avail.public && !avail.srflx {
+                    return PathAction::Install(DirectTier::Lan);
+                }
                 if self.probes_in_flight >= PROBE_CAP {
-                    return PathAction::Relay;
+                    return if avail.relay {
+                        PathAction::Relay
+                    } else {
+                        PathAction::Keep
+                    };
                 }
                 PathAction::Probe(DirectTier::Lan)
             }
             (Incumbent::None, Some((tier, _))) => PathAction::Install(tier),
-            (Incumbent::None, None) => PathAction::Relay,
+            (Incumbent::None, None) => {
+                if avail.relay {
+                    PathAction::Relay
+                } else {
+                    PathAction::Keep
+                }
+            }
             (Incumbent::Direct(_), _) => unreachable!("handled above"),
         }
     }
@@ -1510,8 +1578,10 @@ impl PathMonitor {
             return None;
         }
 
+        let relay_ok = self.relay_available && avail.relay;
         let lan_spaced_out = p.last_lan_attempt.is_some_and(|t| {
-            now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+            now.saturating_duration_since(t)
+                < lan_spacing_for(p, self.fast_return_lan_off, relay_ok, now)
         });
         let voluntary_ok = p.hysteresis.voluntary_allowed(now);
         let cur_q = p.tiers[cur_idx].q.get();
@@ -1567,7 +1637,7 @@ impl PathMonitor {
                 }
                 Some(PathAction::Probe(alt))
             }
-            None => Some(PathAction::Relay),
+            None => avail.relay.then_some(PathAction::Relay),
         }
     }
 
@@ -1603,8 +1673,10 @@ impl PathMonitor {
         {
             return None;
         }
+        let relay_ok = self.relay_available && avail.relay;
         let lan_spaced_out = p.last_lan_attempt.is_some_and(|t| {
-            now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+            now.saturating_duration_since(t)
+                < lan_spacing_for(p, self.fast_return_lan_off, relay_ok, now)
         });
 
         // First higher-precedence tier passing ALL gates (a penalized top
@@ -1872,6 +1944,7 @@ mod tests {
             lan: true,
             public: true,
             srflx: true,
+            relay: true,
         }
     }
 
@@ -2365,6 +2438,7 @@ mod tests {
             lan: false,
             public: false,
             srflx: true,
+            relay: true,
         };
         let action = m.decide(&a, Incumbent::Relay, behind_nat, true, t0, false);
         let e = m.explain(&a, t0);
@@ -2773,6 +2847,7 @@ mod tests {
             lan: false,
             public: false,
             srflx: true,
+            relay: true,
         };
         assert_eq!(
             m.decide(&a, Incumbent::None, srflx_only, true, now, false),
@@ -2851,6 +2926,7 @@ mod tests {
             lan: true,
             public: false,
             srflx: true,
+            relay: true,
         };
         assert_eq!(
             m.decide(&a, Incumbent::Relay, avail, true, t, false),
@@ -2929,6 +3005,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: true,
+            relay: true,
         };
         assert_eq!(
             m.decide(&a, Incumbent::None, no_lan, true, now, false),
@@ -3013,6 +3090,7 @@ mod tests {
             lan: true,
             public: false,
             srflx: true,
+            relay: true,
         };
         // 30 s after the attempt: LAN is eligible + top-Q, yet the pin
         // filters it — the next eligible tier is proposed instead.
@@ -3101,6 +3179,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: true,
+            relay: true,
         };
 
         // Healthy incumbent (Q = 0 cold start): base gap Srflx−Public is
@@ -3188,6 +3267,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: true,
+            relay: true,
         };
 
         // Hysteresis: an install at t0 blocks the voluntary fire until
@@ -3242,6 +3322,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: false,
+            relay: true,
         };
         pump_rtt(&mut m, &a, DirectTier::Public, 60_000, 600); // q → −100 clamp
         assert_eq!(
@@ -3338,6 +3419,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: true,
+            relay: true,
         };
         assert_eq!(m.upward_candidate(&a, DirectTier::Public, no_lan, t0), None);
         assert_eq!(
@@ -4056,6 +4138,7 @@ mod tests {
             lan: false,
             public: true,
             srflx: true,
+            relay: true,
         };
         assert_eq!(
             m.decide(&a, Incumbent::Relay, no_lan, true, t0, true),
@@ -4093,6 +4176,93 @@ mod tests {
         assert_eq!(
             quiet.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(61)),
             m.eligible(&a, DirectTier::Public, t0 + Duration::from_secs(61))
+        );
+    }
+
+    /// FR-139 — when relay is available (e.g. online strict-zone node with
+    /// attached control WS even without `/derp`), decisions and penalties are
+    /// unchanged.
+    #[test]
+    fn fr139_online_strict_zone_keeps_relay_available_and_behavior_unchanged() {
+        let mut m = PathMonitor::default();
+        let p = oid(90);
+        let t0 = Instant::now();
+        let no_direct = TierAvailability {
+            lan: false,
+            public: false,
+            srflx: false,
+            relay: true,
+        };
+        assert_eq!(
+            m.decide(&p, Incumbent::None, no_direct, true, t0, false),
+            PathAction::Relay,
+            "online node with no direct candidate still selects Relay"
+        );
+    }
+
+    /// FR-139 — when truly relayless (WAN/control/DERP/warm all absent),
+    /// PathMonitor never emits PathAction::Relay, caps direct failure retry
+    /// backoff and LAN spacing to 10 s, and resets immediately on network change.
+    #[test]
+    fn fr139_relayless_monitor_never_emits_relay_and_caps_direct_retry_to_10s() {
+        let mut m = PathMonitor::default();
+        m.set_relay_available(false);
+        let p = oid(91);
+        let t0 = Instant::now();
+        let offline_none = TierAvailability {
+            lan: false,
+            public: false,
+            srflx: false,
+            relay: false,
+        };
+        let offline_lan = TierAvailability {
+            lan: true,
+            public: false,
+            srflx: false,
+            relay: false,
+        };
+
+        assert_eq!(
+            m.decide(&p, Incumbent::None, offline_none, true, t0, false),
+            PathAction::Keep
+        );
+        assert_eq!(
+            m.decide(&p, Incumbent::None, offline_lan, true, t0, false),
+            PathAction::Install(DirectTier::Lan)
+        );
+        m.on_installed(&p, DirectTier::Lan, t0);
+
+        for i in 0..4u64 {
+            let ti = t0 + Duration::from_secs(i);
+            m.on_death(&p, DirectTier::Lan, DeathReason::HandshakeDeadline, true, ti);
+        }
+        let fail_t = t0 + Duration::from_secs(3);
+        assert_eq!(
+            m.decide(&p, Incumbent::None, offline_lan, true, fail_t + Duration::from_secs(5), false),
+            PathAction::Keep,
+            "still inside 10 s offline backoff"
+        );
+        assert_eq!(
+            m.decide(
+                &p,
+                Incumbent::None,
+                offline_lan,
+                true,
+                fail_t + OFFLINE_DIRECT_RETRY_CAP + Duration::from_millis(10),
+                false,
+            ),
+            PathAction::Install(DirectTier::Lan),
+            "offline direct retry unlocks within 10 s even after 4 deaths"
+        );
+
+        let fail2 = fail_t + Duration::from_secs(12);
+        m.on_installed(&p, DirectTier::Lan, fail2);
+        m.on_death(&p, DirectTier::Lan, DeathReason::HandshakeDeadline, true, fail2);
+        m.on_network_changed();
+        assert_eq!(
+            m.decide(&p, Incumbent::None, offline_lan, true, fail2 + Duration::from_millis(1), false),
+            PathAction::Install(DirectTier::Lan),
+            "netstate change resets offline retry backoff immediately"
         );
     }
 }

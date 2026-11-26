@@ -2541,10 +2541,16 @@ impl OverlayRuntime {
             // below records the legacy outcome against it (`record`). Legacy
             // stays authoritative — this is instrumentation only. Inert in
             // Direct/test carrier mode and when the monitor is off.
+            let relay_available = self
+                .control_ws_attached
+                .load(std::sync::atomic::Ordering::Relaxed)
+                || relay.as_ref().is_some_and(|r| r.has_live_derp_or_warm());
+            self.shadow(|s| s.mon.set_relay_available(relay_available));
             let avail = path::TierAvailability {
                 lan: cands.lan.is_some(),
                 public: cands.public.is_some(),
                 srflx: cands.srflx.is_some(),
+                relay: relay_available,
             };
             let incumbent = match installed {
                 Some((true, _, tier, _)) => path::Incumbent::Direct(tier),
@@ -3160,7 +3166,9 @@ impl OverlayRuntime {
                     let lan_probe_first = make_before_break
                         && !defer_on_demand
                         && direct_dst.is_some()
-                        && (phase_a_dst.is_some() || srflx_dst.is_some() || relay.is_some());
+                        && (phase_a_dst.is_some()
+                            || srflx_dst.is_some()
+                            || (relay.is_some() && relay_available));
                     let mut lan_probing = false;
                     if lan_probe_first {
                         if wg.has_direct_probe(&cfg.public_key) {

@@ -2634,6 +2634,11 @@ pub struct OverlayRuntime {
     /// FR-139 — Disco-validated direct-path candidate planner (pure state
     /// machine behind an uncontended sync mutex, accessed via [`Self::planner`]).
     candidate_planner: std::sync::Mutex<super::candidates::CandidatePlanner>,
+    /// FR-139 — true while a control-WS session is attached; cleared on
+    /// `ControlDetached` / closed channel and restored on `Reattach` / live
+    /// `Netmap`. Combined with `RelayCoordinator::has_live_derp_or_warm()` to
+    /// measure `TierAvailability.relay`.
+    control_ws_attached: std::sync::atomic::AtomicBool,
 }
 
 /// Opens the node's `/derp` WS (the agent owns `server_url` + the token +
@@ -2866,6 +2871,7 @@ impl OverlayRuntime {
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
+            control_ws_attached: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -2907,6 +2913,7 @@ impl OverlayRuntime {
             disco_rounds: std::sync::atomic::AtomicU64::new(0),
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
+            control_ws_attached: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -5023,9 +5030,12 @@ impl OverlayRuntime {
                 }
                 _ = fallback.tick() => {
                     let t_arm = Instant::now();
-                    if self.outbound.is_closed() && control_detached_at.is_none() {
-                        control_detached_at = Some(Instant::now());
-                        info!("overlay: control-WS channel closed — entering offline continuity window");
+                    if self.outbound.is_closed() {
+                        self.control_ws_attached.store(false, std::sync::atomic::Ordering::Relaxed);
+                        if control_detached_at.is_none() {
+                            control_detached_at = Some(Instant::now());
+                            info!("overlay: control-WS channel closed — entering offline continuity window");
+                        }
                     }
                     if let (Some(detached_at), Some(max_age)) =
                         (control_detached_at, offline_continuity_max_age())
@@ -5352,8 +5362,22 @@ impl OverlayRuntime {
                         || self
                             .shadow(|s| s.mon.fast_return_active(Instant::now()))
                             .unwrap_or(false);
+                    // FR-139 — when offline (control WS detached) and any
+                    // reachable non-backbone peer is carrierless, retry direct
+                    // discovery every ~10 s (2 ticks) instead of every 30 s.
+                    let offline_direct_retry = !self
+                        .control_ws_attached
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        && reupgrade_ticks.is_multiple_of(2)
+                        && current_peers.iter().any(|(nid, np)| {
+                            np.reachable && !np.backbone_only && !by_node.contains_key(nid)
+                        });
                     // A loss already walked every peer in this same pass.
-                    if !carrier_lost && (fast_walk || reupgrade_ticks.is_multiple_of(REUPGRADE_EVERY_N_TICKS)) {
+                    if !carrier_lost
+                        && (fast_walk
+                            || offline_direct_retry
+                            || reupgrade_ticks.is_multiple_of(REUPGRADE_EVERY_N_TICKS))
+                    {
                         let peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
                         let t0 = Instant::now();
                         self.install_peers(
@@ -5935,6 +5959,7 @@ impl OverlayRuntime {
                     // on a CHANGE). Carriers/TUN/WG stay untouched — that is
                     // the point.
                     Some(OverlayEvent::ControlDetached) => {
+                        self.control_ws_attached.store(false, std::sync::atomic::Ordering::Relaxed);
                         post_join_retry = None;
                         post_join_retry_attempt = 0;
                         if control_detached_at.is_none() {
@@ -5943,6 +5968,7 @@ impl OverlayRuntime {
                         }
                     }
                     Some(OverlayEvent::ControlDetachedAt(at)) => {
+                        self.control_ws_attached.store(false, std::sync::atomic::Ordering::Relaxed);
                         post_join_retry = None;
                         post_join_retry_attempt = 0;
                         match &mut control_detached_at {
@@ -6001,6 +6027,7 @@ impl OverlayRuntime {
                         {
                             warn!("overlay: reattach join failed; awaiting the next session");
                         } else {
+                            self.control_ws_attached.store(true, std::sync::atomic::Ordering::Relaxed);
                             info!("overlay: control-WS reattached — re-joined with carriers intact");
                         }
                         // srflx restore: the re-join's server-side rehydrate
@@ -6097,6 +6124,7 @@ impl OverlayRuntime {
                             .iter()
                             .map(|p| (p.node_id, (applied_auth_revision, 0)))
                             .collect();
+                        self.control_ws_attached.store(true, std::sync::atomic::Ordering::Relaxed);
                         control_detached_at = None;
                         offline_continuity_expired = false;
                         post_join_retry = None;

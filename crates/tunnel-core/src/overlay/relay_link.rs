@@ -810,6 +810,18 @@ impl RelayCoordinator {
         self.derp_mux.is_some()
     }
 
+    /// FR-139 — true when any `/derp` mux is currently connected/alive, a
+    /// standing warm TURN leg exists, an allocation is active, or a bound org
+    /// relay carrier is held. Used alongside `control_ws_attached` to compute
+    /// measured `TierAvailability.relay`.
+    pub fn has_live_derp_or_warm(&self) -> bool {
+        self.derp_mux.as_ref().is_some_and(|m| m.is_alive())
+            || self.regional_muxes.values().any(|m| m.is_alive())
+            || self.warm_leg.is_some()
+            || !self.allocated.is_empty()
+            || self.has_bound_org_carrier()
+    }
+
     /// F2 — the node-level `/derp` mux that standby copies ride, if any.
     pub fn derp_mux_handle(&self) -> Option<Arc<DerpMux>> {
         self.derp_mux.clone()
