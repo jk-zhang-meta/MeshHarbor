@@ -217,6 +217,13 @@
             @click="deviceNav.loadMore()"
           />
         </v-list-group>
+        <v-list-item
+          v-if="showFleetNav"
+          :to="`/tenant/${tenantId}/gpu`"
+          prepend-icon="mdi-expansion-card"
+          :title="$t('nav.gpuServers')"
+          data-testid="nav-gpu-servers"
+        />
         <v-list-group v-if="showFleetNav && caps.has('network')" value="network">
           <template #activator="{ props: groupProps }">
             <v-list-item v-bind="groupProps" prepend-icon="mdi-lan" :title="$t('nav.network')" />

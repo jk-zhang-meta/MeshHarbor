@@ -55,6 +55,13 @@
         @click="emit('action', 'edit')"
       />
       <v-list-item
+        v-if="canManageAgents !== false"
+        prepend-icon="mdi-expansion-card"
+        :title="agent.gpu_server ? t('mh.devMenu.unmarkGpuServer') : t('mh.devMenu.markGpuServer')"
+        data-testid="menu-gpu-server"
+        @click="emit('action', 'toggle-gpu-server')"
+      />
+      <v-list-item
         prepend-icon="mdi-domain-plus"
         :title="t('mh.devMenu.joinOrg')"
         @click="emit('action', 'join-org')"
@@ -211,6 +218,7 @@ export type DeviceAction =
   | 'remote-config'
   | 'zone-assignment'
   | 'peer-relay-policy'
+  | 'toggle-gpu-server'
   | 'routes'
   | 'evict'
   | 'delete'

@@ -279,6 +279,13 @@ const routes: RouteRecordRaw[] = [
             meta: { module: 'fleet' },
           },
           {
+            // FR-139 — GPU servers at a glance (fleet, history, users, alerts, bots).
+            path: 'gpu',
+            name: 'gpu-servers',
+            component: () => import('@/views/gpu/GpuServersView.vue'),
+            meta: { module: 'fleet' },
+          },
+          {
             // FR-90 — your agent sessions. A session's own page is its
             // chat room (`room/:roomId`), where the transcript is read.
             path: 'sessions',

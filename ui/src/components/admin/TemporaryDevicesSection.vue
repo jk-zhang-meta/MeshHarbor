@@ -41,6 +41,7 @@
             <td>
               <span class="font-weight-medium">{{ r.device_name || r.label || t('tempDevices.notJoined') }}</span>
               <v-chip v-if="r.converted" size="x-small" variant="outlined" class="ml-1">{{ t('tempDevices.converted') }}</v-chip>
+              <v-chip v-if="r.gpu_server" size="x-small" color="info" variant="tonal" prepend-icon="mdi-expansion-card" class="ml-1">{{ t('tempDevices.gpuServerBadge') }}</v-chip>
               <div v-if="r.label && r.device_name" class="text-caption text-medium-emphasis">{{ r.label }}</div>
               <div v-if="r.device_os" class="text-caption text-medium-emphasis">{{ r.device_os }}</div>
             </td>
@@ -102,6 +103,14 @@
           density="compact"
           class="mt-2"
         />
+        <v-checkbox
+          v-model="form.gpu_server"
+          density="compact"
+          hide-details
+          :label="t('tempDevices.gpuServerLabel')"
+          class="mt-2"
+        />
+        <p class="text-caption text-medium-emphasis mb-0">{{ t('tempDevices.gpuServerHint') }}</p>
         <v-alert v-if="formError" type="error" variant="tonal" density="compact" class="mt-3">{{ formError }}</v-alert>
       </v-card-text>
       <v-card-text v-else>
@@ -212,6 +221,7 @@ interface InviteRow {
   features?: DeviceAccessFeatures | null
   features_revision?: number
   revocation_pending?: boolean
+  gpu_server?: boolean
 }
 interface Created extends InviteRow { code: string; join_command: string }
 
@@ -333,11 +343,12 @@ async function refresh() {
 const createOpen = ref(false)
 const created = ref<Created | null>(null)
 const copied = ref(false)
-const form = reactive({ amount: 1, unit: 'hour', label: '', roles: [] as string[] })
+const form = reactive({ amount: 1, unit: 'hour', label: '', roles: [] as string[], gpu_server: false })
 function openCreate() {
   created.value = null
   formError.value = null
   copied.value = false
+  form.gpu_server = false
   createOpen.value = true
   void roleStore.fetchRoles(props.tenantId)
 }
@@ -349,6 +360,7 @@ async function create() {
       duration_secs: secs(form.amount, form.unit),
       label: form.label || undefined,
       allow_role_ids: form.roles,
+      gpu_server: form.gpu_server,
     })
     void refresh()
   } catch (e) {

@@ -907,7 +907,8 @@
     "audit": "审计",
     "execAudit": "命令审计",
     "sshAudit": "SSH 审计",
-    "sshActivity": "SSH 活动"
+    "sshActivity": "SSH 活动",
+    "gpuServers": "GPU 服务器"
   },
   "room": {
     "create": "创建房间",
@@ -1621,7 +1622,9 @@
         "newAdmin": "管理员（可免密码 sudo 成为 root）",
         "create": "在设备上创建",
         "note": "新账号没有密码，只能通过 MeshHarbor 登录。设备本机没开启 SSH 时不会创建任何账号；设备禁止 root 会话时不会创建管理员账号。"
-      }
+      },
+      "gpuBadge": "GPU 服务器",
+      "gpuFree": "GPU 空闲 {free}/{total}"
     },
     "topo": {
       "title": "服务器拓扑",
@@ -1983,7 +1986,9 @@
       "enrollWith": "注册命令：",
       "mint": "生成",
       "done": "完成",
-      "mintedLabel": "签发于"
+      "mintedLabel": "签发于",
+      "gpuServerLabel": "将注册设备标记为 GPU 服务器",
+      "gpuServerHint": "通过此密钥注册的所有临时设备将自动继承 GPU 服务器标识。"
     },
     "dev": {
       "updateAll": "全部更新",
@@ -2176,7 +2181,10 @@
         "old": "设备版本太旧",
         "oldPush": "该设备的版本早于远程配置功能，不会下发任何内容。",
         "oldReport": "该设备能应用下发的配置，但无法回报执行结果。"
-      }
+      },
+      "gpuBadge": "GPU 服务器",
+      "gpuHintTitle": "检测到 GPU 硬件 — 点击标记为 GPU 服务器",
+      "gpuDetectedHint": "检测到 {count}× {model} — 标记 GPU"
     },
     "common": {
       "close": "关闭",
@@ -2311,7 +2319,9 @@
       "deleteTunnel": "删除隧道客户端",
       "evict": "驱逐 / 重新分配覆盖网络地址",
       "removeMesh": "移出网状网络",
-      "aria": "{name} 的操作"
+      "aria": "{name} 的操作",
+      "markGpuServer": "标记为 GPU 服务器",
+      "unmarkGpuServer": "取消 GPU 服务器标记"
     },
     "zoneAssign": {
       "title": "所属区域设置 — {name}",
@@ -3291,7 +3301,9 @@
       "anchorHint": "这样令牌还可以锚定它注册的设备（仅一次）。MeshHarbor Setup 会在第二次管理员提示后自动完成；通过脚本或手动安装后，请运行下面的锚定命令。只把此令牌交给以管理员身份安装的人。",
       "download": "下载 MeshHarbor Setup",
       "thenPaste": "然后把令牌粘贴到向导中",
-      "close": "关闭"
+      "close": "关闭",
+      "gpuServerLabel": "将注册设备标记为 GPU 服务器",
+      "gpuServerHint": "使用此令牌注册的设备连上线后将自动出现在 GPU 服务器列表中。"
     },
     "enrollCmd": {
       "oneLine": "推荐：一行命令安装",
@@ -3766,6 +3778,142 @@
       "searchRooms": "搜索房间",
       "noRoomMatches": "没有名称含“{q}”的房间。",
       "olderLines": "显示更早的 {n} 行"
+    },
+    "gpu": {
+      "title": "GPU 服务器",
+      "subtitle": "实时 GPU 利用率、显存占用、运行进程、按用户卡时统计及个人空卡提醒。",
+      "live2s": "实时 (2 秒)",
+      "findFree": "查找空闲 GPU",
+      "disabledNotice": "当前服务器未启用 GPU 监控。",
+      "freeWord": "空闲",
+      "details": "详情与历史",
+      "noCardsYet": "正在等待该主机上报 GPU 遥测数据…",
+      "moreProcs": "个更多进程",
+      "procsOffLocal": "该主机本地已关闭进程列表上报",
+      "copyCudaEnv": "复制 CUDA_VISIBLE_DEVICES 命令",
+      "searchPlaceholder": "搜索主机、显卡型号、用户或命令…",
+      "emptyTitle": "尚未标记任何 GPU 服务器",
+      "emptyBody": "可在“设备”页面将已注册或受邀设备标记为 GPU 服务器，或接收他人分享的 GPU 服务器。",
+      "goToDevices": "前往设备页",
+      "tabs": {
+        "fleet": "集群总览",
+        "users": "用户统计",
+        "alerts": "告警与机器人"
+      },
+      "summary": {
+        "hosts": "在线 GPU 主机",
+        "free": "空闲 GPU",
+        "busy": "忙碌 GPU",
+        "heldIdle": "占卡空转",
+        "fault": "故障 GPU"
+      },
+      "filter": {
+        "all": "全部",
+        "free": "空闲",
+        "busy": "忙碌",
+        "heldIdle": "占空",
+        "fault": "故障",
+        "invited": "受邀设备",
+        "shared": "共享设备"
+      },
+      "sort": {
+        "host": "排序：主机名",
+        "free": "排序：空闲最多",
+        "util": "排序：利用率",
+        "vram": "排序：显存占用"
+      },
+      "source": {
+        "invited": "受邀",
+        "sharedRo": "共享（只读）"
+      },
+      "freshness": {
+        "live": "实时",
+        "stale": "陈旧",
+        "offline": "离线"
+      },
+      "state": {
+        "free": "空闲",
+        "busy": "忙碌",
+        "held_idle": "占空!",
+        "unattributed_busy": "未归属",
+        "fault": "故障",
+        "unknown": "未知"
+      },
+      "col": {
+        "model": "显卡",
+        "state": "状态",
+        "vram": "显存",
+        "util": "利用率",
+        "temp": "温度",
+        "power": "功耗",
+        "processes": "运行进程"
+      },
+      "drawer": {
+        "sharedReadOnly": "该 GPU 服务器由他人只读共享，个人告警规则仅针对组织与受邀主机生效。",
+        "hostLoad": "主机负载",
+        "history": "历史趋势",
+        "allGpus": "全部显卡",
+        "noHistory": "该时间段内暂无历史采样数据。",
+        "utilAvg": "平均利用率 %",
+        "utilMax": "峰值利用率 %",
+        "vramAvg": "平均显存",
+        "vramMax": "峰值显存",
+        "cards": "显卡与进程明细"
+      },
+      "users": {
+        "title": "按 Linux 用户统计 GPU 卡时",
+        "empty": "该时间段内暂无已归属的 GPU 使用记录。",
+        "col": {
+          "user": "用户",
+          "heldHours": "占用 (卡·时)",
+          "busyHours": "计算 (卡·时)",
+          "liveGpus": "当前卡数",
+          "liveVram": "当前显存",
+          "hosts": "使用主机"
+        }
+      },
+      "find": {
+        "title": "快速挑选空闲 GPU",
+        "count": "需要卡数",
+        "minFreeGb": "最小空闲显存 (GiB)",
+        "sameHost": "要求同一主机",
+        "notEnough": "需要 {need} 张符合条件的空闲 GPU，当前仅找到 {found} 张。",
+        "copy": "复制",
+        "copied": "已复制"
+      },
+      "alerts": {
+        "rulesTitle": "我的 GPU 告警规则",
+        "rulesIntro": "告警完全属于个人配置，仅向你本人推送（站内通知、桌面伴侣及你的机器人渠道）。",
+        "enable": "启用 GPU 告警",
+        "freeMin": "当空闲 GPU ≥（张）时通知",
+        "minMemGb": "单卡最小空闲显存 (GiB)",
+        "heldIdle": "占卡空转告警（占用显存但利用率为 0%）",
+        "fault": "显卡异常告警（Xid、ECC 错、掉卡、过热降频）",
+        "offline": "GPU 服务器离线超过 5 分钟告警",
+        "lang": "通知语言",
+        "saved": "告警规则已保存。"
+      },
+      "bots": {
+        "title": "我的机器人渠道",
+        "intro": "添加个人 Webhook 机器人（飞书、钉钉、企业微信、Slack、Discord、Telegram 或通用 HTTPS Webhook）。保存后凭证会自动脱敏。",
+        "add": "添加机器人",
+        "addTitle": "添加 GPU 告警机器人",
+        "webhookUrl": "HTTPS Webhook 地址",
+        "secret": "加签密钥（可选）",
+        "chatId": "Telegram Chat ID",
+        "includeUsers": "在告警消息中包含 Linux 用户名",
+        "test": "测试推送",
+        "testOk": "已向 {name} 发送测试消息。",
+        "testFail": "测试消息发送失败。",
+        "empty": "尚未配置任何机器人渠道。",
+        "col": {
+          "name": "名称",
+          "provider": "平台",
+          "url": "Webhook",
+          "enabled": "启用",
+          "actions": "操作"
+        }
+      }
     }
   },
   "tempDevices": {
@@ -3842,7 +3990,10 @@
       "week": "周",
       "month": "月（30 天）",
       "year": "年（365 天）"
-    }
+    },
+    "gpuServerBadge": "GPU",
+    "gpuServerLabel": "将受邀设备标记为 GPU 服务器",
+    "gpuServerHint": "设备加入后将自动在 GPU 服务器页面展示给有权限的成员。"
   },
   "deviceLogin": {
     "userSessionConsent": "在这台电脑上以 {email} 登录账号。电脑会将可撤销的账号会话保存在操作系统凭据库中，让远控和账号页面无需重复网页登录。只批准你此刻正在使用且信任的电脑；这不只是设备入网授权。",

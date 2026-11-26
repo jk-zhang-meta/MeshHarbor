@@ -9,6 +9,10 @@ export interface DeviceShare {
   ssh_account?: string
   /** Display names resolved by the server when it reads the record; ids stay the identity. */
   device_name?: string; owner_username?: string; recipient_username?: string
+  /** FR-139 — GPU server identity & live summary carried by default on shares. */
+  gpu_server?: boolean
+  gpu_inventory?: import('@/api/gpu').GpuInventory | null
+  gpu_summary?: import('@/api/gpu').GpuShareSummary | null
 }
 /** Existing native FILES is bidirectional; read-only never silently receives FILES. */
 export function sharedRemotePermissions(p: DeviceSharePermissions): string {

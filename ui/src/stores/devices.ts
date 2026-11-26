@@ -65,6 +65,9 @@ export interface DeviceRow {
   effective_zone_id?: string | null
   effective_zone_name?: string | null
   zone_source?: ZoneSource | null
+  /** FR-139 — marked as a GPU server and optional detected hardware inventory. */
+  gpu_server?: boolean
+  gpu_inventory?: import('@/api/gpu').GpuInventory | null
 }
 
 interface DeviceListResponse {

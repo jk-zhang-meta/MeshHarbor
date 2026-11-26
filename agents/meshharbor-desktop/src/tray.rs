@@ -53,6 +53,7 @@ struct TrayStaticItems<R: Runtime> {
 static RECORD_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static KEEP_BUSY_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 static UPDATE_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static GPU_WATCH_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Refresh every tray label immediately after the user switches UI language.
 pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
@@ -73,6 +74,7 @@ pub fn refresh_language<R: Runtime>(app: &AppHandle<R>) {
     RECORD_WATCH_WAKE.notify_one();
     KEEP_BUSY_WATCH_WAKE.notify_one();
     UPDATE_WATCH_WAKE.notify_one();
+    GPU_WATCH_WAKE.notify_one();
 }
 
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -186,6 +188,15 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    // FR-139 — GPU summary line; inserted into the menu only when the org has
+    // at least one visible marked GPU server (`spawn_gpu_watch`).
+    let gpu_item = MenuItem::with_id(
+        app,
+        GPU_ITEM_ID,
+        tray_i18n::gpu_servers_free(lang, 0, 0),
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", tray_i18n::quit(lang), true, None::<&str>)?;
     app.manage(TrayStaticItems {
         sign_out: sign_out.clone(),
@@ -227,6 +238,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         "open_status" => show_window(app, "/overview"),
         "open_globe" => open_network_globe(app),
         "open_web" => open_meshharbor_web(app),
+        GPU_ITEM_ID => open_gpu_servers(app),
         "user_sign_out" => {
             tauri::async_runtime::spawn(async {
                 let result = async {
@@ -293,6 +305,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     spawn_recording_watch(app.clone(), record);
     spawn_keep_busy_watch(keep_busy);
     spawn_update_watch(check_updates_item);
+    spawn_gpu_watch(menu.clone(), gpu_item);
+    spawn_gpu_alert_watch();
 
     // FR-27 — ADOPT the tray Tauri already created from `app.trayIcon` in
     // tauri.conf.json instead of building a second one.
@@ -354,6 +368,8 @@ const FALLBACK_TRAY_ID: &str = "meshharbor-desktop-tray";
 const RECORD_ITEM_ID: &str = "record_toggle";
 /// FR-92 — the keep-busy item: its state, Start and Stop.
 const KEEP_BUSY_ITEM_ID: &str = "keep_busy_toggle";
+/// FR-139 — the GPU Servers summary line (hidden when 0 GPU servers).
+const GPU_ITEM_ID: &str = "open_gpu";
 
 /// FR-92 — the tray's keep-busy item: `(text, enabled)`.
 /// - On, whoever turned it on: a Stop. The person at the device must always
@@ -926,6 +942,185 @@ fn check_updates<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// FR-139 — open the primary org's GPU Servers page in the default browser
+/// (falling back to the authenticated dashboard if tenant/server is unknown).
+fn open_gpu_servers<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let target_url = async {
+            let server = crate::commands::server_origin().await.ok()?;
+            let mut client = meshharbor_localapi::connect().await.ok()?;
+            let status = client.status().await.ok()?;
+            let tid = status.tenant_id.filter(|s| !s.trim().is_empty())?;
+            let base = server.trim_end_matches('/');
+            Some(format!("{base}/tenant/{tid}/gpu"))
+        }
+        .await;
+        if let Some(url) = target_url {
+            use tauri_plugin_shell::ShellExt as _;
+            #[allow(deprecated)]
+            let opened = app.shell().open(&url, None);
+            if let Err(err) = opened {
+                tracing::warn!(%err, "tray: failed to open GPU servers URL");
+                open_meshharbor_web(&app);
+            }
+        } else {
+            open_meshharbor_web(&app);
+        }
+    });
+}
+
+/// Compute `(visible, label)` for the FR-139 GPU tray item.
+fn gpu_menu_state(
+    fleet: Option<&meshharbor_localapi::GpuFleetPage>,
+    lang: tray_i18n::Lang,
+) -> (bool, String) {
+    match fleet {
+        Some(page) if page.summary.hosts_total > 0 => (
+            true,
+            tray_i18n::gpu_servers_free(lang, page.summary.gpus_free, page.summary.gpus_total),
+        ),
+        _ => (false, tray_i18n::gpu_servers_free(lang, 0, 0)),
+    }
+}
+
+/// FR-139 — poll LocalAPI `GpuFleet { live: false }` every 30 s when GPU
+/// servers exist, backing off to 5 min when 0 GPU servers are marked (and
+/// hiding the menu item completely while count is 0).
+fn spawn_gpu_watch<R: Runtime>(menu: Menu<R>, item: MenuItem<R>) {
+    const MENU_INSERT_POS: usize = 6; // immediately after `devices`, before `sep`
+    tauri::async_runtime::spawn(async move {
+        let mut inserted = false;
+        let mut last_label: Option<String> = None;
+        loop {
+            let answer = match meshharbor_localapi::connect().await {
+                Ok(mut c) => c.gpu_fleet("", false, 0, &[]).await.ok(),
+                Err(_) => None,
+            };
+            let (visible, label) = gpu_menu_state(answer.as_ref(), tray_i18n::current_lang());
+            if visible {
+                if last_label.as_deref() != Some(label.as_str()) {
+                    let _ = item.set_text(&label);
+                    last_label = Some(label);
+                }
+                if !inserted && menu.insert(&item, MENU_INSERT_POS).is_ok() {
+                    inserted = true;
+                }
+            } else if inserted {
+                let _ = menu.remove(&item);
+                inserted = false;
+                last_label = None;
+            }
+            let sleep_secs = if visible { 30 } else { 300 };
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)) => {}
+                _ = GPU_WATCH_WAKE.notified() => {}
+            }
+        }
+    });
+}
+
+/// Filter incoming GPU alert items, advancing `last_seq` monotonically and
+/// skipping stale historical alerts (> 5 min old) on the very first poll.
+fn select_new_gpu_alerts(
+    items: &[meshharbor_localapi::GpuAlertItem],
+    last_seq: &mut u64,
+    first_poll: bool,
+    now_s: i64,
+) -> Vec<meshharbor_localapi::GpuAlertItem> {
+    let mut out = Vec::new();
+    for item in items {
+        if item.seq <= *last_seq {
+            continue;
+        }
+        *last_seq = item.seq;
+        if first_poll && item.at > 0 && now_s.saturating_sub(item.at) > 300 {
+            continue;
+        }
+        out.push(item.clone());
+    }
+    out
+}
+
+/// FR-139 — poll LocalAPI `GpuAlerts { after_seq }` every 15 s (pure daemon
+/// memory read; zero network traffic) and raise OS desktop notifications.
+fn spawn_gpu_alert_watch() {
+    tauri::async_runtime::spawn(async move {
+        let mut last_seq: u64 = 0;
+        let mut first_poll = true;
+        loop {
+            if let Ok(mut client) = meshharbor_localapi::connect().await
+                && let Ok(page) = client.gpu_alerts(last_seq).await
+            {
+                let now_s = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let fresh = select_new_gpu_alerts(&page.alerts, &mut last_seq, first_poll, now_s);
+                first_poll = false;
+                for alert in fresh {
+                    let title = alert.title;
+                    let body = alert.body;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        notify_os_gpu_alert(&title, &body);
+                    })
+                    .await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
+}
+
+/// Best-effort native OS desktop notification for a GPU alert (injection-safe:
+/// title/body passed via argv or env, never interpolated into shell/script).
+fn notify_os_gpu_alert(title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args(["--app-name=MeshHarbor", "--", title, body])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+                "--",
+                title,
+                body,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$n = New-Object System.Windows.Forms.NotifyIcon
+$n.Icon = [System.Drawing.SystemIcons]::Information
+$n.Visible = $true
+$n.ShowBalloonTip(5000, $env:MH_GPU_TITLE, $env:MH_GPU_BODY, [System.Windows.Forms.ToolTipIcon]::Info)
+Start-Sleep -Seconds 6
+$n.Dispose()
+"#;
+        let _ = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+            .env("MH_GPU_TITLE", title)
+            .env("MH_GPU_BODY", body)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,6 +1128,58 @@ mod tests {
     /// FR-92 — the item is a Stop exactly while keep busy is on; off, an
     /// older service, or no answer at all leave it disabled (there is no
     /// local "on" to offer).
+    #[test]
+    fn fr139_gpu_menu_state_hides_when_zero_and_formats_bilingual() {
+        let empty = meshharbor_localapi::GpuFleetPage::default();
+        assert_eq!(gpu_menu_state(None, tray_i18n::Lang::En).0, false);
+        assert_eq!(gpu_menu_state(Some(&empty), tray_i18n::Lang::En).0, false);
+
+        let mut active = meshharbor_localapi::GpuFleetPage::default();
+        active.summary.hosts_total = 2;
+        active.summary.gpus_total = 8;
+        active.summary.gpus_free = 3;
+        assert_eq!(
+            gpu_menu_state(Some(&active), tray_i18n::Lang::En),
+            (true, "GPU: 3/8 free".into())
+        );
+        assert_eq!(
+            gpu_menu_state(Some(&active), tray_i18n::Lang::ZhCn),
+            (true, "GPU：3/8 空闲".into())
+        );
+    }
+
+    #[test]
+    fn fr139_select_new_gpu_alerts_advances_seq_and_skips_stale_first_poll() {
+        let now = 1_760_000_000i64;
+        let items = vec![
+            meshharbor_localapi::GpuAlertItem {
+                seq: 1,
+                at: now - 900, // stale (> 5 min)
+                severity: "info".into(),
+                title: "old".into(),
+                body: "old".into(),
+                link: "/gpu".into(),
+            },
+            meshharbor_localapi::GpuAlertItem {
+                seq: 2,
+                at: now - 30, // fresh
+                severity: "warning".into(),
+                title: "fresh".into(),
+                body: "body".into(),
+                link: "/gpu".into(),
+            },
+        ];
+        let mut last = 0;
+        let first = select_new_gpu_alerts(&items, &mut last, true, now);
+        assert_eq!(last, 2);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].seq, 2);
+
+        // Re-polling same batch emits nothing.
+        let second = select_new_gpu_alerts(&items, &mut last, false, now);
+        assert!(second.is_empty());
+    }
+
     #[test]
     fn keep_busy_item_is_a_stop_while_on_and_a_start_where_it_can_run() {
         assert_eq!(keep_busy_labels(None), ("Keep busy: off".into(), false));

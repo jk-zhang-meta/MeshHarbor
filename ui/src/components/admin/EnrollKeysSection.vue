@@ -85,6 +85,16 @@
               </td>
               <td v-else>
                 <span class="font-weight-medium">{{ k.label || $t('mh.ek.unnamed') }}</span>
+                <v-chip
+                  v-if="k.gpu_server"
+                  size="x-small"
+                  color="info"
+                  variant="tonal"
+                  prepend-icon="mdi-expansion-card"
+                  class="ml-1"
+                >
+                  GPU
+                </v-chip>
                 <div class="text-caption text-medium-emphasis">
                   {{ $t('mh.ek.minted', { when: fmtDate(k.created_at) }) }}
                 </div>
@@ -171,6 +181,14 @@
           :hint="$t('mh.ek.ttlHint')"
           persistent-hint
         />
+        <v-checkbox
+          v-model="form.gpu_server"
+          density="compact"
+          hide-details
+          :label="$t('mh.ek.gpuServerLabel')"
+          class="mt-2"
+        />
+        <p class="text-caption text-medium-emphasis mb-0">{{ $t('mh.ek.gpuServerHint') }}</p>
         <v-alert v-if="mintError" type="error" variant="tonal" density="compact" class="mt-3">
           {{ mintError }}
         </v-alert>
@@ -245,6 +263,7 @@ const form = reactive({
   max_uses: 100,
   expires_in_days: 30,
   ephemeral_ttl_secs: undefined as number | undefined,
+  gpu_server: false,
 })
 
 function fmtDate(iso: string): string {
@@ -289,6 +308,7 @@ async function mint() {
       max_uses: form.max_uses || undefined,
       expires_in_secs: form.expires_in_days ? form.expires_in_days * 86_400 : undefined,
       ephemeral_ttl_secs: form.ephemeral_ttl_secs || undefined,
+      gpu_server: form.gpu_server || undefined,
     })
     mintedKey.value = resp.key
     void refresh()

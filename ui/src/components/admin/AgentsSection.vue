@@ -234,6 +234,31 @@
               >
                 {{ relayEntryFor(item)!.serving ? $t('mh.dev.relayServingBadge') : $t('mh.dev.relayBadge') }}
               </v-chip>
+              <v-chip
+                v-if="item.kind === 'agent' && isGpuServer(item)"
+                size="x-small"
+                color="info"
+                variant="tonal"
+                class="ml-2"
+                prepend-icon="mdi-expansion-card"
+                :to="`/tenant/${tenantId}/gpu?host=${item.id}`"
+                data-testid="device-gpu-chip"
+              >
+                {{ $t('mh.dev.gpuBadge') }}
+              </v-chip>
+              <v-chip
+                v-else-if="item.kind === 'agent' && mayManageAgents && gpuDetectedHint(item)"
+                size="x-small"
+                color="secondary"
+                variant="outlined"
+                class="ml-2"
+                prepend-icon="mdi-expansion-card-variant"
+                :title="$t('mh.dev.gpuHintTitle')"
+                data-testid="device-gpu-hint-chip"
+                @click="agentFor(item) ? toggleGpuServer(agentFor(item)!) : undefined"
+              >
+                {{ gpuDetectedHint(item) }}
+              </v-chip>
               <v-btn
                 :icon="copiedAgentId === item.id ? 'mdi-check' : 'mdi-content-copy'"
                 size="x-small"
@@ -1079,8 +1104,10 @@
     :loading="enrollLoading"
     :error="enrollError"
     :anchor="enrollToken?.anchor === true"
+    :gpu-server="enrollToken?.gpu_server === true"
     @update:model-value="(v: boolean) => { if (!v) closeEnrollDialog() }"
     @update:anchor="reissueEnrollToken"
+    @update:gpu-server="reissueEnrollTokenGpu"
   />
 
   <!-- Tunnel-client enrollment (folded from /network/tunnel-clients) -->
@@ -1591,6 +1618,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { useSnackbar } from '@/composables/useSnackbar'
 import { useDisplay } from 'vuetify'
 import {
   useAgentStore,
@@ -1682,6 +1710,8 @@ const isAdmin = computed(() =>
 // route.query.
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
+const snackbar = useSnackbar()
 
 // ── Unified server-driven grid state ─────────────────────────────
 const gridSearch = ref('')
@@ -1918,6 +1948,7 @@ function onDeviceAction(row: DeviceRow, action: DeviceAction) {
     case 'remote-config': return openRemoteConfig(a)
     case 'zone-assignment': return mayAssignZoneFor(row) ? openZoneDialog(row, a) : undefined
     case 'peer-relay-policy': return isAdmin.value ? openPeerRelayPolicy(a) : undefined
+    case 'toggle-gpu-server': return mayManageAgents.value ? void toggleGpuServer(a) : undefined
     case 'routes': return openRoutes(a)
     case 'delete': return confirmDelete(a)
   }
@@ -2650,25 +2681,54 @@ watch(
 // Bound as a click handler, so it takes no argument: Vue would pass the event.
 async function openEnrollDialog() {
   enrollDialogOpen.value = true
-  await mintEnrollToken(false)
+  await mintEnrollToken(false, false)
 }
 
 /** FR-104 — the dialog's "also anchor" box: a new token, with or without the
  *  anchor claim. The one shown before stays valid until its own expiry. */
 function reissueEnrollToken(anchor: boolean) {
-  void mintEnrollToken(anchor)
+  void mintEnrollToken(anchor, enrollToken.value?.gpu_server === true)
 }
 
-async function mintEnrollToken(anchor: boolean) {
+/** FR-139 — toggle the gpu_server claim on a fresh enrollment token. */
+function reissueEnrollTokenGpu(gpuServer: boolean) {
+  void mintEnrollToken(enrollToken.value?.anchor === true, gpuServer)
+}
+
+async function mintEnrollToken(anchor: boolean, gpuServer = false) {
   enrollLoading.value = true
   enrollToken.value = null
   enrollError.value = null
   try {
-    enrollToken.value = await agentStore.issueEnrollmentToken(props.tenantId, { anchor })
+    enrollToken.value = await agentStore.issueEnrollmentToken(props.tenantId, {
+      anchor,
+      gpu_server: gpuServer,
+    })
   } catch (e) {
     enrollError.value = (e as Error).message
   } finally {
     enrollLoading.value = false
+  }
+}
+
+function isGpuServer(row: DeviceRow): boolean {
+  return Boolean(row.gpu_server || agentFor(row)?.gpu_server)
+}
+
+function gpuDetectedHint(row: DeviceRow): string | null {
+  const inv = row.gpu_inventory ?? agentFor(row)?.gpu_inventory
+  if (!inv?.gpus?.length) return null
+  const model = inv.gpus[0]?.name || 'GPU'
+  return t('mh.dev.gpuDetectedHint', { count: inv.gpus.length, model })
+}
+
+async function toggleGpuServer(agent: Agent) {
+  const next = !agent.gpu_server
+  try {
+    await agentStore.setGpuServer(props.tenantId, agent.id, next)
+    deviceStore.patchRow({ id: agent.id, gpu_server: next })
+  } catch (e) {
+    snackbar.showError((e as Error).message)
   }
 }
 

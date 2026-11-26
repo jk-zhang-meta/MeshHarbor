@@ -714,6 +714,14 @@ pub fn move_failed(lang: Lang, err: &str) -> String {
     }
 }
 
+/// FR-139 — tray menu line shown while the org has at least one marked GPU server.
+pub fn gpu_servers_free(lang: Lang, free: usize, total: usize) -> String {
+    match lang {
+        Lang::En => format!("GPU: {free}/{total} free"),
+        Lang::ZhCn => format!("GPU：{free}/{total} 空闲"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +845,11 @@ mod tests {
                 "admin_console",
                 admin_console(Lang::En).into(),
                 admin_console(Lang::ZhCn).into(),
+            ),
+            (
+                "gpu_servers_free",
+                gpu_servers_free(Lang::En, 3, 8),
+                gpu_servers_free(Lang::ZhCn, 3, 8),
             ),
             (
                 "start_recording",

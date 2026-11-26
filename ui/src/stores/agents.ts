@@ -453,6 +453,9 @@ export interface Agent {
       cross_border?: boolean
     }>
   }
+  /** FR-139 — marked as a GPU server and optional detected hardware inventory. */
+  gpu_server?: boolean
+  gpu_inventory?: import('@/api/gpu').GpuInventory | null
 }
 
 /** Fleet RPC — whether a device accepts remote commands at all. Mirrors the
@@ -913,6 +916,8 @@ export interface EnrollmentToken {
   /** FR-104 — the token may also anchor the Windows device it enrolls, once.
    *  Absent from a server older than FR-104, which reads as "it may not". */
   anchor?: boolean
+  /** FR-139 — devices enrolled with this token are marked as GPU servers. */
+  gpu_server?: boolean
 }
 
 /** FR-51 — one ephemeral enrollment key, as listed (no secret here). */
@@ -928,6 +933,8 @@ export interface EnrollmentKeyRow {
   ephemeral_ttl_secs?: number
   last_used_at?: string
   created_at: string
+  /** FR-139 — devices enrolled with this key inherit `gpu_server = true`. */
+  gpu_server?: boolean
 }
 
 export interface MintEnrollKeyRequest {
@@ -935,6 +942,7 @@ export interface MintEnrollKeyRequest {
   max_uses?: number
   expires_in_secs?: number
   ephemeral_ttl_secs?: number
+  gpu_server?: boolean
 }
 
 /** The mint response — `key` is the credential itself, shown exactly once. */
@@ -1109,14 +1117,26 @@ export const useAgentStore = defineStore('agents', () => {
 
   async function issueEnrollmentToken(
     tenantId: string,
-    opts: { anchor?: boolean } = {},
+    opts: { anchor?: boolean; gpu_server?: boolean } = {},
   ): Promise<EnrollmentToken> {
     const url = `/tenant/${tenantId}/agent/enroll-token`
-    // FR-104 — a body only when asked: the plain token stays the body-less
-    // request every server version answers.
-    return opts.anchor
-      ? api.post<EnrollmentToken>(url, { anchor: true })
+    // FR-104 / FR-139 — send a body only when an opt-in claim is requested so
+    // plain tokens keep the body-less request shape.
+    const body: Record<string, boolean> = {}
+    if (opts.anchor) body.anchor = true
+    if (opts.gpu_server) body.gpu_server = true
+    return Object.keys(body).length > 0
+      ? api.post<EnrollmentToken>(url, body)
       : api.post<EnrollmentToken>(url)
+  }
+
+  /** FR-139 — mark or unmark an agent (permanent or invited) as a GPU server. */
+  async function setGpuServer(tenantId: string, agentId: string, gpuServer: boolean) {
+    await api.put(`/tenant/${tenantId}/agent/${agentId}/gpu-server`, { gpu_server: gpuServer })
+    const idx = agents.value.findIndex((a) => a.id === agentId)
+    if (idx !== -1) {
+      agents.value[idx]!.gpu_server = gpuServer
+    }
   }
 
   async function rename(tenantId: string, agentId: string, name: string) {
@@ -2068,6 +2088,7 @@ export const useAgentStore = defineStore('agents', () => {
     fetchReleases,
     applyPresence,
     issueEnrollmentToken,
+    setGpuServer,
     rename,
     updateDevice,
     applyNameSync,

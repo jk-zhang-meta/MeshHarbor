@@ -70,6 +70,18 @@
               <v-btn value="user" size="small">{{ t('mh.enroll.scopeUser') }}</v-btn>
             </v-btn-toggle>
             <p class="text-caption text-medium-emphasis mb-3">{{ scopeHint }}</p>
+            <!-- FR-139 — optionally mark the newly enrolled device as a GPU server. -->
+            <v-checkbox
+              :model-value="gpuServer === true"
+              density="compact"
+              hide-details
+              :label="t('mh.enroll.gpuServerLabel')"
+              data-test="enroll-gpu-server"
+              @update:model-value="$emit('update:gpuServer', $event === true)"
+            />
+            <p class="text-caption text-medium-emphasis mb-3">
+              {{ t('mh.enroll.gpuServerHint') }}
+            </p>
           </template>
 
           <v-tabs v-model="osTab" density="compact" class="mb-2">
@@ -172,12 +184,16 @@ const props = defineProps<{
   error: string | null
   /** FR-104 — the shown token may also anchor the device it enrolls. */
   anchor?: boolean
+  /** FR-139 — mark the device enrolled with this token as a GPU server. */
+  gpuServer?: boolean
 }>()
 
 defineEmits<{
   (e: 'update:modelValue', v: boolean): void
   /** FR-104 — mint a new token with (or without) the anchor claim. */
   (e: 'update:anchor', v: boolean): void
+  /** FR-139 — mint a new token with (or without) the gpu_server claim. */
+  (e: 'update:gpuServer', v: boolean): void
 }>()
 
 // Default the OS tab to the visitor's own platform — they're usually

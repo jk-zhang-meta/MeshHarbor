@@ -907,7 +907,8 @@
     "audit": "Audit",
     "execAudit": "Command audit",
     "sshAudit": "SSH audit",
-    "sshActivity": "SSH activity"
+    "sshActivity": "SSH activity",
+    "gpuServers": "GPU Servers"
   },
   "room": {
     "create": "Create Room",
@@ -1621,7 +1622,9 @@
         "newAdmin": "Administrator (may become root with sudo, no password)",
         "create": "Create on device",
         "note": "A new account has no password: it is reached only through MeshHarbor. The device creates nothing unless its own SSH is enabled, and no administrator if it forbids root sessions."
-      }
+      },
+      "gpuBadge": "GPU Server",
+      "gpuFree": "GPU {free}/{total} free"
     },
     "topo": {
       "title": "Server topology",
@@ -1983,7 +1986,9 @@
       "enrollWith": "Enroll with:",
       "mint": "Mint",
       "done": "Done",
-      "mintedLabel": "Minted"
+      "mintedLabel": "Minted",
+      "gpuServerLabel": "Mark enrolled devices as GPU servers",
+      "gpuServerHint": "Every ephemeral device enrolled with this key will inherit the GPU server flag."
     },
     "dev": {
       "updateAll": "Update all",
@@ -2176,7 +2181,10 @@
         "old": "agent too old",
         "oldPush": "This agent predates remote configuration; nothing is sent to it.",
         "oldReport": "This agent applies pushed config but cannot report what it did."
-      }
+      },
+      "gpuBadge": "GPU Server",
+      "gpuHintTitle": "GPU hardware detected — click to mark as GPU server",
+      "gpuDetectedHint": "{count}× {model} detected — mark GPU"
     },
     "common": {
       "close": "Close",
@@ -2311,7 +2319,9 @@
       "deleteTunnel": "Delete tunnel client",
       "evict": "Evict / reassign overlay address",
       "removeMesh": "Remove from mesh",
-      "aria": "Actions for {name}"
+      "aria": "Actions for {name}",
+      "markGpuServer": "Mark as GPU server",
+      "unmarkGpuServer": "Unmark GPU server"
     },
     "zoneAssign": {
       "title": "Zone Assignment — {name}",
@@ -3291,7 +3301,9 @@
       "anchorHint": "The token can then also anchor the device it enrolls, once. MeshHarbor Setup does that itself after a second administrator prompt; after the script or a manual install, run the anchor command below. Give this token only to the person installing it as an administrator.",
       "download": "Download MeshHarbor Setup",
       "thenPaste": "then paste the token into the wizard",
-      "close": "Close"
+      "close": "Close",
+      "gpuServerLabel": "Mark enrolled device as GPU server",
+      "gpuServerHint": "Automatically adds the enrolled device to GPU Servers once it connects."
     },
     "enrollCmd": {
       "oneLine": "Recommended — one-line install",
@@ -3766,6 +3778,142 @@
       "searchRooms": "Search rooms",
       "noRoomMatches": "No room's name contains \"{q}\".",
       "olderLines": "Show {n} older lines"
+    },
+    "gpu": {
+      "title": "GPU Servers",
+      "subtitle": "Live GPU utilization, VRAM, running jobs, per-user GPU-hours, and personal availability alerts.",
+      "live2s": "Live (2 s)",
+      "findFree": "Find free GPU",
+      "disabledNotice": "GPU monitoring is disabled on this server.",
+      "freeWord": "free",
+      "details": "Details & History",
+      "noCardsYet": "Waiting for GPU telemetry from this host…",
+      "moreProcs": "more processes",
+      "procsOffLocal": "Process list disabled locally on this host",
+      "copyCudaEnv": "Copy CUDA_VISIBLE_DEVICES command",
+      "searchPlaceholder": "Search host, model, user, or command…",
+      "emptyTitle": "No GPU servers marked yet",
+      "emptyBody": "Mark any enrolled or invited device as a GPU server on the Devices page, or accept a shared GPU server to see it here.",
+      "goToDevices": "Open Devices",
+      "tabs": {
+        "fleet": "Fleet",
+        "users": "Users",
+        "alerts": "Alerts & Bots"
+      },
+      "summary": {
+        "hosts": "GPU Hosts Online",
+        "free": "Free GPUs",
+        "busy": "Busy GPUs",
+        "heldIdle": "Held Idle",
+        "fault": "Faults"
+      },
+      "filter": {
+        "all": "All",
+        "free": "Free",
+        "busy": "Busy",
+        "heldIdle": "Held Idle",
+        "fault": "Fault",
+        "invited": "Invited",
+        "shared": "Shared"
+      },
+      "sort": {
+        "host": "Sort: Host",
+        "free": "Sort: Most Free",
+        "util": "Sort: Utilization",
+        "vram": "Sort: VRAM Used"
+      },
+      "source": {
+        "invited": "Invited",
+        "sharedRo": "Shared (read-only)"
+      },
+      "freshness": {
+        "live": "LIVE",
+        "stale": "STALE",
+        "offline": "OFFLINE"
+      },
+      "state": {
+        "free": "FREE",
+        "busy": "BUSY",
+        "held_idle": "IDLE!",
+        "unattributed_busy": "UNATTR",
+        "fault": "FAULT",
+        "unknown": "UNK"
+      },
+      "col": {
+        "model": "GPU",
+        "state": "State",
+        "vram": "VRAM",
+        "util": "Util",
+        "temp": "Temp",
+        "power": "Power",
+        "processes": "Processes"
+      },
+      "drawer": {
+        "sharedReadOnly": "This GPU server is shared with you read-only. Alert rules only apply to org and invited hosts.",
+        "hostLoad": "Host Load",
+        "history": "History",
+        "allGpus": "All GPUs",
+        "noHistory": "No history samples recorded for this range yet.",
+        "utilAvg": "Avg Util %",
+        "utilMax": "Max Util %",
+        "vramAvg": "Avg VRAM",
+        "vramMax": "Max VRAM",
+        "cards": "Cards & Processes"
+      },
+      "users": {
+        "title": "GPU Usage by Linux User",
+        "empty": "No attributed GPU usage recorded in this window.",
+        "col": {
+          "user": "User",
+          "heldHours": "Held (GPU·h)",
+          "busyHours": "Busy (GPU·h)",
+          "liveGpus": "Live GPUs",
+          "liveVram": "Live VRAM",
+          "hosts": "Hosts"
+        }
+      },
+      "find": {
+        "title": "Find Free GPUs",
+        "count": "GPU count",
+        "minFreeGb": "Min free VRAM (GiB)",
+        "sameHost": "Same host only",
+        "notEnough": "Requested {need} qualifying free GPU(s), currently found {found}.",
+        "copy": "Copy",
+        "copied": "Copied"
+      },
+      "alerts": {
+        "rulesTitle": "My GPU Alert Rules",
+        "rulesIntro": "Alerts are personal and delivered only to you (in-app, desktop companion, and your bot channels).",
+        "enable": "Enable GPU alerts",
+        "freeMin": "Notify when free GPUs ≥",
+        "minMemGb": "Min free VRAM (GiB)",
+        "heldIdle": "Alert on held-idle GPUs (VRAM held with 0% util)",
+        "fault": "Alert on GPU faults (Xid, ECC, dropped GPU, thermal throttle)",
+        "offline": "Alert when a GPU server goes offline > 5 min",
+        "lang": "Notification language",
+        "saved": "Alert rules saved."
+      },
+      "bots": {
+        "title": "My Bot Channels",
+        "intro": "Add personal webhook bots (Feishu, DingTalk, WeCom, Slack, Discord, Telegram, or HTTPS webhook). Credentials are masked after save.",
+        "add": "Add Bot",
+        "addTitle": "Add GPU Alert Bot",
+        "webhookUrl": "HTTPS Webhook URL",
+        "secret": "Signing secret (optional)",
+        "chatId": "Telegram chat ID",
+        "includeUsers": "Include Linux usernames in alerts",
+        "test": "Test",
+        "testOk": "Test message sent to {name}.",
+        "testFail": "Failed to send test message.",
+        "empty": "No bot channels configured yet.",
+        "col": {
+          "name": "Name",
+          "provider": "Provider",
+          "url": "Webhook",
+          "enabled": "Enabled",
+          "actions": "Actions"
+        }
+      }
     }
   },
   "tempDevices": {
@@ -3842,7 +3990,10 @@
       "week": "weeks",
       "month": "months (30 d)",
       "year": "years (365 d)"
-    }
+    },
+    "gpuServerBadge": "GPU",
+    "gpuServerLabel": "Mark invited device as GPU server",
+    "gpuServerHint": "When joined, this temporary device will appear in GPU Servers for authorized users."
   },
   "deviceLogin": {
     "userSessionConsent": "Sign in to this computer as {email}. It will keep a revocable account session in this computer's operating-system credential store so remote control and account pages can open without another web sign-in. Approve only a computer you trust and are using now. This is more than enrolling a device.",
