@@ -2574,23 +2574,75 @@ button.wl-skip:hover {
   font-size: 12px;
   padding: 3px 9px;
 }
+.gpu-host-load {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 6px 2px 9px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.gpu-mini-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.gpu-mini-k {
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  min-width: 24px;
+}
+.gpu-mini-track {
+  width: 58px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.gpu-mini-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 220ms ease;
+}
+.gpu-mini-v {
+  color: var(--fg);
+}
+.gpu-mini-net {
+  margin-left: auto;
+  font-size: 11px;
+}
 .gpu-card-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .gpu-card-row {
   border: 1px solid var(--border);
+  border-left: 3px solid transparent;
   border-radius: var(--mh-radius-sm);
-  padding: 9px 11px;
+  padding: 8px 10px;
   background: var(--bg);
 }
+.gpu-row-free { border-left-color: #16a34a; }
+.gpu-row-busy { border-left-color: #d97706; }
+.gpu-row-held_idle,
+.gpu-row-unattributed { border-left-color: #ea580c; }
+.gpu-row-fault { border-left-color: #9333ea; }
 .gpu-card-top {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(175px, 1fr) minmax(280px, 2.2fr);
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+@media (max-width: 780px) {
+  .gpu-card-top {
+    grid-template-columns: 1fr;
+  }
 }
 .gpu-card-id {
   display: flex;
@@ -2599,50 +2651,103 @@ button.wl-skip:hover {
   flex-wrap: wrap;
 }
 .gpu-idx {
-  color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-inset);
+  color: var(--fg);
 }
 .gpu-model {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 .gpu-card-metrics {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
-.gpu-meter {
+.gpu-nvbar-group {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 82px;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 130px;
+  min-width: 110px;
 }
-.gpu-meter-wide {
-  min-width: 132px;
+.gpu-nvbar-mem {
+  flex: 1.5 1 165px;
+  min-width: 155px;
 }
-.gpu-meter-lbl {
-  font-size: 11.5px;
-  color: var(--fg);
+.gpu-nvbar-lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted);
+  width: 26px;
+  flex-shrink: 0;
 }
-.gpu-bar {
-  height: 5px;
-  border-radius: 3px;
+.gpu-nvbar-track {
+  position: relative;
+  flex: 1;
+  height: 19px;
+  border-radius: 4px;
   background: var(--bg-inset);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
   overflow: hidden;
 }
-.gpu-bar-fill {
-  height: 100%;
+.gpu-nvbar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
   border-radius: 3px;
+  transition: width 240ms ease, background-color 200ms ease;
 }
-.gpu-bar-util { background: var(--primary); }
-.gpu-bar-vram { background: var(--accent); }
+.gpu-nvbar-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent,
+    transparent calc(10% - 1px),
+    rgba(0, 0, 0, 0.12) calc(10% - 1px),
+    rgba(0, 0, 0, 0.12) 10%
+  );
+}
+.gpu-nvbar-overlay {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  text-shadow: 0 0 5px var(--bg);
+}
+.gpu-nvbar-overlay-end {
+  justify-content: flex-end;
+}
+.gpu-tone-cool { background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%); }
+.gpu-tone-warm { background: linear-gradient(90deg, #d97706 0%, #f59e0b 100%); }
+.gpu-tone-hot  { background: linear-gradient(90deg, #dc2626 0%, #ef4444 100%); }
+.gpu-tone-fault { background: linear-gradient(90deg, #7e22ce 0%, #a855f7 100%); }
+.gpu-tone-idle { background: #64748b; }
 .gpu-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
   font-size: 11.5px;
+  margin-left: auto;
 }
+.gpu-temp-cool { color: #16a34a; font-weight: 600; }
+.gpu-temp-warm { color: #d97706; font-weight: 600; }
+.gpu-temp-hot  { color: #dc2626; font-weight: 700; }
 .gpu-procs {
   margin-top: 8px;
   padding-top: 7px;

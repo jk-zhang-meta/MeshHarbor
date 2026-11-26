@@ -147,22 +147,28 @@ const picks = computed<Pick[]>(() => {
 
 const exports = computed(() => {
   const nameToIds = new Map<string, Set<string>>()
-  const map = new Map<string, { host: string; uuids: string[] }>()
+  const map = new Map<string, { host: string; uuids: string[]; idxs: number[]; ascend: boolean }>()
   for (const p of picks.value) {
     const ids = nameToIds.get(p.host) ?? new Set<string>()
     ids.add(p.agentId)
     nameToIds.set(p.host, ids)
-    const entry = map.get(p.agentId) ?? { host: p.host, uuids: [] }
+    const isAscend = p.uuid.startsWith('ASCEND-') || (p.name || '').toLowerCase().includes('ascend')
+    const entry = map.get(p.agentId) ?? { host: p.host, uuids: [], idxs: [], ascend: isAscend }
     entry.uuids.push(p.uuid)
+    entry.idxs.push(p.idx)
+    entry.ascend = entry.ascend && isAscend
     map.set(p.agentId, entry)
   }
-  return Array.from(map.entries()).map(([agentId, { host, uuids }]) => {
+  return Array.from(map.entries()).map(([agentId, { host, uuids, idxs, ascend }]) => {
     const ambiguous = (nameToIds.get(host)?.size ?? 0) > 1
     const label = ambiguous ? `${host} (${agentId.slice(0, 8)})` : host
+    const cmd = ascend
+      ? `export ASCEND_RT_VISIBLE_DEVICES=${shellQuoteSingle(idxs.join(','))}`
+      : `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(uuids.join(','))}`
     return {
       agentId,
       host: label,
-      cmd: `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(uuids.join(','))}`,
+      cmd,
     }
   })
 })

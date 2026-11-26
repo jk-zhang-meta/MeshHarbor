@@ -24,13 +24,51 @@
     return "'" + String(val).replace(/'/g, "'\"'\"'") + "'";
   }
 
+  function isAscendHost(host) {
+    return typeof (host && host.backend) === 'string' && host.backend.toLowerCase().includes('ascend');
+  }
+
+  function isAscendCard(host, g) {
+    return (
+      isAscendHost(host) ||
+      (g && typeof g.uuid === 'string' && g.uuid.startsWith('ASCEND-')) ||
+      (g && typeof g.name === 'string' && g.name.toLowerCase().includes('ascend'))
+    );
+  }
+
   function buildFreeExportCommand(host) {
     if (!host || !Array.isArray(host.gpus)) return null;
-    const uuids = host.gpus
-      .filter((g) => g && g.state === 'free' && !cardHasFault(g) && isValidGpuUuid(g.uuid))
-      .map((g) => g.uuid);
-    if (!uuids.length) return null;
-    return 'export CUDA_VISIBLE_DEVICES=' + posixSingleQuote(uuids.join(','));
+    const free = host.gpus.filter(
+      (g) => g && g.state === 'free' && !cardHasFault(g) && isValidGpuUuid(g.uuid),
+    );
+    if (!free.length) return null;
+    if (isAscendHost(host) || free.every((g) => g.uuid.startsWith('ASCEND-'))) {
+      return 'export ASCEND_RT_VISIBLE_DEVICES=' + posixSingleQuote(free.map((g) => String(g.idx)).join(','));
+    }
+    return 'export CUDA_VISIBLE_DEVICES=' + posixSingleQuote(free.map((g) => g.uuid).join(','));
+  }
+
+  function loadToneClass(pct) {
+    if (typeof pct !== 'number' || !Number.isFinite(pct)) return 'gpu-tone-idle';
+    if (pct >= 80) return 'gpu-tone-hot';
+    if (pct >= 50) return 'gpu-tone-warm';
+    return 'gpu-tone-cool';
+  }
+
+  function tempToneClass(c) {
+    if (typeof c !== 'number' || !Number.isFinite(c)) return '';
+    if (c >= 85) return 'gpu-temp-hot';
+    if (c >= 72) return 'gpu-temp-warm';
+    return 'gpu-temp-cool';
+  }
+
+  function shortCardModel(name) {
+    if (!name) return 'GPU';
+    return String(name)
+      .replace(/^NVIDIA GeForce\s+/i, '')
+      .replace(/^NVIDIA\s+/i, '')
+      .replace(/\s+Ada Generation$/i, ' Ada')
+      .trim();
   }
 
   function cardHasFault(g) {
@@ -311,33 +349,39 @@
     head.appendChild(right);
     card.appendChild(head);
 
-    // Host load strip
+    // Classic nvitop host load mini-bars strip
     if (h.host) {
       const strip = el('div', 'gpu-host-load mono');
-      const parts = [];
+      const addMini = (label, pct, text) => {
+        const box = el('div', 'gpu-mini-gauge');
+        box.appendChild(el('span', 'gpu-mini-k', label));
+        const track = el('div', 'gpu-mini-track');
+        const fill = el('div', 'gpu-mini-fill ' + loadToneClass(pct));
+        fill.style.width = Math.max(0, Math.min(100, Math.round(pct || 0))) + '%';
+        track.appendChild(fill);
+        box.appendChild(track);
+        box.appendChild(el('span', 'gpu-mini-v', text));
+        strip.appendChild(box);
+      };
       if (typeof h.host.cpu_pct === 'number') {
-        parts.push('CPU ' + Math.round(h.host.cpu_pct) + '%');
-      }
-      if (typeof h.host.load1 === 'number') {
-        parts.push('load ' + h.host.load1.toFixed(2));
+        const loadTxt = typeof h.host.load1 === 'number' ? ' · L ' + h.host.load1.toFixed(1) : '';
+        addMini('CPU', h.host.cpu_pct, Math.round(h.host.cpu_pct) + '%' + loadTxt);
       }
       if (typeof h.host.mem_used_mb === 'number' && typeof h.host.mem_total_mb === 'number' && h.host.mem_total_mb > 0) {
-        parts.push('RAM ' + (h.host.mem_used_mb / 1024).toFixed(1) + '/' + (h.host.mem_total_mb / 1024).toFixed(1) + ' GiB');
+        const mp = Math.round((h.host.mem_used_mb / h.host.mem_total_mb) * 100);
+        addMini('MEM', mp, (h.host.mem_used_mb / 1024).toFixed(1) + '/' + (h.host.mem_total_mb / 1024).toFixed(1) + 'G');
       }
       if (typeof h.host.disk_root_used_gb === 'number' && typeof h.host.disk_root_total_gb === 'number' && h.host.disk_root_total_gb > 0) {
-        const pct = Math.min(100, Math.max(0, Math.round((h.host.disk_root_used_gb / h.host.disk_root_total_gb) * 100)));
-        parts.push('/ ' + pct + '%');
+        const dp = Math.min(100, Math.max(0, Math.round((h.host.disk_root_used_gb / h.host.disk_root_total_gb) * 100)));
+        addMini('DSK', dp, dp + '%');
       }
       const rx = fmtNetBps(h.host.net_rx_bps);
       const tx = fmtNetBps(h.host.net_tx_bps);
-      if (rx && tx) parts.push('Net ↓' + rx + ' ↑' + tx);
-      if (parts.length) {
-        strip.textContent = parts.join('  ·  ');
-        card.appendChild(strip);
-      }
+      if (rx && tx) strip.appendChild(el('span', 'gpu-mini-net', '↓' + rx + ' ↑' + tx));
+      if (strip.childNodes.length) card.appendChild(strip);
     }
 
-    // GPU cards
+    // GPU / NPU nvitop instrument rows
     const gpus = Array.isArray(h.gpus) ? h.gpus : [];
     if (!gpus.length) {
       card.appendChild(
@@ -354,15 +398,18 @@
 
     const list = el('div', 'gpu-card-list');
     for (const g of gpus) {
-      const row = el('div', 'gpu-card-row');
+      const ascend = isAscendCard(h, g);
+      const fault = cardHasFault(g);
+      const rowState = fault ? 'fault' : String(g.state || 'unknown').replace(/[^a-z_]/g, '');
+      const row = el('div', 'gpu-card-row gpu-row-' + rowState);
       const top = el('div', 'gpu-card-top');
 
       const left = el('div', 'gpu-card-id');
-      left.appendChild(el('span', 'gpu-idx mono', '#' + g.idx));
-      left.appendChild(el('span', 'gpu-model', g.name || 'GPU'));
+      left.appendChild(el('span', 'gpu-idx mono', ascend ? 'NPU' + g.idx : '#' + g.idx));
+      left.appendChild(el('span', 'gpu-model', shortCardModel(g.name)));
       const badge = gpuStateBadge(g);
       left.appendChild(el('span', badge.cls, badge.label));
-      if (g.mig_mode) left.appendChild(el('span', 'gpu-meta-pill mono', 'MIG'));
+      if (g.mig_mode || g.mig) left.appendChild(el('span', 'gpu-meta-pill mono', 'MIG'));
       if (g.lost) left.appendChild(el('span', 'gpu-fault-pill', 'LOST'));
       if (typeof g.ecc_uncorrected === 'number' && g.ecc_uncorrected > 0) {
         left.appendChild(el('span', 'gpu-fault-pill mono', 'ECC ' + g.ecc_uncorrected));
@@ -373,42 +420,56 @@
       top.appendChild(left);
 
       const metrics = el('div', 'gpu-card-metrics mono');
-      const utilPct = typeof g.util_pct === 'number' ? Math.max(0, Math.min(100, g.util_pct)) : null;
+      const utilPct = typeof g.util_pct === 'number' ? Math.max(0, Math.min(100, Math.round(g.util_pct))) : null;
       const vramPct =
         !g.unified && typeof g.mem_used_mb === 'number' && typeof g.mem_total_mb === 'number' && g.mem_total_mb > 0
           ? Math.max(0, Math.min(100, Math.round((g.mem_used_mb / g.mem_total_mb) * 100)))
           : null;
 
-      // Util meter
-      const utilBox = el('div', 'gpu-meter');
-      utilBox.appendChild(el('span', 'gpu-meter-lbl', 'SM ' + (utilPct != null ? utilPct + '%' : '—')));
-      const utilBar = el('div', 'gpu-bar');
-      const utilFill = el('div', 'gpu-bar-fill gpu-bar-util');
-      utilFill.style.width = (utilPct != null ? utilPct : 0) + '%';
-      utilBar.appendChild(utilFill);
-      utilBox.appendChild(utilBar);
-      metrics.appendChild(utilBox);
-
-      // VRAM meter
-      const vramBox = el('div', 'gpu-meter gpu-meter-wide');
-      vramBox.appendChild(el('span', 'gpu-meter-lbl', fmtVram(g)));
-      if (vramPct != null) {
-        const vramBar = el('div', 'gpu-bar');
-        const vramFill = el('div', 'gpu-bar-fill gpu-bar-vram');
-        vramFill.style.width = vramPct + '%';
-        vramBar.appendChild(vramFill);
-        vramBox.appendChild(vramBar);
-      }
+      // Segmented VRAM / HBM progress bar
+      const vramBox = el('div', 'gpu-nvbar-group gpu-nvbar-mem');
+      vramBox.appendChild(el('span', 'gpu-nvbar-lbl', ascend ? 'HBM' : 'MEM'));
+      const vramTrack = el('div', 'gpu-nvbar-track');
+      const vramFill = el('div', 'gpu-nvbar-fill ' + (fault ? 'gpu-tone-fault' : loadToneClass(vramPct)));
+      vramFill.style.width = (vramPct != null ? vramPct : 0) + '%';
+      vramTrack.appendChild(vramFill);
+      vramTrack.appendChild(el('div', 'gpu-nvbar-ticks'));
+      const vramOverlay = el('div', 'gpu-nvbar-overlay');
+      vramOverlay.appendChild(el('span', '', fmtVram(g).replace(' GiB', 'G')));
+      if (vramPct != null) vramOverlay.appendChild(el('span', '', vramPct + '%'));
+      vramTrack.appendChild(vramOverlay);
+      vramBox.appendChild(vramTrack);
       metrics.appendChild(vramBox);
 
+      // Segmented GPU / AICore progress bar
+      const utilBox = el('div', 'gpu-nvbar-group gpu-nvbar-util');
+      utilBox.appendChild(el('span', 'gpu-nvbar-lbl', ascend ? 'AIC' : 'GPU'));
+      const utilTrack = el('div', 'gpu-nvbar-track');
+      const utilFill = el('div', 'gpu-nvbar-fill ' + (fault ? 'gpu-tone-fault' : loadToneClass(utilPct)));
+      utilFill.style.width = (utilPct != null ? utilPct : 0) + '%';
+      utilTrack.appendChild(utilFill);
+      utilTrack.appendChild(el('div', 'gpu-nvbar-ticks'));
+      const utilOverlay = el('div', 'gpu-nvbar-overlay gpu-nvbar-overlay-end');
+      utilOverlay.textContent = utilPct != null ? utilPct + '%' : '—';
+      utilTrack.appendChild(utilOverlay);
+      utilBox.appendChild(utilTrack);
+      metrics.appendChild(utilBox);
+
       // Temp / power / fan
-      const envParts = [];
-      if (typeof g.temp_c === 'number') envParts.push(g.temp_c + '°C');
-      if (typeof g.power_w === 'number') {
-        envParts.push(g.power_limit_w != null ? g.power_w + '/' + g.power_limit_w + 'W' : g.power_w + 'W');
+      const envWrap = el('div', 'gpu-env');
+      if (typeof g.temp_c === 'number') {
+        envWrap.appendChild(el('span', 'gpu-temp ' + tempToneClass(g.temp_c), g.temp_c + '°C'));
       }
-      if (typeof g.fan_pct === 'number') envParts.push('fan ' + g.fan_pct + '%');
-      metrics.appendChild(el('span', 'gpu-env', envParts.length ? envParts.join(' · ') : '—'));
+      if (typeof g.power_w === 'number') {
+        envWrap.appendChild(
+          el('span', 'gpu-power', g.power_limit_w != null ? g.power_w + '/' + g.power_limit_w + 'W' : g.power_w + 'W'),
+        );
+      }
+      if (typeof g.fan_pct === 'number') {
+        envWrap.appendChild(el('span', 'gpu-fan', g.fan_pct + '%'));
+      }
+      if (!envWrap.childNodes.length) envWrap.textContent = '—';
+      metrics.appendChild(envWrap);
 
       top.appendChild(metrics);
       row.appendChild(top);

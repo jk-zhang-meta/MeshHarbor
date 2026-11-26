@@ -124,6 +124,7 @@ describe('DeviceActionsMenu', () => {
       'Agent logs',
       'Device console',
       'Edit name & tags',
+      'Mark as GPU server',
       'Add to another organization',
       'Reassign owner',
       'Execution policy',

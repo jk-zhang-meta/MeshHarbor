@@ -159,14 +159,20 @@ const gpuChoices = computed(() => [
   })),
 ])
 
+const isAscendHost = computed(
+  () =>
+    props.host?.backend === 'ascend' ||
+    (props.host?.gpus ?? []).some((g) => g.uuid.startsWith('ASCEND-')),
+)
+
 const utilSeries = computed<SeriesDef[]>(() => [
-  { key: 'util_avg', label: t('mh.gpu.drawer.utilAvg'), color: '#0288d1' },
-  { key: 'util_max', label: t('mh.gpu.drawer.utilMax'), color: '#f57c00' },
+  { key: 'util_avg', label: isAscendHost.value ? 'AICore avg' : t('mh.gpu.drawer.utilAvg'), color: '#0288d1' },
+  { key: 'util_max', label: isAscendHost.value ? 'AICore max' : t('mh.gpu.drawer.utilMax'), color: '#f57c00' },
 ])
 
 const memSeries = computed<SeriesDef[]>(() => [
-  { key: 'mem_avg', label: t('mh.gpu.drawer.vramAvg'), color: '#00897b' },
-  { key: 'mem_max', label: t('mh.gpu.drawer.vramMax'), color: '#7b1fa2' },
+  { key: 'mem_avg', label: isAscendHost.value ? 'HBM avg' : t('mh.gpu.drawer.vramAvg'), color: '#00897b' },
+  { key: 'mem_max', label: isAscendHost.value ? 'HBM max' : t('mh.gpu.drawer.vramMax'), color: '#7b1fa2' },
 ])
 
 const utilPoints = computed<SeriesPoint[]>(() =>

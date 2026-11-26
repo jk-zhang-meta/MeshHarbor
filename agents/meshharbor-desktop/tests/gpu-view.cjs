@@ -39,6 +39,16 @@ const cmd = gpuMod.buildFreeExportCommand({
 });
 assert.strictEqual(cmd, "export CUDA_VISIBLE_DEVICES='GPU-aaa,GPU-bbb'");
 
+const npuCmd = gpuMod.buildFreeExportCommand({
+  backend: 'ascend',
+  gpus: [
+    { idx: 0, uuid: 'ASCEND-0-deadbeef', state: 'free', lost: false },
+    { idx: 1, uuid: 'ASCEND-1-cafebabe', state: 'busy', lost: false },
+    { idx: 2, uuid: 'ASCEND-2-feedface', state: 'free', lost: false },
+  ],
+});
+assert.strictEqual(npuCmd, "export ASCEND_RT_VISIBLE_DEVICES='0,2'");
+
 // 4. Filter behavior covers fault, free, offline, and process user search.
 const sampleHosts = [
   {
