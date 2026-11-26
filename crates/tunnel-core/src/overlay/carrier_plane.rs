@@ -133,12 +133,14 @@ struct PlaneRoute {
 pub struct PlaneView {
     /// One socket per usable LAN interface, bound to `(iface_ip, stable_port)`.
     pub socks: Vec<(Ipv4Addr, Arc<UdpSocket>)>,
-    /// The wildcard public/srflx dialer at `stable_port + 32`, when either
-    /// public-direct or srflx is enabled.
+    /// The wildcard public/srflx dialer at `stable_port + 256` (or `+768` in
+    /// band 2), when either public-direct or srflx is enabled.
     pub public_sock: Option<Arc<UdpSocket>>,
     /// The advertised `ip:port` per LAN socket.
     pub endpoints: Vec<String>,
     pub my_ips: Vec<Ipv4Addr>,
+    /// FR-139 — usable LAN interfaces with their real clamped subnet prefixes.
+    pub my_lan_ifaces: Vec<direct::LanIface>,
     /// §6 item 5 — the IPv6 direct socket and the global addresses it is
     /// advertised under (`None` / empty without global IPv6).
     pub v6: Option<Arc<UdpSocket>>,
@@ -150,6 +152,7 @@ struct PlaneBinds {
     public_sock: Option<Arc<UdpSocket>>,
     endpoints: Vec<String>,
     my_ips: Vec<Ipv4Addr>,
+    my_lan_ifaces: Vec<direct::LanIface>,
     v6: Option<Arc<UdpSocket>>,
     my_v6: Vec<std::net::Ipv6Addr>,
     tasks: Vec<JoinHandle<()>>,
@@ -511,16 +514,16 @@ impl CarrierPlane {
         if let Some(v) = self.view() {
             return Some(v);
         }
-        let ifaces = direct::gather_lan_interfaces();
+        let ifaces = direct::gather_lan_ifaces();
         #[cfg(test)]
         let ifaces: Vec<_> = match self.lan_only.lock().unwrap().as_ref() {
             Some(keep) => ifaces
                 .into_iter()
-                .filter(|(ip, _)| keep.contains(ip))
+                .filter(|iface| keep.contains(&iface.ip))
                 .collect(),
             None => ifaces,
         };
-        let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
+        let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|i| i.ip).collect();
         // T13 — a WSL2 mirrored guest has no LAN interface BY DESIGN (binding
         // the host's addresses starves the host agent), but it is not
         // UDP-less: its wildcard public-dial socket is its srflx vantage.
@@ -534,17 +537,18 @@ impl CarrierPlane {
         let stable_port = direct::direct_port();
         let mut socks: Vec<(Ipv4Addr, Arc<UdpSocket>)> = Vec::new();
         let mut endpoints: Vec<String> = Vec::new();
-        for (ip, ifindex) in &ifaces {
-            let Some(s) = direct::bind_direct_socket(*ip, stable_port, "lan").await else {
+        for iface in &ifaces {
+            let ip = iface.ip;
+            let Some(s) = direct::bind_direct_socket(ip, stable_port, "lan").await else {
                 continue;
             };
-            if let Some(idx) = ifindex {
-                direct::force_egress_interface(&s, *idx);
+            if let Some(idx) = iface.ifindex {
+                direct::force_egress_interface(&s, idx);
             }
             match s.local_addr() {
                 Ok(local) => {
                     endpoints.push(format!("{ip}:{}", local.port()));
-                    socks.push((*ip, Arc::new(s)));
+                    socks.push((ip, Arc::new(s)));
                 }
                 Err(e) => warn!(%ip, %e, "carrier plane: socket local_addr failed; skipping"),
             }
@@ -644,6 +648,7 @@ impl CarrierPlane {
             public_sock,
             endpoints,
             my_ips,
+            my_lan_ifaces: ifaces,
             v6,
             my_v6,
             tasks,
@@ -672,6 +677,7 @@ impl CarrierPlane {
             public_sock: b.public_sock.clone(),
             endpoints: b.endpoints.clone(),
             my_ips: b.my_ips.clone(),
+            my_lan_ifaces: b.my_lan_ifaces.clone(),
             v6: b.v6.clone(),
             my_v6: b.my_v6.clone(),
         })
@@ -2760,6 +2766,7 @@ mod tests {
                 my_v6: Vec::new(),
                 tasks: vec![t_lan, t_pub],
                 stats: Vec::new(),
+                my_lan_ifaces: Vec::new(),
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -2860,6 +2867,7 @@ mod tests {
                 my_v6: Vec::new(),
                 tasks: vec![t_pub],
                 stats: Vec::new(),
+                my_lan_ifaces: Vec::new(),
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -3844,6 +3852,7 @@ mod tests {
             my_v6: Vec::new(),
             tasks: vec![recv_task],
             stats: Vec::new(),
+            my_lan_ifaces: Vec::new(),
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -3961,6 +3970,7 @@ mod tests {
             my_v6: Vec::new(),
             tasks: vec![recv_task],
             stats: Vec::new(),
+            my_lan_ifaces: Vec::new(),
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -4081,6 +4091,7 @@ mod tests {
             my_v6: Vec::new(),
             tasks: vec![recv_task],
             stats: Vec::new(),
+            my_lan_ifaces: Vec::new(),
         });
 
         // Healthy STUN server for Org B.

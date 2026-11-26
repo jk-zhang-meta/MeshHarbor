@@ -24,6 +24,7 @@ const REINIT_PRESSURE_MIN: u32 = 5;
 /// across ALL interfaces (for the same-subnet test), and the `IP:port`
 /// endpoints we advertise (one per interface socket) so a multi-homed peer can
 /// reach us on whichever subnet it shares with us.
+#[derive(Default)]
 pub(super) struct DirectCtx {
     /// One UDP socket bound to EACH usable LAN interface IP (rc.143 — NOT
     /// `0.0.0.0`). Binding to the specific address forces egress out that NIC,
@@ -33,6 +34,8 @@ pub(super) struct DirectCtx {
     /// interface IP shares its /24.
     pub(super) socks: Vec<(Ipv4Addr, Arc<UdpSocket>)>,
     pub(super) my_ips: Vec<Ipv4Addr>,
+    /// FR-139 — usable LAN interfaces with real clamped subnet prefixes.
+    pub(super) my_lan_ifaces: Vec<direct::LanIface>,
     pub(super) endpoints: Vec<String>,
     /// Phase A (`public_direct_enabled`) — a single `0.0.0.0:0` socket used to
     /// DIAL a peer's public endpoint. Unbound to any interface so the OS routing
@@ -67,6 +70,20 @@ pub(super) struct DirectCtx {
 }
 
 impl DirectCtx {
+    /// Real LAN interfaces with clamped prefixes, synthesizing `/24` entries
+    /// from `my_ips` when a synthetic test constructed `DirectCtx` without
+    /// populating `my_lan_ifaces`.
+    pub(super) fn effective_lan_ifaces(&self) -> Vec<direct::LanIface> {
+        if !self.my_lan_ifaces.is_empty() {
+            return self.my_lan_ifaces.clone();
+        }
+        self.my_ips
+            .iter()
+            .copied()
+            .map(direct::LanIface::from_ip_default_24)
+            .collect()
+    }
+
     /// The socket a srflx-tier dial to `dst` rides: the IPv6 socket for an
     /// IPv6 peer, else the punch socket (whose NAT mapping we advertised).
     pub(super) fn srflx_sock(&self, dst: SocketAddr) -> Option<Arc<UdpSocket>> {
@@ -193,27 +210,31 @@ pub(super) fn gather_lan_candidates(
     ctx: &DirectCtx,
     cfg: &PeerConfig,
 ) -> Vec<super::super::candidates::LanCandidate> {
-    use super::super::candidates::LanCandidate;
+    use super::super::candidates::{LanCandidate, LanEgress};
     if cfg.backbone_only {
         return Vec::new();
     }
+    let ifaces = ctx.effective_lan_ifaces();
+    let same_nat = direct::shares_public_nat_ip(
+        ctx.punch.as_ref().map(|(s, _)| s.as_str()),
+        &cfg.srflx_endpoints,
+    );
+    let routed_egress = if ctx.public_sock.is_some() {
+        Some(LanEgress::Wildcard)
+    } else {
+        ctx.socks.first().map(|(ip, _)| LanEgress::Owned(*ip))
+    };
     let mut out = Vec::new();
-    for ep in &cfg.lan_endpoints {
-        let Ok(std::net::SocketAddr::V4(sa)) = ep.trim().parse::<std::net::SocketAddr>() else {
-            continue;
+    for matched in direct::pick_lan_candidates(&ifaces, &ctx.my_ips, &cfg.lan_endpoints, same_nat) {
+        let cand = match matched {
+            direct::MatchedLan::Subnet { local_ip, dst } => LanCandidate::subnet(local_ip, dst),
+            direct::MatchedLan::Routed { dst } => match routed_egress {
+                Some(egress) => LanCandidate::routed(egress, dst),
+                None => continue,
+            },
         };
-        if !direct::is_usable_lan_ipv4(*sa.ip()) || ctx.my_ips.contains(sa.ip()) {
-            continue;
-        }
-        if let Some(local) = ctx
-            .my_ips
-            .iter()
-            .find(|me| direct::same_subnet_24(**me, *sa.ip()))
-        {
-            let cand = LanCandidate::subnet(*local, std::net::SocketAddr::V4(sa));
-            if !out.iter().any(|c: &LanCandidate| c.dst == cand.dst) {
-                out.push(cand);
-            }
+        if !out.iter().any(|c: &LanCandidate| c.dst == cand.dst) {
+            out.push(cand);
         }
     }
     out
@@ -243,12 +264,9 @@ pub(super) fn classify_inbound_lan_hint(
     if !direct::is_usable_lan_ipv4(ip) || ctx.my_ips.contains(&ip) {
         return None;
     }
-    if let Some(local) = ctx
-        .my_ips
-        .iter()
-        .find(|me| direct::same_subnet_24(**me, ip))
-    {
-        return Some((LanEgress::Owned(*local), LanPathKind::Subnet));
+    let ifaces = ctx.effective_lan_ifaces();
+    if let Some(iface) = ifaces.iter().find(|me| me.same_prefix(ip)) {
+        return Some((LanEgress::Owned(iface.ip), LanPathKind::Subnet));
     }
     if !direct::is_public_v4(ip) && ctx.public_sock.is_some() {
         return Some((LanEgress::Wildcard, LanPathKind::Routed));
@@ -1783,6 +1801,7 @@ impl OverlayRuntime {
             return Some(DirectCtx {
                 socks: v.socks,
                 my_ips: v.my_ips,
+                my_lan_ifaces: v.my_lan_ifaces,
                 endpoints: v.endpoints,
                 public_sock: v.public_sock,
                 punch: None,
@@ -1791,8 +1810,8 @@ impl OverlayRuntime {
                 my_v6: v.my_v6,
             });
         }
-        let ifaces = direct::gather_lan_interfaces();
-        let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
+        let ifaces = direct::gather_lan_ifaces();
+        let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|i| i.ip).collect();
         if my_ips.is_empty() {
             info!("overlay: no usable LAN interface; direct path off (relay only)");
             return None;
@@ -1813,17 +1832,18 @@ impl OverlayRuntime {
         let stable_port = direct::direct_port();
         let mut socks: Vec<(Ipv4Addr, Arc<UdpSocket>)> = Vec::new();
         let mut endpoints: Vec<String> = Vec::new();
-        for (ip, ifindex) in &ifaces {
-            let Some(s) = bind_direct_socket(*ip, stable_port, "lan").await else {
+        for iface in &ifaces {
+            let ip = iface.ip;
+            let Some(s) = bind_direct_socket(ip, stable_port, "lan").await else {
                 continue;
             };
-            if let Some(idx) = ifindex {
-                direct::force_egress_interface(&s, *idx);
+            if let Some(idx) = iface.ifindex {
+                direct::force_egress_interface(&s, idx);
             }
             match s.local_addr() {
                 Ok(local) => {
                     endpoints.push(format!("{ip}:{}", local.port()));
-                    socks.push((*ip, Arc::new(s)));
+                    socks.push((ip, Arc::new(s)));
                 }
                 Err(e) => {
                     warn!(%ip, %e, "overlay: direct socket local_addr failed; skipping")
@@ -1885,6 +1905,7 @@ impl OverlayRuntime {
         Some(DirectCtx {
             socks,
             my_ips,
+            my_lan_ifaces: ifaces,
             endpoints,
             public_sock,
             // Set after the startup srflx gather (Phase C) once we know which
@@ -4767,6 +4788,7 @@ mod tests {
             my_nat: my_nat.map(|s| s.to_string()),
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         }
     }
 
@@ -5171,6 +5193,56 @@ mod tests {
 
     /// MeshHarbor #21 — a backbone-only peer is never dialed, even with
     /// candidates that would be dialed for any other peer.
+    /// FR-139 — a same-NAT cross-VLAN RFC 1918 peer yields a routed LAN
+    /// candidate that is NEVER handed to WireGuard on silence, and becomes
+    /// selectable only after a fresh source-matched Disco pong.
+    #[tokio::test]
+    async fn fr139_routed_lan_requires_disco_pong_before_wg_dial() {
+        use crate::overlay::candidates::{CandidatePlanner, LanPathKind};
+        use crate::overlay::disco::DiscoInbound;
+
+        let mut c = ctx(Some("198.51.100.7:43648"), Some("cone")).await;
+        c.public_sock = Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        let p = peer(&["10.42.0.9:43648"], &["198.51.100.7:43656"], Some("cone"));
+        let t0 = Instant::now();
+        let mut planner = CandidatePlanner::default();
+
+        // Silence -> never dialed as LAN.
+        let silent = resolve_direct_candidates_with(
+            Some(&c),
+            &p,
+            CandidateRotation::default(),
+            Some(&planner),
+            t0,
+        );
+        assert!(silent.lan.is_none(), "routed RFC 1918 must require Disco pong");
+
+        // Planner schedules the routed candidate for Disco probing.
+        let adv = gather_lan_candidates(&c, &p);
+        assert_eq!(adv.len(), 1);
+        assert_eq!(adv[0].kind, LanPathKind::Routed);
+        assert!(adv[0].requires_disco);
+        planner.record_sent([7; 8], p.public_key, adv[0], t0);
+        planner.on_pong(&DiscoInbound {
+            sender: p.public_key,
+            nonce: [7; 8],
+            src: adv[0].dst,
+            observed: None,
+            at: t0 + Duration::from_millis(2),
+        });
+
+        let verified = resolve_direct_candidates_with(
+            Some(&c),
+            &p,
+            CandidateRotation::default(),
+            Some(&planner),
+            t0 + Duration::from_millis(5),
+        );
+        let chosen = verified.lan.expect("Disco-verified routed LAN becomes dialable");
+        assert_eq!(chosen.kind, LanPathKind::Routed);
+        assert_eq!(chosen.dst, "10.42.0.9:43648".parse().unwrap());
+    }
+
     #[tokio::test]
     async fn a_backbone_only_peer_has_no_direct_candidate() {
         let c = ctx(Some("5.5.5.5:1"), Some("cone")).await;

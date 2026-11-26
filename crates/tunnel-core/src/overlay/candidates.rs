@@ -132,7 +132,6 @@ impl LanCandidate {
         }
     }
 
-    #[allow(dead_code)] // Used by routed RFC 1918 LAN discovery (Commit 4).
     pub(crate) fn routed(egress: LanEgress, dst: SocketAddr) -> Self {
         Self {
             dst,

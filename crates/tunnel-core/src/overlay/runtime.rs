@@ -7157,6 +7157,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -7237,6 +7238,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut lan_peer = peer(&peer_kp, "100.64.0.7");
         lan_peer.lan_endpoints = vec!["10.1.2.3:1000".into()];
@@ -7296,6 +7298,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -10811,6 +10814,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let dst: SocketAddr = "127.0.0.1:9".parse().unwrap();
 
@@ -10878,6 +10882,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -10961,6 +10966,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -11044,6 +11050,7 @@ mod tests {
             my_nat: None,
             v6: None,
             my_v6: vec![],
+            ..Default::default()
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();

@@ -219,6 +219,52 @@ pub fn gather_lan_ips() -> Vec<Ipv4Addr> {
         .collect()
 }
 
+/// FR-139 — one usable local IPv4 LAN interface together with its clamped
+/// subnet prefix length (`/16..=/30`) and optional OS interface index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanIface {
+    pub ip: Ipv4Addr,
+    pub prefix_len: u8,
+    pub ifindex: Option<u32>,
+}
+
+impl LanIface {
+    /// Clamp an OS netmask to `/16..=/30` so malformed `/8` or host `/32`
+    /// masks neither over-match unrelated networks nor collapse valid LANs.
+    pub fn clamped_prefix(netmask: Ipv4Addr) -> u8 {
+        u32::from(netmask).leading_ones().clamp(16, 30) as u8
+    }
+
+    pub fn from_ip_default_24(ip: Ipv4Addr) -> Self {
+        Self {
+            ip,
+            prefix_len: 24,
+            ifindex: None,
+        }
+    }
+
+    /// True when `other` shares this interface's clamped IPv4 subnet prefix.
+    pub fn same_prefix(&self, other: Ipv4Addr) -> bool {
+        let shift = 32 - u32::from(self.prefix_len.clamp(16, 30));
+        let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
+        (u32::from(self.ip) & mask) == (u32::from(other) & mask)
+    }
+}
+
+/// Like [`gather_lan_interfaces`] but also preserves each interface's real
+/// (clamped `/16..=/30`) IPv4 prefix length for netmask-aware subnet matching.
+/// Still returns empty on Mirrored WSL2 guests (never binds/advertises host IPs).
+pub fn gather_lan_ifaces() -> Vec<LanIface> {
+    gather_lan_interfaces_raw(false)
+        .into_iter()
+        .map(|(_, ip, prefix_len, ifindex)| LanIface {
+            ip,
+            prefix_len,
+            ifindex,
+        })
+        .collect()
+}
+
 /// Like [`gather_lan_ips`] but also returns each interface's OS index (for
 /// `IP_UNICAST_IF` egress pinning — rc.144). The index is `None` when
 /// `if-addrs` can't supply one (then egress can't be pinned — the socket falls
@@ -231,7 +277,14 @@ pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
 }
 
 fn gather_lan_interfaces_named() -> Vec<(String, Ipv4Addr, Option<u32>)> {
-    let mut out: Vec<(String, Ipv4Addr, Option<u32>)> = Vec::new();
+    gather_lan_interfaces_raw(false)
+        .into_iter()
+        .map(|(name, ip, _, idx)| (name, ip, idx))
+        .collect()
+}
+
+fn gather_lan_interfaces_raw(allow_wsl_mirrored: bool) -> Vec<(String, Ipv4Addr, u8, Option<u32>)> {
+    let mut out: Vec<(String, Ipv4Addr, u8, Option<u32>)> = Vec::new();
     let filter = lan_iface_filter_enabled();
     // A WSL2 guest under MIRRORED networking has NO LAN identity of its own:
     // every address it can see is the Windows host's, mirrored in. Gathering
@@ -247,15 +300,17 @@ fn gather_lan_interfaces_named() -> Vec<(String, Ipv4Addr, Option<u32>)> {
     //
     // The guest keeps srflx + relay, which is the honest reachability of a
     // machine with no independent network presence.
-    if wsl_mirrored_guard_enabled() && wsl2_mirrored_networking() {
+    if !allow_wsl_mirrored && wsl_mirrored_guard_enabled() && wsl2_mirrored_networking() {
         return out;
     }
     if let Ok(addrs) = if_addrs::get_if_addrs() {
         for a in addrs {
-            if let std::net::IpAddr::V4(ip) = a.ip()
-                && is_usable_lan_ipv4(ip)
-                && !out.iter().any(|(_, existing, _)| *existing == ip)
+            if let if_addrs::IfAddr::V4(v4) = &a.addr
+                && is_usable_lan_ipv4(v4.ip)
+                && !out.iter().any(|(_, existing, _, _)| *existing == v4.ip)
             {
+                let ip = v4.ip;
+                let prefix_len = LanIface::clamped_prefix(v4.netmask);
                 // rc.275 hygiene — skip virtual / host-only / other-VPN
                 // interfaces (see `lan_iface_denied`). Field: winhost-a
                 // advertised its WSL vEthernet `172.31.176.1` (a host-only
@@ -285,7 +340,7 @@ fn gather_lan_interfaces_named() -> Vec<(String, Ipv4Addr, Option<u32>)> {
                         continue;
                     }
                 }
-                out.push((a.name, ip, a.index));
+                out.push((a.name, ip, prefix_len, a.index));
             }
         }
     }
@@ -1813,6 +1868,84 @@ pub fn pick_same_subnet_endpoint(
         }
     }
     None
+}
+
+/// RFC 1918 private IPv4 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+pub fn is_rfc1918(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
+}
+
+/// True when our advertised srflx and at least one peer srflx share the same
+/// public IPv4 address (both peers sit behind the same NAT / egress router).
+pub fn shares_public_nat_ip(my_srflx: Option<&str>, peer_srflx: &[String]) -> bool {
+    let Some(mine) = my_srflx
+        .and_then(|s| s.trim().parse::<SocketAddr>().ok())
+        .and_then(|sa| match sa {
+            SocketAddr::V4(v4) if is_public_v4(*v4.ip()) => Some(*v4.ip()),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+    peer_srflx.iter().any(|ep| {
+        matches!(
+            ep.trim().parse::<SocketAddr>(),
+            Ok(SocketAddr::V4(v4)) if *v4.ip() == mine
+        )
+    })
+}
+
+/// One advertised LAN candidate classified by real interface netmask or
+/// same-NAT routed RFC 1918 reachability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchedLan {
+    /// Shares a clamped real subnet prefix (`/16..=/30`) with `local_ip`.
+    Subnet { local_ip: Ipv4Addr, dst: SocketAddr },
+    /// Different subnet, RFC 1918 peer behind the same public NAT (routed LAN /
+    /// multi-VLAN office). Callers MUST require a fresh Disco pong before WG.
+    Routed { dst: SocketAddr },
+}
+
+/// FR-139 — netmask-aware + same-NAT routed LAN candidate matcher.
+///
+/// Matches every advertised IPv4 endpoint in `endpoints` (skipping any IP in
+/// `exclude_ips`) against `my_ifaces` using each interface's real clamped
+/// subnet prefix (`/16..=/30`). When `same_nat` is true, non-matching RFC 1918
+/// endpoints are also emitted as [`MatchedLan::Routed`] (which callers gate
+/// behind `requires_disco = true`). Deduped by `dst`.
+pub fn pick_lan_candidates(
+    my_ifaces: &[LanIface],
+    exclude_ips: &[Ipv4Addr],
+    endpoints: &[String],
+    same_nat: bool,
+) -> Vec<MatchedLan> {
+    let mut out: Vec<MatchedLan> = Vec::new();
+    let mut seen: Vec<SocketAddr> = Vec::new();
+    for ep in endpoints {
+        let Ok(SocketAddr::V4(sa)) = ep.trim().parse::<SocketAddr>() else {
+            continue;
+        };
+        let ip = *sa.ip();
+        if !is_usable_lan_ipv4(ip) || exclude_ips.contains(&ip) {
+            continue;
+        }
+        let dst = SocketAddr::V4(sa);
+        if seen.contains(&dst) {
+            continue;
+        }
+        if let Some(iface) = my_ifaces.iter().find(|me| me.same_prefix(ip)) {
+            seen.push(dst);
+            out.push(MatchedLan::Subnet {
+                local_ip: iface.ip,
+                dst,
+            });
+        } else if same_nat && is_rfc1918(ip) {
+            seen.push(dst);
+            out.push(MatchedLan::Routed { dst });
+        }
+    }
+    out
 }
 
 /// Phase B — parse a STUN endpoint from a `stun:` / `stuns:` URL (or a bare
@@ -3934,5 +4067,80 @@ wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
         assert!(parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000002000\n"));
         assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000000000\n"));
         assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000001000\n"));
+    }
+
+    #[test]
+    fn fr139_netmask_aware_lan_matching_and_routed_same_nat() {
+        // Clamping: /8 clamps to /16; /32 clamps to /30.
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 0, 0, 0)), 16);
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 252, 0)), 22);
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 254, 0)), 23);
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 240)), 28);
+        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 255)), 30);
+
+        // /22 matches across adjacent third octets.
+        let slash22 = LanIface {
+            ip: Ipv4Addr::new(10, 20, 0, 5),
+            prefix_len: 22,
+            ifindex: None,
+        };
+        assert!(slash22.same_prefix(Ipv4Addr::new(10, 20, 3, 200)));
+        assert!(!slash22.same_prefix(Ipv4Addr::new(10, 20, 4, 1)));
+
+        // /23 matches .0 and .1, not .2.
+        let slash23 = LanIface {
+            ip: Ipv4Addr::new(192, 168, 0, 10),
+            prefix_len: 23,
+            ifindex: None,
+        };
+        assert!(slash23.same_prefix(Ipv4Addr::new(192, 168, 1, 200)));
+        assert!(!slash23.same_prefix(Ipv4Addr::new(192, 168, 2, 1)));
+
+        // /28 splits a /24 cleanly.
+        let slash28 = LanIface {
+            ip: Ipv4Addr::new(192, 168, 10, 2),
+            prefix_len: 28,
+            ifindex: None,
+        };
+        let eps = vec![
+            "192.168.10.2:43648".to_string(),  // self -> skipped
+            "192.168.10.14:43648".to_string(), // in same /28 -> Subnet
+            "192.168.10.20:43648".to_string(), // outside /28 -> Routed only if same_nat
+            "10.50.0.9:43648".to_string(),     // RFC 1918 other VLAN -> Routed if same_nat
+            "203.0.113.5:43648".to_string(),   // public -> not Routed
+        ];
+        let diff_nat = pick_lan_candidates(&[slash28], &[slash28.ip], &eps, false);
+        assert_eq!(
+            diff_nat,
+            vec![MatchedLan::Subnet {
+                local_ip: slash28.ip,
+                dst: "192.168.10.14:43648".parse().unwrap(),
+            }]
+        );
+        let same_nat = pick_lan_candidates(&[slash28], &[slash28.ip], &eps, true);
+        assert_eq!(
+            same_nat,
+            vec![
+                MatchedLan::Subnet {
+                    local_ip: slash28.ip,
+                    dst: "192.168.10.14:43648".parse().unwrap(),
+                },
+                MatchedLan::Routed {
+                    dst: "192.168.10.20:43648".parse().unwrap(),
+                },
+                MatchedLan::Routed {
+                    dst: "10.50.0.9:43648".parse().unwrap(),
+                },
+            ]
+        );
+
+        assert!(shares_public_nat_ip(
+            Some("198.51.100.7:43648"),
+            &["198.51.100.7:43656".to_string()]
+        ));
+        assert!(!shares_public_nat_ip(
+            Some("198.51.100.7:43648"),
+            &["198.51.100.8:43656".to_string()]
+        ));
     }
 }

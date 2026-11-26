@@ -1544,6 +1544,7 @@ mod tests {
                 my_nat: Some("symmetric".into()),
                 v6: None,
                 my_v6: vec![],
+                ..Default::default()
             };
             let mut inst = Installed::base(
                 peer.public.to_bytes(),
