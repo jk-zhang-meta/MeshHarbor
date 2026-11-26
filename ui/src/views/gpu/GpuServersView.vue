@@ -2,17 +2,35 @@
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
   <v-container fluid class="pa-2 pa-md-4 pa-xl-5 gpu-servers-view">
-    <!-- Top Header + Compact Telemetry Ribbon -->
+    <!-- Top Header + Honest Live Heartbeat Pill -->
     <div class="nvitop-topbar mb-3">
       <div class="nvitop-title-block">
-        <div class="d-flex align-center ga-2">
+        <div class="d-flex align-center flex-wrap ga-2">
           <h1 class="nvitop-heading">{{ t('mh.gpu.title') }}</h1>
           <span
-            v-if="gpuStore.liveActive && !gpuStore.disabled"
+            v-if="!gpuStore.disabled && gpuStore.consecutiveFailures > 0"
+            class="nvitop-live-pill pill-err"
+          >
+            <span class="nvitop-live-dot dot-err" />
+            {{
+              t('mh.gpu.pollRetrying', {
+                sec: retryCountdownSec,
+              })
+            }}
+          </span>
+          <span
+            v-else-if="!gpuStore.disabled && gpuStore.liveIntervalMs === 0"
+            class="nvitop-live-pill pill-warn"
+          >
+            <span class="nvitop-live-dot dot-warn" />
+            {{ t('mh.gpu.standingOnly') }}
+          </span>
+          <span
+            v-else-if="gpuStore.liveActive && !gpuStore.disabled"
             class="nvitop-live-pill"
           >
             <span class="nvitop-live-dot" />
-            {{ t('mh.gpu.live2s') }}
+            {{ liveHeartbeatLabel }}
           </span>
         </div>
         <p class="nvitop-sub">{{ t('mh.gpu.subtitle') }}</p>
@@ -46,32 +64,68 @@
     </v-alert>
 
     <template v-else>
-      <!-- Compact Instrument Telemetry Ribbon -->
+      <!-- Clickable Instrument Telemetry KPI Ribbon -->
       <div class="nvitop-kpi-ribbon mb-3">
-        <div class="nvitop-kpi">
+        <button
+          type="button"
+          class="nvitop-kpi"
+          :class="{ 'is-active': stateFilter === 'all' }"
+          :aria-pressed="stateFilter === 'all'"
+          @click="toggleKpiFilter('all')"
+        >
           <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.hosts') }}</span>
           <span class="nvitop-kpi-val text-mono">
             {{ gpuStore.summary.hosts_online }}<span class="nvitop-kpi-dim">/{{ gpuStore.summary.hosts_total }}</span>
           </span>
-        </div>
-        <div class="nvitop-kpi nvitop-kpi-free">
+        </button>
+        <button
+          type="button"
+          class="nvitop-kpi nvitop-kpi-free"
+          :class="{ 'is-active': stateFilter === 'free' }"
+          :aria-pressed="stateFilter === 'free'"
+          @click="toggleKpiFilter('free')"
+        >
           <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.free') }}</span>
           <span class="nvitop-kpi-val text-mono">
             {{ gpuStore.summary.gpus_free }}<span class="nvitop-kpi-dim">/{{ gpuStore.summary.gpus_total }}</span>
           </span>
-        </div>
-        <div class="nvitop-kpi nvitop-kpi-busy">
+        </button>
+        <button
+          type="button"
+          class="nvitop-kpi nvitop-kpi-busy"
+          :class="{ 'is-active': stateFilter === 'busy' }"
+          :aria-pressed="stateFilter === 'busy'"
+          @click="toggleKpiFilter('busy')"
+        >
           <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.busy') }}</span>
           <span class="nvitop-kpi-val text-mono">{{ gpuStore.summary.gpus_busy }}</span>
-        </div>
-        <div class="nvitop-kpi nvitop-kpi-held">
+        </button>
+        <button
+          type="button"
+          class="nvitop-kpi nvitop-kpi-held"
+          :class="{ 'is-active': stateFilter === 'held_idle' }"
+          :aria-pressed="stateFilter === 'held_idle'"
+          @click="toggleKpiFilter('held_idle')"
+        >
           <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.heldIdle') }}</span>
           <span class="nvitop-kpi-val text-mono">{{ gpuStore.summary.gpus_held_idle }}</span>
-        </div>
-        <div class="nvitop-kpi" :class="{ 'nvitop-kpi-fault': gpuStore.summary.gpus_fault > 0 }">
-          <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.fault') }}</span>
+        </button>
+        <button
+          type="button"
+          class="nvitop-kpi"
+          :class="{
+            'nvitop-kpi-fault': hasActiveFaults,
+            'is-active': stateFilter === 'fault',
+          }"
+          :aria-pressed="stateFilter === 'fault'"
+          @click="toggleKpiFilter('fault')"
+        >
+          <div class="nvitop-kpi-stack">
+            <span class="nvitop-kpi-lbl">{{ t('mh.gpu.summary.fault') }}</span>
+            <span v-if="faultKpiSub" class="nvitop-kpi-sub text-mono">{{ faultKpiSub }}</span>
+          </div>
           <span class="nvitop-kpi-val text-mono">{{ gpuStore.summary.gpus_fault }}</span>
-        </div>
+        </button>
       </div>
 
       <v-tabs v-model="tab" color="primary" density="compact" class="mb-3">
@@ -102,7 +156,25 @@
             <v-chip value="free" size="small" variant="outlined">{{ t('mh.gpu.filter.free') }}</v-chip>
             <v-chip value="busy" size="small" variant="outlined">{{ t('mh.gpu.filter.busy') }}</v-chip>
             <v-chip value="held_idle" size="small" variant="outlined">{{ t('mh.gpu.filter.heldIdle') }}</v-chip>
-            <v-chip value="fault" size="small" variant="outlined">{{ t('mh.gpu.filter.fault') }}</v-chip>
+            <v-chip
+              value="fault"
+              size="small"
+              variant="outlined"
+              :color="faultHostCount > 0 ? 'error' : undefined"
+            >
+              {{ t('mh.gpu.filter.fault') }}<template v-if="faultHostCount > 0"> ({{ faultHostCount }})</template>
+            </v-chip>
+            <v-chip
+              value="warning"
+              size="small"
+              variant="outlined"
+              :color="warnHostCount > 0 ? 'warning' : undefined"
+            >
+              {{ t('mh.gpu.filter.warning') }}<template v-if="warnHostCount > 0"> ({{ warnHostCount }})</template>
+            </v-chip>
+            <v-chip value="offline" size="small" variant="outlined">
+              {{ t('mh.gpu.filter.offline') }}<template v-if="offlineHostCount > 0"> ({{ offlineHostCount }})</template>
+            </v-chip>
             <v-chip value="invited" size="small" variant="outlined">{{ t('mh.gpu.filter.invited') }}</v-chip>
             <v-chip value="shared" size="small" variant="outlined">{{ t('mh.gpu.filter.shared') }}</v-chip>
           </v-chip-group>
@@ -117,6 +189,30 @@
           />
         </div>
 
+        <!-- Compact Recent Live Changes Strip -->
+        <div v-if="gpuStore.recentChanges.length" class="nvitop-changes mb-3">
+          <div class="nvitop-changes-head">
+            <span class="nvitop-changes-title">
+              <v-icon icon="mdi-pulse" size="14" class="mr-1" />
+              {{ t('mh.gpu.changes.title') }}
+            </span>
+            <v-btn size="x-small" variant="text" density="compact" @click="gpuStore.clearRecentChanges()">
+              {{ t('mh.gpu.changes.clear') }}
+            </v-btn>
+          </div>
+          <div class="nvitop-changes-list text-mono">
+            <span
+              v-for="ch in gpuStore.recentChanges"
+              :key="ch.id"
+              class="nvitop-change-chip"
+              :class="`change-${ch.severity}`"
+            >
+              <span>{{ formatLiveChange(ch) }}</span>
+              <span class="nvitop-change-age">· {{ fmtRelativeSecs(ch.at) }}</span>
+            </span>
+          </div>
+        </div>
+
         <v-progress-linear v-if="gpuStore.loading && !gpuStore.hosts.length" indeterminate class="mb-3" />
 
         <v-card v-if="!gpuStore.loading && !gpuStore.hosts.length" variant="outlined" class="pa-6 text-center">
@@ -128,12 +224,24 @@
           </v-btn>
         </v-card>
 
+        <v-card v-else-if="!gpuStore.loading && !filteredHosts.length" variant="outlined" class="pa-6 text-center">
+          <v-icon icon="mdi-filter-off-outline" size="40" color="medium-emphasis" class="mb-2" />
+          <div class="text-subtitle-1 font-weight-medium mb-1">{{ t('mh.gpu.filteredEmptyTitle') }}</div>
+          <p class="text-body-2 text-medium-emphasis mb-3">{{ t('mh.gpu.filteredEmptyBody') }}</p>
+          <v-btn size="small" variant="tonal" color="primary" @click="resetFilters">
+            {{ t('mh.gpu.clearFilters') }}
+          </v-btn>
+        </v-card>
+
         <div v-else class="nvitop-fleet">
           <section
             v-for="host in filteredHosts"
             :key="host.agent_id"
             class="nvitop-host"
-            :class="{ 'nvitop-host-offline': !host.is_online || host.freshness === 'offline' }"
+            :class="{
+              'nvitop-host-offline': isHostOffline(host),
+              'nvitop-host-faulted': !isHostOffline(host) && hostHasFault(host),
+            }"
             :data-testid="`gpu-host-${host.agent_id}`"
           >
             <!-- Rack Bay Header -->
@@ -141,12 +249,18 @@
               <div class="nvitop-host-id">
                 <span
                   class="nvitop-status-dot"
-                  :class="`dot-${host.freshness}`"
-                  :title="t(`mh.gpu.freshness.${host.freshness}`)"
+                  :class="hostDotClass(host)"
+                  :title="hostFreshnessBadge(host).label"
                 />
                 <button type="button" class="nvitop-host-name" @click="openDrawer(host)">
                   {{ hostTitle(host) }}
                 </button>
+                <span class="nvitop-pill text-mono" :class="hostFreshnessBadge(host).cls">
+                  {{ hostFreshnessBadge(host).label }}
+                  <template v-if="!isHostOffline(host) && host.interval_ms">
+                    · {{ Math.max(1, Math.round(host.interval_ms / 1000)) }}s
+                  </template>
+                </span>
                 <span class="nvitop-pill nvitop-pill-vendor text-mono">
                   {{ vendorLabel(host) }}
                   <template v-if="host.driver_version"> · {{ host.driver_version }}</template>
@@ -157,15 +271,19 @@
                 <span v-else-if="host.source === 'shared'" class="nvitop-pill nvitop-pill-shared">
                   {{ t('mh.gpu.source.sharedRo') }}
                 </span>
-                <span v-if="host.status !== 'ok'" class="nvitop-pill nvitop-pill-err text-mono">
-                  {{ host.status }}
+                <span
+                  v-if="host.status !== 'ok'"
+                  class="nvitop-pill"
+                  :class="hostStatusPillClass(host)"
+                >
+                  {{ hostStatusLabel(host.status) }}
                 </span>
               </div>
 
               <div class="nvitop-host-right">
                 <span
                   class="nvitop-free-counter text-mono"
-                  :class="{ 'has-free': host.free_count > 0 && host.is_online }"
+                  :class="{ 'has-free': host.free_count > 0 && !isHostOffline(host) && !host.lagging }"
                 >
                   {{ host.free_count }}/{{ host.total_count }} {{ t('mh.gpu.freeWord') }}
                 </span>
@@ -189,6 +307,16 @@
                 </v-btn>
               </div>
             </header>
+
+            <!-- Host Diagnostic Banner when non-ok or faulted -->
+            <div
+              v-if="hostDiagBanner(host)"
+              class="nvitop-host-diag"
+              :class="`diag-${hostDiagBanner(host)!.tone}`"
+            >
+              <v-icon :icon="hostDiagBanner(host)!.icon" size="15" class="flex-shrink-0 mt-0.5" />
+              <span>{{ hostDiagBanner(host)!.text }}</span>
+            </div>
 
             <!-- Classic nvitop Host Resource Mini-Bars -->
             <div v-if="host.host" class="nvitop-host-strip text-mono">
@@ -260,20 +388,26 @@
 
             <!-- Per-Card nvitop Instrument Rows -->
             <div v-if="!host.gpus.length" class="nvitop-empty-host">
-              {{ t('mh.gpu.noCardsYet') }}
+              {{ hostEmptyMessage(host) }}
             </div>
             <div v-else class="nvitop-cards">
               <div
                 v-for="g in host.gpus"
                 :key="g.uuid"
                 class="nvitop-card"
-                :class="[`state-${cardHasFault(g) ? 'fault' : g.state}`]"
+                :class="[
+                  `state-${cardHasFault(g) ? 'fault' : g.state}`,
+                  {
+                    'is-stale': g.stale,
+                    'is-changed': Boolean(cardDeltaFor(host, g)),
+                  },
+                ]"
               >
                 <div class="nvitop-card-main">
                   <!-- Slot + Name + State -->
                   <div class="nvitop-card-id">
                     <span class="nvitop-idx text-mono">
-                      {{ isAscendCard(host, g) ? `NPU${g.idx}` : `#${g.idx}` }}
+                      {{ cardSlotLabel(host, g) }}
                     </span>
                     <div class="nvitop-model-wrap">
                       <span class="nvitop-model">{{ shortModel(g.name) }}</span>
@@ -282,13 +416,14 @@
                         <template v-else>{{ g.uuid.slice(0, 14) }}</template>
                         <span v-if="g.mig" class="nvitop-tag">MIG</span>
                         <span v-if="g.unified" class="nvitop-tag">Unified</span>
+                        <span v-if="g.presence_only" class="nvitop-tag">{{ t('mh.gpu.presenceOnly') }}</span>
                       </span>
                     </div>
                     <span
                       class="nvitop-state-badge text-mono"
-                      :class="`badge-${cardHasFault(g) ? 'fault' : g.state}`"
+                      :class="`badge-${g.state}`"
                     >
-                      {{ cardHasFault(g) ? t('mh.gpu.state.fault') : stateLabel(g.state) }}
+                      {{ stateLabel(g.state) }}
                     </span>
                   </div>
 
@@ -296,7 +431,7 @@
                   <div class="nvitop-bars text-mono">
                     <!-- Memory / HBM Bar -->
                     <div class="nvitop-bar-group">
-                      <span class="nvitop-bar-lbl">{{ isAscendCard(host, g) ? 'HBM' : 'MEM' }}</span>
+                      <span class="nvitop-bar-lbl">{{ cardRuntimeKind(host, g) === 'ascend' ? 'HBM' : 'MEM' }}</span>
                       <div class="nvitop-bar-track">
                         <div
                           class="nvitop-bar-fill"
@@ -305,15 +440,24 @@
                         />
                         <div class="nvitop-bar-ticks" aria-hidden="true" />
                         <span class="nvitop-bar-overlay">
-                          <span>{{ fmtVramCompact(g) }}</span>
+                          <span>
+                            {{ fmtVramCompact(g) }}
+                            <span
+                              v-if="cardDeltaFor(host, g)?.memDeltaMb"
+                              class="nvitop-delta"
+                              :class="(cardDeltaFor(host, g)!.memDeltaMb > 0) ? 'delta-up' : 'delta-down'"
+                            >
+                              {{ cardDeltaFor(host, g)!.memDeltaMb > 0 ? '▲' : '▼' }}{{ (Math.abs(cardDeltaFor(host, g)!.memDeltaMb) / 1024).toFixed(1) }}G
+                            </span>
+                          </span>
                           <span v-if="vramPct(g) != null">{{ vramPct(g) }}%</span>
                         </span>
                       </div>
                     </div>
 
-                    <!-- Compute / AICore Bar -->
+                    <!-- Compute / AICore / TPU Bar -->
                     <div class="nvitop-bar-group nvitop-bar-util">
-                      <span class="nvitop-bar-lbl">{{ isAscendCard(host, g) ? 'AIC' : 'GPU' }}</span>
+                      <span class="nvitop-bar-lbl">{{ utilAxisLabel(host, g) }}</span>
                       <div class="nvitop-bar-track">
                         <div
                           class="nvitop-bar-fill"
@@ -322,7 +466,14 @@
                         />
                         <div class="nvitop-bar-ticks" aria-hidden="true" />
                         <span class="nvitop-bar-overlay nvitop-bar-overlay-end">
-                          {{ g.util_pct != null ? `${g.util_pct}%` : '—' }}
+                          <span>{{ g.util_pct != null ? `${g.util_pct}%` : '—' }}</span>
+                          <span
+                            v-if="cardDeltaFor(host, g)?.utilDelta"
+                            class="nvitop-delta"
+                            :class="(cardDeltaFor(host, g)!.utilDelta > 0) ? 'delta-up' : 'delta-down'"
+                          >
+                            {{ cardDeltaFor(host, g)!.utilDelta > 0 ? '▲' : '▼' }}{{ Math.abs(cardDeltaFor(host, g)!.utilDelta) }}%
+                          </span>
                         </span>
                       </div>
                     </div>
@@ -344,16 +495,42 @@
                       {{ g.fan_pct }}%
                     </span>
                     <v-btn
-                      v-if="isSafeCudaUuid(g.uuid)"
+                      v-if="cardExportCmd(host, g)"
                       :icon="copiedUuid === g.uuid ? 'mdi-check' : 'mdi-content-copy'"
                       size="x-small"
                       variant="text"
                       density="compact"
                       :color="copiedUuid === g.uuid ? 'success' : undefined"
-                      :title="cardExportCmd(host, g)"
+                      :title="cardExportCmd(host, g) ?? undefined"
                       @click="copyCardEnv(host, g)"
                     />
                   </div>
+                </div>
+
+                <!-- Inline Canonical Fault / Warning / Power-Cap Chips -->
+                <div
+                  v-if="cardFaultReasons(g).length || hasPowerCap(g)"
+                  class="nvitop-fault-row"
+                >
+                  <span
+                    v-for="(reason, rIdx) in cardFaultReasons(g)"
+                    :key="`${reason.code}-${rIdx}`"
+                    class="nvitop-fault-chip"
+                    :class="reason.severity === 'critical' ? 'fault-critical' : 'fault-warning'"
+                    :title="`${reason.code}: ${reason.summary}`"
+                  >
+                    <v-icon
+                      :icon="reason.severity === 'critical' ? 'mdi-alert-octagon' : 'mdi-alert'"
+                      size="12"
+                    />
+                    {{ reason.summary }}
+                  </span>
+                  <span
+                    v-if="hasPowerCap(g)"
+                    class="nvitop-fault-chip fault-info"
+                  >
+                    {{ t('mh.gpu.throttle.power_cap') }}
+                  </span>
                 </div>
 
                 <!-- Compact Inline Process Sub-Rows -->
@@ -433,14 +610,21 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useGpuStore } from '@/stores/gpu'
+import { useGpuStore, type GpuCardDelta, type GpuLiveChange } from '@/stores/gpu'
 import {
+  cardExportCmd,
+  cardFaultReasons,
   cardHasFault,
+  cardRuntimeKind,
   hostHasFault,
+  hostHasWarning,
+  isCardEligibleFree,
+  isExportableRuntime,
   isSafeCudaUuid,
   shellQuoteSingle,
   type GpuCardView,
   type GpuHostLoad,
+  type GpuHostStatus,
   type GpuHostView,
   type GpuProc,
   type GpuState,
@@ -450,20 +634,35 @@ import GpuUsersTab from './GpuUsersTab.vue'
 import GpuFindDialog from './GpuFindDialog.vue'
 import GpuAlertSettings from './GpuAlertSettings.vue'
 
-const { t } = useI18n()
+type FilterKind =
+  | 'all'
+  | 'free'
+  | 'busy'
+  | 'held_idle'
+  | 'fault'
+  | 'warning'
+  | 'offline'
+  | 'invited'
+  | 'shared'
+
+const { t, te } = useI18n()
 const route = useRoute()
 const gpuStore = useGpuStore()
 
 const tenantId = computed(() => route.params.tenantId as string)
 const tab = ref<'fleet' | 'users' | 'alerts'>('fleet')
-const search = ref('')
-const stateFilter = ref<'all' | 'free' | 'busy' | 'held_idle' | 'fault' | 'invited' | 'shared'>('all')
+const search = ref<string | null>('')
+const stateFilter = ref<FilterKind>('all')
 const sortKey = ref<'host' | 'free' | 'util' | 'mem'>('host')
 const drawerOpen = ref(false)
 const findDialogOpen = ref(false)
 const copiedUuid = ref<string | null>(null)
 const copiedHostId = ref<string | null>(null)
 const expandedProcs = reactive(new Set<string>())
+const nowTick = ref(Date.now())
+
+let tickHandle: ReturnType<typeof setInterval> | null = null
+let usersRefreshHandle: ReturnType<typeof setInterval> | null = null
 
 const sortItems = computed(() => [
   { value: 'host', title: t('mh.gpu.sort.host') },
@@ -472,26 +671,278 @@ const sortItems = computed(() => [
   { value: 'mem', title: t('mh.gpu.sort.vram') },
 ])
 
+const hasActiveFaults = computed(
+  () => gpuStore.summary.gpus_fault > 0 || (gpuStore.summary.fault_hosts ?? 0) > 0,
+)
+
+const faultKpiSub = computed(() => {
+  const parts: string[] = []
+  if ((gpuStore.summary.fault_hosts ?? 0) > 0) {
+    parts.push(t('mh.gpu.summary.faultHosts', { n: gpuStore.summary.fault_hosts }))
+  }
+  if ((gpuStore.summary.gpus_warning ?? 0) > 0) {
+    parts.push(t('mh.gpu.summary.warnCount', { n: gpuStore.summary.gpus_warning }))
+  }
+  return parts.join(' · ')
+})
+
+const faultHostCount = computed(() => gpuStore.hosts.filter((h) => hostHasFault(h)).length)
+const warnHostCount = computed(() => gpuStore.hosts.filter((h) => hostHasWarning(h)).length)
+const offlineHostCount = computed(() => gpuStore.hosts.filter((h) => isHostOffline(h)).length)
+
+const retryCountdownSec = computed(() => {
+  if (!gpuStore.nextRetryAt) return 10
+  return Math.max(1, Math.ceil((gpuStore.nextRetryAt - nowTick.value) / 1000))
+})
+
+const liveHeartbeatLabel = computed(() => {
+  const cadence = Math.max(1, Math.round(gpuStore.liveIntervalMs / 1000))
+  if (!gpuStore.lastPollOkAt) return t('mh.gpu.liveCadence', { sec: cadence })
+  const age = Math.max(0, Math.floor((nowTick.value - gpuStore.lastPollOkAt) / 1000))
+  return t('mh.gpu.liveHeartbeat', { sec: cadence, age: fmtAgeSecs(age) })
+})
+
+function toggleKpiFilter(next: FilterKind) {
+  tab.value = 'fleet'
+  stateFilter.value = stateFilter.value === next && next !== 'all' ? 'all' : next
+}
+
+function resetFilters() {
+  search.value = ''
+  stateFilter.value = 'all'
+}
+
+function isHostOffline(h: GpuHostView): boolean {
+  return !h.is_online || h.freshness === 'offline'
+}
+
 function hostTitle(h: GpuHostView): string {
   return h.display_name?.trim() || h.name
 }
 
-function isAscendHost(h: GpuHostView): boolean {
-  return (h.backend || '').toLowerCase().includes('ascend')
+function fmtAgeSecs(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h`
+  return `${Math.floor(s / 86400)}d`
 }
 
-function isAscendCard(h: GpuHostView, g: GpuCardView): boolean {
-  return isAscendHost(h) || g.uuid.startsWith('ASCEND-') || (g.name || '').toLowerCase().includes('ascend')
+function fmtRelativeSecs(tsMs: number): string {
+  return fmtAgeSecs(Math.max(0, Math.floor((nowTick.value - tsMs) / 1000)))
+}
+
+function hostAgeSecs(h: GpuHostView): number | null {
+  const elapsed = gpuStore.lastPollOkAt > 0 ? Math.max(0, nowTick.value - gpuStore.lastPollOkAt) : 0
+  if (h.age_ms != null && Number.isFinite(h.age_ms) && h.age_ms >= 0) {
+    return Math.floor((h.age_ms + elapsed) / 1000)
+  }
+  if (h.received_at_ms != null && h.received_at_ms > 0) {
+    const serverRef = (gpuStore.fleet?.server_time_ms ?? nowTick.value) + elapsed
+    return Math.max(0, Math.floor((serverRef - h.received_at_ms) / 1000))
+  }
+  return null
+}
+
+function hostDotClass(h: GpuHostView): string {
+  if (isHostOffline(h)) return 'dot-offline'
+  if (h.host_fault_severity === 'critical' || (h.fault_count ?? 0) > 0) return 'dot-fault'
+  if (h.freshness === 'stale' || h.lagging || h.host_fault_severity === 'warning') return 'dot-stale'
+  return 'dot-fresh'
+}
+
+function hostFreshnessBadge(h: GpuHostView): { cls: string; label: string } {
+  const ageS = hostAgeSecs(h)
+  const age = ageS != null ? fmtAgeSecs(ageS) : null
+  if (isHostOffline(h)) {
+    return {
+      cls: 'nvitop-pill-offline',
+      label: age ? t('mh.gpu.freshness.offlineAge', { age }) : t('mh.gpu.freshness.offline'),
+    }
+  }
+  if (h.freshness === 'stale') {
+    return {
+      cls: 'nvitop-pill-warn',
+      label: t('mh.gpu.freshness.staleAge', { age: age ?? '—' }),
+    }
+  }
+  if (h.lagging) {
+    return {
+      cls: 'nvitop-pill-warn',
+      label: t('mh.gpu.freshness.laggingAge', { age: age ?? '—' }),
+    }
+  }
+  return {
+    cls: 'nvitop-pill-fresh',
+    label: age ? t('mh.gpu.freshness.freshAge', { age }) : t('mh.gpu.freshness.fresh'),
+  }
+}
+
+function hostStatusLabel(status: GpuHostStatus | string): string {
+  const key = `mh.gpu.hostStatus.${status}`
+  return te(key) ? t(key) : status
+}
+
+function hostStatusPillClass(h: GpuHostView): string {
+  if (
+    h.host_fault_severity === 'critical' ||
+    h.status === 'driver_missing' ||
+    h.status === 'driver_hung' ||
+    h.status === 'unavailable'
+  ) {
+    return 'nvitop-pill-err'
+  }
+  if (
+    h.host_fault_severity === 'warning' ||
+    h.status === 'driver_reboot_pending' ||
+    h.status === 'sampler_stalled' ||
+    h.status === 'limited'
+  ) {
+    return 'nvitop-pill-warn'
+  }
+  return 'nvitop-pill-vendor'
+}
+
+function hostDiagBanner(
+  h: GpuHostView,
+): { tone: 'critical' | 'warn' | 'info'; icon: string; text: string } | null {
+  if (isHostOffline(h)) return null
+  const hasHostIssue =
+    h.status !== 'ok' || Boolean(h.status_detail) || Boolean(h.fault_reasons?.length)
+  if (!hasHostIssue) return null
+
+  const parts: string[] = []
+  const diagKey = `mh.gpu.diag.${h.status}`
+  if (te(diagKey)) parts.push(t(diagKey))
+  if (h.status_detail && !parts.includes(h.status_detail)) {
+    parts.push(h.status_detail)
+  }
+  if (!parts.length && h.fault_reasons?.length) {
+    parts.push(h.fault_reasons.map((r) => r.summary).join(' · '))
+  }
+  if (!parts.length) return null
+
+  const tone: 'critical' | 'warn' | 'info' =
+    h.host_fault_severity === 'critical' ||
+    h.status === 'driver_missing' ||
+    h.status === 'driver_hung' ||
+    h.status === 'unavailable'
+      ? 'critical'
+      : h.host_fault_severity === 'warning' || h.status === 'limited'
+        ? 'warn'
+        : 'info'
+
+  return {
+    tone,
+    icon:
+      tone === 'critical'
+        ? 'mdi-alert-octagon-outline'
+        : tone === 'warn'
+          ? 'mdi-alert-outline'
+          : 'mdi-information-outline',
+    text: parts.join(' — '),
+  }
+}
+
+function hostEmptyMessage(h: GpuHostView): string {
+  if (h.status === 'off_local') return t('mh.gpu.diag.off_local')
+  if (h.status === 'no_gpu') return t('mh.gpu.diag.no_gpu')
+  if (h.status === 'driver_missing') return t('mh.gpu.diag.driver_missing')
+  return t('mh.gpu.noCardsYet')
 }
 
 function vendorLabel(h: GpuHostView): string {
+  const kinds = new Set<string>()
+  const labelFor = (rt: string): string => {
+    switch (rt) {
+      case 'ascend':
+        return 'Ascend NPU'
+      case 'nvidia':
+        return 'NVIDIA'
+      case 'amd':
+        return 'AMD ROCm'
+      case 'tpu':
+        return 'Google TPU'
+      case 'intel':
+        return 'Intel'
+      case 'apple':
+        return 'Apple'
+      case 'pci':
+        return 'PCIe'
+      default:
+        return rt
+    }
+  }
+  for (const g of h.gpus) {
+    kinds.add(labelFor(cardRuntimeKind(h, g)))
+  }
+  if (kinds.size > 0) return Array.from(kinds).join(' + ')
   const b = (h.backend || '').toLowerCase()
   if (b.includes('ascend')) return 'Ascend NPU'
+  if (b.includes('tpu')) return 'Google TPU'
   if (b.includes('nvml')) return 'NVIDIA'
-  if (b.includes('amd')) return 'AMD'
+  if (b.includes('amd')) return 'AMD ROCm'
   if (b.includes('intel')) return 'Intel'
   if (b.includes('apple')) return 'Apple'
+  if (b.includes('pci')) return 'PCIe'
   return h.backend || 'GPU'
+}
+
+function cardSlotLabel(h: GpuHostView, g: GpuCardView): string {
+  const rt = cardRuntimeKind(h, g)
+  if (rt === 'ascend') return `NPU${g.vendor_index ?? g.idx}`
+  if (rt === 'tpu') return `TPU${g.idx}`
+  return `#${g.idx}`
+}
+
+function utilAxisLabel(h: GpuHostView, g: GpuCardView): string {
+  const rt = cardRuntimeKind(h, g)
+  if (rt === 'ascend') return 'AIC'
+  if (rt === 'tpu') return 'TPU'
+  return 'GPU'
+}
+
+function hasPowerCap(g: GpuCardView): boolean {
+  return Boolean(g.throttle?.some((x) => x.toLowerCase() === 'power_cap'))
+}
+
+function cardDeltaFor(h: GpuHostView, g: GpuCardView): GpuCardDelta | null {
+  const d = gpuStore.cardDeltas[`${h.agent_id}:${g.uuid}`]
+  if (!d) return null
+  return nowTick.value - d.at <= 4000 ? d : null
+}
+
+function formatLiveChange(ch: GpuLiveChange): string {
+  switch (ch.kind) {
+    case 'host_online':
+      return t('mh.gpu.changes.hostOnline', { host: ch.host })
+    case 'host_offline':
+      return t('mh.gpu.changes.hostOffline', { host: ch.host })
+    case 'host_status':
+      return t('mh.gpu.changes.hostStatus', {
+        host: ch.host,
+        status: hostStatusLabel(String(ch.to ?? 'unknown')),
+      })
+    case 'fault_detected':
+      return t('mh.gpu.changes.faultDetected', {
+        host: ch.host,
+        slot: ch.slot ?? '',
+        reason: ch.detail ?? '',
+      })
+    case 'fault_cleared':
+      return t('mh.gpu.changes.faultCleared', {
+        host: ch.host,
+        slot: ch.slot ?? '',
+      })
+    case 'card_state':
+    default:
+      return t('mh.gpu.changes.cardState', {
+        host: ch.host,
+        slot: ch.slot ?? '',
+        from: stateLabel((ch.from ?? 'unknown') as GpuState),
+        to: stateLabel((ch.to ?? 'unknown') as GpuState),
+      })
+  }
 }
 
 function shortModel(name?: string | null): string {
@@ -540,12 +991,9 @@ function fmtProcMem(mb?: number | null): string {
 
 function fmtProcAge(startedAt?: number | null): string {
   if (!startedAt || startedAt <= 0) return ''
-  const nowS = Math.floor(Date.now() / 1000)
-  const s = Math.max(0, nowS - startedAt)
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86400)}d`
+  const elapsed = gpuStore.lastPollOkAt > 0 ? Math.max(0, nowTick.value - gpuStore.lastPollOkAt) : 0
+  const serverNowS = Math.floor(((gpuStore.fleet?.server_time_ms ?? nowTick.value) + elapsed) / 1000)
+  return fmtAgeSecs(Math.max(0, serverNowS - startedAt))
 }
 
 function fmtRate(bps: number): string {
@@ -595,30 +1043,35 @@ function toggleExpandProcs(uuid: string) {
 }
 
 function stateLabel(s: GpuState): string {
-  return t(`mh.gpu.state.${s}`)
-}
-
-function cardExportCmd(h: GpuHostView, g: GpuCardView): string {
-  if (isAscendCard(h, g)) {
-    return `export ASCEND_RT_VISIBLE_DEVICES=${shellQuoteSingle(String(g.idx))}`
-  }
-  return `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(g.uuid)}`
+  const key = `mh.gpu.state.${s}`
+  return te(key) ? t(key) : s
 }
 
 function hostFreeExportCmd(h: GpuHostView): string | null {
-  if (!h.is_online || h.freshness === 'offline') return null
-  const free = h.gpus.filter((g) => g.state === 'free' && !cardHasFault(g) && isSafeCudaUuid(g.uuid))
+  const free = h.gpus.filter(
+    (g) => isCardEligibleFree(h, g) && isSafeCudaUuid(g.uuid) && isExportableRuntime(cardRuntimeKind(h, g)),
+  )
   if (!free.length) return null
-  if (isAscendHost(h) || free.every((g) => g.uuid.startsWith('ASCEND-'))) {
-    return `export ASCEND_RT_VISIBLE_DEVICES=${shellQuoteSingle(free.map((g) => String(g.idx)).join(','))}`
+  const ascendCards = free.filter((g) => cardRuntimeKind(h, g) === 'ascend')
+  if (ascendCards.length === free.length) {
+    return `export ASCEND_RT_VISIBLE_DEVICES=${shellQuoteSingle(ascendCards.map((g) => String(g.vendor_index ?? g.idx)).join(','))}`
   }
-  return `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(free.map((g) => g.uuid).join(','))}`
+  const amdCards = free.filter((g) => cardRuntimeKind(h, g) === 'amd')
+  if (amdCards.length === free.length) {
+    return `export ROCR_VISIBLE_DEVICES=${shellQuoteSingle(amdCards.map((g) => String(g.vendor_index ?? g.idx)).join(','))}`
+  }
+  const cudaCards = free.filter((g) => cardRuntimeKind(h, g) === 'nvidia')
+  if (cudaCards.length) {
+    return `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(cudaCards.map((g) => g.uuid).join(','))}`
+  }
+  return null
 }
 
 async function copyCardEnv(h: GpuHostView, g: GpuCardView) {
-  if (!isSafeCudaUuid(g.uuid)) return
+  const cmd = cardExportCmd(h, g)
+  if (!cmd) return
   try {
-    await navigator.clipboard.writeText(cardExportCmd(h, g))
+    await navigator.clipboard.writeText(cmd)
     copiedUuid.value = g.uuid
     setTimeout(() => {
       if (copiedUuid.value === g.uuid) copiedUuid.value = null
@@ -643,25 +1096,34 @@ async function copyHostFree(h: GpuHostView) {
 }
 
 const filteredHosts = computed(() => {
-  const q = search.value.trim().toLowerCase()
+  const q = (search.value ?? '').trim().toLowerCase()
   const list = gpuStore.hosts.filter((h) => {
+    const offline = isHostOffline(h)
     if (stateFilter.value === 'invited' && h.source !== 'invited') return false
     if (stateFilter.value === 'shared' && h.source !== 'shared') return false
-    if (stateFilter.value === 'free' && !h.gpus.some((g) => g.state === 'free')) return false
+    if (stateFilter.value === 'offline' && !offline) return false
+    if (stateFilter.value === 'free' && !h.gpus.some((g) => isCardEligibleFree(h, g))) return false
     if (
       stateFilter.value === 'busy' &&
-      !h.gpus.some((g) => g.state === 'busy' || g.state === 'unattributed')
+      (offline || !h.gpus.some((g) => g.state === 'busy' || g.state === 'unattributed'))
     )
       return false
-    if (stateFilter.value === 'held_idle' && !h.gpus.some((g) => g.state === 'held_idle')) return false
+    if (stateFilter.value === 'held_idle' && (offline || !h.gpus.some((g) => g.state === 'held_idle')))
+      return false
     if (stateFilter.value === 'fault' && !hostHasFault(h)) return false
+    if (stateFilter.value === 'warning' && !hostHasWarning(h)) return false
     if (!q) return true
     if (hostTitle(h).toLowerCase().includes(q) || h.name.toLowerCase().includes(q)) return true
     if ((h.backend || '').toLowerCase().includes(q)) return true
+    if ((h.status || '').toLowerCase().includes(q)) return true
+    if ((h.status_detail || '').toLowerCase().includes(q)) return true
     return h.gpus.some(
       (g) =>
         (g.name || '').toLowerCase().includes(q) ||
         g.uuid.toLowerCase().includes(q) ||
+        cardFaultReasons(g).some(
+          (r) => r.summary.toLowerCase().includes(q) || r.code.toLowerCase().includes(q),
+        ) ||
         (g.procs || []).some(
           (p) =>
             (p.user || '').toLowerCase().includes(q) ||
@@ -682,7 +1144,7 @@ const filteredHosts = computed(() => {
       const mb = Math.max(0, ...b.gpus.map((g) => g.mem_used_mb ?? 0))
       return mb - ma || hostTitle(a).localeCompare(hostTitle(b))
     }
-    return Number(b.is_online) - Number(a.is_online) || hostTitle(a).localeCompare(hostTitle(b))
+    return Number(!isHostOffline(b)) - Number(!isHostOffline(a)) || hostTitle(a).localeCompare(hostTitle(b))
   })
 })
 
@@ -701,31 +1163,58 @@ function refreshCurrentTab() {
   }
 }
 
+function stopUsersTimer() {
+  if (usersRefreshHandle !== null) {
+    clearInterval(usersRefreshHandle)
+    usersRefreshHandle = null
+  }
+}
+
 watch(
   tenantId,
   (tid) => {
+    drawerOpen.value = false
     if (tid) gpuStore.startLivePolling(tid)
   },
   { immediate: true },
 )
 
 watch(tab, (next) => {
+  stopUsersTimer()
   if (!tenantId.value) return
-  if (next === 'users') void gpuStore.loadUsers(tenantId.value)
+  if (next === 'users') {
+    void gpuStore.loadUsers(tenantId.value)
+    usersRefreshHandle = setInterval(() => {
+      if (document.visibilityState === 'visible' && tab.value === 'users' && tenantId.value) {
+        void gpuStore.loadUsers(tenantId.value)
+      }
+    }, 15000)
+  }
   if (next === 'alerts') void gpuStore.loadAlertSettings(tenantId.value)
 })
 
+watch(
+  () => route.query.host,
+  (hostQuery) => {
+    if (typeof hostQuery === 'string' && hostQuery && tenantId.value) {
+      void gpuStore.openHostDetail(tenantId.value, hostQuery).then(() => {
+        if (gpuStore.selectedHost) drawerOpen.value = true
+      })
+    }
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
-  const hostQuery = route.query.host
-  if (typeof hostQuery === 'string' && hostQuery) {
-    void gpuStore.openHostDetail(tenantId.value, hostQuery).then(() => {
-      if (gpuStore.selectedHost) drawerOpen.value = true
-    })
-  }
+  tickHandle = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
 })
 
 onBeforeUnmount(() => {
   gpuStore.stopLivePolling()
+  stopUsersTimer()
+  if (tickHandle !== null) clearInterval(tickHandle)
 })
 </script>
 
@@ -744,7 +1233,7 @@ onBeforeUnmount(() => {
   --nv-hot: #dc2626;
   --nv-hot-soft: rgba(220, 38, 38, 0.16);
   --nv-held: #ea580c;
-  --nv-fault: #9333ea;
+  --nv-fault: #dc2626;
 }
 
 .text-mono {
@@ -787,6 +1276,16 @@ onBeforeUnmount(() => {
   letter-spacing: 0.02em;
 }
 
+.nvitop-live-pill.pill-warn {
+  background: var(--nv-warm-soft);
+  color: var(--nv-warm);
+}
+
+.nvitop-live-pill.pill-err {
+  background: var(--nv-hot-soft);
+  color: var(--nv-hot);
+}
+
 .nvitop-live-dot {
   width: 7px;
   height: 7px;
@@ -795,13 +1294,23 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.22);
 }
 
+.nvitop-live-dot.dot-warn {
+  background: var(--nv-warm);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.22);
+}
+
+.nvitop-live-dot.dot-err {
+  background: var(--nv-hot);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.22);
+}
+
 .nvitop-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* Compact Instrument KPI Ribbon */
+/* Clickable Instrument KPI Ribbon */
 .nvitop-kpi-ribbon {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -814,14 +1323,34 @@ onBeforeUnmount(() => {
 .nvitop-kpi {
   padding: 9px 14px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
+  border: none;
   border-right: 1px solid var(--nv-border);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.nvitop-kpi:hover {
+  background: var(--nv-row-hover);
+}
+
+.nvitop-kpi.is-active {
+  background: rgba(var(--v-theme-primary), 0.08);
 }
 
 .nvitop-kpi:last-child {
   border-right: none;
+}
+
+.nvitop-kpi-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .nvitop-kpi-lbl {
@@ -829,6 +1358,11 @@ onBeforeUnmount(() => {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  color: var(--nv-muted);
+}
+
+.nvitop-kpi-sub {
+  font-size: 0.66rem;
   color: var(--nv-muted);
 }
 
@@ -855,8 +1389,71 @@ onBeforeUnmount(() => {
   color: var(--nv-held);
 }
 
-.nvitop-kpi-fault .nvitop-kpi-val {
+.nvitop-kpi-fault {
+  background: rgba(220, 38, 38, 0.07);
+}
+
+.nvitop-kpi-fault .nvitop-kpi-val,
+.nvitop-kpi-fault .nvitop-kpi-sub {
   color: var(--nv-fault);
+}
+
+/* Recent Live Changes Strip */
+.nvitop-changes {
+  border: 1px solid var(--nv-border);
+  border-radius: 9px;
+  background: var(--nv-surface);
+  padding: 7px 12px;
+}
+
+.nvitop-changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.nvitop-changes-title {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--nv-muted);
+}
+
+.nvitop-changes-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  font-size: 0.7rem;
+}
+
+.nvitop-change-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.nvitop-change-chip.change-success {
+  background: var(--nv-cool-soft);
+  color: var(--nv-cool);
+}
+
+.nvitop-change-chip.change-warning {
+  background: var(--nv-warm-soft);
+  color: var(--nv-warm);
+}
+
+.nvitop-change-chip.change-error {
+  background: var(--nv-hot-soft);
+  color: var(--nv-hot);
+}
+
+.nvitop-change-age {
+  opacity: 0.72;
 }
 
 /* Host Rack Bay */
@@ -876,6 +1473,10 @@ onBeforeUnmount(() => {
 
 .nvitop-host-offline {
   opacity: 0.68;
+}
+
+.nvitop-host-faulted {
+  border-color: rgba(220, 38, 38, 0.45);
 }
 
 .nvitop-host-head {
@@ -912,6 +1513,11 @@ onBeforeUnmount(() => {
   background: var(--nv-warm);
 }
 
+.dot-fault {
+  background: var(--nv-hot);
+  box-shadow: 0 0 6px rgba(220, 38, 38, 0.55);
+}
+
 .dot-offline {
   background: #64748b;
 }
@@ -939,9 +1545,20 @@ onBeforeUnmount(() => {
   line-height: 1.3;
 }
 
-.nvitop-pill-vendor {
+.nvitop-pill-vendor,
+.nvitop-pill-offline {
   background: rgba(var(--v-theme-on-surface), 0.07);
   color: var(--nv-muted);
+}
+
+.nvitop-pill-fresh {
+  background: var(--nv-cool-soft);
+  color: var(--nv-cool);
+}
+
+.nvitop-pill-warn {
+  background: var(--nv-warm-soft);
+  color: var(--nv-warm);
 }
 
 .nvitop-pill-invited {
@@ -977,6 +1594,32 @@ onBeforeUnmount(() => {
 .nvitop-free-counter.has-free {
   background: var(--nv-cool-soft);
   color: var(--nv-cool);
+}
+
+/* Host Diagnostic Banner */
+.nvitop-host-diag {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 14px;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--nv-border);
+}
+
+.nvitop-host-diag.diag-critical {
+  background: var(--nv-hot-soft);
+  color: var(--nv-hot);
+}
+
+.nvitop-host-diag.diag-warn {
+  background: var(--nv-warm-soft);
+  color: var(--nv-warm);
+}
+
+.nvitop-host-diag.diag-info {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: var(--nv-muted);
 }
 
 /* Host Mini-Gauges Strip */
@@ -1045,7 +1688,7 @@ onBeforeUnmount(() => {
   padding: 8px 14px;
   border-bottom: 1px solid var(--nv-border);
   border-left: 3px solid transparent;
-  transition: background-color 120ms ease;
+  transition: background-color 180ms ease;
 }
 
 .nvitop-card:last-child {
@@ -1054,6 +1697,14 @@ onBeforeUnmount(() => {
 
 .nvitop-card:hover {
   background: var(--nv-row-hover);
+}
+
+.nvitop-card.is-stale {
+  opacity: 0.75;
+}
+
+.nvitop-card.is-changed {
+  background: rgba(56, 189, 248, 0.06);
 }
 
 .nvitop-card.state-free {
@@ -1117,6 +1768,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
 }
 
 .nvitop-tag {
@@ -1152,14 +1804,43 @@ onBeforeUnmount(() => {
   color: var(--nv-held);
 }
 
-.badge-fault {
-  background: rgba(147, 51, 234, 0.18);
-  color: var(--nv-fault);
-}
-
 .badge-unknown {
   background: rgba(var(--v-theme-on-surface), 0.08);
   color: var(--nv-muted);
+}
+
+/* Inline Fault / Warning Chips */
+.nvitop-fault-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.nvitop-fault-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+}
+
+.nvitop-fault-chip.fault-critical {
+  background: var(--nv-hot-soft);
+  color: var(--nv-hot);
+}
+
+.nvitop-fault-chip.fault-warning {
+  background: var(--nv-warm-soft);
+  color: var(--nv-warm);
+}
+
+.nvitop-fault-chip.fault-info {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: var(--nv-muted);
+  font-weight: 500;
 }
 
 /* Signature nvitop Segmented Progress Bars */
@@ -1234,6 +1915,24 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
 }
 
+.nvitop-delta {
+  font-size: 0.64rem;
+  font-weight: 700;
+  padding: 0 3px;
+  border-radius: 3px;
+  margin-left: 3px;
+}
+
+.nvitop-delta.delta-up {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.14);
+}
+
+.nvitop-delta.delta-down {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.14);
+}
+
 .tone-cool {
   background: linear-gradient(90deg, #16a34a 0%, #22c55e 100%);
 }
@@ -1247,7 +1946,7 @@ onBeforeUnmount(() => {
 }
 
 .tone-fault {
-  background: linear-gradient(90deg, #7e22ce 0%, #a855f7 100%);
+  background: linear-gradient(90deg, #991b1b 0%, #dc2626 100%);
 }
 
 .tone-idle {
@@ -1425,6 +2124,14 @@ onBeforeUnmount(() => {
   }
   .nvitop-bars {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nvitop-bar-fill,
+  .nvitop-mini-fill,
+  .nvitop-card {
+    transition: none;
   }
 }
 </style>

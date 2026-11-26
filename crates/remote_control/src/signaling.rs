@@ -14509,6 +14509,7 @@ mod fr130_wire_tests {
                     unified: false,
                 }],
                 status: crate::gpu::GpuHostStatus::Ok,
+                status_detail: None,
             }),
         };
         assert_eq!(inv.wire_tag(), "rc:agent.gpu_inventory");
@@ -14523,6 +14524,7 @@ mod fr130_wire_tests {
                 seq: 42,
                 interval_ms: 2000,
                 status: crate::gpu::GpuHostStatus::Ok,
+                status_detail: None,
                 backend: Some("nvml".into()),
                 driver_version: Some("550.90.07".into()),
                 host: crate::gpu::HostLoad::default(),

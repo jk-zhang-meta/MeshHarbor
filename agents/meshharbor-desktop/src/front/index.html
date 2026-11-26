@@ -572,7 +572,7 @@
             </p>
           </div>
           <div class="gpu-head-actions">
-            <label class="gpu-live-toggle">
+            <label class="gpu-live-toggle" id="gpu-live-wrap">
               <input type="checkbox" id="gpu-live-toggle" checked />
               <span data-i18n="gpu.liveToggle">Live (2s)</span>
             </label>
@@ -582,32 +582,33 @@
         </div>
 
         <div id="gpu-summary" class="gpu-summary-grid">
-          <div class="gpu-kpi">
+          <button type="button" class="gpu-kpi" data-gpu-kpi-filter="all" aria-pressed="true">
             <div class="gpu-kpi-label" data-i18n="gpu.kpi.hosts">Online hosts</div>
             <div class="gpu-kpi-val mono" id="gpu-kpi-hosts">0 / 0</div>
-          </div>
-          <div class="gpu-kpi gpu-kpi-free">
+          </button>
+          <button type="button" class="gpu-kpi gpu-kpi-free" data-gpu-kpi-filter="free" aria-pressed="false">
             <div class="gpu-kpi-label" data-i18n="gpu.kpi.free">Free GPUs</div>
             <div class="gpu-kpi-val mono" id="gpu-kpi-free">0 / 0</div>
-          </div>
-          <div class="gpu-kpi gpu-kpi-busy">
+          </button>
+          <button type="button" class="gpu-kpi gpu-kpi-busy" data-gpu-kpi-filter="busy" aria-pressed="false">
             <div class="gpu-kpi-label" data-i18n="gpu.kpi.busy">Busy</div>
             <div class="gpu-kpi-val mono" id="gpu-kpi-busy">0</div>
-          </div>
-          <div class="gpu-kpi gpu-kpi-held">
+          </button>
+          <button type="button" class="gpu-kpi gpu-kpi-held" data-gpu-kpi-filter="held_idle" aria-pressed="false">
             <div class="gpu-kpi-label" data-i18n="gpu.kpi.held">Held idle</div>
             <div class="gpu-kpi-val mono" id="gpu-kpi-held">0</div>
-          </div>
-          <div class="gpu-kpi gpu-kpi-fault">
+          </button>
+          <button type="button" class="gpu-kpi gpu-kpi-fault" id="gpu-kpi-fault-card" data-gpu-kpi-filter="fault" aria-pressed="false">
             <div class="gpu-kpi-label" data-i18n="gpu.kpi.fault">Fault</div>
             <div class="gpu-kpi-val mono" id="gpu-kpi-fault">0</div>
-          </div>
+            <div class="gpu-kpi-sub mono" id="gpu-kpi-fault-sub"></div>
+          </button>
         </div>
 
         <div class="gpu-tabs" role="tablist">
           <button type="button" class="gpu-tab active" data-gpu-tab="fleet" role="tab" aria-selected="true" data-i18n="gpu.tab.fleet">Fleet</button>
           <button type="button" class="gpu-tab" data-gpu-tab="users" role="tab" aria-selected="false" data-i18n="gpu.tab.users">Usage by user</button>
-          <span class="gpu-updated muted small" id="gpu-updated"></span>
+          <span class="gpu-updated muted small mono" id="gpu-updated"></span>
         </div>
 
         <div id="gpu-error" class="banner banner-warn" hidden>
@@ -628,14 +629,23 @@
               <button type="button" class="gpu-filter" data-gpu-filter="busy" data-i18n="gpu.filter.busy">Busy</button>
               <button type="button" class="gpu-filter" data-gpu-filter="held_idle" data-i18n="gpu.filter.heldIdle">Held idle</button>
               <button type="button" class="gpu-filter" data-gpu-filter="fault" data-i18n="gpu.filter.fault">Fault</button>
+              <button type="button" class="gpu-filter" data-gpu-filter="warning" data-i18n="gpu.filter.warning">Warning</button>
               <button type="button" class="gpu-filter" data-gpu-filter="offline" data-i18n="gpu.filter.offline">Offline</button>
             </div>
+          </div>
+          <div id="gpu-changes" class="gpu-changes" hidden>
+            <div class="gpu-changes-head">
+              <span class="gpu-changes-title" data-i18n="gpu.changes.title">Recent live changes</span>
+              <button type="button" class="gpu-changes-clear" id="gpu-changes-clear" data-i18n="gpu.changes.clear">Clear</button>
+            </div>
+            <div id="gpu-changes-list" class="gpu-changes-list mono"></div>
           </div>
           <div id="gpu-empty" class="card gpu-empty" hidden>
             <strong id="gpu-empty-title" data-i18n="gpu.empty.title">No marked GPU servers</strong>
             <p class="muted small" id="gpu-empty-body" data-i18n="gpu.empty.body">
               Mark any device as a GPU server in the web console (or via an enrollment token, key, or temporary invite) to see live cards here.
             </p>
+            <button type="button" id="gpu-empty-reset" hidden data-i18n="gpu.empty.reset">Clear filters</button>
           </div>
           <div id="gpu-hosts" class="gpu-hosts"></div>
         </div>

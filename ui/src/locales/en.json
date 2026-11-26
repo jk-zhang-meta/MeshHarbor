@@ -3781,8 +3781,12 @@
     },
     "gpu": {
       "title": "GPU Servers",
-      "subtitle": "Live GPU utilization, VRAM, running jobs, per-user GPU-hours, and personal availability alerts.",
+      "subtitle": "Live GPU/NPU/TPU utilization, VRAM, running jobs, per-user GPU-hours, and personal availability alerts.",
       "live2s": "Live (2 s)",
+      "liveCadence": "Live ({sec}s)",
+      "liveHeartbeat": "Live ({sec}s) · {age} ago",
+      "standingOnly": "Standing mode (live disabled by server)",
+      "pollRetrying": "Poll failed · retrying in {sec}s",
       "findFree": "Find free GPU",
       "disabledNotice": "GPU monitoring is disabled on this server.",
       "freeWord": "free",
@@ -3790,10 +3794,14 @@
       "noCardsYet": "Waiting for GPU telemetry from this host…",
       "moreProcs": "more processes",
       "procsOffLocal": "Process list disabled locally on this host",
+      "presenceOnly": "Presence only",
       "copyCudaEnv": "Copy CUDA_VISIBLE_DEVICES command",
-      "searchPlaceholder": "Search host, model, user, or command…",
+      "searchPlaceholder": "Search host, model, user, fault, or command…",
       "emptyTitle": "No GPU servers marked yet",
       "emptyBody": "Mark any enrolled or invited device as a GPU server on the Devices page, or accept a shared GPU server to see it here.",
+      "filteredEmptyTitle": "No matching GPU servers",
+      "filteredEmptyBody": "Try clearing the search query or switching the active filter.",
+      "clearFilters": "Clear filters",
       "goToDevices": "Open Devices",
       "tabs": {
         "fleet": "Fleet",
@@ -3805,7 +3813,9 @@
         "free": "Free GPUs",
         "busy": "Busy GPUs",
         "heldIdle": "Held Idle",
-        "fault": "Faults"
+        "fault": "Faults",
+        "faultHosts": "on {n} host(s)",
+        "warnCount": "{n} warn"
       },
       "filter": {
         "all": "All",
@@ -3813,8 +3823,20 @@
         "busy": "Busy",
         "heldIdle": "Held Idle",
         "fault": "Fault",
+        "warning": "Warning",
+        "offline": "Offline",
         "invited": "Invited",
         "shared": "Shared"
+      },
+      "changes": {
+        "title": "Recent live changes",
+        "clear": "Clear",
+        "hostOnline": "{host} came online",
+        "hostOffline": "{host} went offline",
+        "hostStatus": "{host} status: {status}",
+        "cardState": "{host} {slot}: {from} → {to}",
+        "faultDetected": "{host} {slot} fault: {reason}",
+        "faultCleared": "{host} {slot} fault cleared"
       },
       "sort": {
         "host": "Sort: Host",
@@ -3827,14 +3849,48 @@
         "sharedRo": "Shared (read-only)"
       },
       "freshness": {
-        "fresh": "LIVE",
+        "fresh": "FRESH",
+        "freshAge": "{age}",
+        "laggingAge": "LAGGING {age}",
         "stale": "STALE",
-        "offline": "OFFLINE"
+        "staleAge": "STALE {age}",
+        "offline": "OFFLINE",
+        "offlineAge": "OFFLINE {age}"
+      },
+      "hostStatus": {
+        "ok": "Healthy",
+        "limited": "Limited telemetry",
+        "driver_missing": "Driver missing",
+        "driver_reboot_pending": "Reboot pending",
+        "driver_hung": "Driver hung",
+        "sampler_stalled": "Sampler stalled",
+        "unavailable": "Unavailable",
+        "no_gpu": "No accelerator",
+        "off_local": "Local telemetry off",
+        "unknown": "Awaiting report"
+      },
+      "diag": {
+        "driver_missing": "Accelerator hardware was detected via PCIe, but no working vendor driver/runtime is installed on this host.",
+        "driver_reboot_pending": "Driver/library version mismatch detected. Reboot the host or reload the driver kernel module.",
+        "driver_hung": "GPU driver call hung in kernel; the sampler child is backing off and retrying automatically.",
+        "sampler_stalled": "GPU sampler missed its collection deadline and is retrying automatically.",
+        "unavailable": "GPU sampler failed repeatedly; background recovery will retry periodically.",
+        "limited": "Partial telemetry mode (e.g. WSL2, Google TPU device nodes, or PCIe presence without vendor runtime).",
+        "off_local": "GPU telemetry is disabled locally on this host.",
+        "no_gpu": "No GPU, NPU, or TPU hardware was detected on this host.",
+        "unknown": "Waiting for the first telemetry snapshot from this host."
+      },
+      "throttle": {
+        "power_cap": "Power cap",
+        "thermal": "Thermal throttle",
+        "sw_thermal": "SW thermal throttle",
+        "hw_slowdown": "HW slowdown",
+        "power_brake": "Power brake"
       },
       "state": {
         "free": "FREE",
         "busy": "BUSY",
-        "held_idle": "IDLE!",
+        "held_idle": "HELD IDLE",
         "unattributed": "UNATTR",
         "fault": "FAULT",
         "unknown": "UNK"
@@ -3878,6 +3934,7 @@
         "minFreeGb": "Min free VRAM (GiB)",
         "sameHost": "Same host only",
         "notEnough": "Requested {need} qualifying free GPU(s), currently found {found}.",
+        "notEnoughSameHost": "No single host has {need} qualifying free GPU(s) ({total} available across multiple hosts).",
         "copy": "Copy",
         "copied": "Copied"
       },
@@ -3887,9 +3944,9 @@
         "enable": "Enable GPU alerts",
         "freeMin": "Notify when free GPUs ≥",
         "minMemGb": "Min free VRAM (GiB)",
-        "heldIdle": "Alert on held-idle GPUs (VRAM held with 0% util)",
-        "fault": "Alert on GPU faults (Xid, ECC, dropped GPU, thermal throttle)",
-        "offline": "Alert when a GPU server goes offline > 5 min",
+        "heldIdle": "Alert on held-idle GPUs (VRAM held with low utilization past threshold)",
+        "fault": "Alert on GPU faults (Xid, ECC, dropped card, vendor health, thermal throttle)",
+        "offline": "Alert when a GPU server goes offline > 5 min or hits driver/sampler failure",
         "lang": "Notification language",
         "saved": "Alert rules saved."
       },

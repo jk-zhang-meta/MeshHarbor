@@ -67,6 +67,19 @@ pub struct GpuHostLoadView {
     pub net_tx_bps: Option<u64>,
 }
 
+/// Structured fault reason echoed from server fleet DTO (FR-139).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct GpuFaultReasonView {
+    pub scope: String,
+    pub severity: String,
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_idx: Option<u16>,
+    pub summary: String,
+}
+
 /// One GPU card inside a [`GpuHostView`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GpuCardView {
@@ -105,6 +118,24 @@ pub struct GpuCardView {
     pub mig: bool,
     #[serde(default)]
     pub lost: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_health: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_index: Option<u16>,
+    #[serde(default)]
+    pub remap_pending: bool,
+    #[serde(default)]
+    pub remap_failure: bool,
+    #[serde(default)]
+    pub presence_only: bool,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault_severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fault_reasons: Vec<GpuFaultReasonView>,
     #[serde(default)]
     pub unified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,11 +172,25 @@ pub struct GpuHostView {
     #[serde(default)]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_fault_severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fault_reasons: Vec<GpuFaultReasonView>,
+    #[serde(default)]
+    pub fault_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver_version: Option<String>,
+    #[serde(default)]
+    pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub received_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<i64>,
+    #[serde(default)]
+    pub lagging: bool,
     #[serde(default)]
     pub interval_ms: u32,
     #[serde(default)]
@@ -179,6 +224,16 @@ pub struct GpuFleetSummary {
     pub gpus_held_idle: usize,
     #[serde(default)]
     pub gpus_fault: usize,
+    #[serde(default)]
+    pub gpus_warning: usize,
+    #[serde(default)]
+    pub gpus_unknown: usize,
+    #[serde(default)]
+    pub gpus_offline: usize,
+    #[serde(default)]
+    pub fault_hosts: usize,
+    #[serde(default)]
+    pub fault_cards: usize,
 }
 
 /// Answer to [`crate::Request::GpuFleet`].
@@ -190,6 +245,8 @@ pub struct GpuFleetPage {
     pub summary: GpuFleetSummary,
     #[serde(default)]
     pub server_time_ms: i64,
+    #[serde(default)]
+    pub live_interval_ms: u32,
     /// Enrollment label that answered (filled by `SelfView`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub org: String,

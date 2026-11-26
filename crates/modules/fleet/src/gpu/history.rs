@@ -46,6 +46,10 @@ pub struct GpuBucketDoc {
     #[serde(default)]
     pub util_sum: f64,
     #[serde(default)]
+    pub util_wsum: f64,
+    #[serde(default)]
+    pub util_secs: u64,
+    #[serde(default)]
     pub util_max: u8,
     #[serde(default)]
     pub mem_samples: u32,
@@ -65,6 +69,10 @@ pub struct GpuBucketDoc {
     pub free_samples: u32,
     #[serde(default)]
     pub held_idle_samples: u32,
+    #[serde(default)]
+    pub free_secs: u64,
+    #[serde(default)]
+    pub held_idle_secs: u64,
     #[serde(default)]
     pub sample_secs: u64,
     #[serde(default)]
@@ -148,6 +156,8 @@ pub async fn record_report_to_1m_bucket(
         if let Some(u) = g.util_pct {
             inc.insert("util_samples", 1i32);
             inc.insert("util_sum", f64::from(u));
+            inc.insert("util_wsum", f64::from(u) * step_secs as f64);
+            inc.insert("util_secs", step_secs as i64);
         }
         if let Some(m) = g.mem_used_mb {
             inc.insert("mem_samples", 1i32);
@@ -159,9 +169,11 @@ pub async fn record_report_to_1m_bucket(
         }
         if state == GpuState::Free {
             inc.insert("free_samples", 1i32);
+            inc.insert("free_secs", step_secs as i64);
         }
         if state == GpuState::HeldIdle {
             inc.insert("held_idle_samples", 1i32);
+            inc.insert("held_idle_secs", step_secs as i64);
         }
 
         // Attribute GPU-seconds to each distinct Linux user holding processes on this card.
@@ -268,6 +280,8 @@ pub async fn rollup_buckets(
             samples: 0,
             util_samples: 0,
             util_sum: 0.0,
+            util_wsum: 0.0,
+            util_secs: 0,
             util_max: 0,
             mem_samples: 0,
             mem_used_sum: 0.0,
@@ -278,12 +292,16 @@ pub async fn rollup_buckets(
             power_sum: 0.0,
             free_samples: 0,
             held_idle_samples: 0,
+            free_secs: 0,
+            held_idle_secs: 0,
             sample_secs: 0,
             users: HashMap::new(),
         });
         entry.samples = entry.samples.saturating_add(b.samples);
         entry.util_samples = entry.util_samples.saturating_add(b.util_samples);
         entry.util_sum += b.util_sum;
+        entry.util_wsum += b.util_wsum;
+        entry.util_secs = entry.util_secs.saturating_add(b.util_secs);
         entry.util_max = entry.util_max.max(b.util_max);
         entry.mem_samples = entry.mem_samples.saturating_add(b.mem_samples);
         entry.mem_used_sum += b.mem_used_sum;
@@ -299,6 +317,8 @@ pub async fn rollup_buckets(
         entry.power_sum += b.power_sum;
         entry.free_samples = entry.free_samples.saturating_add(b.free_samples);
         entry.held_idle_samples = entry.held_idle_samples.saturating_add(b.held_idle_samples);
+        entry.free_secs = entry.free_secs.saturating_add(b.free_secs);
+        entry.held_idle_secs = entry.held_idle_secs.saturating_add(b.held_idle_secs);
         entry.sample_secs = entry.sample_secs.saturating_add(b.sample_secs);
         for (u, r) in b.users {
             let ur = entry.users.entry(u).or_default();
@@ -359,11 +379,30 @@ pub async fn query_history(
         let mut out = Vec::new();
         while let Some(b) = cur.try_next().await? {
             let n = f64::from(b.samples.max(1));
+            let util_avg = if b.util_secs > 0 {
+                Some((b.util_wsum / b.util_secs as f64) as f32)
+            } else if b.util_samples > 0 {
+                Some((b.util_sum / f64::from(b.util_samples)) as f32)
+            } else {
+                None
+            };
+            let (free_ratio, held_idle_ratio) = if b.sample_secs > 0
+                && (b.free_secs > 0 || b.held_idle_secs > 0 || (b.free_samples == 0 && b.held_idle_samples == 0))
+            {
+                (
+                    (b.free_secs as f64 / b.sample_secs as f64) as f32,
+                    (b.held_idle_secs as f64 / b.sample_secs as f64) as f32,
+                )
+            } else {
+                (
+                    (f64::from(b.free_samples) / n) as f32,
+                    (f64::from(b.held_idle_samples) / n) as f32,
+                )
+            };
             out.push(GpuHistoryPoint {
                 ts_ms: b.ts.timestamp_millis(),
                 samples: b.samples,
-                util_avg: (b.util_samples > 0)
-                    .then(|| (b.util_sum / f64::from(b.util_samples)) as f32),
+                util_avg,
                 util_max: b.util_max,
                 mem_used_avg_mb: (b.mem_samples > 0)
                     .then(|| (b.mem_used_sum / f64::from(b.mem_samples)).round() as u32),
@@ -372,8 +411,8 @@ pub async fn query_history(
                 temp_max_c: b.temp_max,
                 power_avg_w: (b.power_samples > 0)
                     .then(|| (b.power_sum / f64::from(b.power_samples)) as f32),
-                free_ratio: (f64::from(b.free_samples) / n) as f32,
-                held_idle_ratio: (f64::from(b.held_idle_samples) / n) as f32,
+                free_ratio,
+                held_idle_ratio,
             });
         }
         return Ok(out);
@@ -513,7 +552,9 @@ pub async fn query_users(
             let mut card_users: HashMap<String, u64> = HashMap::new();
             for p in procs {
                 if let Some(u) = p.user.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    *card_users.entry(u.to_string()).or_insert(0) += u64::from(p.mem_mb.unwrap_or(0));
+                    // Use the same sanitized key as historical rollups so usernames
+                    // containing `.` or `$` do not split into two separate rows.
+                    *card_users.entry(safe_user_key(u)).or_insert(0) += u64::from(p.mem_mb.unwrap_or(0));
                 }
             }
             for (u, mem_mb) in card_users {
@@ -573,6 +614,8 @@ mod tests {
             samples: 12,
             util_samples: 10,
             util_sum: 780.0,
+            util_wsum: 23400.0,
+            util_secs: 300,
             util_max: 98,
             mem_samples: 12,
             mem_used_sum: 240_000.0,
@@ -583,6 +626,8 @@ mod tests {
             power_sum: 3600.0,
             free_samples: 2,
             held_idle_samples: 1,
+            free_secs: 60,
+            held_idle_secs: 30,
             sample_secs: 60,
             users,
         };

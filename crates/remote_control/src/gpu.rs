@@ -101,6 +101,10 @@ pub struct GpuInventory {
     pub gpus: Vec<GpuInventoryItem>,
     #[serde(default)]
     pub status: GpuHostStatus,
+    /// Optional human-readable host diagnosis (e.g. detected PCIe accelerator
+    /// without kernel driver, missing NVML/npu-smi, WSL2 limitation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
 }
 
 /// Host-level CPU / load / memory / disk / network counters merged by the
@@ -198,10 +202,39 @@ pub struct GpuSample {
     pub remapped_rows: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xid_errors: Option<Vec<u32>>,
+    /// Unix seconds of the most recent Xid error observed on this card (used
+    /// for edge-triggered alerting and age display).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xid_last_at: Option<i64>,
+    /// True when NVML reports pending row remapping (GPU reset required).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remap_pending: bool,
+    /// True when NVML reports a row-remapping failure (hardware RMA signal).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remap_failure: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mig: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lost: bool,
+    /// Optional vendor-reported health string (e.g. Huawei Ascend `"OK"`,
+    /// `"Warning"`, `"Alarm"`, `"Critical"`). Preserved separately from `lost`
+    /// so a responding card with a warning is never falsely marked off-the-bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_health: Option<String>,
+    /// Per-card backend tag (e.g. `"nvml"`, `"ascend"`, `"amd"`, `"intel"`,
+    /// `"apple"`, `"tpu"`, `"pci"`), enabling accurate mixed-vendor hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// Vendor-native device ordinal (e.g. Ascend logical NPU ID for
+    /// `ASCEND_RT_VISIBLE_DEVICES`), preserved even when mixed-backend hosts
+    /// renumber display `idx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_index: Option<u16>,
+    /// True when the card is observed via device-node/PCIe presence without
+    /// hardware memory/utilization counters (e.g. Google TPU `/dev/vfio/*` or
+    /// Ascend `/dev/davinci*` fallback without `npu-smi`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presence_only: bool,
     /// Unix seconds since util stayed continuously below 5%.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_since: Option<i64>,
@@ -225,6 +258,10 @@ pub struct GpuReport {
     pub interval_ms: u32,
     #[serde(default)]
     pub status: GpuHostStatus,
+    /// Optional human-readable host diagnosis explaining non-`ok` status
+    /// (`driver_missing`, `limited`, `driver_reboot_pending`, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,10 +358,337 @@ pub fn compute_freshness(
     }
 }
 
+/// Structured, machine- and human-readable fault explanation shared across
+/// server DTOs, LocalAPI, CLI, Desktop, and Web SPA (FR-139).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuFaultReason {
+    /// `"host"` | `"card"`.
+    pub scope: String,
+    /// `"critical"` | `"warning"`.
+    pub severity: String,
+    /// Stable code (`"lost"`, `"xid"`, `"ecc_uncorrected"`, `"remapped_rows"`,
+    /// `"thermal_throttle"`, `"hw_slowdown"`, `"power_brake"`, `"vendor_health"`,
+    /// `"driver_missing"`, `"driver_reboot_pending"`, `"driver_hung"`,
+    /// `"sampler_stalled"`, `"unavailable"`).
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_idx: Option<u16>,
+    /// Concise human-readable diagnostic summary.
+    pub summary: String,
+}
+
+/// Data-cadence lag detector, independent of presence-based [`GpuFreshness`].
+///
+/// In live 2 s mode a frozen sampler would otherwise stay `Fresh` for 89 s
+/// because of the 90 s offline-flicker floor. This function compares sample age
+/// against `max(3 * interval_ms, 6_000)` when a live lease is active and
+/// `max(3 * interval_ms, 90_000)` in standing 30 s mode.
+pub fn is_lagging(age_ms: i64, interval_ms: u32, live_requested: bool) -> bool {
+    if age_ms < 0 {
+        return false;
+    }
+    let iv = i64::from(interval_ms.max(1000));
+    let floor = if live_requested { 6_000 } else { 90_000 };
+    age_ms > iv.saturating_mul(3).max(floor)
+}
+
+/// Application-caused NVIDIA Xid codes (classified as `warning` rather than
+/// hardware-critical `critical` so user OOM/illegal-memory-access kernels do
+/// not permanently fail hardware health checks).
+pub const APP_LEVEL_XIDS: &[u32] = &[13, 31, 43, 45];
+
+/// Decode common NVIDIA Xid error codes into a concise operational explanation.
+pub fn decode_nvidia_xid(code: u32) -> Option<&'static str> {
+    match code {
+        13 => Some("Graphics engine exception"),
+        31 => Some("GPU memory page fault"),
+        32 => Some("Corrupted command/push buffer stream"),
+        43 => Some("GPU stopped processing"),
+        45 => Some("Preemptive cleanup after prior fault"),
+        48 => Some("Double-bit ECC error (DBE)"),
+        62 => Some("Internal micro-controller halt"),
+        63 => Some("ECC page retirement / row remapping event"),
+        64 => Some("ECC page retirement / row remapper failure"),
+        74 => Some("NVLink error"),
+        79 => Some("GPU fell off the bus"),
+        92 => Some("High single-bit ECC error rate"),
+        94 => Some("Contained ECC error"),
+        95 => Some("Uncontained ECC error (GPU reset required)"),
+        119 => Some("GSP RPC timeout"),
+        120 => Some("GSP error"),
+        _ => None,
+    }
+}
+
+/// Canonical per-card fault evaluation shared across server, CLI, Web, and
+/// Desktop. Routine training power capping (`power_cap`) and `sync_boost` are
+/// NOT faults; hardware/thermal throttling, `lost`, Xid, uncorrected ECC,
+/// remapped rows, and non-OK vendor health ARE surfaced with explicit reasons.
+pub fn card_fault_reasons(sample: &GpuSample) -> Vec<GpuFaultReason> {
+    let mut out = Vec::new();
+    let uuid = Some(sample.uuid.clone());
+    let idx = Some(sample.idx);
+
+    if sample.lost {
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: "critical".into(),
+            code: "lost".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: "Accelerator fell off the bus (lost)".into(),
+        });
+    }
+
+    if let Some(xids) = sample.xid_errors.as_ref().filter(|v| !v.is_empty()) {
+        let any_hw_critical = xids.iter().any(|c| !APP_LEVEL_XIDS.contains(c));
+        let formatted: Vec<String> = xids
+            .iter()
+            .map(|&code| match decode_nvidia_xid(code) {
+                Some(desc) => format!("Xid {code} ({desc})"),
+                None => format!("Xid {code}"),
+            })
+            .collect();
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: if any_hw_critical { "critical" } else { "warning" }.into(),
+            code: if any_hw_critical { "xid" } else { "xid_app" }.into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: formatted.join(", "),
+        });
+    }
+
+    if let Some(ecc) = sample.ecc_uncorrected
+        && ecc > 0
+    {
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: "critical".into(),
+            code: "ecc_uncorrected".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: format!("Uncorrected ECC errors: {ecc}"),
+        });
+    }
+
+    if sample.remap_failure {
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: "critical".into(),
+            code: "remap_failure".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: "Memory row remapping failed (hardware RMA required)".into(),
+        });
+    } else if sample.remap_pending {
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: "critical".into(),
+            code: "remap_pending".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: "Memory row remapping pending (GPU reset required)".into(),
+        });
+    } else if let Some(rem) = sample.remapped_rows
+        && rem > 0
+    {
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: "warning".into(),
+            code: "remapped_rows".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: format!("Remapped memory rows: {rem}"),
+        });
+    }
+
+    if let Some(vh) = sample
+        .vendor_health
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("ok"))
+    {
+        let low = vh.to_ascii_lowercase();
+        let severity = if low.contains("crit")
+            || low.contains("fatal")
+            || low.contains("error")
+            || low.contains("alarm")
+            || low.contains("fail")
+            || low.contains("general")
+        {
+            "critical"
+        } else {
+            "warning"
+        };
+        out.push(GpuFaultReason {
+            scope: "card".into(),
+            severity: severity.into(),
+            code: "vendor_health".into(),
+            device_uuid: uuid.clone(),
+            device_idx: idx,
+            summary: format!("Vendor health: {vh}"),
+        });
+    }
+
+    if let Some(reasons) = sample.throttle.as_ref() {
+        let mut saw_thermal = false;
+        let mut saw_hw = false;
+        let mut saw_power_brake = false;
+        for raw in reasons {
+            match raw.to_ascii_lowercase().as_str() {
+                "thermal" | "sw_thermal" if !saw_thermal => {
+                    saw_thermal = true;
+                    let temp_suffix = sample
+                        .temp_c
+                        .map(|c| format!(" ({c}°C)"))
+                        .unwrap_or_default();
+                    out.push(GpuFaultReason {
+                        scope: "card".into(),
+                        severity: "warning".into(),
+                        code: "thermal_throttle".into(),
+                        device_uuid: uuid.clone(),
+                        device_idx: idx,
+                        summary: format!("Thermal throttling{temp_suffix}"),
+                    });
+                }
+                "hw_slowdown" if !saw_hw => {
+                    saw_hw = true;
+                    out.push(GpuFaultReason {
+                        scope: "card".into(),
+                        severity: "warning".into(),
+                        code: "hw_slowdown".into(),
+                        device_uuid: uuid.clone(),
+                        device_idx: idx,
+                        summary: "Hardware slowdown throttling".into(),
+                    });
+                }
+                "power_brake" if !saw_power_brake => {
+                    saw_power_brake = true;
+                    out.push(GpuFaultReason {
+                        scope: "card".into(),
+                        severity: "warning".into(),
+                        code: "power_brake".into(),
+                        device_uuid: uuid.clone(),
+                        device_idx: idx,
+                        summary: "External power-brake throttling".into(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    out
+}
+
+/// Worst severity (`"critical"` > `"warning"`) among a slice of fault reasons.
+pub fn worst_fault_severity(reasons: &[GpuFaultReason]) -> Option<&'static str> {
+    if reasons.iter().any(|r| r.severity == "critical") {
+        Some("critical")
+    } else if !reasons.is_empty() {
+        Some("warning")
+    } else {
+        None
+    }
+}
+
+/// Whether `sample` has at least one canonical **critical** hardware fault
+/// (used for KPI fault card counts and allocation blocking). Warnings such as
+/// active thermal throttling or Ascend `"Warning"` health are surfaced as
+/// warning badges without turning a working card into a critical fault.
+pub fn card_has_critical_fault(sample: &GpuSample) -> bool {
+    worst_fault_severity(&card_fault_reasons(sample)) == Some("critical")
+}
+
+/// Whether `sample` has any canonical card-level fault or warning reason.
+pub fn card_has_fault(sample: &GpuSample) -> bool {
+    !card_fault_reasons(sample).is_empty()
+}
+
+/// Canonical host-level fault predicate.
+///
+/// Only genuine driver/sampler failures count as host faults (`driver_missing`,
+/// `driver_reboot_pending`, `driver_hung`, `sampler_stalled`, `unavailable`).
+/// `ok`, `no_gpu`, `limited` (e.g. WSL2 or zero-package PCIe/TPU partial mode),
+/// `off_local` (operator opted out locally), and `unknown` (awaiting first
+/// sample) are NOT faults.
+pub fn host_status_fault(
+    status: GpuHostStatus,
+    detail: Option<&str>,
+) -> Option<GpuFaultReason> {
+    let (severity, default_summary) = match status {
+        GpuHostStatus::DriverMissing => (
+            "critical",
+            "Accelerator hardware detected without a working kernel driver",
+        ),
+        GpuHostStatus::DriverRebootPending => (
+            "warning",
+            "Driver/library version mismatch — host reboot or driver reload required",
+        ),
+        GpuHostStatus::DriverHung => (
+            "critical",
+            "GPU driver call hung in kernel — sampler child unresponsive",
+        ),
+        GpuHostStatus::SamplerStalled => (
+            "warning",
+            "GPU sampler missed its collection deadline and is backing off",
+        ),
+        GpuHostStatus::Unavailable => (
+            "critical",
+            "GPU sampler unavailable after repeated failures",
+        ),
+        GpuHostStatus::Ok
+        | GpuHostStatus::NoGpu
+        | GpuHostStatus::Limited
+        | GpuHostStatus::OffLocal
+        | GpuHostStatus::Unknown => return None,
+    };
+    let summary = detail
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_summary)
+        .to_string();
+    Some(GpuFaultReason {
+        scope: "host".into(),
+        severity: severity.into(),
+        code: status.wire().into(),
+        device_uuid: None,
+        device_idx: None,
+        summary,
+    })
+}
+
+/// Canonical allocation eligibility: true ONLY when the host is online with
+/// fresh telemetry (`Fresh`), healthy sampler status (`Ok`), the card is
+/// classified `Free`, and the card has zero active fault reasons.
+pub fn is_card_eligible_free(
+    is_online: bool,
+    freshness: GpuFreshness,
+    host_status: GpuHostStatus,
+    card_state: GpuState,
+    sample: &GpuSample,
+) -> bool {
+    is_online
+        && freshness == GpuFreshness::Fresh
+        && host_status == GpuHostStatus::Ok
+        && card_state == GpuState::Free
+        && !card_has_fault(sample)
+}
+
 /// Compute server-side [`GpuState`] for one GPU sample (FR-139 §7.2).
 ///
 /// Key invariants:
-/// - `status != Ok` or `lost` or `mem_used_mb.is_none()` -> `Unknown`
+/// - `lost` or non-`Ok`/`Limited` host status -> `Unknown`
+/// - On `Limited` hosts (e.g. WSL2 or zero-package TPU/Ascend device-node
+///   attribution), positively observed compute processes classify as `Busy`;
+///   `presence_only` cards with complete `/proc` scan (`ProcsState::Ok`) and
+///   zero open holders classify as `Free`, while partial/unknown scans stay
+///   `Unknown` (never falsely `Free`).
+/// - Active utilization (`util >= idle_util_pct`) NEVER classifies as `Free`,
+///   even if memory usage is below `free_mem_max_mb`!
 /// - `unattributed` (mem > threshold, `procs_state == Ok`, empty procs) is
 ///   NEVER classified as `Free`!
 /// - `held_idle` requires `mem_used_mb > threshold`, `util < idle_util_pct`,
@@ -335,15 +699,57 @@ pub fn classify_gpu_state(
     now_s: i64,
     t: GpuStateThresholds,
 ) -> GpuState {
-    if host_status != GpuHostStatus::Ok || sample.lost {
+    if sample.lost {
         return GpuState::Unknown;
     }
-    let Some(mem_used) = sample.mem_used_mb else {
-        return GpuState::Unknown;
-    };
     let procs_slice = sample.procs.as_deref().unwrap_or(&[]);
     let procs_empty = procs_slice.is_empty();
     let has_procs = !procs_empty;
+    let has_compute_proc = procs_slice
+        .iter()
+        .any(|p| p.kind.as_deref() != Some("graphics"));
+
+    if host_status == GpuHostStatus::Limited {
+        if sample.presence_only {
+            return match sample.procs_state {
+                ProcsState::Ok if has_procs => GpuState::Busy,
+                ProcsState::Ok => GpuState::Free,
+                ProcsState::Partial if has_procs => GpuState::Busy,
+                _ => GpuState::Unknown,
+            };
+        }
+        if has_compute_proc || sample.util_pct.is_some_and(|u| u >= t.idle_util_pct) {
+            return GpuState::Busy;
+        }
+        // WSL2 NVML reports valid VRAM & util with `ProcsState::Unsupported` —
+        // let it classify normally instead of leaving every WSL2 card Unknown.
+        if sample.procs_state == ProcsState::Unsupported
+            && sample.mem_used_mb.is_some()
+            && sample.util_pct.is_some()
+        {
+            // fall through to standard VRAM/util rules below
+        } else {
+            return GpuState::Unknown;
+        }
+    } else if host_status != GpuHostStatus::Ok {
+        return GpuState::Unknown;
+    }
+
+    if sample.presence_only && sample.mem_used_mb.is_none() {
+        return match sample.procs_state {
+            ProcsState::Ok if has_procs => GpuState::Busy,
+            ProcsState::Ok => GpuState::Free,
+            ProcsState::Partial if has_procs => GpuState::Busy,
+            _ => GpuState::Unknown,
+        };
+    }
+
+    let Some(mem_used) = sample.mem_used_mb else {
+        if has_compute_proc || sample.util_pct.is_some_and(|u| u >= t.idle_util_pct) {
+            return GpuState::Busy;
+        }
+        return GpuState::Unknown;
+    };
 
     // Effective free-memory ceiling: default 1 GiB, or for accelerators with
     // verified idle firmware HBM reservation (e.g. Huawei Ascend 910B ~3.4 GiB
@@ -380,10 +786,16 @@ pub fn classify_gpu_state(
         return GpuState::Busy;
     }
 
-    // Memory <= free ceiling: free when no compute/blocking processes are
-    // present. Ignore benign idle display-compositor graphics processes
-    // (e.g. Xorg / gdm holding ~4 MiB VRAM with 0% utilization and zero compute
-    // processes) so idle desktop-attached training cards classify as Free.
+    // Active compute utilization ALWAYS blocks `Free`, even with low VRAM usage.
+    if sample.util_pct.is_some_and(|u| u >= t.idle_util_pct) {
+        return GpuState::Busy;
+    }
+
+    // Memory <= free ceiling and idle/unknown util: free when no compute/blocking
+    // processes are present. Ignore benign idle display-compositor graphics
+    // processes (e.g. Xorg / gdm holding ~4 MiB VRAM with 0% utilization and
+    // zero compute processes) so idle desktop-attached training cards classify
+    // as Free.
     if has_procs {
         let only_idle_graphics = procs_slice
             .iter()
@@ -398,15 +810,22 @@ pub fn classify_gpu_state(
             return GpuState::Busy;
         }
     }
-    if sample.procs_state == ProcsState::Off || sample.procs_state == ProcsState::Unsupported {
-        // Without process list, only mark Free if util is known and < idle_util_pct.
-        return match sample.util_pct {
+
+    match sample.procs_state {
+        ProcsState::Ok => {
+            if sample.util_pct.is_some() || sample.mem_total_mb.is_some() {
+                GpuState::Free
+            } else {
+                GpuState::Unknown
+            }
+        }
+        ProcsState::Off | ProcsState::Unsupported => match sample.util_pct {
             Some(u) if u < t.idle_util_pct => GpuState::Free,
             Some(_) => GpuState::Busy,
             None => GpuState::Unknown,
-        };
+        },
+        ProcsState::Partial | ProcsState::Unknown => GpuState::Unknown,
     }
-    GpuState::Free
 }
 
 /// Wire payload for `ServerMsg::GpuAlert` (`rc:gpu.alert`) relayed to a device
@@ -562,5 +981,125 @@ mod tests {
             classify_gpu_state(GpuHostStatus::Ok, &s_ascend_unattr, now, t),
             GpuState::Unattributed
         );
+
+        // Active utilization (50%) MUST NEVER classify as Free even with <= 1024 MiB and empty procs!
+        let s_active_low_mem = GpuSample {
+            uuid: "GPU-active".into(),
+            mem_used_mb: Some(1024),
+            mem_total_mb: Some(24_576),
+            util_pct: Some(50),
+            procs_state: ProcsState::Ok,
+            procs: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_active_low_mem, now, t),
+            GpuState::Busy
+        );
+
+        // Partial/Unknown proc listing with 0 MiB used MUST NOT falsely claim Free
+        let s_partial_empty = GpuSample {
+            uuid: "GPU-partial".into(),
+            mem_used_mb: Some(0),
+            mem_total_mb: Some(24_576),
+            util_pct: Some(0),
+            procs_state: ProcsState::Partial,
+            procs: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_partial_empty, now, t),
+            GpuState::Unknown
+        );
+
+        // Limited host (e.g. zero-package TPU/Ascend fallback): positively observed compute proc -> Busy
+        let s_tpu_busy = GpuSample {
+            uuid: "TPU-0-0000:00:05.0".into(),
+            procs_state: ProcsState::Ok,
+            procs: Some(vec![GpuProc {
+                pid: 9001,
+                user: Some("trainer".into()),
+                name: Some("python3".into()),
+                kind: Some("compute".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Limited, &s_tpu_busy, now, t),
+            GpuState::Busy
+        );
+    }
+
+    #[test]
+    fn fr139_canonical_fault_reasons_and_eligibility() {
+        // Routine power_cap is NOT a fault
+        let s_pcap = GpuSample {
+            uuid: "GPU-0".into(),
+            idx: 0,
+            mem_used_mb: Some(0),
+            mem_total_mb: Some(81_920),
+            util_pct: Some(0),
+            throttle: Some(vec!["power_cap".into(), "sync_boost".into()]),
+            procs_state: ProcsState::Ok,
+            procs: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(card_fault_reasons(&s_pcap).is_empty());
+        assert!(is_card_eligible_free(
+            true,
+            GpuFreshness::Fresh,
+            GpuHostStatus::Ok,
+            GpuState::Free,
+            &s_pcap
+        ));
+        // Stale freshness MUST block eligibility!
+        assert!(!is_card_eligible_free(
+            true,
+            GpuFreshness::Stale,
+            GpuHostStatus::Ok,
+            GpuState::Free,
+            &s_pcap
+        ));
+
+        // Xid 79 + ECC + remapped + Ascend warning + thermal throttle produce structured reasons
+        let s_bad = GpuSample {
+            uuid: "GPU-1".into(),
+            idx: 1,
+            temp_c: Some(91),
+            xid_errors: Some(vec![79, 48]),
+            ecc_uncorrected: Some(3),
+            remapped_rows: Some(2),
+            vendor_health: Some("Warning".into()),
+            throttle: Some(vec!["thermal".into(), "power_cap".into()]),
+            ..Default::default()
+        };
+        let reasons = card_fault_reasons(&s_bad);
+        let codes: Vec<&str> = reasons.iter().map(|r| r.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            vec!["xid", "ecc_uncorrected", "remapped_rows", "vendor_health", "thermal_throttle"]
+        );
+        assert!(reasons[0].summary.contains("GPU fell off the bus"));
+        assert!(reasons[0].summary.contains("Double-bit ECC"));
+        assert!(!is_card_eligible_free(
+            true,
+            GpuFreshness::Fresh,
+            GpuHostStatus::Ok,
+            GpuState::Free,
+            &s_bad
+        ));
+
+        // Host statuses: only real failures are host faults
+        assert!(host_status_fault(GpuHostStatus::DriverMissing, Some("NVIDIA H100 at 0000:65:00.0")).is_some());
+        assert!(host_status_fault(GpuHostStatus::DriverRebootPending, None).is_some());
+        assert!(host_status_fault(GpuHostStatus::SamplerStalled, None).is_some());
+        assert!(host_status_fault(GpuHostStatus::DriverHung, None).is_some());
+        assert!(host_status_fault(GpuHostStatus::Unavailable, None).is_some());
+        assert!(host_status_fault(GpuHostStatus::Ok, None).is_none());
+        assert!(host_status_fault(GpuHostStatus::Limited, Some("WSL2")).is_none());
+        assert!(host_status_fault(GpuHostStatus::NoGpu, None).is_none());
+        assert!(host_status_fault(GpuHostStatus::OffLocal, None).is_none());
+        assert!(host_status_fault(GpuHostStatus::Unknown, None).is_none());
     }
 }

@@ -98,8 +98,11 @@ struct CardTrack {
     throttle_active: bool,
     last_ecc: Option<u64>,
     last_remapped: Option<u32>,
+    last_xid_at: Option<i64>,
+    last_xids: Vec<u32>,
     xid_coalesce_until: i64,
     lost_active: bool,
+    vendor_health_bad: Option<String>,
 }
 
 #[derive(Default)]
@@ -182,16 +185,29 @@ impl AlertEvaluator {
             held_idle_secs: settings.held_idle_secs,
         };
 
-        // 1. Machine status problems (`driver_reboot_pending`, `sampler_stalled`,
-        // `driver_hung`, `unavailable`) — enter / clear edges.
-        let bad_status = matches!(
-            report.status,
+        // 1. Machine status problems (`driver_missing` with detected hardware,
+        // `driver_reboot_pending`, `sampler_stalled`, `driver_hung`,
+        // `unavailable`) — enter / clear edges. Only emit recovery when the
+        // host affirmatively returns to `Ok` or `Limited` (never when moving
+        // from `sampler_stalled` to `off_local` or `driver_missing`).
+        let bad_status = match report.status {
             GpuHostStatus::DriverRebootPending
-                | GpuHostStatus::SamplerStalled
-                | GpuHostStatus::DriverHung
-                | GpuHostStatus::Unavailable
-        )
-        .then_some(report.status);
+            | GpuHostStatus::SamplerStalled
+            | GpuHostStatus::DriverHung
+            | GpuHostStatus::Unavailable => Some(report.status),
+            GpuHostStatus::DriverMissing
+                if report
+                    .status_detail
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || !report.gpus.is_empty() =>
+            {
+                Some(GpuHostStatus::DriverMissing)
+            }
+            _ => None,
+        };
+        let affirmatively_recovered =
+            matches!(report.status, GpuHostStatus::Ok | GpuHostStatus::Limited);
 
         if rule.machine_alert {
             if let Some(st) = bad_status {
@@ -199,21 +215,35 @@ impl AlertEvaluator {
                     host.machine_status_bad = Some(st);
                     let key = format!("machine:{}", st.wire());
                     if can_fire(host, &key, now_s, settings.cooldown_secs) {
+                        let detail_en = report
+                            .status_detail
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| format!(" ({s})"))
+                            .unwrap_or_default();
                         fired.push(FiredAlert {
                             event_key: key,
                             item: BotAlertItem {
                                 severity: "critical".into(),
                                 title_en: format!("{host_name}: GPU sampler {}", st.wire()),
                                 title_zh: format!("{host_name}: GPU 采样异常 ({})", st.wire()),
-                                body_en: format!("Host {host_name} reported status {}.", st.wire()),
-                                body_zh: format!("主机 {host_name} 报告状态 {}。", st.wire()),
+                                body_en: format!(
+                                    "Host {host_name} reported status {}{detail_en}.",
+                                    st.wire()
+                                ),
+                                body_zh: format!(
+                                    "主机 {host_name} 报告状态 {}{detail_en}。",
+                                    st.wire()
+                                ),
                                 users_summary: None,
                                 link: host_link.clone(),
                             },
                         });
                     }
                 }
-            } else if let Some(prev) = host.machine_status_bad.take() {
+            } else if affirmatively_recovered
+                && let Some(prev) = host.machine_status_bad.take()
+            {
                 let key = format!("machine:clear:{}", prev.wire());
                 if can_fire(host, &key, now_s, settings.cooldown_secs) {
                     fired.push(FiredAlert {
@@ -229,6 +259,10 @@ impl AlertEvaluator {
                         },
                     });
                 }
+            } else if !affirmatively_recovered {
+                // Transitioned to `off_local` / `no_gpu` / `unknown` — clear
+                // active bad flag quietly without emitting a false recovery.
+                host.machine_status_bad = None;
             }
         }
 
@@ -320,7 +354,7 @@ impl AlertEvaluator {
                 }
             }
 
-            // 3b. Faults: lost, ECC increase, remapped increase, Xid (3 min coalesce), throttle > 60 s
+            // 3b. Faults: lost, vendor health, ECC increase, remapped increase, Xid edge (3 min coalesce), throttle > 60 s
             if rule.fault_alert {
                 if g.lost && !card.lost_active {
                     card.lost_active = true;
@@ -331,9 +365,13 @@ impl AlertEvaluator {
                             item: BotAlertItem {
                                 severity: "critical".into(),
                                 title_en: format!("{host_name} {card_label} fell off the bus"),
-                                title_zh: format!("{host_name} {card_label} 掉卡 (GPU Lost)"),
-                                body_en: format!("NVML reported GPU_LOST for {card_label} on {host_name}."),
-                                body_zh: format!("{host_name} 上的 {card_label} 报告掉卡 (GPU_LOST)。"),
+                                title_zh: format!("{host_name} {card_label} 掉卡（设备无响应）"),
+                                body_en: format!(
+                                    "Accelerator {card_label} on {host_name} is no longer responding (lost)."
+                                ),
+                                body_zh: format!(
+                                    "{host_name} 上的 {card_label} 失去响应（掉卡）。"
+                                ),
                                 users_summary: None,
                                 link: host_link.clone(),
                             },
@@ -341,6 +379,42 @@ impl AlertEvaluator {
                     }
                 } else if !g.lost {
                     card.lost_active = false;
+                }
+
+                let bad_vh = g
+                    .vendor_health
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("ok"));
+                if let Some(vh) = bad_vh {
+                    if card.vendor_health_bad.as_deref() != Some(vh) {
+                        card.vendor_health_bad = Some(vh.to_string());
+                        let key = format!("fault:vendor_health:{}", g.uuid);
+                        if can_fire(host, &key, now_s, settings.cooldown_secs) {
+                            let is_crit = vh.to_ascii_lowercase().contains("crit")
+                                || vh.to_ascii_lowercase().contains("alarm")
+                                || vh.to_ascii_lowercase().contains("error")
+                                || vh.to_ascii_lowercase().contains("fail");
+                            fired.push(FiredAlert {
+                                event_key: key,
+                                item: BotAlertItem {
+                                    severity: if is_crit { "critical" } else { "warning" }.into(),
+                                    title_en: format!("{host_name} {card_label} health: {vh}"),
+                                    title_zh: format!("{host_name} {card_label} 健康状态异常：{vh}"),
+                                    body_en: format!(
+                                        "{card_label} on {host_name} reported vendor health '{vh}'."
+                                    ),
+                                    body_zh: format!(
+                                        "{host_name} 上的 {card_label} 报告健康状态为「{vh}」。"
+                                    ),
+                                    users_summary: users_str.clone(),
+                                    link: host_link.clone(),
+                                },
+                            });
+                        }
+                    }
+                } else {
+                    card.vendor_health_bad = None;
                 }
 
                 if let Some(ecc) = g.ecc_uncorrected {
@@ -389,30 +463,43 @@ impl AlertEvaluator {
                     card.last_remapped = Some(rem);
                 }
 
-                if let Some(xids) = g.xid_errors.as_ref().filter(|v| !v.is_empty())
-                    && now_s >= card.xid_coalesce_until
-                {
-                    card.xid_coalesce_until = now_s + 180; // 3-minute Xid coalesce window
-                    let key = format!("fault:xid:{}", g.uuid);
-                    if can_fire(host, &key, now_s, settings.cooldown_secs) {
-                        let list = xids
-                            .iter()
-                            .map(u32::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        fired.push(FiredAlert {
-                            event_key: key,
-                            item: BotAlertItem {
-                                severity: "critical".into(),
-                                title_en: format!("{host_name} {card_label} Xid error(s): {list}"),
-                                title_zh: format!("{host_name} {card_label} 发生 Xid 故障: {list}"),
-                                body_en: format!("Xid error(s) [{list}] observed on {host_name} {card_label}."),
-                                body_zh: format!("{host_name} {card_label} 检测到 Xid 错误 [{list}]。"),
-                                users_summary: users_str.clone(),
-                                link: host_link.clone(),
-                            },
-                        });
+                if let Some(xids) = g.xid_errors.as_ref().filter(|v| !v.is_empty()) {
+                    let is_new_xid = match g.xid_last_at {
+                        Some(ts) => card.last_xid_at.is_none_or(|prev| ts > prev),
+                        None => xids.iter().any(|c| !card.last_xids.contains(c)),
+                    };
+                    if is_new_xid && now_s >= card.xid_coalesce_until {
+                        card.xid_coalesce_until = now_s + 180; // 3-minute Xid coalesce window
+                        let key = format!("fault:xid:{}", g.uuid);
+                        if can_fire(host, &key, now_s, settings.cooldown_secs) {
+                            let list = xids
+                                .iter()
+                                .map(|&c| match meshharbor_remote_control::gpu::decode_nvidia_xid(c) {
+                                    Some(desc) => format!("{c} ({desc})"),
+                                    None => c.to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            fired.push(FiredAlert {
+                                event_key: key,
+                                item: BotAlertItem {
+                                    severity: "critical".into(),
+                                    title_en: format!("{host_name} {card_label} Xid error(s): {list}"),
+                                    title_zh: format!("{host_name} {card_label} 发生 Xid 故障: {list}"),
+                                    body_en: format!("Xid error(s) [{list}] observed on {host_name} {card_label}."),
+                                    body_zh: format!("{host_name} {card_label} 检测到 Xid 错误 [{list}]。"),
+                                    users_summary: users_str.clone(),
+                                    link: host_link.clone(),
+                                },
+                            });
+                        }
                     }
+                    if let Some(ts) = g.xid_last_at {
+                        card.last_xid_at = Some(card.last_xid_at.map_or(ts, |p| p.max(ts)));
+                    }
+                    card.last_xids = xids.clone();
+                } else {
+                    card.last_xids.clear();
                 }
 
                 let severe_throttle = g.throttle.as_ref().is_some_and(|reasons| {
@@ -424,14 +511,18 @@ impl AlertEvaluator {
                         card.throttle_active = true;
                         let key = format!("fault:throttle:{}", g.uuid);
                         if can_fire(host, &key, now_s, settings.cooldown_secs) {
+                            let (temp_en, temp_zh) = match g.temp_c {
+                                Some(t) => (format!(" ({t} °C)"), format!("（当前 {t} °C）")),
+                                None => (String::new(), String::new()),
+                            };
                             fired.push(FiredAlert {
                                 event_key: key,
                                 item: BotAlertItem {
                                     severity: "warning".into(),
                                     title_en: format!("{host_name} {card_label} thermal/HW throttling"),
                                     title_zh: format!("{host_name} {card_label} 持续硬件/过温降频"),
-                                    body_en: format!("{card_label} throttled for > 60 s ({} °C).", g.temp_c.unwrap_or(0)),
-                                    body_zh: format!("{card_label} 已持续降频超过 60 秒（当前 {} °C）。", g.temp_c.unwrap_or(0)),
+                                    body_en: format!("{card_label} throttled for > 60 s{temp_en}."),
+                                    body_zh: format!("{card_label} 已持续降频超过 60 秒{temp_zh}。"),
                                     users_summary: users_str.clone(),
                                     link: host_link.clone(),
                                 },
@@ -577,6 +668,7 @@ mod tests {
             seq: 1,
             interval_ms: 30_000,
             status: GpuHostStatus::Ok,
+            status_detail: None,
             backend: Some("nvml".into()),
             driver_version: Some("550.90".into()),
             host: Default::default(),
@@ -669,5 +761,56 @@ mod tests {
         let off = eval.evaluate_offline(tid, aid, "gpu-01", 2305, &settings, &rule);
         assert!(off.is_some());
         assert_eq!(off.unwrap().event_key, "machine:offline");
+    }
+
+    #[test]
+    fn fr139_stalled_to_off_local_does_not_fire_false_recovery_and_vendor_health_alerts() {
+        let mut eval = AlertEvaluator::default();
+        let aid = ObjectId::new();
+        let tid = ObjectId::new();
+        let uid = ObjectId::new();
+        let settings = GpuSettings::default();
+        let mut rule = GpuAlertRule::default_for(tid, uid);
+        rule.enabled = true;
+
+        // 1. SamplerStalled fires alert
+        let mut stalled = free_report();
+        stalled.status = GpuHostStatus::SamplerStalled;
+        stalled.gpus.clear();
+        let f1 = eval.evaluate_report(tid, aid, "node-1", &stalled, 1000, &settings, &rule);
+        assert!(f1.iter().any(|x| x.event_key == "machine:sampler_stalled"), "{f1:?}");
+
+        // 2. Transition to OffLocal must NOT fire "recovered"
+        let mut off_local = stalled.clone();
+        off_local.status = GpuHostStatus::OffLocal;
+        let f2 = eval.evaluate_report(tid, aid, "node-1", &off_local, 1060, &settings, &rule);
+        assert!(
+            !f2.iter().any(|x| x.event_key.starts_with("machine:clear:")),
+            "OffLocal must not claim recovery: {f2:?}"
+        );
+
+        // 3. DriverMissing with detected hardware fires critical alert
+        let mut drv = free_report();
+        drv.status = GpuHostStatus::DriverMissing;
+        drv.status_detail = Some("Detected 2 NVIDIA GPUs without driver".into());
+        let f3 = eval.evaluate_report(tid, aid, "node-1", &drv, 1120, &settings, &rule);
+        assert!(f3.iter().any(|x| x.event_key == "machine:driver_missing"), "{f3:?}");
+
+        // 4. Ascend vendor_health warning fires separate alert, and throttle with temp_c=None omits 0°C
+        let mut ascend = free_report();
+        ascend.backend = Some("ascend".into());
+        ascend.gpus[0].uuid = "ASCEND-0-0".into();
+        ascend.gpus[0].name = Some("Ascend 910B".into());
+        ascend.gpus[0].vendor_health = Some("Warning".into());
+        ascend.gpus[0].temp_c = None;
+        ascend.gpus[0].throttle = Some(vec!["thermal".into()]);
+        let f4a = eval.evaluate_report(tid, aid, "npu-1", &ascend, 2000, &settings, &rule);
+        assert!(f4a.iter().any(|x| x.event_key == "fault:vendor_health:ASCEND-0-0"));
+        let f4b = eval.evaluate_report(tid, aid, "npu-1", &ascend, 2070, &settings, &rule);
+        let th = f4b
+            .iter()
+            .find(|x| x.event_key == "fault:throttle:ASCEND-0-0")
+            .expect("throttle alert");
+        assert!(!th.item.body_en.contains("0 °C"), "must not fabricate 0 °C: {}", th.item.body_en);
     }
 }

@@ -27,8 +27,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 pub mod gpu;
 pub use gpu::{
-    GpuAlertItem, GpuAlertsPage, GpuCardView, GpuFleetPage, GpuFleetSummary, GpuHostLoadView,
-    GpuHostView, GpuProcView, GpuUserRow, GpuUsersPage,
+    GpuAlertItem, GpuAlertsPage, GpuCardView, GpuFaultReasonView, GpuFleetPage, GpuFleetSummary,
+    GpuHostLoadView, GpuHostView, GpuProcView, GpuUserRow, GpuUsersPage,
 };
 use tokio::sync::watch;
 

@@ -76,6 +76,7 @@ impl IntelBackend {
                 driver_version: driver,
                 gpus,
                 status: GpuHostStatus::Ok,
+                status_detail: None,
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -114,8 +115,14 @@ impl IntelBackend {
                     (state, Some(list))
                 };
 
-                let mem_used_mb = procs.as_ref().map(|list| {
-                    list.iter().filter_map(|p| p.mem_mb).sum::<u32>()
+                // Do not emit a synthetic 0 MiB device-memory reading from an
+                // empty/partial process list while total VRAM and utilization
+                // are unavailable — leave `mem_used_mb: None` so the classifier
+                // reports Busy when compute procs are present and Unknown when
+                // telemetry cannot confirm Free.
+                let mem_used_mb = procs.as_ref().and_then(|list| {
+                    let sum: u32 = list.iter().filter_map(|p| p.mem_mb).sum();
+                    (sum > 0).then_some(sum)
                 });
 
                 out.push(GpuSample {
@@ -131,17 +138,11 @@ impl IntelBackend {
                     temp_c,
                     power_w,
                     fan_pct,
-                    sm_clock_mhz: None,
-                    throttle: None,
-                    ecc_uncorrected: None,
-                    remapped_rows: None,
-                    xid_errors: None,
-                    mig: false,
-                    lost: false,
-                    idle_since: None,
-                    free_mem_floor_mb: None,
+                    backend: Some("intel".into()),
+                    vendor_index: Some(c.idx),
                     procs_state,
                     procs,
+                    ..Default::default()
                 });
             }
             (GpuHostStatus::Ok, out)

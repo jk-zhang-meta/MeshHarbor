@@ -221,26 +221,29 @@ impl GpuManager {
     }
 
     /// Wait up to `wait_ms` (clamped to `0..=3000`) for fresh reports from at
-    /// least one online target agent (used by `mh nvitop` one-shot `wait_ms`).
+    /// least one online target agent (used by `mh nvitop` one-shot `wait_ms`
+    /// and Desktop manual refresh).
     pub async fn wait_for_fresh(&self, agent_ids: &[ObjectId], wait_ms: u32) {
         let clamped = wait_ms.min(3_000);
         if clamped == 0 || agent_ids.is_empty() {
             return;
         }
-        let mut futs = Vec::with_capacity(agent_ids.len());
+        // Register every Notified waiter eagerly BEFORE awaiting so a report
+        // arriving right after lease dispatch cannot race ahead and be lost.
+        let mut waiters = Vec::with_capacity(agent_ids.len());
         for &aid in agent_ids {
             let n = self
                 .waiters
                 .entry(aid)
                 .or_insert_with(|| Arc::new(Notify::new()))
                 .clone();
-            futs.push(async move {
-                n.notified().await;
-            });
+            let mut owned = Box::pin(n.notified_owned());
+            owned.as_mut().enable();
+            waiters.push(owned);
         }
         let _ = tokio::time::timeout(
             Duration::from_millis(u64::from(clamped)),
-            futures::future::join_all(futs),
+            futures::future::select_all(waiters),
         )
         .await;
     }
@@ -248,6 +251,10 @@ impl GpuManager {
     /// Persist static `rc:agent.gpu_inventory` onto `Agent.gpu_inventory`.
     /// Refuses unmarked or deleted devices and pushes a stop lease so multi-replica
     /// unmarks always converge on the connection-owning pod.
+    ///
+    /// Never overwrites a non-empty persisted inventory with an empty error
+    /// frame (`sampler_stalled`, `driver_hung`, `unavailable`, `driver_missing`)
+    /// so known accelerator cards stay visible during outages.
     pub async fn handle_inventory(
         &self,
         state: &FleetState,
@@ -265,6 +272,25 @@ impl GpuManager {
             return;
         }
         sanitize_inventory(&mut inventory);
+        if inventory.gpus.is_empty()
+            && matches!(
+                inventory.status,
+                meshharbor_remote_control::gpu::GpuHostStatus::SamplerStalled
+                    | meshharbor_remote_control::gpu::GpuHostStatus::DriverHung
+                    | meshharbor_remote_control::gpu::GpuHostStatus::Unavailable
+                    | meshharbor_remote_control::gpu::GpuHostStatus::DriverMissing
+            )
+            && let Some(prev) = agent.gpu_inventory.as_ref()
+            && !prev.gpus.is_empty()
+        {
+            inventory.gpus = prev.gpus.clone();
+            if inventory.backend.is_none() {
+                inventory.backend = prev.backend.clone();
+            }
+            if inventory.driver_version.is_none() {
+                inventory.driver_version = prev.driver_version.clone();
+            }
+        }
         if let Err(e) = state.agents.set_gpu_inventory(agent_id, &inventory).await {
             tracing::debug!(%agent_id, %e, "gpu_inventory persist failed");
         }
@@ -687,8 +713,9 @@ fn sanitize_gpu_uuid(raw: &str, idx: u16) -> String {
 }
 
 fn sanitize_inventory(inv: &mut GpuInventory) {
-    sanitize_opt_text(&mut inv.backend, 32);
+    sanitize_opt_text(&mut inv.backend, 64);
     sanitize_opt_text(&mut inv.driver_version, 64);
+    sanitize_opt_text(&mut inv.status_detail, 256);
     inv.gpus.truncate(64);
     for g in &mut inv.gpus {
         g.uuid = sanitize_gpu_uuid(&g.uuid, g.idx);
@@ -698,13 +725,16 @@ fn sanitize_inventory(inv: &mut GpuInventory) {
 }
 
 fn sanitize_report(rep: &mut GpuReport) {
-    sanitize_opt_text(&mut rep.backend, 32);
+    sanitize_opt_text(&mut rep.backend, 64);
     sanitize_opt_text(&mut rep.driver_version, 64);
+    sanitize_opt_text(&mut rep.status_detail, 256);
     rep.gpus.truncate(64);
     for g in &mut rep.gpus {
         g.uuid = sanitize_gpu_uuid(&g.uuid, g.idx);
         sanitize_opt_text(&mut g.name, 128);
         sanitize_opt_text(&mut g.pci_bus, 32);
+        sanitize_opt_text(&mut g.vendor_health, 64);
+        sanitize_opt_text(&mut g.backend, 32);
         if let Some(th) = g.throttle.as_mut() {
             th.truncate(16);
             for item in th.iter_mut() {

@@ -174,6 +174,7 @@ mod tests {
             seq: 1,
             interval_ms: 2000,
             status: GpuHostStatus::Ok,
+            status_detail: None,
             backend: Some("nvml".into()),
             driver_version: Some("550.90".into()),
             host: Default::default(),
@@ -194,6 +195,7 @@ mod tests {
         let text = format_prometheus(Some(&rep), 10_000);
         assert!(text.contains(r#"meshharbor_gpu_utilization_ratio{gpu="0",uuid="GPU-123",name="RTX 4090"} 0.5000"#));
         assert!(text.contains(r#"meshharbor_gpu_memory_used_bytes{gpu="0",uuid="GPU-123",name="RTX 4090"} 1073741824"#));
-        assert!(text.contains(r#"meshharbor_gpu_state{gpu="0",uuid="GPU-123",name="RTX 4090",state="free"} 1"#));
+        // 50% active utilization MUST classify as busy, NEVER free!
+        assert!(text.contains(r#"meshharbor_gpu_state{gpu="0",uuid="GPU-123",name="RTX 4090",state="busy"} 1"#));
     }
 }

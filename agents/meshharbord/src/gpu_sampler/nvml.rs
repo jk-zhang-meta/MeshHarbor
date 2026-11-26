@@ -6,11 +6,16 @@
 //! Key safety invariants:
 //! - Loaded dynamically at runtime (`libnvidia-ml.so.1`, `/usr/lib/wsl/lib/libnvidia-ml.so.1`,
 //!   `nvml.dll`). Non-NVIDIA hosts pay zero startup cost.
-//! - Initialized ONCE and NEVER unloaded (`std::mem::forget` on drop) to avoid
-//!   NVML's known fd leak across unload/reload cycles.
+//! - Initialized ONCE and leaked (`Box::leak`) so `nvmlShutdown`/`dlclose` is
+//!   never called (avoids NVML's known fd leak across unload/reload cycles) AND
+//!   enables a process-lifetime `EventSet<'static>` for Xid error collection.
 //! - Every per-field query degrades to `None` when unsupported (NEVER `0`).
-//! - Per-process utilization samples > 100% or older than the previous timestamp
-//!   are dropped; unknown PIDs are ignored.
+//! - ECC reports **volatile** uncorrectable errors only (never silently switches
+//!   to lifetime Aggregate on transient read failure).
+//! - Remapped rows separate uncorrectable count from `remap_pending` and
+//!   `remap_failure`.
+//! - Device identity `(uuid, name, pci_bus)` is cached per index so `GpuLost`
+//!   attaches to the real GPU UUID rather than fabricating `nvidia-lost-{idx}`.
 
 use std::collections::HashMap;
 #[cfg(not(target_os = "macos"))]
@@ -19,37 +24,48 @@ use std::ffi::OsStr;
 use meshharbor_remote_control::gpu::{
     GpuHostStatus, GpuInventory, GpuInventoryItem, GpuProc, GpuSample, ProcsState,
 };
+use nvml_wrapper::Nvml;
 use nvml_wrapper::bitmasks::device::ThrottleReasons;
+#[cfg(target_os = "linux")]
+use nvml_wrapper::bitmasks::event::EventTypes;
 use nvml_wrapper::enum_wrappers::device::{Clock, EccCounter, MemoryError, TemperatureSensor};
 use nvml_wrapper::enums::device::{SampleValue, UsedGpuMemory};
+#[cfg(target_os = "linux")]
+use nvml_wrapper::enums::event::XidError;
 use nvml_wrapper::error::NvmlError;
 use nvml_wrapper::structs::device::FieldId;
-use nvml_wrapper::Nvml;
 
-/// Canonical NVML v12 field IDs for correctable / uncorrectable remapped rows
-/// (`nvml-wrapper` 0.13 translates these automatically for newer drivers).
-const NVML_FI_DEV_REMAPPED_COR: u32 = 142;
+/// Canonical NVML v12/v13 field IDs for uncorrectable / pending / failure row remapping.
 const NVML_FI_DEV_REMAPPED_UNC: u32 = 143;
+const NVML_FI_DEV_REMAPPED_PENDING: u32 = 144;
+const NVML_FI_DEV_REMAPPED_FAILURE: u32 = 145;
 /// `NVML_DEVICE_MIG_ENABLE` constant from `nvml.h`.
 const NVML_MIG_ENABLE: u32 = 1;
+/// Retain observed Xid events for 10 minutes so all leased orgs observe them.
+#[cfg(target_os = "linux")]
+const XID_RETENTION_SECS: i64 = 600;
 
 use super::proc_linux::{ProcLookup, truncate_proc_name};
 
+#[derive(Debug, Clone)]
+struct RememberedIdentity {
+    uuid: String,
+    name: Option<String>,
+    pci_bus: Option<String>,
+}
+
 pub struct NvmlBackend {
-    // Wrapped in `Option` so Drop can `std::mem::forget` it without calling
-    // `nvmlShutdown`/`dlclose`.
-    nvml: Option<Nvml>,
+    // Leaked once for child lifetime so NVML is never unloaded and EventSet
+    // can safely borrow `&'static Nvml`.
+    nvml: &'static Nvml,
     driver_version: Option<String>,
     is_wsl: bool,
     last_util_ts: HashMap<String, u64>,
-}
-
-impl Drop for NvmlBackend {
-    fn drop(&mut self) {
-        if let Some(nvml) = self.nvml.take() {
-            std::mem::forget(nvml);
-        }
-    }
+    last_identity: HashMap<u32, RememberedIdentity>,
+    #[cfg(target_os = "linux")]
+    xid_events: Option<nvml_wrapper::EventSet<'static>>,
+    #[cfg(target_os = "linux")]
+    recent_xids: HashMap<String, Vec<(u32, i64)>>,
 }
 
 /// Locate `nvml.dll` exclusively inside Windows `System32` using
@@ -67,7 +83,8 @@ fn resolve_windows_system32_nvml() -> Option<std::path::PathBuf> {
     // SAFETY: `dll` is NUL-terminated UTF-16; `LOAD_LIBRARY_SEARCH_SYSTEM32`
     // restricts search strictly to System32. NVML is intentionally never
     // unloaded across the lifetime of the child process.
-    let module = unsafe { LoadLibraryExW(dll.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    let module =
+        unsafe { LoadLibraryExW(dll.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
     if module.is_null() {
         return None;
     }
@@ -83,8 +100,20 @@ fn resolve_windows_system32_nvml() -> Option<std::path::PathBuf> {
 
 pub enum NvmlInitOutcome {
     Ready(Box<NvmlBackend>),
-    Status(GpuHostStatus),
+    Status(GpuHostStatus, String),
     NotPresent,
+}
+
+#[cfg(not(target_os = "macos"))]
+fn init_err_priority(err: &NvmlError) -> u8 {
+    match err {
+        NvmlError::LibRmVersionMismatch => 5,
+        NvmlError::DriverNotLoaded => 4,
+        NvmlError::NoPermission => 3,
+        NvmlError::InsufficientPower | NvmlError::OperatingSystem => 2,
+        NvmlError::LibloadingError(_) => 1,
+        _ => 2,
+    }
 }
 
 impl NvmlBackend {
@@ -116,35 +145,78 @@ impl NvmlBackend {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let mut last_err: Option<NvmlError> = None;
+            // Keep the STRONGEST diagnostic error across all candidates so a
+            // later missing `.so` path never overwrites an earlier
+            // `DriverNotLoaded` or `NoPermission`.
+            let mut best_err: Option<NvmlError> = None;
             for path in &candidates {
                 match Nvml::builder().lib_path(OsStr::new(path)).init() {
                     Ok(nvml) => {
-                        let driver_version = nvml.sys_driver_version().ok();
+                        let nvml_ref: &'static Nvml = Box::leak(Box::new(nvml));
+                        let driver_version = nvml_ref.sys_driver_version().ok();
                         let is_wsl = detect_wsl2();
+                        let mut last_identity = HashMap::new();
+                        if let Ok(count) = nvml_ref.device_count() {
+                            for idx in 0..count {
+                                if let Ok(dev) = nvml_ref.device_by_index(idx)
+                                    && let Ok(uuid) = dev.uuid()
+                                {
+                                    last_identity.insert(
+                                        idx,
+                                        RememberedIdentity {
+                                            uuid,
+                                            name: dev.name().ok(),
+                                            pci_bus: dev.pci_info().ok().map(|p| p.bus_id),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        #[cfg(target_os = "linux")]
+                        let xid_events = if !is_wsl {
+                            init_xid_event_set(nvml_ref)
+                        } else {
+                            None
+                        };
                         return NvmlInitOutcome::Ready(Box::new(Self {
-                            nvml: Some(nvml),
+                            nvml: nvml_ref,
                             driver_version,
                             is_wsl,
                             last_util_ts: HashMap::new(),
+                            last_identity,
+                            #[cfg(target_os = "linux")]
+                            xid_events,
+                            #[cfg(target_os = "linux")]
+                            recent_xids: HashMap::new(),
                         }));
                     }
                     Err(NvmlError::LibRmVersionMismatch) => {
-                        return NvmlInitOutcome::Status(GpuHostStatus::DriverRebootPending);
-                    }
-                    Err(NvmlError::DriverNotLoaded) => {
-                        last_err = Some(NvmlError::DriverNotLoaded);
+                        return NvmlInitOutcome::Status(
+                            GpuHostStatus::DriverRebootPending,
+                            "NVML library/kernel driver version mismatch — reboot or reload nvidia kernel module"
+                                .into(),
+                        );
                     }
                     Err(e) => {
-                        last_err = Some(e);
+                        let replace = best_err
+                            .as_ref()
+                            .is_none_or(|cur| init_err_priority(&e) > init_err_priority(cur));
+                        if replace {
+                            best_err = Some(e);
+                        }
                     }
                 }
             }
 
-            match last_err {
-                Some(NvmlError::DriverNotLoaded) => {
-                    NvmlInitOutcome::Status(GpuHostStatus::DriverMissing)
-                }
+            match best_err {
+                Some(NvmlError::DriverNotLoaded) => NvmlInitOutcome::Status(
+                    GpuHostStatus::DriverMissing,
+                    "libnvidia-ml loaded, but nvidia kernel module is not loaded".into(),
+                ),
+                Some(NvmlError::NoPermission) => NvmlInitOutcome::Status(
+                    GpuHostStatus::Limited,
+                    "Permission denied accessing NVIDIA driver (/dev/nvidia* or NVML)".into(),
+                ),
                 _ => NvmlInitOutcome::NotPresent,
             }
         }
@@ -162,22 +234,39 @@ impl NvmlBackend {
         }
     }
 
+    pub fn status_detail(&self) -> Option<String> {
+        self.is_wsl
+            .then(|| "WSL2 environment: per-process GPU attribution unavailable".to_string())
+    }
+
     pub fn inventory(&self) -> GpuInventory {
-        let Some(nvml) = self.nvml.as_ref() else {
-            return GpuInventory {
-                backend: Some("nvml".into()),
-                driver_version: self.driver_version.clone(),
-                gpus: Vec::new(),
-                status: GpuHostStatus::Unavailable,
-            };
-        };
-        let count = nvml.device_count().unwrap_or(0);
+        let count = self.nvml.device_count().unwrap_or(0);
         let mut gpus = Vec::with_capacity(count as usize);
         for idx in 0..count {
-            let Ok(dev) = nvml.device_by_index(idx) else {
+            let Ok(dev) = self.nvml.device_by_index(idx) else {
+                if let Some(rem) = self.last_identity.get(&idx) {
+                    gpus.push(GpuInventoryItem {
+                        uuid: rem.uuid.clone(),
+                        idx: idx as u16,
+                        name: rem
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| format!("NVIDIA GPU {idx}")),
+                        mem_total_mb: None,
+                        power_limit_w: None,
+                        mig: false,
+                        pci_bus: rem.pci_bus.clone(),
+                        unified: false,
+                    });
+                }
                 continue;
             };
-            let uuid = dev.uuid().unwrap_or_else(|_| format!("nvidia-{idx}"));
+            let uuid = dev.uuid().unwrap_or_else(|_| {
+                self.last_identity
+                    .get(&idx)
+                    .map(|r| r.uuid.clone())
+                    .unwrap_or_else(|| format!("nvidia-{idx}"))
+            });
             let name = dev.name().unwrap_or_else(|_| format!("NVIDIA GPU {idx}"));
             let mem_total_mb = dev
                 .memory_info()
@@ -209,6 +298,7 @@ impl NvmlBackend {
             driver_version: self.driver_version.clone(),
             gpus,
             status: self.host_status(),
+            status_detail: self.status_detail(),
         }
     }
 
@@ -218,10 +308,11 @@ impl NvmlBackend {
         proc_lookup: &ProcLookup,
         #[cfg(windows)] pdh_vram: &HashMap<(u32, String), u32>,
     ) -> (GpuHostStatus, Vec<GpuSample>) {
-        let Some(nvml) = self.nvml.as_ref() else {
-            return (GpuHostStatus::Unavailable, Vec::new());
-        };
-        let count = match nvml.device_count() {
+        let now_s = chrono::Utc::now().timestamp();
+        #[cfg(target_os = "linux")]
+        self.drain_xid_events(now_s);
+
+        let count = match self.nvml.device_count() {
             Ok(c) => c,
             Err(NvmlError::LibRmVersionMismatch) => {
                 return (GpuHostStatus::DriverRebootPending, Vec::new());
@@ -231,38 +322,88 @@ impl NvmlBackend {
 
         let mut samples = Vec::with_capacity(count as usize);
         for idx in 0..count {
-            let dev = match nvml.device_by_index(idx) {
+            let dev = match self.nvml.device_by_index(idx) {
                 Ok(d) => d,
                 Err(NvmlError::GpuLost) => {
+                    let rem = self.last_identity.get(&idx);
                     samples.push(GpuSample {
-                        uuid: format!("nvidia-lost-{idx}"),
+                        uuid: rem
+                            .map(|r| r.uuid.clone())
+                            .unwrap_or_else(|| format!("nvidia-lost-{idx}")),
                         idx: idx as u16,
+                        name: rem.and_then(|r| r.name.clone()),
+                        pci_bus: rem.and_then(|r| r.pci_bus.clone()),
+                        backend: Some("nvml".into()),
+                        vendor_index: Some(idx as u16),
                         lost: true,
                         procs_state: ProcsState::Unknown,
                         ..Default::default()
                     });
                     continue;
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    if let Some(rem) = self.last_identity.get(&idx) {
+                        samples.push(GpuSample {
+                            uuid: rem.uuid.clone(),
+                            idx: idx as u16,
+                            name: rem.name.clone(),
+                            pci_bus: rem.pci_bus.clone(),
+                            backend: Some("nvml".into()),
+                            vendor_index: Some(idx as u16),
+                            vendor_health: Some(format!("nvml_error:{e:?}")),
+                            procs_state: ProcsState::Unknown,
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
             };
 
             let uuid = match dev.uuid() {
                 Ok(u) => u,
                 Err(NvmlError::GpuLost) => {
+                    let rem = self.last_identity.get(&idx);
                     samples.push(GpuSample {
-                        uuid: format!("nvidia-lost-{idx}"),
+                        uuid: rem
+                            .map(|r| r.uuid.clone())
+                            .unwrap_or_else(|| format!("nvidia-lost-{idx}")),
                         idx: idx as u16,
+                        name: rem.and_then(|r| r.name.clone()),
+                        pci_bus: rem.and_then(|r| r.pci_bus.clone()),
+                        backend: Some("nvml".into()),
+                        vendor_index: Some(idx as u16),
                         lost: true,
                         procs_state: ProcsState::Unknown,
                         ..Default::default()
                     });
                     continue;
                 }
-                Err(_) => format!("nvidia-{idx}"),
+                Err(_) => self
+                    .last_identity
+                    .get(&idx)
+                    .map(|r| r.uuid.clone())
+                    .unwrap_or_else(|| format!("nvidia-{idx}")),
             };
 
-            let name = dev.name().ok();
-            let pci_bus = dev.pci_info().ok().map(|p| p.bus_id);
+            let name = dev.name().ok().or_else(|| {
+                self.last_identity
+                    .get(&idx)
+                    .and_then(|r| r.name.clone())
+            });
+            let pci_bus = dev.pci_info().ok().map(|p| p.bus_id).or_else(|| {
+                self.last_identity
+                    .get(&idx)
+                    .and_then(|r| r.pci_bus.clone())
+            });
+            self.last_identity.insert(
+                idx,
+                RememberedIdentity {
+                    uuid: uuid.clone(),
+                    name: name.clone(),
+                    pci_bus: pci_bus.clone(),
+                },
+            );
+
             let (mem_used_mb, mem_total_mb) = match dev.memory_info() {
                 Ok(m) => (
                     Some((m.used / (1024 * 1024)) as u32),
@@ -274,6 +415,8 @@ impl NvmlBackend {
                         idx: idx as u16,
                         name,
                         pci_bus,
+                        backend: Some("nvml".into()),
+                        vendor_index: Some(idx as u16),
                         lost: true,
                         procs_state: ProcsState::Unknown,
                         ..Default::default()
@@ -306,18 +449,30 @@ impl NvmlBackend {
                 .ok()
                 .map(map_throttle_reasons)
                 .filter(|v| !v.is_empty());
+            // Volatile ECC ONLY — never silently switch to lifetime Aggregate
+            // on a transient Volatile read error (which would spike alerts).
             let ecc_uncorrected = dev
                 .total_ecc_errors(MemoryError::Uncorrected, EccCounter::Volatile)
-                .or_else(|_| dev.total_ecc_errors(MemoryError::Uncorrected, EccCounter::Aggregate))
                 .ok();
-            let remapped_rows = read_remapped_rows(&dev);
+            let (remapped_rows, remap_pending, remap_failure) = read_remapped_rows_detail(&dev);
             let mig = dev
                 .mig_mode()
                 .ok()
                 .is_some_and(|m| m.current == NVML_MIG_ENABLE);
 
+            #[cfg(target_os = "linux")]
+            let (xid_errors, xid_last_at) = self.xids_for_uuid(&uuid, now_s);
+            #[cfg(not(target_os = "linux"))]
+            let (xid_errors, xid_last_at) = {
+                let _ = now_s;
+                (None, None)
+            };
+
             let (procs_state, procs) = if !include_procs {
                 (ProcsState::Off, None)
+            } else if self.is_wsl {
+                // WSL2 NVML exposes valid VRAM/util but omits host process PIDs.
+                (ProcsState::Unsupported, None)
             } else {
                 // Per-process SM utilization map (drop > 100% and stale timestamps).
                 let last_ts = self.last_util_ts.get(&uuid).copied().unwrap_or(0);
@@ -337,11 +492,12 @@ impl NvmlBackend {
                 self.last_util_ts.insert(uuid.clone(), max_ts);
 
                 let mut by_pid: HashMap<u32, GpuProc> = HashMap::new();
-                let mut any_query_ok = false;
+                let mut compute_ok = false;
+                let mut graphics_ok = false;
                 let mut partial = false;
 
                 if let Ok(list) = dev.running_compute_processes() {
-                    any_query_ok = true;
+                    compute_ok = true;
                     for p in list {
                         let mem_mb = match p.used_gpu_memory {
                             UsedGpuMemory::Used(b) => Some((b / (1024 * 1024)) as u32),
@@ -381,7 +537,7 @@ impl NvmlBackend {
                     }
                 }
                 if let Ok(list) = dev.running_graphics_processes() {
-                    any_query_ok = true;
+                    graphics_ok = true;
                     for p in list {
                         let mem_mb = match p.used_gpu_memory {
                             UsedGpuMemory::Used(b) => Some((b / (1024 * 1024)) as u32),
@@ -427,9 +583,13 @@ impl NvmlBackend {
                     }
                 }
 
-                if !any_query_ok {
+                if !compute_ok && !graphics_ok {
                     (ProcsState::Unsupported, None)
                 } else {
+                    if !compute_ok || !graphics_ok {
+                        // Compute or graphics enumeration failed on this tick.
+                        partial = true;
+                    }
                     let mut list: Vec<GpuProc> = by_pid.into_values().collect();
                     list.sort_by(|a, b| b.mem_mb.cmp(&a.mem_mb).then_with(|| a.pid.cmp(&b.pid)));
                     let state = if partial {
@@ -458,9 +618,16 @@ impl NvmlBackend {
                 throttle,
                 ecc_uncorrected,
                 remapped_rows,
-                xid_errors: None,
+                xid_errors,
+                xid_last_at,
+                remap_pending,
+                remap_failure,
                 mig,
                 lost: false,
+                vendor_health: None,
+                backend: Some("nvml".into()),
+                vendor_index: Some(idx as u16),
+                presence_only: false,
                 idle_since: None,
                 free_mem_floor_mb: None,
                 procs_state,
@@ -470,34 +637,120 @@ impl NvmlBackend {
 
         (self.host_status(), samples)
     }
+
+    #[cfg(target_os = "linux")]
+    fn drain_xid_events(&mut self, now_s: i64) {
+        let Some(set) = self.xid_events.as_ref() else {
+            return;
+        };
+        // Non-blocking drain (timeout = 0 ms), capped at 64 events per tick.
+        for _ in 0..64 {
+            match set.wait(0) {
+                Ok(ev) => {
+                    if let Some(xid_err) = ev.event_data
+                        && let Ok(uuid) = ev.device.uuid()
+                    {
+                        let code = match xid_err {
+                            XidError::Value(v) => u32::try_from(v).unwrap_or(999),
+                            XidError::Unknown => 999,
+                        };
+                        let list = self.recent_xids.entry(uuid).or_default();
+                        if list.len() >= 32 {
+                            list.remove(0);
+                        }
+                        list.push((code, now_s));
+                    }
+                }
+                Err(NvmlError::Timeout) => break,
+                Err(_) => break,
+            }
+        }
+        // Evict entries older than XID_RETENTION_SECS.
+        let cutoff = now_s.saturating_sub(XID_RETENTION_SECS);
+        for entries in self.recent_xids.values_mut() {
+            entries.retain(|(_, ts)| *ts >= cutoff);
+        }
+        self.recent_xids.retain(|_, v| !v.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn xids_for_uuid(&self, uuid: &str, now_s: i64) -> (Option<Vec<u32>>, Option<i64>) {
+        let Some(entries) = self.recent_xids.get(uuid) else {
+            return (None, None);
+        };
+        let cutoff = now_s.saturating_sub(XID_RETENTION_SECS);
+        let mut codes: Vec<u32> = Vec::new();
+        let mut last_at: Option<i64> = None;
+        for &(code, ts) in entries {
+            if ts < cutoff {
+                continue;
+            }
+            if !codes.contains(&code) {
+                codes.push(code);
+            }
+            last_at = Some(last_at.map_or(ts, |p| p.max(ts)));
+        }
+        if codes.is_empty() {
+            (None, None)
+        } else {
+            (Some(codes), last_at)
+        }
+    }
 }
 
-fn read_remapped_rows(dev: &nvml_wrapper::Device<'_>) -> Option<u32> {
-    let vals = dev
-        .field_values_for(&[
-            FieldId(NVML_FI_DEV_REMAPPED_COR),
-            FieldId(NVML_FI_DEV_REMAPPED_UNC),
-        ])
-        .ok()?;
-    let mut total: u32 = 0;
-    let mut any = false;
-    for entry in vals {
-        if let Ok(sample) = entry
-            && let Ok(v) = sample.value
-        {
-            let n = match v {
-                SampleValue::U32(x) => Some(x),
-                SampleValue::U64(x) => u32::try_from(x).ok(),
-                SampleValue::I64(x) if x >= 0 => u32::try_from(x).ok(),
-                _ => None,
-            };
-            if let Some(n) = n {
-                total = total.saturating_add(n);
-                any = true;
+#[cfg(target_os = "linux")]
+fn init_xid_event_set(nvml: &'static Nvml) -> Option<nvml_wrapper::EventSet<'static>> {
+    let mut set = nvml.create_event_set().ok()?;
+    let count = nvml.device_count().ok()?;
+    let mut any_registered = false;
+    for idx in 0..count {
+        let Ok(dev) = nvml.device_by_index(idx) else {
+            continue;
+        };
+        match dev.register_events(EventTypes::CRITICAL_XID_ERROR, set) {
+            Ok(next_set) => {
+                set = next_set;
+                any_registered = true;
+            }
+            Err(_) => {
+                // `register_events` consumed & freed `set` on error; recreate if
+                // more devices remain or abort gracefully without affecting metrics.
+                return None;
             }
         }
     }
-    any.then_some(total)
+    any_registered.then_some(set)
+}
+
+fn read_remapped_rows_detail(dev: &nvml_wrapper::Device<'_>) -> (Option<u32>, bool, bool) {
+    let Ok(vals) = dev.field_values_for(&[
+        FieldId(NVML_FI_DEV_REMAPPED_UNC),
+        FieldId(NVML_FI_DEV_REMAPPED_PENDING),
+        FieldId(NVML_FI_DEV_REMAPPED_FAILURE),
+    ]) else {
+        return (None, false, false);
+    };
+    let mut unc: Option<u32> = None;
+    let mut pending = false;
+    let mut failure = false;
+    for entry in vals {
+        let Ok(sample) = entry else { continue };
+        let Ok(v) = sample.value else { continue };
+        let n = match v {
+            SampleValue::U32(x) => Some(u64::from(x)),
+            SampleValue::U64(x) => Some(x),
+            SampleValue::I64(x) if x >= 0 => Some(x as u64),
+            _ => None,
+        };
+        let Some(val) = n else { continue };
+        match sample.field.0 {
+            NVML_FI_DEV_REMAPPED_UNC => unc = u32::try_from(val).ok(),
+            NVML_FI_DEV_REMAPPED_PENDING => pending = val > 0,
+            NVML_FI_DEV_REMAPPED_FAILURE => failure = val > 0,
+            _ => {}
+        }
+    }
+    (unc, pending, failure)
 }
 
 fn map_throttle_reasons(r: ThrottleReasons) -> Vec<String> {

@@ -27,9 +27,27 @@ export type GpuProcsState = 'ok' | 'partial' | 'off' | 'unsupported' | 'unknown'
 
 export type GpuHostSource = 'org' | 'invited' | 'shared'
 
-export type GpuRange = '24h' | '7d' | '30d'
+export type GpuRange = '1h' | '24h' | '7d' | '30d'
 
 export type GpuBotKind = 'feishu' | 'dingtalk' | 'wecom' | 'webhook'
+
+export type GpuRuntimeKind =
+  | 'nvidia'
+  | 'ascend'
+  | 'amd'
+  | 'tpu'
+  | 'intel'
+  | 'apple'
+  | 'pci'
+
+export interface GpuFaultReason {
+  scope: string
+  severity: 'critical' | 'warning' | string
+  code: string
+  device_uuid?: string | null
+  device_idx?: number | null
+  summary: string
+}
 
 export interface GpuInventoryCard {
   uuid: string
@@ -46,6 +64,7 @@ export interface GpuInventory {
   driver_version?: string | null
   gpus: GpuInventoryCard[]
   status?: GpuHostStatus
+  status_detail?: string | null
 }
 
 export interface GpuShareSummary {
@@ -82,6 +101,35 @@ export interface GpuHostLoad {
   net_tx_bps?: number | null
 }
 
+export const APP_LEVEL_XIDS: readonly number[] = [13, 31, 43, 45]
+
+const FAULT_HOST_STATUSES = new Set<string>([
+  'driver_missing',
+  'driver_reboot_pending',
+  'driver_hung',
+  'sampler_stalled',
+  'unavailable',
+])
+
+const XID_DESCRIPTIONS: Record<number, string> = {
+  13: 'Graphics engine exception',
+  31: 'GPU memory page fault',
+  32: 'Corrupted command stream',
+  43: 'GPU stopped processing',
+  45: 'Preemptive cleanup after prior fault',
+  48: 'Double-bit ECC error (DBE)',
+  62: 'Internal micro-controller halt',
+  63: 'ECC row remapping event',
+  64: 'ECC row remapper failure',
+  74: 'NVLink error',
+  79: 'GPU fell off the bus',
+  92: 'High single-bit ECC rate',
+  94: 'Contained ECC error',
+  95: 'Uncontained ECC error (reset required)',
+  119: 'GSP RPC timeout',
+  120: 'GSP error',
+}
+
 const SAFE_CUDA_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
 
 export function isSafeCudaUuid(uuid: string): boolean {
@@ -92,17 +140,201 @@ export function shellQuoteSingle(val: string): string {
   return `'${val.replace(/'/g, "'\\''")}'`
 }
 
+export function decodeNvidiaXid(code: number): string | null {
+  return XID_DESCRIPTIONS[code] ?? null
+}
+
+export function cardRuntimeKind(
+  host: Pick<GpuHostView, 'backend'> | null | undefined,
+  g: Pick<GpuCardView, 'backend' | 'uuid' | 'name'>,
+): GpuRuntimeKind {
+  const b = (g.backend || host?.backend || '').toLowerCase()
+  const uuid = g.uuid || ''
+  const name = (g.name || '').toLowerCase()
+  if (b === 'ascend' || uuid.startsWith('ASCEND-') || name.includes('ascend')) return 'ascend'
+  if (b === 'tpu' || uuid.startsWith('TPU-') || name.includes('tpu')) return 'tpu'
+  if (b === 'pci' || uuid.startsWith('PCI-')) return 'pci'
+  if (b === 'amd' || b === 'rocm') return 'amd'
+  if (b === 'intel') return 'intel'
+  if (b === 'apple') return 'apple'
+  return 'nvidia'
+}
+
+export function isExportableRuntime(rt: GpuRuntimeKind): boolean {
+  return rt === 'nvidia' || rt === 'ascend' || rt === 'amd'
+}
+
+export function cardFaultReasons(g: GpuCardView): GpuFaultReason[] {
+  if (g.fault_reasons && g.fault_reasons.length > 0) {
+    return g.fault_reasons
+  }
+  const reasons: GpuFaultReason[] = []
+  if (g.lost) {
+    reasons.push({
+      scope: 'card',
+      severity: 'critical',
+      code: 'lost',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: 'Accelerator fell off the bus (lost)',
+    })
+  }
+  if (g.xid_errors && g.xid_errors.length > 0) {
+    const anyHw = g.xid_errors.some((c) => !APP_LEVEL_XIDS.includes(c))
+    const formatted = g.xid_errors
+      .map((c) => {
+        const desc = decodeNvidiaXid(c)
+        return desc ? `Xid ${c} (${desc})` : `Xid ${c}`
+      })
+      .join(', ')
+    reasons.push({
+      scope: 'card',
+      severity: anyHw ? 'critical' : 'warning',
+      code: anyHw ? 'xid' : 'xid_app',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: formatted,
+    })
+  }
+  if (g.ecc_uncorrected != null && g.ecc_uncorrected > 0) {
+    reasons.push({
+      scope: 'card',
+      severity: 'critical',
+      code: 'ecc_uncorrected',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: `Uncorrected ECC errors: ${g.ecc_uncorrected}`,
+    })
+  }
+  if (g.remap_failure) {
+    reasons.push({
+      scope: 'card',
+      severity: 'critical',
+      code: 'remap_failure',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: 'Memory row remapping failed (hardware RMA required)',
+    })
+  } else if (g.remap_pending) {
+    reasons.push({
+      scope: 'card',
+      severity: 'critical',
+      code: 'remap_pending',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: 'Memory row remapping pending (GPU reset required)',
+    })
+  } else if (g.remapped_rows != null && g.remapped_rows > 0) {
+    reasons.push({
+      scope: 'card',
+      severity: 'warning',
+      code: 'remapped_rows',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: `Remapped memory rows: ${g.remapped_rows}`,
+    })
+  }
+  if (g.vendor_health && g.vendor_health.trim() && g.vendor_health.trim().toLowerCase() !== 'ok') {
+    const low = g.vendor_health.toLowerCase()
+    const crit = /crit|fatal|error|alarm|fail|general/.test(low)
+    reasons.push({
+      scope: 'card',
+      severity: crit ? 'critical' : 'warning',
+      code: 'vendor_health',
+      device_uuid: g.uuid,
+      device_idx: g.idx,
+      summary: `Vendor health: ${g.vendor_health}`,
+    })
+  }
+  if (g.throttle && g.throttle.length > 0) {
+    const seen = new Set<string>()
+    for (const raw of g.throttle) {
+      const low = raw.toLowerCase()
+      if ((low === 'thermal' || low === 'sw_thermal') && !seen.has('thermal')) {
+        seen.add('thermal')
+        reasons.push({
+          scope: 'card',
+          severity: 'warning',
+          code: 'thermal_throttle',
+          device_uuid: g.uuid,
+          device_idx: g.idx,
+          summary: g.temp_c != null ? `Thermal throttling (${g.temp_c}°C)` : 'Thermal throttling',
+        })
+      } else if (low === 'hw_slowdown' && !seen.has('hw_slowdown')) {
+        seen.add('hw_slowdown')
+        reasons.push({
+          scope: 'card',
+          severity: 'warning',
+          code: 'hw_slowdown',
+          device_uuid: g.uuid,
+          device_idx: g.idx,
+          summary: 'Hardware slowdown throttling',
+        })
+      } else if (low === 'power_brake' && !seen.has('power_brake')) {
+        seen.add('power_brake')
+        reasons.push({
+          scope: 'card',
+          severity: 'warning',
+          code: 'power_brake',
+          device_uuid: g.uuid,
+          device_idx: g.idx,
+          summary: 'External power-brake throttling',
+        })
+      }
+    }
+  }
+  return reasons
+}
+
 export function cardHasFault(g: GpuCardView): boolean {
-  return Boolean(
-    g.lost ||
-      (g.ecc_uncorrected != null && g.ecc_uncorrected > 0) ||
-      (g.xid_errors && g.xid_errors.length > 0),
-  )
+  if (g.fault_severity != null) {
+    return g.fault_severity === 'critical'
+  }
+  return cardFaultReasons(g).some((r) => r.severity === 'critical')
+}
+
+export function cardHasWarning(g: GpuCardView): boolean {
+  if (g.fault_severity != null) {
+    return g.fault_severity === 'warning'
+  }
+  const reasons = cardFaultReasons(g)
+  return !reasons.some((r) => r.severity === 'critical') && reasons.some((r) => r.severity === 'warning')
 }
 
 export function hostHasFault(h: GpuHostView): boolean {
-  const badStatus = h.status !== 'ok' && h.status !== 'no_gpu' && h.status !== 'limited'
-  return badStatus || h.gpus.some((g) => cardHasFault(g))
+  if (!h.is_online || h.freshness === 'offline') return false
+  if (h.host_fault_severity === 'critical' || h.host_fault_severity === 'warning') return true
+  if ((h.fault_count ?? 0) > 0) return true
+  if (FAULT_HOST_STATUSES.has(h.status)) return true
+  return h.gpus.some((g) => cardHasFault(g))
+}
+
+export function hostHasWarning(h: GpuHostView): boolean {
+  if (!h.is_online || h.freshness === 'offline') return false
+  if (h.host_fault_severity === 'warning' || h.lagging || h.freshness === 'stale') return true
+  return h.gpus.some((g) => cardHasWarning(g))
+}
+
+export function isCardEligibleFree(h: GpuHostView, g: GpuCardView): boolean {
+  if (!h.is_online || h.freshness !== 'fresh' || h.lagging) return false
+  if (h.host_fault_severity === 'critical') return false
+  if (h.status !== 'ok' && h.status !== 'limited') return false
+  if (g.state !== 'free' || g.stale || g.presence_only) return false
+  if (cardHasFault(g)) return false
+  return true
+}
+
+export function cardExportCmd(h: GpuHostView, g: GpuCardView): string | null {
+  if (!isSafeCudaUuid(g.uuid)) return null
+  const rt = cardRuntimeKind(h, g)
+  if (!isExportableRuntime(rt)) return null
+  if (rt === 'ascend') {
+    return `export ASCEND_RT_VISIBLE_DEVICES=${shellQuoteSingle(String(g.vendor_index ?? g.idx))}`
+  }
+  if (rt === 'amd') {
+    return `export ROCR_VISIBLE_DEVICES=${shellQuoteSingle(String(g.vendor_index ?? g.idx))}`
+  }
+  return `export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=${shellQuoteSingle(g.uuid)}`
 }
 
 export interface GpuCardView {
@@ -124,6 +356,15 @@ export interface GpuCardView {
   xid_errors?: number[] | null
   mig?: boolean
   lost?: boolean
+  vendor_health?: string | null
+  backend?: string | null
+  vendor_index?: number | null
+  remap_pending?: boolean
+  remap_failure?: boolean
+  presence_only?: boolean
+  stale?: boolean
+  fault_severity?: 'critical' | 'warning' | string | null
+  fault_reasons?: GpuFaultReason[]
   unified?: boolean
   pci_bus?: string | null
   idle_since?: number | null
@@ -141,9 +382,16 @@ export interface GpuHostView {
   is_online: boolean
   freshness: GpuFreshness
   status: GpuHostStatus
+  status_detail?: string | null
+  host_fault_severity?: 'critical' | 'warning' | string | null
+  fault_reasons?: GpuFaultReason[]
+  fault_count?: number
   backend?: string | null
   driver_version?: string | null
+  seq?: number
   received_at_ms?: number | null
+  age_ms?: number | null
+  lagging?: boolean
   interval_ms: number
   free_count: number
   busy_count: number
@@ -162,12 +410,18 @@ export interface GpuFleetSummary {
   gpus_busy: number
   gpus_held_idle: number
   gpus_fault: number
+  gpus_warning?: number
+  gpus_unknown?: number
+  gpus_offline?: number
+  fault_hosts?: number
+  fault_cards?: number
 }
 
 export interface GpuFleetResponse {
   hosts: GpuHostView[]
   summary: GpuFleetSummary
   server_time_ms: number
+  live_interval_ms?: number
 }
 
 export interface GpuHistoryPoint {

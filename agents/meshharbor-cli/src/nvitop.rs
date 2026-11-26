@@ -198,6 +198,10 @@ pub struct FreeGpuPick {
     pub agent_id: String,
     pub source: String,
     pub idx: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_index: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
     pub uuid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -240,10 +244,51 @@ pub fn shell_single_quote(val: &str) -> String {
     format!("'{}'", val.replace('\'', "'\\''"))
 }
 
+const APP_LEVEL_XIDS: &[u32] = &[13, 31, 43, 45];
+
 fn card_has_fault(g: &GpuCardView) -> bool {
+    if let Some(sev) = g.fault_severity.as_deref() {
+        return sev == "critical";
+    }
     g.lost
+        || g.remap_failure
+        || g.remap_pending
         || g.ecc_uncorrected.is_some_and(|e| e > 0)
-        || g.xid_errors.as_ref().is_some_and(|x| !x.is_empty())
+        || g.xid_errors
+            .as_ref()
+            .is_some_and(|xs| xs.iter().any(|c| !APP_LEVEL_XIDS.contains(c)))
+}
+
+fn card_has_warning(g: &GpuCardView) -> bool {
+    g.fault_severity.as_deref() == Some("warning")
+}
+
+fn card_runtime_kind<'a>(g: &'a GpuCardView, host_backend: Option<&'a str>) -> &'static str {
+    let b = g
+        .backend
+        .as_deref()
+        .or(host_backend)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if b == "ascend" || g.uuid.starts_with("ASCEND-") {
+        "ascend"
+    } else if b == "tpu" || g.uuid.starts_with("TPU-") {
+        "tpu"
+    } else if b == "pci" || g.uuid.starts_with("PCI-") {
+        "pci"
+    } else if b == "amd" || b == "rocm" {
+        "amd"
+    } else if b == "intel" {
+        "intel"
+    } else if b == "apple" {
+        "apple"
+    } else {
+        "nvidia"
+    }
+}
+
+fn is_exportable_runtime(rt: &str) -> bool {
+    matches!(rt, "nvidia" | "ascend" | "amd")
 }
 
 /// Entry point called from `cli::run_from`.
@@ -731,13 +776,27 @@ pub fn select_free_gpus(
     hosts_sorted.sort_by(|a, b| host_label(a).cmp(host_label(b)));
 
     for h in hosts_sorted {
-        if !h.is_online || h.freshness == "offline" || h.status != "ok" {
+        let host_ok = h.status == "ok" || h.status == "limited";
+        if !h.is_online
+            || h.freshness != "fresh"
+            || h.lagging
+            || !host_ok
+            || h.host_fault_severity.as_deref() == Some("critical")
+        {
             continue;
         }
         let mut qualifying: Vec<FreeGpuPick> = h
             .gpus
             .iter()
-            .filter(|g| g.state == "free" && !g.lost && is_safe_cuda_device_id(&g.uuid))
+            .filter(|g| {
+                let rt = card_runtime_kind(g, h.backend.as_deref());
+                g.state == "free"
+                    && !g.stale
+                    && !g.presence_only
+                    && !card_has_fault(g)
+                    && is_exportable_runtime(rt)
+                    && is_safe_cuda_device_id(&g.uuid)
+            })
             .filter_map(|g| {
                 let free_mb = match (g.mem_total_mb, g.mem_used_mb) {
                     (Some(tot), Some(used)) => Some(tot.saturating_sub(used)),
@@ -746,11 +805,14 @@ pub fn select_free_gpus(
                 if min_free_mb > 0 && free_mb.unwrap_or(0) < min_free_mb {
                     return None;
                 }
+                let rt = card_runtime_kind(g, h.backend.as_deref());
                 Some(FreeGpuPick {
                     host: host_label(h).to_string(),
                     agent_id: h.agent_id.clone(),
                     source: h.source.clone(),
                     idx: g.idx,
+                    vendor_index: g.vendor_index,
+                    runtime: Some(rt.to_string()),
                     uuid: g.uuid.clone(),
                     name: g.name.clone(),
                     free_mb,
@@ -821,28 +883,31 @@ pub fn select_free_gpus(
             .or_default()
             .insert(g.agent_id.as_str());
     }
-    let mut exports: Vec<HostExport> = Vec::new();
+    let mut exports: Vec<(String, HostExport)> = Vec::new();
     for g in &picked {
-        let is_ascend = g.uuid.starts_with("ASCEND-");
-        let token = if is_ascend {
-            g.idx.to_string()
+        let rt = g.runtime.as_deref().unwrap_or(if g.uuid.starts_with("ASCEND-") {
+            "ascend"
         } else {
-            g.uuid.clone()
+            "nvidia"
+        });
+        let token = match rt {
+            "ascend" => g.vendor_index.unwrap_or(g.idx).to_string(),
+            "amd" => g.vendor_index.unwrap_or(g.idx).to_string(),
+            _ => g.uuid.clone(),
         };
-        let format_cmd = |val: &str, ascend: bool| {
-            if ascend {
-                format!("export ASCEND_RT_VISIBLE_DEVICES={}", shell_single_quote(val))
-            } else {
-                format!(
-                    "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
-                    shell_single_quote(val)
-                )
-            }
+        let format_cmd = |val: &str, runtime: &str| match runtime {
+            "ascend" => format!("export ASCEND_RT_VISIBLE_DEVICES={}", shell_single_quote(val)),
+            "amd" => format!("export ROCR_VISIBLE_DEVICES={}", shell_single_quote(val)),
+            _ => format!(
+                "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
+                shell_single_quote(val)
+            ),
         };
-        if let Some(ex) = exports.iter_mut().find(|e| e.agent_id == g.agent_id) {
+        let key = format!("{}:{rt}", g.agent_id);
+        if let Some((_, ex)) = exports.iter_mut().find(|(k, _)| *k == key) {
             ex.cuda_visible_devices.push(',');
             ex.cuda_visible_devices.push_str(&token);
-            ex.export_cmd = format_cmd(&ex.cuda_visible_devices, is_ascend);
+            ex.export_cmd = format_cmd(&ex.cuda_visible_devices, rt);
         } else {
             let ambiguous = name_counts
                 .get(g.host.as_str())
@@ -853,14 +918,18 @@ pub fn select_free_gpus(
             } else {
                 g.host.clone()
             };
-            exports.push(HostExport {
-                agent_id: g.agent_id.clone(),
-                host: label,
-                export_cmd: format_cmd(&token, is_ascend),
-                cuda_visible_devices: token,
-            });
+            exports.push((
+                key,
+                HostExport {
+                    agent_id: g.agent_id.clone(),
+                    host: label,
+                    export_cmd: format_cmd(&token, rt),
+                    cuda_visible_devices: token,
+                },
+            ));
         }
     }
+    let exports: Vec<HostExport> = exports.into_iter().map(|(_, e)| e).collect();
 
     Ok(FreeGpuSelection {
         count,
@@ -986,7 +1055,7 @@ fn state_word(state: &str, fault: bool, lang: Lang) -> &'static str {
         (_, Lang::En) => "UNK",
         ("free", Lang::Zh) => "空闲",
         ("busy", Lang::Zh) => "忙碌",
-        ("held_idle", Lang::Zh) => "占空!",
+        ("held_idle", Lang::Zh) => "占卡空闲",
         ("unattributed", Lang::Zh) => "未归属",
         (_, Lang::Zh) => "未知",
     }
@@ -1056,30 +1125,74 @@ fn format_age(age_s: Option<u64>) -> String {
     }
 }
 
+fn host_status_word(status: &str, lang: Lang) -> String {
+    match (status, lang) {
+        ("driver_missing", Lang::En) => "DRIVER MISSING".into(),
+        ("driver_missing", Lang::Zh) => "缺少驱动".into(),
+        ("driver_reboot_pending", Lang::En) => "REBOOT PENDING".into(),
+        ("driver_reboot_pending", Lang::Zh) => "需重启生效".into(),
+        ("driver_hung", Lang::En) => "DRIVER HUNG".into(),
+        ("driver_hung", Lang::Zh) => "驱动卡死".into(),
+        ("sampler_stalled", Lang::En) => "SAMPLER STALLED".into(),
+        ("sampler_stalled", Lang::Zh) => "采样器无响应".into(),
+        ("unavailable", Lang::En) => "UNAVAILABLE".into(),
+        ("unavailable", Lang::Zh) => "采样器不可用".into(),
+        ("limited", Lang::En) => "LIMITED".into(),
+        ("limited", Lang::Zh) => "受限模式".into(),
+        ("off_local", Lang::En) => "LOCAL OFF".into(),
+        ("off_local", Lang::Zh) => "本地已关闭".into(),
+        ("no_gpu", Lang::En) => "NO ACCEL".into(),
+        ("no_gpu", Lang::Zh) => "未检测到加速卡".into(),
+        ("unknown", Lang::En) => "AWAITING".into(),
+        ("unknown", Lang::Zh) => "等待首次上报".into(),
+        (other, _) => sanitize_term(other),
+    }
+}
+
 /// Pure fleet table renderer (safe for piping, `NO_COLOR`, and CJK widths).
 pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
     let mut out = String::new();
     let s = &page.summary;
+    let fault_hosts_suffix = if s.fault_hosts > 0 {
+        match opts.lang {
+            Lang::En => format!(" on {} hosts", s.fault_hosts),
+            Lang::Zh => format!(" ({} 台主机)", s.fault_hosts),
+        }
+    } else {
+        String::new()
+    };
+    let warn_suffix = if s.gpus_warning > 0 {
+        match opts.lang {
+            Lang::En => format!(", warn {}", s.gpus_warning),
+            Lang::Zh => format!(", 告警 {}", s.gpus_warning),
+        }
+    } else {
+        String::new()
+    };
     let header = match opts.lang {
         Lang::En => format!(
-            "GPU Servers: {}/{} online | GPUs: {} free / {} total (busy {}, idle! {}, fault {})",
+            "GPU Servers: {}/{} online | GPUs: {} free / {} total (busy {}, held-idle {}, fault {}{}{})",
             s.hosts_online,
             s.hosts_total,
             s.gpus_free,
             s.gpus_total,
             s.gpus_busy,
             s.gpus_held_idle,
-            s.gpus_fault
+            s.gpus_fault,
+            fault_hosts_suffix,
+            warn_suffix
         ),
         Lang::Zh => format!(
-            "GPU 服务器: {}/{} 在线 | GPU: {} 空闲 / {} 总计 (忙碌 {}, 占空! {}, 故障 {})",
+            "GPU 服务器: {}/{} 在线 | 加速卡: {} 空闲 / {} 总计 (忙碌 {}, 占卡空闲 {}, 故障 {}{}{})",
             s.hosts_online,
             s.hosts_total,
             s.gpus_free,
             s.gpus_total,
             s.gpus_busy,
             s.gpus_held_idle,
-            s.gpus_fault
+            s.gpus_fault,
+            fault_hosts_suffix,
+            warn_suffix
         ),
     };
     out.push_str(&paint(&truncate_width(&header, opts.width), "1", opts.color));
@@ -1104,16 +1217,27 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
     };
     for h in hosts {
         out.push('\n');
-        let fresh_tag = match (h.freshness.as_str(), opts.lang) {
-            ("fresh", _) => "",
-            ("stale", Lang::En) => " [STALE]",
-            ("stale", Lang::Zh) => " [陈旧]",
-            ("offline", Lang::En) => " [OFFLINE]",
-            ("offline", Lang::Zh) => " [离线]",
-            _ => "",
+        let age_s = h
+            .age_ms
+            .filter(|&a| a >= 0)
+            .map(|a| (a / 1000) as u64)
+            .or_else(|| {
+                h.received_at_ms
+                    .filter(|&r| r > 0 && page.server_time_ms >= r)
+                    .map(|r| ((page.server_time_ms - r) / 1000) as u64)
+            });
+        let fresh_tag = match (h.freshness.as_str(), h.lagging, opts.lang) {
+            ("offline", _, Lang::En) => format!(" [OFFLINE {}]", format_age(age_s)),
+            ("offline", _, Lang::Zh) => format!(" [离线 {}]", format_age(age_s)),
+            ("stale", _, Lang::En) => format!(" [STALE {}]", format_age(age_s)),
+            ("stale", _, Lang::Zh) => format!(" [陈旧 {}]", format_age(age_s)),
+            ("fresh", true, Lang::En) => format!(" [LAG {}]", format_age(age_s)),
+            ("fresh", true, Lang::Zh) => format!(" [延迟 {}]", format_age(age_s)),
+            ("fresh", false, _) => age_s.map(|s| format!(" [{s}s]")).unwrap_or_default(),
+            _ => String::new(),
         };
         let status_tag = if h.status != "ok" && !h.status.is_empty() {
-            format!(" [{}]", sanitize_term(&h.status))
+            format!(" [{}]", host_status_word(&h.status, opts.lang))
         } else {
             String::new()
         };
@@ -1134,11 +1258,40 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         );
         let style = if !h.is_online || h.freshness == "offline" {
             "90"
+        } else if h.host_fault_severity.as_deref() == Some("critical") || h.fault_count > 0 {
+            "1;35"
+        } else if h.host_fault_severity.as_deref() == Some("warning") || h.lagging {
+            "1;33"
         } else {
             "1;34"
         };
         out.push_str(&paint(&truncate_width(&host_line, opts.width), style, opts.color));
         out.push('\n');
+
+        if let Some(detail) = h
+            .status_detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let diag = format!("  ! {}", sanitize_term(detail));
+            let dstyle = if h.host_fault_severity.as_deref() == Some("critical") {
+                "1;35"
+            } else {
+                "33"
+            };
+            out.push_str(&paint(&truncate_width(&diag, opts.width), dstyle, opts.color));
+            out.push('\n');
+        } else if !h.fault_reasons.is_empty() {
+            let joined: Vec<String> = h
+                .fault_reasons
+                .iter()
+                .map(|r| sanitize_term(&r.summary))
+                .collect();
+            let diag = format!("  ! {}", joined.join("; "));
+            out.push_str(&paint(&truncate_width(&diag, opts.width), "1;35", opts.color));
+            out.push('\n');
+        }
 
         if let Some(load) = &h.host {
             let cpu = load
@@ -1174,7 +1327,7 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             continue;
         }
 
-        let name_col = opts.width.saturating_sub(54).clamp(12, 26);
+        let name_col = opts.width.saturating_sub(56).clamp(12, 26);
         let expanded = opts.expanded_host.as_deref() == Some(h.agent_id.as_str());
         for g in &h.gpus {
             let gname = truncate_width(
@@ -1196,9 +1349,14 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                 _ => "—".into(),
             };
             let state_cell = paint_state(&g.state, card_has_fault(g), opts.lang, opts.color);
+            let slot_prefix = match card_runtime_kind(g, h.backend.as_deref()) {
+                "ascend" => format!("N{}", g.vendor_index.unwrap_or(g.idx)),
+                "tpu" => format!("T{}", g.idx),
+                _ => format!("#{}", g.idx),
+            };
             let row = format!(
-                "  #{:<2} {}  {}  {}  {:>11}  {}  {:>8}",
-                g.idx,
+                "  {:<4} {}  {}  {}  {:>11}  {}  {:>8}",
+                slot_prefix,
                 pad_right(&gname, name_col),
                 state_cell,
                 util,
@@ -1208,6 +1366,31 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             );
             out.push_str(&row);
             out.push('\n');
+
+            if !g.fault_reasons.is_empty() {
+                let tag = if card_has_fault(g) {
+                    match opts.lang {
+                        Lang::En => "FAULT",
+                        Lang::Zh => "故障",
+                    }
+                } else if card_has_warning(g) {
+                    match opts.lang {
+                        Lang::En => "WARN",
+                        Lang::Zh => "告警",
+                    }
+                } else {
+                    "INFO"
+                };
+                let joined: Vec<String> = g
+                    .fault_reasons
+                    .iter()
+                    .map(|r| sanitize_term(&r.summary))
+                    .collect();
+                let fline = format!("      [{tag}] {}", joined.join(" · "));
+                let fstyle = if card_has_fault(g) { "1;35" } else { "33" };
+                out.push_str(&paint(&truncate_width(&fline, opts.width), fstyle, opts.color));
+                out.push('\n');
+            }
 
             if expanded {
                 let mut extras = Vec::new();
@@ -1437,9 +1620,88 @@ pub fn pad_right(s: &str, target_w: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tunnel_core::localapi::{GpuFleetSummary, GpuHostLoadView, GpuProcView, GpuUserRow};
+    use tunnel_core::localapi::{
+        GpuFaultReasonView, GpuFleetSummary, GpuHostLoadView, GpuProcView, GpuUserRow,
+    };
+
+    fn make_card(uuid: &str, idx: u16, name: &str, state: &str) -> GpuCardView {
+        GpuCardView {
+            uuid: uuid.into(),
+            idx,
+            name: Some(name.into()),
+            state: state.into(),
+            mem_used_mb: Some(100),
+            mem_total_mb: Some(24_576),
+            util_pct: Some(0),
+            temp_c: Some(35),
+            power_w: Some(25),
+            power_limit_w: Some(450),
+            fan_pct: None,
+            sm_clock_mhz: None,
+            throttle: None,
+            ecc_uncorrected: None,
+            remapped_rows: None,
+            xid_errors: None,
+            mig: false,
+            lost: false,
+            vendor_health: None,
+            backend: Some("nvml".into()),
+            vendor_index: None,
+            remap_pending: false,
+            remap_failure: false,
+            presence_only: false,
+            stale: false,
+            fault_severity: None,
+            fault_reasons: vec![],
+            unified: false,
+            pci_bus: None,
+            idle_since: None,
+            procs_state: "ok".into(),
+            procs: Some(vec![]),
+        }
+    }
 
     fn sample_page() -> GpuFleetPage {
+        let mut a0 = make_card("GPU-AAAA-0000", 0, "NVIDIA A100-SXM4-80GB", "free");
+        a0.mem_used_mb = Some(512);
+        a0.mem_total_mb = Some(81_920);
+        a0.temp_c = Some(32);
+        a0.power_w = Some(45);
+        a0.power_limit_w = Some(400);
+        a0.fan_pct = Some(30);
+        a0.sm_clock_mhz = Some(210);
+        a0.ecc_uncorrected = Some(0);
+        a0.remapped_rows = Some(0);
+        a0.pci_bus = Some("0000:01:00.0".into());
+
+        let mut a1 = make_card("GPU-AAAA-0001", 1, "NVIDIA A100-SXM4-80GB", "busy");
+        a1.mem_used_mb = Some(61_440);
+        a1.mem_total_mb = Some(81_920);
+        a1.util_pct = Some(96);
+        a1.temp_c = Some(68);
+        a1.power_w = Some(340);
+        a1.power_limit_w = Some(400);
+        a1.fan_pct = Some(65);
+        a1.sm_clock_mhz = Some(1410);
+        a1.ecc_uncorrected = Some(0);
+        a1.remapped_rows = Some(0);
+        a1.pci_bus = Some("0000:02:00.0".into());
+        a1.procs = Some(vec![GpuProcView {
+            pid: 4242,
+            user: Some("alice".into()),
+            name: Some("python3".into()),
+            mem_mb: Some(61_440),
+            sm_pct: Some(96),
+            cpu_pct: Some(15.2),
+            started_at: Some(1_759_996_100),
+            container: None,
+            kind: Some("compute".into()),
+        }]);
+
+        let b0 = make_card("GPU-BBBB-0000", 0, "RTX 4090", "free");
+        let mut b1 = make_card("GPU-BBBB-0001", 1, "RTX 4090", "free");
+        b1.temp_c = Some(34);
+
         GpuFleetPage {
             hosts: vec![
                 GpuHostView {
@@ -1452,9 +1714,16 @@ mod tests {
                     is_online: true,
                     freshness: "fresh".into(),
                     status: "ok".into(),
+                    status_detail: None,
+                    host_fault_severity: None,
+                    fault_reasons: vec![],
+                    fault_count: 0,
                     backend: Some("nvml".into()),
                     driver_version: Some("550.90".into()),
+                    seq: 10,
                     received_at_ms: Some(1_760_000_000_000),
+                    age_ms: Some(500),
+                    lagging: false,
                     interval_ms: 2000,
                     free_count: 1,
                     busy_count: 1,
@@ -1475,68 +1744,7 @@ mod tests {
                         net_rx_bps: None,
                         net_tx_bps: None,
                     }),
-                    gpus: vec![
-                        GpuCardView {
-                            uuid: "GPU-AAAA-0000".into(),
-                            idx: 0,
-                            name: Some("NVIDIA A100-SXM4-80GB".into()),
-                            state: "free".into(),
-                            mem_used_mb: Some(512),
-                            mem_total_mb: Some(81_920),
-                            util_pct: Some(0),
-                            temp_c: Some(32),
-                            power_w: Some(45),
-                            power_limit_w: Some(400),
-                            fan_pct: Some(30),
-                            sm_clock_mhz: Some(210),
-                            throttle: None,
-                            ecc_uncorrected: Some(0),
-                            remapped_rows: Some(0),
-                            xid_errors: None,
-                            mig: false,
-                            lost: false,
-                            unified: false,
-                            pci_bus: Some("0000:01:00.0".into()),
-                            idle_since: None,
-                            procs_state: "ok".into(),
-                            procs: Some(vec![]),
-                        },
-                        GpuCardView {
-                            uuid: "GPU-AAAA-0001".into(),
-                            idx: 1,
-                            name: Some("NVIDIA A100-SXM4-80GB".into()),
-                            state: "busy".into(),
-                            mem_used_mb: Some(61_440),
-                            mem_total_mb: Some(81_920),
-                            util_pct: Some(96),
-                            temp_c: Some(68),
-                            power_w: Some(340),
-                            power_limit_w: Some(400),
-                            fan_pct: Some(65),
-                            sm_clock_mhz: Some(1410),
-                            throttle: None,
-                            ecc_uncorrected: Some(0),
-                            remapped_rows: Some(0),
-                            xid_errors: None,
-                            mig: false,
-                            lost: false,
-                            unified: false,
-                            pci_bus: Some("0000:02:00.0".into()),
-                            idle_since: None,
-                            procs_state: "ok".into(),
-                            procs: Some(vec![GpuProcView {
-                                pid: 4242,
-                                user: Some("alice".into()),
-                                name: Some("python3".into()),
-                                mem_mb: Some(61_440),
-                                sm_pct: Some(96),
-                                cpu_pct: Some(15.2),
-                                started_at: Some(1_759_996_100),
-                                container: None,
-                                kind: Some("compute".into()),
-                            }]),
-                        },
-                    ],
+                    gpus: vec![a0, a1],
                 },
                 GpuHostView {
                     agent_id: "aid2".into(),
@@ -1548,67 +1756,23 @@ mod tests {
                     is_online: true,
                     freshness: "fresh".into(),
                     status: "ok".into(),
+                    status_detail: None,
+                    host_fault_severity: None,
+                    fault_reasons: vec![],
+                    fault_count: 0,
                     backend: Some("nvml".into()),
                     driver_version: Some("550.90".into()),
+                    seq: 12,
                     received_at_ms: Some(1_760_000_000_000),
+                    age_ms: Some(500),
+                    lagging: false,
                     interval_ms: 2000,
                     free_count: 2,
                     busy_count: 0,
                     held_idle_count: 0,
                     total_count: 2,
                     host: None,
-                    gpus: vec![
-                        GpuCardView {
-                            uuid: "GPU-BBBB-0000".into(),
-                            idx: 0,
-                            name: Some("RTX 4090".into()),
-                            state: "free".into(),
-                            mem_used_mb: Some(100),
-                            mem_total_mb: Some(24_576),
-                            util_pct: Some(0),
-                            temp_c: Some(35),
-                            power_w: Some(25),
-                            power_limit_w: Some(450),
-                            fan_pct: None,
-                            sm_clock_mhz: None,
-                            throttle: None,
-                            ecc_uncorrected: None,
-                            remapped_rows: None,
-                            xid_errors: None,
-                            mig: false,
-                            lost: false,
-                            unified: false,
-                            pci_bus: None,
-                            idle_since: None,
-                            procs_state: "ok".into(),
-                            procs: Some(vec![]),
-                        },
-                        GpuCardView {
-                            uuid: "GPU-BBBB-0001".into(),
-                            idx: 1,
-                            name: Some("RTX 4090".into()),
-                            state: "free".into(),
-                            mem_used_mb: Some(100),
-                            mem_total_mb: Some(24_576),
-                            util_pct: Some(0),
-                            temp_c: Some(34),
-                            power_w: Some(25),
-                            power_limit_w: Some(450),
-                            fan_pct: None,
-                            sm_clock_mhz: None,
-                            throttle: None,
-                            ecc_uncorrected: None,
-                            remapped_rows: None,
-                            xid_errors: None,
-                            mig: false,
-                            lost: false,
-                            unified: false,
-                            pci_bus: None,
-                            idle_since: None,
-                            procs_state: "ok".into(),
-                            procs: Some(vec![]),
-                        },
-                    ],
+                    gpus: vec![b0, b1],
                 },
             ],
             summary: GpuFleetSummary {
@@ -1619,8 +1783,14 @@ mod tests {
                 gpus_busy: 1,
                 gpus_held_idle: 0,
                 gpus_fault: 0,
+                gpus_warning: 0,
+                gpus_unknown: 0,
+                gpus_offline: 0,
+                fault_hosts: 0,
+                fault_cards: 0,
             },
             server_time_ms: 1_760_000_000_500,
+            live_interval_ms: 2000,
             org: "primary".into(),
         }
     }
@@ -1731,5 +1901,49 @@ mod tests {
         assert!(text.contains("12.50"));
         assert!(text.contains("48.0G"));
         assert!(text.contains("lab-a100"));
+    }
+
+    #[test]
+    fn fr139_select_free_excludes_lagging_fault_tpu_and_uses_ascend_vendor_index() {
+        let mut page = sample_page();
+        // Make host 0 lagging -> must be skipped
+        page.hosts[0].lagging = true;
+        // Make host 1 card 0 have a critical fault and card 1 be an Ascend NPU with vendor_index=3
+        page.hosts[1].gpus[0].fault_severity = Some("critical".into());
+        page.hosts[1].gpus[1].uuid = "ASCEND-3-0".into();
+        page.hosts[1].gpus[1].backend = Some("ascend".into());
+        page.hosts[1].gpus[1].vendor_index = Some(3);
+        page.hosts[1].gpus[1].idx = 7; // renumbered display idx
+        // Add a TPU card that must NOT be selected as CUDA/Ascend exportable
+        let mut tpu = make_card("TPU-0000:00:04.0", 2, "Google TPU v5e", "free");
+        tpu.backend = Some("tpu".into());
+        page.hosts[1].gpus.push(tpu);
+
+        let sel = select_free_gpus(&page, 1, 0, false, Lang::En).unwrap();
+        assert_eq!(sel.gpus.len(), 1);
+        assert_eq!(sel.gpus[0].uuid, "ASCEND-3-0");
+        assert_eq!(
+            sel.exports[0].export_cmd,
+            "export ASCEND_RT_VISIBLE_DEVICES='3'"
+        );
+        // Requesting 2 must fail because lagging host, faulted card, and TPU are excluded.
+        assert!(select_free_gpus(&page, 2, 0, false, Lang::En).is_err());
+
+        // Rendering shows LAG badge, diagnostic status_detail, and inline fault reason.
+        page.hosts[0].status = "driver_missing".into();
+        page.hosts[0].status_detail = Some("Detected 2 NVIDIA GPUs without driver".into());
+        page.hosts[1].gpus[0].fault_reasons = vec![GpuFaultReasonView {
+            scope: "card".into(),
+            severity: "critical".into(),
+            code: "xid".into(),
+            device_uuid: Some("GPU-BBBB-0000".into()),
+            device_idx: Some(0),
+            summary: "Xid 79 (GPU fell off the bus)".into(),
+        }];
+        let rendered = render_fleet_text(&page, &RenderOpts::default());
+        assert!(rendered.contains("[LAG "), "{rendered}");
+        assert!(rendered.contains("DRIVER MISSING"), "{rendered}");
+        assert!(rendered.contains("Detected 2 NVIDIA GPUs without driver"), "{rendered}");
+        assert!(rendered.contains("Xid 79 (GPU fell off the bus)"), "{rendered}");
     }
 }

@@ -722,6 +722,30 @@ pub fn gpu_servers_free(lang: Lang, free: usize, total: usize) -> String {
     }
 }
 
+/// FR-139 — tray menu line including fault count when any card/host is faulted.
+pub fn gpu_servers_status(
+    lang: Lang,
+    free: usize,
+    total: usize,
+    fault_cards: usize,
+    fault_hosts: usize,
+) -> String {
+    let base = gpu_servers_free(lang, free, total);
+    if fault_cards > 0 {
+        match lang {
+            Lang::En => format!("{base} · {fault_cards} fault"),
+            Lang::ZhCn => format!("{base} · {fault_cards} 故障"),
+        }
+    } else if fault_hosts > 0 {
+        match lang {
+            Lang::En => format!("{base} · {fault_hosts} host fault"),
+            Lang::ZhCn => format!("{base} · {fault_hosts} 主机异常"),
+        }
+    } else {
+        base
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

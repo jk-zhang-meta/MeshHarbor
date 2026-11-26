@@ -74,6 +74,7 @@ impl AmdBackend {
                 driver_version: read_amdgpu_version(),
                 gpus,
                 status: GpuHostStatus::Ok,
+                status_detail: None,
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -157,10 +158,11 @@ impl AmdBackend {
                     xid_errors: None,
                     mig: false,
                     lost: false,
-                    idle_since: None,
-                    free_mem_floor_mb: None,
+                    backend: Some("amd".into()),
+                    vendor_index: Some(c.idx),
                     procs_state,
                     procs,
+                    ..Default::default()
                 });
             }
             (GpuHostStatus::Ok, out)

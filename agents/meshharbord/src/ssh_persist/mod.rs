@@ -16,9 +16,10 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "ssh-server")]
 use std::time::Duration;
 
+use meshharbor_node_core::pty_resume::TerminateReason;
 #[cfg(feature = "ssh-server")]
 use meshharbor_node_core::pty_resume::{
-    PersistStatus, RefuseReason, SessionDescriptor, SessionId, TerminateReason,
+    PersistStatus, RefuseReason, SessionDescriptor, SessionId,
     ipc::{
         AttachStartFrame, DaemonDetachingFrame, HostHelloFrame, HostState, IpcFrame, SpawnSpec,
         TerminateFrame,
@@ -31,7 +32,6 @@ use meshharbor_node_core::pty_resume::{
 };
 #[cfg(feature = "ssh-server")]
 use meshharbor_remote_control::models::ssh_limits;
-#[cfg(feature = "ssh-server")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssh-server")]
 use tracing::{debug, info, warn};

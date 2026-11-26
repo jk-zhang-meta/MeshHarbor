@@ -1,15 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Huawei Ascend NPU telemetry backend via `npu-smi` (FR-139).
+//! Huawei Ascend NPU telemetry backend via `npu-smi` with zero-package
+//! `/dev/davinci*` + `/proc/<pid>/fd` fallback (FR-139).
 //!
 //! Runs EXCLUSIVELY inside the isolated `meshharbord gpu-sampler` child process
-//! on Linux (x86_64 and aarch64). Uses fixed trusted absolute paths
-//! (`/usr/local/sbin/npu-smi`, `/usr/bin/npu-smi` — never `$PATH`) and enforces
-//! a hard per-invocation timeout so a wedged CANN driver never blocks the
-//! sampler or daemon.
+//! on Linux (x86_64 and aarch64):
+//! - **Tool mode** (`npu-smi` installed): emits initial inventory immediately
+//!   from a single `npu-smi info` call (never blocks startup on serial
+//!   `info -t board` loops), lazily enriches board details (at most 2 cards
+//!   per sample tick), preserves raw `vendor_health` without falsely setting
+//!   `lost = true` on `Warning`, and marks `lost = true` ONLY when a previously
+//!   present chip disappears from `npu-smi info`.
+//! - **Device mode** (zero-package fallback when `/dev/davinci[0-9]+` exists
+//!   without `npu-smi`): discovers every numbered `/dev/davinciN` device node,
+//!   pairs with Huawei `0x19e5` PCIe BDFs when counts match, attributes
+//!   occupying processes via `/proc/<pid>/fd/*`, leaves unavailable HBM/AICore
+//!   metrics as `None`, and reports `Limited` with an actionable diagnostic.
 
 #[cfg(any(target_os = "linux", test))]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "linux")]
+use std::fs;
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -21,12 +32,17 @@ use meshharbor_remote_control::gpu::{GpuHostStatus, GpuInventory, GpuSample};
 #[cfg(any(target_os = "linux", test))]
 use meshharbor_remote_control::gpu::{GpuInventoryItem, GpuProc, ProcsState};
 
+use super::pci_fallback::{AccelVendor, PciAccelerator};
 use super::proc_linux::ProcLookup;
 #[cfg(any(target_os = "linux", test))]
 use super::proc_linux::truncate_proc_name;
 
 #[cfg(target_os = "linux")]
-const NPU_SMI_CANDIDATES: &[&str] = &["/usr/local/sbin/npu-smi", "/usr/bin/npu-smi"];
+const NPU_SMI_CANDIDATES: &[&str] = &[
+    "/usr/local/sbin/npu-smi",
+    "/usr/bin/npu-smi",
+    "/usr/local/Ascend/driver/tools/npu-smi",
+];
 
 #[cfg(target_os = "linux")]
 const NPU_SMI_TIMEOUT: Duration = Duration::from_secs(4);
@@ -74,62 +90,150 @@ struct ParsedNpuInfo {
     has_proc_section: bool,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+struct DavinciDevCard {
+    npu_id: u16,
+    dev_node: String,
+    name: String,
+    pci_bus: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+enum AscendMode {
+    Tool {
+        smi_path: PathBuf,
+        driver_version: Option<String>,
+        boards: HashMap<(u16, u16), AscendBoardInfo>,
+        initial_cards: Vec<ParsedNpuCard>,
+        board_probe_done: HashSet<(u16, u16)>,
+        last_error: Option<String>,
+    },
+    DeviceOnly {
+        cards: Vec<DavinciDevCard>,
+        reason: String,
+    },
+}
+
 pub struct AscendBackend {
     #[cfg(target_os = "linux")]
-    smi_path: PathBuf,
-    #[cfg(target_os = "linux")]
-    driver_version: Option<String>,
-    #[cfg(target_os = "linux")]
-    boards: HashMap<(u16, u16), AscendBoardInfo>,
-    #[cfg(target_os = "linux")]
-    initial_cards: Vec<ParsedNpuCard>,
+    mode: AscendMode,
 }
 
 impl AscendBackend {
-    pub fn try_init() -> Option<Self> {
+    /// Initialize Ascend backend from `/dev/davinci*`, `npu-smi`, and already
+    /// scanned host PCIe accelerators.
+    pub fn try_init_with_pci(pci_devs: &[PciAccelerator]) -> (Option<Self>, Option<String>) {
         #[cfg(target_os = "linux")]
         {
-            if !Path::new("/dev/davinci_manager").exists() && !Path::new("/dev/davinci0").exists() {
-                return None;
+            let davinci_nodes = discover_davinci_nodes(Path::new("/dev"));
+            let pci_ascend: Vec<&PciAccelerator> = pci_devs
+                .iter()
+                .filter(|d| d.vendor == AccelVendor::Ascend)
+                .collect();
+            let has_manager = Path::new("/dev/davinci_manager").exists();
+
+            if davinci_nodes.is_empty() && !has_manager {
+                return (None, None);
             }
+
             let smi_path = NPU_SMI_CANDIDATES
                 .iter()
                 .map(PathBuf::from)
-                .find(|p| p.is_file())?;
-            let out = run_with_timeout(&smi_path, &["info"], NPU_SMI_TIMEOUT)?;
-            let parsed = parse_npu_smi_info(&out);
-            if parsed.cards.is_empty() {
-                return None;
-            }
-            let mut boards = HashMap::new();
-            for c in &parsed.cards {
-                let npu_s = c.npu_id.to_string();
-                let chip_s = c.chip_id.to_string();
-                if let Some(board_out) = run_with_timeout(
-                    &smi_path,
-                    &["info", "-t", "board", "-i", &npu_s, "-c", &chip_s],
-                    NPU_SMI_TIMEOUT,
-                ) {
-                    boards.insert((c.npu_id, c.chip_id), parse_board_info(&board_out));
+                .find(|p| p.is_file());
+
+            if let Some(path) = smi_path {
+                match run_with_timeout(&path, &["info"], NPU_SMI_TIMEOUT) {
+                    Ok(out) => {
+                        let parsed = parse_npu_smi_info(&out);
+                        if !parsed.cards.is_empty() {
+                            // Emit inventory immediately WITHOUT blocking startup on
+                            // serial per-card `info -t board` calls; board metadata is
+                            // enriched lazily in `sample()`.
+                            return (
+                                Some(Self {
+                                    mode: AscendMode::Tool {
+                                        smi_path: path,
+                                        driver_version: parsed.driver_version,
+                                        boards: HashMap::new(),
+                                        initial_cards: parsed.cards,
+                                        board_probe_done: HashSet::new(),
+                                        last_error: None,
+                                    },
+                                }),
+                                None,
+                            );
+                        }
+                        let diag = "npu-smi returned no NPU rows".to_string();
+                        if !davinci_nodes.is_empty() {
+                            return (
+                                Some(Self::device_only(&davinci_nodes, &pci_ascend, diag.clone())),
+                                Some(diag),
+                            );
+                        }
+                        return (None, Some(diag));
+                    }
+                    Err(err_reason) => {
+                        let diag = format!("npu-smi failed ({err_reason})");
+                        if !davinci_nodes.is_empty() {
+                            return (
+                                Some(Self::device_only(&davinci_nodes, &pci_ascend, diag.clone())),
+                                Some(diag),
+                            );
+                        }
+                        return (None, Some(diag));
+                    }
                 }
             }
-            Some(Self {
-                smi_path,
-                driver_version: parsed.driver_version,
-                boards,
-                initial_cards: parsed.cards,
-            })
+
+            let diag = "Ascend /dev/davinci* present without npu-smi — process lock active; install CANN npu-smi for HBM/AICore/temp metrics".to_string();
+            if !davinci_nodes.is_empty() {
+                return (
+                    Some(Self::device_only(&davinci_nodes, &pci_ascend, diag.clone())),
+                    Some(diag),
+                );
+            }
+            (None, Some("npu-smi not installed".into()))
         }
         #[cfg(not(target_os = "linux"))]
         {
-            None
+            let _ = pci_devs;
+            (None, None)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn device_only(
+        davinci_nodes: &[(u16, String)],
+        pci_ascend: &[&PciAccelerator],
+        reason: String,
+    ) -> Self {
+        let pair_pci = pci_ascend.len() == davinci_nodes.len();
+        let cards = davinci_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, (npu_id, dev_node))| {
+                let pci = pair_pci.then(|| pci_ascend[i]);
+                DavinciDevCard {
+                    npu_id: *npu_id,
+                    dev_node: dev_node.clone(),
+                    name: pci
+                        .map(|p| p.model_name.clone())
+                        .unwrap_or_else(|| format!("Ascend NPU #{npu_id}")),
+                    pci_bus: pci.map(|p| p.pci_bus.clone()),
+                }
+            })
+            .collect();
+        Self {
+            mode: AscendMode::DeviceOnly { cards, reason },
         }
     }
 
     pub fn driver_version(&self) -> Option<String> {
         #[cfg(target_os = "linux")]
-        {
-            self.driver_version.clone()
+        match &self.mode {
+            AscendMode::Tool { driver_version, .. } => driver_version.clone(),
+            AscendMode::DeviceOnly { .. } => None,
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -137,34 +241,106 @@ impl AscendBackend {
         }
     }
 
+    pub fn status_detail(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        match &self.mode {
+            AscendMode::Tool { last_error, .. } => last_error.clone(),
+            AscendMode::DeviceOnly { reason, .. } => Some(reason.clone()),
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    pub fn pci_bdfs(&self) -> Vec<String> {
+        #[cfg(target_os = "linux")]
+        match &self.mode {
+            AscendMode::Tool {
+                initial_cards,
+                boards,
+                ..
+            } => initial_cards
+                .iter()
+                .filter_map(|c| {
+                    boards
+                        .get(&(c.npu_id, c.chip_id))
+                        .and_then(|b| b.pci_bus.clone())
+                        .or_else(|| c.pci_bus.clone())
+                })
+                .collect(),
+            AscendMode::DeviceOnly { cards, .. } => {
+                cards.iter().filter_map(|c| c.pci_bus.clone()).collect()
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Vec::new()
+        }
+    }
+
     pub fn inventory(&self) -> GpuInventory {
         #[cfg(target_os = "linux")]
-        {
-            let gpus = self
-                .initial_cards
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let board = self.boards.get(&(c.npu_id, c.chip_id));
-                    GpuInventoryItem {
-                        uuid: build_ascend_uuid(c, board),
+        match &self.mode {
+            AscendMode::Tool {
+                driver_version,
+                boards,
+                initial_cards,
+                last_error,
+                ..
+            } => {
+                let gpus = initial_cards
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let board = boards.get(&(c.npu_id, c.chip_id));
+                        GpuInventoryItem {
+                            uuid: build_ascend_uuid(c, board),
+                            idx: i as u16,
+                            name: resolve_card_name(c, board),
+                            mem_total_mb: c.mem_total_mb,
+                            power_limit_w: None,
+                            mig: false,
+                            pci_bus: board
+                                .and_then(|b| b.pci_bus.clone())
+                                .or_else(|| c.pci_bus.clone()),
+                            unified: false,
+                        }
+                    })
+                    .collect();
+                GpuInventory {
+                    backend: Some("ascend".into()),
+                    driver_version: driver_version.clone(),
+                    gpus,
+                    status: GpuHostStatus::Ok,
+                    status_detail: last_error.clone(),
+                }
+            }
+            AscendMode::DeviceOnly { cards, reason } => {
+                let gpus = cards
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| GpuInventoryItem {
+                        uuid: match c.pci_bus.as_deref() {
+                            Some(b) => format!("ASCEND-{}-0-{}", c.npu_id, b),
+                            None => format!("ASCEND-{}-0", c.npu_id),
+                        },
                         idx: i as u16,
-                        name: resolve_card_name(c, board),
-                        mem_total_mb: c.mem_total_mb,
+                        name: c.name.clone(),
+                        mem_total_mb: None,
                         power_limit_w: None,
                         mig: false,
-                        pci_bus: board
-                            .and_then(|b| b.pci_bus.clone())
-                            .or_else(|| c.pci_bus.clone()),
+                        pci_bus: c.pci_bus.clone(),
                         unified: false,
-                    }
-                })
-                .collect();
-            GpuInventory {
-                backend: Some("ascend".into()),
-                driver_version: self.driver_version.clone(),
-                gpus,
-                status: GpuHostStatus::Ok,
+                    })
+                    .collect();
+                GpuInventory {
+                    backend: Some("ascend".into()),
+                    driver_version: None,
+                    gpus,
+                    status: GpuHostStatus::Limited,
+                    status_detail: Some(reason.clone()),
+                }
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -174,21 +350,151 @@ impl AscendBackend {
     }
 
     pub fn sample(
-        &self,
+        &mut self,
         include_procs: bool,
         proc_lookup: &ProcLookup,
     ) -> (GpuHostStatus, Vec<GpuSample>) {
         #[cfg(target_os = "linux")]
-        {
-            let Some(out) = run_with_timeout(&self.smi_path, &["info"], NPU_SMI_TIMEOUT) else {
-                return (GpuHostStatus::Unavailable, Vec::new());
-            };
-            let parsed = parse_npu_smi_info(&out);
-            if parsed.cards.is_empty() {
-                return (GpuHostStatus::Unavailable, Vec::new());
+        match &mut self.mode {
+            AscendMode::Tool {
+                smi_path,
+                boards,
+                initial_cards,
+                board_probe_done,
+                last_error,
+                ..
+            } => {
+                // Lazily enrich at most 2 unprobed cards per tick within a 2 s
+                // budget so initial boot & live ticks never exceed supervisor deadlines.
+                let enrich_deadline = Instant::now() + Duration::from_secs(2);
+                let mut probed_this_tick = 0usize;
+                for c in initial_cards.iter() {
+                    if probed_this_tick >= 2 || Instant::now() >= enrich_deadline {
+                        break;
+                    }
+                    let key = (c.npu_id, c.chip_id);
+                    if board_probe_done.contains(&key) {
+                        continue;
+                    }
+                    board_probe_done.insert(key);
+                    probed_this_tick += 1;
+                    let npu_s = c.npu_id.to_string();
+                    let chip_s = c.chip_id.to_string();
+                    let rem = enrich_deadline.saturating_duration_since(Instant::now());
+                    if let Ok(board_out) = run_with_timeout(
+                        smi_path,
+                        &["info", "-t", "board", "-i", &npu_s, "-c", &chip_s],
+                        rem.min(Duration::from_secs(2)),
+                    ) {
+                        boards.insert(key, parse_board_info(&board_out));
+                    }
+                }
+
+                let out = match run_with_timeout(smi_path, &["info"], NPU_SMI_TIMEOUT) {
+                    Ok(o) => o,
+                    Err(reason) => {
+                        *last_error = Some(format!("npu-smi info failed: {reason}"));
+                        // Preserve known cards as metric-less samples rather than
+                        // dropping all cards on transient timeout.
+                        let fallback = initial_cards
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| {
+                                let board = boards.get(&(c.npu_id, c.chip_id));
+                                GpuSample {
+                                    uuid: build_ascend_uuid(c, board),
+                                    idx: i as u16,
+                                    name: Some(resolve_card_name(c, board)),
+                                    mem_total_mb: c.mem_total_mb,
+                                    pci_bus: board
+                                        .and_then(|b| b.pci_bus.clone())
+                                        .or_else(|| c.pci_bus.clone()),
+                                    backend: Some("ascend".into()),
+                                    vendor_index: Some(c.npu_id),
+                                    procs_state: ProcsState::Unknown,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect();
+                        return (GpuHostStatus::Unavailable, fallback);
+                    }
+                };
+                let parsed = parse_npu_smi_info(&out);
+                if parsed.cards.is_empty() {
+                    *last_error = Some("npu-smi info returned zero NPU cards".into());
+                    return (GpuHostStatus::Unavailable, Vec::new());
+                }
+                *last_error = None;
+                let mut samples = build_samples(&parsed, boards, include_procs, proc_lookup);
+
+                // If a card that was present at init disappeared from `npu-smi info`,
+                // surface it with `lost = true` using its stable identity.
+                let seen_keys: HashSet<(u16, u16)> =
+                    parsed.cards.iter().map(|c| (c.npu_id, c.chip_id)).collect();
+                for init_c in initial_cards.iter() {
+                    let key = (init_c.npu_id, init_c.chip_id);
+                    if !seen_keys.contains(&key) {
+                        let board = boards.get(&key);
+                        samples.push(GpuSample {
+                            uuid: build_ascend_uuid(init_c, board),
+                            idx: samples.len() as u16,
+                            name: Some(resolve_card_name(init_c, board)),
+                            mem_total_mb: init_c.mem_total_mb,
+                            pci_bus: board
+                                .and_then(|b| b.pci_bus.clone())
+                                .or_else(|| init_c.pci_bus.clone()),
+                            backend: Some("ascend".into()),
+                            vendor_index: Some(init_c.npu_id),
+                            lost: true,
+                            procs_state: ProcsState::Unknown,
+                            ..Default::default()
+                        });
+                    }
+                }
+                (GpuHostStatus::Ok, samples)
             }
-            let samples = build_samples(&parsed, &self.boards, include_procs, proc_lookup);
-            (GpuHostStatus::Ok, samples)
+            AscendMode::DeviceOnly { cards, .. } => {
+                let wanted: HashSet<String> = cards.iter().map(|c| c.dev_node.clone()).collect();
+                let (by_node, partial) = if include_procs {
+                    super::tpu::scan_open_device_nodes(&wanted, proc_lookup)
+                } else {
+                    (HashMap::new(), false)
+                };
+                let samples = cards
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let (procs_state, procs) = if !include_procs {
+                            (ProcsState::Off, None)
+                        } else {
+                            let mut list = by_node.get(&c.dev_node).cloned().unwrap_or_default();
+                            list.sort_by_key(|p| p.pid);
+                            let st = if partial {
+                                ProcsState::Partial
+                            } else {
+                                ProcsState::Ok
+                            };
+                            (st, Some(list))
+                        };
+                        GpuSample {
+                            uuid: match c.pci_bus.as_deref() {
+                                Some(b) => format!("ASCEND-{}-0-{}", c.npu_id, b),
+                                None => format!("ASCEND-{}-0", c.npu_id),
+                            },
+                            idx: i as u16,
+                            name: Some(c.name.clone()),
+                            pci_bus: c.pci_bus.clone(),
+                            backend: Some("ascend".into()),
+                            vendor_index: Some(c.npu_id),
+                            presence_only: true,
+                            procs_state,
+                            procs,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+                (GpuHostStatus::Limited, samples)
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -198,19 +504,43 @@ impl AscendBackend {
     }
 }
 
+/// Discover all numbered `/dev/davinci[0-9]+` nodes (e.g. `/dev/davinci3` in a
+/// single-card container), excluding `/dev/davinci_manager` and `/dev/davinci_svm*`.
+#[cfg(any(target_os = "linux", test))]
+fn discover_davinci_nodes(dev_root: &Path) -> Vec<(u16, String)> {
+    let Ok(entries) = fs::read_dir(dev_root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u16, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            let rest = name.strip_prefix("davinci")?;
+            if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let id = rest.parse::<u16>().ok()?;
+            Some((id, dev_root.join(&name).to_string_lossy().into_owned()))
+        })
+        .collect();
+    found.sort_by_key(|(id, _)| *id);
+    found
+}
+
 #[cfg(target_os = "linux")]
-fn run_with_timeout(path: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+fn run_with_timeout(path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut child = Command::new(path)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .map_err(|e| format!("spawn error: {e}"))?;
 
-    // Drain stdout on a short-lived reader thread so large outputs never block
-    // the child on a full OS pipe buffer while we wait with a timeout.
-    let stdout = child.stdout.take()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "stdout unavailable".to_string())?;
     let reader = std::thread::spawn(move || {
         use std::io::Read as _;
         let mut buf = Vec::with_capacity(8192);
@@ -223,26 +553,28 @@ fn run_with_timeout(path: &Path, args: &[&str], timeout: Duration) -> Option<Str
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let bytes = reader.join().ok()?;
+                let bytes = reader
+                    .join()
+                    .map_err(|_| "stdout reader panicked".to_string())?;
                 if !status.success() {
-                    return None;
+                    return Err(format!("exit status {status}"));
                 }
-                return Some(String::from_utf8_lossy(&bytes).into_owned());
+                return Ok(String::from_utf8_lossy(&bytes).into_owned());
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
                     let _ = reader.join();
-                    return None;
+                    return Err("timeout".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => {
+            Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
-                return None;
+                return Err(format!("wait error: {e}"));
             }
         }
     }
@@ -307,12 +639,9 @@ fn build_samples(
         .enumerate()
         .map(|(i, c)| {
             let board = boards.get(&(c.npu_id, c.chip_id));
-            let healthy = c.health.eq_ignore_ascii_case("ok") || c.health.is_empty();
-            // Ascend 910B HBM reserves ~3.4 GiB system firmware baseline on a
-            // 64 GiB card even when zero user processes are running. Set a
-            // bounded idle floor (capped server-side to <= 12.5% of total mem)
-            // so completely idle Ascend cards classify cleanly as Free while
-            // genuine unattributed workloads still classify as Unattributed.
+            // Preserve raw vendor health (`OK`, `Warning`, `Alarm`, `Critical`)
+            // WITHOUT setting `lost = true` on a responding chip!
+            let vendor_health = (!c.health.trim().is_empty()).then(|| c.health.trim().to_string());
             let free_mem_floor_mb = if c.is_hbm {
                 c.mem_total_mb.map(|tot| (tot / 12).clamp(2048, 6144))
             } else {
@@ -377,8 +706,15 @@ fn build_samples(
                 ecc_uncorrected: None,
                 remapped_rows: None,
                 xid_errors: None,
+                xid_last_at: None,
+                remap_pending: false,
+                remap_failure: false,
                 mig: false,
-                lost: !healthy,
+                lost: false,
+                vendor_health,
+                backend: Some("ascend".into()),
+                vendor_index: Some(c.npu_id),
+                presence_only: false,
                 idle_since: None,
                 free_mem_floor_mb,
                 procs_state,
@@ -526,7 +862,6 @@ fn parse_npu_smi_info(text: &str) -> ParsedNpuInfo {
             temp_c,
         }) = pending.take()
         {
-            // Line 2: `| <chip_id> | <bus_id> | <aicore%> <mem_used>/<mem_total> <hbm_used>/<hbm_total> |`
             let chip_id = cols[0]
                 .split_whitespace()
                 .next()
@@ -549,7 +884,6 @@ fn parse_npu_smi_info(text: &str) -> ParsedNpuInfo {
                 is_hbm,
             });
         } else {
-            // Line 1: `| <npu_id> <name...> | <health> | <power_w> <temp_c> <hugepages> |`
             let mut c0 = cols[0].split_whitespace();
             let Some(npu_id) = c0.next().and_then(|s| s.parse::<u16>().ok()) else {
                 continue;
@@ -562,9 +896,7 @@ fn parse_npu_smi_info(text: &str) -> ParsedNpuInfo {
                 .and_then(|s| s.parse::<f32>().ok())
                 .filter(|p| p.is_finite() && *p >= 0.0)
                 .map(|p| p.round() as u16);
-            let temp_c = c2
-                .next()
-                .and_then(|s| s.parse::<i16>().ok());
+            let temp_c = c2.next().and_then(|s| s.parse::<i16>().ok());
             pending = Some(PendingNpuRow {
                 npu_id,
                 name,
@@ -587,8 +919,6 @@ fn parse_npu_smi_info(text: &str) -> ParsedNpuInfo {
 /// arbitrary whitespace around `/` (e.g. `62  0 / 0  59306/ 65536`).
 #[cfg(any(target_os = "linux", test))]
 fn parse_card_line2_metrics(col: &str) -> (Option<u8>, Option<u32>, Option<u32>, bool) {
-    // Normalize `/` with surrounding spaces so tokens split cleanly into
-    // `[aicore, mem_used, "/", mem_total, hbm_used, "/", hbm_total]`.
     let normalized = col.replace('/', " / ");
     let toks: Vec<&str> = normalized.split_whitespace().collect();
     let aicore_pct = toks
@@ -596,8 +926,6 @@ fn parse_card_line2_metrics(col: &str) -> (Option<u8>, Option<u32>, Option<u32>,
         .and_then(|s| s.parse::<u16>().ok())
         .map(|u| u.min(100) as u8);
 
-    // Collect every `<u32> / <u32>` pair in order: pair 0 = Memory-Usage(MB),
-    // pair 1 = HBM-Usage(MB) (present on 910A/910B/910C).
     let mut pairs: Vec<(u32, u32)> = Vec::new();
     let mut i = 1;
     while i + 2 < toks.len() {
@@ -611,7 +939,6 @@ fn parse_card_line2_metrics(col: &str) -> (Option<u8>, Option<u32>, Option<u32>,
         }
     }
 
-    // Prefer HBM when total > 0; otherwise fall back to Memory-Usage (310P/310B).
     if let Some(&(used, total)) = pairs.get(1)
         && total > 0
     {
@@ -628,7 +955,9 @@ fn parse_card_line2_metrics(col: &str) -> (Option<u8>, Option<u32>, Option<u32>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meshharbor_remote_control::gpu::{GpuState, GpuStateThresholds, classify_gpu_state};
+    use meshharbor_remote_control::gpu::{
+        GpuState, GpuStateThresholds, card_fault_reasons, classify_gpu_state,
+    };
 
     const SAMPLE_910B: &str = r#"
 +------------------------------------------------------------------------------------------------+
@@ -640,7 +969,7 @@ mod tests {
 | 0     910B4-1             | OK            | 199.1       51                0    / 0             |
 | 0                         | 0000:C1:00.0  | 62          0    / 0          59306/ 65536         |
 +===========================+===============+====================================================+
-| 1     910B4-1             | OK            | 92.1        35                0    / 0             |
+| 1     910B4-1             | Warning       | 92.1        35                0    / 0             |
 | 0                         | 0000:81:00.0  | 0           0    / 0          3445 / 65536         |
 +===========================+===============+====================================================+
 +---------------------------+---------------+----------------------------------------------------+
@@ -662,7 +991,7 @@ mod tests {
 "#;
 
     #[test]
-    fn fr139_ascend_910b_parser_and_free_classification() {
+    fn fr139_ascend_910b_parser_warning_not_lost_and_free_classification() {
         let parsed = parse_npu_smi_info(SAMPLE_910B);
         assert_eq!(parsed.driver_version.as_deref(), Some("25.3.rc1"));
         assert_eq!(parsed.cards.len(), 2);
@@ -678,31 +1007,42 @@ mod tests {
         let c0 = &samples[0];
         assert_eq!(c0.uuid, "ASCEND-0-0-D25BF66C00C024B1");
         assert_eq!(c0.name.as_deref(), Some("Ascend 910B4-1"));
-        assert_eq!(c0.util_pct, Some(62));
-        assert_eq!(c0.mem_used_mb, Some(59306));
-        assert_eq!(c0.mem_total_mb, Some(65536));
-        assert_eq!(c0.power_w, Some(199));
-        assert_eq!(c0.temp_c, Some(51));
-        assert_eq!(c0.procs_state, ProcsState::Ok);
-        assert_eq!(c0.procs.as_ref().unwrap().len(), 1);
-        assert_eq!(c0.procs.as_ref().unwrap()[0].pid, 2755453);
+        assert_eq!(c0.vendor_index, Some(0));
+        assert_eq!(c0.vendor_health.as_deref(), Some("OK"));
+        assert!(!c0.lost);
+        assert!(card_fault_reasons(c0).is_empty());
         assert_eq!(
             classify_gpu_state(GpuHostStatus::Ok, c0, 1000, GpuStateThresholds::default()),
             GpuState::Busy
         );
 
-        // Card 1: idle 910B4-1 with 3445 MiB HBM baseline, 0% AICore, 0 procs -> FREE!
+        // Card 1: responding chip with Health=Warning MUST NOT be marked lost=true!
         let c1 = &samples[1];
         assert_eq!(c1.uuid, "ASCEND-1-0-0000:81:00.0");
-        assert_eq!(c1.name.as_deref(), Some("Ascend 910B4-1"));
-        assert_eq!(c1.util_pct, Some(0));
-        assert_eq!(c1.mem_used_mb, Some(3445));
-        assert_eq!(c1.mem_total_mb, Some(65536));
-        assert!(c1.procs.as_ref().unwrap().is_empty());
+        assert_eq!(c1.vendor_index, Some(1));
+        assert!(!c1.lost, "responding Ascend Warning must NOT set lost=true");
+        assert_eq!(c1.vendor_health.as_deref(), Some("Warning"));
+        let reasons = card_fault_reasons(c1);
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].code, "vendor_health");
+        assert_eq!(reasons[0].severity, "warning");
         assert_eq!(
             classify_gpu_state(GpuHostStatus::Ok, c1, 1000, GpuStateThresholds::default()),
             GpuState::Free
         );
+    }
+
+    #[test]
+    fn fr139_discover_davinci_nodes_finds_sparse_numbered_devices() {
+        let td = tempfile::tempdir().unwrap();
+        fs::write(td.path().join("davinci_manager"), "").unwrap();
+        fs::write(td.path().join("davinci_svm"), "").unwrap();
+        fs::write(td.path().join("davinci3"), "").unwrap();
+        fs::write(td.path().join("davinci7"), "").unwrap();
+        let nodes = discover_davinci_nodes(td.path());
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].0, 3);
+        assert_eq!(nodes[1].0, 7);
     }
 
     #[test]

@@ -955,40 +955,55 @@ fn gpu_menu_state(
     match fleet {
         Some(page) if page.summary.hosts_total > 0 => (
             true,
-            tray_i18n::gpu_servers_free(lang, page.summary.gpus_free, page.summary.gpus_total),
+            tray_i18n::gpu_servers_status(
+                lang,
+                page.summary.gpus_free,
+                page.summary.gpus_total,
+                page.summary.gpus_fault,
+                page.summary.fault_hosts,
+            ),
         ),
         _ => (false, tray_i18n::gpu_servers_free(lang, 0, 0)),
     }
 }
 
 /// FR-139 — poll LocalAPI `GpuFleet { live: false }` every 30 s when GPU
-/// servers exist, backing off to 5 min when 0 GPU servers are marked (and
-/// hiding the menu item completely while count is 0).
+/// servers exist, backing off to 5 min ONLY after a confirmed 0-host response.
+/// Transient LocalAPI errors preserve the last known tray item instead of
+/// hiding the entry for 5 minutes.
 fn spawn_gpu_watch<R: Runtime>(menu: Menu<R>, item: MenuItem<R>) {
     const MENU_INSERT_POS: usize = 6; // immediately after `devices`, before `sep`
     tauri::async_runtime::spawn(async move {
         let mut inserted = false;
         let mut last_label: Option<String> = None;
         loop {
-            let answer = match meshharbor_localapi::connect().await {
+            let fetched = match meshharbor_localapi::connect().await {
                 Ok(mut c) => c.gpu_fleet("", false, 0, &[]).await.ok(),
                 Err(_) => None,
             };
-            let (visible, label) = gpu_menu_state(answer.as_ref(), tray_i18n::current_lang());
-            if visible {
-                if last_label.as_deref() != Some(label.as_str()) {
-                    let _ = item.set_text(&label);
-                    last_label = Some(label);
+            let sleep_secs = if let Some(page) = fetched {
+                let (visible, label) = gpu_menu_state(Some(&page), tray_i18n::current_lang());
+                if visible {
+                    if last_label.as_deref() != Some(label.as_str()) {
+                        let _ = item.set_text(&label);
+                        last_label = Some(label);
+                    }
+                    if !inserted && menu.insert(&item, MENU_INSERT_POS).is_ok() {
+                        inserted = true;
+                    }
+                    30
+                } else {
+                    if inserted {
+                        let _ = menu.remove(&item);
+                        inserted = false;
+                        last_label = None;
+                    }
+                    300
                 }
-                if !inserted && menu.insert(&item, MENU_INSERT_POS).is_ok() {
-                    inserted = true;
-                }
-            } else if inserted {
-                let _ = menu.remove(&item);
-                inserted = false;
-                last_label = None;
-            }
-            let sleep_secs = if visible { 30 } else { 300 };
+            } else {
+                // Transient fetch failure: keep existing tray state and retry in 30 s.
+                30
+            };
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)) => {}
                 _ = GPU_WATCH_WAKE.notified() => {}
@@ -1043,8 +1058,9 @@ fn spawn_gpu_alert_watch() {
                 for alert in fresh {
                     let title = alert.title;
                     let body = alert.body;
+                    let severity = alert.severity;
                     let _ = tokio::task::spawn_blocking(move || {
-                        notify_os_gpu_alert(&title, &body);
+                        notify_os_gpu_alert(&title, &body, &severity);
                     })
                     .await;
                 }
@@ -1056,11 +1072,22 @@ fn spawn_gpu_alert_watch() {
 
 /// Best-effort native OS desktop notification for a GPU alert (injection-safe:
 /// title/body passed via argv or env, never interpolated into shell/script).
-fn notify_os_gpu_alert(title: &str, body: &str) {
+fn notify_os_gpu_alert(title: &str, body: &str, severity: &str) {
     #[cfg(target_os = "linux")]
     {
+        let urgency = match severity {
+            "critical" => "critical",
+            "warning" => "normal",
+            _ => "low",
+        };
         let _ = std::process::Command::new("notify-send")
-            .args(["--app-name=MeshHarbor", "--", title, body])
+            .args([
+                "--app-name=MeshHarbor",
+                &format!("--urgency={urgency}"),
+                "--",
+                title,
+                body,
+            ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1068,6 +1095,7 @@ fn notify_os_gpu_alert(title: &str, body: &str) {
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = severity;
         let _ = std::process::Command::new("osascript")
             .args([
                 "-e",
@@ -1083,17 +1111,24 @@ fn notify_os_gpu_alert(title: &str, body: &str) {
     }
     #[cfg(target_os = "windows")]
     {
-        let script = r#"
+        let icon = match severity {
+            "critical" => "Error",
+            "warning" => "Warning",
+            _ => "Info",
+        };
+        let script = format!(
+            r#"
 Add-Type -AssemblyName System.Windows.Forms
 $n = New-Object System.Windows.Forms.NotifyIcon
 $n.Icon = [System.Drawing.SystemIcons]::Information
 $n.Visible = $true
-$n.ShowBalloonTip(5000, $env:MH_GPU_TITLE, $env:MH_GPU_BODY, [System.Windows.Forms.ToolTipIcon]::Info)
+$n.ShowBalloonTip(5000, $env:MH_GPU_TITLE, $env:MH_GPU_BODY, [System.Windows.Forms.ToolTipIcon]::{icon})
 Start-Sleep -Seconds 6
 $n.Dispose()
-"#;
+"#
+        );
         let _ = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
             .env("MH_GPU_TITLE", title)
             .env("MH_GPU_BODY", body)
             .stdin(std::process::Stdio::null())

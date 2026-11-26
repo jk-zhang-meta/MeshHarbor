@@ -2411,6 +2411,16 @@ button.wl-skip:hover {
   border: 1px solid var(--border);
   border-radius: var(--mh-radius);
   padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.gpu-kpi:hover {
+  border-color: var(--primary);
+}
+.gpu-kpi[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: var(--primary-tint);
 }
 .gpu-kpi-label {
   font-size: 11.5px;
@@ -2422,10 +2432,24 @@ button.wl-skip:hover {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.gpu-kpi-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  min-height: 14px;
+}
 .gpu-kpi-free .gpu-kpi-val { color: var(--ok); }
 .gpu-kpi-busy .gpu-kpi-val { color: var(--primary); }
 .gpu-kpi-held .gpu-kpi-val { color: var(--warn); }
-.gpu-kpi-fault .gpu-kpi-val { color: var(--error); }
+.gpu-kpi-fault .gpu-kpi-val { color: var(--muted); }
+.gpu-kpi-fault.gpu-kpi-has-fault {
+  border-color: var(--error-border);
+  background: var(--error-tint);
+}
+.gpu-kpi-fault.gpu-kpi-has-fault .gpu-kpi-val,
+.gpu-kpi-fault.gpu-kpi-has-fault .gpu-kpi-sub {
+  color: var(--error);
+}
 
 .gpu-tabs {
   display: flex;
@@ -2553,10 +2577,137 @@ button.wl-skip:hover {
   color: var(--warn);
 }
 .gpu-state-fault,
-.gpu-fault-pill {
+.gpu-fault-pill,
+.gpu-badge-fault {
   background: var(--error-tint);
   border-color: var(--error-border);
   color: var(--error);
+}
+.gpu-warn-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--warn-tint);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+.gpu-info-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.gpu-host-diag {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--mh-radius-sm);
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.gpu-host-diag-critical {
+  background: var(--error-tint);
+  border: 1px solid var(--error-border);
+  color: var(--error);
+}
+.gpu-host-diag-warn {
+  background: var(--warn-tint);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+}
+.gpu-host-diag-info {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.gpu-fault-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.gpu-delta {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 3px;
+}
+.gpu-delta-up {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.12);
+}
+.gpu-delta-down {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+}
+.gpu-row-changed {
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.05);
+}
+.gpu-row-stale {
+  opacity: 0.78;
+}
+.gpu-changes {
+  border: 1px solid var(--border);
+  border-radius: var(--mh-radius);
+  background: var(--bg-elev);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.gpu-changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+.gpu-changes-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.gpu-changes-clear {
+  font-size: 11px;
+  padding: 1px 7px;
+}
+.gpu-changes-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  font-size: 11px;
+}
+.gpu-change-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--bg-inset);
+  color: var(--fg);
+}
+.gpu-change-fault {
+  background: var(--error-tint);
+  color: var(--error);
+}
+.gpu-change-free {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.gpu-change-warn {
+  background: var(--warn-tint);
+  color: var(--warn);
 }
 .gpu-badge-offline,
 .gpu-state-unknown,

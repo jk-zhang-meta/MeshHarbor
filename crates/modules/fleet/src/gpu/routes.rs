@@ -13,8 +13,9 @@ use futures::TryStreamExt as _;
 use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 use meshharbor_db::models::role::permissions;
 use meshharbor_remote_control::gpu::{
-    GpuFreshness, GpuHostStatus, GpuInventory, GpuProc, GpuSample, GpuState, HostLoad, ProcsState,
-    classify_gpu_state, compute_freshness,
+    GpuFaultReason, GpuFreshness, GpuHostStatus, GpuInventory, GpuProc, GpuSample, GpuState,
+    HostLoad, ProcsState, card_fault_reasons, classify_gpu_state, compute_freshness,
+    host_status_fault, is_lagging, worst_fault_severity,
 };
 use meshharbor_remote_control::models::{Agent, RpcCap};
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,24 @@ pub struct GpuCardFleetView {
     pub mig: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lost: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_health: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_index: Option<u16>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remap_pending: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remap_failure: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub presence_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault_severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fault_reasons: Vec<GpuFaultReason>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,11 +179,25 @@ pub struct GpuHostFleetView {
     pub freshness: GpuFreshness,
     pub status: GpuHostStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_fault_severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fault_reasons: Vec<GpuFaultReason>,
+    #[serde(default)]
+    pub fault_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driver_version: Option<String>,
+    #[serde(default)]
+    pub seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub received_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lagging: bool,
     pub interval_ms: u32,
     pub free_count: usize,
     pub busy_count: usize,
@@ -182,6 +215,8 @@ pub struct GpuFleetResponse {
     pub hosts: Vec<GpuHostFleetView>,
     pub summary: GpuFleetSummary,
     pub server_time_ms: i64,
+    #[serde(default)]
+    pub live_interval_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +228,16 @@ pub struct GpuFleetSummary {
     pub gpus_busy: usize,
     pub gpus_held_idle: usize,
     pub gpus_fault: usize,
+    #[serde(default)]
+    pub gpus_warning: usize,
+    #[serde(default)]
+    pub gpus_unknown: usize,
+    #[serde(default)]
+    pub gpus_offline: usize,
+    #[serde(default)]
+    pub fault_hosts: usize,
+    #[serde(default)]
+    pub fault_cards: usize,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -273,6 +318,8 @@ pub async fn build_fleet_response(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let now_s = now_ms / 1000;
     let thresholds = state.gpu.thresholds();
+    let live_interval_ms = state.gpu.settings.live_interval_ms;
+    let live_effective = live && live_interval_ms > 0;
 
     let mut hosts = Vec::with_capacity(entries.len());
     let mut sum = GpuFleetSummary {
@@ -283,6 +330,11 @@ pub async fn build_fleet_response(
         gpus_busy: 0,
         gpus_held_idle: 0,
         gpus_fault: 0,
+        gpus_warning: 0,
+        gpus_unknown: 0,
+        gpus_offline: 0,
+        fault_hosts: 0,
+        fault_cards: 0,
     };
 
     for (agent, source, read_only) in entries {
@@ -296,28 +348,13 @@ pub async fn build_fleet_response(
             read_only,
             is_online,
             snap,
+            now_ms,
             now_s,
+            live_effective,
             thresholds,
             include_inventory,
         );
-        sum.hosts_total += 1;
-        if view.is_online {
-            sum.hosts_online += 1;
-        }
-        sum.gpus_total += view.total_count;
-        sum.gpus_free += view.free_count;
-        sum.gpus_busy += view.busy_count;
-        sum.gpus_held_idle += view.held_idle_count;
-        let has_fault = !matches!(
-            view.status,
-            GpuHostStatus::Ok | GpuHostStatus::NoGpu | GpuHostStatus::Limited
-        ) || view
-            .gpus
-            .iter()
-            .any(|g| g.lost || g.xid_errors.as_ref().is_some_and(|x| !x.is_empty()));
-        if has_fault {
-            sum.gpus_fault += 1;
-        }
+        accumulate_summary(&mut sum, &view);
         hosts.push(view);
     }
 
@@ -326,7 +363,97 @@ pub async fn build_fleet_response(
         hosts,
         summary: sum,
         server_time_ms: now_ms,
+        live_interval_ms,
     }
+}
+
+fn accumulate_summary(sum: &mut GpuFleetSummary, view: &GpuHostFleetView) {
+    sum.hosts_total += 1;
+    if view.is_online {
+        sum.hosts_online += 1;
+    }
+    sum.gpus_total += view.total_count;
+
+    let host_offline = !view.is_online || view.freshness == GpuFreshness::Offline;
+    if host_offline {
+        sum.gpus_offline += view.total_count;
+        // Offline host cards are excluded from actionable free/busy/held/fault
+        // counts so stale cached snapshots never keep active KPIs red.
+        return;
+    }
+
+    let host_has_fault = view.host_fault_severity.is_some() || view.fault_count > 0;
+    if host_has_fault {
+        sum.fault_hosts += 1;
+    }
+    sum.fault_cards += view.fault_count;
+
+    let host_critical = view.host_fault_severity.as_deref() == Some("critical");
+    for g in &view.gpus {
+        let card_critical = g.fault_severity.as_deref() == Some("critical");
+        let card_warning = g.fault_severity.as_deref() == Some("warning");
+        if card_warning {
+            sum.gpus_warning += 1;
+        }
+        if host_critical || card_critical {
+            sum.gpus_fault += 1;
+        } else {
+            match g.state {
+                GpuState::Free if view.freshness == GpuFreshness::Fresh && !view.lagging => {
+                    sum.gpus_free += 1;
+                }
+                GpuState::Busy | GpuState::Unattributed => sum.gpus_busy += 1,
+                GpuState::HeldIdle => sum.gpus_held_idle += 1,
+                _ => sum.gpus_unknown += 1,
+            }
+        }
+    }
+}
+
+fn inventory_cards(
+    inv: &GpuInventory,
+    stale: bool,
+    host_fault: Option<&GpuFaultReason>,
+) -> Vec<GpuCardFleetView> {
+    let inherited_reasons: Vec<GpuFaultReason> = host_fault.cloned().into_iter().collect();
+    let inherited_sev = worst_fault_severity(&inherited_reasons).map(str::to_string);
+    inv.gpus
+        .iter()
+        .map(|g| GpuCardFleetView {
+            uuid: g.uuid.clone(),
+            idx: g.idx,
+            name: Some(g.name.clone()),
+            state: GpuState::Unknown,
+            mem_used_mb: None,
+            mem_total_mb: g.mem_total_mb,
+            util_pct: None,
+            temp_c: None,
+            power_w: None,
+            power_limit_w: g.power_limit_w,
+            fan_pct: None,
+            sm_clock_mhz: None,
+            throttle: None,
+            ecc_uncorrected: None,
+            remapped_rows: None,
+            xid_errors: None,
+            mig: g.mig,
+            lost: false,
+            vendor_health: None,
+            backend: inv.backend.clone(),
+            vendor_index: None,
+            remap_pending: false,
+            remap_failure: false,
+            presence_only: false,
+            stale,
+            fault_severity: inherited_sev.clone(),
+            fault_reasons: inherited_reasons.clone(),
+            unified: g.unified,
+            pci_bus: g.pci_bus.clone(),
+            idle_since: None,
+            procs_state: ProcsState::Unknown,
+            procs: None,
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -336,83 +463,127 @@ fn project_host_view(
     read_only: bool,
     is_online: bool,
     snap: Option<&GpuSnapshotDoc>,
+    now_ms: i64,
     now_s: i64,
+    live_requested: bool,
     thresholds: meshharbor_remote_control::gpu::GpuStateThresholds,
     include_inventory: bool,
 ) -> GpuHostFleetView {
     let interval_ms = snap.map(|s| s.report.interval_ms).unwrap_or(30_000);
-    let recv_s = snap.map(|s| s.received_at.timestamp_millis() / 1000);
+    let received_at_ms = snap.map(|s| s.received_at.timestamp_millis());
+    let recv_s = received_at_ms.map(|ms| ms / 1000);
     let freshness = compute_freshness(is_online, recv_s, now_s, interval_ms);
+    let age_ms = received_at_ms.map(|ms| now_ms.saturating_sub(ms).max(0));
+    let lagging = is_online
+        && freshness != GpuFreshness::Offline
+        && age_ms.is_some_and(|a| is_lagging(a, interval_ms, live_requested));
+    let host_offline = !is_online || freshness == GpuFreshness::Offline;
+    let card_stale = host_offline || freshness == GpuFreshness::Stale || lagging;
 
-    let (status, backend, driver_version, host, gpus) = match snap {
+    let (status, status_detail, backend, driver_version, seq, host, gpus) = match snap {
         Some(s) => {
-            let cards: Vec<GpuCardFleetView> = s
+            let status = s.report.status;
+            let status_detail = s
                 .report
-                .gpus
-                .iter()
-                .map(|g| card_from_sample(s.report.status, g, now_s, thresholds))
-                .collect();
+                .status_detail
+                .clone()
+                .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.status_detail.clone()));
+            let hf = host_status_fault(status, status_detail.as_deref());
+            let cards: Vec<GpuCardFleetView> = if s.report.gpus.is_empty()
+                && hf.is_some()
+                && let Some(inv) = agent.gpu_inventory.as_ref().filter(|i| !i.gpus.is_empty())
+            {
+                inventory_cards(inv, true, hf.as_ref())
+            } else {
+                s.report
+                    .gpus
+                    .iter()
+                    .map(|g| card_from_sample(status, g, now_s, card_stale, thresholds))
+                    .collect()
+            };
+            let backend = s
+                .report
+                .backend
+                .clone()
+                .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.backend.clone()));
+            let driver_version = s
+                .report
+                .driver_version
+                .clone()
+                .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.driver_version.clone()));
             (
-                s.report.status,
-                s.report.backend.clone(),
-                s.report.driver_version.clone(),
+                status,
+                status_detail,
+                backend,
+                driver_version,
+                s.report.seq,
                 Some(s.report.host.clone()),
                 cards,
             )
         }
         None => {
             let inv = agent.gpu_inventory.as_ref();
+            let status = inv.map(|i| i.status).unwrap_or(GpuHostStatus::Unknown);
+            let status_detail = inv.and_then(|i| i.status_detail.clone());
+            let hf = host_status_fault(status, status_detail.as_deref());
             let cards: Vec<GpuCardFleetView> = inv
-                .map(|i| {
-                    i.gpus
-                        .iter()
-                        .map(|g| GpuCardFleetView {
-                            uuid: g.uuid.clone(),
-                            idx: g.idx,
-                            name: Some(g.name.clone()),
-                            state: GpuState::Unknown,
-                            mem_used_mb: None,
-                            mem_total_mb: g.mem_total_mb,
-                            util_pct: None,
-                            temp_c: None,
-                            power_w: None,
-                            power_limit_w: g.power_limit_w,
-                            fan_pct: None,
-                            sm_clock_mhz: None,
-                            throttle: None,
-                            ecc_uncorrected: None,
-                            remapped_rows: None,
-                            xid_errors: None,
-                            mig: g.mig,
-                            lost: false,
-                            unified: g.unified,
-                            pci_bus: g.pci_bus.clone(),
-                            idle_since: None,
-                            procs_state: ProcsState::Unknown,
-                            procs: None,
-                        })
-                        .collect()
-                })
+                .map(|i| inventory_cards(i, true, hf.as_ref()))
                 .unwrap_or_default();
             (
-                inv.map(|i| i.status).unwrap_or(GpuHostStatus::Unknown),
+                status,
+                status_detail,
                 inv.and_then(|i| i.backend.clone()),
                 inv.and_then(|i| i.driver_version.clone()),
+                0,
                 None,
                 cards,
             )
         }
     };
 
-    let free_count = gpus.iter().filter(|g| g.state == GpuState::Free).count();
-    let busy_count = gpus
+    let mut host_faults = Vec::new();
+    if let Some(hf) = host_status_fault(status, status_detail.as_deref()) {
+        host_faults.push(hf);
+    }
+    let host_fault_severity = worst_fault_severity(&host_faults).map(str::to_string);
+    let host_critical = host_fault_severity.as_deref() == Some("critical");
+
+    let fault_count = gpus
         .iter()
-        .filter(|g| matches!(g.state, GpuState::Busy | GpuState::Unattributed))
+        .filter(|g| host_critical || g.fault_severity.as_deref() == Some("critical"))
         .count();
-    let held_idle_count = gpus
-        .iter()
-        .filter(|g| g.state == GpuState::HeldIdle)
-        .count();
+
+    let (free_count, busy_count, held_idle_count) = if host_offline {
+        (0, 0, 0)
+    } else {
+        let free = gpus
+            .iter()
+            .filter(|g| {
+                freshness == GpuFreshness::Fresh
+                    && !lagging
+                    && !host_critical
+                    && g.state == GpuState::Free
+                    && g.fault_severity.as_deref() != Some("critical")
+            })
+            .count();
+        let busy = gpus
+            .iter()
+            .filter(|g| {
+                !host_critical
+                    && g.fault_severity.as_deref() != Some("critical")
+                    && matches!(g.state, GpuState::Busy | GpuState::Unattributed)
+            })
+            .count();
+        let held = gpus
+            .iter()
+            .filter(|g| {
+                !host_critical
+                    && g.fault_severity.as_deref() != Some("critical")
+                    && g.state == GpuState::HeldIdle
+            })
+            .count();
+        (free, busy, held)
+    };
     let total_count = gpus.len();
 
     GpuHostFleetView {
@@ -425,9 +596,16 @@ fn project_host_view(
         is_online,
         freshness,
         status,
+        status_detail,
+        host_fault_severity,
+        fault_reasons: host_faults,
+        fault_count,
         backend,
         driver_version,
-        received_at_ms: snap.map(|s| s.received_at.timestamp_millis()),
+        seq,
+        received_at_ms,
+        age_ms,
+        lagging,
         interval_ms,
         free_count,
         busy_count,
@@ -443,8 +621,11 @@ fn card_from_sample(
     host_status: GpuHostStatus,
     g: &GpuSample,
     now_s: i64,
+    stale: bool,
     thresholds: meshharbor_remote_control::gpu::GpuStateThresholds,
 ) -> GpuCardFleetView {
+    let reasons = card_fault_reasons(g);
+    let fault_severity = worst_fault_severity(&reasons).map(str::to_string);
     GpuCardFleetView {
         uuid: g.uuid.clone(),
         idx: g.idx,
@@ -464,6 +645,15 @@ fn card_from_sample(
         xid_errors: g.xid_errors.clone(),
         mig: g.mig,
         lost: g.lost,
+        vendor_health: g.vendor_health.clone(),
+        backend: g.backend.clone(),
+        vendor_index: g.vendor_index,
+        remap_pending: g.remap_pending,
+        remap_failure: g.remap_failure,
+        presence_only: g.presence_only,
+        stale,
+        fault_severity,
+        fault_reasons: reasons,
         unified: g.unified,
         pci_bus: g.pci_bus.clone(),
         idle_since: g.idle_since,
@@ -1055,4 +1245,281 @@ pub async fn test_channel(
         .await
         .map_err(ApiError::BadRequest)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meshharbor_remote_control::gpu::{
+        GpuInventoryItem, GpuReport, GpuStateThresholds,
+    };
+    use meshharbor_remote_control::models::OsKind;
+    use meshharbor_services::dao::agent::AgentDao;
+
+    fn dummy_agent(name: &str, inv: Option<GpuInventory>) -> Agent {
+        let mut a = AgentDao::new_row(
+            ObjectId::new(),
+            ObjectId::new(),
+            name.into(),
+            format!("machine-{name}"),
+            OsKind::Linux,
+            "0.4.219".into(),
+            String::new(),
+            None,
+        );
+        a.id = Some(ObjectId::new());
+        a.gpu_server = true;
+        a.gpu_inventory = inv;
+        a
+    }
+
+    fn snap_from(report: GpuReport, received_at_ms: i64) -> GpuSnapshotDoc {
+        GpuSnapshotDoc {
+            tenant_id: ObjectId::new(),
+            agent_id: ObjectId::new(),
+            received_at: DateTime::from_millis(received_at_ms),
+            report,
+            offline_alerted_at: None,
+        }
+    }
+
+    #[test]
+    fn fr139_summary_partitions_cards_and_excludes_offline_hosts() {
+        let now_ms = 1_760_000_000_000_i64;
+        let now_s = now_ms / 1000;
+        let thresholds = GpuStateThresholds::default();
+
+        // Host A: online fresh with 1 free, 1 busy, 1 held_idle, 1 critical fault, 1 unknown (presence_only)
+        let agent_a = dummy_agent("host-a", None);
+        let snap_a = snap_from(
+            GpuReport {
+                seq: 10,
+                interval_ms: 2000,
+                status: GpuHostStatus::Ok,
+                status_detail: None,
+                backend: Some("nvml".into()),
+                driver_version: Some("550.90".into()),
+                host: HostLoad::default(),
+                gpus: vec![
+                    GpuSample {
+                        uuid: "GPU-0".into(),
+                        idx: 0,
+                        name: Some("A100".into()),
+                        mem_used_mb: Some(100),
+                        mem_total_mb: Some(81_920),
+                        util_pct: Some(0),
+                        procs_state: ProcsState::Ok,
+                        procs: Some(vec![]),
+                        ..Default::default()
+                    },
+                    GpuSample {
+                        uuid: "GPU-1".into(),
+                        idx: 1,
+                        name: Some("A100".into()),
+                        mem_used_mb: Some(40_000),
+                        mem_total_mb: Some(81_920),
+                        util_pct: Some(85),
+                        procs_state: ProcsState::Ok,
+                        procs: Some(vec![GpuProc {
+                            pid: 10,
+                            user: Some("alice".into()),
+                            mem_mb: Some(40_000),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    },
+                    GpuSample {
+                        uuid: "GPU-2".into(),
+                        idx: 2,
+                        name: Some("A100".into()),
+                        mem_used_mb: Some(20_000),
+                        mem_total_mb: Some(81_920),
+                        util_pct: Some(0),
+                        idle_since: Some(now_s - 3600),
+                        procs_state: ProcsState::Ok,
+                        procs: Some(vec![GpuProc {
+                            pid: 11,
+                            user: Some("bob".into()),
+                            mem_mb: Some(20_000),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    },
+                    GpuSample {
+                        uuid: "GPU-3".into(),
+                        idx: 3,
+                        name: Some("A100".into()),
+                        lost: true,
+                        procs_state: ProcsState::Unknown,
+                        ..Default::default()
+                    },
+                    GpuSample {
+                        uuid: "PCI-0000:04:00.0".into(),
+                        idx: 4,
+                        name: Some("Unmanaged PCIe GPU".into()),
+                        presence_only: true,
+                        procs_state: ProcsState::Unknown,
+                        ..Default::default()
+                    },
+                ],
+            },
+            now_ms - 1_000,
+        );
+
+        // Host B: offline with 2 cached cards (one free, one lost) -> must count ONLY in gpus_offline
+        let agent_b = dummy_agent("host-b", None);
+        let snap_b = snap_from(
+            GpuReport {
+                seq: 3,
+                interval_ms: 30_000,
+                status: GpuHostStatus::Ok,
+                status_detail: None,
+                backend: Some("nvml".into()),
+                driver_version: Some("550.90".into()),
+                host: HostLoad::default(),
+                gpus: vec![
+                    GpuSample {
+                        uuid: "GPU-B0".into(),
+                        idx: 0,
+                        mem_used_mb: Some(0),
+                        mem_total_mb: Some(24_576),
+                        util_pct: Some(0),
+                        procs_state: ProcsState::Ok,
+                        procs: Some(vec![]),
+                        ..Default::default()
+                    },
+                    GpuSample {
+                        uuid: "GPU-B1".into(),
+                        idx: 1,
+                        lost: true,
+                        ..Default::default()
+                    },
+                ],
+            },
+            now_ms - 600_000,
+        );
+
+        let view_a = project_host_view(
+            &agent_a, "org", false, true, Some(&snap_a), now_ms, now_s, true, thresholds, false,
+        );
+        let view_b = project_host_view(
+            &agent_b, "org", false, false, Some(&snap_b), now_ms, now_s, true, thresholds, false,
+        );
+
+        let mut sum = GpuFleetSummary {
+            hosts_total: 0,
+            hosts_online: 0,
+            gpus_total: 0,
+            gpus_free: 0,
+            gpus_busy: 0,
+            gpus_held_idle: 0,
+            gpus_fault: 0,
+            gpus_warning: 0,
+            gpus_unknown: 0,
+            gpus_offline: 0,
+            fault_hosts: 0,
+            fault_cards: 0,
+        };
+        accumulate_summary(&mut sum, &view_a);
+        accumulate_summary(&mut sum, &view_b);
+
+        assert_eq!(sum.hosts_total, 2);
+        assert_eq!(sum.hosts_online, 1);
+        assert_eq!(sum.gpus_total, 7);
+        assert_eq!(sum.gpus_free, 1);
+        assert_eq!(sum.gpus_busy, 1);
+        assert_eq!(sum.gpus_held_idle, 1);
+        assert_eq!(sum.gpus_fault, 1);
+        assert_eq!(sum.gpus_unknown, 1);
+        assert_eq!(sum.gpus_offline, 2);
+        assert_eq!(sum.fault_hosts, 1);
+        assert_eq!(sum.fault_cards, 1);
+        assert_eq!(
+            sum.gpus_free
+                + sum.gpus_busy
+                + sum.gpus_held_idle
+                + sum.gpus_fault
+                + sum.gpus_unknown
+                + sum.gpus_offline,
+            sum.gpus_total
+        );
+    }
+
+    #[test]
+    fn fr139_stalled_empty_report_synthesizes_inventory_cards_and_lag_blocks_free() {
+        let now_ms = 1_760_000_000_000_i64;
+        let now_s = now_ms / 1000;
+        let thresholds = GpuStateThresholds::default();
+
+        // DriverMissing with empty gpus array but persisted inventory -> cards synthesized as faulted.
+        let inv = GpuInventory {
+            backend: Some("pci".into()),
+            driver_version: None,
+            gpus: vec![GpuInventoryItem {
+                uuid: "PCI-0000:01:00.0".into(),
+                idx: 0,
+                name: "NVIDIA RTX 4090".into(),
+                mem_total_mb: None,
+                power_limit_w: None,
+                mig: false,
+                pci_bus: Some("0000:01:00.0".into()),
+                unified: false,
+            }],
+            status: GpuHostStatus::DriverMissing,
+            status_detail: Some("Detected 1 NVIDIA GPU via PCIe without driver".into()),
+        };
+        let agent = dummy_agent("no-drv", Some(inv));
+        let snap = snap_from(
+            GpuReport {
+                seq: 1,
+                interval_ms: 30_000,
+                status: GpuHostStatus::DriverMissing,
+                status_detail: Some("Detected 1 NVIDIA GPU via PCIe without driver".into()),
+                backend: Some("pci".into()),
+                driver_version: None,
+                host: HostLoad::default(),
+                gpus: vec![],
+            },
+            now_ms - 5_000,
+        );
+        let view = project_host_view(
+            &agent, "org", false, true, Some(&snap), now_ms, now_s, false, thresholds, false,
+        );
+        assert_eq!(view.gpus.len(), 1);
+        assert_eq!(view.host_fault_severity.as_deref(), Some("critical"));
+        assert_eq!(view.fault_count, 1);
+        assert_eq!(view.free_count, 0);
+
+        // Live 2s host whose last report is 15s old -> Fresh presence, but lagging = true -> free_count = 0!
+        let live_agent = dummy_agent("lag-host", None);
+        let live_snap = snap_from(
+            GpuReport {
+                seq: 9,
+                interval_ms: 2000,
+                status: GpuHostStatus::Ok,
+                status_detail: None,
+                backend: Some("nvml".into()),
+                driver_version: Some("550.90".into()),
+                host: HostLoad::default(),
+                gpus: vec![GpuSample {
+                    uuid: "GPU-LAG".into(),
+                    idx: 0,
+                    mem_used_mb: Some(128),
+                    mem_total_mb: Some(24_576),
+                    util_pct: Some(0),
+                    procs_state: ProcsState::Ok,
+                    procs: Some(vec![]),
+                    ..Default::default()
+                }],
+            },
+            now_ms - 15_000,
+        );
+        let lag_view = project_host_view(
+            &live_agent, "org", false, true, Some(&live_snap), now_ms, now_s, true, thresholds, false,
+        );
+        assert_eq!(lag_view.freshness, GpuFreshness::Fresh);
+        assert!(lag_view.lagging);
+        assert!(lag_view.gpus[0].stale);
+        assert_eq!(lag_view.free_count, 0);
+    }
 }

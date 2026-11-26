@@ -383,6 +383,7 @@ impl GpuSupervisor {
         let mut consecutive_failures: u32 = 0;
         let mut backoff_until: Option<Instant> = None;
         let mut synthetic_seq: u64 = 0;
+        let mut announced_hung = false;
 
         loop {
             if *shutdown_rx.borrow() {
@@ -414,6 +415,7 @@ impl GpuSupervisor {
                     driver_version: None,
                     gpus: Vec::new(),
                     status: GpuHostStatus::OffLocal,
+                    status_detail: Some("GPU telemetry disabled locally on this host".into()),
                 };
                 let stale_inv = self
                     .latest_inventory
@@ -429,6 +431,7 @@ impl GpuSupervisor {
                         seq: synthetic_seq,
                         interval_ms: iv,
                         status: GpuHostStatus::OffLocal,
+                        status_detail: Some("GPU telemetry disabled locally on this host".into()),
                         backend: None,
                         driver_version: None,
                         host: HostLoad::default(),
@@ -449,48 +452,28 @@ impl GpuSupervisor {
                 continue;
             }
 
-            // Latched circuit breaker: once consecutive failures reach the ceiling,
-            // stay `Unavailable` and stop spawning children until daemon restart.
-            if consecutive_failures >= self.timings.max_consecutive_failures {
-                if let Some(iv) = active_iv {
-                    synthetic_seq += 1;
-                    let rep = GpuReport {
-                        seq: synthetic_seq,
-                        interval_ms: iv,
-                        status: GpuHostStatus::Unavailable,
-                        backend: None,
-                        driver_version: None,
-                        host: sample_host_load_nonblocking(&mut host_sampler).await,
-                        gpus: Vec::new(),
-                    };
-                    self.fanout_report(rep, false);
-                }
-                let sleep_for = Duration::from_millis(u64::from(active_iv.unwrap_or(30_000)));
-                tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() { break; }
-                    }
-                    _ = self.notify.notified() => {}
-                    _ = tokio::time::sleep(sleep_for) => {}
-                }
-                continue;
-            }
-
             // If an earlier hung child is still unreaped (e.g. stuck in kernel D
             // state), NEVER spawn a second child; report `DriverHung` instead.
+            // Force immediate fanout ONLY on initial entry into DriverHung; subsequent
+            // ticks respect each org's own lease cadence.
             if self.unreaped_child.load(Ordering::Acquire) {
                 if let Some(iv) = active_iv {
                     synthetic_seq += 1;
+                    let cached_inv = self.latest_inventory();
                     let rep = GpuReport {
                         seq: synthetic_seq,
                         interval_ms: iv,
                         status: GpuHostStatus::DriverHung,
-                        backend: None,
-                        driver_version: None,
+                        status_detail: Some(
+                            "GPU sampler child unreaped (driver call hung in kernel)".into(),
+                        ),
+                        backend: cached_inv.as_ref().and_then(|i| i.backend.clone()),
+                        driver_version: cached_inv.as_ref().and_then(|i| i.driver_version.clone()),
                         host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
-                    self.fanout_report(rep, true);
+                    self.fanout_report(rep, !announced_hung);
+                    announced_hung = true;
                 }
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -501,8 +484,12 @@ impl GpuSupervisor {
                 }
                 continue;
             }
+            announced_hung = false;
 
-            // Respect exponential backoff between spawn attempts.
+            // Respect exponential backoff (capped at `backoff_cap` = 300 s); even
+            // after `max_consecutive_failures` we keep reporting `Unavailable` and
+            // periodically retry at `backoff_cap` so a recovered driver self-heals
+            // without requiring a daemon restart.
             if let Some(until) = backoff_until
                 && now < until
             {
@@ -513,12 +500,20 @@ impl GpuSupervisor {
                 };
                 if let Some(iv) = active_iv {
                     synthetic_seq += 1;
+                    let cached_inv = self.latest_inventory();
                     let rep = GpuReport {
                         seq: synthetic_seq,
                         interval_ms: iv,
                         status,
-                        backend: None,
-                        driver_version: None,
+                        status_detail: Some(if status == GpuHostStatus::Unavailable {
+                            "GPU sampler unavailable after repeated failures — retrying periodically"
+                                .into()
+                        } else {
+                            "GPU sampler missed deadline or exited — backing off before retry"
+                                .into()
+                        }),
+                        backend: cached_inv.as_ref().and_then(|i| i.backend.clone()),
+                        driver_version: cached_inv.as_ref().and_then(|i| i.driver_version.clone()),
                         host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
@@ -536,9 +531,13 @@ impl GpuSupervisor {
             }
 
             // Spawn one `meshharbord gpu-sampler` child.
-            let outcome = self
+            let (outcome, saw_healthy_frame) = self
                 .run_child_session(&mut host_sampler, &mut shutdown_rx, &mut synthetic_seq)
                 .await;
+
+            if saw_healthy_frame {
+                consecutive_failures = 0;
+            }
 
             match outcome {
                 ChildOutcome::CleanIdle | ChildOutcome::Shutdown => {
@@ -555,12 +554,14 @@ impl GpuSupervisor {
                         GpuHostStatus::SamplerStalled
                     };
                     synthetic_seq += 1;
+                    let cached_inv = self.latest_inventory();
                     let rep = GpuReport {
                         seq: synthetic_seq,
                         interval_ms: active_iv.unwrap_or(30_000),
                         status,
-                        backend: None,
-                        driver_version: None,
+                        status_detail: Some("GPU sampler exceeded frame deadline".into()),
+                        backend: cached_inv.as_ref().and_then(|i| i.backend.clone()),
+                        driver_version: cached_inv.as_ref().and_then(|i| i.driver_version.clone()),
                         host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
@@ -575,21 +576,22 @@ impl GpuSupervisor {
                     } else {
                         GpuHostStatus::SamplerStalled
                     };
+                    let cached_inv = self.latest_inventory();
                     if need_inv {
-                        self.fanout_inventory(GpuInventory {
-                            backend: None,
-                            driver_version: None,
-                            gpus: Vec::new(),
-                            status,
-                        });
+                        let mut inv = cached_inv.clone().unwrap_or_default();
+                        inv.status = status;
+                        inv.status_detail =
+                            Some("GPU sampler child exited unexpectedly".into());
+                        self.fanout_inventory(inv);
                     }
                     synthetic_seq += 1;
                     let rep = GpuReport {
                         seq: synthetic_seq,
                         interval_ms: active_iv.unwrap_or(30_000),
                         status,
-                        backend: None,
-                        driver_version: None,
+                        status_detail: Some("GPU sampler child exited unexpectedly".into()),
+                        backend: cached_inv.as_ref().and_then(|i| i.backend.clone()),
+                        driver_version: cached_inv.as_ref().and_then(|i| i.driver_version.clone()),
                         host: sample_host_load_nonblocking(&mut host_sampler).await,
                         gpus: Vec::new(),
                     };
@@ -604,14 +606,14 @@ impl GpuSupervisor {
         host_sampler: &mut Option<Arc<Mutex<HostLoadSampler>>>,
         shutdown_rx: &mut watch::Receiver<bool>,
         synthetic_seq: &mut u64,
-    ) -> ChildOutcome {
+    ) -> (ChildOutcome, bool) {
         let exe = match &self.child_exe_override {
             Some(p) => p.clone(),
             None => match own_executable() {
                 Some(p) => p,
                 None => {
                     tracing::warn!("gpu-sampler: cannot resolve current executable path");
-                    return ChildOutcome::Failed;
+                    return (ChildOutcome::Failed, false);
                 }
             },
         };
@@ -637,35 +639,36 @@ impl GpuSupervisor {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(%e, "gpu-sampler: spawn failed");
-                return ChildOutcome::Failed;
+                return (ChildOutcome::Failed, false);
             }
         };
 
         let Some(mut stdin) = child.stdin.take() else {
             reap_in_background(child, self.unreaped_child.clone(), true);
-            return ChildOutcome::Failed;
+            return (ChildOutcome::Failed, false);
         };
         let Some(stdout) = child.stdout.take() else {
             reap_in_background(child, self.unreaped_child.clone(), true);
-            return ChildOutcome::Failed;
+            return (ChildOutcome::Failed, false);
         };
         let mut lines = BufReader::new(stdout).lines();
 
         let mut last_ctrl: Option<(u32, bool)> = None;
         let mut last_frame_at = Instant::now();
         let mut saw_inventory = false;
+        let mut saw_healthy_frame = false;
 
         loop {
             if *shutdown_rx.borrow() {
                 let _ = write_control(&mut stdin, 0, false, true).await;
                 reap_in_background(child, self.unreaped_child.clone(), false);
-                return ChildOutcome::Shutdown;
+                return (ChildOutcome::Shutdown, saw_healthy_frame);
             }
 
             if !self.gpu_telemetry.load(Ordering::Relaxed) {
                 let _ = write_control(&mut stdin, 0, false, true).await;
                 reap_in_background(child, self.unreaped_child.clone(), false);
-                return ChildOutcome::CleanIdle;
+                return (ChildOutcome::CleanIdle, saw_healthy_frame);
             }
 
             let now = Instant::now();
@@ -680,7 +683,7 @@ impl GpuSupervisor {
                     .is_err()
                 {
                     reap_in_background(child, self.unreaped_child.clone(), true);
-                    return ChildOutcome::Failed;
+                    return (ChildOutcome::Failed, saw_healthy_frame);
                 }
                 last_ctrl = Some((desired_iv, include_procs));
                 last_frame_at = Instant::now();
@@ -690,12 +693,17 @@ impl GpuSupervisor {
             if saw_inventory && !need_inv && desired_iv == 0 {
                 let _ = write_control(&mut stdin, 0, include_procs, true).await;
                 reap_in_background(child, self.unreaped_child.clone(), false);
-                return ChildOutcome::CleanIdle;
+                return (ChildOutcome::CleanIdle, saw_healthy_frame);
             }
 
-            // Frame deadline: max(3 * interval, min_deadline).
-            let deadline = Duration::from_millis(u64::from(desired_iv).saturating_mul(3))
+            // Frame deadline: max(3 * interval, min_deadline), plus a generous
+            // 30 s first-frame grace in production so large multi-card hosts
+            // never get killed during initial probe.
+            let mut deadline = Duration::from_millis(u64::from(desired_iv).saturating_mul(3))
                 .max(self.timings.min_deadline);
+            if !saw_inventory && self.timings.min_deadline >= Duration::from_secs(5) {
+                deadline = deadline.max(Duration::from_secs(30));
+            }
             let remaining = deadline.saturating_sub(last_frame_at.elapsed());
             let wake_in = remaining.min(Duration::from_millis(50));
 
@@ -704,7 +712,7 @@ impl GpuSupervisor {
                     if *shutdown_rx.borrow() {
                         let _ = write_control(&mut stdin, 0, false, true).await;
                         reap_in_background(child, self.unreaped_child.clone(), false);
-                        return ChildOutcome::Shutdown;
+                        return (ChildOutcome::Shutdown, saw_healthy_frame);
                     }
                 }
                 _ = self.notify.notified() => {
@@ -717,7 +725,7 @@ impl GpuSupervisor {
                             "gpu-sampler: frame deadline exceeded — killing child without blocking wait"
                         );
                         reap_in_background(child, self.unreaped_child.clone(), true);
-                        return ChildOutcome::Hung;
+                        return (ChildOutcome::Hung, saw_healthy_frame);
                     }
                 }
                 line_res = lines.next_line() => {
@@ -734,6 +742,15 @@ impl GpuSupervisor {
                                 }
                                 Ok(ChildFrame::Report { mut report }) => {
                                     last_frame_at = Instant::now();
+                                    if matches!(
+                                        report.status,
+                                        GpuHostStatus::Ok
+                                            | GpuHostStatus::Limited
+                                            | GpuHostStatus::NoGpu
+                                            | GpuHostStatus::DriverMissing
+                                    ) {
+                                        saw_healthy_frame = true;
+                                    }
                                     *synthetic_seq = (*synthetic_seq).max(report.seq);
                                     report.host = sample_host_load_nonblocking(host_sampler).await;
                                     self.fanout_report(report, false);
@@ -746,7 +763,7 @@ impl GpuSupervisor {
                         Ok(None) | Err(_) => {
                             // Child stdout closed (crashed or exited unexpectedly).
                             reap_in_background(child, self.unreaped_child.clone(), false);
-                            return ChildOutcome::Failed;
+                            return (ChildOutcome::Failed, saw_healthy_frame);
                         }
                     }
                 }
@@ -1106,6 +1123,7 @@ mod tests {
                     driver_version: Some("550.90".into()),
                     gpus: vec![],
                     status: GpuHostStatus::Ok,
+                    status_detail: None,
                 },
             };
             let sample_rep = ChildFrame::Report {
@@ -1113,6 +1131,7 @@ mod tests {
                     seq: 1,
                     interval_ms: 200,
                     status: GpuHostStatus::Ok,
+                    status_detail: None,
                     backend: Some("fake".into()),
                     driver_version: Some("550.90".into()),
                     host: HostLoad::default(),

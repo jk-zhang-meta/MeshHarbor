@@ -62,6 +62,7 @@ impl AppleBackend {
                     unified: true,
                 }],
                 status: GpuHostStatus::Ok,
+                status_detail: None,
             }
         }
         #[cfg(not(target_os = "macos"))]
@@ -119,10 +120,11 @@ impl AppleBackend {
                 xid_errors: None,
                 mig: false,
                 lost: false,
-                idle_since: None,
-                free_mem_floor_mb: None,
+                backend: Some("apple".into()),
+                vendor_index: Some(0),
                 procs_state: ProcsState::Unsupported,
                 procs: None,
+                ..Default::default()
             };
             (GpuHostStatus::Ok, vec![sample])
         }

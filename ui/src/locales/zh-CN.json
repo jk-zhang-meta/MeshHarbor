@@ -3781,8 +3781,12 @@
     },
     "gpu": {
       "title": "GPU 服务器",
-      "subtitle": "实时 GPU 利用率、显存占用、运行进程、按用户卡时统计及个人空卡提醒。",
+      "subtitle": "实时 GPU/NPU/TPU 利用率、显存占用、运行进程、按用户卡时统计及个人空卡提醒。",
       "live2s": "实时 (2 秒)",
+      "liveCadence": "实时 ({sec}s)",
+      "liveHeartbeat": "实时 ({sec}s) · {age}前",
+      "standingOnly": "常规模式（服务端已关闭实时轮询）",
+      "pollRetrying": "轮询失败 · {sec}s 后重试",
       "findFree": "查找空闲 GPU",
       "disabledNotice": "当前服务器未启用 GPU 监控。",
       "freeWord": "空闲",
@@ -3790,10 +3794,14 @@
       "noCardsYet": "正在等待该主机上报 GPU 遥测数据…",
       "moreProcs": "个更多进程",
       "procsOffLocal": "该主机本地已关闭进程列表上报",
+      "presenceOnly": "仅设备在位",
       "copyCudaEnv": "复制 CUDA_VISIBLE_DEVICES 命令",
-      "searchPlaceholder": "搜索主机、显卡型号、用户或命令…",
+      "searchPlaceholder": "搜索主机、显卡型号、用户、故障或命令…",
       "emptyTitle": "尚未标记任何 GPU 服务器",
       "emptyBody": "可在“设备”页面将已注册或受邀设备标记为 GPU 服务器，或接收他人分享的 GPU 服务器。",
+      "filteredEmptyTitle": "没有匹配的 GPU 服务器",
+      "filteredEmptyBody": "请尝试清空搜索词或切换筛选条件。",
+      "clearFilters": "清空筛选",
       "goToDevices": "前往设备页",
       "tabs": {
         "fleet": "集群总览",
@@ -3804,17 +3812,31 @@
         "hosts": "在线 GPU 主机",
         "free": "空闲 GPU",
         "busy": "忙碌 GPU",
-        "heldIdle": "占卡空转",
-        "fault": "故障 GPU"
+        "heldIdle": "占卡空闲",
+        "fault": "故障 GPU",
+        "faultHosts": "涉及 {n} 台主机",
+        "warnCount": "{n} 条告警"
       },
       "filter": {
         "all": "全部",
         "free": "空闲",
         "busy": "忙碌",
-        "heldIdle": "占空",
+        "heldIdle": "占卡空闲",
         "fault": "故障",
+        "warning": "告警",
+        "offline": "离线",
         "invited": "受邀设备",
         "shared": "共享设备"
+      },
+      "changes": {
+        "title": "最近实时变化",
+        "clear": "清空",
+        "hostOnline": "{host} 已上线",
+        "hostOffline": "{host} 已离线",
+        "hostStatus": "{host} 状态变更：{status}",
+        "cardState": "{host} {slot}：{from} → {to}",
+        "faultDetected": "{host} {slot} 发现故障：{reason}",
+        "faultCleared": "{host} {slot} 故障已恢复"
       },
       "sort": {
         "host": "排序：主机名",
@@ -3827,14 +3849,48 @@
         "sharedRo": "共享（只读）"
       },
       "freshness": {
-        "fresh": "实时",
+        "fresh": "最新",
+        "freshAge": "{age}",
+        "laggingAge": "延迟 {age}",
         "stale": "陈旧",
-        "offline": "离线"
+        "staleAge": "陈旧 {age}",
+        "offline": "离线",
+        "offlineAge": "离线 {age}"
+      },
+      "hostStatus": {
+        "ok": "正常",
+        "limited": "受限遥测",
+        "driver_missing": "缺少驱动",
+        "driver_reboot_pending": "驱动需重启生效",
+        "driver_hung": "驱动卡死",
+        "sampler_stalled": "采样器无响应（重试中）",
+        "unavailable": "采样器不可用",
+        "no_gpu": "未检测到加速卡",
+        "off_local": "本地已关闭上报",
+        "unknown": "等待首次上报"
+      },
+      "diag": {
+        "driver_missing": "已通过 PCIe 检测到加速卡硬件，但宿主机未安装可用的厂商驱动/运行时，请在宿主机安装对应驱动。",
+        "driver_reboot_pending": "检测到驱动与用户态库版本不匹配，请重启宿主机或重新加载驱动内核模块。",
+        "driver_hung": "GPU 内核驱动调用无响应，采样器正在退避并自动重试。",
+        "sampler_stalled": "采样器采集超时无响应，系统正在自动重试。",
+        "unavailable": "采样器连续失败，后台将定期自动尝试恢复。",
+        "limited": "部分遥测模式（如 WSL2、Google TPU 设备节点或无厂商工具的 PCIe 兜底模式）。",
+        "off_local": "该主机本地已关闭 GPU 遥测上报。",
+        "no_gpu": "该主机未检测到 GPU、NPU 或 TPU 硬件。",
+        "unknown": "正在等待该主机发送首次遥测快照。"
+      },
+      "throttle": {
+        "power_cap": "功耗上限",
+        "thermal": "过热降频",
+        "sw_thermal": "软件温控降频",
+        "hw_slowdown": "硬件降频",
+        "power_brake": "外接限功"
       },
       "state": {
         "free": "空闲",
         "busy": "忙碌",
-        "held_idle": "占空!",
+        "held_idle": "占卡空闲",
         "unattributed": "未归属",
         "fault": "故障",
         "unknown": "未知"
@@ -3878,6 +3934,7 @@
         "minFreeGb": "最小空闲显存 (GiB)",
         "sameHost": "要求同一主机",
         "notEnough": "需要 {need} 张符合条件的空闲 GPU，当前仅找到 {found} 张。",
+        "notEnoughSameHost": "没有单台主机同时满足 {need} 张符合条件的空闲 GPU（跨主机共 {total} 张可用）。",
         "copy": "复制",
         "copied": "已复制"
       },
@@ -3887,9 +3944,9 @@
         "enable": "启用 GPU 告警",
         "freeMin": "当空闲 GPU ≥（张）时通知",
         "minMemGb": "单卡最小空闲显存 (GiB)",
-        "heldIdle": "占卡空转告警（占用显存但利用率为 0%）",
-        "fault": "显卡异常告警（Xid、ECC 错、掉卡、过热降频）",
-        "offline": "GPU 服务器离线超过 5 分钟告警",
+        "heldIdle": "占卡空闲告警（占用显存但持续低利用率超过阈值）",
+        "fault": "显卡异常告警（Xid、ECC 错、掉卡、厂商健康异常、过热降频）",
+        "offline": "GPU 服务器离线超过 5 分钟或驱动/采样器故障时告警",
         "lang": "通知语言",
         "saved": "告警规则已保存。"
       },

@@ -112,5 +112,6 @@ pub fn inventory_from_report(r: &GpuReport) -> GpuInventory {
             })
             .collect(),
         status: r.status,
+        status_detail: r.status_detail.clone(),
     }
 }
