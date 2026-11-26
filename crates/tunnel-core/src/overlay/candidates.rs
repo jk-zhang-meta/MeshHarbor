@@ -243,7 +243,6 @@ impl CandidatePlanner {
 
     /// Seed previously learned endpoints (e.g., from the signed offline netmap
     /// cache) as candidate hints requiring fresh proof before promotion.
-    #[allow(dead_code)] // Consumed by netmap cache replay (Commit 8).
     pub(crate) fn seed_learned(
         &mut self,
         peer: [u8; 32],

@@ -1483,6 +1483,17 @@ pub enum OverlayEvent {
         org_relay_discovery: bool,
         path_trial_v1: bool,
     },
+    /// FR-139 — cold-boot seed from the locally verified signed netmap cache
+    /// when the coordination server is unreachable at startup. Brings up TUN,
+    /// MagicDNS, and direct LAN/loopback probing immediately while marking the
+    /// control-WS detached until a live `Reattach` + `Netmap` reconciles
+    /// authoritatively without rebuilding TUN.
+    CachedNetmap {
+        self_ip: String,
+        network: OverlayNetworkInfo,
+        peers: Vec<NetmapPeer>,
+        learned_endpoints: std::collections::BTreeMap<String, Vec<SocketAddr>>,
+    },
     PathTrial(meshharbor_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
@@ -2639,7 +2650,37 @@ pub struct OverlayRuntime {
     /// `Netmap`. Combined with `RelayCoordinator::has_live_derp_or_warm()` to
     /// measure `TierAvailability.relay`.
     control_ws_attached: std::sync::atomic::AtomicBool,
+    /// FR-139 — optional agent callback invoked whenever authoritative netmap
+    /// state or learned direct endpoints change so the local signed cache stays
+    /// fresh (and flushes synchronously on authority reduction).
+    netmap_snapshot_sink: Option<NetmapSnapshotSink>,
 }
+
+/// FR-139 — state handed to the agent's local signed netmap-cache writer
+/// whenever authoritative netmap state or learned peer direct endpoints change.
+#[derive(Debug, Clone)]
+pub struct NetmapSnapshot {
+    pub self_ip: String,
+    pub network: OverlayNetworkInfo,
+    pub peers: Vec<NetmapPeer>,
+    pub auth_revision: u64,
+    /// `true` when produced by a live server `Netmap`, `NetmapDelta`, or
+    /// `SelfName`; `false` when produced solely by a learned direct-endpoint
+    /// discovery update (must NEVER extend `last_authoritative_at_ms` or
+    /// `last_authoritative_revision`).
+    pub authoritative: bool,
+    /// `true` when peers were removed or authority narrowed; the agent MUST
+    /// flush synchronously, bypassing any write debounce.
+    pub urgent_flush: bool,
+    /// Last Disco-verified direct LAN/loopback endpoints keyed by peer
+    /// `node_id` hex string.
+    pub learned_endpoints:
+        std::collections::BTreeMap<String, Vec<super::netmap_cache::LearnedPeerEndpoint>>,
+}
+
+/// Non-blocking sink notified by [`OverlayRuntime`] when cacheable netmap or
+/// learned-endpoint state updates.
+pub type NetmapSnapshotSink = Arc<dyn Fn(NetmapSnapshot) + Send + Sync>;
 
 /// Opens the node's `/derp` WS (the agent owns `server_url` + the token +
 /// `tokio_tungstenite`) and returns the connected [`DerpMux`]. Boxed +
@@ -2872,6 +2913,7 @@ impl OverlayRuntime {
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
             control_ws_attached: std::sync::atomic::AtomicBool::new(true),
+            netmap_snapshot_sink: None,
         }
     }
 
@@ -2914,7 +2956,48 @@ impl OverlayRuntime {
             disco_paths: std::sync::Mutex::new(Vec::new()),
             candidate_planner: std::sync::Mutex::new(super::candidates::CandidatePlanner::default()),
             control_ws_attached: std::sync::atomic::AtomicBool::new(true),
+            netmap_snapshot_sink: None,
         }
+    }
+
+    /// FR-139 — attach a callback notified on authoritative netmap / delta
+    /// changes and learned direct-endpoint discoveries so the agent can
+    /// persist its signed local netmap cache.
+    pub fn with_netmap_snapshot_sink(mut self, sink: Option<NetmapSnapshotSink>) -> Self {
+        self.netmap_snapshot_sink = sink;
+        self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_netmap_snapshot(
+        &self,
+        self_ip: &str,
+        network: &OverlayNetworkInfo,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
+        auth_revision: u64,
+        authoritative: bool,
+        urgent_flush: bool,
+        learned_endpoints: &std::collections::BTreeMap<
+            String,
+            Vec<super::netmap_cache::LearnedPeerEndpoint>,
+        >,
+    ) {
+        let Some(sink) = &self.netmap_snapshot_sink else {
+            return;
+        };
+        let mut peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
+        peers.sort_by_key(|p| p.node_id);
+        let mut net = network.clone();
+        net.auth_revision = auth_revision;
+        sink(NetmapSnapshot {
+            self_ip: self_ip.to_string(),
+            network: net,
+            peers,
+            auth_revision,
+            authoritative,
+            urgent_flush,
+            learned_endpoints: learned_endpoints.clone(),
+        });
     }
 
     /// FR-139 — run a short synchronous closure against the candidate planner
@@ -3087,10 +3170,15 @@ impl OverlayRuntime {
         by_node: &HashMap<ObjectId, Installed>,
         current_peers: &HashMap<ObjectId, NetmapPeer>,
         direct_ctx: Option<&super::runtime::establish::DirectCtx>,
-    ) -> Vec<(ObjectId, DirectTier)> {
+        learned_endpoints: &mut std::collections::BTreeMap<
+            String,
+            Vec<super::netmap_cache::LearnedPeerEndpoint>,
+        >,
+    ) -> (Vec<(ObjectId, DirectTier)>, bool) {
         let mut back = Vec::new();
+        let mut learned_changed = false;
         if !crate::overlay::direct::disco_probe_enabled() {
-            return back;
+            return (back, false);
         }
         let now = Instant::now();
         // FR-139 — drain authenticated inbound Disco ping sources as bounded
@@ -3108,17 +3196,42 @@ impl OverlayRuntime {
         }
         // Absorb replies first so this round's verdicts reflect the last one.
         let mut newly_verified_lan: Vec<[u8; 32]> = Vec::new();
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         if let Some(rx) = rx.as_mut() {
             while let Ok(p) = rx.try_recv() {
                 path_trials.active_pong(&p);
                 birthday.on_pong(&p);
                 prober.on_pong(&p);
                 prefer.on_pong(&p, by_node);
-                if let Some(hit) = self.planner(|pl| pl.on_pong(&p))
-                    && hit.newly_verified
-                    && !newly_verified_lan.contains(&hit.peer)
-                {
-                    newly_verified_lan.push(hit.peer);
+                if let Some(hit) = self.planner(|pl| pl.on_pong(&p)) {
+                    if let Some((nid, _)) = current_peers.iter().find(|(_, np)| {
+                        !np.backbone_only
+                            && super::netmap::peer_config_from_netmap(np)
+                                .is_some_and(|c| c.public_key == hit.peer)
+                    }) {
+                        let key = nid.to_hex();
+                        let dst_str = hit.dst.to_string();
+                        let list = learned_endpoints.entry(key).or_default();
+                        let was_top = list.first().is_some_and(|e| e.addr == dst_str);
+                        list.retain(|e| e.addr != dst_str);
+                        list.insert(
+                            0,
+                            super::netmap_cache::LearnedPeerEndpoint {
+                                addr: dst_str,
+                                last_verified_at_ms: now_ms,
+                            },
+                        );
+                        list.truncate(super::netmap_cache::MAX_LEARNED_PER_PEER);
+                        if !was_top {
+                            learned_changed = true;
+                        }
+                    }
+                    if hit.newly_verified && !newly_verified_lan.contains(&hit.peer) {
+                        newly_verified_lan.push(hit.peer);
+                    }
                 }
             }
         }
@@ -3171,6 +3284,26 @@ impl OverlayRuntime {
                 let mut adv_lan = super::runtime::establish::gather_lan_candidates(ctx, &cfg);
                 if probe_loopback_only {
                     adv_lan.retain(|c| c.kind == super::candidates::LanPathKind::Loopback);
+                } else if !self
+                    .control_ws_attached
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    // FR-139 — when offline and without an active LAN carrier,
+                    // expand Disco-only recovery probes across this peer's
+                    // known LAN/loopback IPs' stable port bands (capped at 16).
+                    let learned_addrs: Vec<SocketAddr> = learned_endpoints
+                        .get(&nid.to_hex())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.addr.parse::<SocketAddr>().ok())
+                        .collect();
+                    let recovery = super::netmap_cache::offline_recovery_candidates(
+                        &cfg,
+                        &learned_addrs,
+                        &adv_lan,
+                        |sa| super::runtime::establish::classify_inbound_lan_hint(ctx, sa),
+                    );
+                    adv_lan.extend(recovery);
                 }
                 let planned = self.planner(|pl| pl.plan_probes(cfg.public_key, &adv_lan, now));
                 for cand in planned {
@@ -3278,7 +3411,7 @@ impl OverlayRuntime {
                 prober.forget(&s.peer);
             }
         }
-        back
+        (back, learned_changed)
     }
 
     #[allow(clippy::too_many_arguments)] // Snapshot the existing runtime owners without a new wrapper.
@@ -3605,7 +3738,15 @@ impl OverlayRuntime {
         let mut pending_self_name: Option<SelfNameUpdate> = None;
         let mut pre_join_retry_attempt: u32 = 0;
         let mut pre_join_retry: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
-        let (self_ip, mut network, first_peers, mut server_org_discovery, mut server_path_trial_v1) = loop {
+        let (
+            self_ip,
+            mut network,
+            first_peers,
+            mut server_org_discovery,
+            mut server_path_trial_v1,
+            seeded_from_cache,
+            initial_learned,
+        ) = loop {
             let event = tokio::select! {
                 changed = relay_listener_changed(&mut listener_changes) => {
                     if changed {
@@ -3649,7 +3790,44 @@ impl OverlayRuntime {
                     peers,
                     org_relay_discovery,
                     path_trial_v1,
-                }) => break (self_ip, network, peers, org_relay_discovery, path_trial_v1),
+                }) => {
+                    break (
+                        self_ip,
+                        network,
+                        peers,
+                        org_relay_discovery,
+                        path_trial_v1,
+                        false,
+                        std::collections::BTreeMap::new(),
+                    );
+                }
+                Some(OverlayEvent::CachedNetmap {
+                    self_ip,
+                    network,
+                    peers,
+                    learned_endpoints,
+                }) => {
+                    self.control_ws_attached
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    let sanitized_net =
+                        super::netmap_cache::sanitize_network_for_offline_replay(&network);
+                    let sanitized_peers =
+                        super::netmap_cache::sanitize_for_offline_replay(&peers);
+                    info!(
+                        peers = sanitized_peers.len(),
+                        auth_revision = sanitized_net.auth_revision,
+                        "overlay: cold-booting data plane from verified local netmap cache (control-WS offline)"
+                    );
+                    break (
+                        self_ip,
+                        sanitized_net,
+                        sanitized_peers,
+                        false,
+                        false,
+                        true,
+                        learned_endpoints,
+                    );
+                }
                 // rc.307 (B) — the session died before the first netmap:
                 // re-bind + re-join on the fresh one, keep waiting.
                 Some(OverlayEvent::Reattach { outbound }) => {
@@ -3709,10 +3887,56 @@ impl OverlayRuntime {
             .iter()
             .map(|p| (p.node_id, (applied_auth_revision, 0)))
             .collect();
-        let mut control_detached_at: Option<Instant> = None;
+        let mut awaiting_first_live_netmap = seeded_from_cache;
+        let mut control_detached_at: Option<Instant> = seeded_from_cache.then(Instant::now);
         let mut offline_continuity_expired = false;
         let mut post_join_retry_attempt: u32 = 0;
         let mut post_join_retry: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+        let startup_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut learned_cache_endpoints: std::collections::BTreeMap<
+            String,
+            Vec<super::netmap_cache::LearnedPeerEndpoint>,
+        > = initial_learned
+            .iter()
+            .map(|(nid, addrs)| {
+                (
+                    nid.clone(),
+                    addrs
+                        .iter()
+                        .take(super::netmap_cache::MAX_LEARNED_PER_PEER)
+                        .map(|sa| super::netmap_cache::LearnedPeerEndpoint {
+                            addr: sa.to_string(),
+                            last_verified_at_ms: startup_ms,
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        if let Some(ctx) = direct_ctx.as_ref()
+            && !initial_learned.is_empty()
+        {
+            let now = Instant::now();
+            for p in &first_peers {
+                if p.backbone_only {
+                    continue;
+                }
+                if let Some(addrs) = initial_learned.get(&p.node_id.to_hex())
+                    && let Some(cfg) = super::netmap::peer_config_from_netmap(p)
+                {
+                    self.planner(|pl| {
+                        pl.seed_learned(
+                            cfg.public_key,
+                            addrs,
+                            |sa| super::runtime::establish::classify_inbound_lan_hint(ctx, sa),
+                            now,
+                        );
+                    });
+                }
+            }
+        }
 
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
@@ -3852,9 +4076,20 @@ impl OverlayRuntime {
         // the direct-plane rebuild; these three locals keep their original
         // roles (keepalive seed + reattach restore).
         let srflx_stun = self.srflx_stun_urls(&network);
-        let gathered = self
-            .gather_and_advertise_srflx(&mut direct_ctx, &srflx_stun)
-            .await;
+        // FR-139 — when cold-booted from the signed local netmap cache while
+        // offline, skip blocking WAN STUN gather at startup so TUN, MagicDNS,
+        // and LAN/loopback direct probing come up immediately; the first live
+        // `Netmap` after `Reattach` runs srflx discovery and spawns keepalive.
+        let gathered = if seeded_from_cache {
+            SrflxGather {
+                stun_server: None,
+                advertised: Vec::new(),
+                my_nat: None,
+            }
+        } else {
+            self.gather_and_advertise_srflx(&mut direct_ctx, &srflx_stun)
+                .await
+        };
         let mut srflx_stun_server: Option<SocketAddr> = gathered.stun_server;
         let mut srflx_advertised: Vec<String> = gathered.advertised;
         let mut srflx_my_nat: Option<String> = gathered.my_nat;
@@ -3916,7 +4151,9 @@ impl OverlayRuntime {
         let mut stun_sink = wg
             .take_stun_events()
             .map(|rx| Arc::new(tokio::sync::Mutex::new(rx)));
-        let mut srflx_keepalive = if let Some(plane) = &self.carrier_plane {
+        let mut srflx_keepalive = if seeded_from_cache {
+            None
+        } else if let Some(plane) = &self.carrier_plane {
             info!(
                 self_v4 = %self_v4,
                 "overlay: srflx re-advert via the carrier PLANE forwarder"
@@ -3951,7 +4188,7 @@ impl OverlayRuntime {
                 self.keypair.secret.to_bytes().to_vec(),
             )
         };
-        if srflx_keepalive.is_none() {
+        if srflx_keepalive.is_none() && !seeded_from_cache {
             warn!(
                 self_v4 = %self_v4,
                 "overlay: this org has NO srflx re-advert task at all — a NAT \
@@ -4242,7 +4479,8 @@ impl OverlayRuntime {
         }
         // Multi-region DERP — reusable per-URL opener for regional relays.
         let regional_derp_factory = self.regional_derp_factory.take();
-        let derp_mux = if matches!(self.mode, CarrierMode::Relay)
+        let derp_mux = if !seeded_from_cache
+            && matches!(self.mode, CarrierMode::Relay)
             && (srflx_advertised.is_empty() || super::direct::derp_floor_enabled())
         {
             derp_factory.take().map(|f| f())
@@ -4275,7 +4513,11 @@ impl OverlayRuntime {
                 // with it; a NAT-less anchor's host addresses are public too,
                 // and dialing one was the rx=0 QUIC rendezvous bug. One
                 // resolve at startup; empty (DNS failure) = legacy pick.
-                r.set_coturn_ips(direct::resolve_stun_worker_ips(&network.stun_urls).await);
+                // FR-139: skip WAN DNS resolve during offline cache seed;
+                // populated when the first live `Netmap` arrives.
+                if !seeded_from_cache {
+                    r.set_coturn_ips(direct::resolve_stun_worker_ips(&network.stun_urls).await);
+                }
                 Some(r)
             }
             CarrierMode::Direct(_) => None,
@@ -4382,14 +4624,25 @@ impl OverlayRuntime {
             "initial",
         )
         .await;
-        if applied_auth_revision > 0 {
-            let _ = self
-                .outbound
-                .send(ClientMsg::OverlayNetmapAck {
-                    epoch: applied_netmap_epoch,
-                    auth_revision: applied_auth_revision,
-                })
-                .await;
+        if !seeded_from_cache {
+            self.emit_netmap_snapshot(
+                &self_ip,
+                &network,
+                &current_peers,
+                applied_auth_revision,
+                true,
+                false,
+                &learned_cache_endpoints,
+            );
+            if applied_auth_revision > 0 {
+                let _ = self
+                    .outbound
+                    .send(ClientMsg::OverlayNetmapAck {
+                        epoch: applied_netmap_epoch,
+                        auth_revision: applied_auth_revision,
+                    })
+                    .await;
+            }
         }
         // P5 exit-node — default-route capture state, reconciled after every
         // carrier change. Inert unless this node has `exit_node` configured.
@@ -5300,7 +5553,31 @@ impl OverlayRuntime {
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut birthday, &mut prefer, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    let (revived, learned_changed) = self
+                        .disco_round(
+                            &mut disco,
+                            &mut path_trials,
+                            &mut birthday,
+                            &mut prefer,
+                            &mut disco_rx,
+                            &wg,
+                            &by_node,
+                            &current_peers,
+                            direct_ctx.as_ref(),
+                            &mut learned_cache_endpoints,
+                        )
+                        .await;
+                    if learned_changed {
+                        self.emit_netmap_snapshot(
+                            &self_ip,
+                            &network,
+                            &current_peers,
+                            applied_auth_revision,
+                            false,
+                            false,
+                            &learned_cache_endpoints,
+                        );
+                    }
                     // A relayed peer's direct candidate answers disco again:
                     // lift its suppression and walk this very tick, so the
                     // make-before-break probe starts now instead of up to a
@@ -6077,6 +6354,9 @@ impl OverlayRuntime {
                     // Re-sync: a full netmap is the reconcile point — today it
                     // arrives on every rc.307 re-join (reattach), and the arm
                     // below applies it AUTHORITATIVELY against live state.
+                    Some(OverlayEvent::CachedNetmap { .. }) => {
+                        debug!("overlay: ignoring late CachedNetmap after netmap already active");
+                    }
                     Some(OverlayEvent::SelfName { node_id, revision, name }) => {
                         if SelfNameUpdate::parse(node_id, &revision, name).is_some_and(|update| update.apply(&mut network)) {
                             if let Some(names) = &dns_names {
@@ -6089,12 +6369,25 @@ impl OverlayRuntime {
                             if let Some(view) = &self.peer_view {
                                 view.send_modify(|view| view.dns = self.dns_status.clone());
                             }
+                            if !awaiting_first_live_netmap {
+                                self.emit_netmap_snapshot(
+                                    &self_ip,
+                                    &network,
+                                    &current_peers,
+                                    applied_auth_revision,
+                                    true,
+                                    false,
+                                    &learned_cache_endpoints,
+                                );
+                            }
                             info!(node_id = %node_id, revision = %revision, name = ?network.self_name,
                                 "overlay: applied self DNS name metadata without rebuilding the data plane");
                         }
                     }
                     Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers, org_relay_discovery, path_trial_v1 }) => {
                         let t_arm = Instant::now();
+                        let old_network = network.clone();
+                        let first_live_after_cache = awaiting_first_live_netmap;
                         if !accept_netmap_version(
                             &mut applied_netmap_epoch,
                             &mut applied_auth_revision,
@@ -6113,6 +6406,7 @@ impl OverlayRuntime {
                             }
                             continue;
                         }
+                        awaiting_first_live_netmap = false;
                         // A full netmap is an authoritative full-table replacement
                         // for the newly attached control-WS session (possibly on a
                         // pod whose wall clock is slightly behind the previous pod
@@ -6151,15 +6445,20 @@ impl OverlayRuntime {
                             break;
                         }
                         merge_self_name(&mut network, &new_network);
+                        network.cidrs = new_network.cidrs.clone();
+                        network.nameservers = new_network.nameservers.clone();
+                        network.auth_revision = applied_auth_revision;
                         if let Some(status) = &mut self.dns_status {
                             status.self_name = network.self_name.clone();
                             status.self_name_revision = network.self_name_revision.clone();
                         }
-                        if new_network.stun_urls != network.stun_urls
+                        if first_live_after_cache
+                            || new_network.stun_urls != network.stun_urls
                             || new_network.strict_stun != network.strict_stun
                         {
                             let prev_srflx_stun = self.srflx_stun_urls(&network);
-                            let server_stun_changed = new_network.stun_urls != network.stun_urls;
+                            let server_stun_changed =
+                                first_live_after_cache || new_network.stun_urls != network.stun_urls;
                             network.stun_urls = new_network.stun_urls.clone();
                             network.strict_stun = new_network.strict_stun;
                             if server_stun_changed
@@ -6170,11 +6469,12 @@ impl OverlayRuntime {
                                 );
                             }
                             let next_srflx_stun = self.srflx_stun_urls(&network);
-                            if next_srflx_stun != prev_srflx_stun {
+                            if first_live_after_cache || next_srflx_stun != prev_srflx_stun {
                                 info!(
                                     old = ?prev_srflx_stun,
                                     new = ?next_srflx_stun,
-                                    "overlay: full netmap changed stun_urls — reconfiguring srflx discovery"
+                                    first_live_after_cache,
+                                    "overlay: full netmap updating srflx discovery"
                                 );
                                 if let Some(h) = srflx_keepalive.take() {
                                     h.abort();
@@ -6217,6 +6517,16 @@ impl OverlayRuntime {
                                     )
                                 };
                             }
+                        }
+                        if first_live_after_cache
+                            && matches!(self.mode, CarrierMode::Relay)
+                            && !network.central_relay_denied
+                            && (srflx_advertised.is_empty() || super::direct::derp_floor_enabled())
+                            && let Some(r) = relay.as_mut()
+                            && !r.has_derp_mux()
+                            && let Some(mux) = derp_factory.take().map(|f| f())
+                        {
+                            r.set_derp_mux(mux);
                         }
                         #[cfg(test)]
                         {
@@ -6346,6 +6656,26 @@ impl OverlayRuntime {
                         self.enforce_prefer_relay(&mut prefer, &mut wg, &mut by_node, &mut relay, &tun, &current_peers, &mut relay_bq, &mut upgrade_probes).await;
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        learned_cache_endpoints.retain(|k, _| {
+                            current_peers
+                                .iter()
+                                .any(|(nid, p)| !p.backbone_only && nid.to_hex() == *k)
+                        });
+                        let urgent_flush = super::netmap_cache::is_authority_reducing(
+                            &old_network,
+                            &old_peers,
+                            &network,
+                            &current_peers,
+                        );
+                        self.emit_netmap_snapshot(
+                            &self_ip,
+                            &network,
+                            &current_peers,
+                            applied_auth_revision,
+                            true,
+                            urgent_flush,
+                            &learned_cache_endpoints,
+                        );
                         if applied_auth_revision > 0 || applied_netmap_epoch > 0 {
                             let _ = self
                                 .outbound
@@ -6358,8 +6688,8 @@ impl OverlayRuntime {
                         warn_if_slow("arm:netmap", t_arm);
                     }
                     Some(OverlayEvent::NetmapDelta { epoch, auth_revision, mut upserts, mut removes }) => {
-                        if offline_continuity_expired {
-                            debug!("overlay: ignoring netmap_delta after offline continuity expiry; awaiting full netmap");
+                        if offline_continuity_expired || awaiting_first_live_netmap {
+                            debug!("overlay: ignoring netmap_delta before authoritative full netmap; awaiting full netmap");
                             continue;
                         }
                         let prev_auth_revision = applied_auth_revision;
@@ -6384,6 +6714,11 @@ impl OverlayRuntime {
                             );
                             continue;
                         }
+                        let urgent_flush = super::netmap_cache::delta_is_authority_reducing(
+                            &current_peers,
+                            &upserts,
+                            &removes,
+                        );
                         positive.retain(|id| upserts.iter().any(|p| p.node_id == *id && p.reachable));
                         let relay_hints = probe_updates.delta(epoch, auth_revision, &upserts, &removes);
                         let relay_changed = !relay_hints.is_empty();
@@ -6465,6 +6800,19 @@ impl OverlayRuntime {
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        network.auth_revision = applied_auth_revision;
+                        for nid in &removes {
+                            learned_cache_endpoints.remove(&nid.to_hex());
+                        }
+                        self.emit_netmap_snapshot(
+                            &self_ip,
+                            &network,
+                            &current_peers,
+                            applied_auth_revision,
+                            true,
+                            urgent_flush,
+                            &learned_cache_endpoints,
+                        );
                         // B3 — Emit `OverlayNetmapAck` on `NetmapDelta` only when
                         // `auth_revision` advances (`applied_auth_revision > prev_auth_revision`)
                         // so routine `endpoints` / `srflx` trickle deltas do not cause
@@ -16552,5 +16900,213 @@ mod org_upgrade_tests {
         assert!(!relay.as_ref().unwrap().holds_org_session(&nid));
         assert!(!conn2.is_alive());
         serve2.abort();
+    }
+
+    #[tokio::test]
+    async fn fr139_cached_netmap_cold_boot_and_live_reattach_reconcile_without_tun_rebuild() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let kp_self = WgKeypair::generate();
+        let kp_kept = WgKeypair::generate();
+        let kp_revoked = WgKeypair::generate();
+        let nid_kept = ObjectId::new();
+        let nid_revoked = ObjectId::new();
+
+        // Start with a closed control channel (cold boot while server is unreachable).
+        let (closed_out_tx, closed_out_rx) = mpsc::channel(8);
+        drop(closed_out_rx);
+
+        let tun_creations = Arc::new(AtomicUsize::new(0));
+        let tun_creations_c = Arc::clone(&tun_creations);
+        let kept_tun_channels = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept_tun_channels_c = Arc::clone(&kept_tun_channels);
+        let tun_factory: TunFactory = Box::new(move |_ip, _mask, _mtu| {
+            tun_creations_c.fetch_add(1, Ordering::SeqCst);
+            let (tun_mock, inj, del) = crate::overlay::runtime::tests::MockTun::new();
+            kept_tun_channels_c.lock().unwrap().push((inj, del));
+            Ok(tun_mock as Arc<dyn TunIo>)
+        });
+
+        let snapshots = Arc::new(std::sync::Mutex::new(Vec::<NetmapSnapshot>::new()));
+        let snapshots_c = Arc::clone(&snapshots);
+        let sink: NetmapSnapshotSink = Arc::new(move |snap| {
+            snapshots_c.lock().unwrap().push(snap);
+        });
+
+        let (view_tx, view_rx) = watch::channel(OverlayView::default());
+        let (evt_tx, evt_rx) = mpsc::channel(32);
+
+        let rt = OverlayRuntime::new_relay(kp_self, closed_out_tx, tun_factory, 1280)
+            .with_peer_view(view_tx)
+            .with_netmap_snapshot_sink(Some(sink));
+        let handle = tokio::spawn(rt.run(evt_rx, vec![]));
+
+        let mut net = OverlayNetworkInfo {
+            org_relay_fallback_v1: false,
+            org_relay_loss_v1: false,
+            path_quality_v1: false,
+            cidr: "100.64.0.0/10".into(),
+            cidrs: vec!["100.64.0.0/10".into()],
+            mtu: 1280,
+            magic_domain: None,
+            nameservers: vec![],
+            self_name: Some("offline-node".into()),
+            self_node_id: None,
+            self_name_revision: None,
+            stun_urls: vec![],
+            strict_stun: false,
+            central_relay_denied: false,
+            relay_probe_targets: vec![],
+            backbone_probe_targets: vec![],
+            auth_revision: 5,
+        };
+        let peer_kept = NetmapPeer {
+            node_id: nid_kept,
+            overlay_ip: "100.64.0.2".into(),
+            name: "kept".into(),
+            wg_public_key: kp_kept.public_base64(),
+            endpoints: vec!["203.0.113.2:55555".into()],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            supports_org_relay: false,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: false, // cached offline presence -> sanitized to true!
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            relay_strategy: None,
+            prefer_relay_ms: Some(30_000),
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_derp_floor: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: Some(vec![]),
+            ingress_rules_preview: None,
+        };
+        let peer_revoked = NetmapPeer {
+            node_id: nid_revoked,
+            overlay_ip: "100.64.0.3".into(),
+            name: "revoked".into(),
+            wg_public_key: kp_revoked.public_base64(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            supports_org_relay: false,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: false,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            relay_strategy: None,
+            prefer_relay_ms: None,
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_derp_floor: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+            ingress_rules_preview: None,
+        };
+
+        // 1. Cold boot from CachedNetmap brings up TUN + publishes both peers as online
+        // without emitting an authoritative snapshot yet.
+        evt_tx
+            .send(OverlayEvent::CachedNetmap {
+                self_ip: "100.64.0.1".into(),
+                network: net.clone(),
+                peers: vec![peer_kept.clone(), peer_revoked.clone()],
+                learned_endpoints: std::collections::BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if view_rx.borrow().self_ip.as_deref() == Some("100.64.0.1")
+                    && view_rx.borrow().peers.len() == 2
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cached netmap should bring up TUN and view");
+        assert_eq!(tun_creations.load(Ordering::SeqCst), 1);
+        assert!(view_rx.borrow().peers.iter().all(|p| p.online));
+        assert!(
+            snapshots.lock().unwrap().is_empty(),
+            "cached cold boot must not emit an authoritative snapshot"
+        );
+
+        // 2. Server reconnects: Reattach + live Netmap revoking `peer_revoked`
+        // reconciles in place WITHOUT rebuilding TUN and emits an urgent authoritative snapshot.
+        let (live_out_tx, mut live_out_rx) = mpsc::channel(16);
+        evt_tx
+            .send(OverlayEvent::Reattach {
+                outbound: live_out_tx,
+            })
+            .await
+            .unwrap();
+        let join_msg = tokio::time::timeout(Duration::from_secs(2), live_out_rx.recv())
+            .await
+            .expect("join after reattach")
+            .expect("live outbound open");
+        assert!(matches!(join_msg, ClientMsg::OverlayJoin { .. }));
+
+        net.auth_revision = 6;
+        let mut live_kept = peer_kept.clone();
+        live_kept.reachable = true;
+        evt_tx
+            .send(OverlayEvent::Netmap {
+                self_ip: "100.64.0.1".into(),
+                network: net,
+                peers: vec![live_kept],
+                org_relay_discovery: false,
+                path_trial_v1: false,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if view_rx.borrow().peers.len() == 1
+                    && !snapshots.lock().unwrap().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("live netmap should prune revoked peer and emit snapshot");
+
+        // Zero TUN rebuilds across CachedNetmap -> Reattach -> live Netmap!
+        assert_eq!(tun_creations.load(Ordering::SeqCst), 1);
+        assert_eq!(view_rx.borrow().peers[0].node_id, nid_kept.to_hex());
+
+        {
+            let snaps = snapshots.lock().unwrap();
+            let last = snaps.last().expect("snapshot recorded");
+            assert!(last.authoritative);
+            assert!(last.urgent_flush, "revoked peer must trigger urgent_flush");
+            assert_eq!(last.auth_revision, 6);
+            assert_eq!(last.peers.len(), 1);
+            assert_eq!(last.peers[0].ingress_rules, Some(vec![]));
+        }
+
+        drop(evt_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 }

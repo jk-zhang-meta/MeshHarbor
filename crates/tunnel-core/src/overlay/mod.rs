@@ -56,6 +56,9 @@ pub(crate) mod multipath_control;
 pub mod nat;
 pub mod netcheck;
 pub mod netmap;
+/// FR-139 — Signed local netmap cache envelope, verification, offline replay
+/// sanitization, authority-narrowing detection, and bounded endpoint recovery.
+pub mod netmap_cache;
 /// Userspace TCP/IP stack (smoltcp) presented as a [`tun::TunIo`] — the
 /// OS-free twin of [`tun::SystemTun`]. Feature `overlay-netstack`.
 #[cfg(feature = "overlay-netstack")]
