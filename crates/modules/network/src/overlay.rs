@@ -1233,6 +1233,11 @@ async fn handle_overlay_join(
         return;
     }
 
+    // FR-139 — attach tenant-scoped offline capability verification keys only
+    // when the organization opted into `TenantSettings::offline_access`.
+    let (offline_cap_keys, offline_caps_not_before_ms, offline_max_age_s) =
+        offline_cap_netmap_fields(state, tenant_id).await;
+
     // Full netmap → joiner, then deltas → peers, under `tenant_join_guard` so
     // no later join can overtake this revision's publication.
     let mut needs_retry = !send_to_node_checked(
@@ -1263,6 +1268,10 @@ async fn handle_overlay_join(
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision,
+                network_id: network.id,
+                offline_cap_keys,
+                offline_caps_not_before_ms,
+                offline_max_age_s,
             },
             peers,
             epoch,
@@ -1296,6 +1305,26 @@ async fn handle_overlay_join(
     // the ONLY re-delivery path a single-relay DIALER has — it never sends a
     // relay_request, so it can't pick the pin back up reactively.
     repush_forced_pairs_on_join(state, &self_node).await;
+}
+
+/// FR-139 — compute `(offline_cap_keys, offline_caps_not_before_ms,
+/// offline_max_age_s)` for an `OverlayNetworkInfo` snapshot. Returns empty
+/// keys whenever `TenantSettings::offline_access` is off (the default).
+async fn offline_cap_netmap_fields(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+) -> (Vec<String>, Option<u64>, Option<u64>) {
+    let Ok(tenant) = state.core.tenants.base.find_by_id(tenant_id).await else {
+        return (Vec::new(), None, None);
+    };
+    if !tenant.settings.offline_access {
+        return (Vec::new(), tenant.settings.offline_caps_not_before_ms, None);
+    }
+    (
+        state.core.offline_cap.public_keys_b64().to_vec(),
+        tenant.settings.offline_caps_not_before_ms,
+        Some(meshharbor_remote_control::offline_cap::MAX_OFFLINE_CAP_TTL_SECS),
+    )
 }
 
 struct JoinNetmapRetrySlot {
@@ -1583,6 +1612,8 @@ async fn try_complete_join_netmap(
             return false;
         }
     }
+    let (offline_cap_keys, offline_caps_not_before_ms, offline_max_age_s) =
+        offline_cap_netmap_fields(state, tenant_id).await;
     if !send_to_node_checked(
         state,
         &self_node,
@@ -1611,6 +1642,10 @@ async fn try_complete_join_netmap(
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision,
+                network_id: network.id,
+                offline_cap_keys,
+                offline_caps_not_before_ms,
+                offline_max_age_s,
             },
             peers,
             epoch,
@@ -6404,6 +6439,8 @@ async fn repush_node_full_netmap(
     let backbone_probe_targets =
         crate::org_relay::backbone_probe_targets(state, self_node, Some(lines)).await;
     let (stun_urls, strict_stun) = stun_policy_for_node(state, self_node, lines);
+    let (offline_cap_keys, offline_caps_not_before_ms, offline_max_age_s) =
+        offline_cap_netmap_fields(state, self_node.tenant_id).await;
     let epoch = next_epoch();
     send_to_node(
         state,
@@ -6439,6 +6476,10 @@ async fn repush_node_full_netmap(
                 relay_probe_targets,
                 backbone_probe_targets,
                 auth_revision: network.auth_revision.max(1),
+                network_id: network.id,
+                offline_cap_keys,
+                offline_caps_not_before_ms,
+                offline_max_age_s,
             },
             peers,
             epoch,

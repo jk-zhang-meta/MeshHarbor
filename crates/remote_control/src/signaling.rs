@@ -4619,6 +4619,12 @@ pub enum ServerMsg {
         /// `grant_refused`, so the caller can ask the person for a code.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         two_factor: Option<String>,
+        /// FR-139 — optional server-signed offline capability (`aud = "mh-offline"`,
+        /// `verb = "ssh"`), issued only when the tenant opts into `offline_access`,
+        /// the grant succeeded, and no FR-90 `ssh_ticket` was used. Cached
+        /// daemon-internally; never surfaced over LocalAPI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offline_cap: Option<String>,
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
@@ -4640,6 +4646,12 @@ pub enum ServerMsg {
         /// Set when the command never ran (gate refusal, offline, timeout).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// FR-139 — optional server-signed offline capability (`aud = "mh-offline"`,
+        /// `verb = "exec"`), issued only when the tenant opts into `offline_access`
+        /// and the online command succeeded. Cached daemon-internally; never
+        /// surfaced over LocalAPI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offline_cap: Option<String>,
     },
 
     // ─── server → tunnel-client / agent (rc:tunnel.*) ────────────────
@@ -6991,6 +7003,19 @@ pub struct OverlayNetworkInfo {
     /// B3 — tenant-wide authority revision carried in the full netmap.
     #[serde(default)]
     pub auth_revision: u64,
+    /// FR-139 — overlay network id (hex), bound into offline capabilities (`net`).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "option_oid_hex")]
+    pub network_id: Option<ObjectId>,
+    /// FR-139 — active Ed25519 public verification keys (base64 raw 32-byte keys)
+    /// for offline capabilities. Empty when `TenantSettings::offline_access` is off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offline_cap_keys: Vec<String>,
+    /// FR-139 — tenant-wide offline capability revocation cutoff (Unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_caps_not_before_ms: Option<u64>,
+    /// FR-139 — tenant ceiling on offline netmap cache / capability lifetime (seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_max_age_s: Option<u64>,
 }
 
 /// One relay [`OverlayNetworkInfo::relay_probe_targets`] names: what to probe,
@@ -9219,6 +9244,7 @@ mod tests {
         const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample target";
         let m = ServerMsg::SshResponse {
             two_factor: None,
+            offline_cap: None,
             request_id: "r1".into(),
             address: Some("100.65.4.30".into()),
             port: Some(2222),
@@ -9242,6 +9268,7 @@ mod tests {
         // land on "cannot verify", not on something a client treats as a key.
         let refused = ServerMsg::SshResponse {
             two_factor: None,
+            offline_cap: None,
             request_id: "r2".into(),
             address: None,
             port: None,
@@ -9309,6 +9336,7 @@ mod tests {
 
         let answer = |ssh_ticket_id: Option<&str>| ServerMsg::SshResponse {
             two_factor: None,
+            offline_cap: None,
             request_id: "q1".into(),
             address: None,
             port: None,
@@ -11829,6 +11857,10 @@ mod tests {
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 1,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         };
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
@@ -11915,6 +11947,10 @@ mod tests {
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,
+                network_id: None,
+                offline_cap_keys: Vec::new(),
+                offline_caps_not_before_ms: None,
+                offline_max_age_s: None,
             },
             peers: vec![],
             epoch: 7,
@@ -12541,6 +12577,7 @@ mod tests {
             truncated: true,
             duration_ms: 5,
             error: None,
+            offline_cap: None,
         };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains(r#""t":"rc:rpc.response""#));
@@ -12759,6 +12796,10 @@ mod tests {
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
                 auth_revision: 1,
+                network_id: None,
+                offline_cap_keys: Vec::new(),
+                offline_caps_not_before_ms: None,
+                offline_max_age_s: None,
             },
             peers: vec![NetmapPeer {
                 node_id,

@@ -12016,6 +12016,10 @@ mod tests {
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 0,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         }
     }
     pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
@@ -16302,6 +16306,10 @@ mod org_upgrade_tests {
             org_relay_loss_v1: true,
             path_quality_v1: false,
             auth_revision: rev,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         };
 
         // 1. Initial unrestricted netmap with HK STUN.
@@ -16533,6 +16541,10 @@ mod org_upgrade_tests {
             org_relay_loss_v1: true,
             path_quality_v1: false,
             auth_revision: rev,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         };
         evt_tx
             .send(OverlayEvent::Netmap {
@@ -16974,6 +16986,10 @@ mod org_upgrade_tests {
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 5,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         };
         let peer_kept = NetmapPeer {
             node_id: nid_kept,

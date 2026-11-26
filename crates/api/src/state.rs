@@ -273,6 +273,35 @@ impl AppState {
         // and the tail spawns capture. The core's fields are cloned in
         // (every one is an `Arc`, a handle, or `Settings` once), so the
         // locals stay usable for the rest of the constructor.
+        let prev_jwt_secrets: Vec<String> = settings
+            .jwt
+            .previous_secrets
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        let offline_cap = {
+            use meshharbor_remote_control::offline_cap::OfflineCapSigner;
+            let derived = OfflineCapSigner::from_jwt_secrets(&settings.jwt.secret, &prev_jwt_secrets);
+            match settings.relay.offline_cap_private_key.as_deref() {
+                Some(key) if !key.trim().is_empty() => {
+                    match OfflineCapSigner::from_pkcs8_b64(key, derived.public_keys_b64().to_vec())
+                    {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "relay.offline_cap_private_key invalid; falling back to JWT-derived offline capability signer"
+                            );
+                            Arc::new(derived)
+                        }
+                    }
+                }
+                _ => Arc::new(derived),
+            }
+        };
+
         let core = Core {
             db: db.clone(),
             settings: settings.clone(),
@@ -308,6 +337,7 @@ impl AppState {
             // FR-115 — plans bind only where they are sold (`saas` compiled
             // in and switched on); self-hosting stays free and unlimited.
             plans_sold: cfg!(feature = "saas") && settings.modules.saas,
+            offline_cap,
         };
         // FR-69 P2 — the module crates, after the core and before the host
         // state that mounts them.

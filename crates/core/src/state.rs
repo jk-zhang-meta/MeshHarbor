@@ -132,4 +132,7 @@ pub struct Core {
     /// unlimited, and an org there is `free` only because nobody sold it
     /// anything. Set once, by the host.
     pub plans_sold: bool,
+    /// FR-139 — stateless EdDSA signer + active public verification keys for
+    /// offline capabilities (`aud = "mh-offline"`).
+    pub offline_cap: Arc<meshharbor_remote_control::offline_cap::OfflineCapSigner>,
 }

@@ -577,6 +577,12 @@ pub struct RelaySettings {
     /// Generate: `openssl genpkey -algorithm ed25519 -outform DER | base64 -w0`.
     /// Env: `MESHHARBOR__RELAY__DERP_TICKET_PRIVATE_KEY`.
     pub derp_ticket_private_key: Option<String>,
+    /// FR-139 — optional dedicated Ed25519 private key (base64 PKCS#8 DER)
+    /// signing offline capabilities (`aud = "mh-offline"`). When unset,
+    /// deterministically derived via HKDF-SHA256 from `jwt.secret` (with
+    /// `jwt.previous_secrets` retained as verification keys during rotation).
+    /// Env: `MESHHARBOR__RELAY__OFFLINE_CAP_PRIVATE_KEY`.
+    pub offline_cap_private_key: Option<String>,
     /// PoP `/stats` poll cadence in seconds; 0 disables the poller (regions
     /// then never mark busy). Env: `MESHHARBOR__RELAY__STATS_POLL_SECS`.
     pub stats_poll_secs: u64,
@@ -594,6 +600,7 @@ impl Default for RelaySettings {
             regions_enabled: false,
             regions: None,
             derp_ticket_private_key: None,
+            offline_cap_private_key: None,
             stats_poll_secs: 30,
             busy_load: 1.5,
             busy_tx_mbps: 400.0,
@@ -1853,6 +1860,7 @@ impl Settings {
             .set_default("relay.regions_enabled", false)?
             .set_default("relay.regions", None::<String>)?
             .set_default("relay.derp_ticket_private_key", None::<String>)?
+            .set_default("relay.offline_cap_private_key", None::<String>)?
             .set_default("relay.stats_poll_secs", 30)?
             .set_default("relay.busy_load", 1.5)?
             .set_default("relay.busy_tx_mbps", 400.0)?

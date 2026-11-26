@@ -979,6 +979,10 @@ mod tests {
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 1,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         };
         let legacy_peer = NetmapPeer {
             node_id: bson::oid::ObjectId::new(),

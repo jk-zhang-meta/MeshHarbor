@@ -159,6 +159,7 @@ pub async fn handle_agent_ssh_request(
         expires_at_ms: None,
         error: Some(msg),
         ssh_ticket_id: None,
+        offline_cap: None,
     };
 
     // The origin's owner is the person whose permissions this runs under. A
@@ -270,6 +271,24 @@ pub async fn handle_agent_ssh_request(
         ssh_ticket_id,
         two_factor,
     } = res;
+    // FR-139 — mint an offline SSH capability ONLY when:
+    //   1. the online SSH grant succeeded (`error.is_none()`),
+    //   2. NO FR-90 `ssh_ticket` was used (agent sessions never get offline caps),
+    //   3. the tenant explicitly opted into `TenantSettings::offline_access`,
+    //   4. both origin and target have live overlay nodes in the same network.
+    let offline_cap = if error.is_none() && ssh_ticket.is_none() {
+        maybe_mint_ssh_offline_cap(
+            state,
+            tenant_id,
+            origin_agent_id,
+            &agent,
+            &caller.display,
+        )
+        .await
+    } else {
+        None
+    };
+
     let msg = ServerMsg::SshResponse {
         request_id: request_id.clone(),
         address,
@@ -280,9 +299,78 @@ pub async fn handle_agent_ssh_request(
         error,
         ssh_ticket_id,
         two_factor,
+        offline_cap,
     };
     if reply_tx.try_send(msg).is_err() {
         warn!(%origin_agent_id, %request_id, "rc:ssh.response undeliverable — origin WS gone");
+    }
+}
+
+async fn maybe_mint_ssh_offline_cap(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    origin_agent_id: ObjectId,
+    target_agent: &meshharbor_remote_control::models::Agent,
+    caller_display: &str,
+) -> Option<String> {
+    use meshharbor_remote_control::models::{ConsentMode, ssh_limits};
+    use meshharbor_remote_control::offline_cap::{
+        DEFAULT_OFFLINE_CAP_TTL_SECS, OFFLINE_CAP_AUDIENCE, OfflineCapClaims, VERB_SSH,
+    };
+    let target_id = target_agent.id?;
+    let tenant = state.core.tenants.base.find_by_id(tenant_id).await.ok()?;
+    if !tenant.settings.offline_access {
+        return None;
+    }
+    let origin_node = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, origin_agent_id)
+        .await
+        .ok()??;
+    let target_node = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, target_id)
+        .await
+        .ok()??;
+    if origin_node.network_id != target_node.network_id {
+        return None;
+    }
+    let policy = target_agent.ssh_policy.clone();
+    let (_gates, spec) = policy.split();
+    let consent = match spec.consent_mode {
+        Some(ConsentMode::Auto) => "auto",
+        _ => "prompt",
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = OfflineCapClaims {
+        aud: OFFLINE_CAP_AUDIENCE.to_string(),
+        verb: VERB_SSH.to_string(),
+        net: origin_node.network_id.to_hex(),
+        tid: tenant_id.to_hex(),
+        tgt: target_id.to_hex(),
+        org: origin_agent_id.to_hex(),
+        opk: origin_node.wg_public_key,
+        caller: caller_display.to_string(),
+        jti: ObjectId::new().to_hex(),
+        iat: now_secs,
+        exp: now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS),
+        ssh_account_mode: Some(spec.account_mode.wire().to_string()),
+        ssh_account: spec.account,
+        ssh_max_session_secs: Some(ssh_limits::MAX_SESSION_SECS),
+        exec_shells: None,
+        exec_run_as: None,
+        exec_max_timeout_ms: None,
+        consent_mode: Some(consent.to_string()),
+    };
+    match state.core.offline_cap.mint(&claims) {
+        Ok(tok) => Some(tok),
+        Err(e) => {
+            warn!(%tenant_id, %target_id, error = %e, "failed to mint ssh offline_cap");
+            None
+        }
     }
 }
 

@@ -7469,6 +7469,7 @@ async fn handle_server_msg(
             ssh_ticket_id,
             // FR-129 — the target refused on two-factor.
             two_factor,
+            offline_cap: _,
         } => {
             // The key itself is never logged — only whether one arrived. It is
             // public, but a log line is the wrong place to start treating key
@@ -7507,6 +7508,7 @@ async fn handle_server_msg(
             truncated,
             duration_ms,
             error,
+            offline_cap: _,
         } => {
             let delivered = crate::exec::deliver_response(
                 &request_id,

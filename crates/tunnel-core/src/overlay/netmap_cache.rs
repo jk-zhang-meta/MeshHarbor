@@ -306,9 +306,18 @@ pub fn open_and_verify(
     if now_ms.saturating_add(CLOCK_ROLLBACK_TOLERANCE_MS) < floor {
         return Err(CacheError::ClockRollback);
     }
+    let effective_max_age = payload
+        .network
+        .offline_max_age_s
+        .map(|s| s.saturating_mul(1_000))
+        .map(|server_ms| max_age_ms.min(server_ms))
+        .unwrap_or(max_age_ms);
     let age_ms = now_ms.saturating_sub(payload.last_authoritative_at_ms);
-    if age_ms > max_age_ms {
-        return Err(CacheError::Expired { age_ms, max_age_ms });
+    if age_ms > effective_max_age {
+        return Err(CacheError::Expired {
+            age_ms,
+            max_age_ms: effective_max_age,
+        });
     }
     if let Some(min_required) = min_authoritative_revision
         && payload.last_authoritative_revision < min_required
@@ -414,6 +423,16 @@ pub fn is_authority_reducing(
         || (!old_net.strict_stun && new_net.strict_stun)
         || old_net.cidr != new_net.cidr
         || old_net.cidrs != new_net.cidrs
+        || old_net
+            .offline_cap_keys
+            .iter()
+            .any(|k| !new_net.offline_cap_keys.contains(k))
+        || new_net.offline_caps_not_before_ms > old_net.offline_caps_not_before_ms
+        || match (old_net.offline_max_age_s, new_net.offline_max_age_s) {
+            (Some(old_max), Some(new_max)) => new_max < old_max,
+            (None, Some(_)) => true,
+            _ => false,
+        }
     {
         return true;
     }
@@ -585,6 +604,10 @@ mod tests {
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
             auth_revision: 7,
+            network_id: None,
+            offline_cap_keys: Vec::new(),
+            offline_caps_not_before_ms: None,
+            offline_max_age_s: None,
         }
     }
 

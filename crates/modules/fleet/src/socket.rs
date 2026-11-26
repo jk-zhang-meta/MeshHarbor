@@ -1583,7 +1583,7 @@ async fn handle_agent_exec_request(
 ) {
     use meshharbor_remote_control::models::ExecOutcome;
 
-    let reply = |outcome: ExecOutcome| ServerMsg::RpcExecResponse {
+    let reply = |outcome: ExecOutcome, offline_cap: Option<String>| ServerMsg::RpcExecResponse {
         request_id: request_id.clone(),
         exit_code: outcome.exit_code,
         stdout: outcome.stdout,
@@ -1591,12 +1591,16 @@ async fn handle_agent_exec_request(
         truncated: outcome.truncated,
         duration_ms: outcome.duration_ms,
         error: outcome.error,
+        offline_cap,
     };
     let fail = |msg: String| {
-        reply(ExecOutcome {
-            error: Some(msg),
-            ..Default::default()
-        })
+        reply(
+            ExecOutcome {
+                error: Some(msg),
+                ..Default::default()
+            },
+            None,
+        )
     };
 
     // Resolve the origin's owner — the person whose permissions this runs
@@ -1648,8 +1652,84 @@ async fn handle_agent_exec_request(
         two_factor_code,
     };
     let res = crate::agent_exec::dispatch(state, tenant_id, &agent, &caller, &body).await;
-    if reply_tx.try_send(reply(res.outcome)).is_err() {
+    let offline_cap = if res.outcome.error.is_none() {
+        maybe_mint_exec_offline_cap(state, tenant_id, origin_agent_id, &agent, &caller.display)
+            .await
+    } else {
+        None
+    };
+    if reply_tx.try_send(reply(res.outcome, offline_cap)).is_err() {
         warn!(%origin_agent_id, %request_id, "rc:rpc.response undeliverable — origin WS gone");
+    }
+}
+
+async fn maybe_mint_exec_offline_cap(
+    state: &FleetState,
+    tenant_id: bson::oid::ObjectId,
+    origin_agent_id: bson::oid::ObjectId,
+    target_agent: &meshharbor_remote_control::models::Agent,
+    caller_display: &str,
+) -> Option<String> {
+    use meshharbor_remote_control::models::{ConsentMode, OsKind, exec_limits};
+    use meshharbor_remote_control::offline_cap::{
+        DEFAULT_OFFLINE_CAP_TTL_SECS, OFFLINE_CAP_AUDIENCE, OfflineCapClaims, VERB_EXEC,
+    };
+    let target_id = target_agent.id?;
+    let tenant = state.core.tenants.base.find_by_id(tenant_id).await.ok()?;
+    if !tenant.settings.offline_access {
+        return None;
+    }
+    // Offline exec never routes through the Windows SYSTEM service claim path.
+    if tenant.settings.exec_require_system && matches!(target_agent.os, OsKind::Windows) {
+        return None;
+    }
+    let overlay_nodes = meshharbor_services::dao::overlay_node::OverlayNodeDao::new(&state.core.db);
+    let origin_node = overlay_nodes
+        .find_live_by_agent(tenant_id, origin_agent_id)
+        .await
+        .ok()??;
+    let target_node = overlay_nodes
+        .find_live_by_agent(tenant_id, target_id)
+        .await
+        .ok()??;
+    if origin_node.network_id != target_node.network_id {
+        return None;
+    }
+    let policy = target_agent.exec_policy.clone();
+    let consent = match policy.effective_consent_mode() {
+        ConsentMode::Auto => "auto",
+        _ => "prompt",
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let claims = OfflineCapClaims {
+        aud: OFFLINE_CAP_AUDIENCE.to_string(),
+        verb: VERB_EXEC.to_string(),
+        net: origin_node.network_id.to_hex(),
+        tid: tenant_id.to_hex(),
+        tgt: target_id.to_hex(),
+        org: origin_agent_id.to_hex(),
+        opk: origin_node.wg_public_key,
+        caller: caller_display.to_string(),
+        jti: bson::oid::ObjectId::new().to_hex(),
+        iat: now_secs,
+        exp: now_secs.saturating_add(DEFAULT_OFFLINE_CAP_TTL_SECS),
+        ssh_account_mode: None,
+        ssh_account: None,
+        ssh_max_session_secs: None,
+        exec_shells: Some(policy.shells),
+        exec_run_as: Some(policy.run_as.wire().to_string()),
+        exec_max_timeout_ms: Some(exec_limits::MAX_TIMEOUT_MS),
+        consent_mode: Some(consent.to_string()),
+    };
+    match state.core.offline_cap.mint(&claims) {
+        Ok(tok) => Some(tok),
+        Err(e) => {
+            warn!(%tenant_id, %target_id, error = %e, "failed to mint exec offline_cap");
+            None
+        }
     }
 }
 

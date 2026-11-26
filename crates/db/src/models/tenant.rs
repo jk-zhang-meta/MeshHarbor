@@ -312,6 +312,19 @@ pub struct TenantSettings {
     /// settable with MANAGE_TENANT.
     #[serde(default)]
     pub rc_limits: RcSessionLimits,
+
+    /// FR-139 — organization opt-in for server-signed offline capabilities
+    /// (`mh ssh` / `mh exec` over `p2pctl` while WAN is unavailable). Default
+    /// OFF: organizations that do not enable this receive empty
+    /// `offline_cap_keys` and never mint offline capabilities.
+    #[serde(default)]
+    pub offline_access: bool,
+
+    /// FR-139 — optional tenant-wide revocation cutoff (Unix ms) for minted
+    /// offline capabilities; any capability with `iat * 1000 < cutoff` is
+    /// refused offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_caps_not_before_ms: Option<u64>,
 }
 
 impl Default for TenantSettings {
@@ -333,6 +346,8 @@ impl Default for TenantSettings {
             plan_enforcement: PlanEnforcement::default(),
             rc_session: RcSessionPolicy::default(),
             rc_limits: RcSessionLimits::default(),
+            offline_access: false,
+            offline_caps_not_before_ms: None,
         }
     }
 }
