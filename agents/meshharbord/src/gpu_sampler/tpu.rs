@@ -282,9 +282,22 @@ pub(crate) fn scan_open_device_nodes(
             }
             Err(_) => continue,
         };
-        for fd in fds.flatten() {
-            let Ok(target) = fs::read_link(fd.path()) else {
-                continue;
+        for fd_res in fds {
+            let fd = match fd_res {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    partial = true;
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            let target = match fs::read_link(fd.path()) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    partial = true;
+                    continue;
+                }
+                Err(_) => continue,
             };
             let target_s = target.to_string_lossy();
             let clean = target_s.strip_suffix(" (deleted)").unwrap_or(&target_s);

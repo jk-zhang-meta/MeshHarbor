@@ -626,6 +626,7 @@ impl NvmlBackend {
                 lost: false,
                 vendor_health: None,
                 backend: Some("nvml".into()),
+                backend_status: None,
                 vendor_index: Some(idx as u16),
                 presence_only: false,
                 idle_since: None,

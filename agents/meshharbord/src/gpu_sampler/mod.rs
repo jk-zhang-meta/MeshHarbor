@@ -152,12 +152,26 @@ fn init_backend() -> anyhow::Result<ActiveBackend> {
         PciScanOutcome::Unreadable(_) => &[],
     };
 
+    let has_nvidia_pci = matches!(&pci_scan, PciScanOutcome::Unreadable(_))
+        || pci_devs
+            .iter()
+            .any(|d| d.vendor == pci_fallback::AccelVendor::Nvidia);
     let (nvml, nvml_diag) = if denied.contains("nvidia") {
         (None, None)
     } else {
         match NvmlBackend::try_init() {
             NvmlInitOutcome::Ready(b) => (Some(b), None),
-            NvmlInitOutcome::Status(st, detail) => (None, Some((st, detail))),
+            NvmlInitOutcome::Status(st, detail) => {
+                // Only promote NVML init failure to a host fault when NVIDIA hardware
+                // is actually present (or PCI scan is unreadable, or a live driver/lib
+                // mismatch occurred). Prevents stale libnvidia-ml on AMD-only hosts
+                // from marking the host faulty.
+                if has_nvidia_pci || st == GpuHostStatus::DriverRebootPending {
+                    (None, Some((st, detail)))
+                } else {
+                    (None, None)
+                }
+            }
             NvmlInitOutcome::NotPresent => (None, None),
         }
     };
@@ -490,7 +504,8 @@ pub fn run_child() -> anyhow::Result<()> {
                         &pdh_vram,
                     );
                     host_status = merge_status(host_status, st);
-                    for s in &samples {
+                    for s in &mut samples {
+                        s.backend_status = Some(st);
                         if let Some(b) = s.pci_bus.as_deref() {
                             active_bdfs.insert(normalize_pci_bdf(b));
                         }
@@ -508,6 +523,7 @@ pub fn run_child() -> anyhow::Result<()> {
                     let offset = gpus.len() as u16;
                     for (i, s) in samples.iter_mut().enumerate() {
                         s.idx = offset + i as u16;
+                        s.backend_status = Some(st);
                         if let Some(b) = s.pci_bus.as_deref() {
                             active_bdfs.insert(normalize_pci_bdf(b));
                         }
@@ -522,6 +538,7 @@ pub fn run_child() -> anyhow::Result<()> {
                     let offset = gpus.len() as u16;
                     for (i, s) in samples.iter_mut().enumerate() {
                         s.idx = offset + i as u16;
+                        s.backend_status = Some(st);
                         if let Some(b) = s.pci_bus.as_deref() {
                             active_bdfs.insert(normalize_pci_bdf(b));
                         }
@@ -536,6 +553,7 @@ pub fn run_child() -> anyhow::Result<()> {
                     let offset = gpus.len() as u16;
                     for (i, s) in samples.iter_mut().enumerate() {
                         s.idx = offset + i as u16;
+                        s.backend_status = Some(st);
                     }
                     gpus.append(&mut samples);
                 }
@@ -553,6 +571,7 @@ pub fn run_child() -> anyhow::Result<()> {
                     let offset = gpus.len() as u16;
                     for (i, s) in samples.iter_mut().enumerate() {
                         s.idx = offset + i as u16;
+                        s.backend_status = Some(st);
                         if let Some(b) = s.pci_bus.as_deref() {
                             active_bdfs.insert(normalize_pci_bdf(b));
                         }
@@ -573,6 +592,7 @@ pub fn run_child() -> anyhow::Result<()> {
                     let offset = gpus.len() as u16;
                     for (i, s) in samples.iter_mut().enumerate() {
                         s.idx = offset + i as u16;
+                        s.backend_status = Some(st);
                         if let Some(b) = s.pci_bus.as_deref() {
                             active_bdfs.insert(normalize_pci_bdf(b));
                         }
@@ -593,7 +613,13 @@ pub fn run_child() -> anyhow::Result<()> {
                             gpus.len() as u16,
                         );
                         if let Some(st) = fb.status {
-                            host_status = merge_status(host_status, st);
+                            // Never let a presence-only `Limited` fallback (e.g. a sibling
+                            // vfio-pci passthrough GPU or PCIe-only card) downgrade healthy
+                            // cards from an `Ok` primary backend; per-card `backend_status`
+                            // preserves the fallback card's own status.
+                            if !(st == GpuHostStatus::Limited && host_status == GpuHostStatus::Ok) {
+                                host_status = merge_status(host_status, st);
+                            }
                         }
                         if let Some(d) = fb.status_detail {
                             details.push(d);
@@ -603,7 +629,13 @@ pub fn run_child() -> anyhow::Result<()> {
                                 backend_names.push(tag);
                             }
                         }
-                        gpus.extend(fb.samples);
+                        let fb_card_status = fb.status;
+                        for mut s in fb.samples {
+                            if s.backend_status.is_none() {
+                                s.backend_status = fb_card_status;
+                            }
+                            gpus.push(s);
+                        }
                     }
                     PciScanOutcome::Unreadable(reason) => {
                         if gpus.is_empty() && host_status == GpuHostStatus::NoGpu {

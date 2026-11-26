@@ -523,6 +523,9 @@ async fn run_watch(
     let mut selected_host_idx: usize = 0;
     let mut expanded_host: Option<String> = None;
     let mut scroll_offset: usize = 0;
+    let mut prev_card_states: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+    let mut recent_changes: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
     loop {
         if Instant::now() >= next_refresh {
@@ -530,6 +533,49 @@ async fn run_watch(
             first_fetch = false;
             match client.gpu_fleet(org, live, wait_ms, hosts).await {
                 Ok(p) => {
+                    let has_prev = !prev_card_states.is_empty();
+                    let mut next_states = std::collections::HashMap::new();
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let ts_str = format!(
+                        "{:02}:{:02}:{:02}Z",
+                        (secs / 3600) % 24,
+                        (secs / 60) % 60,
+                        secs % 60
+                    );
+                    for h in &p.hosts {
+                        let h_label = h.display_name.as_deref().unwrap_or(&h.name);
+                        for g in &h.gpus {
+                            let key = (h.agent_id.clone(), g.uuid.clone());
+                            if has_prev
+                                && let Some(old_st) = prev_card_states.get(&key)
+                                && old_st != &g.state
+                            {
+                                let slot = if g.backend.as_deref() == Some("ascend")
+                                    || g.uuid.starts_with("ASCEND-")
+                                {
+                                    format!("NPU{}", g.vendor_index.unwrap_or(g.idx))
+                                } else if g.backend.as_deref() == Some("tpu")
+                                    || g.uuid.starts_with("TPU-")
+                                {
+                                    format!("TPU{}", g.vendor_index.unwrap_or(g.idx))
+                                } else {
+                                    format!("GPU#{}", g.idx)
+                                };
+                                recent_changes.push_front(format!(
+                                    "[{ts_str}] {h_label} {slot}: {old_st} -> {}",
+                                    g.state
+                                ));
+                                while recent_changes.len() > 5 {
+                                    recent_changes.pop_back();
+                                }
+                            }
+                            next_states.insert(key, g.state.clone());
+                        }
+                    }
+                    prev_card_states = next_states;
                     page = p;
                     last_err = None;
                 }
@@ -565,6 +611,17 @@ async fn run_watch(
             .lines()
             .map(ToString::to_string)
             .collect();
+
+        if !recent_changes.is_empty() {
+            lines.push(String::new());
+            lines.push(match lang {
+                Lang::En => "Recent changes:".to_string(),
+                Lang::Zh => "近期状态变化:".to_string(),
+            });
+            for ch in &recent_changes {
+                lines.push(format!("  • {ch}"));
+            }
+        }
 
         if show_help {
             lines.push(String::new());
@@ -905,9 +962,11 @@ pub fn select_free_gpus(
         };
         let key = format!("{}:{rt}", g.agent_id);
         if let Some((_, ex)) = exports.iter_mut().find(|(k, _)| *k == key) {
-            ex.cuda_visible_devices.push(',');
-            ex.cuda_visible_devices.push_str(&token);
-            ex.export_cmd = format_cmd(&ex.cuda_visible_devices, rt);
+            if !ex.cuda_visible_devices.split(',').any(|t| t == token) {
+                ex.cuda_visible_devices.push(',');
+                ex.cuda_visible_devices.push_str(&token);
+                ex.export_cmd = format_cmd(&ex.cuda_visible_devices, rt);
+            }
         } else {
             let ambiguous = name_counts
                 .get(g.host.as_str())

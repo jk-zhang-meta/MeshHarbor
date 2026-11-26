@@ -315,8 +315,17 @@ export function hostHasWarning(h: GpuHostView): boolean {
   return h.gpus.some((g) => cardHasWarning(g))
 }
 
-export function isCardEligibleFree(h: GpuHostView, g: GpuCardView): boolean {
+export function isCardEligibleFree(
+  h: GpuHostView,
+  g: GpuCardView,
+  nowMs?: number,
+): boolean {
   if (!h.is_online || h.freshness !== 'fresh' || h.lagging) return false
+  if (nowMs != null && h.received_at_ms && h.received_at_ms > 0) {
+    // Match server freshness bound (90 s) so prolonged polling outages never
+    // leave expired cached cards selectable for allocation/export.
+    if (nowMs - h.received_at_ms >= 90_000) return false
+  }
   if (h.host_fault_severity === 'critical') return false
   if (h.status !== 'ok' && h.status !== 'limited') return false
   if (g.state !== 'free' || g.stale || g.presence_only) return false
@@ -428,9 +437,9 @@ export interface GpuHistoryPoint {
   ts_ms: number
   samples: number
   util_avg?: number | null
-  util_max: number
+  util_max?: number | null
   mem_used_avg_mb?: number | null
-  mem_used_max_mb: number
+  mem_used_max_mb?: number | null
   mem_total_mb?: number | null
   temp_max_c?: number | null
   power_avg_w?: number | null

@@ -289,7 +289,7 @@ const utilPoints = computed<SeriesPoint[]>(() =>
   gpuStore.hostHistory.map((p) => ({
     t: Math.floor(p.ts_ms / 1000),
     util_avg: p.util_avg ?? null,
-    util_max: p.util_max,
+    util_max: p.util_max ?? null,
   })),
 )
 
@@ -297,7 +297,7 @@ const memPoints = computed<SeriesPoint[]>(() =>
   gpuStore.hostHistory.map((p) => ({
     t: Math.floor(p.ts_ms / 1000),
     mem_avg: p.mem_used_avg_mb ?? null,
-    mem_max: p.mem_used_max_mb,
+    mem_max: p.mem_used_max_mb ?? null,
   })),
 )
 

@@ -108,12 +108,18 @@ export const useGpuStore = defineStore('gpu', () => {
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let activeTenantId: string | null = null
+  /** Tracks which tenant currently owns the cached fleet/users/changes/settings
+   *  data, independently of active polling, so navigating away from tenant A and
+   *  then mounting tenant B always resets A's cached state before B loads. */
+  let dataTenantId: string | null = null
   let visHandler: (() => void) | null = null
   let pollSeq = 0
   let hostDetailSeq = 0
   let historySeq = 0
   let usersSeq = 0
+  let alertSettingsSeq = 0
   let changeIdSeq = 0
+  let lastTrackAt = 0
   let prevHosts = new Map<string, PrevHostSnap>()
 
   const hosts = computed(() => fleet.value?.hosts ?? [])
@@ -141,6 +147,7 @@ export const useGpuStore = defineStore('gpu', () => {
     hostDetailSeq += 1
     historySeq += 1
     usersSeq += 1
+    alertSettingsSeq += 1
     fleet.value = null
     error.value = null
     disabled.value = false
@@ -151,9 +158,19 @@ export const useGpuStore = defineStore('gpu', () => {
     hostHistory.value = []
     historyError.value = null
     users.value = []
+    alertRule.value = {
+      enabled: false,
+      free_gpus_min: null,
+      free_min_mem_gb: null,
+      held_idle_alert: true,
+      fault_alert: true,
+      machine_alert: true,
+      lang: null,
+    }
     channels.value = []
     cardDeltas.value = {}
     recentChanges.value = []
+    lastTrackAt = 0
     prevHosts = new Map()
   }
 
@@ -172,6 +189,9 @@ export const useGpuStore = defineStore('gpu', () => {
 
   function trackChanges(resp: GpuFleetResponse) {
     const now = Date.now()
+    // Suppress false bursts of "recent changes" after a long tab-sleep or poll gap.
+    const emitTransitions = lastTrackAt > 0 && now - lastTrackAt <= 30_000
+    lastTrackAt = now
     const nextDeltas: Record<string, GpuCardDelta> = {}
     for (const [k, d] of Object.entries(cardDeltas.value)) {
       if (now - d.at <= DELTA_TTL_MS) nextDeltas[k] = d
@@ -204,7 +224,7 @@ export const useGpuStore = defineStore('gpu', () => {
         gpus: curGpus,
       })
 
-      if (!prev) continue
+      if (!prev || !emitTransitions) continue
 
       if (prev.is_online !== nowOnline) {
         pushChange({
@@ -351,9 +371,10 @@ export const useGpuStore = defineStore('gpu', () => {
   }
 
   function startLivePolling(tenantId: string) {
-    const switchingTenant = activeTenantId !== null && activeTenantId !== tenantId
+    const switchingTenant = dataTenantId !== null && dataTenantId !== tenantId
     stopLivePolling()
     if (switchingTenant) resetTenantState()
+    dataTenantId = tenantId
     activeTenantId = tenantId
     liveActive.value = true
     if (typeof document !== 'undefined') {
@@ -424,16 +445,18 @@ export const useGpuStore = defineStore('gpu', () => {
   }
 
   async function loadAlertSettings(tenantId: string) {
+    const seq = ++alertSettingsSeq
     alertsLoading.value = true
     try {
       const [rule, chs] = await Promise.all([
         fetchGpuAlertRules(tenantId),
         listGpuChannels(tenantId),
       ])
+      if (seq !== alertSettingsSeq || dataTenantId !== tenantId) return
       alertRule.value = rule
       channels.value = chs
     } finally {
-      alertsLoading.value = false
+      if (seq === alertSettingsSeq) alertsLoading.value = false
     }
   }
 

@@ -132,7 +132,7 @@ const qualifyingByHost = computed(() => {
     const cards: Pick[] = []
     for (const g of h.gpus) {
       const rt = cardRuntimeKind(h, g)
-      if (!isCardEligibleFree(h, g) || !isSafeCudaUuid(g.uuid) || !isExportableRuntime(rt)) continue
+      if (!isCardEligibleFree(h, g, Date.now()) || !isSafeCudaUuid(g.uuid) || !isExportableRuntime(rt)) continue
       const freeMb =
         g.mem_total_mb != null && g.mem_used_mb != null
           ? Math.max(0, g.mem_total_mb - g.mem_used_mb)

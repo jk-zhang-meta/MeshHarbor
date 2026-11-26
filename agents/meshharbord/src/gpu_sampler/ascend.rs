@@ -19,10 +19,12 @@
 
 #[cfg(any(target_os = "linux", test))]
 use std::collections::{HashMap, HashSet};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::fs;
+#[cfg(any(target_os = "linux", test))]
+use std::path::Path;
 #[cfg(target_os = "linux")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 #[cfg(target_os = "linux")]
@@ -51,7 +53,6 @@ const NPU_SMI_TIMEOUT: Duration = Duration::from_secs(4);
 #[derive(Debug, Clone)]
 struct AscendBoardInfo {
     full_name: Option<String>,
-    vdie_id: Option<String>,
     pci_bus: Option<String>,
 }
 
@@ -598,17 +599,10 @@ fn resolve_card_name(c: &ParsedNpuCard, board: Option<&AscendBoardInfo>) -> Stri
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn build_ascend_uuid(c: &ParsedNpuCard, board: Option<&AscendBoardInfo>) -> String {
-    if let Some(vdie) = board.and_then(|b| b.vdie_id.as_deref()) {
-        let compact: String = vdie
-            .chars()
-            .filter(|ch| ch.is_ascii_hexdigit())
-            .take(16)
-            .collect();
-        if compact.len() >= 8 {
-            return format!("ASCEND-{}-{}-{compact}", c.npu_id, c.chip_id);
-        }
-    }
+fn build_ascend_uuid(c: &ParsedNpuCard, _board: Option<&AscendBoardInfo>) -> String {
+    // Freeze a stable card identity strictly from `npu-smi info` discovery fields
+    // (npu_id, chip_id, pci_bus) so lazy `info -t board` enrichment never mutates
+    // an already-published card UUID mid-flight (which would split history/alerts).
     if let Some(bus) = c.pci_bus.as_deref().filter(|s| !s.is_empty()) {
         let clean: String = bus
             .chars()
@@ -633,12 +627,16 @@ fn build_samples(
         procs_by_card.entry((p.npu_id, p.chip_id)).or_default().push(p);
     }
 
+    let has_multi_chip = parsed.cards.iter().any(|c| c.chip_id > 0);
     parsed
         .cards
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let board = boards.get(&(c.npu_id, c.chip_id));
+            // On multi-chip Ascend cards (e.g. 910A/310P dual-die), `ASCEND_RT_VISIBLE_DEVICES`
+            // addresses logical chip ordinals, NOT duplicate physical `npu_id`s.
+            let logical_vendor_idx = if has_multi_chip { i as u16 } else { c.npu_id };
             // Preserve raw vendor health (`OK`, `Warning`, `Alarm`, `Critical`)
             // WITHOUT setting `lost = true` on a responding chip!
             let vendor_health = (!c.health.trim().is_empty()).then(|| c.health.trim().to_string());
@@ -713,7 +711,8 @@ fn build_samples(
                 lost: false,
                 vendor_health,
                 backend: Some("ascend".into()),
-                vendor_index: Some(c.npu_id),
+                backend_status: None,
+                vendor_index: Some(logical_vendor_idx),
                 presence_only: false,
                 idle_since: None,
                 free_mem_floor_mb,
@@ -729,7 +728,6 @@ fn build_samples(
 fn parse_board_info(text: &str) -> AscendBoardInfo {
     let mut chip_type: Option<String> = None;
     let mut chip_name: Option<String> = None;
-    let mut vdie_id: Option<String> = None;
     let mut pci_bus: Option<String> = None;
 
     for line in text.lines() {
@@ -744,7 +742,6 @@ fn parse_board_info(text: &str) -> AscendBoardInfo {
         match key {
             "Chip Type" => chip_type = Some(val.to_string()),
             "Chip Name" => chip_name = Some(val.to_string()),
-            "VDie ID" => vdie_id = Some(val.to_string()),
             "PCIe Bus Info" => pci_bus = Some(val.to_string()),
             _ => {}
         }
@@ -763,11 +760,7 @@ fn parse_board_info(text: &str) -> AscendBoardInfo {
         (None, None) => None,
     };
 
-    AscendBoardInfo {
-        full_name,
-        vdie_id,
-        pci_bus,
-    }
+    AscendBoardInfo { full_name, pci_bus }
 }
 
 /// Parse `npu-smi info` ASCII table output into driver version, cards, and processes.
@@ -790,10 +783,9 @@ fn parse_npu_smi_info(text: &str) -> ParsedNpuInfo {
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
-        if !line.starts_with('|') || !line.ends_with('|') {
+        let Some(inner) = line.strip_prefix('|').and_then(|s| s.strip_suffix('|')) else {
             continue;
-        }
-        let inner = &line[1..line.len() - 1];
+        };
 
         if driver_version.is_none()
             && let Some(idx) = inner.find("Version:")
@@ -998,14 +990,16 @@ mod tests {
         assert!(parsed.has_proc_section);
         assert_eq!(parsed.procs.len(), 1);
 
+        let before_probe = build_samples(&parsed, &HashMap::new(), true, &ProcLookup::default());
         let mut boards = HashMap::new();
         boards.insert((0, 0), parse_board_info(SAMPLE_BOARD));
         let samples = build_samples(&parsed, &boards, true, &ProcLookup::default());
         assert_eq!(samples.len(), 2);
 
-        // Card 0: busy with VLLMEngineCor
+        // Card 0: busy with VLLMEngineCor; UUID must stay invariant across lazy board probe!
         let c0 = &samples[0];
-        assert_eq!(c0.uuid, "ASCEND-0-0-D25BF66C00C024B1");
+        assert_eq!(c0.uuid, "ASCEND-0-0-0000:C1:00.0");
+        assert_eq!(c0.uuid, before_probe[0].uuid);
         assert_eq!(c0.name.as_deref(), Some("Ascend 910B4-1"));
         assert_eq!(c0.vendor_index, Some(0));
         assert_eq!(c0.vendor_health.as_deref(), Some("OK"));

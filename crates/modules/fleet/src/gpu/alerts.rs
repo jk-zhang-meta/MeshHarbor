@@ -103,6 +103,7 @@ struct CardTrack {
     xid_coalesce_until: i64,
     lost_active: bool,
     vendor_health_bad: Option<String>,
+    vendor_health_delivered_sev: Option<u8>,
 }
 
 #[derive(Default)]
@@ -306,14 +307,14 @@ impl AlertEvaluator {
         for g in capped_gpus {
             present_uuids.insert(g.uuid.clone());
             let st = classify_gpu_state(report.status, g, now_s, thresholds);
-            if st == GpuState::Free {
-                let avail_mb = g
-                    .mem_total_mb
-                    .unwrap_or(0)
-                    .saturating_sub(g.mem_used_mb.unwrap_or(0));
-                if min_free_mb == 0 || avail_mb >= min_free_mb {
-                    qualifying_free = qualifying_free.saturating_add(1);
-                }
+            if meshharbor_remote_control::gpu::is_card_allocatable_free(
+                report.status,
+                g,
+                now_s,
+                thresholds,
+                min_free_mb,
+            ) {
+                qualifying_free = qualifying_free.saturating_add(1);
             }
 
             let users_str = collect_card_users(g);
@@ -381,24 +382,29 @@ impl AlertEvaluator {
                     card.lost_active = false;
                 }
 
-                let bad_vh = g
-                    .vendor_health
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("ok"));
-                if let Some(vh) = bad_vh {
-                    if card.vendor_health_bad.as_deref() != Some(vh) {
-                        card.vendor_health_bad = Some(vh.to_string());
+                let bad_vh = g.vendor_health.as_deref().and_then(|raw| {
+                    meshharbor_remote_control::gpu::vendor_health_severity(raw)
+                        .map(|sev| (raw.trim(), sev))
+                });
+                if let Some((vh, sev_str)) = bad_vh {
+                    let sev_rank: u8 = if sev_str == "critical" { 2 } else { 1 };
+                    let prev_sev = card.vendor_health_delivered_sev.unwrap_or(0);
+                    let escalated_to_critical = sev_rank > prev_sev && sev_rank == 2;
+                    let state_changed = card.vendor_health_bad.as_deref() != Some(vh);
+                    if escalated_to_critical || state_changed {
                         let key = format!("fault:vendor_health:{}", g.uuid);
-                        if can_fire(host, &key, now_s, settings.cooldown_secs) {
-                            let is_crit = vh.to_ascii_lowercase().contains("crit")
-                                || vh.to_ascii_lowercase().contains("alarm")
-                                || vh.to_ascii_lowercase().contains("error")
-                                || vh.to_ascii_lowercase().contains("fail");
+                        let allowed = escalated_to_critical
+                            || can_fire(host, &key, now_s, settings.cooldown_secs);
+                        if allowed {
+                            if escalated_to_critical {
+                                host.cooldowns.insert(key.clone(), now_s);
+                            }
+                            card.vendor_health_bad = Some(vh.to_string());
+                            card.vendor_health_delivered_sev = Some(sev_rank);
                             fired.push(FiredAlert {
                                 event_key: key,
                                 item: BotAlertItem {
-                                    severity: if is_crit { "critical" } else { "warning" }.into(),
+                                    severity: sev_str.into(),
                                     title_en: format!("{host_name} {card_label} health: {vh}"),
                                     title_zh: format!("{host_name} {card_label} 健康状态异常：{vh}"),
                                     body_en: format!(
@@ -415,6 +421,7 @@ impl AlertEvaluator {
                     }
                 } else {
                     card.vendor_health_bad = None;
+                    card.vendor_health_delivered_sev = None;
                 }
 
                 if let Some(ecc) = g.ecc_uncorrected {
@@ -468,10 +475,27 @@ impl AlertEvaluator {
                         Some(ts) => card.last_xid_at.is_none_or(|prev| ts > prev),
                         None => xids.iter().any(|c| !card.last_xids.contains(c)),
                     };
-                    if is_new_xid && now_s >= card.xid_coalesce_until {
-                        card.xid_coalesce_until = now_s + 180; // 3-minute Xid coalesce window
+                    let xid_sev = if xids.iter().any(|&c| {
+                        meshharbor_remote_control::gpu::xid_severity(c) == "critical"
+                    }) {
+                        "critical"
+                    } else {
+                        "warning"
+                    };
+                    let escalated_hw_xid = is_new_xid
+                        && xid_sev == "critical"
+                        && !card.last_xids.iter().any(|&c| {
+                            meshharbor_remote_control::gpu::xid_severity(c) == "critical"
+                        });
+                    if is_new_xid && (now_s >= card.xid_coalesce_until || escalated_hw_xid) {
                         let key = format!("fault:xid:{}", g.uuid);
-                        if can_fire(host, &key, now_s, settings.cooldown_secs) {
+                        let allowed = escalated_hw_xid
+                            || can_fire(host, &key, now_s, settings.cooldown_secs);
+                        if allowed {
+                            if escalated_hw_xid {
+                                host.cooldowns.insert(key.clone(), now_s);
+                            }
+                            card.xid_coalesce_until = now_s + 180; // 3-minute Xid coalesce window
                             let list = xids
                                 .iter()
                                 .map(|&c| match meshharbor_remote_control::gpu::decode_nvidia_xid(c) {
@@ -483,7 +507,7 @@ impl AlertEvaluator {
                             fired.push(FiredAlert {
                                 event_key: key,
                                 item: BotAlertItem {
-                                    severity: "critical".into(),
+                                    severity: xid_sev.into(),
                                     title_en: format!("{host_name} {card_label} Xid error(s): {list}"),
                                     title_zh: format!("{host_name} {card_label} 发生 Xid 故障: {list}"),
                                     body_en: format!("Xid error(s) [{list}] observed on {host_name} {card_label}."),
@@ -492,18 +516,25 @@ impl AlertEvaluator {
                                     link: host_link.clone(),
                                 },
                             });
+                            // Advance last-delivered Xid watermark ONLY when an alert actually fired
+                            // so newly arriving Xids inside coalesce/cooldown are never permanently lost.
+                            if let Some(ts) = g.xid_last_at {
+                                card.last_xid_at = Some(card.last_xid_at.map_or(ts, |p| p.max(ts)));
+                            }
+                            card.last_xids = xids.clone();
                         }
                     }
-                    if let Some(ts) = g.xid_last_at {
-                        card.last_xid_at = Some(card.last_xid_at.map_or(ts, |p| p.max(ts)));
-                    }
-                    card.last_xids = xids.clone();
                 } else {
                     card.last_xids.clear();
                 }
 
                 let severe_throttle = g.throttle.as_ref().is_some_and(|reasons| {
-                    reasons.iter().any(|r| r == "hw_slowdown" || r == "thermal")
+                    reasons.iter().any(|r| {
+                        matches!(
+                            r.to_ascii_lowercase().as_str(),
+                            "hw_slowdown" | "thermal" | "sw_thermal" | "power_brake"
+                        )
+                    })
                 });
                 if severe_throttle {
                     let since = *card.throttle_since.get_or_insert(now_s);

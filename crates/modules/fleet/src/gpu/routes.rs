@@ -483,11 +483,14 @@ fn project_host_view(
     let (status, status_detail, backend, driver_version, seq, host, gpus) = match snap {
         Some(s) => {
             let status = s.report.status;
-            let status_detail = s
-                .report
-                .status_detail
-                .clone()
-                .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.status_detail.clone()));
+            let status_detail = if status == GpuHostStatus::Ok {
+                s.report.status_detail.clone()
+            } else {
+                s.report
+                    .status_detail
+                    .clone()
+                    .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.status_detail.clone()))
+            };
             let hf = host_status_fault(status, status_detail.as_deref());
             let cards: Vec<GpuCardFleetView> = if s.report.gpus.is_empty()
                 && hf.is_some()

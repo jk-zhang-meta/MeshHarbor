@@ -205,12 +205,11 @@ pub fn classify_pci_accelerator(
     match vendor_id {
         // NVIDIA (exclude HDMI audio 0x0403, USB 0x0c03, NVSwitch bridges 0x0680)
         0x10de if is_display || is_accelerator => Some(AccelVendor::Nvidia),
-        // Huawei Ascend NPU (exclude Huawei NICs 0x0200 and SAS/RAID HBAs 0x01xx)
-        0x19e5
-            if is_accelerator
-                || is_display
-                || matches!(device_id, 0xd100 | 0xd105 | 0xd107 | 0xd500 | 0xd801..=0xd807) =>
-        {
+        // Huawei Ascend NPU ONLY: match explicit Ascend device IDs strictly!
+        // NEVER match generic Huawei display/accelerator classes — every Huawei /
+        // xFusion / Kunpeng server carries an iBMC Hi171x VGA chip (19e5:1711,
+        // `hibmc-drm`), which would otherwise be misclassified as a fake Ascend NPU.
+        0x19e5 if matches!(device_id, 0xd100 | 0xd105 | 0xd107 | 0xd500 | 0xd801..=0xd807) => {
             Some(AccelVendor::Ascend)
         }
         // Google Cloud TPU (exclude gVNIC 0x0042 / virtual devices!)
@@ -223,15 +222,19 @@ pub fn classify_pci_accelerator(
         {
             Some(AccelVendor::Tpu)
         }
-        // AMD Radeon / Instinct GPUs
-        0x1002 if is_display || is_accelerator => Some(AccelVendor::Amd),
+        // AMD Radeon / Instinct GPUs (exclude legacy ES1000 BMC VGA 0x515e/0x515f)
+        0x1002 if (is_display || is_accelerator) && !matches!(device_id, 0x515e | 0x515f) => {
+            Some(AccelVendor::Amd)
+        }
         // Intel discrete/compute GPUs (Arc, Flex, Max) or DRM-bound Intel GPUs
+        // (explicitly exclude Intel integrated VPU/NPU `intel_vpu` IDs)
         0x8086
-            if is_accelerator
-                || (base_class == 0x03 && matches!(sub_class, 0x02 | 0x80))
-                || (is_display
-                    && (matches!(driver, Some("xe" | "i915"))
-                        || matches!(device_id & 0xff00, 0x5600 | 0x0b00 | 0xe200))) =>
+            if driver != Some("intel_vpu")
+                && !matches!(device_id, 0x7d1d | 0xad1d | 0x643e | 0xb03e)
+                && ((base_class == 0x03 && matches!(sub_class, 0x02 | 0x80))
+                    || (is_display
+                        && (matches!(driver, Some("xe" | "i915"))
+                            || matches!(device_id & 0xff00, 0x5600 | 0x0b00 | 0xe200)))) =>
         {
             Some(AccelVendor::Intel)
         }
@@ -550,6 +553,12 @@ mod tests {
         mk_pci_dev(td.path(), "0000:81:00.0", "0x19e5", "0xd802", "0x120000", Some("drv_pcie_host"));
         // Huawei Ethernet NIC -> MUST be ignored
         mk_pci_dev(td.path(), "0000:82:00.0", "0x19e5", "0x0222", "0x020000", Some("hinic"));
+        // Huawei iBMC Hi171x VGA (19e5:1711, hibmc-drm) -> MUST be ignored (NEVER fake Ascend NPU!)
+        mk_pci_dev(td.path(), "0000:05:00.0", "0x19e5", "0x1711", "0x030000", Some("hibmc-drm"));
+        // AMD ES1000 BMC VGA (1002:515e) -> MUST be ignored
+        mk_pci_dev(td.path(), "0000:06:00.0", "0x1002", "0x515e", "0x030000", None);
+        // Intel Meteor/Lunar Lake integrated VPU (8086:7d1d, intel_vpu) -> MUST be ignored
+        mk_pci_dev(td.path(), "0000:00:0b.0", "0x8086", "0x7d1d", "0x120000", Some("intel_vpu"));
         // Google TPU v6e
         mk_pci_dev(td.path(), "0000:00:05.0", "0x1ae0", "0x006f", "0x120000", Some("vfio-pci"));
         // Google gVNIC -> MUST be ignored

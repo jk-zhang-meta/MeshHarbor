@@ -86,10 +86,12 @@ pub struct GpuHistoryPoint {
     pub samples: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub util_avg: Option<f32>,
-    pub util_max: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub util_max: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_used_avg_mb: Option<u32>,
-    pub mem_used_max_mb: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_used_max_mb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_total_mb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,10 +405,10 @@ pub async fn query_history(
                 ts_ms: b.ts.timestamp_millis(),
                 samples: b.samples,
                 util_avg,
-                util_max: b.util_max,
+                util_max: (b.util_samples > 0 || b.util_secs > 0).then_some(b.util_max),
                 mem_used_avg_mb: (b.mem_samples > 0)
                     .then(|| (b.mem_used_sum / f64::from(b.mem_samples)).round() as u32),
-                mem_used_max_mb: b.mem_used_max,
+                mem_used_max_mb: (b.mem_samples > 0).then_some(b.mem_used_max),
                 mem_total_mb: b.mem_total_mb,
                 temp_max_c: b.temp_max,
                 power_avg_w: (b.power_samples > 0)
@@ -419,12 +421,15 @@ pub async fn query_history(
     }
 
     // All-GPUs view: aggregate per-card buckets at each timestamp into one
-    // host-wide series (mean util across cards, summed VRAM/power, max temp).
+    // host-wide series using the SAME duration-weighted numerators/denominators
+    // as the single-UUID path (mean util across cards, summed VRAM/power, max temp).
     #[derive(Default)]
     struct TsAgg {
         samples: u32,
         util_samples: u32,
         util_sum: f64,
+        util_wsum: f64,
+        util_secs: u64,
         util_max: u8,
         mem_used_avg_sum: f64,
         has_mem_used: bool,
@@ -436,6 +441,9 @@ pub async fn query_history(
         has_power: bool,
         free_samples: u32,
         held_idle_samples: u32,
+        free_secs: u64,
+        held_idle_secs: u64,
+        sample_secs: u64,
     }
     let mut by_ts: std::collections::BTreeMap<i64, TsAgg> = std::collections::BTreeMap::new();
     while let Some(b) = cur.try_next().await? {
@@ -443,12 +451,23 @@ pub async fn query_history(
         a.samples = a.samples.saturating_add(b.samples);
         a.util_samples = a.util_samples.saturating_add(b.util_samples);
         a.util_sum += b.util_sum;
-        a.util_max = a.util_max.max(b.util_max);
+        if b.util_secs > 0 {
+            a.util_wsum += b.util_wsum;
+            a.util_secs = a.util_secs.saturating_add(b.util_secs);
+        } else if b.util_samples > 0 {
+            // Normalize legacy unweighted buckets before merging.
+            let est_secs = u64::from(b.util_samples);
+            a.util_wsum += b.util_sum;
+            a.util_secs = a.util_secs.saturating_add(est_secs);
+        }
+        if b.util_samples > 0 || b.util_secs > 0 {
+            a.util_max = a.util_max.max(b.util_max);
+        }
         if b.mem_samples > 0 {
             a.mem_used_avg_sum += b.mem_used_sum / f64::from(b.mem_samples);
+            a.mem_used_max_sum = a.mem_used_max_sum.saturating_add(b.mem_used_max);
             a.has_mem_used = true;
         }
-        a.mem_used_max_sum = a.mem_used_max_sum.saturating_add(b.mem_used_max);
         if let Some(mt) = b.mem_total_mb {
             a.mem_total_sum = a.mem_total_sum.saturating_add(mt);
             a.has_mem_total = true;
@@ -463,25 +482,51 @@ pub async fn query_history(
         }
         a.free_samples = a.free_samples.saturating_add(b.free_samples);
         a.held_idle_samples = a.held_idle_samples.saturating_add(b.held_idle_samples);
+        if b.sample_secs > 0 {
+            a.free_secs = a.free_secs.saturating_add(b.free_secs);
+            a.held_idle_secs = a.held_idle_secs.saturating_add(b.held_idle_secs);
+            a.sample_secs = a.sample_secs.saturating_add(b.sample_secs);
+        } else if b.samples > 0 {
+            a.free_secs = a.free_secs.saturating_add(u64::from(b.free_samples));
+            a.held_idle_secs = a.held_idle_secs.saturating_add(u64::from(b.held_idle_samples));
+            a.sample_secs = a.sample_secs.saturating_add(u64::from(b.samples));
+        }
     }
 
     let out = by_ts
         .into_iter()
         .map(|(ts_ms, a)| {
             let n = f64::from(a.samples.max(1));
+            let util_avg = if a.util_secs > 0 {
+                Some((a.util_wsum / a.util_secs as f64) as f32)
+            } else if a.util_samples > 0 {
+                Some((a.util_sum / f64::from(a.util_samples)) as f32)
+            } else {
+                None
+            };
+            let (free_ratio, held_idle_ratio) = if a.sample_secs > 0 {
+                (
+                    (a.free_secs as f64 / a.sample_secs as f64) as f32,
+                    (a.held_idle_secs as f64 / a.sample_secs as f64) as f32,
+                )
+            } else {
+                (
+                    (f64::from(a.free_samples) / n) as f32,
+                    (f64::from(a.held_idle_samples) / n) as f32,
+                )
+            };
             GpuHistoryPoint {
                 ts_ms,
                 samples: a.samples,
-                util_avg: (a.util_samples > 0)
-                    .then(|| (a.util_sum / f64::from(a.util_samples)) as f32),
-                util_max: a.util_max,
+                util_avg,
+                util_max: (a.util_samples > 0 || a.util_secs > 0).then_some(a.util_max),
                 mem_used_avg_mb: a.has_mem_used.then(|| a.mem_used_avg_sum.round() as u32),
-                mem_used_max_mb: a.mem_used_max_sum,
+                mem_used_max_mb: a.has_mem_used.then_some(a.mem_used_max_sum),
                 mem_total_mb: a.has_mem_total.then_some(a.mem_total_sum),
                 temp_max_c: a.temp_max,
                 power_avg_w: a.has_power.then_some(a.power_avg_sum as f32),
-                free_ratio: (f64::from(a.free_samples) / n) as f32,
-                held_idle_ratio: (f64::from(a.held_idle_samples) / n) as f32,
+                free_ratio,
+                held_idle_ratio,
             }
         })
         .collect();

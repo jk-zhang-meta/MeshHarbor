@@ -225,6 +225,10 @@ pub struct GpuSample {
     /// `"apple"`, `"tpu"`, `"pci"`), enabling accurate mixed-vendor hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Per-card backend health status on mixed-vendor hosts (e.g. healthy NVML
+    /// cards stay `Ok` even when a sibling TPU backend reports `Limited`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_status: Option<GpuHostStatus>,
     /// Vendor-native device ordinal (e.g. Ascend logical NPU ID for
     /// `ASCEND_RT_VISIBLE_DEVICES`), preserved even when mixed-backend hosts
     /// renumber display `idx`.
@@ -422,6 +426,70 @@ pub fn decode_nvidia_xid(code: u32) -> Option<&'static str> {
     }
 }
 
+/// Canonical severity for a vendor health string (`None` when healthy / `"OK"`).
+pub fn vendor_health_severity(vh: &str) -> Option<&'static str> {
+    let trimmed = vh.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("ok") {
+        return None;
+    }
+    let low = trimmed.to_ascii_lowercase();
+    if low.contains("crit")
+        || low.contains("fatal")
+        || low.contains("error")
+        || low.contains("alarm")
+        || low.contains("fail")
+        || low.contains("general")
+    {
+        Some("critical")
+    } else {
+        Some("warning")
+    }
+}
+
+/// Canonical severity for an NVIDIA Xid error code (hardware/bus errors are
+/// critical; pure application faults like illegal address / segfault are warning).
+pub fn xid_severity(code: u32) -> &'static str {
+    if APP_LEVEL_XIDS.contains(&code) {
+        "warning"
+    } else {
+        "critical"
+    }
+}
+
+/// Shared allocatable-free predicate used identically by availability alerts,
+/// fleet summary counters, and free-card pickers: excludes any card with a
+/// critical fault or `presence_only`, and requires real memory headroom when
+/// `min_free_mb > 0`.
+pub fn is_card_allocatable_free(
+    host_status: GpuHostStatus,
+    sample: &GpuSample,
+    now_s: i64,
+    thresholds: GpuStateThresholds,
+    min_free_mb: u32,
+) -> bool {
+    if sample.presence_only {
+        return false;
+    }
+    if classify_gpu_state(host_status, sample, now_s, thresholds) != GpuState::Free {
+        return false;
+    }
+    if card_fault_reasons(sample)
+        .iter()
+        .any(|f| f.severity == "critical")
+    {
+        return false;
+    }
+    if min_free_mb > 0 {
+        let (Some(tot), Some(used)) = (sample.mem_total_mb, sample.mem_used_mb) else {
+            return false;
+        };
+        if tot.saturating_sub(used) < min_free_mb {
+            return false;
+        }
+    }
+    true
+}
+
 /// Canonical per-card fault evaluation shared across server, CLI, Web, and
 /// Desktop. Routine training power capping (`power_cap`) and `sync_boost` are
 /// NOT faults; hardware/thermal throttling, `lost`, Xid, uncorrected ECC,
@@ -505,31 +573,16 @@ pub fn card_fault_reasons(sample: &GpuSample) -> Vec<GpuFaultReason> {
         });
     }
 
-    if let Some(vh) = sample
-        .vendor_health
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("ok"))
+    if let Some(vh) = sample.vendor_health.as_deref()
+        && let Some(severity) = vendor_health_severity(vh)
     {
-        let low = vh.to_ascii_lowercase();
-        let severity = if low.contains("crit")
-            || low.contains("fatal")
-            || low.contains("error")
-            || low.contains("alarm")
-            || low.contains("fail")
-            || low.contains("general")
-        {
-            "critical"
-        } else {
-            "warning"
-        };
         out.push(GpuFaultReason {
             scope: "card".into(),
             severity: severity.into(),
             code: "vendor_health".into(),
             device_uuid: uuid.clone(),
             device_idx: idx,
-            summary: format!("Vendor health: {vh}"),
+            summary: format!("Vendor health: {}", vh.trim()),
         });
     }
 
@@ -709,7 +762,9 @@ pub fn classify_gpu_state(
         .iter()
         .any(|p| p.kind.as_deref() != Some("graphics"));
 
-    if host_status == GpuHostStatus::Limited {
+    let eff_status = sample.backend_status.unwrap_or(host_status);
+
+    if eff_status == GpuHostStatus::Limited {
         if sample.presence_only {
             return match sample.procs_state {
                 ProcsState::Ok if has_procs => GpuState::Busy,
@@ -731,7 +786,7 @@ pub fn classify_gpu_state(
         } else {
             return GpuState::Unknown;
         }
-    } else if host_status != GpuHostStatus::Ok {
+    } else if eff_status != GpuHostStatus::Ok {
         return GpuState::Unknown;
     }
 
@@ -750,6 +805,12 @@ pub fn classify_gpu_state(
         }
         return GpuState::Unknown;
     };
+
+    // Denied/partial process enumeration with empty list must NEVER classify
+    // an accelerator as Free unless full telemetry decisively proves otherwise.
+    if sample.procs_state == ProcsState::Partial && procs_empty && sample.util_pct.is_none() {
+        return GpuState::Unknown;
+    }
 
     // Effective free-memory ceiling: default 1 GiB, or for accelerators with
     // verified idle firmware HBM reservation (e.g. Huawei Ascend 910B ~3.4 GiB
