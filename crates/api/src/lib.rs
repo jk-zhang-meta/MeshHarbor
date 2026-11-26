@@ -414,6 +414,14 @@ pub fn build_router(state: AppState) -> Router {
     let api = api
         .route("/agent/self/devices", get(routes::agent_self::devices))
         .route(
+            "/agent/self/gpu/fleet",
+            get(routes::agent_self::gpu_fleet),
+        )
+        .route(
+            "/agent/self/gpu/users",
+            get(routes::agent_self::gpu_users),
+        )
+        .route(
             "/agent/self/egress-probe",
             post(routes::agent_self::egress_probe),
         )

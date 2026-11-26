@@ -245,6 +245,14 @@
       "methods": "POST"
     },
     {
+      "path": "/api/agent/self/gpu/fleet",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/agent/self/gpu/users",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/agent/self/link",
       "methods": "POST"
     },
@@ -669,6 +677,10 @@
       "methods": "PUT"
     },
     {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/gpu-server",
+      "methods": "PUT"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/agent/{agent_id}/join-org",
       "methods": "POST"
     },
@@ -790,6 +802,38 @@
     },
     {
       "path": "/api/tenant/{tenant_id}/file/{file_id}/download",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/alert-rules",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/channels",
+      "methods": "GET,HEAD,POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/channels/{channel_id}",
+      "methods": "DELETE,PATCH"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/channels/{channel_id}/test",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/fleet",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/fleet/{agent_id}",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/history",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/gpu/users",
       "methods": "GET,HEAD"
     },
     {
@@ -1972,6 +2016,40 @@
             "key": {
               "external_source.provider": 1,
               "external_source.external_id": 1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "gpu_alert_channels",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "user_id": 1,
+              "created_at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "gpu_alert_rules",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "user_id": 1
+            },
+            "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "gpu_snapshot",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1
             }
           }
         ]
@@ -3239,6 +3317,84 @@
               "ts": 1
             },
             "expireAfterSeconds": 63072000
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 604800
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu_1d",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 63072000
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu_1h",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 7776000
           }
         ]
       },
@@ -4536,6 +4692,40 @@
         ]
       },
       {
+        "collection": "gpu_alert_channels",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "user_id": 1,
+              "created_at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "gpu_alert_rules",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "user_id": 1
+            },
+            "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "gpu_snapshot",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1
+            }
+          }
+        ]
+      },
+      {
         "collection": "growth_alerts",
         "indexes": [
           {
@@ -5104,7 +5294,7 @@
           {
             "op": "drop_index_if_present",
             "index": "network_id_1",
-            "why": "multi-block schema — one-block-per-network guard removed"
+            "why": "multi-block schema \u2014 one-block-per-network guard removed"
           }
         ],
         "indexes": [
@@ -5796,6 +5986,84 @@
               "ts": 1
             },
             "expireAfterSeconds": 63072000
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 604800
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu_1d",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 63072000
+          }
+        ]
+      },
+      {
+        "collection": "stats_gpu_1h",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "agent_id": 1,
+              "uuid": 1,
+              "ts": 1
+            },
+            "unique": true
+          },
+          {
+            "key": {
+              "tenant_id": 1,
+              "ts": 1
+            }
+          },
+          {
+            "key": {
+              "ts": 1
+            },
+            "expireAfterSeconds": 7776000
           }
         ]
       },
@@ -6565,6 +6833,8 @@
     "rc:extauth.ke2",
     "rc:extauth.outcome",
     "rc:extauth.session",
+    "rc:agent.gpu_inventory",
+    "rc:agent.gpu_report",
     "rc:accounts.request",
     "rc:agent.two_factor",
     "rc:share.ssh.setup",
@@ -6683,6 +6953,8 @@
     "rc:vault.described",
     "rc:vault.net.granted",
     "rc:vault.ssh.granted",
+    "rc:gpu.lease",
+    "rc:gpu.alert",
     "rc:pong",
     "rc:error",
     "rc:overlay.netmap"
@@ -6690,6 +6962,8 @@
   "namespaces": {
     "rc:accounts.result": "fleet",
     "rc:agent.config_status": "fleet",
+    "rc:agent.gpu_inventory": "fleet",
+    "rc:agent.gpu_report": "fleet",
     "rc:agent.heartbeat": "fleet",
     "rc:agent.hello": "fleet",
     "rc:agent.key_rotated": "network",

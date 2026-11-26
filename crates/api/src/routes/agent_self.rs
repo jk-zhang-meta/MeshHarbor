@@ -704,6 +704,174 @@ pub async fn egress_probe(
     }))
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct SelfGpuFleetQuery {
+    #[serde(default)]
+    pub live: Option<String>,
+    #[serde(default)]
+    pub wait_ms: Option<u32>,
+    #[serde(default)]
+    pub hosts: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct SelfGpuUsersQuery {
+    #[serde(default)]
+    pub range: Option<String>,
+}
+
+/// Resolve the GPU servers visible to `agent` under the EXACT same visibility
+/// contract as `GET /api/agent/self/devices`:
+/// - Permanent account devices see all active non-temporary marked GPU servers
+///   in their org, plus any temporary invited GPU servers present in their
+///   shaped overlay netmap.
+/// - Temporary invited guests remain strictly isolated to their shaped netmap
+///   (plus themselves).
+async fn self_visible_gpu_agents(
+    state: &AppState,
+    fleet: &meshharbor_mod_fleet::FleetState,
+    agent: &HostAuthAgent,
+) -> Result<Vec<(meshharbor_remote_control::models::Agent, &'static str, bool)>, ApiError> {
+    let tid = agent.tenant_id;
+    let vis = visibility(state, agent).await?;
+    let temporary_agents =
+        meshharbor_mod_fleet::device_invite::temporary_agent_ids_in_tenant(fleet, tid).await?;
+    let temporary_caller = vis.self_temporary
+        || temporary_agents.contains(&agent.agent_id)
+        || meshharbor_mod_fleet::device_invite::grant_for_agent(fleet, agent.agent_id)
+            .await?
+            .is_some();
+    let full_account_inventory = !temporary_caller;
+
+    let mut shaped_agent_ids: HashSet<bson::oid::ObjectId> = HashSet::new();
+    shaped_agent_ids.insert(agent.agent_id);
+    for (n, _) in vis.nodes.iter().flatten() {
+        if let NodeRef::Agent { agent_id } = n.node_ref {
+            shaped_agent_ids.insert(agent_id);
+        }
+    }
+
+    let marked = fleet.agents.list_gpu_servers_in_tenant(tid).await?;
+    let mut out = Vec::new();
+    for a in marked {
+        let Some(aid) = a.id else { continue };
+        let is_temp = temporary_agents.contains(&aid);
+        let in_netmap = shaped_agent_ids.contains(&aid);
+        if is_temp {
+            if in_netmap {
+                out.push((a, "invited", false));
+            }
+        } else if full_account_inventory || in_netmap {
+            out.push((a, "org", false));
+        }
+    }
+    Ok(out)
+}
+
+/// `GET /api/agent/self/gpu/fleet?live=0|1&wait_ms=0..3000&hosts=` — device's own
+/// view of visible GPU servers for `mh nvitop` and the desktop companion tray.
+pub async fn gpu_fleet(
+    State(state): State<AppState>,
+    agent: HostAuthAgent,
+    Query(query): Query<SelfGpuFleetQuery>,
+) -> Result<Json<meshharbor_mod_fleet::gpu::routes::GpuFleetResponse>, ApiError> {
+    let Some(fleet) = state.modules.fleet.as_ref() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the fleet module is not mounted on this server".to_string(),
+        ));
+    };
+    if !fleet.gpu.settings.enabled {
+        return Err(ApiError::NotFound("GPU monitoring is disabled".to_string()));
+    }
+    let live = matches!(
+        query
+            .live
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1" | "true" | "yes")
+    );
+    let wait_ms = query.wait_ms.unwrap_or(0).min(3_000);
+    let host_filter: HashSet<String> = query
+        .hosts
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let entries: Vec<_> = self_visible_gpu_agents(&state, fleet, &agent)
+        .await?
+        .into_iter()
+        .filter(|(a, _, _)| {
+            if host_filter.is_empty() {
+                return true;
+            }
+            a.id.is_some_and(|id| host_filter.contains(&id.to_hex().to_ascii_lowercase()))
+                || host_filter.contains(&a.name.to_ascii_lowercase())
+                || a.display_name
+                    .as_deref()
+                    .is_some_and(|dn| host_filter.contains(&dn.to_ascii_lowercase()))
+        })
+        .collect();
+
+    Ok(Json(
+        meshharbor_mod_fleet::gpu::routes::build_fleet_response(fleet, entries, live, wait_ms, false)
+            .await,
+    ))
+}
+
+/// `GET /api/agent/self/gpu/users?range=24h|7d|30d` — per-Linux-user GPU·h
+/// rollup over the GPU servers visible to this device (for `mh nvitop users`).
+pub async fn gpu_users(
+    State(state): State<AppState>,
+    agent: HostAuthAgent,
+    Query(query): Query<SelfGpuUsersQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(fleet) = state.modules.fleet.as_ref() else {
+        return Err(ApiError::ServiceUnavailable(
+            "the fleet module is not mounted on this server".to_string(),
+        ));
+    };
+    if !fleet.gpu.settings.enabled {
+        return Err(ApiError::NotFound("GPU monitoring is disabled".to_string()));
+    }
+    let range = query.range.as_deref().unwrap_or("24h");
+    let entries = self_visible_gpu_agents(&state, fleet, &agent).await?;
+    let mut visible_map: HashMap<bson::oid::ObjectId, String> = HashMap::new();
+    for (a, _, _) in &entries {
+        if let Some(id) = a.id {
+            visible_map.insert(
+                id,
+                a.display_name
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| a.name.clone()),
+            );
+        }
+    }
+    let ids: Vec<bson::oid::ObjectId> = visible_map.keys().copied().collect();
+    let snaps = meshharbor_mod_fleet::gpu::load_snapshots(&fleet.core.db, &ids).await;
+    let live_reports: HashMap<bson::oid::ObjectId, meshharbor_remote_control::gpu::GpuReport> =
+        snaps.into_iter().map(|(k, v)| (k, v.report)).collect();
+    let users = meshharbor_mod_fleet::gpu::history::query_users(
+        &fleet.core.db,
+        agent.tenant_id,
+        &visible_map,
+        range,
+        &live_reports,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("GPU users query failed: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "range": range,
+        "users": users,
+    })))
+}
+
 #[cfg(any(feature = "network", test))]
 fn should_query_tunnel_clients(full_account_inventory: bool, has_client_nodes: bool) -> bool {
     full_account_inventory || has_client_nodes

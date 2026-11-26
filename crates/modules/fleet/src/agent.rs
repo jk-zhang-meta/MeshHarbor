@@ -2758,6 +2758,8 @@ mod geo_serialization_tests {
             effective_zone_name: None,
             zone_source: None,
             default_route_vpn: false,
+            gpu_server: false,
+            gpu_inventory: None,
         }
     }
 

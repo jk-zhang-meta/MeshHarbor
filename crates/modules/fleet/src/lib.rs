@@ -72,6 +72,9 @@ pub mod device_move;
 pub mod enroll_key;
 pub mod exec_service;
 pub mod external_access;
+/// FR-139 — GPU servers at a glance: fleet snapshot/leases, history buckets,
+/// owner-only edge-triggered alerts, and SSRF-hardened bot channels.
+pub mod gpu;
 pub mod hub;
 pub mod install_trace;
 pub mod keep_busy;
@@ -161,6 +164,9 @@ pub struct FleetState {
     /// FR-102 P3c — `growth.internal_networks`, parsed once at boot: a fetch
     /// from inside is counted as `internal` (`install_trace::count_fetch`).
     pub internal_networks: Arc<meshharbor_core::growth::InternalNetworks>,
+    /// FR-139 — GPU fleet lease controller, snapshot waiters, alert engine,
+    /// and bot dispatcher.
+    pub gpu: Arc<gpu::GpuManager>,
 }
 
 impl std::ops::Deref for FleetState {
@@ -349,6 +355,7 @@ impl Module for FleetState {
             exec_rate_limiter: Arc::new(RateLimiter::new()),
             releases_cache,
             internal_networks: Arc::new(internal_networks_from(settings)),
+            gpu: Arc::new(gpu::GpuManager::new(settings.gpu.clone())),
             core,
         };
 
@@ -418,6 +425,8 @@ impl Module for FleetState {
         // C-2/PR-1 — the owner-side idle-agent nudge handler (P7b, from the
         // host): cycles an agent's socket iff every holder reads it idle.
         nudge::register_bus_handler(&state);
+        // FR-139 — GPU lease expiry sweep, offline alerts, and 1h/1d rollups.
+        state.gpu.spawn_background_tasks(state.clone());
         Ok(state)
     }
 
@@ -497,6 +506,32 @@ impl Module for FleetState {
             .route(
                 "/{agent_id}/desired-config",
                 put(remote_config::set_desired_config),
+            )
+            // FR-139 — mark or unmark an agent (permanent or invited) as a GPU server.
+            .route("/{agent_id}/gpu-server", put(gpu::routes::set_gpu_server));
+
+        // FR-139 — GPU fleet overview, history, per-user GPU·h, alert rules, and bot channels.
+        let gpu_routes = Router::new()
+            .route("/fleet", get(gpu::routes::get_fleet))
+            .route("/fleet/{agent_id}", get(gpu::routes::get_fleet_host))
+            .route("/history", get(gpu::routes::get_history))
+            .route("/users", get(gpu::routes::get_users))
+            .route(
+                "/alert-rules",
+                get(gpu::routes::get_alert_rules).put(gpu::routes::put_alert_rules),
+            )
+            .route(
+                "/channels",
+                get(gpu::routes::list_channels).post(gpu::routes::create_channel),
+            )
+            .route(
+                "/channels/{channel_id}",
+                axum::routing::patch(gpu::routes::patch_channel)
+                    .delete(gpu::routes::delete_channel),
+            )
+            .route(
+                "/channels/{channel_id}/test",
+                post(gpu::routes::test_channel),
             );
 
         // NB `/tenant/{tenant_id}/device` (the device listing) is NOT here: it
@@ -645,6 +680,7 @@ impl Module for FleetState {
 
         Router::new()
             .nest("/tenant/{tenant_id}/agent", agent)
+            .nest("/tenant/{tenant_id}/gpu", gpu_routes)
             .nest("/tenant/{tenant_id}/exec-audit", exec_audit)
             .nest("/tenant/{tenant_id}/external-access", external_access)
             .nest("/tenant/{tenant_id}/external-rc-audit", external_rc_audit)
@@ -958,6 +994,56 @@ impl Module for FleetState {
                 collection: meshharbor_services::dao::rc_resume_scope::RC_RESUME_SCOPE,
                 pre_ops: Vec::new(),
                 indexes: vec![index_unique(bson::doc! { "kind": 1, "id": 1 })],
+            },
+            // FR-139 — latest GPU telemetry snapshot per marked device (`_id = agent_id`).
+            IndexSet {
+                collection: gpu::SNAPSHOT_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index(bson::doc! { "tenant_id": 1 })],
+            },
+            // FR-139 — 1-minute GPU history buckets (7-day TTL).
+            IndexSet {
+                collection: gpu::history::COLL_1M,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! { "tenant_id": 1, "agent_id": 1, "uuid": 1, "ts": 1 }),
+                    index(bson::doc! { "tenant_id": 1, "ts": 1 }),
+                    index_ttl(bson::doc! { "ts": 1 }, gpu::history::TTL_1M_SECS),
+                ],
+            },
+            // FR-139 — 1-hour GPU history rollups (90-day TTL).
+            IndexSet {
+                collection: gpu::history::COLL_1H,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! { "tenant_id": 1, "agent_id": 1, "uuid": 1, "ts": 1 }),
+                    index(bson::doc! { "tenant_id": 1, "ts": 1 }),
+                    index_ttl(bson::doc! { "ts": 1 }, gpu::history::TTL_1H_SECS),
+                ],
+            },
+            // FR-139 — 1-day GPU history rollups (730-day TTL).
+            IndexSet {
+                collection: gpu::history::COLL_1D,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index_unique(bson::doc! { "tenant_id": 1, "agent_id": 1, "uuid": 1, "ts": 1 }),
+                    index(bson::doc! { "tenant_id": 1, "ts": 1 }),
+                    index_ttl(bson::doc! { "ts": 1 }, gpu::history::TTL_1D_SECS),
+                ],
+            },
+            // FR-139 — per-user GPU alert rules (owner-only).
+            IndexSet {
+                collection: gpu::alerts::RULES_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index_unique(bson::doc! { "tenant_id": 1, "user_id": 1 })],
+            },
+            // FR-139 — per-user GPU bot channels (masked credentials, owner-only).
+            IndexSet {
+                collection: gpu::bots::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index(
+                    bson::doc! { "tenant_id": 1, "user_id": 1, "created_at": -1 },
+                )],
             },
         ]
     }

@@ -6465,11 +6465,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bson",
  "chrono",
  "dashmap",
  "futures",
  "hex",
+ "hmac 0.12.1",
  "ipnet",
  "meshharbor-config",
  "meshharbor-core",
@@ -6485,6 +6487,7 @@ dependencies = [
  "syn 2.0.117",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

@@ -783,6 +783,20 @@ pub async fn handle_agent_socket(
         push_keep_busy_policy_on_connect(&state, tenant_id, agent_id, &registered_tx).await;
     }
 
+    // FR-139 — grant a standing 30 s GPU telemetry lease on connect when this
+    // agent is marked as a GPU server and advertises `RpcCap::Gpu`.
+    if caps.has_rpc(RpcCap::Gpu) {
+        let is_gpu_server = state
+            .agents
+            .find_live_in_tenant(tenant_id, agent_id)
+            .await
+            .map(|a| a.gpu_server)
+            .unwrap_or(false);
+        state
+            .gpu
+            .on_agent_connected(&state.rc_hub, agent_id, is_gpu_server, true);
+    }
+
     // FR-40 — reconcile-on-connect for a rotation order the device has not
     // answered. Cap-gated for the same reason as the config push: a
     // pre-feature agent would drop the frame silently while the dashboard
@@ -1072,6 +1086,21 @@ pub async fn handle_agent_socket(
                                         if !crate::two_factor::deliver(&request_id, agent_id, answer) {
                                             debug!(%agent_id, %request_id, "rc:agent.two_factor_result nobody awaits");
                                         }
+                                        continue;
+                                    }
+                                    // FR-139 — static GPU hardware inventory & periodic telemetry reports.
+                                    ClientMsg::AgentGpuInventory { inventory } => {
+                                        state
+                                            .gpu
+                                            .handle_inventory(&state, agent_id, *inventory)
+                                            .await;
+                                        continue;
+                                    }
+                                    ClientMsg::AgentGpuReport { report } => {
+                                        state
+                                            .gpu
+                                            .handle_report(&state, tenant_id, agent_id, *report)
+                                            .await;
                                         continue;
                                     }
                                     // A device asking to run something on ANOTHER

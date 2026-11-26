@@ -29,13 +29,16 @@ meshharbor-remote-control = { path = "../../remote_control" }
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 bson.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 futures.workspace = true
 hex.workspace = true
+hmac.workspace = true
 # Static-endpoint / subnet validation in the agent routes (not a workspace dep).
 ipnet = "2"
+mongodb.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -43,6 +46,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+url = "2"
 uuid.workspace = true
 
 [dev-dependencies]
@@ -53,5 +57,4 @@ meshharbor-remote-control = { path = "../../remote_control", features = ["test-f
 # wire crate carried the driver behind its `server` feature; only the tests
 # here name it directly) and drive the negotiating-timeout reaper on a paused
 # clock (`#[tokio::test(start_paused = true)]` needs `test-util`).
-mongodb.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
