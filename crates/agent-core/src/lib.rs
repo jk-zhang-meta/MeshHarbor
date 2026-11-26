@@ -58,6 +58,10 @@ pub mod notify;
 pub mod personal_system;
 #[cfg(any(target_os = "macos", test))]
 mod privacy_cache;
+/// FR-141 — resumable SSH wire protocol (`meshharbor-pty@v1`), daemon↔host
+/// local IPC framing (frozen `0x00 Terminate`), stateless HKDF/HMAC resume
+/// proofs, byte-offset replay ring, and VT100 snapshot/shadow engine.
+pub mod pty_resume;
 /// Client-side RDP session planner, per-session `127.77.x.y:0` loopback tunnel,
 /// and OS secure credential store shared by `mh rdp` and `meshharbor-desktop`.
 pub mod rdp_client;

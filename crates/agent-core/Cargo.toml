@@ -50,6 +50,12 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 # FR-129 two-factor: TOTP (RFC 6238) is HMAC-SHA1.
 hmac = { workspace = true }
+hkdf = "0.12"
+subtle = { version = "2.6", default-features = false }
+zeroize = { workspace = true }
+# FR-141 resumable SSH: VT100 screen tracker for >4 MiB snapshot fallback and
+# client-side shadow screen (non-corrupting reconnect status overlay). Pure Rust, MIT.
+vt100 = "0.16"
 sha1 = { workspace = true }
 hex = { workspace = true }
 bson = { workspace = true }
