@@ -99,6 +99,10 @@ socket2 = "0.5"
 # operator's shell with echo permanently off after a Ctrl-C — a worse bug than
 # the one it saves a dependency on. This crate restores on drop.
 rpassword = "7.5.4"
+# FR-139 — `mh nvitop` watch TUI (alternate screen, raw keys, DEC 2026 sync)
+# and CJK-accurate display-width column layout.
+crossterm = "0.29"
+unicode-width = "0.2"
 
 # SIGPIPE reset at the CLI entry (cli::run_from) so `meshharbor … | head` dies
 # quietly on EPIPE instead of panicking — Rust starts with SIGPIPE ignored.

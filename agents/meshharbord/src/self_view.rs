@@ -43,7 +43,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use meshharbor_remote_control::models::{OsKind, VisibleDeviceRow, VisibleDevicesPage};
-use tunnel_core::localapi::{DeviceRowLite, DevicesPage, DevicesQuery, MeshView, Response};
+use tunnel_core::localapi::{
+    DeviceRowLite, DevicesPage, DevicesQuery, GpuFleetPage, GpuUsersPage, MeshView, Response,
+};
 
 use crate::config::{AgentConfig, OrgEntry, PRIMARY_ORG_LABEL};
 
@@ -335,7 +337,105 @@ impl SelfView {
         resp
     }
 
-    /// The org a request names → its row. Empty and `primary` both mean the
+    /// FR-139 — `GET /api/agent/self/gpu/fleet` for `org`.
+    /// When `live` is true, bypasses the short cache so the server immediately
+    /// grants/renews a 2 s live sampling lease and optionally waits up to `wait_ms`.
+    pub async fn gpu_fleet(
+        &self,
+        org: &str,
+        live: bool,
+        wait_ms: u32,
+        hosts: &[String],
+    ) -> Response {
+        const VERB: &str = "gpu_fleet";
+        let started = Instant::now();
+        let target = match self.resolve(org) {
+            Ok(t) => t,
+            Err(e) => return e.into_response(),
+        };
+        let mut params: Vec<(&'static str, String)> = Vec::new();
+        if live {
+            params.push(("live", "1".to_string()));
+        }
+        if wait_ms > 0 {
+            params.push(("wait_ms", wait_ms.min(3000).to_string()));
+        }
+        if !hosts.is_empty() {
+            let joined = hosts
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(",");
+            if !joined.is_empty() {
+                params.push(("hosts", joined));
+            }
+        }
+        let label = target.label.clone();
+        let resp = if live {
+            match self
+                .get(&target, "/api/agent/self/gpu/fleet", &params)
+                .await
+            {
+                Ok(body) => match parse_gpu_fleet(&body, &target.label) {
+                    Ok(page) => Response::GpuFleet(Box::new(page)),
+                    Err(e) => e.into_response(),
+                },
+                Err(e) => e.into_response(),
+            }
+        } else {
+            let key = (VERB, target.label.clone(), canonical(&params));
+            self.cached(key, self.fresh.devices, || async move {
+                match self
+                    .get(&target, "/api/agent/self/gpu/fleet", &params)
+                    .await
+                {
+                    Ok(body) => match parse_gpu_fleet(&body, &target.label) {
+                        Ok(page) => Response::GpuFleet(Box::new(page)),
+                        Err(e) => e.into_response(),
+                    },
+                    Err(e) => e.into_response(),
+                }
+            })
+            .await
+        };
+        self.note_outcome(VERB, &label, &resp, started);
+        resp
+    }
+
+    /// FR-139 — `GET /api/agent/self/gpu/users` for `org`.
+    pub async fn gpu_users(&self, org: &str, range: &str) -> Response {
+        const VERB: &str = "gpu_users";
+        let started = Instant::now();
+        let target = match self.resolve(org) {
+            Ok(t) => t,
+            Err(e) => return e.into_response(),
+        };
+        let norm_range = match range.trim() {
+            "7d" => "7d",
+            "30d" => "30d",
+            _ => "24h",
+        };
+        let params = vec![("range", norm_range.to_string())];
+        let key = (VERB, target.label.clone(), canonical(&params));
+        let label = target.label.clone();
+        let resp = self
+            .cached(key, self.fresh.mesh, || async move {
+                match self
+                    .get(&target, "/api/agent/self/gpu/users", &params)
+                    .await
+                {
+                    Ok(body) => match parse_gpu_users(&body, &target.label) {
+                        Ok(page) => Response::GpuUsers(page),
+                        Err(e) => e.into_response(),
+                    },
+                    Err(e) => e.into_response(),
+                }
+            })
+            .await;
+        self.note_outcome(VERB, &label, &resp, started);
+        resp
+    }
     /// primary enrollment, whatever its row is labelled.
     fn resolve(&self, org: &str) -> Result<OrgHttp, Upstream> {
         let want = org.trim();
@@ -522,7 +622,35 @@ impl SelfView {
 
 /// A successful answer (as opposed to a failure held for [`ERROR_HOLD`]).
 fn is_answer(resp: &Response) -> bool {
-    matches!(resp, Response::Devices(_) | Response::Mesh(_))
+    matches!(
+        resp,
+        Response::Devices(_)
+            | Response::Mesh(_)
+            | Response::GpuFleet(_)
+            | Response::GpuUsers(_)
+    )
+}
+
+fn parse_gpu_fleet(body: &[u8], org: &str) -> Result<GpuFleetPage, Upstream> {
+    let mut page: GpuFleetPage = serde_json::from_slice(body).map_err(|e| {
+        Upstream::new(
+            "bad_response",
+            format!("could not decode GPU fleet JSON from server: {e}"),
+        )
+    })?;
+    page.org = org.to_string();
+    Ok(page)
+}
+
+fn parse_gpu_users(body: &[u8], org: &str) -> Result<GpuUsersPage, Upstream> {
+    let mut page: GpuUsersPage = serde_json::from_slice(body).map_err(|e| {
+        Upstream::new(
+            "bad_response",
+            format!("could not decode GPU users JSON from server: {e}"),
+        )
+    })?;
+    page.org = org.to_string();
+    Ok(page)
 }
 
 /// The outcome map stores `&'static str`s; map a code back to its constant.

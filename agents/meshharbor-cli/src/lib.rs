@@ -33,6 +33,8 @@ pub mod mesh;
 /// rule for `ping` / `exec` / `ssh` (pure; `docs/device-naming.md`).
 pub mod names;
 pub mod native_auth;
+/// FR-139 — `mh nvitop` (alias `mh gpu`) fleet GPU viewer, TUI watch, users, and free picker.
+pub mod nvitop;
 pub mod rdpcmd;
 pub mod share_sshcmd;
 pub mod sshcmd;

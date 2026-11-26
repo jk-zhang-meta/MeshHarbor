@@ -24,6 +24,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+pub mod gpu;
+pub use gpu::{
+    GpuAlertItem, GpuAlertsPage, GpuCardView, GpuFleetPage, GpuFleetSummary, GpuHostLoadView,
+    GpuHostView, GpuProcView, GpuUserRow, GpuUsersPage,
+};
 use tokio::sync::watch;
 
 // FR-90 P1j — the adopt socket's protocol: a separate socket, open to every
@@ -1719,6 +1725,30 @@ pub enum Request {
     /// its root update helper), bypassing automatic idle deferral and startup
     /// cooldown and reusing any verified pre-downloaded installer.
     ApplyUpdate,
+    /// FR-139 — live or cached GPU fleet view (`GET /api/agent/self/gpu/fleet`).
+    GpuFleet {
+        #[serde(default)]
+        org: String,
+        #[serde(default)]
+        live: bool,
+        #[serde(default)]
+        wait_ms: u32,
+        #[serde(default)]
+        hosts: Vec<String>,
+    },
+    /// FR-139 — per-Linux-user GPU·h usage table (`GET /api/agent/self/gpu/users`).
+    GpuUsers {
+        #[serde(default)]
+        org: String,
+        #[serde(default)]
+        range: String,
+    },
+    /// FR-139 — read recent GPU alerts received over `rc:gpu.alert` strictly
+    /// newer than `after_seq` (read-only, zero network I/O; polled by companion).
+    GpuAlerts {
+        #[serde(default)]
+        after_seq: u64,
+    },
 }
 
 /// Snapshot of the daemon's self-update lifecycle, shared across
@@ -2168,6 +2198,13 @@ pub enum Response {
     /// Answer to [`Request::UpdateStatus`], [`Request::CheckUpdate`], and
     /// [`Request::ApplyUpdate`].
     UpdateStatus(Box<UpdateStatusInfo>),
+    /// FR-139 — answer to [`Request::GpuFleet`]. Boxed so small responses do not
+    /// pay for the fleet payload size.
+    GpuFleet(Box<GpuFleetPage>),
+    /// FR-139 — answer to [`Request::GpuUsers`].
+    GpuUsers(GpuUsersPage),
+    /// FR-139 — answer to [`Request::GpuAlerts`].
+    GpuAlerts(GpuAlertsPage),
 }
 
 /// FR-85 — options for a LOCAL recording. The microphone and system audio are
@@ -3254,6 +3291,26 @@ pub trait LocalApiState: Send + Sync {
             message: "self-update is not supported on this node".into(),
         }
     }
+    /// FR-139 — fetch GPU fleet view from `/api/agent/self/gpu/fleet`.
+    async fn gpu_fleet(&self, _org: &str, _live: bool, _wait_ms: u32, _hosts: &[String]) -> Response {
+        Response::Upstream {
+            code: "unsupported".into(),
+            message: "this node has no server connection to query GPU servers".into(),
+            status: None,
+        }
+    }
+    /// FR-139 — fetch GPU per-user usage table from `/api/agent/self/gpu/users`.
+    async fn gpu_users(&self, _org: &str, _range: &str) -> Response {
+        Response::Upstream {
+            code: "unsupported".into(),
+            message: "this node has no server connection to query GPU usage".into(),
+            status: None,
+        }
+    }
+    /// FR-139 — read recent GPU alerts received on `rc:gpu.alert` after `after_seq`.
+    fn gpu_alerts(&self, _after_seq: u64) -> GpuAlertsPage {
+        GpuAlertsPage::default()
+    }
 }
 
 /// FR-85 — the refusal a non-console caller gets for a recording verb.
@@ -3375,7 +3432,12 @@ pub fn person_may(req: &Request) -> bool {
         // the console to check/trigger updates never grants version/URL control.
         | Request::UpdateStatus
         | Request::CheckUpdate
-        | Request::ApplyUpdate => true,
+        | Request::ApplyUpdate
+        // FR-139 — GPU fleet / user summary (same read-only visibility as
+        // `Request::Devices`) and the companion's own GPU alert ring.
+        | Request::GpuFleet { .. }
+        | Request::GpuUsers { .. }
+        | Request::GpuAlerts { .. } => true,
         Request::Flows
         | Request::Ping { .. }
         | Request::CreateForward { .. }
@@ -3484,6 +3546,7 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
             ok: state.companion_bye(*pid),
         },
         Request::UpdateStatus => Response::UpdateStatus(Box::new(state.update_status())),
+        Request::GpuAlerts { after_seq } => Response::GpuAlerts(state.gpu_alerts(*after_seq)),
         // `Ping` / `Create*` / the mutating `Route*` verbs are async —
         // intercepted in `serve_connection` before this sync dispatch runs.
         // These arms only satisfy match exhaustiveness.
@@ -3521,7 +3584,9 @@ pub fn handle(req: &Request, state: &dyn LocalApiState) -> Response {
         | Request::Connect { .. }
         | Request::ConnectStatus { .. }
         | Request::CheckUpdate
-        | Request::ApplyUpdate => Response::Error {
+        | Request::ApplyUpdate
+        | Request::GpuFleet { .. }
+        | Request::GpuUsers { .. } => Response::Error {
             message: "this verb must be served on the async path".into(),
         },
     }
@@ -3881,6 +3946,13 @@ where
                 Ok(Request::ConnectStatus { id }) => state.connect_status(id),
                 Ok(Request::CheckUpdate) => state.check_update().await,
                 Ok(Request::ApplyUpdate) => state.apply_update().await,
+                Ok(Request::GpuFleet {
+                    org,
+                    live,
+                    wait_ms,
+                    hosts,
+                }) => state.gpu_fleet(&org, live, wait_ms, &hosts).await,
+                Ok(Request::GpuUsers { org, range }) => state.gpu_users(&org, &range).await,
                 Ok(req) => handle(&req, state),
                 Err(e) => Response::Error {
                     message: format!("bad request: {e}"),
@@ -5487,6 +5559,51 @@ impl Client {
         match self.request(&req).await? {
             Response::Mesh(view) => Ok(*view),
             other => Err(directory_error(other)),
+        }
+    }
+
+    /// FR-139 — `Request::GpuFleet` → visible GPU servers + live or cached metrics.
+    pub async fn gpu_fleet(
+        &mut self,
+        org: &str,
+        live: bool,
+        wait_ms: u32,
+        hosts: &[String],
+    ) -> Result<GpuFleetPage, DirectoryError> {
+        let req = Request::GpuFleet {
+            org: org.to_string(),
+            live,
+            wait_ms,
+            hosts: hosts.to_vec(),
+        };
+        match self.request(&req).await? {
+            Response::GpuFleet(page) => Ok(*page),
+            other => Err(directory_error(other)),
+        }
+    }
+
+    /// FR-139 — `Request::GpuUsers` → per-Linux-user GPU·h usage table.
+    pub async fn gpu_users(
+        &mut self,
+        org: &str,
+        range: &str,
+    ) -> Result<GpuUsersPage, DirectoryError> {
+        let req = Request::GpuUsers {
+            org: org.to_string(),
+            range: range.to_string(),
+        };
+        match self.request(&req).await? {
+            Response::GpuUsers(page) => Ok(page),
+            other => Err(directory_error(other)),
+        }
+    }
+
+    /// FR-139 — `Request::GpuAlerts` → recent GPU alerts strictly newer than `after_seq`.
+    pub async fn gpu_alerts(&mut self, after_seq: u64) -> std::io::Result<GpuAlertsPage> {
+        let req = Request::GpuAlerts { after_seq };
+        match self.request(&req).await? {
+            Response::GpuAlerts(page) => Ok(page),
+            other => Err(unexpected_response(other)),
         }
     }
 

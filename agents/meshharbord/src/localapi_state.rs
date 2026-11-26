@@ -2421,6 +2421,67 @@ impl LocalApiState for DaemonState {
         crate::person_socket::or_machine_view(own, req).await
     }
 
+    /// FR-139 — live or cached GPU fleet view from `/api/agent/self/gpu/fleet`
+    /// (and, on a Mac's per-user half, forwarded through the root half).
+    async fn gpu_fleet(&self, org: &str, live: bool, wait_ms: u32, hosts: &[String]) -> Response {
+        let own = match &self.self_view {
+            Some(view) => view.gpu_fleet(org, live, wait_ms, hosts).await,
+            None => Response::Upstream {
+                code: "unsupported".into(),
+                message: "this daemon was started without a server identity to ask".into(),
+                status: None,
+            },
+        };
+        let req = tunnel_core::localapi::Request::GpuFleet {
+            org: org.to_string(),
+            live,
+            wait_ms,
+            hosts: hosts.to_vec(),
+        };
+        crate::person_socket::or_machine_view(own, req).await
+    }
+
+    /// FR-139 — per-Linux-user GPU·h usage table from `/api/agent/self/gpu/users`.
+    async fn gpu_users(&self, org: &str, range: &str) -> Response {
+        let own = match &self.self_view {
+            Some(view) => view.gpu_users(org, range).await,
+            None => Response::Upstream {
+                code: "unsupported".into(),
+                message: "this daemon was started without a server identity to ask".into(),
+                status: None,
+            },
+        };
+        let req = tunnel_core::localapi::Request::GpuUsers {
+            org: org.to_string(),
+            range: range.to_string(),
+        };
+        crate::person_socket::or_machine_view(own, req).await
+    }
+
+    /// FR-139 — recent GPU alerts received on `rc:gpu.alert` strictly newer
+    /// than `after_seq`. Read-only from the host-wide GPU supervisor ring.
+    fn gpu_alerts(&self, after_seq: u64) -> tunnel_core::localapi::GpuAlertsPage {
+        let alerts = self
+            .remote_config
+            .as_ref()
+            .map(|rc| {
+                rc.gpu()
+                    .alerts_after(after_seq)
+                    .into_iter()
+                    .map(|a| tunnel_core::localapi::GpuAlertItem {
+                        seq: a.seq,
+                        at: a.at,
+                        severity: a.severity,
+                        title: a.title,
+                        body: a.body,
+                        link: a.link,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        tunnel_core::localapi::GpuAlertsPage { alerts }
+    }
+
     /// FR-97 P2h — on a Mac's per-user half, which runs no overlay node, the
     /// network fields of the status (overlay addresses, exit, MagicDNS) are the
     /// root half's ([`crate::person_socket::or_machine_status`]). Everywhere

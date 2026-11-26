@@ -352,6 +352,10 @@ enum Command {
         #[command(flatten)]
         fmt: OutputFmt,
     },
+    /// FR-139 — GPU servers at a glance: live fleet view, interactive `-w` TUI,
+    /// `users` GPU·h usage table, and `free` GPU picker.
+    #[command(visible_alias = "gpu")]
+    Nvitop(crate::nvitop::NvitopArgs),
     /// Explain why ONE peer rides the carrier it rides: the tier ladder with
     /// each tier's eligibility and score, and any hold-down that is
     /// overriding the raw ranking (a demote-follow window, a server DERP pin,
@@ -1279,6 +1283,7 @@ where
             })
             .await
         }
+        Command::Nvitop(args) => crate::nvitop::run(args).await,
         Command::Why { peer, fmt } => localclient::why(&peer, fmt.json).await,
         Command::Netcheck { fmt } => localclient::netcheck(fmt.json).await,
         Command::Flows { fmt } => localclient::flows(fmt.json).await,
