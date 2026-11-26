@@ -1864,6 +1864,38 @@ const KEYS: &[KeyMeta] = &[
         description: "FR-119 - frame rates above 60 this device must not grant: comma-separated name:fps entries (e.g. hevc_qsv:120), `*` for every encoder (e.g. *:144). Empty or `none` = deny nothing. Env: MESHHARBORD_FPS_DENY. Pushable through remote config. Restart required.",
     },
     KeyMeta {
+        key: "gpu_telemetry",
+        group: Group::Device,
+        tier: Tier::Standard,
+        live: true,
+        kind: "tribool",
+        description: "FR-139 - allow GPU server telemetry collection when the coordination server holds a lease. Built-in default: on. When false, the daemon never spawns gpu-sampler and reports status=off_local. Device-only: never pushable through remote config. Env: MESHHARBORD_GPU_TELEMETRY.",
+    },
+    KeyMeta {
+        key: "gpu_processes",
+        group: Group::Device,
+        tier: Tier::Standard,
+        live: true,
+        kind: "tribool",
+        description: "FR-139 - include per-process GPU attribution (user, basename, PID, VRAM, SM%, container) in GPU telemetry reports. Built-in default: on. When false, reports procs_state=off and omits procs. Device-only: never pushable through remote config. Env: MESHHARBORD_GPU_PROCESSES.",
+    },
+    KeyMeta {
+        key: "gpu_backends_deny",
+        group: Group::Device,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "string",
+        description: "FR-139 - comma-separated GPU telemetry backends to skip (`nvidia`, `amd`, `intel`, `apple`) or `none`. Empty = probe all available backends. Env: MESHHARBORD_GPU_BACKENDS_DENY. Pushable through remote config. Restart required.",
+    },
+    KeyMeta {
+        key: "gpu_metrics_listen",
+        group: Group::Device,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "string",
+        description: "FR-139 - optional loopback-only Prometheus /metrics listen address (127.0.0.1:<port> or [::1]:<port>). Empty = disabled. Non-loopback addresses are rejected. Device-only: never pushable through remote config. Restart required.",
+    },
+    KeyMeta {
         key: "vaapi_device",
         group: Group::VideoEncoding,
         tier: Tier::Advanced,
@@ -2308,6 +2340,10 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "fps_high" => cfg.fps_high.map(fmt_bool),
         "encoder_cells_deny" => cfg.encoder_cells_deny.clone(),
         "fps_deny" => cfg.fps_deny.clone(),
+        "gpu_telemetry" => cfg.gpu_telemetry.map(fmt_bool),
+        "gpu_processes" => cfg.gpu_processes.map(fmt_bool),
+        "gpu_backends_deny" => cfg.gpu_backends_deny.clone(),
+        "gpu_metrics_listen" => cfg.gpu_metrics_listen.clone(),
         "vaapi_device" => cfg.vaapi_device.clone(),
         "d3d12_adapter" => cfg.d3d12_adapter.clone(),
         "vulkan_device" => cfg.vulkan_device.clone(),
@@ -3056,6 +3092,26 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
                 }
             }
         }
+        "gpu_telemetry" => cfg.gpu_telemetry = parse_tribool(value)?,
+        "gpu_processes" => cfg.gpu_processes = parse_tribool(value)?,
+        "gpu_backends_deny" => {
+            cfg.gpu_backends_deny = match value.map(str::trim).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(v) => {
+                    crate::config::validate_gpu_backends_deny(v)?;
+                    Some(v.to_ascii_lowercase())
+                }
+            }
+        }
+        "gpu_metrics_listen" => {
+            cfg.gpu_metrics_listen = match value.map(str::trim).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(v) => {
+                    let addr = crate::config::validate_gpu_metrics_listen(v)?;
+                    Some(addr.to_string())
+                }
+            }
+        }
         "forward_acl" => {
             cfg.forward_acl = match value.map(str::trim).filter(|s| !s.is_empty()) {
                 None => Default::default(),
@@ -3542,6 +3598,9 @@ mod tests {
             "external_access_enabled",
             "external_consent_mode",
             "external_max_permissions",
+            // FR-139 — re-seeded by `adopt_local`; GPU supervisor reads live.
+            "gpu_telemetry",
+            "gpu_processes",
         ]
         .into_iter()
         .map(String::from)
@@ -5497,6 +5556,44 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn fr139_gpu_config_keys_validate_and_restrict_metrics_to_loopback() {
+        let mut cfg = crate::config::test_fixture();
+        assert!(cfg.gpu_telemetry_enabled());
+        assert!(cfg.gpu_processes_enabled());
+
+        apply(&mut cfg, "gpu_telemetry", Some("false")).unwrap();
+        assert!(!cfg.gpu_telemetry_enabled());
+        apply(&mut cfg, "gpu_processes", Some("0")).unwrap();
+        assert!(!cfg.gpu_processes_enabled());
+
+        apply(&mut cfg, "gpu_backends_deny", Some("AMD, intel")).unwrap();
+        assert_eq!(cfg.gpu_backends_deny.as_deref(), Some("amd, intel"));
+        apply(&mut cfg, "gpu_backends_deny", Some("none")).unwrap();
+        assert!(apply(&mut cfg, "gpu_backends_deny", Some("rocm")).is_err());
+
+        apply(&mut cfg, "gpu_metrics_listen", Some("127.0.0.1:9401")).unwrap();
+        assert_eq!(cfg.gpu_metrics_listen.as_deref(), Some("127.0.0.1:9401"));
+        apply(&mut cfg, "gpu_metrics_listen", Some("[::1]:9401")).unwrap();
+        assert_eq!(cfg.gpu_metrics_listen.as_deref(), Some("[::1]:9401"));
+        for bad in [
+            "0.0.0.0:9401",
+            "[::]:9401",
+            "192.168.1.5:9401",
+            "10.0.0.2:9401",
+            "127.0.0.1:0",
+            "localhost:9401",
+            "not-an-addr",
+        ] {
+            assert!(
+                apply(&mut cfg, "gpu_metrics_listen", Some(bad)).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        apply(&mut cfg, "gpu_metrics_listen", None).unwrap();
+        assert_eq!(cfg.gpu_metrics_listen, None);
     }
 
     /// FR-119 P2b — `fps_deny` sets, echoes, clears, and refuses an entry that

@@ -37,6 +37,8 @@ pub struct DesiredConfigBody {
     pub encoder_cells_deny: Option<String>,
     #[serde(default)]
     pub fps_deny: Option<String>,
+    #[serde(default)]
+    pub gpu_backends_deny: Option<String>,
     /// Every other key in the body, kept only to be refused if it names a
     /// switch that is the device's own ([`DeviceSwitch::named_in`]). Dropped
     /// silently, such a key would answer 200 as if the push had taken. Never
@@ -86,15 +88,28 @@ pub enum DeviceSwitch {
     /// the loss of the control socket. The server's own lever is its window
     /// and its resume scope.
     SessionsSurviveReattach,
+    /// FR-139 — `gpu_telemetry`, `gpu_processes`, `gpu_metrics_listen`:
+    /// device-owned GPU switches that no server may push.
+    GpuTelemetry,
+    GpuProcesses,
+    GpuMetricsListen,
 }
 
 impl DeviceSwitch {
-    const ALL: [Self; 1] = [Self::SessionsSurviveReattach];
+    const ALL: [Self; 4] = [
+        Self::SessionsSurviveReattach,
+        Self::GpuTelemetry,
+        Self::GpuProcesses,
+        Self::GpuMetricsListen,
+    ];
 
     /// The switch's key in the device's config.
     pub fn key(self) -> &'static str {
         match self {
             Self::SessionsSurviveReattach => "rc_sessions_survive_reattach",
+            Self::GpuTelemetry => "gpu_telemetry",
+            Self::GpuProcesses => "gpu_processes",
+            Self::GpuMetricsListen => "gpu_metrics_listen",
         }
     }
 
@@ -130,6 +145,15 @@ impl ConfigDenyReason {
                 "rc_sessions_survive_reattach keeps a live remote session through the loss \
                  of the device's control socket, which is the device's decision or a \
                  release's: no server can push it"
+            }
+            Self::DeviceOwnedSwitch(DeviceSwitch::GpuTelemetry) => {
+                "gpu_telemetry is a device-owned GPU telemetry switch: no server can push it"
+            }
+            Self::DeviceOwnedSwitch(DeviceSwitch::GpuProcesses) => {
+                "gpu_processes is a device-owned GPU process-attribution switch: no server can push it"
+            }
+            Self::DeviceOwnedSwitch(DeviceSwitch::GpuMetricsListen) => {
+                "gpu_metrics_listen opens a local Prometheus listener on the device: no server can push it"
             }
         }
     }
@@ -216,6 +240,7 @@ pub async fn set_desired_config(
         ssh_port: body.ssh_port,
         encoder_cells_deny: body.encoder_cells_deny,
         fps_deny: body.fps_deny,
+        gpu_backends_deny: body.gpu_backends_deny,
         revision: agent.desired_config.revision + 1,
         updated_by: Some(auth.user_id),
         updated_at: Some(DateTime::now()),
@@ -601,5 +626,29 @@ mod tests {
             decide(0, &DesiredConfig::default(), &deny),
             Err(ConfigDenyReason::NotDeviceAdmin)
         );
+    }
+
+    #[test]
+    fn fr139_gpu_backends_deny_needs_only_manage_agents_and_device_switches_are_refused() {
+        let deny = DesiredConfig {
+            gpu_backends_deny: Some("amd,intel".into()),
+            ..Default::default()
+        };
+        decide(DEFAULT_ADMIN, &DesiredConfig::default(), &deny)
+            .expect("MANAGE_AGENTS alone may set gpu_backends_deny");
+        assert!(!deny.touches_exec() && !deny.touches_ssh());
+        assert!(!deny.is_empty());
+        assert_eq!(
+            decide(0, &DesiredConfig::default(), &deny),
+            Err(ConfigDenyReason::NotDeviceAdmin)
+        );
+        for k in ["gpu_telemetry", "gpu_processes", "gpu_metrics_listen"] {
+            let mut rest = std::collections::BTreeMap::new();
+            rest.insert(k.to_string(), serde_json::json!(true));
+            assert!(
+                DeviceSwitch::named_in(&rest).is_some(),
+                "{k} must be refused as a device-owned switch"
+            );
+        }
     }
 }

@@ -3052,6 +3052,22 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         charge_org: Option<String>,
     },
+
+    /// FR-139 — static GPU hardware inventory emitted on connect and whenever
+    /// detected GPU hardware changes (e.g. driver load/unload, MIG toggle).
+    #[serde(rename = "rc:agent.gpu_inventory")]
+    AgentGpuInventory {
+        #[serde(flatten)]
+        inventory: Box<crate::gpu::GpuInventory>,
+    },
+
+    /// FR-139 — periodic GPU + host telemetry emitted while the host holds an
+    /// active server lease (`rc:gpu.lease`).
+    #[serde(rename = "rc:agent.gpu_report")]
+    AgentGpuReport {
+        #[serde(flatten)]
+        report: Box<crate::gpu::GpuReport>,
+    },
 }
 
 /// FR-90 P3-7-1b — serde's test for a port that is absent: SOCKS names none.
@@ -3235,6 +3251,8 @@ impl ClientMsg {
             ClientMsg::ExtauthKe2 { .. } => "rc:extauth.ke2",
             ClientMsg::ExtauthOutcome { .. } => "rc:extauth.outcome",
             ClientMsg::ExtauthSession { .. } => "rc:extauth.session",
+            ClientMsg::AgentGpuInventory { .. } => "rc:agent.gpu_inventory",
+            ClientMsg::AgentGpuReport { .. } => "rc:agent.gpu_report",
         }
     }
 
@@ -3255,7 +3273,10 @@ impl ClientMsg {
             // MeshHarbor — device management: the owner's view of its accounts.
             | ClientMsg::LocalAccountsResult { .. }
             // FR-129 — switching a device's two-factor on or off.
-            | ClientMsg::TwoFactorResult { .. } => Owner::Fleet,
+            | ClientMsg::TwoFactorResult { .. }
+            // FR-139 — GPU server inventory & live telemetry.
+            | ClientMsg::AgentGpuInventory { .. }
+            | ClientMsg::AgentGpuReport { .. } => Owner::Fleet,
             ClientMsg::SharedLeaseChallenge { .. }
             | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
@@ -3477,6 +3498,8 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:extauth.ke2", Owner::Remote),
     ("rc:extauth.outcome", Owner::Remote),
     ("rc:extauth.session", Owner::Remote),
+    ("rc:agent.gpu_inventory", Owner::Fleet),
+    ("rc:agent.gpu_report", Owner::Fleet),
 ];
 
 #[cfg(test)]
@@ -5969,6 +5992,26 @@ pub enum ServerMsg {
         /// The account the target's SSH policy maps, which the vault decided
         /// on (a [`crate::models::SshAccountMode`] word) and the ticket names.
         account: String,
+    },
+
+    /// FR-139 — server lease telling a marked GPU server how fast to report.
+    /// `standing: true` holds the baseline 30 s cadence while connected; a
+    /// shorter `interval_ms` lasts `ttl_ms` before falling back to standing
+    /// (or stopping if `standing == false`).
+    #[serde(rename = "rc:gpu.lease")]
+    GpuLease {
+        interval_ms: u32,
+        ttl_ms: u32,
+        #[serde(default)]
+        standing: bool,
+    },
+
+    /// FR-139 — GPU alert relayed to the device owner's online agents with a
+    /// live desktop companion so the tray raises an OS notification.
+    #[serde(rename = "rc:gpu.alert")]
+    GpuAlert {
+        #[serde(flatten)]
+        alert: Box<crate::gpu::GpuAlertWire>,
     },
 }
 
@@ -14447,5 +14490,83 @@ mod fr130_wire_tests {
                 .collect::<Vec<_>>(),
             vec![Owner::Remote]
         );
+    }
+
+    #[test]
+    fn fr139_gpu_wire_messages_round_trip_and_belong_to_fleet() {
+        let inv = ClientMsg::AgentGpuInventory {
+            inventory: Box::new(crate::gpu::GpuInventory {
+                backend: Some("nvml".into()),
+                driver_version: Some("550.90.07".into()),
+                gpus: vec![crate::gpu::GpuInventoryItem {
+                    uuid: "GPU-0001".into(),
+                    idx: 0,
+                    name: "RTX 4090".into(),
+                    mem_total_mb: Some(24_564),
+                    power_limit_w: Some(450),
+                    mig: false,
+                    pci_bus: Some("0000:01:00.0".into()),
+                    unified: false,
+                }],
+                status: crate::gpu::GpuHostStatus::Ok,
+            }),
+        };
+        assert_eq!(inv.wire_tag(), "rc:agent.gpu_inventory");
+        assert_eq!(inv.namespace(), Owner::Fleet);
+        let inv_json = serde_json::to_string(&inv).unwrap();
+        assert!(inv_json.contains(r#""t":"rc:agent.gpu_inventory""#));
+        let inv_back: ClientMsg = serde_json::from_str(&inv_json).unwrap();
+        assert_eq!(inv_back.wire_tag(), "rc:agent.gpu_inventory");
+
+        let rep = ClientMsg::AgentGpuReport {
+            report: Box::new(crate::gpu::GpuReport {
+                seq: 42,
+                interval_ms: 2000,
+                status: crate::gpu::GpuHostStatus::Ok,
+                backend: Some("nvml".into()),
+                driver_version: Some("550.90.07".into()),
+                host: crate::gpu::HostLoad::default(),
+                gpus: vec![],
+            }),
+        };
+        assert_eq!(rep.wire_tag(), "rc:agent.gpu_report");
+        assert_eq!(rep.namespace(), Owner::Fleet);
+        let rep_json = serde_json::to_string(&rep).unwrap();
+        assert!(rep_json.contains(r#""t":"rc:agent.gpu_report""#));
+        let rep_back: ClientMsg = serde_json::from_str(&rep_json).unwrap();
+        assert_eq!(rep_back.wire_tag(), "rc:agent.gpu_report");
+
+        let lease = ServerMsg::GpuLease {
+            interval_ms: 2000,
+            ttl_ms: 30_000,
+            standing: true,
+        };
+        let lease_json = serde_json::to_string(&lease).unwrap();
+        assert!(lease_json.contains(r#""t":"rc:gpu.lease""#));
+        assert!(matches!(
+            serde_json::from_str::<ServerMsg>(&lease_json).unwrap(),
+            ServerMsg::GpuLease {
+                interval_ms: 2000,
+                ttl_ms: 30_000,
+                standing: true,
+            }
+        ));
+
+        let alert = ServerMsg::GpuAlert {
+            alert: Box::new(crate::gpu::GpuAlertWire {
+                seq: 7,
+                at: 1_762_700_000,
+                severity: "warning".into(),
+                title: "GPU free".into(),
+                body: "gpu-01 has 2 free GPUs".into(),
+                link: "/gpu".into(),
+            }),
+        };
+        let alert_json = serde_json::to_string(&alert).unwrap();
+        assert!(alert_json.contains(r#""t":"rc:gpu.alert""#));
+        assert!(matches!(
+            serde_json::from_str::<ServerMsg>(&alert_json).unwrap(),
+            ServerMsg::GpuAlert { .. }
+        ));
     }
 }

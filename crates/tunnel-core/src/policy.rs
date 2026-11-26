@@ -1073,6 +1073,8 @@ mod tests {
             advertised_routes: Vec::new(),
             relay_home: None,
             relay_rtt: None,
+            gpu_server: false,
+            gpu_inventory: None,
             created_at: DateTime::now(),
             updated_at: DateTime::now(),
             deleted_at: deleted.then(DateTime::now),

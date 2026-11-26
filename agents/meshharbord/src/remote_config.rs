@@ -87,6 +87,12 @@ pub struct RemoteConfigServices {
     /// until [`Self::adopt_local`] seeds the configured value; only the
     /// person at the console can change it, and never the server.
     peer_auth_policy: Arc<std::sync::atomic::AtomicU8>,
+    /// FR-139 — LIVE local GPU telemetry switch (default ON). Read by the
+    /// GPU supervisor on every lease/frame; device-owned, never server-pushable.
+    gpu_telemetry: Arc<AtomicBool>,
+    /// FR-139 — LIVE local GPU per-process attribution switch (default ON).
+    /// Read by the GPU supervisor; device-owned, never server-pushable.
+    gpu_processes: Arc<AtomicBool>,
 }
 
 /// FR-100 P1c — the policy in an atomic: `0` off, `1` audit.
@@ -127,7 +133,19 @@ impl RemoteConfigServices {
             peer_auth_policy: Arc::new(std::sync::atomic::AtomicU8::new(policy_bits(
                 crate::peer_auth::PeerAuthPolicy::Audit,
             ))),
+            gpu_telemetry: Arc::new(AtomicBool::new(true)),
+            gpu_processes: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// FR-139 — whether local GPU telemetry is allowed (live, default ON).
+    pub fn gpu_telemetry_enabled(&self) -> bool {
+        self.gpu_telemetry.load(Ordering::Relaxed)
+    }
+
+    /// FR-139 — whether local per-process GPU attribution is allowed (live, default ON).
+    pub fn gpu_processes_enabled(&self) -> bool {
+        self.gpu_processes.load(Ordering::Relaxed)
     }
 
     /// FR-100 P1c — the device's `peer_auth` policy at this moment.
@@ -254,6 +272,11 @@ impl RemoteConfigServices {
         // FR-100 P1c — the next offer is judged under the owner's new word.
         self.peer_auth_policy
             .store(policy_bits(cfg.peer_auth), Ordering::Relaxed);
+        // FR-139 — GPU telemetry & per-process attribution switches apply live.
+        self.gpu_telemetry
+            .store(cfg.gpu_telemetry_enabled(), Ordering::Relaxed);
+        self.gpu_processes
+            .store(cfg.gpu_processes_enabled(), Ordering::Relaxed);
     }
 
     /// Reconcile the on-disk config against `desired`, persist, and put the
@@ -333,6 +356,21 @@ impl RemoteConfigServices {
                 if cfg.fps_deny != next {
                     cfg.fps_deny = next;
                     applied.needs_restart.push("fps_deny");
+                }
+            }
+            // FR-139 — GPU backend denylist (`gpu_backends_deny`): only ever
+            // removes backends, so pushable under `remote_config_enabled`.
+            if let Some(want) = desired.gpu_backends_deny.as_deref() {
+                let next = Some(want.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if let Some(ref v) = next {
+                    crate::config::validate_gpu_backends_deny(v)
+                        .map_err(|e| format!("invalid gpu_backends_deny: {e}"))?;
+                }
+                if cfg.gpu_backends_deny != next {
+                    cfg.gpu_backends_deny = next;
+                    applied.needs_restart.push("gpu_backends_deny");
                 }
             }
 

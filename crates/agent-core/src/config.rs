@@ -1717,6 +1717,30 @@ pub struct AgentConfig {
     /// `encoder_cells_deny`: it only ever REMOVES rates.
     #[serde(default)]
     pub fps_deny: Option<String>,
+    /// FR-139 — enable GPU server telemetry sampling when the server holds a
+    /// lease (`MESHHARBORD_GPU_TELEMETRY`). Default ON; device-owned (never
+    /// server-pushable). When `Some(false)`, the daemon never spawns
+    /// `gpu-sampler` and reports `status: "off_local"`.
+    #[serde(default)]
+    pub gpu_telemetry: Option<bool>,
+    /// FR-139 — include per-process GPU attribution (`user`, `name`, `pid`,
+    /// `mem_mb`, `sm_pct`, `container`) in GPU reports
+    /// (`MESHHARBORD_GPU_PROCESSES`). Default ON; device-owned (never
+    /// server-pushable). When `Some(false)`, cards report `procs_state: "off"`
+    /// and omit `procs`.
+    #[serde(default)]
+    pub gpu_processes: Option<bool>,
+    /// FR-139 — comma-separated GPU telemetry backends to skip (`nvidia`,
+    /// `amd`, `intel`, `apple`, or `none`). Env `MESHHARBORD_GPU_BACKENDS_DENY`.
+    /// Pushable through remote config with `MANAGE_AGENTS` alone because it
+    /// only ever removes backends.
+    #[serde(default)]
+    pub gpu_backends_deny: Option<String>,
+    /// FR-139 — optional loopback-only Prometheus `/metrics` listener address
+    /// (`127.0.0.1:<port>` or `[::1]:<port>`). Default off; device-owned
+    /// (never server-pushable). Validated at config load and `ConfigSet`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_metrics_listen: Option<String>,
     /// FR-77 P4 — pin the VAAPI render node (`MESHHARBORD_VAAPI_DEVICE`,
     /// e.g. `/dev/dri/renderD129`). Unset = the first node libva opens, in
     /// order `/dev/dri/renderD128`…`renderD135`. Read once per process at
@@ -3247,6 +3271,10 @@ pub fn test_fixture() -> AgentConfig {
         fps_high: None,
         encoder_cells_deny: None,
         fps_deny: None,
+        gpu_telemetry: None,
+        gpu_processes: None,
+        gpu_backends_deny: None,
+        gpu_metrics_listen: None,
         vaapi_device: None,
         d3d12_adapter: None,
         vulkan_device: None,
@@ -3369,7 +3397,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 99] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 101] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3488,6 +3516,8 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 99]
         ("TEXT_MOD_NEUTRALIZE", cfg.text_mod_neutralize),
         ("CAPS_CACHE", cfg.caps_cache),
         ("FPS_HIGH", cfg.fps_high),
+        ("GPU_TELEMETRY", cfg.gpu_telemetry),
+        ("GPU_PROCESSES", cfg.gpu_processes),
     ]
 }
 
@@ -3623,6 +3653,10 @@ pub fn env_fallbacks(cfg: &AgentConfig) -> std::collections::HashMap<String, Str
     // FR-119 P2b — the frame-rate denylist, read by the pump once per session.
     if let Some(v) = &cfg.fps_deny {
         fallbacks.insert("FPS_DENY".to_string(), v.clone());
+    }
+    // FR-139 — GPU backend denylist reaches the `gpu-sampler` child process.
+    if let Some(v) = &cfg.gpu_backends_deny {
+        fallbacks.insert("GPU_BACKENDS_DENY".to_string(), v.clone());
     }
     // FR-77 P4 / FR-78 P1 — the pinned hardware-frame devices reach the
     // probe child too.
@@ -3870,7 +3904,66 @@ fn try_load(path: &PathBuf) -> Result<AgentConfig> {
              allow_plaintext_server = true to keep plaintext (a lab without TLS)"
         );
     }
+    // FR-139 §5.1 / §8 — `gpu_metrics_listen` must accept loopback only at both
+    // config load and `ConfigSet`, so a hand-edited 0.0.0.0 bind fails closed.
+    if let Some(listen) = cfg.gpu_metrics_listen.as_deref()
+        && !listen.trim().is_empty()
+        && let Err(reason) = validate_gpu_metrics_listen(listen)
+    {
+        anyhow::bail!("invalid gpu_metrics_listen in {}: {reason}", path.display());
+    }
     Ok(cfg)
+}
+
+/// FR-139 — validate `gpu_metrics_listen`: strictly loopback (`127.0.0.1:<port>`
+/// or `[::1]:<port>`) with a non-zero port. Rejects `0.0.0.0`, `::`, LAN IPs,
+/// hostnames, and port 0.
+pub fn validate_gpu_metrics_listen(raw: &str) -> Result<std::net::SocketAddr, String> {
+    let trimmed = raw.trim();
+    let addr: std::net::SocketAddr = trimmed.parse().map_err(|_| {
+        format!("gpu_metrics_listen {trimmed:?} must be a loopback socket address (e.g. 127.0.0.1:9401 or [::1]:9401)")
+    })?;
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "gpu_metrics_listen {trimmed:?} must bind to a loopback address (127.0.0.1 or ::1) only"
+        ));
+    }
+    if addr.port() == 0 {
+        return Err("gpu_metrics_listen port must be non-zero (1..=65535)".to_string());
+    }
+    Ok(addr)
+}
+
+/// FR-139 — validate `gpu_backends_deny`: comma-separated backend names
+/// (`nvidia`, `amd`, `intel`, `apple`) or the single word `none`.
+pub fn validate_gpu_backends_deny(raw: &str) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return Ok(());
+    }
+    for entry in trimmed.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !matches!(
+            entry.to_ascii_lowercase().as_str(),
+            "nvidia" | "amd" | "intel" | "apple"
+        ) {
+            return Err(format!(
+                "gpu_backends_deny entry {entry:?} must be one of nvidia, amd, intel, apple (or 'none')"
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl AgentConfig {
+    /// FR-139 — effective local GPU telemetry switch (default ON).
+    pub fn gpu_telemetry_enabled(&self) -> bool {
+        self.gpu_telemetry.unwrap_or(true)
+    }
+
+    /// FR-139 — effective local per-process GPU attribution switch (default ON).
+    pub fn gpu_processes_enabled(&self) -> bool {
+        self.gpu_processes.unwrap_or(true)
+    }
 }
 
 #[cfg(all(test, unix))]

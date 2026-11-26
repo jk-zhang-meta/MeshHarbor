@@ -1350,6 +1350,17 @@ pub enum RpcCap {
     /// ⚠️ Equality-matched like every verb here: no other verb is a prefix of
     /// it, nor it of another (a test walks [`RpcCap::ALL`]).
     RcResume,
+    /// FR-139 — the agent supports GPU server inventory & telemetry frames
+    /// (`rc:agent.gpu_inventory`, `rc:agent.gpu_report`, `rc:gpu.lease`).
+    ///
+    /// ⚠️ `gpu` is a prefix of `gpu-alerts` and the two mean different things,
+    /// so matching stays equality (locked by test).
+    Gpu,
+    /// FR-139 — the agent understands `rc:gpu.alert` frames and stores them
+    /// in its local ring for the desktop companion to raise OS notifications.
+    ///
+    /// ⚠️ Distinct from [`Self::Gpu`]: equality-matched.
+    GpuAlerts,
 }
 
 impl RpcCap {
@@ -1412,11 +1423,13 @@ impl RpcCap {
             Self::SharedSshStream => "shared-ssh-stream-v1",
             Self::LocalAccounts => "local-accounts-v1",
             Self::RcResume => "rc-resume",
+            Self::Gpu => "gpu",
+            Self::GpuAlerts => "gpu-alerts",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 51] = [
+    pub const ALL: [RpcCap; 53] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1468,6 +1481,8 @@ impl RpcCap {
         Self::ManagementEntry,
         Self::TwoFactor,
         Self::RcResume,
+        Self::Gpu,
+        Self::GpuAlerts,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -2578,6 +2593,16 @@ pub struct Agent {
     /// `None`.
     #[serde(default)]
     pub relay_rtt: Option<Vec<crate::signaling::RelayRegionRtt>>,
+    /// FR-139 — whether an operator (or GPU-tagged invite/key) marked this
+    /// device as a GPU server so it appears in GPU fleet views, holds a
+    /// standing 30 s telemetry lease, and rolls up GPU history/alerts.
+    #[serde(default)]
+    pub gpu_server: bool,
+    /// FR-139 — latest static GPU inventory reported by `rc:agent.gpu_inventory`
+    /// on connect or hardware change. Kept even for unmarked devices so the
+    /// Devices UI can suggest "4x A100 detected — mark as GPU server".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_inventory: Option<crate::gpu::GpuInventory>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub deleted_at: Option<DateTime>,
@@ -2649,6 +2674,10 @@ pub struct EnrollmentKey {
     /// (`Agent::ephemeral_ttl_secs`). `None` = the server default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ephemeral_ttl_secs: Option<u64>,
+    /// FR-139 — when `true`, devices enrolled using this key are marked
+    /// `Agent.gpu_server = true` automatically.
+    #[serde(default)]
+    pub gpu_server: bool,
     #[serde(default)]
     pub last_used_at: Option<DateTime>,
     pub created_at: DateTime,
@@ -2944,6 +2973,13 @@ pub struct DesiredConfig {
     /// per process, which the device reports as `needs_restart`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps_deny: Option<String>,
+    /// FR-139 §5.1 — GPU telemetry backend denylist (`gpu_backends_deny`):
+    /// comma-separated backend names (`nvidia`, `amd`, `intel`, `apple`) or
+    /// `none`. Pushable with `MANAGE_AGENTS` alone because it only ever
+    /// REMOVES backends a device would otherwise probe; never turns telemetry
+    /// on or opens a listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_backends_deny: Option<String>,
     /// Bumped on every write. The agent reports the revision it has applied,
     /// so "asked for" and "actually running" can be told apart in the UI —
     /// without it, a device that refused the config and one that never heard
@@ -2967,6 +3003,7 @@ impl DesiredConfig {
             && self.ssh_port.is_none()
             && self.encoder_cells_deny.is_none()
             && self.fps_deny.is_none()
+            && self.gpu_backends_deny.is_none()
     }
 
     /// Whether this request touches the Fleet-RPC grant. Drives the
@@ -3012,6 +3049,8 @@ impl DesiredConfig {
             encoder_cells_deny: _,
             // FR-119 P2b — the same for the frame-rate denylist: it only removes.
             fps_deny: _,
+            // FR-139 §5.1 — GPU backend denylist: only removes backends, MANAGE_AGENTS alone.
+            gpu_backends_deny: _,
             revision: _,
             updated_by: _,
             updated_at: _,
@@ -8506,6 +8545,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 7,
             updated_by: None,
             updated_at: None,
@@ -8551,6 +8591,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 7,
             updated_by: None,
             updated_at: None,
@@ -8580,6 +8621,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 7,
             updated_by: None,
             updated_at: None,
@@ -8629,6 +8671,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 7,
             updated_by: None,
             updated_at: None,
@@ -8671,6 +8714,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 7,
             updated_by: None,
             updated_at: None,
@@ -10475,6 +10519,7 @@ mod tests {
             ssh_port: Some(2222),
             encoder_cells_deny: Some("none".into()),
             fps_deny: Some("*:144".into()),
+            gpu_backends_deny: Some("none".into()),
             revision: 1,
             updated_by: Some(ObjectId::new()),
             updated_at: Some(DateTime::now()),
@@ -10553,6 +10598,12 @@ mod tests {
             // FR-99 — whether a controller may cover this screen: a server
             // that could set it could curtain any device it controls.
             "privacy_mode_allowed",
+            // FR-139 — device-owned GPU switches: a server may deny a broken
+            // backend (`gpu_backends_deny`), never turn telemetry or process
+            // collection back on or open a Prometheus listener.
+            "gpu_telemetry",
+            "gpu_processes",
+            "gpu_metrics_listen",
             // FR-101 P2b — the device's own floor for clipboard, files and
             // audio. A server that could set them could switch back on what
             // the owner switched off; the org's policy is the server's half.
@@ -11798,6 +11849,24 @@ mod fr130_resume_tests {
                 "{cap:?} and rc-resume must not be prefixes of each other"
             );
         }
+    }
+
+    #[test]
+    fn fr139_gpu_rpc_caps_are_equality_matched() {
+        assert_eq!(RpcCap::Gpu.wire(), "gpu");
+        assert_eq!(RpcCap::GpuAlerts.wire(), "gpu-alerts");
+        assert!(caps(&["gpu"]).has_rpc(RpcCap::Gpu));
+        assert!(
+            !caps(&["gpu"]).has_rpc(RpcCap::GpuAlerts),
+            "`gpu` must NOT prefix-match `gpu-alerts`"
+        );
+        assert!(caps(&["gpu-alerts"]).has_rpc(RpcCap::GpuAlerts));
+        assert!(
+            !caps(&["gpu-alerts"]).has_rpc(RpcCap::Gpu),
+            "`gpu-alerts` must NOT match `gpu`"
+        );
+        assert!(caps(&["gpu", "gpu-alerts"]).has_rpc(RpcCap::Gpu));
+        assert!(caps(&["gpu", "gpu-alerts"]).has_rpc(RpcCap::GpuAlerts));
     }
 
     fn row() -> RemoteSession {

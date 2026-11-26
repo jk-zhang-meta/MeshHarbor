@@ -214,6 +214,8 @@ impl AgentDao {
             advertised_routes: Vec::new(),
             relay_home: None,
             relay_rtt: None,
+            gpu_server: false,
+            gpu_inventory: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,

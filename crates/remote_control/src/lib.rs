@@ -43,6 +43,8 @@ pub mod derp_frame;
 pub mod derp_ticket;
 pub mod device_access;
 pub mod error;
+/// FR-139 — GPU servers at a glance wire types and pure state/freshness helpers.
+pub mod gpu;
 pub mod hive;
 pub mod management_entry;
 pub mod models;

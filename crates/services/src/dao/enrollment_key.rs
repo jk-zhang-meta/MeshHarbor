@@ -79,6 +79,7 @@ impl EnrollmentKeyDao {
             expires_at,
             revoked_at: None,
             ephemeral_ttl_secs,
+            gpu_server: false,
             last_used_at: None,
             created_at: now,
             updated_at: now,
