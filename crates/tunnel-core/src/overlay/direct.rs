@@ -251,6 +251,52 @@ impl LanIface {
     }
 }
 
+/// FR-139 — LAN interfaces VISIBLE on this host strictly for outbound subnet
+/// matching and self-address exclusion, NEVER for binding or advertising.
+///
+/// On a Mirrored WSL2 guest, [`gather_lan_interfaces`] and
+/// [`gather_lan_ifaces`] remain empty so the guest never binds
+/// `(host_lan_ip, port)` (2026-08-14 socket starvation) and never advertises
+/// the Windows host's IP (#436 phantom LAN candidate). Keeping visible
+/// prefixes in this separate newtype lets the guest dial sibling LAN peers
+/// (e.g. other laptops on the same Wi-Fi) via its wildcard `public_sock` while
+/// excluding the host's own mirrored IP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VisibleLan(Vec<LanIface>);
+
+impl VisibleLan {
+    /// Enumerate visible usable LAN interfaces including on Mirrored WSL2
+    /// guests (read-only; never pass these to socket bind or join adverts).
+    pub fn gather() -> Self {
+        Self(
+            gather_lan_interfaces_raw(true)
+                .into_iter()
+                .map(|(_, ip, prefix_len, ifindex)| LanIface {
+                    ip,
+                    prefix_len,
+                    ifindex,
+                })
+                .collect(),
+        )
+    }
+
+    pub fn from_ifaces(ifaces: Vec<LanIface>) -> Self {
+        Self(ifaces)
+    }
+
+    pub fn ifaces(&self) -> &[LanIface] {
+        &self.0
+    }
+
+    pub fn ips(&self) -> Vec<Ipv4Addr> {
+        self.0.iter().map(|i| i.ip).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// Like [`gather_lan_interfaces`] but also preserves each interface's real
 /// (clamped `/16..=/30`) IPv4 prefix length for netmask-aware subnet matching.
 /// Still returns empty on Mirrored WSL2 guests (never binds/advertises host IPs).

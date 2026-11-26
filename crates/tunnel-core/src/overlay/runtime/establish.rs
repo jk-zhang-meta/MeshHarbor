@@ -36,6 +36,10 @@ pub(super) struct DirectCtx {
     pub(super) my_ips: Vec<Ipv4Addr>,
     /// FR-139 — usable LAN interfaces with real clamped subnet prefixes.
     pub(super) my_lan_ifaces: Vec<direct::LanIface>,
+    /// FR-139 — outbound-only visible LAN prefixes on Mirrored WSL2 guests
+    /// (never bound, never advertised; used for wildcard LAN dialing and
+    /// host-IP self-exclusion).
+    pub(super) visible_lan: direct::VisibleLan,
     pub(super) endpoints: Vec<String>,
     /// Phase A (`public_direct_enabled`) — a single `0.0.0.0:0` socket used to
     /// DIAL a peer's public endpoint. Unbound to any interface so the OS routing
@@ -82,6 +86,19 @@ impl DirectCtx {
             .copied()
             .map(direct::LanIface::from_ip_default_24)
             .collect()
+    }
+
+    /// All local IPv4 addresses belonging to this host (owned LAN NICs plus
+    /// Mirrored WSL2 host-visible NICs), used strictly for self-address
+    /// exclusion so we never dial ourselves or the mirrored Windows host IP.
+    pub(super) fn all_self_ips(&self) -> Vec<Ipv4Addr> {
+        let mut out = self.my_ips.clone();
+        for ip in self.visible_lan.ips() {
+            if !out.contains(&ip) {
+                out.push(ip);
+            }
+        }
+        out
     }
 
     /// The socket a srflx-tier dial to `dst` rides: the IPv6 socket for an
@@ -214,7 +231,8 @@ pub(super) fn gather_lan_candidates(
     if cfg.backbone_only {
         return Vec::new();
     }
-    let ifaces = ctx.effective_lan_ifaces();
+    let owned_ifaces = ctx.effective_lan_ifaces();
+    let exclude_ips = ctx.all_self_ips();
     let same_nat = direct::shares_public_nat_ip(
         ctx.punch.as_ref().map(|(s, _)| s.as_str()),
         &cfg.srflx_endpoints,
@@ -225,7 +243,10 @@ pub(super) fn gather_lan_candidates(
         ctx.socks.first().map(|(ip, _)| LanEgress::Owned(*ip))
     };
     let mut out = Vec::new();
-    for matched in direct::pick_lan_candidates(&ifaces, &ctx.my_ips, &cfg.lan_endpoints, same_nat) {
+    // 1. Owned LAN interfaces (per-interface sockets) + routed RFC 1918.
+    for matched in
+        direct::pick_lan_candidates(&owned_ifaces, &exclude_ips, &cfg.lan_endpoints, same_nat)
+    {
         let cand = match matched {
             direct::MatchedLan::Subnet { local_ip, dst } => LanCandidate::subnet(local_ip, dst),
             direct::MatchedLan::Routed { dst } => match routed_egress {
@@ -235,6 +256,23 @@ pub(super) fn gather_lan_candidates(
         };
         if !out.iter().any(|c: &LanCandidate| c.dst == cand.dst) {
             out.push(cand);
+        }
+    }
+    // 2. Mirrored WSL2 visible host LAN prefixes: dial sibling LAN peers over
+    //    the wildcard `public_sock` without binding or advertising host IPs,
+    //    and strictly excluding the host's own mirrored IP.
+    if ctx.public_sock.is_some() && !ctx.visible_lan.is_empty() {
+        for matched in direct::pick_lan_candidates(
+            ctx.visible_lan.ifaces(),
+            &exclude_ips,
+            &cfg.lan_endpoints,
+            false,
+        ) {
+            if let direct::MatchedLan::Subnet { dst, .. } = matched
+                && !out.iter().any(|c: &LanCandidate| c.dst == dst)
+            {
+                out.push(LanCandidate::wildcard_subnet(dst));
+            }
         }
     }
     out
@@ -261,12 +299,17 @@ pub(super) fn classify_inbound_lan_hint(
             .is_some()
             .then_some((LanEgress::Wildcard, LanPathKind::Loopback));
     }
-    if !direct::is_usable_lan_ipv4(ip) || ctx.my_ips.contains(&ip) {
+    if !direct::is_usable_lan_ipv4(ip) || ctx.all_self_ips().contains(&ip) {
         return None;
     }
     let ifaces = ctx.effective_lan_ifaces();
     if let Some(iface) = ifaces.iter().find(|me| me.same_prefix(ip)) {
         return Some((LanEgress::Owned(iface.ip), LanPathKind::Subnet));
+    }
+    if ctx.public_sock.is_some()
+        && ctx.visible_lan.ifaces().iter().any(|me| me.same_prefix(ip))
+    {
+        return Some((LanEgress::Wildcard, LanPathKind::Subnet));
     }
     if !direct::is_public_v4(ip) && ctx.public_sock.is_some() {
         return Some((LanEgress::Wildcard, LanPathKind::Routed));
@@ -308,7 +351,8 @@ pub(super) fn resolve_direct_candidates_with(
     let public = direct_ctx.and_then(|ctx| {
         (direct::public_direct_enabled() && ctx.public_sock.is_some())
             .then(|| {
-                direct::pick_public_endpoint_rotated(&ctx.my_ips, &cfg.lan_endpoints, rot.public)
+                let exclude = ctx.all_self_ips();
+                direct::pick_public_endpoint_rotated(&exclude, &cfg.lan_endpoints, rot.public)
             })
             .flatten()
     });
@@ -340,7 +384,8 @@ pub(super) fn resolve_direct_candidates_with(
                     lan_usable,
                 ))
             .then(|| {
-                direct::pick_public_endpoint_rotated(&ctx.my_ips, &cfg.srflx_endpoints, rot.srflx)
+                let exclude = ctx.all_self_ips();
+                direct::pick_public_endpoint_rotated(&exclude, &cfg.srflx_endpoints, rot.srflx)
             })
             .flatten()
         })
@@ -1802,6 +1847,7 @@ impl OverlayRuntime {
                 socks: v.socks,
                 my_ips: v.my_ips,
                 my_lan_ifaces: v.my_lan_ifaces,
+                visible_lan: v.visible_lan,
                 endpoints: v.endpoints,
                 public_sock: v.public_sock,
                 punch: None,
@@ -1812,7 +1858,13 @@ impl OverlayRuntime {
         }
         let ifaces = direct::gather_lan_ifaces();
         let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|i| i.ip).collect();
-        if my_ips.is_empty() {
+        let public_only = my_ips.is_empty() && direct::wsl_mirrored_guest();
+        let visible_lan = if public_only {
+            direct::VisibleLan::gather()
+        } else {
+            direct::VisibleLan::default()
+        };
+        if my_ips.is_empty() && !public_only {
             info!("overlay: no usable LAN interface; direct path off (relay only)");
             return None;
         }
@@ -1850,7 +1902,7 @@ impl OverlayRuntime {
                 }
             }
         }
-        if socks.is_empty() {
+        if socks.is_empty() && !public_only {
             info!("overlay: no bindable LAN interface; direct path off (relay only)");
             return None;
         }
@@ -1901,11 +1953,16 @@ impl OverlayRuntime {
         } else {
             None
         };
+        if public_only && public_sock.is_none() {
+            info!("overlay: WSL2 mirrored guest without public-dial socket; direct path off");
+            return None;
+        }
         let (v6, my_v6) = bind_v6_direct(stable_port).await;
         Some(DirectCtx {
             socks,
             my_ips,
             my_lan_ifaces: ifaces,
+            visible_lan,
             endpoints,
             public_sock,
             // Set after the startup srflx gather (Phase C) once we know which
@@ -5241,6 +5298,54 @@ mod tests {
         let chosen = verified.lan.expect("Disco-verified routed LAN becomes dialable");
         assert_eq!(chosen.kind, LanPathKind::Routed);
         assert_eq!(chosen.dst, "10.42.0.9:43648".parse().unwrap());
+    }
+
+    /// FR-139 — a Mirrored WSL2 guest keeps zero bound/advertised LAN sockets
+    /// (preventing host socket starvation & phantom adverts), never dials its
+    /// Windows host's mirrored LAN IP, and dials sibling LAN peers over the
+    /// wildcard `public_sock`.
+    #[tokio::test]
+    async fn fr139_mirrored_wsl_visible_lan_dials_sibling_via_wildcard_never_host_ip() {
+        use crate::overlay::candidates::{LanEgress, LanPathKind};
+
+        let public_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let host_ip = Ipv4Addr::new(192, 168, 10, 50);
+        let c = DirectCtx {
+            socks: vec![],
+            my_ips: vec![],
+            endpoints: vec![],
+            visible_lan: direct::VisibleLan::from_ifaces(vec![direct::LanIface {
+                ip: host_ip,
+                prefix_len: 24,
+                ifindex: None,
+            }]),
+            public_sock: Some(public_sock.clone()),
+            ..Default::default()
+        };
+        assert!(c.socks.is_empty() && c.endpoints.is_empty() && c.my_ips.is_empty());
+
+        // Host's own mirrored IP must NEVER be dialed as a LAN candidate.
+        let win_host = peer(&["192.168.10.50:43648"], &[], None);
+        assert!(
+            gather_lan_candidates(&c, &win_host).is_empty(),
+            "mirrored guest must never dial host's mirrored LAN IP"
+        );
+        assert!(resolve_direct_candidates(Some(&c), &win_host, Default::default()).lan.is_none());
+
+        // Sibling LAN peer on same Wi-Fi IS matched via wildcard public_sock.
+        let sibling = peer(&["192.168.10.42:43648"], &[], None);
+        let chosen = resolve_direct_candidates(Some(&c), &sibling, Default::default())
+            .lan
+            .expect("sibling LAN peer must resolve over VisibleLan");
+        assert_eq!(chosen.dst, "192.168.10.42:43648".parse().unwrap());
+        assert_eq!(chosen.egress, LanEgress::Wildcard);
+        assert_eq!(chosen.kind, LanPathKind::Subnet);
+        assert!(!chosen.requires_disco);
+
+        let egress = lan_egress_socket_for(&c, chosen.egress, chosen.dst)
+            .await
+            .expect("wildcard egress resolves to public_sock");
+        assert!(Arc::ptr_eq(&egress, &public_sock));
     }
 
     #[tokio::test]

@@ -141,6 +141,9 @@ pub struct PlaneView {
     pub my_ips: Vec<Ipv4Addr>,
     /// FR-139 — usable LAN interfaces with their real clamped subnet prefixes.
     pub my_lan_ifaces: Vec<direct::LanIface>,
+    /// FR-139 — outbound-only visible LAN prefixes on Mirrored WSL2 guests
+    /// (never bound, never advertised).
+    pub visible_lan: direct::VisibleLan,
     /// §6 item 5 — the IPv6 direct socket and the global addresses it is
     /// advertised under (`None` / empty without global IPv6).
     pub v6: Option<Arc<UdpSocket>>,
@@ -153,6 +156,7 @@ struct PlaneBinds {
     endpoints: Vec<String>,
     my_ips: Vec<Ipv4Addr>,
     my_lan_ifaces: Vec<direct::LanIface>,
+    visible_lan: direct::VisibleLan,
     v6: Option<Arc<UdpSocket>>,
     my_v6: Vec<std::net::Ipv6Addr>,
     tasks: Vec<JoinHandle<()>>,
@@ -530,6 +534,11 @@ impl CarrierPlane {
         // Without this every such guest was relay-only, so a pair whose
         // other end refuses relays (DERP and TURN off) never connected.
         let public_only = my_ips.is_empty() && self.public_dial_only();
+        let visible_lan = if public_only {
+            direct::VisibleLan::gather()
+        } else {
+            direct::VisibleLan::default()
+        };
         if my_ips.is_empty() && !public_only {
             info!("carrier plane: no usable LAN interface; direct path off (relay only)");
             return None;
@@ -649,6 +658,7 @@ impl CarrierPlane {
             endpoints,
             my_ips,
             my_lan_ifaces: ifaces,
+            visible_lan,
             v6,
             my_v6,
             tasks,
@@ -678,6 +688,7 @@ impl CarrierPlane {
             endpoints: b.endpoints.clone(),
             my_ips: b.my_ips.clone(),
             my_lan_ifaces: b.my_lan_ifaces.clone(),
+            visible_lan: b.visible_lan.clone(),
             v6: b.v6.clone(),
             my_v6: b.my_v6.clone(),
         })
@@ -2767,6 +2778,7 @@ mod tests {
                 tasks: vec![t_lan, t_pub],
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
+            visible_lan: direct::VisibleLan::default(),
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -2868,6 +2880,7 @@ mod tests {
                 tasks: vec![t_pub],
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
+            visible_lan: direct::VisibleLan::default(),
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -3853,6 +3866,7 @@ mod tests {
             tasks: vec![recv_task],
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
+            visible_lan: direct::VisibleLan::default(),
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -3971,6 +3985,7 @@ mod tests {
             tasks: vec![recv_task],
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
+            visible_lan: direct::VisibleLan::default(),
         });
 
         let stun_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -4092,6 +4107,7 @@ mod tests {
             tasks: vec![recv_task],
             stats: Vec::new(),
             my_lan_ifaces: Vec::new(),
+            visible_lan: direct::VisibleLan::default(),
         });
 
         // Healthy STUN server for Org B.

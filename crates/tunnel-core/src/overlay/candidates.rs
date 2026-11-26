@@ -121,7 +121,6 @@ impl LanCandidate {
         }
     }
 
-    #[allow(dead_code)] // Used by Mirrored WSL VisibleLan (Commit 5).
     pub(crate) fn wildcard_subnet(dst: SocketAddr) -> Self {
         Self {
             dst,
