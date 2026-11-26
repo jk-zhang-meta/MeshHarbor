@@ -1492,6 +1492,18 @@ struct SendState {
     /// [`WgDevice::send_uninstall`]). Key-set equality with `peers` is
     /// debug-asserted after every mutator.
     peers: HashMap<[u8; 32], SendPeer>,
+    /// FR-139 — netmap-authorized peer static keys allowed to exchange direct
+    /// Disco pings/pongs (every peer in the current netmap with
+    /// `!backbone_only`). `None` until [`WgDevice::sync_peer_ingress`] runs
+    /// (preserves direct `add_peer` unit tests); once `Some`, strictly
+    /// authoritative so cold authorized peers answer before any carrier is
+    /// installed while `backbone_only` peers are always denied even when a
+    /// relay carrier is installed.
+    disco_authorized: Option<std::collections::HashSet<[u8; 32]>>,
+    /// FR-139 — bounded queue of authenticated inbound Disco ping sources
+    /// `(peer_pubkey, src)` collected on carrier sockets for candidate hints.
+    /// Never promotes directly; the runtime only probes/validates these hints.
+    inbound_disco_pings: Vec<([u8; 32], SocketAddr)>,
 }
 
 /// P1 (S6) — cloneable send half of the WG device, handed to the runtime's
@@ -1684,6 +1696,41 @@ impl WgSender {
         self.0.read().unwrap().peers.contains_key(pk)
     }
 
+    /// FR-139 — is `pk` authorized to exchange direct Disco frames?
+    /// Once the netmap has been synced via [`WgDevice::sync_peer_ingress`],
+    /// this answers `true` for every netmap peer with `!backbone_only` (even
+    /// before any carrier is installed) and `false` for `backbone_only`,
+    /// removed, or unknown peers. Before any netmap sync (low-level WG tests),
+    /// falls back to installed peers.
+    pub(crate) fn allows_disco(&self, pk: &[u8; 32]) -> bool {
+        let g = self.0.read().unwrap();
+        match g.disco_authorized.as_ref() {
+            Some(authorized) => authorized.contains(pk),
+            None => g.peers.contains_key(pk),
+        }
+    }
+
+    /// FR-139 — record the source address of an authenticated inbound Disco
+    /// ping as a bounded candidate hint for the runtime prober.
+    pub(crate) fn record_inbound_disco_ping(&self, peer: [u8; 32], src: SocketAddr) {
+        const MAX_INBOUND_DISCO_HINTS: usize = 128;
+        let mut g = self.0.write().unwrap();
+        if g.inbound_disco_pings.contains(&(peer, src)) {
+            return;
+        }
+        if g.inbound_disco_pings.len() >= MAX_INBOUND_DISCO_HINTS {
+            g.inbound_disco_pings.remove(0);
+        }
+        g.inbound_disco_pings.push((peer, src));
+    }
+
+    /// FR-139 — drain recorded authenticated inbound Disco ping sources.
+    #[allow(dead_code)] // Consumed by candidates.rs in the next commit.
+    pub(crate) fn take_inbound_disco_pings(&self) -> Vec<([u8; 32], SocketAddr)> {
+        let mut g = self.0.write().unwrap();
+        std::mem::take(&mut g.inbound_disco_pings)
+    }
+
     pub(crate) fn pq_peer(&self, pk: &[u8; 32]) -> Option<Arc<super::pq_psk::PqPeerHandle>> {
         let g = self.0.read().unwrap();
         g.peers.get(pk).and_then(|p| p.stats.pq.get().cloned())
@@ -1740,6 +1787,8 @@ impl WgSender {
             ingress_acls_preview: HashMap::new(),
             flows: Default::default(),
             peers: HashMap::new(),
+            disco_authorized: None,
+            inbound_disco_pings: Vec::new(),
         })))
     }
 
@@ -6214,10 +6263,15 @@ impl WgDevice {
     ) {
         let mut table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
         let mut preview_table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
+        let mut disco_authorized: std::collections::HashSet<[u8; 32]> =
+            std::collections::HashSet::new();
         for p in peers.values() {
             let Some(pk) = super::decode_public(&p.wg_public_key) else {
                 continue;
             };
+            if !p.backbone_only {
+                disco_authorized.insert(pk);
+            }
             if let Some(rules) = p.ingress_rules.as_ref() {
                 table.insert(pk, Arc::new(rules.clone()));
             } else if acl_warn_preview_enabled()
@@ -6261,6 +6315,9 @@ impl WgDevice {
         }
         g.ingress_acls = table;
         g.ingress_acls_preview = preview_table;
+        g.inbound_disco_pings
+            .retain(|(pk, _)| disco_authorized.contains(pk));
+        g.disco_authorized = Some(disco_authorized);
     }
 
     /// Test-only — override the reverse-path mode. Must run BEFORE `add_peer`:
@@ -7660,10 +7717,14 @@ async fn run_direct_demux(
             // disco, while the SAME fleet-host-1 measured correctly on the other
             // org's engine. `classify`'s own doc already promised the two
             // seams could not diverge; now they don't.
+            let claimed = super::disco::claimed_sender(&buf[..n]);
             match super::disco::classify(&buf[..n], src, &disco_secret, &disco_public, |pk| {
-                disco_routes.has_peer(pk)
+                disco_routes.allows_disco(pk)
             }) {
                 super::disco::Verdict::Answer(pong) => {
+                    if let Some(sender) = claimed {
+                        disco_routes.record_inbound_disco_ping(sender, src);
+                    }
                     if super::direct::disco_respond_enabled() {
                         let s = sock.clone();
                         tokio::spawn(async move {

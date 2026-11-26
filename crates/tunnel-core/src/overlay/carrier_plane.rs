@@ -1386,10 +1386,13 @@ impl CarrierPlane {
         };
         for (secret, public, send, sink) in engines {
             match super::disco::classify(pkt, src, &secret, &public, |pk| {
-                *pk == sender && send.has_peer(pk)
+                *pk == sender && send.allows_disco(pk)
             }) {
                 super::disco::Verdict::Ignore => continue,
-                super::disco::Verdict::Answer(pong) => return Some(pong),
+                super::disco::Verdict::Answer(pong) => {
+                    send.record_inbound_disco_ping(sender, src);
+                    return Some(pong);
+                }
                 // The engine that authenticated it is the engine that probed
                 // it: deliver there and nowhere else.
                 super::disco::Verdict::Pong(p) => {
@@ -4184,5 +4187,114 @@ mod tests {
         gather_a.abort();
         drop((h_a, h_b, silent1, silent2));
         stun_b_srv.abort();
+    }
+
+    /// FR-139: Disco responder answers netmap-authorized peers even before any
+    /// carrier is installed (essential for cold offline discovery), records the
+    /// inbound ping source as a candidate hint, and strictly refuses
+    /// `backbone_only` peers even when a carrier exists.
+    #[tokio::test]
+    async fn fr139_disco_answers_netmap_authorized_cold_peer_and_refuses_backbone_only() {
+        use meshharbor_remote_control::signaling::NetmapPeer;
+
+        let local_kp = WgKeypair::generate();
+        let cold_kp = WgKeypair::generate();
+        let backbone_kp = WgKeypair::generate();
+        let stranger_kp = WgKeypair::generate();
+
+        let (mut dev, _tun_rx) = WgDevice::new(local_kp.secret.clone());
+        let plane = CarrierPlane::new();
+        let handle = plane.attach(dev.plane_hooks());
+
+        let mk_peer = |kp: &WgKeypair, ip: &str, backbone_only: bool| NetmapPeer {
+            node_id: bson::oid::ObjectId::new(),
+            overlay_ip: ip.into(),
+            name: String::new(),
+            wg_public_key: kp.public_base64(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            supports_derp_floor: false,
+            supports_org_relay: false,
+            supports_overlay_echo: false,
+            relay_strategy: None,
+            prefer_relay_ms: None,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+            ingress_rules_preview: None,
+            backbone_only,
+        };
+        let p_cold = mk_peer(&cold_kp, "100.64.0.2", false);
+        let p_backbone = mk_peer(&backbone_kp, "100.64.0.3", true);
+        let peers = HashMap::from([(p_cold.node_id, p_cold), (p_backbone.node_id, p_backbone)]);
+        dev.sync_peer_ingress(&peers);
+
+        let build_ping = |sender_kp: &WgKeypair, nonce: [u8; 8]| {
+            let sh = super::super::disco::shared_secret(&sender_kp.secret, &local_kp.public);
+            super::super::disco::build(
+                super::super::disco::KIND_PING,
+                nonce,
+                sender_kp.public.as_bytes(),
+                None,
+                &sh,
+            )
+        };
+
+        // 1. Cold authorized peer (no carrier installed) MUST get an 85-byte pong
+        //    carrying our observed src, and its source is recorded as a hint.
+        let cold_src: SocketAddr = "192.168.10.21:43904".parse().unwrap();
+        let pong = plane
+            .disco_handle(&build_ping(&cold_kp, [1; 8]), cold_src)
+            .expect("cold netmap-authorized peer must receive a disco pong");
+        assert_eq!(pong.len(), super::super::disco::FRAME_LEN);
+        let sh_cold = super::super::disco::shared_secret(&cold_kp.secret, &local_kp.public);
+        let parsed = super::super::disco::parse(&pong, &sh_cold).expect("valid pong");
+        assert_eq!(parsed.observed, Some(cold_src));
+        assert_eq!(
+            dev.sender().take_inbound_disco_pings(),
+            vec![(cold_kp.public.to_bytes(), cold_src)]
+        );
+
+        // 2. backbone_only peer MUST NOT receive a disco pong (even if installed).
+        let dummy_sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        dev.add_peer(
+            backbone_kp.public.to_bytes(),
+            Ipv4Addr::new(100, 64, 0, 3),
+            Carrier::direct(dummy_sock, "127.0.0.1:43905".parse().unwrap()),
+            false,
+        );
+        assert!(
+            plane
+                .disco_handle(
+                    &build_ping(&backbone_kp, [2; 8]),
+                    "192.168.10.22:43905".parse().unwrap()
+                )
+                .is_none(),
+            "backbone_only peer must never get a direct disco reply"
+        );
+
+        // 3. Unknown stranger MUST NOT receive a disco pong.
+        assert!(
+            plane
+                .disco_handle(
+                    &build_ping(&stranger_kp, [3; 8]),
+                    "192.168.10.23:43906".parse().unwrap()
+                )
+                .is_none(),
+            "unknown peer must be ignored"
+        );
+
+        drop(handle);
     }
 }

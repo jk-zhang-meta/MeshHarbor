@@ -233,6 +233,7 @@ pub(crate) fn classify(
             sender: d.sender,
             nonce: d.nonce,
             src,
+            observed: d.observed,
             // Stamp on the receive path, while we are still holding the
             // packet — see `DiscoInbound::at`.
             at: std::time::Instant::now(),
@@ -305,6 +306,9 @@ pub struct DiscoInbound {
     pub nonce: [u8; 8],
     /// Where the pong came FROM (the remote end of the measured path).
     pub src: SocketAddr,
+    /// FR-139 — the source tuple the responder observed our ping arriving from
+    /// (`d.observed` in the authenticated pong payload).
+    pub observed: Option<SocketAddr>,
     /// When the pong was AUTHENTICATED on the carrier socket — not when the
     /// prober got round to reading it.
     ///
@@ -681,6 +685,7 @@ mod tests {
                     sender: peer,
                     nonce,
                     src: dst,
+                    observed: None,
                     at,
                 });
             }
@@ -1048,6 +1053,7 @@ mod tests {
             sender: peer,
             nonce,
             src: dst,
+            observed: None,
             at: arrived,
         });
 
@@ -1079,6 +1085,7 @@ mod tests {
                 sender: peer,
                 nonce,
                 src: dst,
+                observed: None,
                 at: std::time::Instant::now(),
             });
         }
@@ -1102,6 +1109,7 @@ mod tests {
             sender: peer,
             nonce: [0xEE; 8],
             src: dst,
+            observed: None,
             at: std::time::Instant::now(),
         });
         assert_eq!(
@@ -1124,6 +1132,30 @@ mod tests {
             let sa: SocketAddr = s.parse().unwrap();
             let f = build(KIND_PONG, [0u8; 8], a_p.as_bytes(), Some(sa), &sh);
             assert_eq!(parse(&f, &sh).unwrap().observed, Some(sa));
+        }
+    }
+
+    #[test]
+    fn classify_preserves_observed_address_on_pong() {
+        let (a_s, a_p) = kp();
+        let (b_s, b_p) = kp();
+        let sh = shared_secret(&b_s, &a_p);
+        let observed: SocketAddr = "198.51.100.42:43904".parse().unwrap();
+        let responder_src: SocketAddr = "192.168.10.20:43648".parse().unwrap();
+        let pong = build(
+            KIND_PONG,
+            [0x11; 8],
+            b_p.as_bytes(),
+            Some(observed),
+            &sh,
+        );
+        match classify(&pong, responder_src, &a_s, &a_p, |pk| pk == b_p.as_bytes()) {
+            Verdict::Pong(inb) => {
+                assert_eq!(inb.sender, *b_p.as_bytes());
+                assert_eq!(inb.src, responder_src);
+                assert_eq!(inb.observed, Some(observed));
+            }
+            _ => panic!("expected Verdict::Pong"),
         }
     }
 }

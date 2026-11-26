@@ -1441,6 +1441,7 @@ mod tests {
             sender: [7; 32],
             nonce: [9; 8],
             src: "45.77.1.2:61000".parse().unwrap(),
+            observed: None,
             at: Instant::now(),
         };
         for wrong in [
@@ -1480,6 +1481,7 @@ mod tests {
             sender: [7; 32],
             nonce: [9; 8],
             src: "45.77.1.2:45210".parse().unwrap(),
+            observed: None,
             at: Instant::now(),
         });
         assert!(engine.active[&node].hit.is_some());
