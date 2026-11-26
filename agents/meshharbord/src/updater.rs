@@ -4523,6 +4523,10 @@ fn act_on_outcome_with(
                 // restart and observed rollback. Submission is not completion.
                 return false;
             }
+            // FR-141: record target update version so the async shutdown arm
+            // announces `TargetRestarting { reason: "update", to_version }` to
+            // all surviving SSH PTY hosts before exit.
+            crate::ssh_persist::record_pending_update_version(&latest);
             let _ = shutdown_tx.send(true);
             true
         }

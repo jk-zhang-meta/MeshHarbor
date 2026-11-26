@@ -25,6 +25,16 @@
 //! trust-on-first-use — a client that cannot verify should say so, not quietly
 //! accept whatever answers.
 
+//! ## FR-141 amendment: built-in resumable SSH for interactive shells
+//!
+//! Interactive shells (`mh ssh <device>` and `mh ssh <device> -t <cmd>`) now
+//! run through the built-in `russh` + `crossterm` client (`crate::ssh_resume`)
+//! speaking `meshharbor-pty@v1` so sessions survive Wi-Fi drops, DERP failover,
+//! and target `meshharbord` restarts/updates with a non-corrupting top-row
+//! recovery banner. OpenSSH flags (`-L/-R/-D/-W/-J/-N/-A/-X/-o`), `scp`,
+//! `sftp`, `--no-resume`, and non-TTY invocations keep the byte-for-byte
+//! unchanged system OpenSSH exec path below.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +50,54 @@ use crate::localclient;
 const SSH_USER: &str = "meshharbor";
 
 pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32> {
+    run_with_options(device, session_secs, args, false, false).await
+}
+
+pub async fn run_with_options(
+    device: &str,
+    session_secs: u64,
+    args: &[String],
+    no_resume: bool,
+    ephemeral: bool,
+) -> Result<i32> {
+    if let crate::ssh_resume::RouteDecision::BuiltinPty { command } =
+        crate::ssh_resume::decide_route(args, no_resume, crate::ssh_resume::stdin_is_tty())
+    {
+        crate::ssh_resume::hint_detached_sessions(device);
+        let (node, socks_port) = localclient::ssh_target(device).await?;
+        let key = mint_session_key().context("minting a session key")?;
+        let public_openssh = key
+            .public_key()
+            .to_openssh()
+            .context("encoding the session public key")?;
+        let grant = localclient::ssh_session(&node, &public_openssh, session_secs).await?;
+        if let Some(err) = grant.error {
+            bail!("{err}");
+        }
+        let (address, port) = match (grant.address, grant.port) {
+            (Some(a), Some(p)) => (a, p),
+            _ => bail!("the server did not say where to dial and gave no reason"),
+        };
+        let Some(host_pubkey) = grant.host_pubkey else {
+            bail!(
+                "{device} has not published an SSH host key, so this connection cannot be \
+                 verified.\nRefusing rather than trusting it on first use. The device needs \
+                 an agent that has had SSH enabled at least once (rc.444+)."
+            );
+        };
+        return crate::ssh_resume::client::run_open(crate::ssh_resume::client::OpenParams {
+            device: device.to_string(),
+            address,
+            port,
+            socks_port,
+            host_pubkey,
+            session_key: key,
+            command,
+            ephemeral,
+        })
+        .await;
+    }
+
     let grant = Grant::obtain(device, session_secs).await?;
     let mut cmd = tokio::process::Command::new("ssh");
     cmd.args(grant.client_options())

@@ -303,7 +303,9 @@ fn busy_now(rc_sessions: &crate::rc_sessions::RcSessionRegistry) -> Busy {
 fn ssh_connections() -> usize {
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
     {
-        crate::ssh::live_connections()
+        // FR-141: persistent SSH sessions outlive daemon restarts, so only
+        // classic in-daemon connections defer a replaced-binary restart.
+        crate::ssh::classic_connections()
     }
     #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
     {

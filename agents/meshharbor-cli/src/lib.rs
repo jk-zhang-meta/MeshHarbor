@@ -37,6 +37,9 @@ pub mod native_auth;
 pub mod nvitop;
 pub mod rdpcmd;
 pub mod share_sshcmd;
+/// FR-141 — Built-in resumable `mh ssh` client (`meshharbor-pty@v1`), shadow
+/// VT100 top-row reconnect overlay, escapes, and local `0600` session store.
+pub mod ssh_resume;
 pub mod sshcmd;
 pub mod update;
 

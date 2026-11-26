@@ -136,7 +136,17 @@ impl Drop for ReapEvidence {
 /// cannot revoke a command which deliberately detached (setsid/daemonization).
 pub async fn close_all_and_wait() -> Result<(), String> {
     #[cfg(feature = "ssh-server")]
-    close_generation(&SESSIONS, true).await?;
+    {
+        let (classic, persist) = tokio::join!(
+            close_generation(&SESSIONS, true),
+            crate::ssh_persist::terminate_all(
+                meshharbor_node_core::pty_resume::TerminateReason::CloseAccess,
+                true,
+            )
+        );
+        classic?;
+        persist?;
+    }
     Ok(())
 }
 
@@ -192,6 +202,22 @@ pub fn resume_after_close() -> Result<(), String> {
         *generation = SessionGeneration::default();
     }
     Ok(())
+}
+
+#[cfg(feature = "ssh-server")]
+pub(crate) async fn ask_here_for_subsystem(
+    asker: &Asker,
+    caller: &str,
+    sentinel: &str,
+    what: &str,
+) -> Result<(), String> {
+    let timeout = crate::consent::DEFAULT_PROMPT_TIMEOUT;
+    match asker {
+        Asker::Here { broker, indicator } => {
+            sshd::ask_here(broker, indicator, caller, sentinel, what, timeout).await
+        }
+        Asker::Worker(relay) => relay.ask(sentinel, caller, what, timeout).await,
+    }
 }
 
 /// Process services a session depends on, threaded EXPLICITLY from the daemon
@@ -825,6 +851,12 @@ pub(crate) mod sshd {
         /// the SYSTEM service's server: the allowlist that would gate one
         /// there is the signed-in user's to edit.
         pub forward_refusal: Option<&'static str>,
+        /// FR-141 — org/tenant ID, agent ID, host key fingerprint, and service
+        /// flag bound into persistent session descriptors and resume lookups.
+        pub org_id: String,
+        pub agent_id: String,
+        pub host_fingerprint: String,
+        pub via_service: bool,
     }
 
     /// Process-wide ceiling on live `direct-tcpip` channels. Generous enough
@@ -935,6 +967,10 @@ pub(crate) mod sshd {
                 exec_streaming: cfg.ssh_exec_streaming,
                 service_ceiling: None,
                 forward_refusal: None,
+                org_id: cfg.tenant_id.clone(),
+                agent_id: cfg.agent_id.clone(),
+                host_fingerprint,
+                via_service: false,
             }))
         }
 
@@ -995,6 +1031,10 @@ pub(crate) mod sshd {
                     "port forwarding is not served through the SYSTEM service: the allowlist \
                      that would gate it is the signed-in user's to edit",
                 ),
+                org_id: "service".to_string(),
+                agent_id: "service".to_string(),
+                host_fingerprint: fingerprint,
+                via_service: true,
             }))
         }
     }
@@ -1039,6 +1079,13 @@ pub(crate) mod sshd {
         /// nothing else ([`super::Grant::one_command`]). Every request handler
         /// that could do more reads it.
         pub one_command: bool,
+        /// FR-141 — stable principal name, granted lifetime in seconds,
+        /// optional server-side resume policy, and whether auth came from the
+        /// local `ssh_authorized_keys` file.
+        pub principal: String,
+        pub session_secs: u64,
+        pub resume_allowed: Option<bool>,
+        pub key_list_auth: bool,
     }
 
     impl ResolvedSessionPolicy {
@@ -1066,6 +1113,7 @@ pub(crate) mod sshd {
                 consent_mode,
                 session_secs,
                 one_command,
+                resume_allowed,
                 deadline,
             } = grant;
             // Two fields were spent BEFORE resolution, and that is their
@@ -1091,6 +1139,7 @@ pub(crate) mod sshd {
                 other => other,
             };
 
+            let clamped_secs = ssh_limits::clamp_session_secs(session_secs);
             Self {
                 run_as,
                 // Only an explicit `Auto` skips the operator. `Prompt`,
@@ -1107,13 +1156,14 @@ pub(crate) mod sshd {
                 // already clamped this, but resolving is total on its own:
                 // 0 means the ceiling, never "forever".
                 deadline: Some(
-                    tokio::time::Instant::now()
-                        + std::time::Duration::from_secs(ssh_limits::clamp_session_secs(
-                            session_secs,
-                        )),
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(clamped_secs),
                 ),
+                principal: caller.clone(),
                 caller: format!("ssh:{caller}@{peer}"),
                 one_command,
+                session_secs: clamped_secs,
+                resume_allowed,
+                key_list_auth: false,
             }
         }
 
@@ -1136,6 +1186,7 @@ pub(crate) mod sshd {
                 deadline: None,
                 // All a key-list session can honestly claim: the username the
                 // client typed, and the overlay address WireGuard proved.
+                principal: format!("keylist:{user}"),
                 caller: format!("ssh:{user}@{peer} (key-list)"),
                 // No grant, so nothing to correlate to. Its activity is still
                 // reported (it is the path most worth watching), just without
@@ -1145,6 +1196,9 @@ pub(crate) mod sshd {
                 // The device owner's own break-glass key: no agent session's
                 // grant backs it, so nothing limits it to one command.
                 one_command: false,
+                session_secs: meshharbor_remote_control::models::ssh_limits::MAX_SESSION_SECS,
+                resume_allowed: None,
+                key_list_auth: true,
             }
         }
 
@@ -1259,6 +1313,15 @@ pub(crate) mod sshd {
         /// FR-90 P3-8-2a — what a session granted one command has used of it.
         /// Read only when its policy says `one_command`.
         used: OneCommandUse,
+        /// FR-141 — SHA-256 fingerprint of the authenticated client key.
+        client_key_fp: Option<String>,
+        /// FR-141 — `Some` when authenticated as `ConnClass::ResumeOnly` (may
+        /// ONLY open one channel and request `meshharbor-pty@v1` -> `Attach`).
+        resume_only: Option<crate::ssh_persist::ResumeLookup>,
+        resume_channel_opened: bool,
+        /// Counts in `CLASSIC_CONNECTIONS` until dropped or upgraded to
+        /// `meshharbor-pty@v1`.
+        classic_counted: bool,
     }
 
     /// FR-90 P3-8-2a — a one-command session's one channel and one `exec`.
@@ -1288,6 +1351,7 @@ pub(crate) mod sshd {
                 .map(crate::power::ActivityGuard::new);
             let asker = ctx.services.asker.clone();
             let generation = registry.lock().unwrap_or_else(|e| e.into_inner());
+            super::CLASSIC_CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Self {
                 ctx,
                 peer,
@@ -1306,6 +1370,17 @@ pub(crate) mod sshd {
                 _awake: awake,
                 asker,
                 used: OneCommandUse::default(),
+                client_key_fp: None,
+                resume_only: None,
+                resume_channel_opened: false,
+                classic_counted: true,
+            }
+        }
+
+        fn mark_persistent(&mut self) {
+            if self.classic_counted {
+                self.classic_counted = false;
+                super::CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
 
@@ -1968,6 +2043,10 @@ pub(crate) mod sshd {
     /// runtime either.
     impl Drop for Handler {
         fn drop(&mut self) {
+            if self.classic_counted {
+                self.classic_counted = false;
+                super::CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
             self.cancellation().cancel();
             self.report(SshActivityKind::SessionClose, None, None, true);
             for (_, abort) in self.exec_aborts.drain() {
@@ -2016,6 +2095,7 @@ pub(crate) mod sshd {
                     account_mode = %grant.account_mode,
                     "ssh: authenticated (server grant)"
                 );
+                self.client_key_fp = Some(fingerprint);
                 // Resolving HERE — not lazily at each request — is the P5
                 // design: one place turns a grant into what a session may do,
                 // and the request handlers can only read the result.
@@ -2036,6 +2116,25 @@ pub(crate) mod sshd {
 
             if self.shared_stream {
                 return Ok(Auth::reject());
+            }
+
+            // FR-141 — check surviving persistent SSH sessions (or tombstones)
+            // in THIS org before falling through to key-list auth. A key that
+            // matches here is admitted as `ResumeOnly` — it may ONLY open one
+            // channel and request `meshharbor-pty@v1` -> `Attach`.
+            match crate::ssh_persist::lookup_resume_key(&self.ctx.org_id, &fingerprint) {
+                lookup @ (crate::ssh_persist::ResumeLookup::Live(_)
+                | crate::ssh_persist::ResumeLookup::Tombstone { .. }) => {
+                    info!(
+                        peer = %self.peer, %user, %fingerprint,
+                        "ssh: authenticated (FR-141 resume-only)"
+                    );
+                    self.client_key_fp = Some(fingerprint);
+                    self.resume_only = Some(lookup);
+                    self.mark_persistent();
+                    return Ok(Auth::Accept);
+                }
+                crate::ssh_persist::ResumeLookup::None => {}
             }
             // FR-129 — a key from the device-owned list opens a session with no grant, so no
             // code: on a two-factor device only a grant (which carried a code the device
@@ -2061,6 +2160,7 @@ pub(crate) mod sshd {
                     peer = %self.peer, %user, %fingerprint,
                     "ssh: authenticated (ssh_authorized_keys)"
                 );
+                self.client_key_fp = Some(fingerprint);
                 self.policy = Some(ResolvedSessionPolicy::from_key_list(
                     &self.ctx, user, self.peer,
                 ));
@@ -2082,6 +2182,20 @@ pub(crate) mod sshd {
             reply: russh::server::ChannelOpenHandle,
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            // FR-141 — a ResumeOnly connection gets exactly ONE channel, and
+            // must complete `meshharbor-pty@v1` Attach within 10 seconds.
+            if self.resume_only.is_some() {
+                if self.resume_channel_opened {
+                    warn!(peer = %self.peer, "ssh: refused second channel on ResumeOnly connection");
+                    reply
+                        .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                        .await;
+                    return Ok(());
+                }
+                self.resume_channel_opened = true;
+                reply.accept().await;
+                return Ok(());
+            }
             // FR-90 P3-8-2a — a session granted one command gets ONE channel:
             // a second could carry a second command.
             if self.one_command() {
@@ -2129,7 +2243,7 @@ pub(crate) mod sshd {
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
             use russh::ChannelOpenFailure;
-            if self.shared_stream {
+            if self.shared_stream || self.resume_only.is_some() {
                 reply
                     .reject(ChannelOpenFailure::AdministrativelyProhibited)
                     .await;
@@ -2249,6 +2363,15 @@ pub(crate) mod sshd {
             data: &[u8],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if self.resume_only.is_some() {
+                return refuse(
+                    session,
+                    channel,
+                    self.peer,
+                    "exec",
+                    "resume-only connection may only attach via meshharbor-pty@v1.",
+                );
+            }
             // FR-90 P3-8-2a — one command, asked once: the attempt is spent
             // here, before anything can refuse or fail it.
             if self.one_command() {
@@ -2364,6 +2487,15 @@ pub(crate) mod sshd {
             channel: ChannelId,
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if self.resume_only.is_some() {
+                return refuse(
+                    session,
+                    channel,
+                    self.peer,
+                    "shell",
+                    "resume-only connection may only attach via meshharbor-pty@v1.",
+                );
+            }
             // FR-90 P3-8-2a — never a shell for a session granted one command.
             if self.one_command() {
                 return refuse(
@@ -2405,10 +2537,10 @@ pub(crate) mod sshd {
         ) -> Result<(), Self::Error> {
             // FR-90 P3-8-2a — nor a terminal: refused before it is recorded,
             // so nothing a later request asks can find one.
-            if self.one_command() {
+            if self.resume_only.is_some() || self.one_command() {
                 warn!(
                     peer = %self.peer, %term,
-                    "ssh: refused a terminal: this session was granted one command"
+                    "ssh: refused a terminal: this session is resume-only or one-command"
                 );
                 session.channel_failure(channel)?;
                 return Ok(());
@@ -2523,6 +2655,57 @@ pub(crate) mod sshd {
                     self.peer,
                     name,
                     "this session was granted one command, not a subsystem.",
+                );
+            }
+            if name == meshharbor_node_core::pty_resume::SUBSYSTEM_NAME {
+                self.mark_persistent();
+                let open_auth = self.policy.as_ref().map(|p| {
+                    crate::ssh_persist::subsystem::OpenAuthContext {
+                        principal: p.principal.clone(),
+                        caller_label: p.caller.clone(),
+                        grant_id: p.grant_id.clone(),
+                        run_as: p.run_as.clone(),
+                        consent_sentinel: p.consent_sentinel.clone(),
+                        asker: self.asker.clone(),
+                        session_secs: p.session_secs,
+                        resume_allowed: p.resume_allowed,
+                        key_list_auth: p.key_list_auth,
+                    }
+                });
+                let activity = self.ctx.services.activity.clone().and_then(|sink| {
+                    self.policy
+                        .as_ref()
+                        .map(|p| (sink, p.grant_id.clone(), p.caller.clone()))
+                });
+                session.channel_success(channel)?;
+                let (in_tx, in_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+                self.channel_input = Some(in_tx);
+                let sub_ctx = crate::ssh_persist::subsystem::SubsystemContext {
+                    handle: session.handle(),
+                    channel,
+                    org_id: self.ctx.org_id.clone(),
+                    agent_id: self.ctx.agent_id.clone(),
+                    host_key_fp: self.ctx.host_fingerprint.clone(),
+                    client_key_fp: self.client_key_fp.clone().unwrap_or_default(),
+                    via_service: self.ctx.via_service,
+                    peer: self.peer,
+                    open_auth,
+                    resume_only: self.resume_only.clone(),
+                    activity,
+                    cancel: self.cancellation(),
+                };
+                self.tasks.spawn(crate::ssh_persist::subsystem::run_subsystem(
+                    sub_ctx, in_rx,
+                ));
+                return Ok(());
+            }
+            if self.resume_only.is_some() {
+                return refuse(
+                    session,
+                    channel,
+                    self.peer,
+                    name,
+                    "resume-only connection may only request `meshharbor-pty@v1`.",
                 );
             }
             if name == "sftp" {
@@ -3240,11 +3423,20 @@ pub async fn serve_for_service<S>(
 /// waits while any is open: the likeliest way that binary gets replaced is an
 /// admin's `apt upgrade` typed INTO one of these sessions.
 static LIVE_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CLASSIC_CONNECTIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// How many SSH connections are open right now; zero in a build without the
 /// SSH server.
 pub fn live_connections() -> usize {
     LIVE_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// FR-141 — how many non-persistent (classic in-daemon) SSH connections are
+/// open right now. Used by `replaced_binary` so persistent shells do not defer
+/// per-user daemon updates.
+pub fn classic_connections() -> usize {
+    CLASSIC_CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Counts one connection in [`LIVE_CONNECTIONS`] for as long as it lives,
@@ -3309,6 +3501,8 @@ pub struct Grant {
     /// not the client: the daemon that holds the key could ask for anything a
     /// key may ask for.
     pub one_command: bool,
+    /// FR-141 — optional server policy override for persistent resumable SSH.
+    pub resume_allowed: Option<bool>,
     /// LOCAL deadline after which this grant is dead.
     ///
     /// Deliberately an `Instant` derived from arrival rather than the server's
@@ -3341,6 +3535,7 @@ impl Grant {
             consent_mode,
             session_secs,
             one_command: false,
+            resume_allowed: Some(false),
             deadline,
         }
     }
@@ -3669,6 +3864,7 @@ pub fn record_grant(
         consent_mode,
         session_secs: ssh_limits::clamp_session_secs(session_secs),
         one_command,
+        resume_allowed: None,
         deadline: Instant::now() + window,
     };
 
@@ -4894,6 +5090,7 @@ mod tests {
             consent_mode: consent,
             session_secs,
             one_command: false,
+            resume_allowed: None,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
         }
     }

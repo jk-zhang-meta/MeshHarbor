@@ -103,6 +103,9 @@ rpassword = "7.5.4"
 # and CJK-accurate display-width column layout.
 crossterm = "0.29"
 unicode-width = "0.2"
+# FR-141 — built-in resumable `mh ssh` client (`meshharbor-pty@v1` over russh,
+# ring-only, zero OpenSSL / aws-lc-rs).
+russh = { version = "0.62", default-features = false, features = ["ring"] }
 
 # SIGPIPE reset at the CLI entry (cli::run_from) so `meshharbor … | head` dies
 # quietly on EPIPE instead of panicking — Rust starts with SIGPIPE ignored.

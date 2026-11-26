@@ -242,6 +242,10 @@ pub mod ssh_client;
 /// overlay to serve on, but an answer to a request WE sent arrives on the
 /// plain control WS and must be deliverable in every build.
 pub mod ssh_origin;
+/// FR-141 — Persistent resumable SSH session registry, adoption, and revocation.
+pub mod ssh_persist;
+/// FR-141 — Out-of-process detached PTY session host (`meshharbord ssh-pty-host`).
+pub mod ssh_pty_host;
 /// FR-105 — meshharbor SSH through a Windows device's SYSTEM service: the framed
 /// SSH pipe between the worker and the service, the service's grant claim and
 /// endpoint publisher, and the worker's word. Compiled everywhere; off

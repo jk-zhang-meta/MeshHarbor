@@ -6301,6 +6301,7 @@ dependencies = [
  "rand 0.9.4",
  "reqwest 0.12.28",
  "rpassword",
+ "russh",
  "serde",
  "serde_json",
  "sha2 0.10.9",

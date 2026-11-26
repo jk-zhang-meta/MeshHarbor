@@ -336,6 +336,14 @@ enum Command {
     /// daemon supervisor so GPU driver calls never run inside the daemon.
     #[command(hide = true, name = "gpu-sampler")]
     GpuSampler,
+    /// FR-141 — inspect or terminate surviving detached persistent SSH PTY hosts.
+    #[command(name = "ssh-sessions")]
+    SshSessions {
+        /// Action: `list`, `kill`, or `kill-all`.
+        action: String,
+        /// Session ID or prefix (for `kill`).
+        target: Option<String>,
+    },
     /// FR-97 P6a — read a downloaded release artifact's own version and bind
     /// it to the release it is offered as, exactly as the updater does before
     /// it installs anything. Prints the verdict; exits non-zero on a refusal.
@@ -2255,6 +2263,12 @@ fn main() -> Result<()> {
     // Before AppKit and before any runtime: see the other `main`.
     #[cfg(feature = "ssh-server")]
     meshharbord::sftp_builtin::exit_if_requested();
+    // FR-141 — `meshharbord ssh-pty-host`: detached PTY session host surviving
+    // daemon restarts/updates. Runs before logging, config, or instance lock.
+    #[cfg(feature = "ssh-server")]
+    meshharbord::ssh_pty_host::exit_if_requested();
+    #[cfg(feature = "ssh-server")]
+    meshharbord::ssh_pty_host::exit_if_requested();
     exit_for_cli_help_or_version();
     if meshharbord::tcc_recovery::probe_if_requested()? {
         return Ok(());
@@ -2326,6 +2340,10 @@ fn main() -> Result<()> {
     // and it exits rather than returns.
     #[cfg(feature = "ssh-server")]
     meshharbord::sftp_builtin::exit_if_requested();
+    // FR-141 — `meshharbord ssh-pty-host`: detached PTY session host surviving
+    // daemon restarts/updates. Runs before logging, config, or instance lock.
+    #[cfg(feature = "ssh-server")]
+    meshharbord::ssh_pty_host::exit_if_requested();
 
     exit_for_cli_help_or_version();
     #[cfg(target_os = "macos")]
@@ -2820,6 +2838,54 @@ async fn daemon_main() -> Result<()> {
             Ok(())
         }
         Command::GpuSampler => meshharbord::gpu_sampler::run_child(),
+        Command::SshSessions { action, target } => {
+            #[cfg(feature = "ssh-server")]
+            {
+                let _ = meshharbord::ssh_persist::init_state_dir(
+                    &meshharbord::ssh_persist::state_dir(),
+                );
+                let _ = meshharbord::ssh_persist::adopt_all(|_| Ok(())).await;
+                match action.as_str() {
+                    "list" => {
+                        let list = meshharbord::ssh_persist::list_sessions();
+                        println!("{}", serde_json::to_string_pretty(&list)?);
+                        Ok(())
+                    }
+                    "kill" => {
+                        let sid = target.ok_or_else(|| {
+                            anyhow::anyhow!("usage: meshharbord ssh-sessions kill <sid>")
+                        })?;
+                        let ok = meshharbord::ssh_persist::kill_session(&sid)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                        if ok {
+                            println!("terminated session {sid}");
+                        } else {
+                            println!("no live session matching {sid}");
+                        }
+                        Ok(())
+                    }
+                    "kill-all" => {
+                        let n = meshharbord::ssh_persist::terminate_all(
+                            meshharbor_node_core::pty_resume::TerminateReason::UserCancelled,
+                            false,
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                        println!("terminated {n} session(s)");
+                        Ok(())
+                    }
+                    other => Err(anyhow::anyhow!(
+                        "unknown action `{other}` (expected list | kill <sid> | kill-all)"
+                    )),
+                }
+            }
+            #[cfg(not(feature = "ssh-server"))]
+            {
+                let _ = (action, target);
+                Err(anyhow::anyhow!("ssh-server feature is not enabled in this build"))
+            }
+        }
         Command::PortalSession => {
             #[cfg(all(target_os = "linux", feature = "portal-capture"))]
             {
@@ -5354,6 +5420,52 @@ async fn run_cmd(
         tracing::info!(kept, swept, "rc19: partial-registry warm-up");
     }
 
+    // FR-141 — initialize device-local SSH resume master key and adopt any
+    // surviving detached `ssh-pty-host` sessions from before this restart/update
+    // BEFORE overlay/signaling accepts incoming SSH connections.
+    #[cfg(feature = "ssh-server")]
+    {
+        if let Err(e) =
+            meshharbord::ssh_persist::init_state_dir(&meshharbord::ssh_persist::state_dir())
+        {
+            tracing::warn!(%e, "fr141: could not initialize ssh-persist state dir");
+        } else {
+            let ssh_enabled = cfg.ssh_enabled;
+            let deny_daemon = cfg.ssh_max_privilege.as_deref() == Some("console_user");
+            let joined_orgs: std::collections::HashSet<String> = cfg
+                .orgs
+                .iter()
+                .map(|o| o.tenant_id.clone())
+                .chain(std::iter::once(cfg.tenant_id.clone()))
+                .collect();
+            let two_factor_on = meshharbor_node_core::two_factor::active();
+            let adopted = meshharbord::ssh_persist::adopt_all(|desc| {
+                if !ssh_enabled {
+                    return Err("ssh_enabled is false".into());
+                }
+                if !joined_orgs.contains(&desc.org_id) {
+                    return Err(format!("org {} is no longer joined", desc.org_id));
+                }
+                if deny_daemon
+                    && matches!(
+                        desc.run_as,
+                        meshharbor_node_core::pty_resume::RunAsDescriptor::Daemon
+                    )
+                {
+                    return Err("ssh_max_privilege forbids daemon identity".into());
+                }
+                if desc.key_list_auth && two_factor_on {
+                    return Err("two-factor authentication is now enabled".into());
+                }
+                Ok(())
+            })
+            .await;
+            if adopted > 0 {
+                tracing::info!(adopted, "fr141: adopted surviving detached SSH sessions");
+            }
+        }
+    }
+
     // Task 9 Phase 1C: drain any crash sidecars left by previous
     // crash-loop iterations. Best-effort + sequential so a fleet
     // reboot doesn't burst the ingest endpoint. Runs in parallel
@@ -6363,6 +6475,7 @@ async fn run_cmd(
     let mut os_initiated_stop = false;
     tokio::select! {
         res = sig_task => {
+            meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
             // FR-90 P1d-2 — first, on every way out: a harness that ends from
             // here on went down with the daemon, and its session is resumed
             // by the next one instead of being ended.
@@ -6403,6 +6516,7 @@ async fn run_cmd(
             }
         }
         _ = tokio::signal::ctrl_c() => {
+            meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
             #[cfg(hive_host)]
             meshharbord::hive::begin_shutdown();
             tracing::info!("shutdown requested");
@@ -6416,6 +6530,7 @@ async fn run_cmd(
         // for what this cost before it existed (#1040 on Unix; #1683 on the
         // Windows SCM service, where the stop arrived only as a hard kill).
         _ = terminate_signal(stop_event, config_path) => {
+            meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
             // Under systemd the same stop reaches every harness a moment
             // after this (`KillMode=control-group`).
             #[cfg(hive_host)]

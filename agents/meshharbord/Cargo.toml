@@ -862,7 +862,7 @@ overlay-netstack = ["meshharbor-tunnel-core/overlay-netstack", "meshharbor-node-
 # p256 0.14 vs 0.13, sha2 0.11 vs 0.10), so the binary really does carry a
 # second, parallel primitive stack and ~99 extra crates. That is the honest
 # price of the feature and the reason it is opt-in per build.
-ssh-server = ["dep:russh", "dep:russh-sftp", "overlay-netstack"]
+ssh-server = ["dep:russh", "dep:russh-sftp", "dep:zeroize", "overlay-netstack"]
 
 # FR-52 — cross-org remote access: the device half of gate 4. +7 crates (see
 # the opaque-ke dep comment).

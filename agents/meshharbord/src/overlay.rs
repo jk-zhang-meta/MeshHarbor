@@ -879,6 +879,18 @@ pub fn drop_runtime_slot(tenant_id: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .remove(tenant_id);
     crate::p2pctl::clear_tenant_directory(tenant_id);
+    // FR-141: persistent SSH hosts survive netstack teardown, so every org
+    // slot teardown must terminate that org's detached hosts explicitly.
+    let org = tenant_id.to_string();
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        rt.spawn(async move {
+            let _ = crate::ssh_persist::terminate_org(
+                &org,
+                meshharbor_node_core::pty_resume::TerminateReason::OrgRemoved,
+            )
+            .await;
+        });
+    }
 }
 
 /// rc.307 (B) — the process-lifetime runtime slots. The overlay runtime used

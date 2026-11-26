@@ -128,6 +128,19 @@ impl PtyProcess {
         size: WinSize,
         run_as: &crate::exec::RunAs,
     ) -> Result<Self, String> {
+        Self::spawn_with_env(command, term, size, run_as, &[])
+    }
+
+    /// Spawn a login shell (or `shell -c <command>`) attached to a new pty,
+    /// passing an allowlisted set of environment variables (`LANG`, `LC_*`,
+    /// `TZ`, `COLORTERM`).
+    pub fn spawn_with_env(
+        command: Option<&str>,
+        term: &str,
+        size: WinSize,
+        run_as: &crate::exec::RunAs,
+        extra_env: &[(String, String)],
+    ) -> Result<Self, String> {
         let (master, slave) = open_pty(size).map_err(|e| format!("could not open a pty: {e}"))?;
 
         let shell = default_shell();
@@ -172,6 +185,9 @@ impl PtyProcess {
                 term
             },
         );
+        for (k, v) in meshharbor_node_core::pty_resume::filter_open_env(extra_env) {
+            cmd.env(k, v);
+        }
 
         // Registered BEFORE `apply_run_as`'s own pre_exec so the terminal is
         // claimed while still privileged. Not strictly required (TIOCSCTTY
@@ -265,6 +281,15 @@ impl PtyProcess {
             pgid,
             hard_kill: false,
         })
+    }
+
+    /// PID of the spawned shell (session leader / process group leader).
+    pub fn child_pid(&self) -> Option<u32> {
+        if self.pgid > 0 {
+            Some(self.pgid as u32)
+        } else {
+            self.child.id()
+        }
     }
 
     /// A handle for writing client keystrokes into the terminal and resizing

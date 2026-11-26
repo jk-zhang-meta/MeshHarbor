@@ -536,6 +536,21 @@ enum Command {
         /// Session lifetime in seconds. 0 = the server's ceiling.
         #[arg(long, default_value_t = 0)]
         session_secs: u64,
+        /// FR-141 — bypass built-in resumable SSH and exec system OpenSSH directly.
+        #[arg(long)]
+        no_resume: bool,
+        /// FR-141 — keep resumable session credentials in memory only (do not save to disk).
+        #[arg(long)]
+        ephemeral: bool,
+        /// FR-141 — list saved resumable SSH sessions for this device.
+        #[arg(long)]
+        sessions: bool,
+        /// FR-141 — reattach to a detached resumable SSH session (latest if ID omitted).
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        resume: Option<String>,
+        /// FR-141 — terminate a detached remote resumable SSH session by ID prefix.
+        #[arg(long, value_name = "SESSION_ID")]
+        kill: Option<String>,
         /// Anything after `--` is passed to `ssh` verbatim — a remote command,
         /// or extra client options: `mh ssh box -- -v uptime`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1422,12 +1437,25 @@ where
         Command::Ssh {
             device,
             session_secs,
+            no_resume,
+            ephemeral,
+            sessions,
+            resume,
+            kill,
             args,
         } => {
-            // Mirror ssh's own exit status, the same way `exec` mirrors the
-            // remote command's — so `mh ssh box -- false` composes in a
-            // script instead of always looking successful.
-            match crate::sshcmd::run(&device, session_secs, &args).await? {
+            let code = if sessions {
+                crate::ssh_resume::print_sessions(&device)?
+            } else if let Some(prefix) = kill {
+                crate::ssh_resume::client::run_kill(&device, &prefix).await?
+            } else if let Some(prefix) = resume {
+                let id_opt = (!prefix.trim().is_empty()).then_some(prefix.as_str());
+                crate::ssh_resume::client::run_resume(&device, id_opt).await?
+            } else {
+                crate::sshcmd::run_with_options(&device, session_secs, &args, no_resume, ephemeral)
+                    .await?
+            };
+            match code {
                 0 => Ok(()),
                 code => std::process::exit(code),
             }

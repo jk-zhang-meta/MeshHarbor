@@ -144,6 +144,7 @@ pub struct PtyProcess {
     /// only closed on drop — teardown goes through `TerminateJobObject`, which
     /// is idempotent and leaves the handle valid.
     job: Arc<Owned>,
+    child_pid: u32,
     handle: PtyHandle,
 }
 
@@ -180,9 +181,21 @@ impl PtyProcess {
     /// Start a shell (or `shell -c <command>`) on a fresh pseudoconsole.
     pub fn spawn(
         command: Option<&str>,
+        term: &str,
+        size: WinSize,
+        run_as: &crate::exec::RunAs,
+    ) -> Result<Self, String> {
+        Self::spawn_with_env(command, term, size, run_as, &[])
+    }
+
+    /// Start a shell on a fresh pseudoconsole (`extra_env` is accepted for
+    /// cross-platform parity with Unix).
+    pub fn spawn_with_env(
+        command: Option<&str>,
         _term: &str,
         size: WinSize,
         run_as: &crate::exec::RunAs,
+        _extra_env: &[(String, String)],
     ) -> Result<Self, String> {
         // Which identity — decided BEFORE anything is allocated, so a session
         // that will be refused never gets a pseudoconsole or a process.
@@ -237,6 +250,7 @@ impl PtyProcess {
         } else {
             spawn_attached(&pc, &cmdline, in_read.0, out_write.0)?
         };
+        let child_pid = pi.dwProcessId;
         let process = Owned(pi.hProcess);
         // The thread handle is of no use to us and would leak.
         let _thread = Owned(pi.hThread);
@@ -391,7 +405,12 @@ impl PtyProcess {
             exit_rx: Some(exit_rx),
             exit: None,
             job,
+            child_pid,
         })
+    }
+
+    pub fn child_pid(&self) -> Option<u32> {
+        (self.child_pid != 0).then_some(self.child_pid)
     }
 
     pub fn handle(&self) -> PtyHandle {
