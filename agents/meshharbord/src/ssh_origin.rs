@@ -37,6 +37,8 @@ pub struct SshGrantAnswer {
     pub ssh_ticket_id: Option<String>,
     /// FR-129 — the target refused on two-factor (its wire spelling).
     pub two_factor: Option<String>,
+    /// FR-141 — whether the grant allows persistent resumable SSH PTYs.
+    pub resume: bool,
 }
 
 type Pending = HashMap<String, oneshot::Sender<SshGrantAnswer>>;

@@ -223,6 +223,14 @@ pub fn record_pending_update_version(version: &str) {
         .unwrap_or_else(|e| e.into_inner()) = Some(version.to_string());
 }
 
+/// Read the pending target update version if an update triggered the shutdown.
+pub fn pending_update_version() -> Option<String> {
+    PENDING_UPDATE_VERSION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 #[cfg(feature = "ssh-server")]
 fn sessions_dir_for(state_dir: &Path) -> PathBuf {
     state_dir.join("ssh-sessions")
@@ -940,6 +948,24 @@ pub async fn terminate_org(org_id: &str, reason: TerminateReason) -> usize {
     #[cfg(not(feature = "ssh-server"))]
     {
         let _ = (org_id, reason);
+        0
+    }
+}
+
+/// Terminate a single persistent session scoped to `org_id` (used by `rc:ssh.revoke`).
+pub async fn terminate_session_in_org(
+    org_id: &str,
+    sid_hex: &str,
+    reason: TerminateReason,
+) -> usize {
+    #[cfg(feature = "ssh-server")]
+    {
+        let q = sid_hex.trim().to_ascii_lowercase();
+        terminate_where(|d| d.org_id == org_id && d.sid.to_hex() == q, reason).await
+    }
+    #[cfg(not(feature = "ssh-server"))]
+    {
+        let _ = (org_id, sid_hex, reason);
         0
     }
 }

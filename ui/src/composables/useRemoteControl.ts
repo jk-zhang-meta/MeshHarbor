@@ -1564,6 +1564,19 @@ export function hostLockedChipTitle(input: HostLockedInput): string {
   }
 }
 
+/** FR-141 — window after an agent restart during which `continues_from` may
+ *  auto-continue consent/2FA on the restarted device (matches daemon 120 s TTL). */
+export const RC_CONTINUE_WINDOW_MS = 120_000
+
+/** FR-141 — reactive state for a soft non-blocking restart recovery banner
+ *  over the frozen last video frame when the remote daemon announces a
+ *  graceful restart/update (`rc:ended { limit: "restart" }`). */
+export interface RcRestartRecovery {
+  etaMs: number
+  toVersion: string | null
+  startedAt: number
+}
+
 export type RcControlInbound =
   /** `input` (FR-97 P3b, P2d-1): what the lock screen does with input — see
    *  {@link HostLockedInput}. Windows never sends it. */
@@ -1584,11 +1597,11 @@ export type RcControlInbound =
   /** FR-101 P4b-2b — the device's idle limit: the session ends in `endsInMs`
    *  unless someone acts; `null` withdraws the warning. */
   | { kind: 'idle'; endsInMs: number | null }
-  /** FR-130 — the session ended while the server could not tell this page
-   *  (the person at the device, or the server's end of a session the device
-   *  holds): the device says it peer to peer, with the reason and limit an
-   *  `rc:terminate` carries, and the page reads it as one. */
-  | { kind: 'ended'; reason: string; limit: string | null }
+  /** FR-130 / FR-141 — the session ended while the server could not tell this page
+   *  (the person at the device, the server's end of a session the device holds,
+   *  or a graceful daemon restart/update with `limit: "restart"`): the device
+   *  says it peer to peer, with the reason and limit an `rc:terminate` carries. */
+  | { kind: 'ended'; reason: string; limit: string | null; etaMs?: number | null; toVersion?: string | null }
   | { kind: 'control_state'; state: RcControlState }
   | { kind: 'logs_fetch_reply'; reply: RcLogsFetchReply }
   | { kind: 'logs_fetch_start'; id: string | null; path?: string; totalLines?: number; truncated?: boolean }
@@ -1869,10 +1882,22 @@ export function parseControlInbound(data: unknown): RcControlInbound {
       installed,
     }
   }
-  // FR-130 — `{"t":"rc:ended","reason":…,"limit"?:…}`: an end the device
-  // says peer to peer. No reason, no message.
+  // FR-130 / FR-141 — `{"t":"rc:ended","reason":…,"limit"?:…,"eta_ms"?:…,"to_version"?:…}`:
+  // an end the device says peer to peer. No reason, no message.
   if (obj.t === 'rc:ended' && typeof obj.reason === 'string' && obj.reason.length > 0) {
-    return { kind: 'ended', reason: obj.reason, limit: typeof obj.limit === 'string' ? obj.limit : null }
+    const etaMs =
+      typeof obj.eta_ms === 'number' && Number.isFinite(obj.eta_ms) && obj.eta_ms >= 0
+        ? obj.eta_ms
+        : null
+    const toVersion =
+      typeof obj.to_version === 'string' && obj.to_version.length > 0 ? obj.to_version : null
+    return {
+      kind: 'ended',
+      reason: obj.reason,
+      limit: typeof obj.limit === 'string' ? obj.limit : null,
+      ...(etaMs !== null ? { etaMs } : {}),
+      ...(toVersion !== null ? { toVersion } : {}),
+    }
   }
   return null
 }
@@ -5017,7 +5042,7 @@ export function filterCapsByPreference(
  * back to false (legacy rc.18 fail-fast upload semantics).
  */
 export function useRemoteControl(
-  agent?: Ref<Pick<Agent, 'id' | 'os' | 'capabilities' | 'peer_auth_key'> | null>,
+  agent?: Ref<(Pick<Agent, 'id' | 'os' | 'capabilities' | 'peer_auth_key'> & Partial<Pick<Agent, 'is_online'>>) | null>,
   opts?: {
     external?: boolean
     shareGrantId?: () => string | null
@@ -5379,6 +5404,35 @@ export function useRemoteControl(
    *  release. Consumed by disconnect(). */
   let requestSent = false
   const reconnectAttempt = ref(0)
+  /** FR-141 — non-null while recovering from a graceful device restart/update
+   *  (`rc:ended { limit: "restart" }`), keeping the last painted frame visible
+   *  under a soft banner while reconnecting with `continues_from`. */
+  const restartingDevice = ref<RcRestartRecovery | null>(null)
+  let continuesFromId: string | null = null
+  let continuesUntilMs = 0
+
+  function noteRestartContinuity(
+    prevSid: string | null,
+    restartBanner?: { etaMs: number; toVersion: string | null },
+  ) {
+    if (!externalMode && !sharedMode && prevSid && /^[0-9a-f]{24}$/.test(prevSid)) {
+      continuesFromId = prevSid
+      continuesUntilMs = Date.now() + RC_CONTINUE_WINDOW_MS
+    }
+    if (restartBanner && !externalMode && !sharedMode) {
+      restartingDevice.value = {
+        etaMs: restartBanner.etaMs,
+        toVersion: restartBanner.toVersion,
+        startedAt: Date.now(),
+      }
+    }
+  }
+
+  function clearRestartContinuity() {
+    continuesFromId = null
+    continuesUntilMs = 0
+    restartingDevice.value = null
+  }
   /**
    * FR-27 P10 - who ended the last session when it was not this viewer:
    * `'host'` after a `host_disconnect` (the person at the device clicked
@@ -5703,7 +5757,13 @@ export function useRemoteControl(
    *  and a final one closes with no ladder and the replay arguments dropped,
    *  so a reload resumes nothing either. `fromPc`: the peer whose control
    *  channel said it; a channel this session no longer owns ends nothing. */
-  function onDeviceEnded(reason: string, limit: string | null, fromPc: RTCPeerConnection | null) {
+  function onDeviceEnded(
+    reason: string,
+    limit: string | null,
+    fromPc: RTCPeerConnection | null,
+    etaMs?: number | null,
+    toVersion?: string | null,
+  ) {
     if (fromPc !== pc || phase.value === 'idle' || phase.value === 'closed' || phase.value === 'error' || phase.value === 'reconnecting') return
     if (!claimEnd(sessionId.value)) return
     endHold(reason)
@@ -5713,6 +5773,14 @@ export function useRemoteControl(
       canReplay: !!lastConnectArgs,
     })
     if (action === 'reconnect') {
+      if (limit === 'restart') {
+        noteRestartContinuity(sessionId.value, {
+          etaMs: etaMs ?? 5_000,
+          toVersion: toVersion ?? null,
+        })
+      } else if (reason === 'agent_disconnect') {
+        noteRestartContinuity(sessionId.value)
+      }
       console.info('[rc] FR-130: the device ended the session (rc:ended', reason, ') - auto-reconnecting')
       scheduleReconnect({ notifyServer: false })
       return
@@ -5721,6 +5789,7 @@ export function useRemoteControl(
     phase.value = 'closed'
     if (endedByHost(reason)) endedBy.value = 'host'
     cancelReconnect()
+    clearRestartContinuity()
     lastConnectArgs = null
     replacesId = null
     const friendly = friendlyEndReason(reason, limit)
@@ -9610,12 +9679,19 @@ export function useRemoteControl(
       })
       if (action === 'keep-error') return
       if (action === 'reconnect') {
+        if (msg.reason === 'agent_disconnect') {
+          noteRestartContinuity(
+            sessionId.value,
+            msg.limit === 'restart' ? { etaMs: 5_000, toVersion: null } : undefined,
+          )
+        }
         console.info('[rc] session ended (', msg.reason, ') — auto-reconnecting')
         // Server already ended the session — don't send a redundant
         // terminate for it.
         scheduleReconnect({ notifyServer: false })
         return
       }
+      clearRestartContinuity()
       phase.value = 'closed'
       if (endedByHost(msg.reason)) {
         // FR-27 P10 - the person at the device ended it. Said as such (the
@@ -10007,6 +10083,26 @@ export function useRemoteControl(
   // one. (Attempts fired while the WS is down send into the void and
   // get re-laddered by the signalling timeout, so this also shortens
   // the worst case after a laptop wake.)
+  /** FR-141 — cancel the backoff timer and dial immediately when the target
+   *  device announces it is back online (`device:presence` / `agent.is_online`). */
+  function retryNowIfReconnecting(why = 'device came back online') {
+    if (phase.value === 'reconnecting' && reconnectTimer !== null && ws.status === 'connected') {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+      console.info(`[rc] FR-141: ${why} — retrying immediately`)
+      fireReconnectAttempt()
+    }
+  }
+
+  watch(
+    () => agent?.value?.is_online,
+    (online, prev) => {
+      if (online === true && prev === false) {
+        retryNowIfReconnecting('target agent presence flipped online')
+      }
+    },
+  )
+
   watch(
     () => ws.status,
     (s) => {
@@ -10534,6 +10630,7 @@ export function useRemoteControl(
       if (state === 'connected') {
         markConnect('pc_connected')
         phase.value = 'connected'
+        clearRestartContinuity()
         // FR-130 — a resumable session that goes live while this page's socket
         // is down is held from here: its return asks for it back.
         if (ws.status !== 'connected') hold.socketDown()
@@ -11451,9 +11548,9 @@ export function useRemoteControl(
         reconnectAttempt.value = 0
         notice.value = null
       } else if (parsed?.kind === 'ended') {
-        // FR-130 — the session ended while the server could not tell this
+        // FR-130 / FR-141 — the session ended while the server could not tell this
         // page, and the device said so peer to peer, on this peer's channel.
-        onDeviceEnded(parsed.reason, parsed.limit, controlPc)
+        onDeviceEnded(parsed.reason, parsed.limit, controlPc, parsed.etaMs, parsed.toVersion)
       } else if (parsed?.kind === 'idle') {
         // FR-101 P4b-2b — the device's idle limit: a countdown on this
         // browser's clock, or its withdrawal (there was activity).
@@ -11962,6 +12059,20 @@ export function useRemoteControl(
     if (!externalMode && !sharedMode && replacesId && /^[0-9a-f]{24}$/.test(replacesId)) {
       requestPayload.replaces = replacesId
     }
+    // FR-141 — auto-continuation after a graceful target restart/update: carry
+    // the prior session id for up to 120 s so the server + target daemon can
+    // verify continuity and skip re-prompting consent/2FA.
+    if (
+      !externalMode
+      && !sharedMode
+      && continuesFromId
+      && Date.now() < continuesUntilMs
+      && /^[0-9a-f]{24}$/.test(continuesFromId)
+    ) {
+      requestPayload.continues_from = continuesFromId
+    } else if (continuesFromId && Date.now() >= continuesUntilMs) {
+      clearRestartContinuity()
+    }
     sessionDcTransport = preferredTransport
     // FR-77 — which chroma cell this session runs in (mirrors the chroma_pref
     // logic below; an unstated VP9 chroma is profile 1 on the agent).
@@ -12082,6 +12193,7 @@ export function useRemoteControl(
     // FR-130 — the person's own hangup ends a hold, and replaces nothing.
     endHold('controller_hangup')
     replacesId = null
+    clearRestartContinuity()
     // Operator-initiated teardown must override any pending
     // reconnect timer; otherwise a reconnect could fire after the
     // user already dismissed the viewer, racing the WS rc:terminate
@@ -15436,6 +15548,10 @@ export function useRemoteControl(
      * `phase === 'reconnecting'`.
      */
     reconnectAttempt,
+    /** FR-141 — soft restart/update recovery banner state (non-null while reconnecting after `rc:ended { limit: "restart" }`). */
+    restartingDevice,
+    /** FR-141 — cancel pending reconnect backoff and retry immediately (e.g. on `device:presence` online). */
+    retryNowIfReconnecting,
     /** FR-130 - the session rides out the loss of its control socket (spec §4.5). */
     sessionHeld,
     /** FR-130 - the view's `<video>` frame callback: a frame presented, for `rc.resume`'s `gap_ms`. */

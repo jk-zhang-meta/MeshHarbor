@@ -1636,3 +1636,33 @@ with unconditional `/32` WireGuard static-key ingress binding):
   bound to `(tid, net, tgt, org, opk, ceilings, jti)` and checked against
   `offline_caps_not_before_ms`. Raw capabilities never cross LocalAPI.
 - **Kill switches**: `p2p_control_enabled` (device-side), org `offline_access` (default off).
+
+## 8. Persistent Resumable SSH PTYs Across Network Drops & Updates (FR-141)
+
+Interactive `mh ssh` sessions now survive transient network drops, roaming/IP changes,
+and `meshharbord` restarts or self-updates without killing running remote jobs unless
+the user explicitly exits (`exit`, `Ctrl-D`, or double `Ctrl-C` during recovery):
+
+- **Detached PTY host (`meshharbord ssh-pty-host`)**: Interactive PTYs run inside a
+  lightweight detached child process outside `meshharbord`'s cgroup/service tree
+  (Linux `systemd-run --scope` / `setsid`, macOS `setsid`, Windows detached job),
+  holding a 4 MiB byte ring buffer and a VT100 terminal screen model
+  (`crates/agent-core/src/pty_resume/vt.rs`) for lossless replay or clean screen
+  snapshot recovery after long gaps.
+- **Zero-secret child & mutual HKDF/HMAC re-attach**: The PTY host stores only its
+  signed `SessionDescriptor` + 32-byte `seal` (`ssh-resume.key`, HKDF label
+  `fr141/seal/v1`). On restart, the new `meshharbord` adopts live hosts over local
+  IPC, re-verifies every descriptor against local policy, and authenticates re-attaching
+  clients with fresh mutual nonces over the `meshharbor-pty-resume@meshharbor.io`
+  SSH subsystem (`agents/meshharbord/src/ssh_persist/subsystem.rs`).
+- **Humanized recovery UX**: While disconnected or while the target daemon is
+  restarting/updating, `mh ssh` preserves the remote terminal screen and draws a
+  non-destructive top-row recovery overlay ("SSH session recovering…") with live
+  elapsed time and double-`Ctrl-C` detach.
+- **Immediate revocation & policy enforcement**: Turning off org `remote_ssh_enabled`
+  or per-device `ssh_policy.mode = Off` pushes `rc:ssh.revoke` across pods (and
+  reconciles on connect) to terminate surviving detached PTYs immediately. Operators
+  can also inspect or kill sessions locally via `meshharbord ssh-sessions list|kill`
+  or disable resume via `MESHHARBORD_SSH_RESUME=0` / `mh ssh --no-resume`.
+  FR-105 Windows SYSTEM-service grants and FR-90 one-command agent tickets always
+  receive `resume_allowed: false`.

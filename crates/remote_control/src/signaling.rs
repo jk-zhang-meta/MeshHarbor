@@ -2095,6 +2095,14 @@ pub enum ClientMsg {
             with = "option_oid_hex"
         )]
         replaces: Option<ObjectId>,
+        /// FR-141 — previous session ID that ended via graceful target restart
+        /// (`agent_disconnect` <= 120 s ago) which this request continues.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "option_oid_hex"
+        )]
+        continues_from: Option<ObjectId>,
     },
 
     /// Controller sends an SDP offer (after consent granted).
@@ -4031,6 +4039,15 @@ pub enum ServerMsg {
         /// device and checked there; the centre never checks or keeps it. Absent otherwise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         two_factor_code: Option<crate::models::Confidential>,
+        /// FR-141 — validated previous session ID that this request continues
+        /// after a graceful target daemon restart/update. Sent ONLY to agents
+        /// advertising `RpcCap::RcContinue`.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "option_oid_hex"
+        )]
+        continues: Option<ObjectId>,
     },
 
     /// Server forwards SDP offer from controller → agent.
@@ -4597,6 +4614,26 @@ pub enum ServerMsg {
         /// device and checked there; the centre never checks or keeps it. Absent otherwise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         two_factor_code: Option<crate::models::Confidential>,
+        /// FR-141 — whether the target may open/attach a resumable persistent
+        /// PTY session (`meshharbor-pty-v1`) for this grant. Sent only to
+        /// devices advertising `RpcCap::SshResume`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume_allowed: bool,
+    },
+
+    /// FR-141 — server-ordered revocation of persistent SSH sessions on a
+    /// target device (org kill-switch off, device SSH policy disabled, or
+    /// principal/session revocation). Cap-gated on `RpcCap::SshResume`.
+    #[serde(rename = "rc:ssh.revoke")]
+    SshRevoke {
+        /// `"org"` | `"principal"` | `"session"` | `"all"`.
+        scope: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sid: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 
     /// Answer to a device-originated [`ClientMsg::SshRequest`] — the
@@ -4648,6 +4685,10 @@ pub enum ServerMsg {
         /// daemon-internally; never surfaced over LocalAPI.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         offline_cap: Option<String>,
+        /// FR-141 — true when the target advertises `RpcCap::SshResume` and
+        /// the grant permits opening a resumable persistent PTY session.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume: bool,
     },
 
     /// Answer to a device-originated [`ClientMsg::RpcExecRequest`] — the
@@ -9296,6 +9337,7 @@ mod tests {
             expires_at_ms: Some(123),
             error: None,
             ssh_ticket_id: None,
+            resume: false,
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""host_pubkey""#), "must reach the wire");
@@ -9320,6 +9362,7 @@ mod tests {
             expires_at_ms: None,
             error: Some("nope".into()),
             ssh_ticket_id: None,
+            resume: false,
         };
         let s = serde_json::to_string(&refused).unwrap();
         assert!(!s.contains("host_pubkey"), "absent, not null");
@@ -9364,6 +9407,7 @@ mod tests {
             consent_mode: None,
             via_service: false,
             one_command,
+            resume_allowed: false,
         };
         let v = serde_json::to_value(grant(false)).unwrap();
         assert!(v.get("one_command").is_none(), "a person's grant: {v}");
@@ -9388,6 +9432,7 @@ mod tests {
             expires_at_ms: None,
             error: Some("refused".into()),
             ssh_ticket_id: ssh_ticket_id.map(String::from),
+            resume: false,
         };
         let v = serde_json::to_value(answer(None)).unwrap();
         assert!(v.get("ssh_ticket_id").is_none(), "{v}");
@@ -10122,6 +10167,7 @@ mod tests {
             local_relay: None,
             initial_resolution: None,
             replaces: None,
+            continues_from: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(!s.contains("$oid"));
@@ -10149,6 +10195,7 @@ mod tests {
             local_relay: None,
             initial_resolution: None,
             replaces: None,
+            continues_from: None,
         };
         let s = serde_json::to_string(&req_with_t).unwrap();
         assert!(s.contains("\"preferred_transport\":\"data-channel-vp9-444\""));
@@ -10180,6 +10227,7 @@ mod tests {
             }),
             initial_resolution: None,
             replaces: None,
+            continues_from: None,
         };
         let s = serde_json::to_string(&req_lr).unwrap();
         assert!(
@@ -10229,6 +10277,7 @@ mod tests {
             lock_on_end: None,
             external: None,
             initial_resolution: None,
+            continues: None,
         };
         let off = serde_json::to_string(&req(false)).unwrap();
         assert!(
@@ -10280,6 +10329,7 @@ mod tests {
             lock_on_end: None,
             external: None,
             initial_resolution: None,
+            continues: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("session_policy"), "{none}");
@@ -10378,6 +10428,7 @@ mod tests {
             lock_on_end: None,
             external: None,
             initial_resolution: None,
+            continues: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("idle_secs"), "{none}");
@@ -10464,6 +10515,7 @@ mod tests {
             lock_on_end,
             external: None,
             initial_resolution: None,
+            continues: None,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("lock_on_end"), "{none}");
@@ -10535,6 +10587,7 @@ mod tests {
             local_relay: None,
             initial_resolution,
             replaces: None,
+            continues_from: None,
         };
         let server_req = |initial_resolution| ServerMsg::Request {
             two_factor_code: None,
@@ -10560,6 +10613,7 @@ mod tests {
             lock_on_end: None,
             external: None,
             initial_resolution,
+            continues: None,
         };
 
         // 1. Omitted when None, and deserializes as None when absent on the wire.
@@ -14341,6 +14395,7 @@ mod fr130_wire_tests {
             two_factor_code: None,
             share_grant_id: None,
             replaces,
+            continues_from: None,
         }
     }
 
@@ -14569,6 +14624,63 @@ mod fr130_wire_tests {
         assert!(matches!(
             serde_json::from_str::<ServerMsg>(&alert_json).unwrap(),
             ServerMsg::GpuAlert { .. }
+        ));
+    }
+
+    #[test]
+    fn fr141_ssh_resume_revoke_and_rc_continue_wire_round_trip() {
+        use crate::models::{RpcCap, SshActivityKind};
+        assert!(RpcCap::ALL.contains(&RpcCap::SshResume));
+        assert!(RpcCap::ALL.contains(&RpcCap::RcContinue));
+        assert_eq!(RpcCap::from_wire("ssh-resume"), Some(RpcCap::SshResume));
+        assert_eq!(RpcCap::from_wire("rc-continue"), Some(RpcCap::RcContinue));
+
+        for (kind, wire) in [
+            (SshActivityKind::Detached, "detached"),
+            (SshActivityKind::Resumed, "resumed"),
+            (SshActivityKind::Ended, "ended"),
+        ] {
+            let s = serde_json::to_string(&kind).unwrap();
+            assert_eq!(s, format!("\"{wire}\""));
+            assert_eq!(serde_json::from_str::<SshActivityKind>(&s).unwrap(), kind);
+        }
+
+        let revoke = ServerMsg::SshRevoke {
+            scope: "org".into(),
+            principal: None,
+            sid: None,
+            reason: Some("org_ssh_disabled".into()),
+        };
+        let rev_json = serde_json::to_string(&revoke).unwrap();
+        assert!(rev_json.contains(r#""t":"rc:ssh.revoke""#), "{rev_json}");
+        assert!(rev_json.contains(r#""scope":"org""#), "{rev_json}");
+        assert!(matches!(
+            serde_json::from_str::<ServerMsg>(&rev_json).unwrap(),
+            ServerMsg::SshRevoke { ref scope, .. } if scope == "org"
+        ));
+
+        let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
+        let req = ClientMsg::SessionRequest {
+            agent_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
+            share_grant_id: None,
+            permissions: Permissions::VIEW,
+            browser_caps: vec![],
+            preferred_transport: None,
+            chroma_pref: None,
+            chunk_framing: None,
+            audio_enabled: false,
+            override_reason: None,
+            local_relay: None,
+            initial_resolution: None,
+            two_factor_code: None,
+            replaces: None,
+            continues_from: Some(sid),
+        };
+        let req_json = serde_json::to_string(&req).unwrap();
+        assert!(req_json.contains(r#""continues_from":"507f1f77bcf86cd799439011""#));
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(&req_json).unwrap(),
+            ClientMsg::SessionRequest { continues_from: Some(c), .. } if c == sid
         ));
     }
 }

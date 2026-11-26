@@ -278,6 +278,23 @@ pub fn wire_rc_relay(state: &RemoteState) {
                         }
                     }
                 }
+                let continues = if let ClientMsg::SessionRequest {
+                    agent_id,
+                    share_grant_id: None,
+                    continues_from: Some(prev_sid),
+                    ..
+                } = &frame
+                {
+                    crate::row_end::validate_continues_from(
+                        &state,
+                        user_id,
+                        *agent_id,
+                        Some(*prev_sid),
+                    )
+                    .await
+                } else {
+                    None
+                };
                 let ctx = DispatchCtx {
                     role: Role::Controller,
                     user_id: Some(user_id),
@@ -298,6 +315,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     slot: slot.clone(),
                     // Shared requests never cross pods (refused above).
                     share_files_account: None,
+                    continues,
                 };
                 let dispatched = state.fleet.rc_hub.dispatch(&ctx, frame);
                 if let Some(lease) = &slot {

@@ -495,6 +495,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         }
     }
 
@@ -580,6 +581,7 @@ mod tests {
                 local_relay: None,
                 initial_resolution: None,
                 replaces: None,
+                continues_from: None,
             };
             hub.dispatch(&controller_ctx(user, tx), request).unwrap();
         };

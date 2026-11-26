@@ -160,6 +160,7 @@ pub async fn handle_agent_ssh_request(
         error: Some(msg),
         ssh_ticket_id: None,
         offline_cap: None,
+        resume: false,
     };
 
     // The origin's owner is the person whose permissions this runs under. A
@@ -270,6 +271,7 @@ pub async fn handle_agent_ssh_request(
         error,
         ssh_ticket_id,
         two_factor,
+        resume,
     } = res;
     // FR-139 — mint an offline SSH capability ONLY when:
     //   1. the online SSH grant succeeded (`error.is_none()`),
@@ -300,6 +302,7 @@ pub async fn handle_agent_ssh_request(
         ssh_ticket_id,
         two_factor,
         offline_cap,
+        resume,
     };
     if reply_tx.try_send(msg).is_err() {
         warn!(%origin_agent_id, %request_id, "rc:ssh.response undeliverable — origin WS gone");

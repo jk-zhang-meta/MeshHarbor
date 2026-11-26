@@ -40,6 +40,8 @@ pub mod crash_uploader;
 pub mod delegate;
 pub mod device_name;
 pub mod personal_system_exec;
+/// FR-141 — Sealed short-lived remote-desktop restart continuity records.
+pub mod rc_continuity;
 #[cfg(unix)]
 pub mod delegate_worker;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]

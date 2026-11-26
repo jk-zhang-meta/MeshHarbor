@@ -410,3 +410,49 @@ pub(crate) async fn revoked(state: &RemoteState, row: &RemoteSession) {
         );
     }
 }
+
+/// FR-141 — maximum elapsed time after an agent restart disconnect during
+/// which the viewer's `continues_from` claim may be forwarded to the target
+/// device for automatic consent / 2FA continuity (matches the daemon's sealed
+/// 120 s `rc-continuity.json` TTL).
+pub const CONTINUES_FROM_WINDOW_MS: i64 = 120_000;
+
+/// FR-141 — validate a controller's `ClientMsg::SessionRequest::continues_from`
+/// claim against MongoDB before setting `DispatchCtx::continues`.
+///
+/// The hub NEVER trusts the raw wire field directly. Returns `Some(prev_sid)`
+/// only when `prev_sid` belongs to `user_id` on `agent_id`, was a non-external
+/// session that actually became live (`started_at.is_some()`), and ended with
+/// `EndReason::AgentDisconnect` (or is still closing/detached without a
+/// terminating non-disconnect reason) within [`CONTINUES_FROM_WINDOW_MS`].
+pub async fn validate_continues_from(
+    state: &RemoteState,
+    user_id: ObjectId,
+    agent_id: ObjectId,
+    continues_from: Option<ObjectId>,
+) -> Option<ObjectId> {
+    let prev_sid = continues_from?;
+    let row = state
+        .remote_sessions
+        .find_for_controller(prev_sid, user_id)
+        .await
+        .ok()?;
+    if row.agent_id != agent_id || row.external || row.started_at.is_none() {
+        return None;
+    }
+    let now_ms = DateTime::now().timestamp_millis();
+    let eligible = match (row.end_reason, row.ended_at) {
+        (Some(EndReason::AgentDisconnect), Some(ended_at)) => {
+            now_ms.saturating_sub(ended_at.timestamp_millis()) <= CONTINUES_FROM_WINDOW_MS
+        }
+        (None, None) => {
+            // Audit-projection race: allow briefly if the row was recently active/detached.
+            let ref_ts = row.detached_at.or(row.stats_at).or(row.started_at);
+            ref_ts.is_some_and(|t| {
+                now_ms.saturating_sub(t.timestamp_millis()) <= CONTINUES_FROM_WINDOW_MS
+            })
+        }
+        _ => false,
+    };
+    eligible.then_some(prev_sid)
+}

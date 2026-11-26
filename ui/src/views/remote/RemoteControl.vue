@@ -1183,6 +1183,45 @@
         </v-btn>
       </div>
 
+      <!-- FR-141 — graceful device restart/update continuity: keep the last painted
+           frame visible under a soft non-blocking recovery banner instead of blanking
+           out the stage while auto-reconnecting with `continues_from`. -->
+      <div
+        v-else-if="rc.restartingDevice.value && ['reconnecting', 'requesting', 'awaiting_consent', 'negotiating'].includes(rc.phase.value)"
+        class="rc-restart-stage"
+        data-testid="rc-restart-recovery"
+      >
+        <img
+          v-if="frozenFrameUrl"
+          :src="frozenFrameUrl"
+          alt=""
+          class="rc-restart-frozen-frame"
+        />
+        <div class="rc-restart-banner">
+          <v-progress-circular indeterminate size="20" width="2" color="warning" class="mr-3 flex-shrink-0" />
+          <div class="rc-restart-banner-text">
+            <div class="text-body-2 font-weight-medium">
+              {{ rc.restartingDevice.value.toVersion
+                ? t('remote.viewer.stage.restartingToVersion', { version: rc.restartingDevice.value.toVersion })
+                : t('remote.viewer.stage.restartingTitle') }}
+            </div>
+            <div class="text-caption text-medium-emphasis">
+              {{ t('remote.viewer.stage.restartingBody', { n: Math.max(1, rc.reconnectAttempt.value) }) }}
+            </div>
+          </div>
+          <v-btn
+            variant="tonal"
+            size="small"
+            color="warning"
+            class="ml-3 flex-shrink-0"
+            data-testid="rc-restart-cancel"
+            @click="leave()"
+          >
+            {{ t('remote.viewer.cancel') }}
+          </v-btn>
+        </div>
+      </div>
+
       <div
         v-else-if="['requesting', 'awaiting_consent', 'negotiating'].includes(rc.phase.value)"
         class="empty-state"
@@ -5356,6 +5395,59 @@ watch(
   () => rc.phase.value,
   (p) => {
     if (p === 'reconnecting' || p === 'error') void refreshAgentStatus()
+    if (p === 'connected' || p === 'idle' || p === 'closed' || p === 'error') {
+      frozenFrameUrl.value = null
+    }
+  },
+)
+
+// FR-141 — snapshot the last painted <video> or <canvas> frame synchronously when
+// the target device announces a graceful restart/update, BEFORE teardown unmounts
+// the render element, so the viewer keeps visual context under the soft banner.
+const frozenFrameUrl = ref<string | null>(null)
+function captureFrozenFrame() {
+  try {
+    const stage = stageEl.value
+    if (!stage) return
+    const src =
+      stage.querySelector<HTMLCanvasElement>('canvas.remote-video')
+      ?? (videoEl.value && videoEl.value.videoWidth > 0 ? videoEl.value : null)
+    if (!src) return
+    const w = src instanceof HTMLVideoElement ? src.videoWidth : src.width
+    const h = src instanceof HTMLVideoElement ? src.videoHeight : src.height
+    if (w <= 0 || h <= 0) return
+    const snap = document.createElement('canvas')
+    snap.width = w
+    snap.height = h
+    const ctx = snap.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(src, 0, 0, w, h)
+    frozenFrameUrl.value = snap.toDataURL('image/jpeg', 0.82)
+  } catch {
+    // OffscreenCanvas / cross-origin / headless DOM: degrade gracefully to banner only.
+  }
+}
+watch(
+  () => rc.restartingDevice.value,
+  (val) => {
+    if (val) captureFrozenFrame()
+    else frozenFrameUrl.value = null
+  },
+  { flush: 'sync' },
+)
+
+// FR-141 — live `device:presence` fast-path: ws.ts patches `agentStore.agents` in
+// realtime when the restarted daemon comes back online. Sync `agent.value.is_online`
+// and wake the reconnect ladder immediately instead of waiting out backoff.
+watch(
+  () => agentStore.agents.find((a) => a.id === agentId.value)?.is_online,
+  (online, prev) => {
+    if (typeof online === 'boolean' && agent.value && agent.value.is_online !== online) {
+      agent.value = { ...agent.value, is_online: online }
+    }
+    if (online === true && prev === false) {
+      rc.retryNowIfReconnecting('device:presence online')
+    }
   },
 )
 
@@ -5884,6 +5976,44 @@ onBeforeUnmount(() => {
   text-align: center;
   padding: 32px;
   color: rgba(255, 255, 255, 0.7);
+}
+.rc-restart-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #0b0b0b;
+}
+.rc-restart-frozen-frame {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: brightness(0.68);
+  pointer-events: none;
+  user-select: none;
+}
+.rc-restart-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(18, 20, 26, 0.88);
+  border: 1px solid rgba(255, 193, 7, 0.45);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.92);
+}
+.rc-restart-banner-text {
+  min-width: 0;
 }
 /* The stage is dark in every theme, but Vuetify's `text-medium-emphasis` is
    theme-relative (on-background at medium opacity, `!important`): in the light

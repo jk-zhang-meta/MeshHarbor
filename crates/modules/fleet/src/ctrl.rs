@@ -126,6 +126,42 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(tenant = %tid, denied, agents = n, "rc ctrl: keep-busy policy applied from another pod");
             }
         }
+        Some("ssh_revoke") => {
+            let Some(tid) = ctrl
+                .get("tenant_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| ObjectId::parse_str(s).ok())
+            else {
+                return;
+            };
+            let scope = ctrl.get("scope").and_then(|v| v.as_str()).unwrap_or("org");
+            let principal = ctrl
+                .get("principal")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let sid = ctrl.get("sid").and_then(|v| v.as_str()).map(str::to_string);
+            let reason = ctrl
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(aid) = ctrl
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| ObjectId::parse_str(s).ok())
+            {
+                if hub.push_ssh_revoke_agent(tid, aid, scope, principal, sid, reason.clone()) {
+                    info!(tenant = %tid, agent = %aid, scope, ?reason, "rc ctrl: ssh_revoke applied to agent from another pod");
+                }
+            } else {
+                let n = hub.push_ssh_revoke_org(
+                    tid,
+                    reason.as_deref().unwrap_or("org_ssh_disabled"),
+                );
+                if n > 0 {
+                    info!(tenant = %tid, scope, ?reason, agents = n, "rc ctrl: ssh_revoke applied to org agents from another pod");
+                }
+            }
+        }
         Some("peer_relay_serve") => {
             let (Some(tid), Some(aid), Some(serve)) = (
                 ctrl.get("tenant_id")

@@ -6874,6 +6874,7 @@
     "rc:rpc.exec",
     "rc:rpc.cancel",
     "rc:ssh.grant",
+    "rc:ssh.revoke",
     "rc:ssh.response",
     "rc:rpc.response",
     "rc:tunnel.opened",

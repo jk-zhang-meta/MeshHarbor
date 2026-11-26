@@ -151,6 +151,10 @@ pub struct SshResponseBody {
     /// `two_factor_invalid` / `two_factor_locked`), so the caller can ask the person for a code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub two_factor: Option<String>,
+    /// FR-141 — `true` when this grant permits persistent resumable SSH PTY
+    /// sessions (`meshharbor-pty-resume@meshharbor.io` subsystem).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume: bool,
 }
 
 impl SshResponseBody {
@@ -165,6 +169,7 @@ impl SshResponseBody {
             error: Some(reason.message().to_string()),
             ssh_ticket_id: None,
             two_factor: reason.two_factor().map(str::to_string),
+            resume: false,
         }
     }
 }
@@ -393,6 +398,8 @@ struct Granted {
     /// FR-105 — who serves the session: `system` / `console_user` (the
     /// device's SYSTEM service) or `worker`. Recorded in `ssh_audit`.
     ran_as: &'static str,
+    /// FR-141 — whether the target + grant permit persistent resumable SSH PTYs.
+    resume_allowed: bool,
 }
 
 /// Gate, mint, push, answer. The ONE path a session request takes, whether it
@@ -469,6 +476,7 @@ pub async fn dispatch(
                 error: None,
                 ssh_ticket_id,
                 two_factor: None,
+                resume: g.resume_allowed,
             }
         }
         Err(reason) => {
@@ -611,6 +619,8 @@ async fn decide(
     .await
     .map_err(|_| SshDenyReason::CallerNotAllowed)?;
     let consent_mode = Some(effective_wire_consent(Some(consent_mode)));
+    let resume_allowed =
+        !via_service && session.is_none() && agent.capabilities.has_rpc(RpcCap::SshResume);
     let msg = ServerMsg::SshGrant {
         two_factor_code: two_factor_code.cloned(),
         grant_id: grant_id.clone(),
@@ -623,6 +633,7 @@ async fn decide(
         consent_mode,
         via_service,
         one_command: session.is_some(),
+        resume_allowed,
     };
 
     // FR-105 — the service PULLS the grant with its own credential, so it is
@@ -817,6 +828,7 @@ async fn decide(
             DEFAULT_SSH_PORT
         },
         ran_as: ran_as(via_service, account_mode),
+        resume_allowed,
     })
 }
 
@@ -1234,6 +1246,28 @@ pub async fn set_policy(
         account_mode = ?policy.account_mode,
         "ssh: device policy updated"
     );
+    if policy.mode == SshMode::Off {
+        let aid = agent.id.unwrap_or_default();
+        let _ = state.fleet.rc_hub.push_ssh_revoke_agent(
+            tid,
+            aid,
+            "org",
+            None,
+            None,
+            Some("ssh_policy_disabled".to_string()),
+        );
+        meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
+            &state.fleet,
+            "ssh_revoke",
+            serde_json::json!({
+                "tenant_id": tid.to_hex(),
+                "agent_id": aid.to_hex(),
+                "scope": "org",
+                "reason": "ssh_policy_disabled",
+            }),
+        )
+        .await;
+    }
     Ok(Json(body))
 }
 
@@ -1293,6 +1327,22 @@ pub async fn set_org_settings(
         enabled = body.remote_ssh_enabled,
         "ssh: org kill-switch changed"
     );
+    if !body.remote_ssh_enabled {
+        let _ = state
+            .fleet
+            .rc_hub
+            .push_ssh_revoke_org(tid, "org_ssh_disabled");
+        meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
+            &state.fleet,
+            "ssh_revoke",
+            serde_json::json!({
+                "tenant_id": tid.to_hex(),
+                "scope": "org",
+                "reason": "org_ssh_disabled",
+            }),
+        )
+        .await;
+    }
     Ok(Json(OrgSshSettings {
         remote_ssh_enabled: tenant.settings.remote_ssh_enabled,
     }))
@@ -1826,6 +1876,7 @@ mod audit_tests {
             confirmed_after_ms: Some(42),
             port: DEFAULT_SSH_PORT,
             ran_as: "worker",
+            resume_allowed: true,
         }
     }
 

@@ -213,6 +213,12 @@ pub struct ConnectedAgent {
     /// parses `rc:agent.keep_busy_policy`. Per CONNECTION; a pre-FR-92 agent
     /// would log every policy frame as an unknown `rc:*` at WARN.
     pub supports_keep_busy: bool,
+    /// FR-141 — the agent advertises `ssh-resume` in `AgentCaps.rpc`: it
+    /// supports persistent SSH PTY host survival and `rc:ssh.revoke`.
+    pub supports_ssh_resume: bool,
+    /// FR-141 — the agent advertises `rc-continue` in `AgentCaps.rpc`: it
+    /// honours `Request.continues` after a graceful restart.
+    pub supports_rc_continue: bool,
     /// Dynamic org-relay serving control (`rc:overlay.peer_relay_serve`).
     pub supports_relay_control: bool,
     /// Multi-region relay PoP target push (`rc:relay.regions`).
@@ -1954,6 +1960,8 @@ impl Hub {
             // FR-92 — set by `set_agent_keep_busy_support`; `false` = no
             // policy frame is ever pushed to this connection.
             supports_keep_busy: false,
+            supports_ssh_resume: false,
+            supports_rc_continue: false,
             supports_relay_control: false,
             supports_relay_regions: false,
             supports_relay_server: false,
@@ -2600,6 +2608,7 @@ impl Hub {
             SessionCreationOrigin::Unknown,
             None,
             None,
+            None,
         )
     }
 
@@ -2667,6 +2676,9 @@ impl Hub {
         // FR-129 — the person's two-factor code, relayed to the device in the Request and
         // checked there; the hub never reads it.
         two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
+        // FR-141 — validated prior session id when the viewer is auto-continuing
+        // after an agent restart (`DispatchCtx::continues`).
+        continues: Option<ObjectId>,
     ) -> Result<ObjectId> {
         // Positive provenance requires the dedicated, post-PDP local entry.
         // Optional scopes below only veto it; their absence never creates it.
@@ -2887,6 +2899,7 @@ impl Hub {
             agent_enforces_idle,
             agent_honours_lock,
             agent_window,
+            agent_rc_continue,
         ) = {
             let mut agent = self
                 .inner
@@ -2912,6 +2925,8 @@ impl Hub {
                 agent.honours_lock_on_end,
                 // FR-130 — the window this connection was announced, if any.
                 agent.resume_window,
+                // FR-141 — whether this agent honours `Request.continues`.
+                agent.supports_rc_continue,
             )
         };
 
@@ -3203,6 +3218,7 @@ impl Hub {
             // after an agent-socket flap carries it too.
             external,
             initial_resolution,
+            continues: continues.filter(|_| agent_rc_continue && !live_external),
         };
         // Keep the Request while consent is pending so `register_agent` can
         // re-push it if the agent's control WS flaps before `rc:consent`
@@ -4065,6 +4081,84 @@ impl Hub {
             Some(mut entry) => std::mem::replace(&mut entry.supports_keep_busy, supports),
             None => false,
         }
+    }
+
+    /// FR-141 — record per-connection `ssh-resume` and `rc-continue` capability
+    /// support from the agent's live hello / caps announcement. Returns whether
+    /// `ssh-resume` was previously enabled on this connection.
+    pub fn set_agent_fr141_support(
+        &self,
+        agent_id: ObjectId,
+        ssh_resume: bool,
+        rc_continue: bool,
+    ) -> bool {
+        match self.inner.agents.get_mut(&agent_id) {
+            Some(mut entry) => {
+                entry.supports_rc_continue = rc_continue;
+                std::mem::replace(&mut entry.supports_ssh_resume, ssh_resume)
+            }
+            None => false,
+        }
+    }
+
+    /// FR-141 — push `rc:ssh.revoke` to every `ssh-resume`-capable agent in
+    /// `tenant_id` connected to THIS pod (e.g. when org `remote_ssh_enabled` is
+    /// switched off). Returns how many agents received the frame.
+    pub fn push_ssh_revoke_org(&self, tenant_id: ObjectId, reason: &str) -> usize {
+        let targets: Vec<ObjectId> = self
+            .inner
+            .agents
+            .iter()
+            .filter(|a| a.tenant_id == tenant_id && a.supports_ssh_resume)
+            .map(|a| a.agent_id)
+            .collect();
+        targets
+            .into_iter()
+            .filter(|id| {
+                self.send_to_agent(
+                    *id,
+                    ServerMsg::SshRevoke {
+                        scope: "org".into(),
+                        principal: None,
+                        sid: None,
+                        reason: Some(reason.to_string()),
+                    },
+                )
+                .is_ok()
+            })
+            .count()
+    }
+
+    /// FR-141 — push `rc:ssh.revoke` to one `ssh-resume`-capable agent in
+    /// `tenant_id` connected to THIS pod (e.g. device SSH policy turned off or
+    /// principal/session revoked).
+    pub fn push_ssh_revoke_agent(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        scope: &str,
+        principal: Option<String>,
+        sid: Option<String>,
+        reason: Option<String>,
+    ) -> bool {
+        let eligible = self
+            .inner
+            .agents
+            .get(&agent_id)
+            .is_some_and(|a| a.tenant_id == tenant_id && a.supports_ssh_resume);
+        if !eligible {
+            return false;
+        }
+        self.send_to_agent(
+            agent_id,
+            ServerMsg::SshRevoke {
+                scope: scope.to_string(),
+                principal,
+                sid,
+                reason,
+            },
+        )
+        .is_ok()
     }
 
     /// FR-92 — push an org's keep-busy policy to every agent of `tenant_id`
@@ -5801,6 +5895,10 @@ pub struct DispatchCtx {
     /// for a share without an account; the device then decides by its own
     /// privilege. Never taken from the controller's frame.
     pub share_files_account: Option<String>,
+    /// FR-141 — server-validated previous session ID that this request
+    /// continues after a graceful target daemon restart (<= 120 s ago).
+    /// Never trusted directly from `ClientMsg::SessionRequest::continues_from`.
+    pub continues: Option<ObjectId>,
 }
 
 impl Hub {
@@ -5933,6 +6031,9 @@ impl Hub {
                     // capacity gate, the org's slot it claims before this
                     // dispatch included (`Hub::end_replaced`).
                     replaces: _,
+                    // FR-141 — validated against MongoDB by the remote module
+                    // and passed via `ctx.continues`; raw wire field ignored.
+                    continues_from: _,
                 },
             ) => {
                 // Forward browser codec caps verbatim to the agent in
@@ -5987,6 +6088,7 @@ impl Hub {
                     origin,
                     initial_resolution,
                     two_factor_code,
+                    ctx.continues,
                 )?;
                 *created = Some(session_id);
                 Ok(())
@@ -7160,6 +7262,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         hub.dispatch(
             &device,
@@ -7313,6 +7416,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         let offer = || ClientMsg::SdpOffer {
             session_id: sid,
@@ -7428,6 +7532,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         assert!(matches!(
             ctl_rx.recv().await,
@@ -7490,6 +7595,7 @@ mod tests {
             local_relay: None,
             initial_resolution: None,
             replaces: None,
+            continues_from: None,
         }
     }
 
@@ -7602,6 +7708,7 @@ mod tests {
                 org_session_cap: None,
                 slot: None,
                 share_files_account: None,
+            continues: None,
             }
         }
         fn ctx(&self) -> DispatchCtx {
@@ -8079,6 +8186,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
         hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
@@ -8376,6 +8484,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         f.hub
             .dispatch(
@@ -8760,6 +8869,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         let stranger = ctx_for(Role::Controller, Some(ObjectId::new()), None);
         let owner_ctx = ctx_for(Role::Controller, Some(owner), None);
@@ -8935,6 +9045,7 @@ mod tests {
             org_session_cap: None,
             slot: None,
             share_files_account: None,
+            continues: None,
         };
         let device = ctx_for(Role::Agent, None, Some(agent_id));
         let viewer = ctx_for(Role::Controller, Some(owner), None);

@@ -427,6 +427,7 @@ mod tests {
             error: None,
             ssh_ticket_id: ticket_id.map(String::from),
             two_factor: None,
+            resume: false,
         }
     }
 

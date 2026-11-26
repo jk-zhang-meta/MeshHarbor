@@ -1197,6 +1197,7 @@ fn handle_offline_ssh_grant(
             allow_via_service: false,
             one_command: false,
             two_factor_code,
+            resume_allowed: None,
         },
     );
 

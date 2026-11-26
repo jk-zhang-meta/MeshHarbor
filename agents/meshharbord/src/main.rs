@@ -5420,6 +5420,10 @@ async fn run_cmd(
         tracing::info!(kept, swept, "rc19: partial-registry warm-up");
     }
 
+    // FR-141 — load and immediately unlink any sealed remote-desktop restart
+    // continuity records written by the previous daemon generation (120 s TTL).
+    let _ = meshharbord::rc_continuity::load_and_consume_on_boot();
+
     // FR-141 — initialize device-local SSH resume master key and adopt any
     // surviving detached `ssh-pty-host` sessions from before this restart/update
     // BEFORE overlay/signaling accepts incoming SSH connections.

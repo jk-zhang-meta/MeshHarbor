@@ -2623,6 +2623,25 @@ async fn connect_once(
                     if ctx.is_primary {
                         crate::mgmt_entry::stop();
                     }
+                    // FR-141 — persist short-lived sealed continuity records for
+                    // live non-external RC sessions and announce the graceful
+                    // restart peer-to-peer BEFORE closing WebRTC peers so the
+                    // viewer keeps the last painted frame and auto-reconnects.
+                    let live_rc_ids = peers.live_session_ids();
+                    if !live_rc_ids.is_empty() {
+                        if let Err(e) = crate::rc_continuity::save_active_for_restart(&live_rc_ids)
+                        {
+                            warn!(%e, "fr141: failed to persist rc-continuity records");
+                        }
+                        let to_ver = crate::ssh_persist::pending_update_version();
+                        peers
+                            .notify_restart_before_shutdown(
+                                5_000,
+                                to_ver.as_deref(),
+                                Duration::from_millis(120),
+                            )
+                            .await;
+                    }
                     peers.end_connection(ConnExit::Shutdown).await;
                     close_side(side, ConnExit::Shutdown.label()).await;
                     close_all_tunnel_peers(&mut tunnel_peers).await;
@@ -4470,6 +4489,7 @@ async fn handle_server_msg(
             external,
             initial_resolution,
             two_factor_code,
+            continues,
         } => {
             // FR-130 — sessions kept through the last socket's loss hold the
             // device's capacity until their claim is answered: a new one is
@@ -4490,6 +4510,33 @@ async fn handle_server_msg(
                 });
                 return Ok(());
             }
+            // FR-141 — check whether this request continues a recently live
+            // session interrupted by a graceful daemon restart (single-use,
+            // <= 120 s, same org & controller, no permission/audio escalation).
+            let continued = if let Some(prev_sid) = continues
+                && shared_lease.is_none()
+                && external.is_none()
+            {
+                let pre_mask = crate::session_policy::mask(
+                    permissions,
+                    audio_enabled,
+                    session_policy,
+                    crate::session_policy::device_policy(),
+                    false,
+                );
+                let pre_audio = pre_mask.audio_enabled
+                    && audio_enabled
+                    && !crate::encode::caps::detect().audio.is_empty();
+                crate::rc_continuity::take_matching(
+                    prev_sid,
+                    &agent_cfg.tenant_id,
+                    controller_user_id,
+                    pre_mask.permissions.bits(),
+                    pre_audio,
+                )
+            } else {
+                false
+            };
             // FR-129 — a device with two-factor on asks for a code on every session, checked
             // HERE by the daemon before anything else: the centre only relayed it. A share
             // link's or an outsider's session has nobody with the device's authenticator app,
@@ -4511,9 +4558,13 @@ async fn handle_server_msg(
                     return Ok(());
                 }
                 let session_hex = session_id.to_hex();
-                // A request the hub replays after this socket reconnected was admitted already:
+                // A request the hub replays after this socket reconnected — or
+                // a verified FR-141 restart continuation — was admitted already:
                 // its code is used, and checking it again would end the person's session.
-                if !meshharbor_node_core::two_factor::admitted(&session_hex) {
+                if continued {
+                    meshharbor_node_core::two_factor::admit(&session_hex);
+                    info!(%session_id, %controller_user_id, "two-factor: admitted via FR-141 restart continuity");
+                } else if !meshharbor_node_core::two_factor::admitted(&session_hex) {
                     if let Err(r) = meshharbor_node_core::two_factor::check(
                         two_factor_code.as_ref().map(|c| c.as_str()),
                     ) {
@@ -4784,8 +4835,17 @@ async fn handle_server_msg(
             // the directive simply won — so a device that had set
             // `auto_grant_session = false` was silently overridden by a server
             // `Auto`, inverting the gate-4 property exec and SSH are built on.
-            let effective_mode =
-                crate::consent::strictest_of(directed_mode, consent_broker.mode(), host_window);
+            let effective_mode = if continued {
+                info!(
+                    %session_id,
+                    prev_session_id = ?continues,
+                    %controller_user_id,
+                    "rc: auto-continuing remote control session after device restart (FR-141)"
+                );
+                crate::consent::Mode::AutoGrant
+            } else {
+                crate::consent::strictest_of(directed_mode, consent_broker.mode(), host_window)
+            };
             // FR-101 P2b — the session policy, the org's (on the request) and
             // the device owner's floor, applied to the grant BEFORE anything
             // below reads it: the stash the channels enforce, the worker's
@@ -4908,7 +4968,8 @@ async fn handle_server_msg(
             // ⚠️ FR-52 P4 — never for an external session, whatever the server
             // says: the device decides that one itself, and an offer it did
             // not consent to is refused at `check_offer`.
-            let owner_side_consent = external_consent.is_none()
+            let owner_side_consent = !continued
+                && external_consent.is_none()
                 && matches!(
                     consent_mode,
                     Some(meshharbor_remote_control::models::ConsentMode::Email)
@@ -5575,6 +5636,17 @@ async fn handle_server_msg(
             peers
                 .insert(session_id, peer, link.filter(|_| !external))
                 .await;
+            if !external
+                && let Some(rm) = &record_meta
+            {
+                crate::rc_continuity::register_active(
+                    session_id,
+                    agent_cfg.tenant_id.clone(),
+                    rm.controller_user_id,
+                    permissions.bits(),
+                    audio_enabled,
+                );
+            }
             // 2026-07-27 — first live session engages the GPU-clock pin
             // (opt-in, `MESHHARBORD_GPU_CLOCK_PIN`; no-op otherwise).
             crate::gpu_clock::on_sessions_changed(peers.len());
@@ -5666,6 +5738,7 @@ async fn handle_server_msg(
             pending_audio.remove(&session_id);
             pending_permissions.remove(&session_id);
             pending_session_meta.remove(&session_id);
+            crate::rc_continuity::unregister_active(session_id);
             // (FR-52 P4 — an external session's binding already ended ahead
             // of the delegation branch, which a delegated Terminate never
             // gets past.)
@@ -6812,6 +6885,7 @@ async fn handle_server_msg(
             // service's, which takes it from its own claim.
             one_command,
             two_factor_code,
+            resume_allowed,
         } => {
             use crate::ssh::{SshGrantAdmitInput, SshGrantAdmitOutcome};
             match crate::ssh::admit_grant(
@@ -6829,6 +6903,7 @@ async fn handle_server_msg(
                     allow_via_service: true,
                     one_command,
                     two_factor_code: two_factor_code.map(|c| c.as_str().to_string()),
+                    resume_allowed: Some(resume_allowed),
                 },
             ) {
                 SshGrantAdmitOutcome::Recorded => {
@@ -7505,6 +7580,8 @@ async fn handle_server_msg(
             // daemon-internally ONLY for non-ticketed requests; NEVER exposed
             // over LocalAPI or logged.
             offline_cap,
+            // FR-141 — whether the target & grant permit persistent resumable SSH PTYs.
+            resume,
         } => {
             if ssh_ticket_id.is_none()
                 && error.is_none()
@@ -7521,6 +7598,7 @@ async fn handle_server_msg(
                 address = ?address, port = ?port, grant_id = ?grant_id,
                 verifiable = host_pubkey.is_some(), error = ?error,
                 ssh_ticket_id = ?ssh_ticket_id,
+                resume,
                 "rc:ssh.response"
             );
             crate::ssh_origin::deliver(
@@ -7534,7 +7612,59 @@ async fn handle_server_msg(
                     error,
                     ssh_ticket_id,
                     two_factor,
+                    resume,
                 },
+            );
+        }
+
+        // FR-141 — server-initiated revocation of surviving persistent SSH PTY
+        // sessions (org kill-switch off, device policy off, principal removal,
+        // or single-session kill). Strictly scoped to THIS connection's org_id.
+        ServerMsg::SshRevoke {
+            scope,
+            principal,
+            sid,
+            reason,
+        } => {
+            let org_id = agent_cfg.tenant_id.clone();
+            let killed = match scope.as_str() {
+                "session" => {
+                    if let Some(sid_hex) = sid.as_deref() {
+                        crate::ssh_persist::terminate_session_in_org(
+                            &org_id,
+                            sid_hex,
+                            meshharbor_node_core::pty_resume::TerminateReason::Revoked,
+                        )
+                        .await
+                    } else {
+                        0
+                    }
+                }
+                "principal" => {
+                    crate::ssh_persist::terminate_by_revoke(
+                        &org_id,
+                        None,
+                        principal.as_deref(),
+                        false,
+                    )
+                    .await
+                }
+                _ => {
+                    crate::ssh_persist::terminate_org(
+                        &org_id,
+                        meshharbor_node_core::pty_resume::TerminateReason::Revoked,
+                    )
+                    .await
+                }
+            };
+            info!(
+                %org_id,
+                %scope,
+                principal = ?principal,
+                sid = ?sid,
+                reason = ?reason,
+                killed,
+                "fr141: processed rc:ssh.revoke"
             );
         }
 
@@ -8532,6 +8662,20 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool, entry_eligible: bool) -> Age
                 .to_owned(),
         );
     }
+    // FR-141 — persistent resumable SSH PTY host & remote-desktop restart continuity.
+    #[cfg(feature = "ssh-server")]
+    if crate::ssh_persist::resume_enabled_globally() {
+        caps.rpc.push(
+            meshharbor_remote_control::models::RpcCap::SshResume
+                .wire()
+                .to_owned(),
+        );
+    }
+    caps.rpc.push(
+        meshharbor_remote_control::models::RpcCap::RcContinue
+            .wire()
+            .to_owned(),
+    );
     caps.two_factor = meshharbor_node_core::two_factor::active();
     // FR-138 — report whether the OS IPv4/IPv6 default route currently sits on a VPN/virtual
     // interface so the server holds last_clean_zone_id instead of following the VPN exit.

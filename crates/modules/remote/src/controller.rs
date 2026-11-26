@@ -372,6 +372,17 @@ async fn dispatch_controller_rc(
             }
         }
     }
+    let continues = if let ClientMsg::SessionRequest {
+        agent_id,
+        share_grant_id: None,
+        continues_from: Some(prev_sid),
+        ..
+    } = &parsed
+    {
+        crate::row_end::validate_continues_from(state, user_id, *agent_id, Some(*prev_sid)).await
+    } else {
+        None
+    };
     let mut ctx = DispatchCtx {
         role: Role::Controller,
         user_id: Some(user_id),
@@ -393,6 +404,7 @@ async fn dispatch_controller_rc(
         slot: slot.clone(),
         // Set below by the share gate, and only for a shared request.
         share_files_account: None,
+        continues,
     };
     // …and so does the cross-pod relay, for the same reason.
     let relay_tenant_name = tenant_name;

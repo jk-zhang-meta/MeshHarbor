@@ -486,6 +486,11 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_keep_busy_support(agent_id, supports_keep_busy);
+    let supports_ssh_resume = caps.has_rpc(RpcCap::SshResume);
+    let supports_rc_continue = caps.has_rpc(RpcCap::RcContinue);
+    state
+        .rc_hub
+        .set_agent_fr141_support(agent_id, supports_ssh_resume, supports_rc_continue);
     state
         .rc_hub
         .set_agent_relay_control_support(agent_id, caps.has_rpc(RpcCap::RelayControl));
@@ -783,6 +788,13 @@ pub async fn handle_agent_socket(
         push_keep_busy_policy_on_connect(&state, tenant_id, agent_id, &registered_tx).await;
     }
 
+    // FR-141 — reconcile-on-connect for persistent SSH PTY revocation: if the
+    // org kill-switch or this device's SSH policy was turned off while the
+    // agent was offline, revoke any surviving persistent SSH sessions now.
+    if supports_ssh_resume {
+        push_ssh_revoke_on_connect_if_disabled(&state, tenant_id, agent_id, &registered_tx).await;
+    }
+
     // FR-139 — grant a standing 30 s GPU telemetry lease on connect when this
     // agent is marked as a GPU server and advertises `RpcCap::Gpu`.
     if caps.has_rpc(RpcCap::Gpu) {
@@ -905,6 +917,7 @@ pub async fn handle_agent_socket(
         org_session_cap: None,
         slot: None,
         share_files_account: None,
+        continues: None,
     };
 
     // Phase A-1 — server-side receive-liveness, symmetric to the agent's
@@ -1353,6 +1366,22 @@ pub async fn handle_agent_socket(
                                             .set_agent_keep_busy_support(agent_id, keep_busy);
                                         if keep_busy && !had_keep_busy {
                                             push_keep_busy_policy_on_connect(
+                                                &state,
+                                                tenant_id,
+                                                agent_id,
+                                                &registered_tx,
+                                            )
+                                            .await;
+                                        }
+                                        let ssh_resume = caps.has_rpc(RpcCap::SshResume);
+                                        let rc_continue = caps.has_rpc(RpcCap::RcContinue);
+                                        let had_ssh_resume = state.rc_hub.set_agent_fr141_support(
+                                            agent_id,
+                                            ssh_resume,
+                                            rc_continue,
+                                        );
+                                        if ssh_resume && !had_ssh_resume {
+                                            push_ssh_revoke_on_connect_if_disabled(
                                                 &state,
                                                 tenant_id,
                                                 agent_id,
@@ -2638,6 +2667,54 @@ async fn push_keep_busy_policy_on_connect(
         }
         Err(e) => {
             warn!(%agent_id, %e, "keep-busy: tenant read failed — org policy not pushed");
+        }
+    }
+}
+
+/// FR-141 — reconcile-on-connect for persistent SSH PTY survival: if the org
+/// `remote_ssh_enabled` kill-switch is off or the device's `ssh_policy.mode`
+/// is `Off`, push `rc:ssh.revoke` (`scope: "org"`) so surviving detached PTY
+/// hosts are terminated even when the flip happened while the agent was offline.
+async fn push_ssh_revoke_on_connect_if_disabled(
+    state: &FleetState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    tx: &mpsc::Sender<ServerMsg>,
+) {
+    let org_disabled = match state.tenants.base.find_by_id(tenant_id).await {
+        Ok(t) => !t.settings.remote_ssh_enabled,
+        Err(e) => {
+            warn!(%agent_id, %e, "fr141: tenant read failed — skipping ssh revoke check");
+            return;
+        }
+    };
+    let reason = if org_disabled {
+        Some("org_ssh_disabled")
+    } else {
+        match state.agents.find_live_in_tenant(tenant_id, agent_id).await {
+            Ok(a) if a.ssh_policy.mode == meshharbor_remote_control::models::SshMode::Off => {
+                Some("ssh_policy_disabled")
+            }
+            Ok(_) => None,
+            Err(e) => {
+                warn!(%agent_id, %e, "fr141: agent read failed — skipping ssh revoke check");
+                return;
+            }
+        }
+    };
+    if let Some(reason) = reason {
+        if tx
+            .try_send(ServerMsg::SshRevoke {
+                scope: "org".into(),
+                principal: None,
+                sid: None,
+                reason: Some(reason.to_string()),
+            })
+            .is_err()
+        {
+            debug!(%agent_id, reason, "fr141: ssh revoke not queued (connection closing)");
+        } else {
+            info!(%agent_id, reason, "fr141: pushed ssh revoke on connect (SSH disabled)");
         }
     }
 }

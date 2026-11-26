@@ -1429,6 +1429,63 @@ impl<P: TablePeer> SessionTable<P> {
         ids
     }
 
+    /// FR-141 — every live session id held by this table (attached, kept, or
+    /// live delegated record), used right before graceful shutdown to persist
+    /// short-lived `rc-continuity.json` records.
+    pub(crate) fn live_session_ids(&self) -> Vec<ObjectId> {
+        let mut ids: Vec<ObjectId> = self
+            .attached
+            .keys()
+            .chain(self.kept.keys())
+            .copied()
+            .collect();
+        ids.extend(self.live_records().map(|(s, _)| *s));
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// FR-141 — warn every live viewer peer-to-peer on its control DataChannel
+    /// right before graceful daemon shutdown/update (`limit: "restart"`) so the
+    /// browser preserves the last video frame and displays a soft reconnecting
+    /// banner instead of dropping into an error state.
+    pub(crate) async fn notify_restart_before_shutdown(
+        &self,
+        eta_ms: u64,
+        to_version: Option<&str>,
+        grace: Duration,
+    ) {
+        let mut payload = serde_json::json!({
+            "t": "rc:ended",
+            "reason": EndReason::AgentDisconnect,
+            "limit": "restart",
+            "eta_ms": eta_ms,
+        });
+        if let Some(ver) = to_version {
+            payload["to_version"] = serde_json::Value::from(ver);
+        }
+        let said = payload.to_string();
+        let mut notified = 0usize;
+        for live in self.attached.values() {
+            live.peer.say_on_control(said.clone()).await;
+            notified += 1;
+        }
+        for kept in self.kept.values() {
+            kept.peer.say_on_control(said.clone()).await;
+            notified += 1;
+        }
+        if notified > 0 && !grace.is_zero() {
+            info!(
+                notified,
+                eta_ms,
+                ?to_version,
+                grace_ms = millis(grace),
+                "fr141: announced graceful restart to live remote-control peers"
+            );
+            tokio::time::sleep(grace).await;
+        }
+    }
+
     /// A new request would put a session beside a kept peer past the device's
     /// capacity: it is refused as busy. FR-130 P2b (A10) — or beside a kept
     /// delegated session.

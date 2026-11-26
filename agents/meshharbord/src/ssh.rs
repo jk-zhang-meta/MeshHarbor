@@ -3619,6 +3619,9 @@ pub struct SshGrantAdmitInput {
     pub allow_via_service: bool,
     pub one_command: bool,
     pub two_factor_code: Option<String>,
+    /// FR-141 — whether the server grant permits persistent resumable SSH PTYs.
+    /// `None` = legacy / offline P2P (defer to local device capability).
+    pub resume_allowed: Option<bool>,
 }
 
 /// Result of [`admit_grant`].
@@ -3654,6 +3657,7 @@ pub fn admit_grant(
         allow_via_service,
         one_command,
         two_factor_code,
+        resume_allowed,
     } = input;
 
     // FR-129 — two-factor, checked before the grant is recorded or handed to
@@ -3702,6 +3706,7 @@ pub fn admit_grant(
                 expires_at_ms,
                 session_secs,
                 one_command,
+                resume_allowed,
             );
             match refusal {
                 Some((refused, why)) => {
@@ -3718,7 +3723,7 @@ pub fn admit_grant(
                 );
                 return SshGrantAdmitOutcome::Refused(SshGrantRefusal::SshDisabled);
             }
-            match record_grant(
+            match record_grant_ex(
                 grant_id.clone(),
                 public_key,
                 caller.clone(),
@@ -3728,6 +3733,7 @@ pub fn admit_grant(
                 expires_at_ms,
                 session_secs,
                 one_command,
+                resume_allowed,
             ) {
                 Ok(()) => SshGrantAdmitOutcome::Recorded,
                 Err(e) => {
@@ -3750,6 +3756,7 @@ pub fn admit_grant(
             via_service,
             allow_via_service,
             one_command,
+            resume_allowed,
         );
         tracing::warn!(
             %grant_id, %caller,
@@ -3791,6 +3798,7 @@ mod fr139_ssh_admit_tests {
             allow_via_service,
             one_command: false,
             two_factor_code: None,
+            resume_allowed: Some(true),
         };
 
         // 1. ssh_enabled=false -> SshDisabled.
@@ -3833,6 +3841,35 @@ pub fn record_grant(
     session_secs: u64,
     one_command: bool,
 ) -> Result<(), GrantRejected> {
+    record_grant_ex(
+        grant_id,
+        public_key,
+        caller,
+        account_mode,
+        account,
+        consent_mode,
+        expires_at_ms,
+        session_secs,
+        one_command,
+        None,
+    )
+}
+
+/// Record an `rc:ssh.grant` with explicit FR-141 `resume_allowed` policy.
+#[cfg(feature = "ssh-server")]
+#[allow(clippy::too_many_arguments)]
+pub fn record_grant_ex(
+    grant_id: String,
+    public_key: String,
+    caller: String,
+    account_mode: String,
+    account: Option<String>,
+    consent_mode: Option<meshharbor_remote_control::models::ConsentMode>,
+    expires_at_ms: u64,
+    session_secs: u64,
+    one_command: bool,
+    resume_allowed: Option<bool>,
+) -> Result<(), GrantRejected> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use meshharbor_remote_control::models::ssh_limits;
@@ -3864,7 +3901,7 @@ pub fn record_grant(
         consent_mode,
         session_secs: ssh_limits::clamp_session_secs(session_secs),
         one_command,
-        resume_allowed: None,
+        resume_allowed,
         deadline: Instant::now() + window,
     };
 

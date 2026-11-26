@@ -53,11 +53,15 @@ All vendor libraries and sysfs/PDH/IOKit probes execute exclusively inside `mesh
 | Backend | Platform | Source | Notes |
 |---|---|---|---|
 | `nvml` | Linux / Windows | `nvml-wrapper` (`dlopen` `libnvidia-ml`) | Per-card VRAM, SM/mem util, temp, power, fan, SM clock, throttle, ECC, remapped rows (`FieldId 142/143`), MIG detection, WSL2 limitation flag, driver-version mismatch detection (`driver_reboot_pending`). |
+| `ascend` | Linux | `npu-smi` + `/dev/davinci*` | Huawei Ascend NPU telemetry (HBM/DDR memory, AI Core util, temperature, power, health, per-PID attribution) with `presence_only` fallback when `/dev/davinci*` exists without `npu-smi`. |
 | `amd` | Linux | `/sys/class/drm/card*/device/*` + `/proc/<pid>/fdinfo/*` + KFD | VRAM, busy %, hwmon temp/power/fan, per-PID VRAM attribution via DRM `fdinfo`. |
 | `intel` | Linux | `xe` / `i915` sysfs + DRM `fdinfo` | Card discovery, hwmon telemetry, DRM client memory when exposed. |
 | `apple` | macOS | `macmon` (IOKit / IOReport) | Unified-memory GPU busy %, power, and thermal state (`unified: true`, no discrete VRAM total). |
 | `windows_pdh` | Windows | PDH GPU Engine & Adapter Memory counters | Non-NVIDIA / iGPU fallback on Windows. |
+| `pci_presence` | Linux | `/sys/bus/pci/devices` + `/dev/accel*` + `/dev/vfio*` | **Zero-package hardware discovery**: detects NVIDIA/AMD/Intel GPUs, Huawei Ascend NPUs, and Google TPUs without installing vendor drivers or packages, surfacing `driver_missing` / `tool_missing` / `presence_only` cleanly instead of silent empty lists. |
 | `fake` | All | `MESHHARBORD_GPU_FAKE=<jsonl>` | Deterministic JSONL frame replay for unit tests and UI verification. |
+
+> **Zero auto-install policy:** `meshharbord` **never** installs vendor drivers, kernel modules, or Python/CLI packages. When accelerator hardware is detected without working vendor tooling, the sampler reports `GpuHostStatus::DriverMissing` / `ToolMissing` / `PresenceOnly` with clear remediation copy across Web SPA, Desktop Companion, and `mh nvitop`.
 
 ### Hung-Driver & Failure Isolation
 
@@ -110,8 +114,8 @@ All 6 collections are owned by `FleetModule::indexes()` (`crates/modules/fleet/s
   - `GET/POST /api/tenant/{tid}/gpu/channels`, `PATCH/DELETE /api/tenant/{tid}/gpu/channels/{cid}`, `POST .../test`
   - `GET /api/agent/self/gpu/fleet?live=0|1&wait_ms=0..3000&hosts=` and `GET /api/agent/self/gpu/users?range=`
 - **CLI**: `mh nvitop` (alias `mh gpu`) — one-shot, `--cached`, `-w/--watch` (DEC 2026 synchronized output, `NO_COLOR`, `unicode-width`), `--json`, `mh nvitop users`, and `mh nvitop free [-n N] [--min-free 40G] [--same-host]`.
-- **Web SPA**: `/tenant/:tenantId/gpu` (`ui/src/views/gpu/GpuServersView.vue`), live 2 s visibility-gated polling, `TimeSeriesChart` history drawer, zero `v-html`.
-- **Desktop Companion (`meshharbor-desktop`)**: built-in **GPU Servers** sidebar view (`#/gpu`, [gpu.js](file:///root/.agent-work/runtime/meshharbor-fr139/repo/agents/meshharbor-desktop/src/front/gpu.js) — live 2 s visibility-gated fleet cards, host load, L1 process attribution, one-click `CUDA_VISIBLE_DEVICES` copy, and 24h/7d/30d per-user GPU·h table via LocalAPI `GpuFleet`/`GpuUsers`), dynamic `GPU: N/M free` tray line opening `#/gpu` (hidden when 0 GPU servers; 30 s / 5 min backoff), plus 15 s LocalAPI `GpuAlerts` poller raising native OS notifications (`agents/meshharbor-desktop/src/tray.rs`).
+- **Web SPA**: `/tenant/:tenantId/gpu` (`ui/src/views/gpu/GpuServersView.vue`), `nvitop`-style segmented progress-bar cards with unified fault/warning/lag/delta banners, recent-changes feed, live 2 s visibility-gated polling, `TimeSeriesChart` history drawer, zero `v-html`.
+- **Desktop Companion (`meshharbor-desktop`)**: built-in **GPU Servers** sidebar view (`#/gpu`, `agents/meshharbor-desktop/src/front/gpu.js` — `nvitop`-style segmented bars, unified fault/warning/lag/recent-changes summary strip, live 2 s visibility-gated fleet cards, host load, L1 process attribution, one-click `CUDA_VISIBLE_DEVICES`/`ASCEND_RT_VISIBLE_DEVICES` copy, and 24h/7d/30d per-user GPU·h table via LocalAPI `GpuFleet`/`GpuUsers`), dynamic `GPU: N/M free` (or fault/warning count) tray line opening `#/gpu` (hidden when 0 GPU servers; 30 s / 5 min backoff), plus 15 s LocalAPI `GpuAlerts` poller raising native OS notifications (`agents/meshharbor-desktop/src/tray.rs`).
 - **Kill switches & device-local controls**:
   - Server: `MESHHARBOR__GPU__ENABLED`, `MESHHARBOR__GPU__LIVE_INTERVAL_MS`, `MESHHARBOR__GPU__ALERTS`, `MESHHARBOR__GPU__BOTS`.
   - Device-owned (structurally refused in `DesiredConfig`): `gpu_telemetry` (live), `gpu_processes` (live), `gpu_metrics_listen` (strict loopback validation, `agents/meshharbord/src/gpu_sampler/metrics.rs:94`).

@@ -1361,6 +1361,14 @@ pub enum RpcCap {
     ///
     /// ⚠️ Distinct from [`Self::Gpu`]: equality-matched.
     GpuAlerts,
+    /// FR-141 — the agent supports resumable persistent SSH PTY sessions
+    /// (`meshharbord ssh-pty-host` + `meshharbor-pty-v1` subsystem) and honours
+    /// `SshGrant.resume_allowed` and `ServerMsg::SshRevoke`. Equality-matched.
+    SshResume,
+    /// FR-141 — the agent supports 120 s sealed remote-desktop restart
+    /// continuity (`rc:ended { limit: "restart" }` + `Request.continues`
+    /// verified against device-local HMAC-sealed continuity record). Equality-matched.
+    RcContinue,
 }
 
 impl RpcCap {
@@ -1425,11 +1433,13 @@ impl RpcCap {
             Self::RcResume => "rc-resume",
             Self::Gpu => "gpu",
             Self::GpuAlerts => "gpu-alerts",
+            Self::SshResume => "ssh-resume",
+            Self::RcContinue => "rc-continue",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 53] = [
+    pub const ALL: [RpcCap; 55] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1483,6 +1493,8 @@ impl RpcCap {
         Self::RcResume,
         Self::Gpu,
         Self::GpuAlerts,
+        Self::SshResume,
+        Self::RcContinue,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -5697,6 +5709,12 @@ pub enum SshActivityKind {
     /// A `direct-tcpip` forward was requested. `detail` is `host:port`,
     /// `allowed` says whether the device's `forward_acl` permitted it.
     Forward,
+    /// FR-141 — a persistent PTY session detached while keeping its remote shell alive.
+    Detached,
+    /// FR-141 — a persistent PTY session re-attached after a network drop or daemon restart.
+    Resumed,
+    /// FR-141 — a persistent PTY session ended (shell exit, expiry, user close, or revoke).
+    Ended,
 }
 
 /// One thing a device reported doing inside an SSH session (P8).
@@ -9010,7 +9028,7 @@ mod tests {
     /// right on the devices that already exist.
     #[test]
     fn the_only_prefix_related_verbs_are_the_deliberate_ones() {
-        const KNOWN: [(RpcCap, RpcCap); 25] = [
+        const KNOWN: [(RpcCap, RpcCap); 26] = [
             (RpcCap::Ssh, RpcCap::SshConsent),
             (RpcCap::Config, RpcCap::ConfigReport),
             // MeshHarbor #20 — "runs managed forwards in userspace" is not
@@ -9081,6 +9099,10 @@ mod tests {
             // FR-139 — "reports GPU telemetry" is not "receives companion GPU
             // alerts". Locked by `gpu_does_not_imply_gpu_alerts`.
             (RpcCap::Gpu, RpcCap::GpuAlerts),
+            // FR-141 — "runs an SSH server" is not "supports persistent
+            // resumable SSH PTYs and rc:ssh.revoke". Locked by
+            // `ssh_does_not_imply_ssh_resume`.
+            (RpcCap::Ssh, RpcCap::SshResume),
         ];
         for a in RpcCap::ALL {
             for b in RpcCap::ALL {
@@ -9107,6 +9129,22 @@ mod tests {
     /// them as reporting, and the dashboard would wait forever for an answer
     /// that was never going to come, while showing the operator a state it
     /// had no evidence for.
+    #[test]
+    fn ssh_does_not_imply_ssh_resume() {
+        let pre_fr141 = AgentCaps {
+            rpc: vec!["ssh".into(), "ssh-grant-ack".into()],
+            ..Default::default()
+        };
+        assert!(pre_fr141.has_rpc(RpcCap::Ssh));
+        assert!(!pre_fr141.has_rpc(RpcCap::SshResume));
+        let fr141 = AgentCaps {
+            rpc: vec!["ssh".into(), "ssh-resume".into(), "rc-continue".into()],
+            ..Default::default()
+        };
+        assert!(fr141.has_rpc(RpcCap::SshResume));
+        assert!(fr141.has_rpc(RpcCap::RcContinue));
+    }
+
     #[test]
     fn config_does_not_imply_config_report() {
         let rc458_era = AgentCaps {
