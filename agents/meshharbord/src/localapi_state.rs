@@ -2195,6 +2195,17 @@ impl LocalApiState for DaemonState {
         two_factor_code: Option<&str>,
     ) -> Response {
         let Some(sink) = self.tunnel_hub.sink_now() else {
+            if let Some(tid) = self.tenant_id.as_deref() {
+                return crate::p2pctl::exec_offline(
+                    tid,
+                    node,
+                    shell,
+                    command,
+                    timeout_ms,
+                    two_factor_code,
+                )
+                .await;
+            }
             return Response::Error {
                 message: "not connected to the server — remote commands need the control \
                           connection (check `mh status`)"
@@ -2271,6 +2282,16 @@ impl LocalApiState for DaemonState {
         two_factor_code: Option<&str>,
     ) -> Response {
         let Some(sink) = self.tunnel_hub.sink_now() else {
+            if let Some(tid) = self.tenant_id.as_deref() {
+                return crate::p2pctl::ssh_session_offline(
+                    tid,
+                    node,
+                    public_key,
+                    session_secs,
+                    two_factor_code,
+                )
+                .await;
+            }
             return Response::Error {
                 message: "not connected to the server — SSH grants need the control \
                           connection (check `mh status`)"

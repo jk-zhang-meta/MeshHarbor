@@ -981,7 +981,7 @@ fn shared_carrier_plane()
 #[allow(clippy::too_many_arguments)]
 pub async fn maybe_start(
     cfg: &AgentConfig,
-    config_path: &std::path::Path,
+    remote_cfg: &crate::remote_config::RemoteConfigServices,
     // FR-103 — this enrollment's LIVE token. The DERP dialer below outlives
     // the connection that built it (the runtime persists across reconnects),
     // so it reads this per dial rather than keeping a copy.
@@ -994,6 +994,7 @@ pub async fn maybe_start(
     // `consent::set_shared` process global.
     services: crate::ssh::SessionServices,
 ) -> Option<OverlayEventTx> {
+    let config_path = remote_cfg.config_path();
     if !cfg.overlay_enabled {
         // Drop THIS org's persistent-runtime slot entry: once the sessions'
         // event-sender clones are gone too, its channel closes and it tears
@@ -1054,6 +1055,7 @@ pub async fn maybe_start(
                 if let Some(sink) = activity_sink {
                     sink.repoint(outbound.clone());
                 }
+                crate::p2pctl::drain_offline_audit_on_reconnect(config_path, &cfg.tenant_id);
                 if lan_ips_same {
                     info!("overlay: re-attached the persistent node runtime (carriers intact)");
                 } else {
@@ -1126,8 +1128,14 @@ pub async fn maybe_start(
     // same on a server, a multi-org host and a locked-down corp laptop.
     // No-op (and byte-for-byte the old path) unless `ssh_enabled` is on.
     let activity_sink_for_slot = services.activity.clone();
-    let p2p_ctx = crate::p2pctl::enabled(cfg)
-        .then(|| crate::p2pctl::ServerCtx::new(cfg, keypair.clone(), services.clone()));
+    let p2p_ctx = crate::p2pctl::enabled(cfg).then(|| {
+        crate::p2pctl::ServerCtx::new(
+            cfg,
+            keypair.clone(),
+            services.clone(),
+            remote_cfg.clone(),
+        )
+    });
     let tun_factory = crate::ssh::maybe_intercept(tun_factory, cfg, services, p2p_ctx);
     // P5 exit-node client — resolve the coordination server's IPs NOW, while the
     // uplink is still clean (before any split-default is installed), so exit
@@ -1281,12 +1289,13 @@ pub async fn maybe_start(
 #[allow(clippy::too_many_arguments)]
 pub async fn seed_from_cache(
     cfg: &AgentConfig,
-    config_path: &std::path::Path,
+    remote_cfg: &crate::remote_config::RemoteConfigServices,
     token: crate::token_slot::TokenSlot,
     peer_view: watch::Sender<OverlayView>,
     derp_ticket_slot: crate::relay_probe::DerpTicketSlot,
     services: crate::ssh::SessionServices,
 ) -> Option<OverlayEventTx> {
+    let config_path = remote_cfg.config_path();
     if !cfg.overlay_enabled {
         return None;
     }
@@ -1312,7 +1321,7 @@ pub async fn seed_from_cache(
 
     let evt_tx = maybe_start(
         cfg,
-        config_path,
+        remote_cfg,
         token,
         closed_tx,
         peer_view,

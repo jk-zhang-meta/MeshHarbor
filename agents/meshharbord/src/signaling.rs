@@ -1140,7 +1140,7 @@ pub async fn run(
         drop(closed_rx);
         let _ = crate::overlay::seed_from_cache(
             &cfg,
-            remote_cfg.config_path(),
+            &remote_cfg,
             ctx.token.clone(),
             overlay_view_tx.clone(),
             derp_ticket_slot.clone(),
@@ -2329,7 +2329,7 @@ async fn connect_once(
     } else {
         let start = crate::overlay::maybe_start(
             cfg,
-            remote_cfg.config_path(),
+            remote_cfg,
             ctx.token.clone(),
             outbound_tx.clone(),
             overlay_view_tx.clone(),
@@ -2587,7 +2587,7 @@ async fn connect_once(
                     );
                     overlay_evt_tx = crate::overlay::maybe_start(
                         cfg,
-                        remote_cfg.config_path(),
+                        remote_cfg,
                         ctx.token.clone(),
                         outbound_tx.clone(),
                         overlay_view_tx.clone(),
@@ -2644,7 +2644,7 @@ async fn connect_once(
                     );
                     overlay_evt_tx = crate::overlay::maybe_start(
                         cfg,
-                        remote_cfg.config_path(),
+                        remote_cfg,
                         ctx.token.clone(),
                         outbound_tx.clone(),
                         overlay_view_tx.clone(),
@@ -7469,8 +7469,17 @@ async fn handle_server_msg(
             ssh_ticket_id,
             // FR-129 — the target refused on two-factor.
             two_factor,
-            offline_cap: _,
+            // FR-139 — optional server-signed offline SSH capability. Cached
+            // daemon-internally ONLY for non-ticketed requests; NEVER exposed
+            // over LocalAPI or logged.
+            offline_cap,
         } => {
+            if ssh_ticket_id.is_none()
+                && error.is_none()
+                && let Some(cap) = offline_cap.as_deref()
+            {
+                crate::p2pctl::store_offline_cap(&agent_cfg.tenant_id, cap);
+            }
             // The key itself is never logged — only whether one arrived. It is
             // public, but a log line is the wrong place to start treating key
             // material as printable, and "did the server have one for this
@@ -7508,8 +7517,13 @@ async fn handle_server_msg(
             truncated,
             duration_ms,
             error,
-            offline_cap: _,
+            offline_cap,
         } => {
+            if error.is_none()
+                && let Some(cap) = offline_cap.as_deref()
+            {
+                crate::p2pctl::store_offline_cap(&agent_cfg.tenant_id, cap);
+            }
             let delivered = crate::exec::deliver_response(
                 &request_id,
                 crate::exec::ExecOutcome {
