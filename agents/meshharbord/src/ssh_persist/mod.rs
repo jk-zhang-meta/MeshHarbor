@@ -1394,7 +1394,7 @@ fn planned_scope_unit(sid: &SessionId) -> Option<String> {
 fn planned_job_name(sid: &SessionId) -> Option<String> {
     #[cfg(windows)]
     {
-        let prefix = if crate::win_identity::is_local_system() {
+        let prefix = if crate::win_identity::process_is_local_system() {
             "Global"
         } else {
             "Local"
