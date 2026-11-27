@@ -42,6 +42,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use meshharbor_node_core::management_path::Candidate;
 use meshharbor_remote_control::models::{OsKind, VisibleDeviceRow, VisibleDevicesPage};
 use tunnel_core::localapi::{
     DeviceRowLite, DevicesPage, DevicesQuery, GpuFleetPage, GpuUsersPage, MeshView, Response,
@@ -52,8 +53,27 @@ use crate::config::{AgentConfig, OrgEntry, PRIMARY_ORG_LABEL};
 /// Connect budget for one request — a dead route or a black-holed port must
 /// fail inside the window a person is looking at the page for.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Whole-request budget (connect + TLS + answer).
+/// Per-candidate connect budget (TCP + TLS handshake) when at least one backup
+/// management-path candidate remains, leaving room inside [`REQUEST_TIMEOUT`]
+/// to fail over cleanly without surfacing an error.
+pub const FAILOVER_CONNECT_TIMEOUT: Duration = Duration::from_millis(3500);
+/// Base per-candidate request-header timeout when backup candidates remain
+/// (catches both cold TLS stalls and silently black-holed warm keep-alive
+/// sockets); extended by any explicit `wait_ms` up to [`FAILOVER_REQUEST_MAX`].
+const FAILOVER_REQUEST_BASE: Duration = Duration::from_millis(4500);
+/// Upper bound on an individual candidate attempt while another backup
+/// candidate still waits, reserving at least 4 s inside [`REQUEST_TIMEOUT`].
+const FAILOVER_REQUEST_MAX: Duration = Duration::from_secs(6);
+/// Whole-request budget (connect + TLS + answer, across all failover tries).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a failover override candidate stays sticky before re-checking the
+/// control socket's primary route (or immediately on `route_generation` bump).
+const FALLBACK_STICKY_TTL: Duration = Duration::from_secs(60);
+/// Minimum remaining budget needed before attempting an additional candidate.
+const MIN_RETRY_REMAINING: Duration = Duration::from_millis(500);
+/// Fast transport error window on a reused keep-alive client (e.g. half-open
+/// socket after sleep/wake or idle NAT eviction) that earns one fresh retry.
+const STALE_POOL_FAST_FAIL: Duration = Duration::from_secs(1);
 /// How long a device page stays fresh. The companion re-asks every 30 s while
 /// the page is on screen; this only coalesces a burst (a search being typed,
 /// two windows, the CLI next to the companion).
@@ -199,16 +219,33 @@ struct CacheEntry {
 /// `(verb, org label, canonical query)`.
 type CacheKey = (&'static str, String, String);
 
-/// The daemon's proxy for the two self-view routes. One per daemon; cheap to
+/// Cached production HTTP client for one centre host, bound to a specific
+/// management-path candidate so HTTP keep-alive connections are reused across
+/// sub-second/1 s GPU polls while still invalidating immediately on route
+/// transitions or failing over cleanly when an entry stalls.
+#[derive(Clone)]
+struct PooledClient {
+    client: reqwest::Client,
+    candidate: Candidate,
+    connect_timeout: Duration,
+    route_gen: u64,
+    override_until: Option<Instant>,
+}
+
+enum HttpClients {
+    /// Tests (`SelfView::with_client`): explicit injected client used verbatim.
+    Fixed(Result<reqwest::Client, String>),
+    /// Production daemon: lazy-built on first real ask and pooled per centre
+    /// host so most headless daemons never load TLS roots while active views
+    /// reuse warm keep-alive TLS connections across polls.
+    Pooled(Mutex<HashMap<String, PooledClient>>),
+}
+
+/// The daemon's proxy for the self-view routes. One per daemon; cheap to
 /// share (`Arc` it).
 pub struct SelfView {
     registry: OrgHttpRegistry,
-    /// Built on the FIRST ask, not at daemon start: most daemons in a fleet
-    /// never serve a Devices page (headless nodes, servers), and building the
-    /// client loads the platform's TLS roots. `Err` when it could not be built
-    /// (a TLS backend that failed to initialise) — every ask then names that,
-    /// rather than the daemon refusing to start over a page nobody may open.
-    http: std::sync::OnceLock<Result<reqwest::Client, String>>,
+    http: HttpClients,
     fresh: Freshness,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     /// The last outcome per (verb, org): `None` = answered, `Some(code)` =
@@ -217,32 +254,42 @@ pub struct SelfView {
     outcomes: Mutex<HashMap<(&'static str, String), Option<&'static str>>>,
 }
 
-/// The production HTTP client: the crash uploader's posture (system TLS
-/// roots; no proxy unless the device opted in, FR-135) with this module's budgets.
-fn build_client() -> Result<reqwest::Client, String> {
-    build_client_from(meshharbor_node_core::http_client::builder())
+/// Build a pooled client pinned to one explicit FR-128/FR-134 candidate for `host`.
+fn build_candidate_client(
+    host: &str,
+    candidate: Candidate,
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    build_client_from(
+        meshharbor_node_core::management_path::route_http_candidate(
+            meshharbor_node_core::http_client::builder(),
+            host,
+            candidate,
+        ),
+        connect_timeout,
+    )
 }
 
-/// FR-128 — the same client, pointed at the management entry the control socket is on.
-fn build_routed_client() -> Result<reqwest::Client, String> {
-    build_client_from(meshharbor_node_core::management_path::route_http(
-        meshharbor_node_core::http_client::builder(),
-    ))
-}
-
-fn build_client_from(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, String> {
+fn build_client_from(
+    builder: reqwest::ClientBuilder,
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, String> {
     builder
         .user_agent(concat!("meshharbord-localapi/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT_TIMEOUT)
+        .connect_timeout(connect_timeout)
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| format!("building the HTTP client: {e}"))
 }
 
 impl SelfView {
-    /// The daemon's instance: the production client, built on first use.
+    /// The daemon's instance: production clients, built lazily on first use.
     pub fn new(registry: OrgHttpRegistry) -> Self {
-        Self::assemble(registry, std::sync::OnceLock::new(), Freshness::default())
+        Self::assemble(
+            registry,
+            HttpClients::Pooled(Mutex::new(HashMap::new())),
+            Freshness::default(),
+        )
     }
 
     /// Tests: a client of their own (no proxy, short budgets) and short
@@ -252,14 +299,10 @@ impl SelfView {
         http: Result<reqwest::Client, String>,
         fresh: Freshness,
     ) -> Self {
-        Self::assemble(registry, std::sync::OnceLock::from(http), fresh)
+        Self::assemble(registry, HttpClients::Fixed(http), fresh)
     }
 
-    fn assemble(
-        registry: OrgHttpRegistry,
-        http: std::sync::OnceLock<Result<reqwest::Client, String>>,
-        fresh: Freshness,
-    ) -> Self {
+    fn assemble(registry: OrgHttpRegistry, http: HttpClients, fresh: Freshness) -> Self {
         Self {
             registry,
             http,
@@ -269,15 +312,12 @@ impl SelfView {
         }
     }
 
-    /// The HTTP client, built the first time anyone asks.
-    fn http(&self) -> &Result<reqwest::Client, String> {
-        self.http.get_or_init(|| {
-            let built = build_client();
-            if let Err(e) = &built {
-                tracing::warn!(error = %e, "localapi self-view: no HTTP client — the device list will report server_unreachable");
-            }
-            built
-        })
+    #[cfg(test)]
+    fn pooled_client_count(&self) -> usize {
+        match &self.http {
+            HttpClients::Fixed(_) => 1,
+            HttpClients::Pooled(pool) => pool.lock().unwrap_or_else(|p| p.into_inner()).len(),
+        }
     }
 
     /// `GET /api/agent/self/devices` for `org` (empty / `primary` = the
@@ -534,6 +574,85 @@ impl SelfView {
         self.cache.lock().unwrap().len()
     }
 
+    /// Look up a warm cached client for `(host, candidate, connect_timeout, route_gen)`, or build
+    /// a fresh one without caching it yet (callers store only on a successful connect/response).
+    fn get_or_build_pooled(
+        pool: &Mutex<HashMap<String, PooledClient>>,
+        host: &str,
+        candidate: Candidate,
+        connect_timeout: Duration,
+        route_gen: u64,
+    ) -> Result<(reqwest::Client, bool), String> {
+        {
+            let guard = pool.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(entry) = guard.get(host)
+                && entry.candidate == candidate
+                && entry.connect_timeout == connect_timeout
+                && entry.route_gen == route_gen
+            {
+                return Ok((entry.client.clone(), true));
+            }
+        }
+        let client = build_candidate_client(host, candidate, connect_timeout)?;
+        Ok((client, false))
+    }
+
+    fn store_pooled(pool: &Mutex<HashMap<String, PooledClient>>, host: &str, entry: PooledClient) {
+        let mut guard = pool.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(host.to_string(), entry);
+    }
+
+    fn evict_pooled(
+        pool: &Mutex<HashMap<String, PooledClient>>,
+        host: &str,
+        candidate: Candidate,
+    ) {
+        let mut guard = pool.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.get(host).is_some_and(|e| e.candidate == candidate) {
+            guard.remove(host);
+        }
+    }
+
+    /// Reconcile any cached client for `host` with the current `route_gen` and candidate ladder:
+    /// - When `route_gen` changed to the exact candidate we already hold, keep the warm pool.
+    /// - When `route_gen` changed to a different primary candidate, drop the old pool.
+    /// - When `route_gen` is unchanged and a non-expired sticky failover candidate is still in
+    ///   `candidates`, promote it to index 0 so live sub-second/1 s polls do not re-hit a stalled
+    ///   entry on every tick.
+    fn apply_sticky_candidate(
+        pool: &Mutex<HashMap<String, PooledClient>>,
+        host: &str,
+        route_gen: u64,
+        candidates: &mut Vec<Candidate>,
+    ) -> Option<Instant> {
+        let primary = candidates[0];
+        let mut guard = pool.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = guard.get_mut(host)?;
+        if entry.route_gen != route_gen {
+            if entry.candidate == primary {
+                entry.route_gen = route_gen;
+                entry.override_until = None;
+            } else {
+                guard.remove(host);
+            }
+            return None;
+        }
+        if entry.candidate == primary {
+            return None;
+        }
+        let until = entry.override_until.filter(|u| Instant::now() < *u);
+        if let Some(until) = until
+            && candidates.contains(&entry.candidate)
+        {
+            let sticky = entry.candidate;
+            candidates.retain(|c| *c != sticky);
+            candidates.insert(0, sticky);
+            return Some(until);
+        }
+        guard.remove(host);
+        None
+    }
+
     /// One authenticated GET against the org's server. `Ok` is a 2xx body;
     /// every other outcome is a named [`Upstream`].
     async fn get(
@@ -542,17 +661,6 @@ impl SelfView {
         path: &str,
         params: &[(&'static str, String)],
     ) -> Result<Vec<u8>, Upstream> {
-        // FR-128 — while the control socket is on a management entry, this request follows it
-        // (the cached client was built for the direct path).
-        let routed;
-        let http = if meshharbor_node_core::management_path::current_route().is_some() {
-            routed = build_routed_client().map_err(|e| Upstream::new("server_unreachable", e))?;
-            &routed
-        } else {
-            self.http()
-                .as_ref()
-                .map_err(|e| Upstream::new("server_unreachable", e.clone()))?
-        };
         let base = org.server_url.trim().trim_end_matches('/');
         if !(base.starts_with("https://") || base.starts_with("http://")) {
             return Err(Upstream::new(
@@ -564,33 +672,216 @@ impl SelfView {
             ));
         }
         let url = format!("{base}{path}");
-        let resp = http
-            .get(&url)
-            .bearer_auth(org.token.get())
-            .query(params)
-            .send()
-            .await
-            .map_err(|e| transport_error(base, e))?;
-        let status = resp.status().as_u16();
-        let body = read_capped(resp, MAX_BODY).await.map_err(|e| match e {
-            BodyError::TooLarge => Upstream {
-                code: "bad_response",
-                message: format!("the server's answer is larger than {MAX_BODY} bytes"),
-                status: Some(status),
-            },
-            BodyError::Transport(e) => transport_error(base, e),
-        })?;
-        if (200..300).contains(&status) {
-            Ok(body)
-        } else {
-            Err(classify_status(status, &body))
+        match &self.http {
+            HttpClients::Fixed(fixed) => {
+                let http = fixed
+                    .as_ref()
+                    .map_err(|e| Upstream::new("server_unreachable", e.clone()))?;
+                let resp = http
+                    .get(&url)
+                    .bearer_auth(org.token.get())
+                    .query(params)
+                    .send()
+                    .await
+                    .map_err(|e| transport_error(base, e, CONNECT_TIMEOUT, REQUEST_TIMEOUT))?;
+                finish_response(base, resp, CONNECT_TIMEOUT, REQUEST_TIMEOUT).await
+            }
+            HttpClients::Pooled(pool) => {
+                let host = meshharbor_node_core::management_path::centre_host(base);
+                let route_gen = meshharbor_node_core::management_path::route_generation();
+                let (mut candidates, _last_resort) =
+                    meshharbor_node_core::management_path::http_candidates_for_url(base);
+                if candidates.is_empty() {
+                    candidates.push(Candidate::Direct);
+                }
+                let primary_candidate = candidates[0];
+                let sticky_until =
+                    Self::apply_sticky_candidate(pool, &host, route_gen, &mut candidates);
+
+                let wait_budget = params
+                    .iter()
+                    .find(|(k, _)| *k == "wait_ms")
+                    .and_then(|(_, v)| v.parse::<u64>().ok())
+                    .map(|ms| Duration::from_millis(ms.min(3000)))
+                    .unwrap_or(Duration::ZERO);
+                let total_candidates = candidates.len();
+                let pool_connect_timeout = if total_candidates > 1 {
+                    FAILOVER_CONNECT_TIMEOUT
+                } else {
+                    CONNECT_TIMEOUT
+                };
+                let overall_deadline = Instant::now() + REQUEST_TIMEOUT;
+                let mut last_err: Option<Upstream> = None;
+
+                for (idx, candidate) in candidates.iter().copied().enumerate() {
+                    let remaining = overall_deadline.saturating_duration_since(Instant::now());
+                    if idx > 0 && remaining < MIN_RETRY_REMAINING {
+                        break;
+                    }
+                    let has_more = idx + 1 < total_candidates;
+                    let request_budget = if has_more {
+                        (FAILOVER_REQUEST_BASE + wait_budget)
+                            .min(FAILOVER_REQUEST_MAX)
+                            .min(remaining)
+                    } else {
+                        remaining
+                    };
+
+                    let (client, was_reused) = match Self::get_or_build_pooled(
+                        pool,
+                        &host,
+                        candidate,
+                        pool_connect_timeout,
+                        route_gen,
+                    ) {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "localapi self-view: no HTTP client — the view will report server_unreachable"
+                            );
+                            last_err = Some(Upstream::new("server_unreachable", e));
+                            continue;
+                        }
+                    };
+
+                    let attempt_started = Instant::now();
+                    match client
+                        .get(&url)
+                        .bearer_auth(org.token.get())
+                        .query(params)
+                        .timeout(request_budget)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if !was_reused {
+                                let override_until = if candidate == primary_candidate {
+                                    None
+                                } else if idx == 0 && sticky_until.is_some() {
+                                    sticky_until
+                                } else {
+                                    Some(Instant::now() + FALLBACK_STICKY_TTL)
+                                };
+                                Self::store_pooled(
+                                    pool,
+                                    &host,
+                                    PooledClient {
+                                        client,
+                                        candidate,
+                                        connect_timeout: pool_connect_timeout,
+                                        route_gen,
+                                        override_until,
+                                    },
+                                );
+                            }
+                            if idx > 0 {
+                                tracing::info!(
+                                    org = %org.label,
+                                    from = %candidates[0],
+                                    to = %candidate,
+                                    elapsed_ms = attempt_started.elapsed().as_millis() as u64,
+                                    "localapi self-view: failed over to alternate management path"
+                                );
+                            }
+                            return finish_response(
+                                base,
+                                resp,
+                                pool_connect_timeout,
+                                request_budget,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            let attempt_elapsed = attempt_started.elapsed();
+                            Self::evict_pooled(pool, &host, candidate);
+
+                            // Single-candidate stale keep-alive protection: if a reused pooled
+                            // socket failed fast (e.g. half-open TCP after sleep/wake or NAT
+                            // idle timeout), retry once on a fresh connection.
+                            if !has_more
+                                && idx == 0
+                                && was_reused
+                                && !e.is_timeout()
+                                && attempt_elapsed < STALE_POOL_FAST_FAIL
+                            {
+                                let retry_remaining =
+                                    overall_deadline.saturating_duration_since(Instant::now());
+                                if retry_remaining >= MIN_RETRY_REMAINING
+                                    && let Ok(fresh) = build_candidate_client(
+                                        &host,
+                                        candidate,
+                                        pool_connect_timeout,
+                                    )
+                                {
+                                    match fresh
+                                        .get(&url)
+                                        .bearer_auth(org.token.get())
+                                        .query(params)
+                                        .timeout(retry_remaining)
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(resp) => {
+                                            Self::store_pooled(
+                                                pool,
+                                                &host,
+                                                PooledClient {
+                                                    client: fresh,
+                                                    candidate,
+                                                    connect_timeout: pool_connect_timeout,
+                                                    route_gen,
+                                                    override_until: None,
+                                                },
+                                            );
+                                            return finish_response(
+                                                base,
+                                                resp,
+                                                pool_connect_timeout,
+                                                retry_remaining,
+                                            )
+                                            .await;
+                                        }
+                                        Err(e2) => {
+                                            last_err = Some(transport_error(
+                                                base,
+                                                e2,
+                                                pool_connect_timeout,
+                                                retry_remaining,
+                                            ));
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            last_err = Some(transport_error(
+                                base,
+                                e,
+                                pool_connect_timeout,
+                                request_budget,
+                            ));
+                        }
+                    }
+                }
+
+                Err(last_err.unwrap_or_else(|| {
+                    Upstream::new(
+                        "server_unreachable",
+                        format!(
+                            "no answer from {base} within {}",
+                            fmt_budget(REQUEST_TIMEOUT)
+                        ),
+                    )
+                }))
+            }
         }
     }
 
     /// Log a CHANGE of outcome per (verb, org) at info, everything at debug.
     fn note_outcome(&self, verb: &'static str, org: &str, resp: &Response, started: Instant) {
         let code: Option<&'static str> = match resp {
-            Response::Devices(_) | Response::Mesh(_) => None,
+            r if is_answer(r) => None,
             Response::Upstream { code, .. } => Some(static_code(code)),
             _ => Some("error"),
         };
@@ -742,14 +1033,54 @@ async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Result<Vec<u8>,
     Ok(out)
 }
 
+async fn finish_response(
+    base: &str,
+    resp: reqwest::Response,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<Vec<u8>, Upstream> {
+    let status = resp.status().as_u16();
+    let body = read_capped(resp, MAX_BODY).await.map_err(|e| match e {
+        BodyError::TooLarge => Upstream {
+            code: "bad_response",
+            message: format!("the server's answer is larger than {MAX_BODY} bytes"),
+            status: Some(status),
+        },
+        BodyError::Transport(e) => transport_error(base, e, connect_timeout, request_timeout),
+    })?;
+    if (200..300).contains(&status) {
+        Ok(body)
+    } else {
+        Err(classify_status(status, &body))
+    }
+}
+
+fn fmt_budget(d: Duration) -> String {
+    if d.subsec_millis() == 0 {
+        format!("{}s", d.as_secs().max(1))
+    } else {
+        format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
 /// A request that never got an HTTP status: connect / DNS / TLS failures and
 /// timeouts. All `server_unreachable`; the message says which, with the
 /// underlying cause (reqwest's own Display is only "error sending request").
-fn transport_error(server: &str, e: reqwest::Error) -> Upstream {
-    let what = if e.is_timeout() {
+fn transport_error(
+    server: &str,
+    e: reqwest::Error,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Upstream {
+    let what = if e.is_connect() && e.is_timeout() {
         format!(
-            "no answer from {server} within {}s",
-            REQUEST_TIMEOUT.as_secs()
+            "could not connect to {server} within {}",
+            fmt_budget(connect_timeout)
+        )
+    } else if e.is_timeout() {
+        format!(
+            "no answer from {server} within {}",
+            fmt_budget(request_timeout)
         )
     } else if e.is_connect() {
         format!("could not connect to {server}")
@@ -1215,20 +1546,27 @@ mod tests {
     /// cannot initialise would surface here, not on an operator's page).
     #[test]
     fn the_production_client_builds() {
-        assert!(build_client().is_ok());
+        assert!(build_candidate_client("", Candidate::Direct, CONNECT_TIMEOUT).is_ok());
+        assert_eq!(fmt_budget(CONNECT_TIMEOUT), "5s");
+        assert_eq!(fmt_budget(FAILOVER_CONNECT_TIMEOUT), "3.5s");
+        assert_eq!(fmt_budget(REQUEST_TIMEOUT), "10s");
     }
 
     /// A daemon that never serves a Devices page never builds the client
     /// (TLS roots and all): nothing at start, nothing for a request the
-    /// registry refuses, and exactly once on the first real ask.
+    /// registry refuses, and cached on the first real successful ask.
     #[tokio::test]
     async fn the_client_is_built_on_the_first_real_ask() {
-        let view = SelfView::new(registry("http://127.0.0.1:9"));
-        assert!(view.http.get().is_none(), "built at start");
+        let srv = fake_server(|_| (200, page_json(&["me"])), Duration::ZERO).await;
+        let view = SelfView::new(registry(&srv.url));
+        assert_eq!(view.pooled_client_count(), 0, "built at start");
         let _ = view.devices("ghost", &DevicesQuery::default()).await;
-        assert!(view.http.get().is_none(), "built for a refused org");
-        assert!(view.http().is_ok());
-        assert!(view.http.get().is_some());
+        assert_eq!(view.pooled_client_count(), 0, "built for a refused org");
+        assert!(matches!(
+            view.devices("", &DevicesQuery::default()).await,
+            Response::Devices(_)
+        ));
+        assert_eq!(view.pooled_client_count(), 1);
     }
 
     #[test]
@@ -1608,6 +1946,217 @@ mod tests {
             view.cache_len() <= CACHE_CAP,
             "cache grew to {}",
             view.cache_len()
+        );
+    }
+
+    static MGMT_PATH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct KeepAliveServer {
+        addr: std::net::SocketAddr,
+        accepts: Arc<AtomicUsize>,
+        requests: Arc<AtomicUsize>,
+    }
+
+    /// Minimal HTTP/1.1 keep-alive server that serves multiple sequential GETs
+    /// on a single TCP connection so tests can assert real connection reuse.
+    async fn keep_alive_gpu_server(body: String) -> KeepAliveServer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let body = Arc::new(body);
+        {
+            let accepts = accepts.clone();
+            let requests = requests.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    accepts.fetch_add(1, Ordering::SeqCst);
+                    let requests = requests.clone();
+                    let body = body.clone();
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                match sock.read(&mut chunk).await {
+                                    Ok(0) | Err(_) => return,
+                                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                                }
+                            }
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                buf.drain(..pos + 4);
+                            }
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            let reply = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                                 content-length: {}\r\nconnection: keep-alive\r\n\r\n{}",
+                                body.len(),
+                                body.as_str()
+                            );
+                            if sock.write_all(reply.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        KeepAliveServer {
+            addr,
+            accepts,
+            requests,
+        }
+    }
+
+    fn empty_gpu_fleet_json() -> String {
+        serde_json::to_string(&GpuFleetPage::default()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn routed_gpu_fleet_reuses_keep_alive_connection_and_switches_on_route_change() {
+        let _guard = MGMT_PATH_TEST_LOCK.lock().await;
+        use meshharbor_node_core::management_path as mp;
+
+        let entry_a = keep_alive_gpu_server(empty_gpu_fleet_json()).await;
+        let entry_b = keep_alive_gpu_server(empty_gpu_fleet_json()).await;
+        let centre = "selfview-reuse.fr134.invalid";
+        let url = format!("http://{centre}");
+
+        mp::note_config(&url, &[entry_a.addr.to_string(), entry_b.addr.to_string()]);
+        mp::note_pushed(
+            centre,
+            &mp::Pushed {
+                direct: false,
+                entries: Vec::new(),
+            },
+        );
+        mp::note_connected(centre, mp::Candidate::Entry(entry_a.addr), false);
+
+        let view = SelfView::new(registry(&url));
+        for _ in 0..3 {
+            match view.gpu_fleet("", true, 0, &[], Some(500)).await {
+                Response::GpuFleet(_) => {}
+                other => panic!("expected GpuFleet via entry A, got {other:?}"),
+            }
+        }
+        assert_eq!(entry_a.requests.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            entry_a.accepts.load(Ordering::SeqCst),
+            1,
+            "consecutive live gpu_fleet polls on the same entry must reuse keep-alive TCP/TLS"
+        );
+
+        // Route switches to entry B -> pooled client must follow immediately without sticking to A.
+        mp::note_connected(centre, mp::Candidate::Entry(entry_b.addr), false);
+        for _ in 0..2 {
+            match view.gpu_fleet("", true, 0, &[], Some(500)).await {
+                Response::GpuFleet(_) => {}
+                other => panic!("expected GpuFleet via entry B, got {other:?}"),
+            }
+        }
+        assert_eq!(entry_a.requests.load(Ordering::SeqCst), 3);
+        assert_eq!(entry_b.requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            entry_b.accepts.load(Ordering::SeqCst),
+            1,
+            "requests after route change must reuse keep-alive on the new entry"
+        );
+
+        mp::set_route(centre, None);
+        mp::note_config("", &[]);
+    }
+
+    #[tokio::test]
+    async fn dead_or_stalled_active_entry_fails_over_to_healthy_backup_entry_and_sticks() {
+        let _guard = MGMT_PATH_TEST_LOCK.lock().await;
+        use meshharbor_node_core::management_path as mp;
+
+        // 1. Active entry accepts TCP and stalls silently (exact model of a gateway whose
+        //    upstream leg to the centre is hanging while TCP accept on :18443 still succeeds).
+        let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stalled_addr = stalled.local_addr().unwrap();
+        let stalled_accepts = Arc::new(AtomicUsize::new(0));
+        {
+            let stalled_accepts = stalled_accepts.clone();
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((sock, _)) = stalled.accept().await {
+                    stalled_accepts.fetch_add(1, Ordering::SeqCst);
+                    held.push(sock);
+                }
+            });
+        }
+        let healthy = keep_alive_gpu_server(empty_gpu_fleet_json()).await;
+        let centre = "selfview-failover.fr134.invalid";
+        let url = format!("http://{centre}");
+
+        mp::note_config(
+            &url,
+            &[stalled_addr.to_string(), healthy.addr.to_string()],
+        );
+        mp::note_pushed(
+            centre,
+            &mp::Pushed {
+                direct: false,
+                entries: Vec::new(),
+            },
+        );
+        mp::note_connected(centre, mp::Candidate::Entry(stalled_addr), false);
+
+        let view = SelfView::new(registry(&url));
+        match view.gpu_fleet("", true, 0, &[], Some(500)).await {
+            Response::GpuFleet(_) => {}
+            other => panic!("expected automatic failover to healthy backup entry, got {other:?}"),
+        }
+        assert_eq!(healthy.requests.load(Ordering::SeqCst), 1);
+        let stalled_after_first = stalled_accepts.load(Ordering::SeqCst);
+
+        // Subsequent polls must stick to the healthy fallback with keep-alive (no repeated stalls).
+        let t0 = Instant::now();
+        for _ in 0..2 {
+            match view.gpu_fleet("", true, 0, &[], Some(500)).await {
+                Response::GpuFleet(_) => {}
+                other => panic!("expected sticky healthy fallback, got {other:?}"),
+            }
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "sticky fallback took too long: {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(
+            stalled_accepts.load(Ordering::SeqCst),
+            stalled_after_first,
+            "sticky fallback must not re-hit the stalled entry on every poll"
+        );
+        assert_eq!(healthy.requests.load(Ordering::SeqCst), 3);
+        assert_eq!(healthy.accepts.load(Ordering::SeqCst), 1);
+
+        mp::set_route(centre, None);
+        mp::note_config("", &[]);
+    }
+
+    #[tokio::test]
+    async fn note_outcome_treats_gpu_responses_as_success() {
+        let srv = fake_server(|_| (200, empty_gpu_fleet_json()), Duration::ZERO).await;
+        let view = SelfView::with_client(registry(&srv.url), test_client(), Freshness::default());
+        assert!(matches!(
+            view.gpu_fleet("", true, 0, &[], Some(1000)).await,
+            Response::GpuFleet(_)
+        ));
+        let recorded = view
+            .outcomes
+            .lock()
+            .unwrap()
+            .get(&("gpu_fleet", "primary".to_string()))
+            .copied();
+        assert_eq!(
+            recorded,
+            Some(None),
+            "GpuFleet must record as success (None), not Some(\"error\")"
         );
     }
 }

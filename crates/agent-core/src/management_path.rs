@@ -366,6 +366,33 @@ pub fn candidates_for_url(url: &str, local: &[String]) -> (Vec<Candidate>, bool)
     plan(&pushed, local, last_good)
 }
 
+/// FR-134 — ordered HTTP candidates `(order, last_resort)` for a request to `url`.
+/// Only known centres receive management-path entries (third-party URLs and unregistered
+/// loopback test targets stay direct); when the control socket has an active entry for `url`'s
+/// host, that entry is guaranteed to appear first even if the pushed list is still converging.
+pub fn http_candidates_for_url(url: &str) -> (Vec<Candidate>, bool) {
+    if disabled() {
+        return (vec![Candidate::Direct], false);
+    }
+    let host = centre_host(url);
+    if host.is_empty() || !is_known_centre(&host) {
+        return (vec![Candidate::Direct], false);
+    }
+    let local = local_entries();
+    let pushed = load_effective(&host);
+    let active = route_for(&host);
+    let last_good = active
+        .map(Candidate::Entry)
+        .or_else(|| last_connected().map(|(c, _)| c));
+    let (mut order, last_resort) = plan(&pushed, &local, last_good);
+    if let Some(active_entry) = active {
+        let c = Candidate::Entry(active_entry);
+        order.retain(|x| *x != c);
+        order.insert(0, c);
+    }
+    (order, last_resort)
+}
+
 /// The control socket to the centre at `host` connected along `c`.
 pub fn note_connected(host: &str, c: Candidate, last_resort: bool) {
     set_route(
@@ -480,6 +507,46 @@ pub fn route_http(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     match route {
         Some((host, entry)) => builder.resolve(&host, entry),
         None => builder,
+    }
+}
+
+/// Plain system DNS resolver used only when explicitly dialing [`Candidate::Direct`] (e.g. as
+/// an HTTP failover last resort while `ROUTE` may still hold a degraded management entry).
+struct DirectSystemResolver;
+
+impl reqwest::dns::Resolve for DirectSystemResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().trim_matches(['[', ']']).to_ascii_lowercase();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0u16))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                .collect();
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+/// Point a client at one explicit management-path [`Candidate`] for `host`:
+/// - `Candidate::Entry(entry)` resolves `host` to `entry` (preserving SNI & TLS cert checks).
+/// - `Candidate::Direct` bypasses `ManagementPathResolver` and resolves `host` directly via the
+///   system resolver (only for explicit direct / last-resort attempts).
+pub fn route_http_candidate(
+    builder: reqwest::ClientBuilder,
+    host: &str,
+    candidate: Candidate,
+) -> reqwest::ClientBuilder {
+    match candidate {
+        Candidate::Entry(entry) => {
+            let key = host.trim_matches(['[', ']']).to_ascii_lowercase();
+            if key.is_empty() {
+                builder
+            } else {
+                builder.resolve(&key, entry)
+            }
+        }
+        Candidate::Direct => builder.dns_resolver(Arc::new(DirectSystemResolver)),
     }
 }
 
@@ -725,5 +792,31 @@ mod tests {
             &[],
         ));
         set_route("centre-move.invalid", None);
+    }
+
+    #[test]
+    fn http_candidates_scope_entries_to_known_centres_and_prioritise_active_route() {
+        let e1: SocketAddr = "198.51.100.11:18443".parse().unwrap();
+        let e2: SocketAddr = "198.51.100.12:18443".parse().unwrap();
+        let centre = "centre-http-cands.invalid";
+        note_pushed(
+            centre,
+            &p(false, &["198.51.100.11:18443", "198.51.100.12:18443"]),
+        );
+        note_connected(centre, Candidate::Entry(e2), false);
+
+        let (order, last_resort) = http_candidates_for_url(&format!("https://{centre}/api"));
+        assert!(last_resort);
+        assert_eq!(
+            order,
+            vec![Candidate::Entry(e2), Candidate::Entry(e1), Candidate::Direct]
+        );
+
+        // Unregistered third-party or loopback hosts stay strictly direct.
+        let (other, other_lr) = http_candidates_for_url("https://unrelated.example/api");
+        assert!(!other_lr);
+        assert_eq!(other, vec![Candidate::Direct]);
+
+        set_route(centre, None);
     }
 }

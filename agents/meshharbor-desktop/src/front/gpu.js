@@ -17,7 +17,7 @@
   const DEFAULT_CADENCE_MS = 1000;
   const CADENCE_STORAGE_KEY = 'mh.desktop.gpuCadenceMs';
   const CACHED_POLL_MS = 15000;
-  const BACKOFF_MS = [10000, 30000, 60000];
+  const BACKOFF_MS = [2000, 5000, 10000, 30000];
   const DELTA_TTL_MS = 4500;
   const MAX_RECENT_CHANGES = 8;
   const APP_LEVEL_XIDS = [13, 31, 43, 45];
@@ -1440,8 +1440,15 @@
     const refreshBtn = $('gpu-btn-refresh');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => {
-        if (st.tab === 'users') void fetchUsers();
-        else void fetchFleet(true);
+        if (st.tab === 'users') {
+          st.usersFailures = 0;
+          st.usersNextRetryAt = 0;
+          void fetchUsers();
+        } else {
+          st.fleetFailures = 0;
+          st.fleetNextRetryAt = 0;
+          void fetchFleet(true);
+        }
       });
     }
 

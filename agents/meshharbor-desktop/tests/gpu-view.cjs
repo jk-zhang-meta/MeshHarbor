@@ -21,6 +21,12 @@ assert.ok(!gpuSrc.includes('wait_ms:'), 'gpu.js must not pass snake_case wait_ms
 assert.ok(gpuSrc.includes('intervalMs:'), 'gpu.js must pass camelCase intervalMs to cmd_gpu_fleet');
 assert.ok(!gpuSrc.includes('interval_ms:'), 'gpu.js must not pass snake_case interval_ms to Tauri command');
 
+// 1b. Fast initial backoff so brief network blips recover promptly.
+const backoffMatch = gpuSrc.match(/const BACKOFF_MS\s*=\s*\[([^\]]+)\]/);
+assert.ok(backoffMatch, 'gpu.js must define BACKOFF_MS');
+const firstBackoff = Number(backoffMatch[1].split(',')[0].trim());
+assert.ok(firstBackoff > 0 && firstBackoff <= 3000, 'first retry backoff must be <= 3s, got ' + firstBackoff);
+
 // 2. Router & HTML wiring present.
 assert.ok(appSrc.includes("'gpu'"), 'app.js VIEWS must include gpu');
 assert.ok(htmlSrc.includes('data-view="gpu"'), 'index.html nav must include GPU Servers link');
