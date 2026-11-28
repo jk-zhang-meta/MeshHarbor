@@ -444,7 +444,9 @@ mod tests {
     #[test]
     fn quit_sentinel_matches_own_pid_and_strips_old_suffix() {
         assert_eq!(
-            quit_sentinel_path_for(std::path::Path::new(r"C:\MeshHarbor\meshharbor-desktop.exe.old")),
+            quit_sentinel_path_for(std::path::Path::new(
+                r"C:\MeshHarbor\meshharbor-desktop.exe.old"
+            )),
             std::path::PathBuf::from(r"C:\MeshHarbor\meshharbor-desktop.exe.quit")
         );
         assert!(sentinel_requests_pid("100\n32528\n", 32528));

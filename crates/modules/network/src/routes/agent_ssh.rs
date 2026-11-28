@@ -81,7 +81,6 @@ use meshharbor_remote_control::{
     },
     signaling::ServerMsg,
 };
-use meshharbor_services::auth::AuthService;
 use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -142,11 +141,6 @@ pub struct SshResponseBody {
     /// Set when the request was refused, naming which gate said no.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// FR-90 P3-8-1b — the agent session's ticket, by its id, when the
-    /// request was held to it (`rc:ssh.response`'s echo). Absent for a
-    /// person's request, so the HTTP body is what it was.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ssh_ticket_id: Option<String>,
     /// FR-129 — set when the DEVICE refused on two-factor (`two_factor_required` /
     /// `two_factor_invalid` / `two_factor_locked`), so the caller can ask the person for a code.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,7 +161,6 @@ impl SshResponseBody {
             host_pubkey: None,
             expires_at_ms: None,
             error: Some(reason.message().to_string()),
-            ssh_ticket_id: None,
             two_factor: reason.two_factor().map(str::to_string),
             resume: false,
         }
@@ -190,80 +183,6 @@ pub struct Caller {
     pub display: String,
     /// Set on the device-originated leg — the device whose LocalAPI asked.
     pub origin_agent_id: Option<ObjectId>,
-    /// FR-90 P3-8-1b — whether an agent session asked, under its own ticket.
-    pub session: CallerSession,
-}
-
-/// FR-90 P3-8-1b — an agent session's part in a request, decided where the
-/// request arrived ([`bind_ssh_ticket`]) and carried here so [`dispatch`]
-/// audits every outcome in its one place, a refused ticket's included.
-pub enum CallerSession {
-    /// A person's request (`mh ssh`, the HTTP route): no ticket.
-    None,
-    /// An agent session's, its ticket held: the SESSION is the principal and
-    /// `Caller::user_id` the person it acts for.
-    Bound(SessionCaller),
-    /// An agent session's, its ticket refused, and why (for the log). Never
-    /// served as the device owner's request instead.
-    Refused(&'static str),
-}
-
-/// FR-90 P3-8-1b — an agent session, as its verified ticket names it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionCaller {
-    pub session_id: ObjectId,
-    /// The person the session acts for.
-    pub owner_user_id: ObjectId,
-    /// The ticket's id (`ticket:<id>` in `vault_audit`), echoed and audited.
-    pub ticket_id: String,
-    /// The account the target's SSH policy mapped when the vault decided.
-    pub account: SshAccountMode,
-    /// When the ticket ends, unix seconds: the SSH session ends by then too.
-    pub ends_at: i64,
-}
-
-/// FR-90 P3-8-1b — verify a ticket presented at `rc:ssh.request` and bind it
-/// to the request. `verify_ssh_ticket` checks its signature, its audience,
-/// its ids, its two devices, its account and its life; this checks it names
-/// THIS organization, THIS connection's device as its origin, and the
-/// request's target as resolved, compared by id. The reason it does not hold,
-/// otherwise.
-///
-/// ⚠️ Only from an agent's own WS: a session's request rides its device's
-/// connection, never a person's HTTP call.
-pub fn bind_ssh_ticket(
-    auth: &AuthService,
-    tenant_id: ObjectId,
-    origin_agent_id: Option<ObjectId>,
-    target_agent_id: ObjectId,
-    token: &str,
-) -> Result<SessionCaller, &'static str> {
-    let Some(origin) = origin_agent_id else {
-        return Err("a session's ticket rides only its own device's connection");
-    };
-    let claims = auth
-        .verify_ssh_ticket(token)
-        .map_err(|_| "not a ticket this server signed, or it has ended")?;
-    let id =
-        |hex: &str| ObjectId::parse_str(hex).map_err(|_| "a ticket naming an id that is not one");
-    if id(&claims.tenant_id)? != tenant_id {
-        return Err("a ticket for another organization");
-    }
-    if id(&claims.origin_agent_id)? != origin {
-        return Err("a ticket for another device");
-    }
-    if id(&claims.target_agent_id)? != target_agent_id {
-        return Err("a ticket for another target");
-    }
-    let account = SshAccountMode::from_wire(&claims.account)
-        .ok_or("a ticket naming an account this build cannot name")?;
-    Ok(SessionCaller {
-        session_id: id(&claims.sub)?,
-        owner_user_id: id(&claims.owner_user_id)?,
-        ticket_id: claims.jti,
-        account,
-        ends_at: claims.exp,
-    })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -310,32 +229,19 @@ pub async fn authorize(
         return Err(SshDenyReason::OrgDisabled);
     }
 
-    // FR-90 P3-8-1b — an agent session's request is the session's, never its
-    // owner's: the vault's `ssh:run` decided in gate 2's place, and the
-    // owner's `SSH_DEVICE` is not read for it.
-    let session = matches!(caller.session, CallerSession::Bound(_));
-
     // Gate 2 — the caller's role.
-    if !session {
-        let perms = state
-            .tenants
-            .get_member_permissions(tenant_id, caller.user_id)
-            .await
-            .unwrap_or(0);
-        if !permissions::has(perms, permissions::SSH_DEVICE) {
-            return Err(SshDenyReason::NoPermission);
-        }
+    let perms = state
+        .tenants
+        .get_member_permissions(tenant_id, caller.user_id)
+        .await
+        .unwrap_or(0);
+    if !permissions::has(perms, permissions::SSH_DEVICE) {
+        return Err(SshDenyReason::NoPermission);
     }
 
     // Gate 3 — the target device's own policy.
     if *mode != SshMode::On {
         return Err(SshDenyReason::DeviceDisabled);
-    }
-    // FR-90 P3-8-1b — which policies admit a session is decision 22 (the
-    // spec's §6); until it is built, none does, and the owner's own place on
-    // the allowlists never stands in for the session's.
-    if session {
-        return Err(SshDenyReason::SessionNotAllowed);
     }
     // Role ids are only fetched when the policy actually restricts by role —
     // an extra query on every SSH request would be paid by the common case to
@@ -424,34 +330,17 @@ pub async fn dispatch(
     // FR-90 P3-8-1b — a session's ticket that does not hold refuses the
     // request here, audited like any other refusal, and is never answered as
     // the device owner's request instead.
-    let outcome = match &caller.session {
-        CallerSession::Refused(why) => {
-            warn!(
-                agent = %agent_id, caller = %caller.display, why = *why,
-                "ssh: an agent session's ticket does not hold"
-            );
-            Err(SshDenyReason::TicketRefused)
-        }
-        CallerSession::None | CallerSession::Bound(_) => {
-            decide(
-                state,
-                tenant_id,
-                agent,
-                caller,
-                public_key,
-                session_secs,
-                two_factor_code,
-            )
-            .await
-        }
-    };
+    let outcome = decide(
+        state,
+        tenant_id,
+        agent,
+        caller,
+        public_key,
+        session_secs,
+        two_factor_code,
+    )
+    .await;
     record_audit(state, tenant_id, agent_id, caller, &outcome).await;
-    // The echo: the session's daemon dials only on an answer naming the
-    // ticket it presented, which a server that ignored the ticket never sends.
-    let ssh_ticket_id = match &caller.session {
-        CallerSession::Bound(s) => Some(s.ticket_id.clone()),
-        CallerSession::None | CallerSession::Refused(_) => None,
-    };
 
     match outcome {
         Ok(g) => {
@@ -474,7 +363,6 @@ pub async fn dispatch(
                 host_pubkey: g.host_pubkey,
                 expires_at_ms: Some(g.expires_at_ms),
                 error: None,
-                ssh_ticket_id,
                 two_factor: None,
                 resume: g.resume_allowed,
             }
@@ -484,10 +372,7 @@ pub async fn dispatch(
                 agent = %agent_id, caller = %caller.display, ?reason,
                 "ssh: request denied"
             );
-            SshResponseBody {
-                ssh_ticket_id,
-                ..SshResponseBody::denied(reason)
-            }
+            SshResponseBody::denied(reason)
         }
     }
 }
@@ -524,29 +409,6 @@ async fn decide(
     // policy field cannot be silently ignored by either half.
     let (gates, spec) = agent.ssh_policy.clone().split();
 
-    // FR-90 P3-8-1b — an agent session's request, checked as the key is,
-    // before the gates: the ticket was decided for the account the target's
-    // policy mapped then, and a policy changed since is a ticket that no
-    // longer holds; and only a device that can hold the grant to one command
-    // is sent one.
-    let session = match &caller.session {
-        CallerSession::Bound(s) => Some(s),
-        CallerSession::None | CallerSession::Refused(_) => None,
-    };
-    if let Some(s) = session {
-        if s.account != spec.account_mode {
-            warn!(
-                agent = %agent_id, session = %s.session_id, ticket = ?s.account,
-                policy = ?spec.account_mode,
-                "ssh: the target's account changed since the session's ticket was decided"
-            );
-            return Err(SshDenyReason::TicketRefused);
-        }
-        if !agent.capabilities.has_rpc(RpcCap::SshOneCommand) {
-            return Err(SshDenyReason::TargetTooOld);
-        }
-    }
-
     if !meshharbor_mod_fleet::device_invite::allows_feature(
         &state.fleet,
         agent_id,
@@ -567,10 +429,7 @@ async fn decide(
     // also protects the TARGET: the device's pending-grant table holds 16 and
     // evicts the OLDEST, so an unthrottled caller could burst a legitimate
     // caller's un-redeemed grant out of existence.
-    //
-    // FR-90 P3-8-1b — a session's requests count against the SESSION, so one
-    // session cannot spend its owner's budget, nor its owner the session's.
-    let rate_key = session.map_or(caller.user_id, |s| s.session_id);
+    let rate_key = caller.user_id;
     if !state
         .ssh_rate_limiter
         .check(rate_key, agent_id, ssh_limits::RATE_LIMIT_PER_MINUTE)
@@ -591,12 +450,6 @@ async fn decide(
 
     let grant_id = ObjectId::new().to_hex();
     let session_secs = ssh_limits::clamp_session_secs(session_secs);
-    // FR-90 P3-8-1b — a session's SSH session ends with its ticket at the
-    // latest: the target closes it there, whatever the session asked for.
-    let session_secs = match session {
-        Some(s) => session_secs.min(secs_left(s.ends_at, now_ms())),
-        None => session_secs,
-    };
     let expires_at_ms = now_ms() + ssh_limits::GRANT_TTL_SECS * 1000;
 
     // EXHAUSTIVE — the spec's fields map 1:1 onto the wire, and binding them
@@ -609,7 +462,7 @@ async fn decide(
     } = spec;
     // FR-105 — who serves this grant: the device's SYSTEM service, or its
     // worker (on an attended Windows install, the signed-in user).
-    let via_service = routes_ssh_via_service(state, agent, account_mode, session.is_some());
+    let via_service = routes_ssh_via_service(state, agent, account_mode, false);
     let consent_mode = meshharbor_mod_fleet::device_invite::invite_consent_mode(
         &state.fleet,
         agent_id,
@@ -619,8 +472,7 @@ async fn decide(
     .await
     .map_err(|_| SshDenyReason::CallerNotAllowed)?;
     let consent_mode = Some(effective_wire_consent(Some(consent_mode)));
-    let resume_allowed =
-        !via_service && session.is_none() && agent.capabilities.has_rpc(RpcCap::SshResume);
+    let resume_allowed = !via_service && agent.capabilities.has_rpc(RpcCap::SshResume);
     let msg = ServerMsg::SshGrant {
         two_factor_code: two_factor_code.cloned(),
         grant_id: grant_id.clone(),
@@ -632,7 +484,7 @@ async fn decide(
         session_secs,
         consent_mode,
         via_service,
-        one_command: session.is_some(),
+        one_command: false,
         resume_allowed,
         principal_id: Some(caller.user_id.to_hex()),
     };
@@ -659,7 +511,7 @@ async fn decide(
             expires_at_ms,
             session_secs,
             consent_mode,
-            one_command: session.is_some(),
+            one_command: false,
             state: SshPending::PENDING.to_string(),
             created_at: authorization_started,
             claim_by: at(ssh_limits::GRANT_ACK_TIMEOUT_SECS),
@@ -937,12 +789,6 @@ fn audit_event(
     // Bound once so a refusal cannot accidentally carry grant-only fields:
     // everything below reads from THIS, not from the outcome directly.
     let granted = outcome.as_ref().ok();
-    // FR-90 P3-8-1b — a session that asked, once its ticket held; a refused
-    // ticket names no session, since nothing it claims was verified.
-    let session = match &caller.session {
-        CallerSession::Bound(s) => Some(s),
-        CallerSession::None | CallerSession::Refused(_) => None,
-    };
     SshAuditEvent {
         id: None,
         tenant_id,
@@ -952,16 +798,14 @@ fn audit_event(
         grant_id: granted.map(|g| g.grant_id.clone()),
         // The HTTP leg cannot tell a browser from a script — both arrive as an
         // authenticated caller with a bearer token — so this records the only
-        // distinction the server can actually observe. An agent session's
-        // request is `session` whether or not its ticket held.
-        source: match (&caller.session, caller.origin_agent_id) {
-            (CallerSession::Bound(_) | CallerSession::Refused(_), _) => "session",
-            (CallerSession::None, Some(_)) => "cli",
-            (CallerSession::None, None) => "api",
+        // distinction the server can actually observe.
+        source: if caller.origin_agent_id.is_some() {
+            "cli"
+        } else {
+            "api"
         }
         .to_string(),
-        session_id: session.map(|s| s.session_id),
-        ssh_ticket_id: session.map(|s| s.ticket_id.clone()),
+        session_id: None,
         caller: caller.display.clone(),
         account_mode: granted.map(|g| account_mode_wire(g.account_mode).to_string()),
         session_secs: granted.map(|g| g.session_secs),
@@ -1048,16 +892,6 @@ fn account_mode_wire(mode: SshAccountMode) -> &'static str {
     mode.wire()
 }
 
-/// FR-90 P3-8-1b — what is left of a ticket that ends at `ends_at_secs`, in
-/// whole seconds, at least one. Never 0: to `clamp_session_secs` a 0 means
-/// the ceiling, so a ticket at its very end would LIFT the bound it sets.
-fn secs_left(ends_at_secs: i64, now_ms: u64) -> u64 {
-    let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
-    u64::try_from(ends_at_secs.saturating_sub(now_secs))
-        .unwrap_or(0)
-        .max(1)
-}
-
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -1103,7 +937,6 @@ async fn http_caller(state: &NetworkState, auth: &AuthUser) -> Caller {
         user_id: auth.user_id,
         display,
         origin_agent_id: None,
-        session: CallerSession::None,
     }
 }
 
@@ -1613,7 +1446,6 @@ pub async fn claim_service_grant(
                 grant_id: Some(grant_id),
                 source: "service-claim".to_string(),
                 session_id: None,
-                ssh_ticket_id: None,
                 caller: String::new(),
                 account_mode: None,
                 session_secs: None,
@@ -1901,7 +1733,6 @@ mod audit_tests {
             user_id: ObjectId::new(),
             display: "someone@example.com".to_string(),
             origin_agent_id: origin,
-            session: CallerSession::None,
         }
     }
 
@@ -2277,198 +2108,6 @@ mod tests {
                 "{r:?}'s message is too terse to act on: {m:?}"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod session_tests {
-    use super::*;
-    use meshharbor_services::auth::SshTicket;
-
-    /// An auth service under a secret made at run time.
-    fn auth() -> AuthService {
-        AuthService::new(meshharbor_config::JwtSettings {
-            secret: format!("p381b-{}-{}", ObjectId::new(), ObjectId::new()),
-            previous_secrets: String::new(),
-            access_token_ttl_secs: 3600,
-            refresh_token_ttl_secs: 3600,
-            issuer: "meshharbor-test".into(),
-        })
-    }
-
-    struct Places {
-        tenant: ObjectId,
-        origin: ObjectId,
-        target: ObjectId,
-        session: ObjectId,
-        owner: ObjectId,
-        ticket: ObjectId,
-    }
-
-    fn places() -> Places {
-        Places {
-            tenant: ObjectId::new(),
-            origin: ObjectId::new(),
-            target: ObjectId::new(),
-            session: ObjectId::new(),
-            owner: ObjectId::new(),
-            ticket: ObjectId::new(),
-        }
-    }
-
-    fn signed(auth: &AuthService, p: &Places, account: SshAccountMode) -> (String, i64) {
-        let exp = bson::DateTime::now().timestamp_millis() / 1000 + 120;
-        let token = auth
-            .issue_ssh_ticket(&SshTicket {
-                session_id: p.session,
-                tenant_id: p.tenant,
-                fence: 3,
-                owner_user_id: p.owner,
-                origin_agent_id: p.origin,
-                target_agent_id: p.target,
-                account,
-                ticket_id: p.ticket,
-                exp,
-            })
-            .unwrap();
-        (token, exp)
-    }
-
-    /// FR-90 P3-8-1b — a ticket binds only where it holds: on an agent's own
-    /// connection, signed by this server, in its organization, from the
-    /// device it names and toward the target it names. What it binds is the
-    /// session's, as the ticket names it; each refusal is in its own words.
-    #[test]
-    fn a_ticket_binds_only_where_it_holds() {
-        let a = auth();
-        let p = places();
-        let (token, exp) = signed(&a, &p, SshAccountMode::Named);
-        let s = bind_ssh_ticket(&a, p.tenant, Some(p.origin), p.target, &token).unwrap();
-        // Three dotted words, made at run time: no token-shaped literal.
-        let garbage = ["not", "a", "ticket"].join(".");
-        assert_eq!(
-            s,
-            SessionCaller {
-                session_id: p.session,
-                owner_user_id: p.owner,
-                ticket_id: p.ticket.to_hex(),
-                account: SshAccountMode::Named,
-                ends_at: exp,
-            }
-        );
-        for (tenant, origin, target, token, why) in [
-            (
-                p.tenant,
-                None,
-                p.target,
-                token.as_str(),
-                "rides only its own device's connection",
-            ),
-            (
-                ObjectId::new(),
-                Some(p.origin),
-                p.target,
-                token.as_str(),
-                "another organization",
-            ),
-            (
-                p.tenant,
-                Some(ObjectId::new()),
-                p.target,
-                token.as_str(),
-                "another device",
-            ),
-            (
-                p.tenant,
-                Some(p.origin),
-                ObjectId::new(),
-                token.as_str(),
-                "another target",
-            ),
-            (
-                p.tenant,
-                Some(p.origin),
-                p.target,
-                garbage.as_str(),
-                "not a ticket this server signed",
-            ),
-        ] {
-            let refused = bind_ssh_ticket(&a, tenant, origin, target, token).unwrap_err();
-            assert!(refused.contains(why), "{why}: {refused}");
-        }
-        // Another server's ticket, however well formed, is no ticket here.
-        let (theirs, _) = signed(&auth(), &p, SshAccountMode::Named);
-        assert!(bind_ssh_ticket(&a, p.tenant, Some(p.origin), p.target, &theirs).is_err());
-    }
-
-    /// FR-90 P3-8-1b — what is left of a ticket bounds a session's SSH
-    /// session, and never by 0, which `clamp_session_secs` reads as the
-    /// ceiling.
-    #[test]
-    fn what_is_left_of_a_ticket_never_lifts_the_bound() {
-        let now_ms = 1_800_000_000_000_u64;
-        let now = 1_800_000_000_i64;
-        assert_eq!(secs_left(now + 120, now_ms), 120);
-        assert_eq!(secs_left(now + 1, now_ms), 1);
-        assert_eq!(
-            secs_left(now, now_ms),
-            1,
-            "at its end: one second, not the ceiling"
-        );
-        assert_eq!(secs_left(now - 30, now_ms), 1, "past its end");
-        assert_eq!(
-            ssh_limits::clamp_session_secs(300).min(secs_left(now + 120, now_ms)),
-            120
-        );
-    }
-
-    /// FR-90 P3-8-1b — a session's row names the session and its ticket, as
-    /// `session`; a refused ticket is a `session` row that names no session,
-    /// since nothing it claims was verified; a person's row names neither.
-    #[test]
-    fn a_sessions_row_names_the_session_only_once_its_ticket_held() {
-        let (tid, aid, origin) = (ObjectId::new(), ObjectId::new(), Some(ObjectId::new()));
-        let bound = SessionCaller {
-            session_id: ObjectId::new(),
-            owner_user_id: ObjectId::new(),
-            ticket_id: "k1".into(),
-            account: SshAccountMode::ConsoleUser,
-            ends_at: 1,
-        };
-        let caller = |session| Caller {
-            user_id: ObjectId::new(),
-            display: "someone (via a device)".into(),
-            origin_agent_id: origin,
-            session,
-        };
-        let row = audit_event(
-            tid,
-            aid,
-            &caller(CallerSession::Bound(bound.clone())),
-            &Err(SshDenyReason::SessionNotAllowed),
-        );
-        assert_eq!(row.source, "session");
-        assert_eq!(row.session_id, Some(bound.session_id));
-        assert_eq!(row.ssh_ticket_id.as_deref(), Some("k1"));
-        assert_eq!(row.denied, Some(SshDenyReason::SessionNotAllowed));
-
-        let refused = audit_event(
-            tid,
-            aid,
-            &caller(CallerSession::Refused("a ticket for another target")),
-            &Err(SshDenyReason::TicketRefused),
-        );
-        assert_eq!(refused.source, "session");
-        assert_eq!((refused.session_id, refused.ssh_ticket_id), (None, None));
-
-        let person = audit_event(
-            tid,
-            aid,
-            &caller(CallerSession::None),
-            &Err(SshDenyReason::NoPermission),
-        );
-        assert_eq!(person.source, "cli");
-        assert_eq!((person.session_id, person.ssh_ticket_id), (None, None));
     }
 }
 

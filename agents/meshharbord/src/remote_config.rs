@@ -130,7 +130,10 @@ impl RemoteConfigServices {
             gpu_processes.clone(),
         );
         Self {
-            names: Arc::new(crate::device_name::DeviceNames::new(path.clone(), lock.clone())),
+            names: Arc::new(crate::device_name::DeviceNames::new(
+                path.clone(),
+                lock.clone(),
+            )),
             path,
             lock,
             exec_enabled: Arc::new(AtomicBool::new(exec_enabled)),

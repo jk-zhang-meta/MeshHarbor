@@ -89,15 +89,8 @@ pub struct DerpAllowTable {
     approved_roles: Option<HashSet<DerpPubKey>>,
     /// Logical Network Zone resolution (`zone_id`, `cross_zone_mode`) per node pubkey
     /// when `OverlayNetwork.zones` is non-empty; `UnresolvedStrict` nodes are omitted.
-    network_zones: Option<
-        HashMap<
-            DerpPubKey,
-            (
-                String,
-                meshharbor_remote_control::models::CrossZoneMode,
-            ),
-        >,
-    >,
+    network_zones:
+        Option<HashMap<DerpPubKey, (String, meshharbor_remote_control::models::CrossZoneMode)>>,
     /// Monotonic `OverlayNetwork.zone_revision` captured for this table (`None` for unit-test fixtures).
     zone_revision: Option<u64>,
     /// FR-124 — nodes in a strict zone whose countries do not hold this
@@ -911,20 +904,38 @@ mod tests {
             let _ = a_paused_tx.send(());
             let _ = b_done_rx.await;
             // Both DB revision (Some(2)) and cached table revision (Some(2)) reject snap_rev = 1!
-            let ok_vs_db = install_fenced_derp_table(&cache_a, net_id, 1, Some(2), permissive_r1.clone());
-            let ok_vs_cache = install_fenced_derp_table(&cache_a, net_id, 1, Some(1), permissive_r1);
+            let ok_vs_db =
+                install_fenced_derp_table(&cache_a, net_id, 1, Some(2), permissive_r1.clone());
+            let ok_vs_cache =
+                install_fenced_derp_table(&cache_a, net_id, 1, Some(1), permissive_r1);
             (ok_vs_db, ok_vs_cache)
         });
 
         let _ = a_paused_rx.await;
-        assert!(install_fenced_derp_table(&cache, net_id, 2, Some(2), strict_r2));
+        assert!(install_fenced_derp_table(
+            &cache,
+            net_id,
+            2,
+            Some(2),
+            strict_r2
+        ));
         let _ = b_done_tx.send(());
 
         let (ok_vs_db, ok_vs_cache) = task_a.await.unwrap();
-        assert!(!ok_vs_db && !ok_vs_cache, "stale r=1 rebuild must be rejected");
         assert!(
-            commit_open_or_keep_on_zone_read(&cache, net_id, false, false, Ok((false, 1, ())), Some(2))
-                .is_none(),
+            !ok_vs_db && !ok_vs_cache,
+            "stale r=1 rebuild must be rejected"
+        );
+        assert!(
+            commit_open_or_keep_on_zone_read(
+                &cache,
+                net_id,
+                false,
+                false,
+                Ok((false, 1, ())),
+                Some(2)
+            )
+            .is_none(),
             "stale open-table insertion must also be fenced"
         );
         let final_tbl = cache.get(&net_id).expect("r=2 table remains installed");

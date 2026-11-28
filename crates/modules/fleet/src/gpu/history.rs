@@ -7,9 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use bson::{DateTime, doc, oid::ObjectId};
 use futures::TryStreamExt as _;
-use meshharbor_remote_control::gpu::{
-    GpuReport, GpuState, GpuStateThresholds, classify_gpu_state,
-};
+use meshharbor_remote_control::gpu::{GpuReport, GpuState, GpuStateThresholds, classify_gpu_state};
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 
@@ -408,7 +406,9 @@ pub async fn query_history(
                 None
             };
             let (free_ratio, held_idle_ratio) = if b.sample_secs > 0
-                && (b.free_secs > 0 || b.held_idle_secs > 0 || (b.free_samples == 0 && b.held_idle_samples == 0))
+                && (b.free_secs > 0
+                    || b.held_idle_secs > 0
+                    || (b.free_samples == 0 && b.held_idle_samples == 0))
             {
                 (
                     (b.free_secs as f64 / b.sample_secs as f64) as f32,
@@ -507,7 +507,9 @@ pub async fn query_history(
             a.sample_secs = a.sample_secs.saturating_add(b.sample_secs);
         } else if b.samples > 0 {
             a.free_secs = a.free_secs.saturating_add(u64::from(b.free_samples));
-            a.held_idle_secs = a.held_idle_secs.saturating_add(u64::from(b.held_idle_samples));
+            a.held_idle_secs = a
+                .held_idle_secs
+                .saturating_add(u64::from(b.held_idle_samples));
             a.sample_secs = a.sample_secs.saturating_add(u64::from(b.samples));
         }
     }
@@ -618,7 +620,8 @@ pub async fn query_users(
                 if let Some(u) = p.user.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                     // Use the same sanitized key as historical rollups so usernames
                     // containing `.` or `$` do not split into two separate rows.
-                    *card_users.entry(safe_user_key(u)).or_insert(0) += u64::from(p.mem_mb.unwrap_or(0));
+                    *card_users.entry(safe_user_key(u)).or_insert(0) +=
+                        u64::from(p.mem_mb.unwrap_or(0));
                 }
             }
             for (u, mem_mb) in card_users {
@@ -717,7 +720,10 @@ mod tests {
             "sample_secs",
             "users",
         ] {
-            assert!(bson_doc.contains_key(field), "missing persisted field {field}");
+            assert!(
+                bson_doc.contains_key(field),
+                "missing persisted field {field}"
+            );
         }
         let back: GpuBucketDoc = bson::from_document(bson_doc).expect("from_document");
         assert_eq!(back, orig);

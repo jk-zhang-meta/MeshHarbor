@@ -56,10 +56,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, info, warn};
 use tunnel_core::driver::{
-    Carrier, Establishment, GrantError, SessionGrantRef, SessionParams, Target, TransportPref,
-    establish_tunnel_session,
+    Carrier, Establishment, SessionParams, Target, TransportPref, establish_tunnel_session,
 };
-use tunnel_core::flow_listener::{Admit, FlowListener, HoldPolicy};
+use tunnel_core::flow_listener::{FlowListener, HoldPolicy};
 use tunnel_core::forward::SessionThroughput;
 use tunnel_core::localapi::{FlowInfo, FlowKind};
 use tunnel_core::signaling_link::{TunnelSignalingSink, TunnelSignalingSource};
@@ -194,11 +193,6 @@ pub(crate) struct FlowLive {
     /// #1685 — when the supervisor's current backoff sleep ends; `None`
     /// while an attempt is in flight. Read as `next_retry_secs`.
     retry_at: Mutex<Option<std::time::Instant>>,
-    /// FR-90 P3-7-3a — the agent session's grant this flow's tunnels are
-    /// opened under, every attempt and every re-upgrade candidate alike: the
-    /// tunnel carries the session's flows or none. `None` for the daemon's
-    /// own flows (declared routes, LocalAPI forwards).
-    net_grant: Option<SessionGrantRef>,
 }
 
 impl FlowLive {
@@ -408,9 +402,6 @@ impl TunnelClientHub {
             Target::Static { host, port },
             pref,
             start,
-            // The daemon's own forward: no session's grant, its port bound by
-            // the supervisor.
-            None,
             None,
         );
         info!(flow = %id, %node, local, %remote, ?pref, start, "created daemon forward");
@@ -439,66 +430,10 @@ impl TunnelClientHub {
             // SOCKS5 has no start-transport lever (the FR-86 P2 field test drives
             // a static forward); it always starts on the normal ladder.
             None,
-            // The daemon's own listener: no session's grant, its port bound by
-            // the supervisor.
-            None,
             None,
         );
         info!(flow = %id, %node, local, ?pref, "created daemon socks5 listener");
         Ok(id)
-    }
-
-    /// FR-90 P3-7-3b — a flow for an agent session's own egress through
-    /// `exit`:
-    /// - a listener on loopback at a port the system picks, each connection
-    ///   first admitted by `admit` (the session's account alone);
-    /// - its tunnels opened under `grant` (P3-7-3a);
-    /// - ended at `until`, the grant's end: the listener closes, and every
-    ///   connection ends with the carrier, both halves (#2129).
-    ///
-    /// `target` is a forward's one destination, or [`Target::SessionSocks5`]
-    /// with the listener's credential. Answers the flow's id and the address
-    /// it serves on.
-    pub async fn create_session_flow(
-        &self,
-        exit: ObjectId,
-        target: Target,
-        grant: SessionGrantRef,
-        until: std::time::Instant,
-        admit: Admit,
-    ) -> std::result::Result<(String, std::net::SocketAddr), String> {
-        let (kind, shown) = match &target {
-            Target::Static { host, port } => (FlowKind::Forward, Some(format!("{host}:{port}"))),
-            Target::Socks5 | Target::SessionSocks5(_) => (FlowKind::Socks5, None),
-        };
-        let listener = FlowListener::bind_admitting(0, HoldPolicy::default(), Some(admit))
-            .await
-            .map_err(|e| format!("a loopback port: {e:#}"))?;
-        let addr = listener.local_addr();
-        let grant_id = grant.grant_id.clone();
-        let id = self.spawn_flow(
-            kind,
-            exit,
-            exit.to_hex(),
-            addr.port(),
-            shown,
-            target,
-            TransportPref::Auto,
-            None,
-            Some(grant),
-            Some(listener),
-        );
-        let hub = self.clone();
-        let flow = id.clone();
-        let grant_for_log = grant_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
-            if hub.kill_flow(&flow) {
-                info!(%flow, grant = %grant_for_log, "a session's flow ended with its grant");
-            }
-        });
-        info!(flow = %id, %exit, %addr, grant = %grant_id, "created a session's flow");
-        Ok((id, addr))
     }
 
     /// Whether a flow with this id is registered (P6 — the route
@@ -613,16 +548,10 @@ impl TunnelClientHub {
         // FR-86 P2 — force the FIRST session's transport (a below-best carrier
         // for the field test); `None` = the normal ladder.
         start_transport: Option<&'static str>,
-        // FR-90 P3-7-3a — an agent session's grant: the flow is the session's.
-        net_grant: Option<SessionGrantRef>,
-        // FR-90 P3-7-3b — the session's listener, bound by the caller.
         prebound: Option<FlowListener<Carrier>>,
     ) -> String {
         let id = format!("fl-{}", self.inner.seq.fetch_add(1, Ordering::Relaxed));
-        let live = Arc::new(FlowLive {
-            net_grant,
-            ..FlowLive::default()
-        });
+        let live = Arc::new(FlowLive::default());
         let handle = tokio::spawn(run_flow_supervisor(
             self.clone(),
             id.clone(),
@@ -770,15 +699,11 @@ impl TunnelSignalingSink for DaemonSink {
                 transport,
                 open_nonce: _,
                 derp_pubkey,
-                net_grant,
             } => ClientMsg::TunnelOpen {
                 agent_id,
                 transport,
                 open_nonce: Some(self.nonce.clone()),
                 derp_pubkey,
-                // FR-90 P3-7-2a — carried as given: the daemon's own tunnels
-                // send none until P3-7-3.
-                net_grant,
             },
             other => other,
         };
@@ -1735,9 +1660,6 @@ fn flow_retry_jitter(flow_id: &str, attempt: u64) -> Duration {
 /// permanent too, by its type: opening again would present the same grant to
 /// the same server. The session asks the vault for another.
 fn permanent_session_error(e: &anyhow::Error) -> Option<String> {
-    if e.downcast_ref::<GrantError>().is_some() {
-        return Some(format!("{e:#}"));
-    }
     let msg = format!("{e:#}");
     let lower = msg.to_ascii_lowercase();
     if lower.contains("revoked") || lower.contains("cross_tenant") {
@@ -1981,7 +1903,6 @@ async fn drive_attempt(
             on_listening: None,
             // FR-90 P3-7-3a — a session's flow presents its grant at every
             // open; the daemon's own flows present none.
-            net_grant: live.net_grant.clone(),
         },
         supported,
         request,
@@ -2186,7 +2107,6 @@ mod tests {
             ice_servers: vec![],
             quic_auth_token: None,
             open_nonce: Some("n1".into()),
-            net_grant_id: None,
         };
         assert!(hub.intercept(opened).is_none(), "opened consumed by nonce");
         assert!(matches!(rx.try_recv(), Ok(ServerMsg::TunnelOpened { .. })));
@@ -2362,7 +2282,6 @@ mod tests {
             ice_servers: vec![],
             quic_auth_token: None,
             open_nonce: Some("fl-9.1".into()),
-            net_grant_id: None,
         })
         .await
         .unwrap();
@@ -2973,97 +2892,5 @@ mod tests {
             entry_present_at_drop.load(Ordering::SeqCst),
             "the carrier is dropped BEFORE the entry is removed (and never under the demux lock)"
         );
-    }
-
-    /// FR-90 P3-7-3a — a session's grant the server refused or did not bind
-    /// ends the flow: opening again would present the same grant to the same
-    /// server. Known by its type through the context the supervisor wraps it
-    /// in, while an ordinary open failure stays retryable.
-    #[test]
-    fn a_refused_or_unbound_grant_ends_the_flow() {
-        for e in [
-            GrantError::NotBound,
-            GrantError::Refused("a grant for another exit".into()),
-        ] {
-            let wrapped = anyhow::Error::from(e.clone()).context("tunnel session (flow fl-1)");
-            assert!(permanent_session_error(&wrapped).is_some(), "{e}");
-        }
-        let ordinary = anyhow::anyhow!("server error during tunnel.open: agent_offline: gone");
-        assert!(permanent_session_error(&ordinary).is_none());
-    }
-
-    /// FR-90 P3-7-3b — a session's flow listens on a port the system picks,
-    /// bound before `create_session_flow` returns; holds a connection its hook
-    /// admits and closes one it does not; and ends at its grant's end,
-    /// releasing what it held and unbinding its port. With no agent WS the
-    /// supervisor parks in `wait_for_sink`, so nothing else ends it.
-    #[tokio::test]
-    async fn a_session_flow_serves_whom_it_admits_and_ends_with_its_grant() {
-        use std::sync::atomic::AtomicBool;
-        use tokio::io::AsyncReadExt;
-        let hub = TunnelClientHub::new("test".into());
-        let allow = Arc::new(AtomicBool::new(true));
-        let gate = Arc::clone(&allow);
-        let admit: Admit = Arc::new(move |_tcp: &tokio::net::TcpStream, _local| {
-            if gate.load(Ordering::SeqCst) {
-                Ok(())
-            } else {
-                Err("another account".into())
-            }
-        });
-        let until = std::time::Instant::now() + Duration::from_secs(3);
-        let grant = SessionGrantRef {
-            token: "a.b.c".into(),
-            grant_id: "g1".into(),
-        };
-        let target = Target::Static {
-            host: "db.internal".into(),
-            port: 5432,
-        };
-        let (id, addr) = hub
-            .create_session_flow(ObjectId::new(), target, grant, until, admit)
-            .await
-            .expect("created");
-        assert_ne!(addr.port(), 0, "a port the system picked");
-        assert!(hub.has_flow(&id));
-
-        // Bound already: an admitted connection is held, open and quiet.
-        let mut held = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let mut buf = [0u8; 4];
-        assert!(
-            tokio::time::timeout(Duration::from_millis(300), held.read(&mut buf))
-                .await
-                .is_err(),
-            "held open"
-        );
-        // One the hook does not admit is closed at once, while the flow lives
-        // on: the hook closed it, not the grant's end.
-        allow.store(false, Ordering::SeqCst);
-        let mut refused = tokio::net::TcpStream::connect(addr).await.unwrap();
-        match tokio::time::timeout(Duration::from_millis(500), refused.read(&mut buf)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => {}
-            other => panic!("a connection not admitted must be closed at once: {other:?}"),
-        }
-        assert!(
-            hub.has_flow(&id),
-            "closed by the hook, not by the grant's end"
-        );
-
-        // At the grant's end: the flow is gone, what it held released, its
-        // port unbound.
-        match tokio::time::timeout(Duration::from_secs(5), held.read(&mut buf)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => {}
-            other => panic!("the held connection outlived its grant: {other:?}"),
-        }
-        assert!(!hub.has_flow(&id), "the flow ended with its grant");
-        let mut rebound = false;
-        for _ in 0..40 {
-            if tokio::net::TcpListener::bind(addr).await.is_ok() {
-                rebound = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(rebound, "its port is unbound");
     }
 }

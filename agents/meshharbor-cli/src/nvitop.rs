@@ -364,9 +364,9 @@ fn terminal_width() -> usize {
 
 fn map_directory_err(err: DirectoryError) -> anyhow::Error {
     match err {
-        DirectoryError::Io(e) => anyhow!(
-            "cannot reach local meshharbord ({e}). Is the daemon running? Try `mh status`."
-        ),
+        DirectoryError::Io(e) => {
+            anyhow!("cannot reach local meshharbord ({e}). Is the daemon running? Try `mh status`.")
+        }
         DirectoryError::UnsupportedDaemon { message } => anyhow!(
             "the running meshharbord predates `mh nvitop` ({message}) — upgrade the daemon first"
         ),
@@ -481,7 +481,10 @@ async fn run_free(
         println!("{}", serde_json::to_string_pretty(&selection)?);
         return Ok(());
     }
-    print!("{}", render_free_selection(&selection, color_enabled(), lang));
+    print!(
+        "{}",
+        render_free_selection(&selection, color_enabled(), lang)
+    );
     Ok(())
 }
 
@@ -824,9 +827,9 @@ pub fn parse_min_free_mb(raw: &str) -> Result<u32> {
         .unwrap_or(s.len());
     let num_str = &s[..split];
     let unit = s[split..].trim().to_ascii_lowercase();
-    let val: f64 = num_str
-        .parse()
-        .map_err(|_| anyhow!("invalid --min-free size {raw:?}; expected e.g. 40G, 24GiB, 16384M"))?;
+    let val: f64 = num_str.parse().map_err(|_| {
+        anyhow!("invalid --min-free size {raw:?}; expected e.g. 40G, 24GiB, 16384M")
+    })?;
     if !val.is_finite() || val < 0.0 {
         bail!("--min-free must be a non-negative size (got {raw:?})");
     }
@@ -965,18 +968,24 @@ pub fn select_free_gpus(
     }
     let mut exports: Vec<(String, HostExport)> = Vec::new();
     for g in &picked {
-        let rt = g.runtime.as_deref().unwrap_or(if g.uuid.starts_with("ASCEND-") {
-            "ascend"
-        } else {
-            "nvidia"
-        });
+        let rt = g
+            .runtime
+            .as_deref()
+            .unwrap_or(if g.uuid.starts_with("ASCEND-") {
+                "ascend"
+            } else {
+                "nvidia"
+            });
         let token = match rt {
             "ascend" => g.vendor_index.unwrap_or(g.idx).to_string(),
             "amd" => g.vendor_index.unwrap_or(g.idx).to_string(),
             _ => g.uuid.clone(),
         };
         let format_cmd = |val: &str, runtime: &str| match runtime {
-            "ascend" => format!("export ASCEND_RT_VISIBLE_DEVICES={}", shell_single_quote(val)),
+            "ascend" => format!(
+                "export ASCEND_RT_VISIBLE_DEVICES={}",
+                shell_single_quote(val)
+            ),
             "amd" => format!("export ROCR_VISIBLE_DEVICES={}", shell_single_quote(val)),
             _ => format!(
                 "export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={}",
@@ -1187,7 +1196,11 @@ fn format_vram(g: &GpuCardView) -> String {
                 format!("{u}/{t}M")
             }
         }
-        (Some(u), None) => format!("{:.1}G{}", f64::from(u) / 1024.0, if g.unified { " uni" } else { "" }),
+        (Some(u), None) => format!(
+            "{:.1}G{}",
+            f64::from(u) / 1024.0,
+            if g.unified { " uni" } else { "" }
+        ),
         _ => "—".to_string(),
     }
 }
@@ -1277,7 +1290,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             warn_suffix
         ),
     };
-    out.push_str(&paint(&truncate_width(&header, opts.width), "1", opts.color));
+    out.push_str(&paint(
+        &truncate_width(&header, opts.width),
+        "1",
+        opts.color,
+    ));
     out.push('\n');
 
     let hosts = filtered_sorted_hosts(&page.hosts, &opts.filter, opts.sort);
@@ -1347,7 +1364,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         } else {
             "1;34"
         };
-        out.push_str(&paint(&truncate_width(&host_line, opts.width), style, opts.color));
+        out.push_str(&paint(
+            &truncate_width(&host_line, opts.width),
+            style,
+            opts.color,
+        ));
         out.push('\n');
 
         if let Some(detail) = h
@@ -1362,7 +1383,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
             } else {
                 "33"
             };
-            out.push_str(&paint(&truncate_width(&diag, opts.width), dstyle, opts.color));
+            out.push_str(&paint(
+                &truncate_width(&diag, opts.width),
+                dstyle,
+                opts.color,
+            ));
             out.push('\n');
         } else if !h.fault_reasons.is_empty() {
             let joined: Vec<String> = h
@@ -1371,7 +1396,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                 .map(|r| sanitize_term(&r.summary))
                 .collect();
             let diag = format!("  ! {}", joined.join("; "));
-            out.push_str(&paint(&truncate_width(&diag, opts.width), "1;35", opts.color));
+            out.push_str(&paint(
+                &truncate_width(&diag, opts.width),
+                "1;35",
+                opts.color,
+            ));
             out.push('\n');
         }
 
@@ -1397,7 +1426,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                 _ => String::new(),
             };
             let summary = format!("  {cpu}{load1}{ram}{disk}");
-            out.push_str(&paint(&truncate_width(&summary, opts.width), "90", opts.color));
+            out.push_str(&paint(
+                &truncate_width(&summary, opts.width),
+                "90",
+                opts.color,
+            ));
             out.push('\n');
         }
 
@@ -1412,10 +1445,8 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
         let name_col = opts.width.saturating_sub(56).clamp(12, 26);
         let expanded = opts.expanded_host.as_deref() == Some(h.agent_id.as_str());
         for g in &h.gpus {
-            let gname = truncate_width(
-                &sanitize_term(g.name.as_deref().unwrap_or("GPU")),
-                name_col,
-            );
+            let gname =
+                truncate_width(&sanitize_term(g.name.as_deref().unwrap_or("GPU")), name_col);
             let util = g
                 .util_pct
                 .map(|u| format!("{u:>3}%"))
@@ -1470,7 +1501,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                     .collect();
                 let fline = format!("      [{tag}] {}", joined.join(" · "));
                 let fstyle = if card_has_fault(g) { "1;35" } else { "33" };
-                out.push_str(&paint(&truncate_width(&fline, opts.width), fstyle, opts.color));
+                out.push_str(&paint(
+                    &truncate_width(&fline, opts.width),
+                    fstyle,
+                    opts.color,
+                ));
                 out.push('\n');
             }
 
@@ -1503,7 +1538,11 @@ pub fn render_fleet_text(page: &GpuFleetPage, opts: &RenderOpts) -> String {
                     extras.push(format!("throttle={}", clean_th.join(",")));
                 }
                 let detail = format!("      {}", extras.join("  "));
-                out.push_str(&paint(&truncate_width(&detail, opts.width), "90", opts.color));
+                out.push_str(&paint(
+                    &truncate_width(&detail, opts.width),
+                    "90",
+                    opts.color,
+                ));
                 out.push('\n');
             }
 
@@ -1638,7 +1677,11 @@ pub fn render_free_selection(sel: &FreeGpuSelection, color: bool, lang: Lang) ->
     for g in &sel.gpus {
         let free_str = match (g.free_mb, g.total_mb) {
             (Some(f), Some(t)) => {
-                format!("{:.1}/{:.1}G free", f64::from(f) / 1024.0, f64::from(t) / 1024.0)
+                format!(
+                    "{:.1}/{:.1}G free",
+                    f64::from(f) / 1024.0,
+                    f64::from(t) / 1024.0
+                )
             }
             _ => "—".into(),
         };
@@ -1653,7 +1696,11 @@ pub fn render_free_selection(sel: &FreeGpuSelection, color: bool, lang: Lang) ->
     }
     out.push('\n');
     for ex in &sel.exports {
-        out.push_str(&format!("# {}\n{}\n", sanitize_term(&ex.host), ex.export_cmd));
+        out.push_str(&format!(
+            "# {}\n{}\n",
+            sanitize_term(&ex.host),
+            ex.export_cmd
+        ));
     }
     out
 }
@@ -1935,7 +1982,10 @@ mod tests {
     fn fr139_render_fleet_no_color_explicit_words() {
         let page = sample_page();
         let text = render_fleet_text(&page, &RenderOpts::default());
-        assert!(!text.contains("\x1b["), "NO_COLOR output must contain zero ANSI escapes");
+        assert!(
+            !text.contains("\x1b["),
+            "NO_COLOR output must contain zero ANSI escapes"
+        );
         assert!(text.contains("FREE"));
         assert!(text.contains("BUSY"));
         assert!(text.contains("[shared RO]"));
@@ -2025,8 +2075,14 @@ mod tests {
         let rendered = render_fleet_text(&page, &RenderOpts::default());
         assert!(rendered.contains("[LAG "), "{rendered}");
         assert!(rendered.contains("DRIVER MISSING"), "{rendered}");
-        assert!(rendered.contains("Detected 2 NVIDIA GPUs without driver"), "{rendered}");
-        assert!(rendered.contains("Xid 79 (GPU fell off the bus)"), "{rendered}");
+        assert!(
+            rendered.contains("Detected 2 NVIDIA GPUs without driver"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Xid 79 (GPU fell off the bus)"),
+            "{rendered}"
+        );
     }
 
     #[test]

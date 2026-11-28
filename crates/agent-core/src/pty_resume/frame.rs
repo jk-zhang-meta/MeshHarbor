@@ -274,7 +274,10 @@ impl WireFrame {
             WIRE_ATTACHED => Ok(Self::Attached(json_decode(frame_type, body)?)),
             WIRE_DATA => {
                 if body.len() < 9 {
-                    return Err(FrameError::Malformed(frame_type, "data frame too short".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "data frame too short".into(),
+                    ));
                 }
                 let payload = &body[9..];
                 if payload.len() > MAX_DATA_CHUNK {
@@ -290,7 +293,10 @@ impl WireFrame {
             }
             WIRE_ACK => {
                 if body.len() != 9 {
-                    return Err(FrameError::Malformed(frame_type, "ack frame must be 9 bytes".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "ack frame must be 9 bytes".into(),
+                    ));
                 }
                 Ok(Self::Ack {
                     stream: body[0],
@@ -338,7 +344,10 @@ impl WireFrame {
             }
             WIRE_PING => {
                 if body.len() != 8 {
-                    return Err(FrameError::Malformed(frame_type, "ping must be 8 bytes".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "ping must be 8 bytes".into(),
+                    ));
                 }
                 Ok(Self::Ping {
                     t_ms: u64::from_be_bytes(body[0..8].try_into().unwrap()),
@@ -346,7 +355,10 @@ impl WireFrame {
             }
             WIRE_PONG => {
                 if body.len() != 8 {
-                    return Err(FrameError::Malformed(frame_type, "pong must be 8 bytes".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "pong must be 8 bytes".into(),
+                    ));
                 }
                 Ok(Self::Pong {
                     t_ms: u64::from_be_bytes(body[0..8].try_into().unwrap()),
@@ -544,7 +556,10 @@ mod tests {
                 rows: 24,
                 bytes: b"\x1b[2Jhi".to_vec(),
             },
-            WireFrame::Resize { cols: 132, rows: 50 },
+            WireFrame::Resize {
+                cols: 132,
+                rows: 50,
+            },
             WireFrame::Signal {
                 signal: SignalKind::Int,
             },

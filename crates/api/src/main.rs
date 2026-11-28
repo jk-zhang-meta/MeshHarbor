@@ -54,9 +54,6 @@ async fn main() -> anyhow::Result<()> {
                     ",meshharbor_mod_fleet=debug",
                     ",meshharbor_mod_network=debug",
                     ",meshharbor_mod_remote=debug",
-                    ",meshharbor_mod_chat=debug",
-                    ",meshharbor_mod_conference=debug",
-                    ",meshharbor_mod_saas=debug",
                     ",meshharbor_remote_control=debug",
                     ",tunnel_core=debug",
                     ",tower_http=debug",
@@ -177,32 +174,14 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Stripe half-configuration is a silent checkout-killer: with a secret
-    // key but empty price ids, every valid-plan checkout errors (prod hit
-    // exactly this — empty MESHHARBOR__STRIPE__PRICE_PRO/BUSINESS in the
-    // configmap). Loud at startup; the checkout path also refuses cleanly
-    // (StripeError::PriceNotConfigured).
-    if !settings.stripe.secret_key.is_empty()
-        && (settings.stripe.price_pro.is_empty() || settings.stripe.price_business.is_empty())
-    {
-        error!(
-            "Stripe secret key is set but price_pro/price_business is empty — \
-             checkout WILL fail; set MESHHARBOR__STRIPE__PRICE_PRO and \
-             MESHHARBOR__STRIPE__PRICE_BUSINESS."
-        );
-    }
-
     info!(
         "Starting MeshHarbor2 API on {}:{}",
         settings.app.host, settings.app.port
     );
     info!(
-        listen_ip = %settings.mediasoup.listen_ip,
-        announced_ip = %settings.mediasoup.announced_ip,
-        rtc_ports = %format!("{}-{}", settings.mediasoup.rtc_min_port, settings.mediasoup.rtc_max_port),
         turn_url = ?settings.turn.url,
         force_relay = ?settings.turn.force_relay,
-        "Mediasoup/TURN config"
+        "TURN config"
     );
 
     // Connect to MongoDB

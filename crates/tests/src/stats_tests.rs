@@ -11,7 +11,6 @@ use bson::{Document, doc, oid::ObjectId};
 
 use crate::fixtures::test_app::TestApp;
 use meshharbor_api::stats_rollup::{pass_count, run_stats_rollup_once};
-use meshharbor_mod_conference::maintenance::close_orphaned_call_state;
 use meshharbor_services::dao::stats::{RelaySample, bucket_start};
 
 fn unix_now() -> i64 {
@@ -395,82 +394,6 @@ async fn call_lifecycle_books_call_session_and_fills_dead_fields() {
         room.get_object_id("current_call_id").is_err(),
         "current_call_id cleared on end"
     );
-}
-
-#[tokio::test]
-async fn orphan_sweep_closes_stale_call_state() {
-    let app = TestApp::spawn().await;
-    let tenant = ObjectId::new();
-    let room = ObjectId::new();
-    let call = ObjectId::new();
-    let hour_ago =
-        bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() - 3_600_000);
-
-    // A call doc + an open member session for a room that is NOT
-    // in_progress (no room doc at all — same class as a crashed pod's
-    // leftovers).
-    app.state
-        .db
-        .collection::<Document>("call_sessions")
-        .insert_one(doc! {
-            "_id": call,
-            "tenant_id": tenant,
-            "room_id": room,
-            "started_by": tenant,
-            "started_at": hour_ago,
-            "ended_at": bson::Bson::Null,
-            "peak_participants": 2_i32,
-            "participant_seconds": 0_i64,
-        })
-        .await
-        .unwrap();
-    app.state
-        .db
-        .collection::<Document>("room_members")
-        .insert_one(doc! {
-            "tenant_id": tenant,
-            "room_id": room,
-            "sessions": [ {
-                "joined_at": hour_ago,
-                "left_at": bson::Bson::Null,
-                "duration": bson::Bson::Null,
-                "device_type": "web",
-                "connection_id": "dead-conn",
-            } ],
-            "total_duration": 0_i64,
-        })
-        .await
-        .unwrap();
-
-    let (calls, sessions) = close_orphaned_call_state(
-        app.state
-            .modules
-            .conference
-            .as_ref()
-            .expect("the conference module is mounted in tests"),
-    )
-    .await;
-    assert_eq!(calls, 1);
-    assert_eq!(sessions, 1);
-
-    let call_doc = find_one(&app, "call_sessions", doc! { "_id": call })
-        .await
-        .unwrap();
-    assert!(call_doc.get_datetime("ended_at").is_ok());
-    assert_eq!(call_doc.get_str("end_reason").unwrap(), "stale_reset");
-    let member = find_one(&app, "room_members", doc! { "room_id": room })
-        .await
-        .unwrap();
-    let sess = member.get_array("sessions").unwrap()[0]
-        .as_document()
-        .unwrap();
-    assert!(sess.get_datetime("left_at").is_ok());
-    let d = match sess.get("duration") {
-        Some(bson::Bson::Int64(v)) => *v,
-        Some(bson::Bson::Int32(v)) => i64::from(*v),
-        other => panic!("duration not filled: {other:?}"),
-    };
-    assert!((3500..3700).contains(&d), "duration ≈1h, got {d}");
 }
 
 // ── Stats PR-3 — platform admin + query APIs ────────────────────────────

@@ -747,7 +747,11 @@ async fn account_devices_enriches_city_geoip_and_logical_network_zones_when_pres
     let tid = app
         .state
         .tenants
-        .create("my-devices-geo".into(), format!("my-devices-geo-{}", ObjectId::new()), me.id)
+        .create(
+            "my-devices-geo".into(),
+            format!("my-devices-geo-{}", ObjectId::new()),
+            me.id,
+        )
         .await
         .unwrap()
         .id

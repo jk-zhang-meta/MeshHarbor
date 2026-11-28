@@ -534,8 +534,10 @@ pub async fn plan(
             if !logical_denied && mode != Mode::Off {
                 match (&ingress_ref, &dest_ref) {
                     (Some(a), Some(b)) => Some(
-                        business_isolation::permit_refs_with_lines(state, mode, &topo, tenant_id, a, b)
-                            .await,
+                        business_isolation::permit_refs_with_lines(
+                            state, mode, &topo, tenant_id, a, b,
+                        )
+                        .await,
                     ),
                     _ => Some(business_isolation::Permit::Denied),
                 }
@@ -1612,9 +1614,7 @@ mod tests {
 
     #[test]
     fn logical_network_zones_permit_same_zone_and_direct_preferred_with_business_isolation_off() {
-        use meshharbor_remote_control::models::{
-            CrossZoneMode, DeviceZoneResolution, NetworkZone,
-        };
+        use meshharbor_remote_control::models::{CrossZoneMode, DeviceZoneResolution, NetworkZone};
         let cn = NetworkZone {
             id: "cn".into(),
             name: "CN".into(),

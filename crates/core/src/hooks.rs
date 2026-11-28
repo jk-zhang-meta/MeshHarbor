@@ -31,28 +31,9 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use bson::oid::ObjectId;
 
-/// The order the cascade runs in: session holders (`hive`, `remote`) release
-/// first, then lease holders (`network`), then the record owner (`fleet`);
-/// the collaboration modules and `saas` follow, in composition order.
-///
-/// FR-90 — `hive` leads: an agent session is the longest-lived thing a
-/// device holds for anyone, and ending it (the record, and the stop order to
-/// a device that is still connected) must happen while the device's row and
-/// socket are still there to address.
-///
-/// FR-90 P3 — `vault` follows it: its leases (P3-3) are held by sessions on
-/// devices, so they are revoked once the sessions have ended and while the
-/// device is still there to be told. P3-1 registers no hooks.
-pub const HOOK_ORDER: &[&str] = &[
-    "hive",
-    "vault",
-    "remote",
-    "network",
-    "fleet",
-    "conference",
-    "chat",
-    "saas",
-];
+/// The order the cascade runs in: session holders (`remote`) release first,
+/// then lease holders (`network`), then the record owner (`fleet`).
+pub const HOOK_ORDER: &[&str] = &["remote", "network", "fleet"];
 
 /// What a lease holder freed when an agent was removed — the one piece of
 /// hook output a caller reports back (the admin delete route answers with
@@ -180,60 +161,11 @@ pub trait FleetLifecycle: Send + Sync {
     }
 }
 
-/// FR-90 P3-2b — what a session's vault role is decided with: who asks, for
-/// which role, on which device, and why now. Plain data: core knows neither
-/// the agent row nor the session record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoleAsk {
-    pub tenant_id: ObjectId,
-    /// The person the decision is about: the starter, the person moving the
-    /// session, the person forking it.
-    pub user_id: ObjectId,
-    pub role: String,
-    pub session_id: ObjectId,
-    /// The device the session would run on, as its row holds it: `os` the
-    /// agent's `OsKind` spelling (`linux` · `macos` · `windows`), `tags` the
-    /// admin's labels, `owner` the device's owner.
-    pub device_id: ObjectId,
-    pub device_os: String,
-    pub device_tags: Vec<String>,
-    pub device_owner: ObjectId,
-    /// `start` | `promote` | `teleport` | `fork`.
-    pub purpose: &'static str,
-}
-
-/// The gate's answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoleVerdict {
-    pub allow: bool,
-    /// The policies that decided it, or why nothing could — for the audit
-    /// and the caller's refusal.
-    pub reason: String,
-}
-
-/// FR-90 P3-2b — the vault's gate on a session's role. `hive` owns the
-/// session and must never call the vault (`vault → hive` in the graph), so
-/// it asks through here, at every start that names a role and every move or
-/// fork of a session that holds one.
-///
-/// ⚠️ No gate registered (the vault not mounted) is a REFUSAL for any ask
-/// that names a role, never a pass: the caller sees `None` from
-/// [`HookRegistry::session_gate`] and refuses.
-#[async_trait]
-pub trait SessionGate: Send + Sync {
-    /// May `ask.user_id` assume `ask.role` on that device for that session?
-    /// The gate records its decision before answering; an `Err` is the gate
-    /// failing to decide, and the caller refuses.
-    async fn role_assume(&self, ask: &RoleAsk) -> anyhow::Result<RoleVerdict>;
-}
-
 /// What one module registers: the hook traits it implements.
 #[derive(Clone, Default)]
 pub struct Hooks {
     pub tenant: Option<Arc<dyn TenantLifecycle>>,
     pub fleet: Option<Arc<dyn FleetLifecycle>>,
-    /// FR-90 P3-2b — the vault's [`SessionGate`]; no other module has one.
-    pub session: Option<Arc<dyn SessionGate>>,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -241,7 +173,6 @@ impl std::fmt::Debug for Hooks {
         f.debug_struct("Hooks")
             .field("tenant", &self.tenant.is_some())
             .field("fleet", &self.fleet.is_some())
-            .field("session", &self.session.is_some())
             .finish()
     }
 }
@@ -310,19 +241,6 @@ impl HookRegistry {
                     .map(|h| (*id, h))
             })
             .collect()
-    }
-
-    /// FR-90 P3-2b — the registered [`SessionGate`], the first in
-    /// [`HOOK_ORDER`] (only the vault registers one). `None` means no gate:
-    /// an ask that names a role is then refused by the caller.
-    pub fn session_gate(&self) -> Option<Arc<dyn SessionGate>> {
-        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
-        HOOK_ORDER.iter().find_map(|id| {
-            inner
-                .iter()
-                .find(|(m, _)| m == id)
-                .and_then(|(_, h)| h.session.clone())
-        })
     }
 
     /// Run every `agent_removed` hook in order. The first lease a holder
@@ -472,7 +390,6 @@ mod tests {
     #[test]
     fn session_holders_run_before_lease_holders_before_the_record_owner() {
         let pos = |id: &str| HOOK_ORDER.iter().position(|m| *m == id).unwrap();
-        assert!(pos("hive") < pos("network"));
         assert!(pos("remote") < pos("network"));
         assert!(pos("network") < pos("fleet"));
     }
@@ -575,14 +492,11 @@ mod tests {
         }
     }
 
-    /// FR-90 — `member_removed` runs in HOOK_ORDER (hive first), and a holder
-    /// that fails stops the cascade with its name, so the route can refuse
-    /// the removal instead of reporting a clean one.
     #[tokio::test]
     async fn member_removed_runs_in_hook_order_and_a_failure_stops_it() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let reg = HookRegistry::default();
-        for (id, fail) in [("chat", false), ("hive", false)] {
+        for (id, fail) in [("fleet", false), ("remote", false)] {
             reg.register(
                 id,
                 Hooks {
@@ -598,14 +512,14 @@ mod tests {
         reg.member_removed(ObjectId::new(), ObjectId::new())
             .await
             .unwrap();
-        assert_eq!(*seen.lock().unwrap(), vec!["hive", "chat"]);
+        assert_eq!(*seen.lock().unwrap(), vec!["remote", "fleet"]);
 
         seen.lock().unwrap().clear();
         reg.register(
-            "hive",
+            "remote",
             Hooks {
                 tenant: Some(Arc::new(Member {
-                    id: "hive",
+                    id: "remote",
                     seen: seen.clone(),
                     fail: true,
                 })),
@@ -616,8 +530,8 @@ mod tests {
             .member_removed(ObjectId::new(), ObjectId::new())
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("hive: member_removed"), "{err}");
-        assert_eq!(*seen.lock().unwrap(), vec!["hive"], "the cascade stopped");
+        assert!(err.to_string().contains("remote: member_removed"), "{err}");
+        assert_eq!(*seen.lock().unwrap(), vec!["remote"], "the cascade stopped");
     }
 
     #[test]
@@ -642,53 +556,5 @@ mod tests {
                 .unwrap(),
             RenamePropagation::NoLiveNode
         );
-    }
-
-    struct Gate(bool);
-
-    #[async_trait]
-    impl SessionGate for Gate {
-        async fn role_assume(&self, ask: &RoleAsk) -> anyhow::Result<RoleVerdict> {
-            Ok(RoleVerdict {
-                allow: self.0,
-                reason: format!("{} for {}", ask.purpose, ask.role),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn the_session_gate_is_the_vaults_and_absent_without_it() {
-        let reg = HookRegistry::default();
-        // No gate: the caller must refuse an ask that names a role.
-        assert!(reg.session_gate().is_none());
-        // Hooks without one leave it absent.
-        reg.register(
-            "hive",
-            Hooks {
-                fleet: Some(Arc::new(Releases("x"))),
-                ..Default::default()
-            },
-        );
-        assert!(reg.session_gate().is_none());
-        reg.register(
-            "vault",
-            Hooks {
-                session: Some(Arc::new(Gate(true))),
-                ..Default::default()
-            },
-        );
-        let ask = RoleAsk {
-            tenant_id: ObjectId::new(),
-            user_id: ObjectId::new(),
-            role: "dev".into(),
-            session_id: ObjectId::new(),
-            device_id: ObjectId::new(),
-            device_os: "linux".into(),
-            device_tags: Vec::new(),
-            device_owner: ObjectId::new(),
-            purpose: "start",
-        };
-        let v = reg.session_gate().unwrap().role_assume(&ask).await.unwrap();
-        assert_eq!((v.allow, v.reason.as_str()), (true, "start for dev"));
     }
 }

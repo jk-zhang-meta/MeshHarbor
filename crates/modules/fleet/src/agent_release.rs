@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use meshharbor_core::{ApiError, client_ip::PeerAddr};
 
-use crate::{FleetState, install_trace, releases};
+use crate::{FleetState, releases};
 
 /// Subset of GitHub's release JSON the agent actually consults. We
 /// don't need authors, body, html_url, or hundreds of bytes of CI
@@ -86,17 +86,9 @@ pub struct AgentRelease {
 /// just a URL swap.
 pub async fn latest_release(
     State(state): State<FleetState>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Result<Json<Vec<AgentRelease>>, ApiError> {
-    // FR-102 P3 — counted before the upstream read, so an outage at GitHub
-    // hides no demand; the updater's own checks are never counted.
-    install_trace::count_fetch(
-        &state,
-        &headers,
-        peer,
-        install_trace::asset::AGENT_LATEST_RELEASE,
-    );
     let base = crate::release_delivery::public_base(&state.settings.app.frontend_url)?;
     let releases = releases::cached(&state).await?;
     Ok(Json(crate::release_delivery::own_urls(
@@ -268,18 +260,11 @@ pub async fn installer_proxy(
     State(state): State<FleetState>,
     Path(flavour): Path<String>,
     Query(params): Query<InstallerQuery>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let normalised = normalise_flavour(&flavour)?;
     crate::release_delivery::validate_version(&params.version)?;
-    // FR-102 P3 — one fetch of this flavour by this client class.
-    install_trace::count_fetch(
-        &state,
-        &headers,
-        peer,
-        &install_trace::asset::installer(normalised),
-    );
     let releases = releases::cached(&state).await?;
     let release = pick_release(&releases, &params.version).ok_or_else(|| {
         ApiError::NotFound(format!("no release matching version={}", params.version))

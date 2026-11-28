@@ -59,8 +59,7 @@ pub fn default_store_dir() -> Result<PathBuf> {
 }
 
 pub fn save_in(dir: &Path, session: &StoredSession) -> Result<PathBuf> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -127,11 +126,7 @@ pub fn list_for_device(device: &str) -> Vec<StoredSession> {
         .unwrap_or_default()
 }
 
-pub fn find_by_prefix_in(
-    dir: &Path,
-    device: &str,
-    prefix: Option<&str>,
-) -> Result<StoredSession> {
+pub fn find_by_prefix_in(dir: &Path, device: &str, prefix: Option<&str>) -> Result<StoredSession> {
     let all = list_in(dir, Some(device));
     if all.is_empty() {
         bail!("no saved resumable SSH sessions found for `{device}`");
@@ -205,7 +200,8 @@ mod tests {
         };
         save_in(dir.path(), &sess).unwrap();
 
-        let found = find_by_prefix_in(dir.path(), "gpu-node-a", Some(&sid.short_hex()[..6])).unwrap();
+        let found =
+            find_by_prefix_in(dir.path(), "gpu-node-a", Some(&sid.short_hex()[..6])).unwrap();
         assert_eq!(found.sid, sid);
         assert_eq!(found.resume_secret().unwrap(), [0x42u8; 32]);
 

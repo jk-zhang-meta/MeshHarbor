@@ -148,11 +148,7 @@ pub fn seal_descriptor(master: &MasterKey, descriptor_json: &[u8]) -> [u8; 32] {
 }
 
 /// Verify a descriptor seal in constant time.
-pub fn verify_descriptor_seal(
-    master: &MasterKey,
-    descriptor_json: &[u8],
-    seal: &[u8; 32],
-) -> bool {
+pub fn verify_descriptor_seal(master: &MasterKey, descriptor_json: &[u8], seal: &[u8; 32]) -> bool {
     let expected = seal_descriptor(master, descriptor_json);
     bool::from(expected.ct_eq(seal))
 }
@@ -246,11 +242,7 @@ pub fn seal_rc_continuity(master: &MasterKey, payload_json: &[u8]) -> [u8; 32] {
 }
 
 /// Verify a remote-desktop restart continuity seal in constant time.
-pub fn verify_rc_continuity(
-    master: &MasterKey,
-    payload_json: &[u8],
-    seal: &[u8; 32],
-) -> bool {
+pub fn verify_rc_continuity(master: &MasterKey, payload_json: &[u8], seal: &[u8; 32]) -> bool {
     let expected = seal_rc_continuity(master, payload_json);
     bool::from(expected.ct_eq(seal))
 }
@@ -281,26 +273,71 @@ mod tests {
         let s_nonce = [1u8; 32];
         let c_nonce = [2u8; 32];
         let wrong_nonce = [3u8; 32];
-        let c_proof = compute_client_proof(&secret, &sid, &s_nonce, &c_nonce, "SHA256:host", "SHA256:cli");
+        let c_proof = compute_client_proof(
+            &secret,
+            &sid,
+            &s_nonce,
+            &c_nonce,
+            "SHA256:host",
+            "SHA256:cli",
+        );
         assert!(verify_client_proof(
-            &secret, &sid, &s_nonce, &c_nonce, "SHA256:host", "SHA256:cli", &c_proof
+            &secret,
+            &sid,
+            &s_nonce,
+            &c_nonce,
+            "SHA256:host",
+            "SHA256:cli",
+            &c_proof
         ));
         assert!(!verify_client_proof(
-            &secret, &sid, &wrong_nonce, &c_nonce, "SHA256:host", "SHA256:cli", &c_proof
+            &secret,
+            &sid,
+            &wrong_nonce,
+            &c_nonce,
+            "SHA256:host",
+            "SHA256:cli",
+            &c_proof
         ));
         assert!(!verify_client_proof(
-            &secret, &sid, &s_nonce, &c_nonce, "SHA256:mitm", "SHA256:cli", &c_proof
+            &secret,
+            &sid,
+            &s_nonce,
+            &c_nonce,
+            "SHA256:mitm",
+            "SHA256:cli",
+            &c_proof
         ));
         assert!(!verify_client_proof(
-            &secret, &sid, &s_nonce, &c_nonce, "SHA256:host", "SHA256:other", &c_proof
+            &secret,
+            &sid,
+            &s_nonce,
+            &c_nonce,
+            "SHA256:host",
+            "SHA256:other",
+            &c_proof
         ));
         assert!(!verify_client_proof(
-            &secret_other_sid, &sid, &s_nonce, &c_nonce, "SHA256:host", "SHA256:cli", &c_proof
+            &secret_other_sid,
+            &sid,
+            &s_nonce,
+            &c_nonce,
+            "SHA256:host",
+            "SHA256:cli",
+            &c_proof
         ));
 
         let s_proof = compute_server_proof(&secret, &sid, &c_nonce, &s_nonce);
-        assert!(verify_server_proof(&secret, &sid, &c_nonce, &s_nonce, &s_proof));
-        assert!(!verify_server_proof(&secret, &sid, &wrong_nonce, &s_nonce, &s_proof));
+        assert!(verify_server_proof(
+            &secret, &sid, &c_nonce, &s_nonce, &s_proof
+        ));
+        assert!(!verify_server_proof(
+            &secret,
+            &sid,
+            &wrong_nonce,
+            &s_nonce,
+            &s_proof
+        ));
 
         // RC continuity seal isolation from SSH descriptor seal.
         let rc_seal = seal_rc_continuity(&master, desc);

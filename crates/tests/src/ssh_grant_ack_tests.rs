@@ -389,7 +389,7 @@ async fn invitation_consent_default_is_auto_on_the_actual_ssh_wire() {
             let aid = ObjectId::parse_str(&dev.agent_id).unwrap();
             let agent = fleet.agents.base.find_by_id(aid).await.unwrap();
             meshharbor_mod_fleet::device_invite::create_bound(
-                &fleet,
+                fleet,
                 agent.tenant_id,
                 ObjectId::parse_str(&seeded.admin.id).unwrap(),
                 &agent,

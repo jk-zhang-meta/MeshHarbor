@@ -64,6 +64,7 @@ async fn join(
         false,
         false,
         false,
+        false,
         &[],
         None,
     )

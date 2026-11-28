@@ -4,7 +4,6 @@ pub mod cluster;
 pub mod compose;
 pub mod core_state;
 pub mod extractors;
-pub mod growth;
 pub mod logging;
 pub mod middleware;
 pub mod routes;
@@ -194,14 +193,6 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::background_task::download),
         );
 
-    // Export routes (under tenant). The xlsx `/conversation` export is the
-    // `chat` module's; this PDF one is the host's integration route, mounted
-    // under the same prefix.
-    let export_routes = Router::new().route(
-        "/conversation-pdf",
-        post(routes::integration::export_conversation_pdf),
-    );
-
     // Public invite routes (no auth required for info, auth required for accept)
     let public_invite_routes = Router::new()
         .route("/{code}", get(routes::invite::get_invite_info))
@@ -258,8 +249,7 @@ pub fn build_router(state: AppState) -> Router {
         // messages); a static segment, it still wins over the capture.
         // FR-12 P3 — likewise static, likewise above the capture.
         .route("/tutorial", put(routes::user::update_tutorial))
-        // FR-58 P4 — `/user/newsletter` (the signed-in toggle) is mounted by
-        // the `saas` module; a static segment, it still wins over the capture.
+        .route("/unread-summary", get(routes::notification::unread_summary))
         .route("/{user_id}", get(routes::user::get_profile));
 
     // rc.58 — browser console log batch ingest. User-authed (the
@@ -289,45 +279,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/relay/current", get(routes::stats::admin_relay_current))
         .route("/relay/history", get(routes::stats::admin_relay_history))
         .route("/orgs", get(routes::stats::admin_orgs))
-        // FR-20 P5 - per-org metered cost + margin inputs. Platform
-        // admin only, and it reports "not priced"/"not monitored"
-        // rather than zero for anything it has not measured.
         .route("/cost", get(routes::cost::admin_cost))
         .route("/users", get(routes::stats::admin_users))
         .route("/machines", get(routes::stats::admin_machines))
-        .route("/calls", get(routes::stats::admin_calls))
-        // FR-88 P1a — sign-ups by campaign and how many activated (a device
-        // enrolled within 7 days). Counts only; `activated` is null without
-        // the fleet module.
-        .route("/attribution", get(routes::attribution::admin_attribution))
-        // Wave 3 — per-user usage. `/usage/{uid}` spans every org, which is
-        // what makes "in which org did this happen" answerable.
         .route("/usage", get(routes::usage::admin_usage))
         .route("/usage/{user_id}", get(routes::usage::admin_usage_detail));
-    // FR-58 — the newsletter admin surface (`/admin/newsletter/*`) is
-    // mounted by the `saas` module (FR-69 P2).
     let tenant_stats_routes = Router::new()
         .route("/overview", get(routes::stats::tenant_overview))
         .route("/mesh", get(routes::stats::tenant_mesh))
         .route("/machines", get(routes::stats::tenant_machines))
-        .route("/calls", get(routes::stats::tenant_calls))
         .route("/tunnels", get(routes::stats::tenant_tunnels))
-        // FR-20 P6 - the org's OWN metered consumption, in units rather
-        // than money: these are our costs, not their bill, and the point of
-        // the surface is that a high relayed share is something their own
-        // network team can act on. Membership only; failures 404.
         .route("/resources", get(routes::cost::tenant_resources))
-        // `/usage` needs MANAGE_AGENTS (everyone's activity); `/usage/{uid}`
-        // is self-service for your OWN row, MANAGE_AGENTS for anyone else's.
         .route("/usage", get(routes::usage::tenant_usage))
         .route("/usage/{user_id}", get(routes::usage::tenant_usage_detail));
 
     // Compose API
     let api = Router::new()
-        // FR-69 — what this server is composed of; the module list one UI
-        // build and one daemon read before offering a pillar.
         .route("/capabilities", get(routes::capabilities::get))
-        // C-6 — per-pod cluster status (identity, counters, gauges).
         .route("/cluster/status", get(routes::cluster::status))
         .nest("/auth", auth_routes)
         .nest("/user", user_routes)
@@ -336,27 +304,12 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/push", push_routes)
         .nest("/notification", notification_routes)
         .nest("/admin/stats", admin_stats_routes)
-        // FR-102 — growth observability: the exclusion list (P1c) and, from
-        // P1d, the daily digest. A composition view over core and whichever
-        // modules are mounted, so the host's, next to `/admin/stats`; the
-        // same platform-admin gate, plus `growth.enabled`.
-        .nest("/admin/growth", growth::admin_routes(&state))
-        // `/stripe/*`, `/admin/newsletter/*`, `/admin/plan-compliance`,
-        // `/user/newsletter` and `/subscribe*` are the `saas` module's
-        // (FR-69 P2), merged in by `state.modules.mount` below.
-        // Wave 2 — the SPA's route-change beacon (authenticated, paths
-        // normalised server-side). User-scoped, not tenant-scoped: a
-        // user navigates across orgs within one session.
         .route("/stats/pageview", post(routes::stats::page_view))
         .nest("/tenant", tenant_routes)
         .nest("/tenant/{tenant_id}/member", member_routes)
         .nest("/tenant/{tenant_id}/role", role_routes)
         .nest("/tenant/{tenant_id}/invite", tenant_invite_routes)
         .nest("/tenant/{tenant_id}/task", task_routes)
-        .nest("/tenant/{tenant_id}/export", export_routes)
-        // `/tenant/{tenant_id}/device` — the listing that joins agents with
-        // tunnel clients and overlay nodes — is the `network` module's (FR-69
-        // P7b: it depends on fleet, which the graph allows; the host may not).
         .nest("/tenant/{tenant_id}/stats", tenant_stats_routes);
 
     // FR-69 — the unified device listing is the host's composition view:
@@ -413,14 +366,8 @@ pub fn build_router(state: AppState) -> Router {
     #[cfg(feature = "fleet")]
     let api = api
         .route("/agent/self/devices", get(routes::agent_self::devices))
-        .route(
-            "/agent/self/gpu/fleet",
-            get(routes::agent_self::gpu_fleet),
-        )
-        .route(
-            "/agent/self/gpu/users",
-            get(routes::agent_self::gpu_users),
-        )
+        .route("/agent/self/gpu/fleet", get(routes::agent_self::gpu_fleet))
+        .route("/agent/self/gpu/users", get(routes::agent_self::gpu_users))
         .route(
             "/agent/self/egress-probe",
             post(routes::agent_self::egress_probe),

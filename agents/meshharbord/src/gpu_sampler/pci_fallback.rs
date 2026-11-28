@@ -17,9 +17,7 @@ use std::fs;
 #[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 
-use meshharbor_remote_control::gpu::{
-    GpuHostStatus, GpuInventoryItem, GpuSample, ProcsState,
-};
+use meshharbor_remote_control::gpu::{GpuHostStatus, GpuInventoryItem, GpuSample, ProcsState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccelVendor {
@@ -130,7 +128,8 @@ pub fn scan_pci_dir(root: &Path) -> PciScanOutcome {
             continue;
         };
         let driver = read_bound_driver(&dir);
-        let Some(vendor) = classify_pci_accelerator(vendor_id, device_id, class_code, driver.as_deref())
+        let Some(vendor) =
+            classify_pci_accelerator(vendor_id, device_id, class_code, driver.as_deref())
         else {
             continue;
         };
@@ -209,7 +208,12 @@ pub fn classify_pci_accelerator(
         // NEVER match generic Huawei display/accelerator classes — every Huawei /
         // xFusion / Kunpeng server carries an iBMC Hi171x VGA chip (19e5:1711,
         // `hibmc-drm`), which would otherwise be misclassified as a fake Ascend NPU.
-        0x19e5 if matches!(device_id, 0xd100 | 0xd105 | 0xd107 | 0xd500 | 0xd801..=0xd807) => {
+        0x19e5
+            if matches!(
+                device_id,
+                0xd100 | 0xd105 | 0xd107 | 0xd500 | 0xd801..=0xd807
+            ) =>
+        {
             Some(AccelVendor::Ascend)
         }
         // Google Cloud TPU (exclude gVNIC 0x0042 / virtual devices!)
@@ -291,7 +295,10 @@ pub fn lookup_pci_model_name(vendor: AccelVendor, vendor_id: u16, device_id: u16
     };
     match known {
         Some(name) => name.to_string(),
-        None => format!("{} ({vendor_id:04x}:{device_id:04x})", vendor.display_name()),
+        None => format!(
+            "{} ({vendor_id:04x}:{device_id:04x})",
+            vendor.display_name()
+        ),
     }
 }
 
@@ -383,7 +390,9 @@ pub fn synthesize_unmanaged_fallbacks(
                     )
                 } else {
                     saw_limited = true;
-                    let extra = nvml_diag.map(|(_, m)| m).unwrap_or("NVML library unavailable");
+                    let extra = nvml_diag
+                        .map(|(_, m)| m)
+                        .unwrap_or("NVML library unavailable");
                     (
                         GpuHostStatus::Limited,
                         format!(
@@ -531,14 +540,25 @@ pub fn synthesize_unmanaged_fallbacks(
 mod tests {
     use super::*;
 
-    fn mk_pci_dev(root: &Path, bdf: &str, vendor: &str, device: &str, class: &str, driver: Option<&str>) {
+    fn mk_pci_dev(
+        root: &Path,
+        bdf: &str,
+        vendor: &str,
+        device: &str,
+        class: &str,
+        driver: Option<&str>,
+    ) {
         let dir = root.join(bdf);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("vendor"), format!("{vendor}\n")).unwrap();
         fs::write(dir.join("device"), format!("{device}\n")).unwrap();
         fs::write(dir.join("class"), format!("{class}\n")).unwrap();
         if let Some(d) = driver {
-            fs::write(dir.join("uevent"), format!("DRIVER={d}\nPCI_SLOT_NAME={bdf}\n")).unwrap();
+            fs::write(
+                dir.join("uevent"),
+                format!("DRIVER={d}\nPCI_SLOT_NAME={bdf}\n"),
+            )
+            .unwrap();
         }
     }
 
@@ -546,23 +566,86 @@ mod tests {
     fn fr139_pci_scan_detects_gpu_npu_tpu_and_skips_nics_and_audio() {
         let td = tempfile::tempdir().unwrap();
         // NVIDIA H100 without driver -> DriverMissing
-        mk_pci_dev(td.path(), "0000:65:00.0", "0x10de", "0x2330", "0x030200", None);
+        mk_pci_dev(
+            td.path(),
+            "0000:65:00.0",
+            "0x10de",
+            "0x2330",
+            "0x030200",
+            None,
+        );
         // NVIDIA HDMI audio function -> MUST be ignored
-        mk_pci_dev(td.path(), "0000:65:00.1", "0x10de", "0x22bd", "0x040300", Some("snd_hda_intel"));
+        mk_pci_dev(
+            td.path(),
+            "0000:65:00.1",
+            "0x10de",
+            "0x22bd",
+            "0x040300",
+            Some("snd_hda_intel"),
+        );
         // Huawei Ascend 910B with bound driver
-        mk_pci_dev(td.path(), "0000:81:00.0", "0x19e5", "0xd802", "0x120000", Some("drv_pcie_host"));
+        mk_pci_dev(
+            td.path(),
+            "0000:81:00.0",
+            "0x19e5",
+            "0xd802",
+            "0x120000",
+            Some("drv_pcie_host"),
+        );
         // Huawei Ethernet NIC -> MUST be ignored
-        mk_pci_dev(td.path(), "0000:82:00.0", "0x19e5", "0x0222", "0x020000", Some("hinic"));
+        mk_pci_dev(
+            td.path(),
+            "0000:82:00.0",
+            "0x19e5",
+            "0x0222",
+            "0x020000",
+            Some("hinic"),
+        );
         // Huawei iBMC Hi171x VGA (19e5:1711, hibmc-drm) -> MUST be ignored (NEVER fake Ascend NPU!)
-        mk_pci_dev(td.path(), "0000:05:00.0", "0x19e5", "0x1711", "0x030000", Some("hibmc-drm"));
+        mk_pci_dev(
+            td.path(),
+            "0000:05:00.0",
+            "0x19e5",
+            "0x1711",
+            "0x030000",
+            Some("hibmc-drm"),
+        );
         // AMD ES1000 BMC VGA (1002:515e) -> MUST be ignored
-        mk_pci_dev(td.path(), "0000:06:00.0", "0x1002", "0x515e", "0x030000", None);
+        mk_pci_dev(
+            td.path(),
+            "0000:06:00.0",
+            "0x1002",
+            "0x515e",
+            "0x030000",
+            None,
+        );
         // Intel Meteor/Lunar Lake integrated VPU (8086:7d1d, intel_vpu) -> MUST be ignored
-        mk_pci_dev(td.path(), "0000:00:0b.0", "0x8086", "0x7d1d", "0x120000", Some("intel_vpu"));
+        mk_pci_dev(
+            td.path(),
+            "0000:00:0b.0",
+            "0x8086",
+            "0x7d1d",
+            "0x120000",
+            Some("intel_vpu"),
+        );
         // Google TPU v6e
-        mk_pci_dev(td.path(), "0000:00:05.0", "0x1ae0", "0x006f", "0x120000", Some("vfio-pci"));
+        mk_pci_dev(
+            td.path(),
+            "0000:00:05.0",
+            "0x1ae0",
+            "0x006f",
+            "0x120000",
+            Some("vfio-pci"),
+        );
         // Google gVNIC -> MUST be ignored
-        mk_pci_dev(td.path(), "0000:00:04.0", "0x1ae0", "0x0042", "0x020000", Some("gve"));
+        mk_pci_dev(
+            td.path(),
+            "0000:00:04.0",
+            "0x1ae0",
+            "0x0042",
+            "0x020000",
+            Some("gve"),
+        );
 
         let PciScanOutcome::Readable(devs) = scan_pci_dir(td.path()) else {
             panic!("expected readable scan");
@@ -587,7 +670,12 @@ mod tests {
         assert_eq!(fb.status, Some(GpuHostStatus::DriverMissing));
         assert_eq!(fb.samples.len(), 3);
         assert!(fb.status_detail.as_deref().unwrap().contains("NVIDIA H100"));
-        assert!(fb.status_detail.as_deref().unwrap().contains("npu-smi not installed"));
+        assert!(
+            fb.status_detail
+                .as_deref()
+                .unwrap()
+                .contains("npu-smi not installed")
+        );
     }
 
     #[test]

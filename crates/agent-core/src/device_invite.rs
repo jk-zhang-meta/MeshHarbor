@@ -1038,7 +1038,11 @@ mod tests {
             },
             |tmp_path, file| {
                 let meta = std::fs::symlink_metadata(tmp_path)?;
-                assert_eq!(meta.len(), 0, "invites temp must have 0 bytes before first write");
+                assert_eq!(
+                    meta.len(),
+                    0,
+                    "invites temp must have 0 bytes before first write"
+                );
                 assert_eq!(file.metadata()?.len(), 0);
                 assert_eq!(
                     meta.permissions().mode() & 0o777,
@@ -1073,7 +1077,11 @@ mod tests {
             ),
             |tmp_path, file| {
                 let meta = std::fs::symlink_metadata(tmp_path)?;
-                assert_eq!(meta.len(), 0, "marker temp must have 0 bytes before first write");
+                assert_eq!(
+                    meta.len(),
+                    0,
+                    "marker temp must have 0 bytes before first write"
+                );
                 assert_eq!(file.metadata()?.len(), 0);
                 assert_eq!(
                     meta.permissions().mode() & 0o777,

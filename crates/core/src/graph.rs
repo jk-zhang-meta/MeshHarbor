@@ -7,39 +7,12 @@
 //! topological order of this graph; the hook order is its reverse.
 
 /// Every module, in the order the host composes them (dependencies first).
-pub const MODULES: &[&str] = &[
-    "saas",
-    "chat",
-    "conference",
-    "fleet",
-    "remote",
-    "network",
-    "hive",
-    "vault",
-];
+pub const MODULES: &[&str] = &["fleet", "remote", "network"];
 
 /// The allowed **module → module** call edges. Every module may call core;
 /// core calls no module. Anything not listed here is forbidden — in particular
-/// `chat ↔ remote`, `chat ↔ network` and `remote ↔ network`.
-///
-/// FR-90 — `hive → fleet`: a session lives on a device and its frames ride
-/// the agent socket, so hive needs the Hub. `hive → chat` (P0d): a session is
-/// a room, and its turns are messages in it. Hive never calls `remote` or
-/// `network`: it reaches a device over the control WS like exec does, and
-/// session content travels device-to-browser, never through a module.
-///
-/// FR-90 P3 — `vault → hive` (P3-3b): a lease is believed only from the
-/// device a session's record places it on, at its fence, read through hive's
-/// own DAO. `vault → fleet` (the Hub, to push a revocation) comes with P3-3c.
-/// Hive never calls the vault: it asks through core's `SessionGate` hook.
-pub const EDGES: &[(&str, &str)] = &[
-    ("conference", "chat"),
-    ("remote", "fleet"),
-    ("network", "fleet"),
-    ("hive", "fleet"),
-    ("hive", "chat"),
-    ("vault", "hive"),
-];
+/// `remote ↔ network`.
+pub const EDGES: &[(&str, &str)] = &[("remote", "fleet"), ("network", "fleet")];
 
 /// The modules `id` may call, besides core.
 pub fn depends_on(id: &str) -> impl Iterator<Item = &'static str> {
@@ -93,15 +66,7 @@ mod tests {
 
     #[test]
     fn the_forbidden_pairs_stay_forbidden() {
-        for (a, b) in [
-            ("chat", "remote"),
-            ("chat", "network"),
-            ("remote", "network"),
-            // FR-90 — a session's content never flows through another
-            // module, and its device path is the control WS (fleet's).
-            ("hive", "remote"),
-            ("hive", "network"),
-        ] {
+        for (a, b) in [("remote", "network")] {
             assert!(!is_allowed_edge(a, b), "{a} -> {b} must not be allowed");
             assert!(!is_allowed_edge(b, a), "{b} -> {a} must not be allowed");
         }

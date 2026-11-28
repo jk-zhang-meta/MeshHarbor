@@ -356,12 +356,10 @@ impl Engine {
                 ) => {
                     let abort_return = {
                         let t = self.trials.get_mut(&id).unwrap();
-                        let abort_id = matches!(
-                            t.phase,
-                            Phase::ReturnPreparing | Phase::ReturnReady
-                        )
-                        .then_some(t.return_id)
-                        .flatten();
+                        let abort_id =
+                            matches!(t.phase, Phase::ReturnPreparing | Phase::ReturnReady)
+                                .then_some(t.return_id)
+                                .flatten();
                         if let Some(rid) = t.return_id.take() {
                             t.return_retired.push(rid);
                             if t.return_retired.len() > 64 {
@@ -1238,9 +1236,8 @@ impl Engine {
                 self.cancel(id, ctx, wg, peers, installed, true).await;
                 continue;
             }
-            let direct_forbidden =
-                Self::peer_is_backbone_only(self.trials[&id].peer_id, peers)
-                    || self.trials[&id].direct_shadow_retired;
+            let direct_forbidden = Self::peer_is_backbone_only(self.trials[&id].peer_id, peers)
+                || self.trials[&id].direct_shadow_retired;
             if direct_forbidden {
                 self.trials.get_mut(&id).unwrap().direct_shadow_retired = true;
                 wg.retire_path_trial_direct_shadow(id).await;
@@ -1379,8 +1376,7 @@ impl Engine {
             }
             let t = self.trials.get_mut(&id).unwrap();
             let measure_allowed = !direct_forbidden
-                || (t.incumbent_is_relay
-                    && matches!(t.phase, Phase::Measuring | Phase::Ready));
+                || (t.incumbent_is_relay && matches!(t.phase, Phase::Measuring | Phase::Ready));
             if measure_allowed
                 && t.measurements.round.is_none()
                 && t.measurements
@@ -2557,8 +2553,7 @@ mod sequential_relay_upgrade_tests {
         let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let addr = sock.local_addr().unwrap();
         let stats = Arc::new(RelayStats::default());
-        let (server, handle) =
-            RelayServer::new(CookieKey::from_bytes([0x42; 32]), stats.clone());
+        let (server, handle) = RelayServer::new(CookieKey::from_bytes([0x42; 32]), stats.clone());
         let now = Instant::now();
         assert!(handle.install(Session {
             vni,
@@ -2604,7 +2599,7 @@ mod sequential_relay_upgrade_tests {
 
     #[tokio::test]
     async fn sequential_relay_upgrade_r0_to_r1_to_r2_preserves_r1_on_abort_and_switches_to_r2_on_commit()
-    {
+     {
         let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
         let (id_a, id_b) = (ObjectId::new(), ObjectId::new());
         let (ip_a, ip_b) = (Ipv4Addr::new(100, 64, 0, 10), Ipv4Addr::new(100, 64, 0, 11));
@@ -2636,16 +2631,36 @@ mod sequential_relay_upgrade_tests {
             s0_b,
         )
         .await;
-        let (sock0_a, _, _) =
-            bind_any(&[r0_addr], 100, 1, &BindSecret::from_bytes(s0_a), Duration::from_secs(2))
-                .await
-                .unwrap();
-        let (sock0_b, _, _) =
-            bind_any(&[r0_addr], 100, 1, &BindSecret::from_bytes(s0_b), Duration::from_secs(2))
-                .await
-                .unwrap();
-        let conn0_a = Arc::new(OrgRelayConn::new(Arc::new(sock0_a), r0_addr, 100, "r0".into()));
-        let conn0_b = Arc::new(OrgRelayConn::new(Arc::new(sock0_b), r0_addr, 100, "r0".into()));
+        let (sock0_a, _, _) = bind_any(
+            &[r0_addr],
+            100,
+            1,
+            &BindSecret::from_bytes(s0_a),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let (sock0_b, _, _) = bind_any(
+            &[r0_addr],
+            100,
+            1,
+            &BindSecret::from_bytes(s0_b),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let conn0_a = Arc::new(OrgRelayConn::new(
+            Arc::new(sock0_a),
+            r0_addr,
+            100,
+            "r0".into(),
+        ));
+        let conn0_b = Arc::new(OrgRelayConn::new(
+            Arc::new(sock0_b),
+            r0_addr,
+            100,
+            "r0".into(),
+        ));
 
         let (out_a, mut rx_a) = mpsc::channel(64);
         let (out_b, mut rx_b) = mpsc::channel(64);
@@ -2787,10 +2802,26 @@ mod sequential_relay_upgrade_tests {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 eng_a
-                    .tick_enabled(&ctx_a, &mut wg_a, &peers_a, &mut installed_a, &mut disc_a, true, true)
+                    .tick_enabled(
+                        &ctx_a,
+                        &mut wg_a,
+                        &peers_a,
+                        &mut installed_a,
+                        &mut disc_a,
+                        true,
+                        true,
+                    )
                     .await;
                 eng_b
-                    .tick_enabled(&ctx_b, &mut wg_b, &peers_b, &mut installed_b, &mut disc_b, true, true)
+                    .tick_enabled(
+                        &ctx_b,
+                        &mut wg_b,
+                        &peers_b,
+                        &mut installed_b,
+                        &mut disc_b,
+                        true,
+                        true,
+                    )
                     .await;
                 if wg_a.path_trial_handshake_done(t1) && wg_b.path_trial_handshake_done(t1) {
                     break;
@@ -2813,10 +2844,26 @@ mod sequential_relay_upgrade_tests {
             ServerMsg::OverlayPathTrialFinalize { trial_id: t1 },
         ] {
             eng_a
-                .control_enabled(msg.clone(), &ctx_a, &mut wg_a, &peers_a, &mut installed_a, true, true)
+                .control_enabled(
+                    msg.clone(),
+                    &ctx_a,
+                    &mut wg_a,
+                    &peers_a,
+                    &mut installed_a,
+                    true,
+                    true,
+                )
                 .await;
             eng_b
-                .control_enabled(msg, &ctx_b, &mut wg_b, &peers_b, &mut installed_b, true, true)
+                .control_enabled(
+                    msg,
+                    &ctx_b,
+                    &mut wg_b,
+                    &peers_b,
+                    &mut installed_b,
+                    true,
+                    true,
+                )
                 .await;
         }
         while rx_a.try_recv().is_ok() {}
@@ -2873,7 +2920,10 @@ mod sequential_relay_upgrade_tests {
             )
             .await;
         assert!(installed_a.contains_key(&id_b));
-        assert!(conn1_a.is_alive(), "R1 connection must stay alive when R1->R2 aborts");
+        assert!(
+            conn1_a.is_alive(),
+            "R1 connection must stay alive when R1->R2 aborts"
+        );
         assert!(ctx_a.path_trial_managed.lock().unwrap().contains(&id_b));
         let r1_fwd_before = r1_stats.snapshot().forwarded;
         let pkt1 = ipv4_packet(ip_a, ip_b, b"still-on-r1");
@@ -2951,12 +3001,30 @@ mod sequential_relay_upgrade_tests {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 eng_a
-                    .tick_enabled(&ctx_a, &mut wg_a, &peers_a, &mut installed_a, &mut disc_a, true, true)
+                    .tick_enabled(
+                        &ctx_a,
+                        &mut wg_a,
+                        &peers_a,
+                        &mut installed_a,
+                        &mut disc_a,
+                        true,
+                        true,
+                    )
                     .await;
                 eng_b
-                    .tick_enabled(&ctx_b, &mut wg_b, &peers_b, &mut installed_b, &mut disc_b, true, true)
+                    .tick_enabled(
+                        &ctx_b,
+                        &mut wg_b,
+                        &peers_b,
+                        &mut installed_b,
+                        &mut disc_b,
+                        true,
+                        true,
+                    )
                     .await;
-                if wg_a.path_trial_handshake_done(t2_good) && wg_b.path_trial_handshake_done(t2_good) {
+                if wg_a.path_trial_handshake_done(t2_good)
+                    && wg_b.path_trial_handshake_done(t2_good)
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2978,10 +3046,26 @@ mod sequential_relay_upgrade_tests {
             ServerMsg::OverlayPathTrialAbort { trial_id: t1 },
         ] {
             eng_a
-                .control_enabled(msg.clone(), &ctx_a, &mut wg_a, &peers_a, &mut installed_a, true, true)
+                .control_enabled(
+                    msg.clone(),
+                    &ctx_a,
+                    &mut wg_a,
+                    &peers_a,
+                    &mut installed_a,
+                    true,
+                    true,
+                )
                 .await;
             eng_b
-                .control_enabled(msg, &ctx_b, &mut wg_b, &peers_b, &mut installed_b, true, true)
+                .control_enabled(
+                    msg,
+                    &ctx_b,
+                    &mut wg_b,
+                    &peers_b,
+                    &mut installed_b,
+                    true,
+                    true,
+                )
                 .await;
         }
 
@@ -3146,7 +3230,12 @@ mod sequential_relay_upgrade_tests {
                 initiated: true,
                 relay_kind: Some(RelayKind::Org),
                 carrier_dst: Some(conn_rejoin_a.synth_peer()),
-                ..Installed::base(kp_b.public.to_bytes(), ip_b, DirectTier::Relay, Instant::now())
+                ..Installed::base(
+                    kp_b.public.to_bytes(),
+                    ip_b,
+                    DirectTier::Relay,
+                    Instant::now(),
+                )
             },
         );
         assert!(

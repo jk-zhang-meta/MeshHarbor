@@ -10,14 +10,14 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tunnel_core::env::node_env;
 
-#[path = "updater_origin.rs"]
-mod origin;
 #[cfg(target_os = "linux")]
 #[path = "updater_linux_user.rs"]
 mod linux_user;
+#[path = "updater_origin.rs"]
+mod origin;
 
 /// Unenrolled MeshHarbor fallback only; enrolled/custom centers retain their prefix.
 pub const DEFAULT_PROXY_URL: &str = "https://www.itachi.fans/meshharbor/api/agent/latest-release";
@@ -484,165 +484,15 @@ pub fn decide_turn_wait(running: usize, waited: Duration, max: Duration) -> Turn
     }
 }
 
-/// How often the updater looks again while agent turns run.
-const TURN_POLL: Duration = Duration::from_secs(5);
-/// How often a deferral for agent turns is logged while it lasts.
-const TURN_LOG_EVERY: Duration = Duration::from_secs(60);
+/// No-op hold helper retained for update-flow callers after Hive removal in 0.5.0.
+pub(crate) fn hold_agent_prompts(_hold: bool) {}
 
-/// The agent sessions mid-turn (ids), as the Hive supervisor sees them; none
-/// in a build without agent sessions.
-fn agent_turns_running() -> Vec<String> {
-    #[cfg(hive_host)]
-    {
-        crate::hive::turns_running()
-            .into_iter()
-            .map(|s| s.to_hex())
-            .collect()
-    }
-    #[cfg(not(hive_host))]
-    {
-        Vec::new()
-    }
-}
-
-/// The device's `hive_update_wait_secs`; zero without agent sessions.
-fn agent_turn_wait() -> Duration {
-    #[cfg(hive_host)]
-    {
-        crate::hive::update_wait()
-    }
-    #[cfg(not(hive_host))]
-    {
-        Duration::ZERO
-    }
-}
-
-/// Hold (or release) new agent prompts and starts around an install.
-pub(crate) fn hold_agent_prompts(hold: bool) {
-    #[cfg(hive_host)]
-    {
-        if hold {
-            crate::hive::begin_update();
-        } else {
-            crate::hive::end_update();
-        }
-    }
-    #[cfg(not(hive_host))]
-    {
-        let _ = hold;
-    }
-}
-
-/// FR-90 P1d-1 (AC7) — wait for running agent turns before an installer
-/// restarts the daemon, and with it every session's harness: at most the
-/// device's `hive_update_wait_secs` (30 min by default), the deferral logged
-/// when it starts and once a minute while it lasts. A turn is a person's work
-/// in progress, so this holds a PUSHED update too — unlike a transfer — and
-/// it is bounded, so a busy session cannot hold the device's updates back.
-///
-/// Once no turn runs, new prompts and starts are refused
-/// ([`crate::hive::begin_update`]) BEFORE a last look, so none begins in the
-/// gap; a prompt admitted before that still runs, and is waited for.
-/// `false` = the daemon is shutting down instead.
+/// Always ready immediately after Hive removal in 0.5.0 (`false` only if shutting down).
 pub(crate) async fn wait_for_agent_turns(
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
-    by: &'static str,
+    _by: &'static str,
 ) -> bool {
-    let max = agent_turn_wait();
-    let started = Instant::now();
-    let mut logged: Option<Instant> = None;
-    let mut held = false;
-    loop {
-        let running = agent_turns_running();
-        if running.is_empty() && !held {
-            // Hold new prompts first, then look once more: a prompt that
-            // arrived between the two looks began a turn to wait for.
-            hold_agent_prompts(true);
-            held = true;
-            continue;
-        }
-        let waited = started.elapsed();
-        match decide_turn_wait(running.len(), waited, max) {
-            TurnWait::Proceed => {
-                if logged.is_some() {
-                    tracing::info!(
-                        by,
-                        waited_secs = waited.as_secs(),
-                        "auto-updater: the agent turns are done — installing"
-                    );
-                }
-                return true;
-            }
-            TurnWait::Cut => {
-                hold_agent_prompts(true);
-                tracing::warn!(
-                    by,
-                    waited_secs = waited.as_secs(),
-                    turns = running.len(),
-                    sessions = ?running,
-                    "auto-updater: agent turns still running after the whole wait — installing anyway, which cuts them"
-                );
-                return true;
-            }
-            TurnWait::Wait => {
-                if logged.is_none_or(|t| t.elapsed() >= TURN_LOG_EVERY) {
-                    tracing::info!(
-                        by,
-                        turns = running.len(),
-                        sessions = ?running,
-                        waited_secs = waited.as_secs(),
-                        max_secs = max.as_secs(),
-                        "auto-updater: update deferred — agent turns running"
-                    );
-                    logged = Some(Instant::now());
-                }
-            }
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(TURN_POLL) => {}
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
-                    hold_agent_prompts(false);
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-/// FR-90 P1h-2 (AC7 on macOS) — the daemon's half of the root update
-/// helper's hold ([`tunnel_core::localapi::Request::HiveUpdateHold`]): the
-/// wait above, then new prompts and starts held until
-/// [`release_install_hold`]. On macOS the helper installs, never this
-/// process, so this is the only wait there.
-pub async fn hold_for_install(
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
-) -> tunnel_core::localapi::Response {
-    use tunnel_core::localapi::Response;
-    if !cfg!(hive_host) {
-        return Response::Error {
-            message: "this build runs no agent sessions".into(),
-        };
-    }
-    let started = Instant::now();
-    if !wait_for_agent_turns(&mut shutdown, "update-helper").await {
-        return Response::Error {
-            message: "the daemon is stopping".into(),
-        };
-    }
-    Response::HiveUpdateHeld {
-        waited_secs: started.elapsed().as_secs(),
-        cut: u32::try_from(agent_turns_running().len()).unwrap_or(u32::MAX),
-    }
-}
-
-/// FR-90 P1h-2 — the helper's connection closed and this daemon is still
-/// here, so its install did not happen: take prompts and starts again.
-pub fn release_install_hold() {
-    hold_agent_prompts(false);
-    tracing::info!(
-        "update-helper: the hold is released — agent prompts and starts are taken again"
-    );
+    !*shutdown.borrow()
 }
 
 /// Work an installer would cut short: file transfers in flight, plus an
@@ -1318,13 +1168,15 @@ async fn fetch_releases_from(url: &str) -> Result<Vec<GithubRelease>> {
         bail!("manifest URL differs from the configured trusted update feed");
     }
     // FR-128 — to the centre along the control socket's path.
-    let client = meshharbor_node_core::management_path::route_http(meshharbor_node_core::http_client::builder())
-        .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(UPDATE_CONNECT_TIMEOUT)
-        .timeout(Duration::from_secs(30))
-        .redirect(update_redirect_policy(origin, false))
-        .build()
-        .context("building reqwest client")?;
+    let client = meshharbor_node_core::management_path::route_http(
+        meshharbor_node_core::http_client::builder(),
+    )
+    .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
+    .connect_timeout(UPDATE_CONNECT_TIMEOUT)
+    .timeout(Duration::from_secs(30))
+    .redirect(update_redirect_policy(origin, false))
+    .build()
+    .context("building reqwest client")?;
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -2099,10 +1951,7 @@ fn is_staging_dir_in(base: &std::path::Path, dir: &std::path::Path) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn acquire_windows_owner_lock(
-    journal: &std::path::Path,
-    wait: Duration,
-) -> Result<std::fs::File> {
+fn acquire_windows_owner_lock(journal: &std::path::Path, wait: Duration) -> Result<std::fs::File> {
     std::fs::create_dir_all(journal)?;
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -2128,10 +1977,7 @@ fn acquire_windows_owner_lock(
 /// continuously holding `install-owner.lock` so a concurrent `self-update`
 /// cannot create or claim an owner inside `dir` across inspection and removal.
 #[cfg(target_os = "windows")]
-fn try_sweep_windows_staging_dir(
-    dir: &std::path::Path,
-    journal: &std::path::Path,
-) -> bool {
+fn try_sweep_windows_staging_dir(dir: &std::path::Path, journal: &std::path::Path) -> bool {
     let Ok(_lock) = acquire_windows_owner_lock(journal, Duration::ZERO) else {
         return false;
     };
@@ -2174,9 +2020,7 @@ fn try_sweep_windows_staging_dir(
             let Ok(previous) = serde_json::from_slice::<std::path::PathBuf>(&bytes) else {
                 return false;
             };
-            if normalize_windows_path_key(&previous)
-                .starts_with(normalize_windows_path_key(dir))
-            {
+            if normalize_windows_path_key(&previous).starts_with(normalize_windows_path_key(dir)) {
                 if verify_windows_owner_terminal(&previous).is_err() {
                     return false;
                 }
@@ -2290,13 +2134,15 @@ async fn download_asset_inner(
     let asset_url = origin
         .asset_url(&asset.browser_download_url)
         .map_err(anyhow::Error::msg)?;
-    let client = meshharbor_node_core::management_path::route_http(meshharbor_node_core::http_client::builder())
-        .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(UPDATE_CONNECT_TIMEOUT)
-        .timeout(Duration::from_secs(600))
-        .redirect(update_redirect_policy(origin.clone(), true))
-        .build()
-        .context("building download client")?;
+    let client = meshharbor_node_core::management_path::route_http(
+        meshharbor_node_core::http_client::builder(),
+    )
+    .user_agent(concat!("meshharbord/", env!("CARGO_PKG_VERSION")))
+    .connect_timeout(UPDATE_CONNECT_TIMEOUT)
+    .timeout(Duration::from_secs(600))
+    .redirect(update_redirect_policy(origin.clone(), true))
+    .build()
+    .context("building download client")?;
     let expected_total = (asset.size > 0).then_some(asset.size);
     if track_progress {
         mutate_update_status(|s| {
@@ -2444,7 +2290,7 @@ async fn download_asset_inner(
                         .context("retaining verified signature for same-user transaction")
                 });
                 checked
-            },
+            }
             Err(e) => Err(e.context(format!("fetching {asc_url}"))),
         };
         match verdict {
@@ -3733,7 +3579,6 @@ fn strip_deleted_suffix(exe: &std::path::Path) -> Option<PathBuf> {
     Some(PathBuf::from(stripped))
 }
 
-
 // The installer may terminate the install-directory daemon through Restart
 // Manager immediately. Its independent observer must own the launch, rather
 // than be spawned by a parent that the installer can already remove.
@@ -3811,9 +3656,8 @@ fn is_terminal_install_outcome(outcome: &crate::post_install::InstallOutcome) ->
 
 #[cfg(target_os = "windows")]
 fn verify_windows_owner_terminal(previous: &std::path::Path) -> Result<()> {
-    let request: WindowsOwnerRequest = serde_json::from_slice(&std::fs::read(
-        previous.join("request.json"),
-    )?)?;
+    let request: WindowsOwnerRequest =
+        serde_json::from_slice(&std::fs::read(previous.join("request.json"))?)?;
     let terminal = std::fs::read(previous.join("terminal.json")).context(
         "prior install owner is unresolved; refusing another installer, including after cooldown/restart",
     )?;
@@ -3963,7 +3807,8 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
     let launch = dir.join("meshharbord-owner.exe");
     std::fs::copy(&origin, &launch).context("staging independent install owner")?;
     let request = WindowsOwnerRequest {
-        installer: installer.clone(), origin,
+        installer: installer.clone(),
+        origin,
         expected_version: tag.to_owned(),
         digest: format!("sha256:{:x}", Sha256::digest(std::fs::read(&installer)?)),
     };
@@ -3972,12 +3817,21 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
     let stdout = std::fs::File::create(dir.join("stdout.log"))?;
     let stderr = std::fs::File::create(dir.join("stderr.log"))?;
     let mut command = std::process::Command::new(launch);
-    let config = UPDATE_CONFIG_PATH.get().context("install owner requires exact active config")?;
-    command.arg("--config").arg(config).arg("post-install-owner").arg("--directory").arg(&dir)
+    let config = UPDATE_CONFIG_PATH
+        .get()
+        .context("install owner requires exact active config")?;
+    command
+        .arg("--config")
+        .arg(config)
+        .arg("post-install-owner")
+        .arg("--directory")
+        .arg(&dir)
         // Prefer explicit job breakaway; the observed Scheduler ERROR5 case
         // uses the detached-group fallback below. No MSI precedes readiness.
         .creation_flags(0x01000000 | 0x00000200 | 0x08000000)
-        .stdin(std::process::Stdio::null()).stdout(stdout).stderr(stderr);
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
     let mut child = match command.spawn() {
         Ok(child) => child,
         // Match the existing companion spawn policy. Task Scheduler can deny
@@ -3986,7 +3840,9 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
         Err(error) if error.raw_os_error() == Some(5) => {
             tracing::warn!(error = %error, "install owner explicit job breakaway denied; trying detached process group");
             command.creation_flags(0x00000200 | 0x08000000);
-            command.spawn().context("starting detached install owner after denied job breakaway")?
+            command
+                .spawn()
+                .context("starting detached install owner after denied job breakaway")?
         }
         Err(error) => return Err(error).context("starting independent install owner"),
     };
@@ -3998,11 +3854,18 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
             break;
         }
         if let Some(status) = child.try_wait()? {
-            bail!("install owner exited before readiness ({status}); diagnostics {}", dir.display());
+            bail!(
+                "install owner exited before readiness ({status}); diagnostics {}",
+                dir.display()
+            );
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill(); let _ = child.wait();
-            bail!("install owner readiness timed out; no installer authorized; diagnostics {}", dir.display());
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "install owner readiness timed out; no installer authorized; diagnostics {}",
+                dir.display()
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -4010,13 +3873,21 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
     // A launch error must not make the daemon exit. Once the MSI starts it may
     // kill us before this acknowledgment; the already independent owner lives.
     loop {
-        if dir.join("started.json").is_file() { return Ok(()); }
+        if dir.join("started.json").is_file() {
+            return Ok(());
+        }
         if let Some(status) = child.try_wait()? {
-            bail!("install owner exited before installer launch ({status}); diagnostics {}", dir.display());
+            bail!(
+                "install owner exited before installer launch ({status}); diagnostics {}",
+                dir.display()
+            );
         }
         if std::time::Instant::now() >= deadline {
             // Authorization was issued: NEVER kill or retry an uncertain owner.
-            bail!("install owner launch acknowledgment missing; outcome unknown, do not retry; diagnostics {}", dir.display());
+            bail!(
+                "install owner launch acknowledgment missing; outcome unknown, do not retry; diagnostics {}",
+                dir.display()
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -4027,30 +3898,44 @@ fn spawn_windows_install_owner(installer: &std::path::Path, tag: &str) -> Result
 #[cfg(target_os = "windows")]
 pub fn run_windows_install_owner(dir: &std::path::Path) -> Result<()> {
     let result = (|| -> Result<()> {
-        let request: WindowsOwnerRequest = serde_json::from_slice(&std::fs::read(dir.join("request.json"))?)?;
+        let request: WindowsOwnerRequest =
+            serde_json::from_slice(&std::fs::read(dir.join("request.json"))?)?;
         anyhow::ensure!(request.origin.is_file(), "install origin is missing");
         verify_sha256(&std::fs::read(&request.installer)?, &request.digest)?;
         // Fail before readiness if the ordinary outcome directory is unwritable.
-        let outcome = crate::post_install::outcome_path().context("outcome location unavailable")?;
+        let outcome =
+            crate::post_install::outcome_path().context("outcome location unavailable")?;
         let journal_dir = outcome.parent().context("outcome has no parent")?;
         std::fs::create_dir_all(journal_dir)?;
         if outcome.exists() {
-            let _existing = std::fs::OpenOptions::new().write(true).open(&outcome)
+            let _existing = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&outcome)
                 .context("existing outcome journal is not writable")?;
         }
         let _probe = tempfile::NamedTempFile::new_in(journal_dir)?;
         // The new daemon must never start before a matching pending receipt
         // exists. Failure here occurs before authorization and before MSI.
-        let mut prepared = crate::post_install::prepare_windows_outcome(&request.installer, &request.expected_version)?;
+        let mut prepared = crate::post_install::prepare_windows_outcome(
+            &request.installer,
+            &request.expected_version,
+        )?;
         owner_record(dir, "ready.json", &std::process::id())?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if dir.join("authorize.json").is_file() {
-                let authorized: u32 = serde_json::from_slice(&std::fs::read(dir.join("authorize.json"))?)?;
-                anyhow::ensure!(authorized == std::process::id(), "install owner authorization mismatch");
+                let authorized: u32 =
+                    serde_json::from_slice(&std::fs::read(dir.join("authorize.json"))?)?;
+                anyhow::ensure!(
+                    authorized == std::process::id(),
+                    "install owner authorization mismatch"
+                );
                 break;
             }
-            anyhow::ensure!(std::time::Instant::now() < deadline, "owner not authorized; no installer launched");
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "owner not authorized; no installer launched"
+            );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         verify_sha256(&std::fs::read(&request.installer)?, &request.digest)?;
@@ -4581,7 +4466,9 @@ pub async fn run_periodic(
         let helper_switch = tunnel_core::env::flag("UPDATE_HELPER", true);
         let owner = if linux_user::current() {
             UpdateOwner::InProcess("same-user ~/.local installation")
-        } else { decide_update_owner(euid, helper_switch, enabled) };
+        } else {
+            decide_update_owner(euid, helper_switch, enabled)
+        };
         match owner {
             UpdateOwner::Helper(link) => {
                 tracing::info!(
@@ -4613,7 +4500,9 @@ pub async fn run_periodic(
             // helper instead. Not under the kill switch: that one is AC7's
             // "today's behaviour exactly".
             UpdateOwner::InProcess(_)
-                if !linux_user::current() && helper_switch && !can_install_in_process(euid, no_new_privs()) =>
+                if !linux_user::current()
+                    && helper_switch
+                    && !can_install_in_process(euid, no_new_privs()) =>
             {
                 return wait_for_the_helper(shutdown, trigger_rx, interval).await;
             }
@@ -5200,54 +5089,6 @@ async fn forward_triggers_to(
     }
 }
 
-/// How long the update helper waits for the daemon's word before it installs
-/// anyway (FR-90 P1h-2). The daemon bounds its own wait by the device's
-/// `hive_update_wait_secs` (30 min by default); this is only the ceiling for
-/// a daemon that never answers.
-#[cfg(target_os = "macos")]
-const HOLD_CEILING: Duration = Duration::from_secs(2 * 60 * 60);
-
-/// What the update helper got from the daemon before installing (FR-90 P1h-2).
-#[cfg(any(target_os = "macos", all(test, unix)))]
-pub(crate) enum InstallHold {
-    /// The daemon holds, for as long as the helper keeps this client: until
-    /// `installer(8)` returns.
-    Held {
-        _client: tunnel_core::localapi::Client,
-        waited_secs: u64,
-        cut: u32,
-    },
-    /// No hold, and why: no daemon here, one older than the verb, a refusal,
-    /// or no answer in time. The install goes ahead as it did before P1h-2.
-    Without(String),
-}
-
-/// FR-90 P1h-2 (AC7 on macOS) — ask the root daemon at `socket` to hold for
-/// its agent turns before the helper's `installer(8)` restarts it, and every
-/// harness with it. Fail-open by design: a missing, older or silent daemon
-/// never keeps an update from installing; it gets the install it got before.
-#[cfg(any(target_os = "macos", all(test, unix)))]
-pub(crate) async fn hold_daemon_for_install(socket: PathBuf, ceiling: Duration) -> InstallHold {
-    use tunnel_core::localapi::{Request, Response, connect_unix_at};
-    let mut client = match connect_unix_at(socket).await {
-        Ok(c) => c,
-        Err(e) => return InstallHold::Without(format!("no daemon to hold ({e})")),
-    };
-    match tokio::time::timeout(ceiling, client.request(&Request::HiveUpdateHold)).await {
-        Ok(Ok(Response::HiveUpdateHeld { waited_secs, cut })) => InstallHold::Held {
-            _client: client,
-            waited_secs,
-            cut,
-        },
-        Ok(Ok(Response::Error { message })) => {
-            InstallHold::Without(format!("the daemon holds nothing: {message}"))
-        }
-        Ok(Ok(_)) => InstallHold::Without("an answer this helper does not know".into()),
-        Ok(Err(e)) => InstallHold::Without(format!("the daemon's answer was lost: {e}")),
-        Err(_) => InstallHold::Without(format!("no answer within {} s", ceiling.as_secs())),
-    }
-}
-
 /// `meshharbord update-helper` — the body of `fans.itachi.meshharbor.update` on macOS, and
 /// of `meshharbor-update.service` on Linux (FR-96).
 ///
@@ -5417,7 +5258,7 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     }
 }
 
-/// The macOS helper's install: hold the root daemon, then `installer(8)`.
+/// The macOS helper's install: run `installer(8)`.
 #[cfg(target_os = "macos")]
 async fn install_from_helper(
     current: String,
@@ -5425,25 +5266,6 @@ async fn install_from_helper(
     installer_path: PathBuf,
 ) -> anyhow::Result<()> {
     use anyhow::{Context, bail};
-    // FR-90 P1h-2 (AC7 on macOS) — the root daemon runs agent sessions, and
-    // the install restarts it with every harness: hold it for its running
-    // turns first, as the in-process updater does on Linux. The hold ends
-    // when `hold` is dropped, right after the installer returns; a failed
-    // install takes prompts again.
-    let hold =
-        hold_daemon_for_install(tunnel_core::localapi::system_socket_path(), HOLD_CEILING).await;
-    match &hold {
-        InstallHold::Held {
-            waited_secs, cut, ..
-        } => tracing::info!(
-            waited_secs,
-            cut,
-            "update-helper: the daemon holds for its agent turns"
-        ),
-        InstallHold::Without(why) => {
-            tracing::info!(%why, "update-helper: installing without a hold")
-        }
-    }
     record_update_attempt();
     tracing::warn!(
         %current,
@@ -5456,9 +5278,7 @@ async fn install_from_helper(
         .arg(&installer_path)
         .args(["-target", "/"])
         .status()
-        .context("running installer(8)");
-    drop(hold);
-    let status = status?;
+        .context("running installer(8)")?;
     if !status.success() {
         // Same operator sentinel act_on_outcome raises: a failed install is
         // otherwise invisible — the fleet version simply never moves.
@@ -5597,7 +5417,9 @@ pub fn answer_capabilities_query() -> bool {
 /// who installs.
 #[cfg(target_os = "linux")]
 pub fn helper_owns_updates() -> Option<PathBuf> {
-    if linux_user::current() { return None; }
+    if linux_user::current() {
+        return None;
+    }
     // SAFETY: geteuid takes no arguments and cannot fail.
     let euid = unsafe { libc::geteuid() };
     let enabled = helper_enable_link_in(&UPDATE_HELPER_ENABLE_LINKS.map(std::path::Path::new));
@@ -5647,92 +5469,6 @@ mod tests {
             !super::request_update_now(None),
             "a push to a daemon whose updater is off must report undeliverable"
         );
-    }
-
-    /// FR-90 P1h-2 — the macOS update helper holds the daemon for exactly as
-    /// long as it keeps the hold (until `installer(8)` returns), and installs
-    /// without one when nothing holds: no daemon, a daemon older than the
-    /// verb, one that never answers. Run on every Unix: the client is not
-    /// macOS's, only its caller is.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn the_update_helper_holds_the_daemon_while_it_installs() {
-        use std::time::Duration;
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-        // A short path: a Unix socket's name is capped at 104 bytes on macOS.
-        let dir = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
-
-        // A daemon that holds, and says when the helper lets go.
-        let sock = dir.path().join("hold.sock");
-        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
-        let (gone_tx, mut gone_rx) = tokio::sync::oneshot::channel::<String>();
-        tokio::spawn(async move {
-            let (s, _) = listener.accept().await.unwrap();
-            let (rd, mut wr) = s.into_split();
-            let mut rd = BufReader::new(rd);
-            let mut asked = String::new();
-            rd.read_line(&mut asked).await.unwrap();
-            wr.write_all(b"{\"t\":\"hive_update_held\",\"d\":{\"waited_secs\":12,\"cut\":1}}\n")
-                .await
-                .unwrap();
-            let mut rest = Vec::new();
-            let _ = rd.read_to_end(&mut rest).await;
-            let _ = gone_tx.send(asked);
-        });
-        let hold = super::hold_daemon_for_install(sock, Duration::from_secs(5)).await;
-        let super::InstallHold::Held {
-            waited_secs, cut, ..
-        } = &hold
-        else {
-            panic!("the daemon held")
-        };
-        assert_eq!((*waited_secs, *cut), (12, 1));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(150), &mut gone_rx)
-                .await
-                .is_err(),
-            "held while the installer runs"
-        );
-        drop(hold);
-        let asked = tokio::time::timeout(Duration::from_secs(5), gone_rx)
-            .await
-            .expect("the daemon sees the hold end")
-            .unwrap();
-        assert_eq!(asked.trim_end(), r#"{"t":"hive_update_hold"}"#);
-
-        // No daemon at all.
-        let none =
-            super::hold_daemon_for_install(dir.path().join("none.sock"), Duration::from_secs(5))
-                .await;
-        assert!(matches!(&none, super::InstallHold::Without(w) if w.contains("no daemon")));
-
-        // A daemon older than the verb.
-        let old = dir.path().join("old.sock");
-        let older = tokio::net::UnixListener::bind(&old).unwrap();
-        tokio::spawn(async move {
-            let (s, _) = older.accept().await.unwrap();
-            let (rd, mut wr) = s.into_split();
-            let mut line = String::new();
-            BufReader::new(rd).read_line(&mut line).await.unwrap();
-            wr.write_all(
-                b"{\"t\":\"error\",\"d\":{\"message\":\"bad request: unknown variant `hive_update_hold`\"}}\n",
-            )
-            .await
-            .unwrap();
-        });
-        let old = super::hold_daemon_for_install(old, Duration::from_secs(5)).await;
-        assert!(matches!(&old, super::InstallHold::Without(w) if w.contains("holds nothing")));
-
-        // One that never answers: the ceiling, and the install goes ahead.
-        let silent = dir.path().join("silent.sock");
-        let mute = tokio::net::UnixListener::bind(&silent).unwrap();
-        let _mute = tokio::spawn(async move {
-            let (s, _) = mute.accept().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            drop(s);
-        });
-        let late = super::hold_daemon_for_install(silent, Duration::from_millis(300)).await;
-        assert!(matches!(&late, super::InstallHold::Without(w) if w.contains("no answer")));
     }
 
     /// #1206 — the post-install watcher must verify the INSTALL path, never
@@ -8317,11 +8053,20 @@ mod tests {
     #[test]
     fn msiexec_argv_converts_verbatim_drive_and_unc_only_at_cli_edge() {
         for (input, expected) in [
-            (r"\\?\C:\用户\with space\release.msi", r"C:\用户\with space\release.msi"),
-            (r"\\?\UNC\host\share\release.msi", r"\\host\share\release.msi"),
+            (
+                r"\\?\C:\用户\with space\release.msi",
+                r"C:\用户\with space\release.msi",
+            ),
+            (
+                r"\\?\UNC\host\share\release.msi",
+                r"\\host\share\release.msi",
+            ),
             (r"C:\normal\release.msi", r"C:\normal\release.msi"),
         ] {
-            for flavour in [WindowsInstallFlavour::PerUser, WindowsInstallFlavour::PerMachine] {
+            for flavour in [
+                WindowsInstallFlavour::PerUser,
+                WindowsInstallFlavour::PerMachine,
+            ] {
                 let argv = msiexec_argv(std::path::Path::new(input), flavour);
                 assert_eq!(argv[1], expected);
                 assert_eq!(argv[5], format!("{expected}.log"));
@@ -8671,26 +8416,49 @@ mod install_owner_tests {
     fn owner_receipts_are_atomic_and_cannot_reauthorize_or_overwrite() {
         let dir = tempfile::tempdir().unwrap();
         owner_record(dir.path(), "ready.json", &41u32).unwrap();
-        assert_eq!(serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap()).unwrap(),41);
+        assert_eq!(
+            serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap())
+                .unwrap(),
+            41
+        );
         assert!(owner_record(dir.path(), "ready.json", &42u32).is_err());
-        assert_eq!(serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap()).unwrap(),41);
+        assert_eq!(
+            serde_json::from_slice::<u32>(&std::fs::read(dir.path().join("ready.json")).unwrap())
+                .unwrap(),
+            41
+        );
         assert!(!dir.path().join("authorize.json").exists());
         assert!(!dir.path().join("started.json").exists());
     }
     #[test]
     fn owner_bad_request_fails_before_ready_authorization_or_installer() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("request.json"),b"not-json").unwrap();
+        std::fs::write(dir.path().join("request.json"), b"not-json").unwrap();
         assert!(run_windows_install_owner(dir.path()).is_err());
         assert!(dir.path().join("error.json").exists());
-        for marker in ["ready.json","authorize.json","started.json","terminal.json"] {
+        for marker in [
+            "ready.json",
+            "authorize.json",
+            "started.json",
+            "terminal.json",
+        ] {
             assert!(!dir.path().join(marker).exists());
         }
     }
     #[test]
     fn owner_real_origin_not_staged_temp_selects_machine_scope() {
-        assert_eq!(classify_install_flavour_from_path(std::path::Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe")),WindowsInstallFlavour::PerMachine);
-        assert_eq!(classify_install_flavour_from_path(std::path::Path::new(r"C:\Users\u\AppData\Local\Temp\install-owner-x\meshharbord-owner.exe")),WindowsInstallFlavour::PerUser);
+        assert_eq!(
+            classify_install_flavour_from_path(std::path::Path::new(
+                r"C:\Program Files\MeshHarbor\meshharbord.exe"
+            )),
+            WindowsInstallFlavour::PerMachine
+        );
+        assert_eq!(
+            classify_install_flavour_from_path(std::path::Path::new(
+                r"C:\Users\u\AppData\Local\Temp\install-owner-x\meshharbord-owner.exe"
+            )),
+            WindowsInstallFlavour::PerUser
+        );
     }
 }
 
@@ -8703,28 +8471,48 @@ mod install_owner_fence_tests {
         let journal = root.path().join("journal");
         let first = root.path().join("first");
         let second = root.path().join("second");
-        std::fs::create_dir(&first).unwrap(); std::fs::create_dir(&second).unwrap();
-        let request = WindowsOwnerRequest { installer:first.join("fixture.msi"), origin:first.join("original.exe"), expected_version:"agent-v0.4.160".into(), digest:"sha256:fixture".into() };
-        owner_record(&first,"request.json",&request).unwrap();
-        claim_windows_owner(&journal,&first).unwrap();
-        owner_record(&first,"authorize.json",&17u32).unwrap();
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let request = WindowsOwnerRequest {
+            installer: first.join("fixture.msi"),
+            origin: first.join("original.exe"),
+            expected_version: "agent-v0.4.160".into(),
+            digest: "sha256:fixture".into(),
+        };
+        owner_record(&first, "request.json", &request).unwrap();
+        claim_windows_owner(&journal, &first).unwrap();
+        owner_record(&first, "authorize.json", &17u32).unwrap();
         let mut installer_spawns = 1;
         // Caller disappeared after authorization; started.json write failed.
         // A restart/old cooldown cannot release the persisted active pointer.
-        std::fs::write(journal.join("update-attempt"),b"0").unwrap();
-        for _elapsed_seconds in [301,601,1500] {
-            if claim_windows_owner(&journal,&second).is_ok() { installer_spawns += 1; }
+        std::fs::write(journal.join("update-attempt"), b"0").unwrap();
+        for _elapsed_seconds in [301, 601, 1500] {
+            if claim_windows_owner(&journal, &second).is_ok() {
+                installer_spawns += 1;
+            }
         }
-        assert_eq!(installer_spawns,1);
-        owner_record(&first,"error.json",&"unknown after authorization").unwrap();
-        assert!(claim_windows_owner(&journal,&second).is_err());
-        let terminal = crate::post_install::InstallOutcome { installer_pid:17,installer_path:request.installer.display().to_string(),expected_version:request.expected_version.clone(),started_unix:1,finished_unix:Some(1501),installer_exit_code:Some(0),new_binary_path:None,new_binary_version:None,status:crate::post_install::InstallStatus::SucceededUnverified,note:"fixture terminal observed, no live claim".into() };
-        owner_record(&first,"terminal.json",&terminal).unwrap();
-        claim_windows_owner(&journal,&second).unwrap();
+        assert_eq!(installer_spawns, 1);
+        owner_record(&first, "error.json", &"unknown after authorization").unwrap();
+        assert!(claim_windows_owner(&journal, &second).is_err());
+        let terminal = crate::post_install::InstallOutcome {
+            installer_pid: 17,
+            installer_path: request.installer.display().to_string(),
+            expected_version: request.expected_version.clone(),
+            started_unix: 1,
+            finished_unix: Some(1501),
+            installer_exit_code: Some(0),
+            new_binary_path: None,
+            new_binary_version: None,
+            status: crate::post_install::InstallStatus::SucceededUnverified,
+            note: "fixture terminal observed, no live claim".into(),
+        };
+        owner_record(&first, "terminal.json", &terminal).unwrap();
+        claim_windows_owner(&journal, &second).unwrap();
     }
 
     #[test]
-    fn sweep_preserves_unresolved_owner_and_retires_active_pointer_before_deleting_terminal_stage() {
+    fn sweep_preserves_unresolved_owner_and_retires_active_pointer_before_deleting_terminal_stage()
+    {
         let root = tempfile::tempdir().unwrap();
         let base = root.path().join("temp");
         let journal = root.path().join("journal");
@@ -8750,7 +8538,10 @@ mod install_owner_fence_tests {
 
         // Unresolved owner (no terminal.json): sweep must keep both stage and active pointer.
         sweep_stale_update_staging_in(&base, &journal, Duration::ZERO);
-        assert!(stage.exists(), "unresolved owner staging dir must not be swept");
+        assert!(
+            stage.exists(),
+            "unresolved owner staging dir must not be swept"
+        );
         assert!(journal.join("install-owner-active.json").exists());
 
         // Terminal owner: sweep must retire install-owner-active.json first, then delete stage,
@@ -8769,7 +8560,10 @@ mod install_owner_fence_tests {
         };
         owner_record(&owner, "terminal.json", &terminal).unwrap();
         sweep_stale_update_staging_in(&base, &journal, Duration::ZERO);
-        assert!(!stage.exists(), "terminal owner staging dir should be swept");
+        assert!(
+            !stage.exists(),
+            "terminal owner staging dir should be swept"
+        );
         assert!(
             !journal.join("install-owner-active.json").exists(),
             "active pointer must be retired before sweeping stage"
@@ -8861,7 +8655,10 @@ mod install_owner_fence_tests {
 
         // With terminal last-install.json for a DIFFERENT staging dir -> stays fenced.
         let other_stage = base.join(format!("{STAGING_DIR_PREFIX}other1"));
-        outcome.installer_path = other_stage.join("meshharbor-0.4.160.msi").display().to_string();
+        outcome.installer_path = other_stage
+            .join("meshharbor-0.4.160.msi")
+            .display()
+            .to_string();
         outcome.finished_unix = Some(2);
         outcome.installer_exit_code = Some(0);
         outcome.status = crate::post_install::InstallStatus::SucceededVerified;

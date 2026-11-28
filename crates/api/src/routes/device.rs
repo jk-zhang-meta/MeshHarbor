@@ -239,13 +239,12 @@ pub async fn list_devices(
             (clients, nodes, dns_domain, zones)
         }
         None => {
-            let zones = meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(
-                &state.core.db,
-            )
-            .find_for_tenant(tid)
-            .await?
-            .map(|n| n.zones)
-            .unwrap_or_default();
+            let zones =
+                meshharbor_services::dao::overlay_network::OverlayNetworkDao::new(&state.core.db)
+                    .find_for_tenant(tid)
+                    .await?
+                    .map(|n| n.zones)
+                    .unwrap_or_default();
             (Vec::new(), Vec::new(), None, zones)
         }
     };
@@ -485,16 +484,15 @@ pub(crate) fn agent_row(
     };
     // Only alongside `rdp_available == Some(true)`, like the three above.
     let rdp_mesh_reachable = rdp_available.and(a.capabilities.rdp_mesh_reachable);
-    let resolved_ip = a
-        .id
-        .and_then(|aid| fleet.rc_hub.agent_live_public_ip(aid))
-        .or_else(|| {
-            a.public_ip
-                .as_deref()
-                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-                .and_then(meshharbor_core::user_analytics::canonical_public_ip)
-        })
-        .or_else(|| public_ip_from_node(node));
+    let resolved_ip =
+        a.id.and_then(|aid| fleet.rc_hub.agent_live_public_ip(aid))
+            .or_else(|| {
+                a.public_ip
+                    .as_deref()
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+            })
+            .or_else(|| public_ip_from_node(node));
     let loc = meshharbor_mod_fleet::socket::lookup_display_location(
         geoip,
         a.physical_public_ip.as_deref(),
@@ -586,14 +584,15 @@ pub(crate) fn client_row(
     let loc = resolved_ip
         .map(|ip| geoip.lookup_location(ip))
         .unwrap_or_default();
-    let (zone_res, zone_source) = meshharbor_remote_control::models::resolve_device_zone_with_source(
-        zones,
-        &meshharbor_remote_control::models::DeviceZoneInputs {
-            egress_country: loc.country_code.as_deref(),
-            now_ms: bson::DateTime::now().timestamp_millis(),
-            ..Default::default()
-        },
-    );
+    let (zone_res, zone_source) =
+        meshharbor_remote_control::models::resolve_device_zone_with_source(
+            zones,
+            &meshharbor_remote_control::models::DeviceZoneInputs {
+                egress_country: loc.country_code.as_deref(),
+                now_ms: bson::DateTime::now().timestamp_millis(),
+                ..Default::default()
+            },
+        );
     let (effective_zone_id, effective_zone_name) = match zone_res {
         meshharbor_remote_control::models::DeviceZoneResolution::Resolved(z) => {
             (Some(z.id.clone()), Some(z.name.clone()))
@@ -704,9 +703,7 @@ fn row_matches(r: &DeviceRow, needle: &str) -> bool {
         || r.magic_dns_name
             .as_deref()
             .is_some_and(|f| f.to_lowercase().contains(needle))
-        || r.public_ip
-            .as_deref()
-            .is_some_and(|ip| ip.contains(needle))
+        || r.public_ip.as_deref().is_some_and(|ip| ip.contains(needle))
         || r.country_code
             .as_deref()
             .is_some_and(|c| c.to_lowercase().contains(needle))

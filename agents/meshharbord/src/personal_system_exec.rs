@@ -441,23 +441,27 @@ fn fold_seeded_user_config(
 
     let sys_markers = device_invite::read_markers(target_path);
     for mut cand in candidates_from_user_config(u_cfg, seed_markers) {
-        let existing_match_id =
-            if same_org_identity(&sys_cfg.server_url, &sys_cfg.tenant_id, &cand.entry.server_url, &cand.entry.tenant_id) {
-                Some((true, sys_cfg.agent_id.clone()))
-            } else {
-                sys_cfg
-                    .orgs
-                    .iter()
-                    .find(|o| {
-                        same_org_identity(
-                            &o.server_url,
-                            &o.tenant_id,
-                            &cand.entry.server_url,
-                            &cand.entry.tenant_id,
-                        )
-                    })
-                    .map(|o| (false, o.agent_id.clone()))
-            };
+        let existing_match_id = if same_org_identity(
+            &sys_cfg.server_url,
+            &sys_cfg.tenant_id,
+            &cand.entry.server_url,
+            &cand.entry.tenant_id,
+        ) {
+            Some((true, sys_cfg.agent_id.clone()))
+        } else {
+            sys_cfg
+                .orgs
+                .iter()
+                .find(|o| {
+                    same_org_identity(
+                        &o.server_url,
+                        &o.tenant_id,
+                        &cand.entry.server_url,
+                        &cand.entry.tenant_id,
+                    )
+                })
+                .map(|o| (false, o.agent_id.clone()))
+        };
 
         if let Some((is_sys_primary, sys_agent_id)) = existing_match_id {
             if sys_agent_id == cand.entry.agent_id {
@@ -518,7 +522,9 @@ fn fold_seeded_user_config(
         let label = cand
             .label_hint
             .as_deref()
-            .and_then(|h| crate::enrollment::unique_org_label(&sys_cfg, Some(h), &cand.entry.server_url).ok())
+            .and_then(|h| {
+                crate::enrollment::unique_org_label(&sys_cfg, Some(h), &cand.entry.server_url).ok()
+            })
             .map(Ok)
             .unwrap_or_else(|| {
                 crate::enrollment::unique_org_label(&sys_cfg, None, &cand.entry.server_url)
@@ -569,8 +575,8 @@ mod win_security {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
     use std::path::Path;
-    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, LUID, LocalFree};
     use std::path::PathBuf;
+    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, LUID, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
         GetSecurityInfo, SE_FILE_OBJECT,
@@ -579,8 +585,8 @@ mod win_security {
         ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AdjustTokenPrivileges,
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, IsWellKnownSid,
         LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-        SE_PRIVILEGE_ENABLED, SetFileSecurityW, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_PRIVILEGE_ENABLED,
+        SECURITY_ATTRIBUTES, SetFileSecurityW, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
         TOKEN_QUERY, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::Storage::FileSystem::{
@@ -615,8 +621,7 @@ mod win_security {
     /// Builtin Users read+execute (`0x1200a9`); inheritance off.
     pub(super) const PF_DIR_SDDL: &str =
         "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
-    pub(super) const PF_FILE_SDDL: &str =
-        "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
+    pub(super) const PF_FILE_SDDL: &str = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
 
     const WRITE_LIKE: u32 = 0x2 // FILE_WRITE_DATA / FILE_ADD_FILE
         | 0x4 // FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
@@ -696,9 +701,11 @@ mod win_security {
             return false;
         }
         // NT SERVICE\TrustedInstaller: S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464
-        const TI_SDDL_SID: &str =
-            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-        let wsid: Vec<u16> = TI_SDDL_SID.encode_utf16().chain(std::iter::once(0)).collect();
+        const TI_SDDL_SID: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        let wsid: Vec<u16> = TI_SDDL_SID
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let mut ti_psid: PSID = std::ptr::null_mut();
         // SAFETY: NUL-terminated string SID; `ti_psid` freed via LocalFree on success.
         let ok = unsafe { ConvertStringSidToSidW(wsid.as_ptr(), &mut ti_psid) };
@@ -872,8 +879,8 @@ mod win_security {
     }
 
     pub(super) fn apply_sddl_to_path(path: &Path, sddl: &str) -> Result<()> {
-        let sd = Sddl::new(sddl)
-            .with_context(|| format!("compiling SDDL for {}", path.display()))?;
+        let sd =
+            Sddl::new(sddl).with_context(|| format!("compiling SDDL for {}", path.display()))?;
         let wpath = wide(path);
         // SAFETY: `wpath` is NUL-terminated and `sd.psd` outlives the call.
         let ok = unsafe {
@@ -949,8 +956,9 @@ mod win_security {
                 bail!("creating secure directory {}: {err}", dir.display());
             }
         }
-        let verified = open_plain_dir_handle(dir)?
-            .ok_or_else(|| anyhow::anyhow!("directory {} disappeared after creation", dir.display()))?;
+        let verified = open_plain_dir_handle(dir)?.ok_or_else(|| {
+            anyhow::anyhow!("directory {} disappeared after creation", dir.display())
+        })?;
         check_security_handle(verified.as_raw_handle() as HANDLE, dir, true)
     }
 
@@ -1022,10 +1030,7 @@ mod win_security {
     /// delete anything placed inside, and a directory recreated after it is refused by
     /// the ownership check that follows. Anything non-empty is left for that check to
     /// refuse with [`untrusted_hint`].
-    pub(super) fn reclaim_empty_untrusted_tree(
-        root_dir: &Path,
-        config_dir: &Path,
-    ) -> Result<()> {
+    pub(super) fn reclaim_empty_untrusted_tree(root_dir: &Path, config_dir: &Path) -> Result<()> {
         let root = dir_trust(root_dir, false)?;
         let cfg = dir_trust(config_dir, true)?;
         if root != Some(false) && cfg != Some(false) {
@@ -1059,9 +1064,9 @@ mod win_security {
                 link.display()
             );
         }
-        let config_dir = config_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("config path {} has no parent", config_path.display()))?;
+        let config_dir = config_path.parent().ok_or_else(|| {
+            anyhow::anyhow!("config path {} has no parent", config_path.display())
+        })?;
         let root_dir = config_dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("config dir {} has no parent", config_dir.display()))?;
@@ -1137,7 +1142,10 @@ mod win_security {
             if file_path.exists() {
                 apply_sddl_to_path(&file_path, &file_sddl)?;
                 let verified = open_verified_private_file(&file_path)?.ok_or_else(|| {
-                    anyhow::anyhow!("{} disappeared during security verification", file_path.display())
+                    anyhow::anyhow!(
+                        "{} disappeared during security verification",
+                        file_path.display()
+                    )
                 })?;
                 drop(verified);
             }
@@ -1153,8 +1161,9 @@ mod win_security {
                 link.display()
             );
         }
-        let handle = open_plain_dir_handle(pf_root)?
-            .ok_or_else(|| anyhow::anyhow!("ProgramFiles root {} does not exist", pf_root.display()))?;
+        let handle = open_plain_dir_handle(pf_root)?.ok_or_else(|| {
+            anyhow::anyhow!("ProgramFiles root {} does not exist", pf_root.display())
+        })?;
         check_pf_security_handle(handle.as_raw_handle() as HANDLE, pf_root, true)
     }
 
@@ -1181,11 +1190,17 @@ mod win_security {
             let wdir = wide(dir);
             if unsafe { CreateDirectoryW(wdir.as_ptr(), sd.attributes()) } == 0 {
                 let err = std::io::Error::last_os_error();
-                bail!("creating secure ProgramFiles directory {}: {err}", dir.display());
+                bail!(
+                    "creating secure ProgramFiles directory {}: {err}",
+                    dir.display()
+                );
             }
         }
         let verified = open_plain_dir_handle(dir)?.ok_or_else(|| {
-            anyhow::anyhow!("ProgramFiles directory {} disappeared after hardening", dir.display())
+            anyhow::anyhow!(
+                "ProgramFiles directory {} disappeared after hardening",
+                dir.display()
+            )
         })?;
         check_security_handle(verified.as_raw_handle() as HANDLE, dir, true)
     }
@@ -1253,12 +1268,16 @@ mod win_security {
         {
             let entry = entry?;
             let p = entry.path();
-            let meta = std::fs::symlink_metadata(&p)
-                .with_context(|| format!("stat {}", p.display()))?;
+            let meta =
+                std::fs::symlink_metadata(&p).with_context(|| format!("stat {}", p.display()))?;
             if meta.file_type().is_symlink()
                 || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0
             {
-                bail!("refusing reparse point {} inside {}", p.display(), dir.display());
+                bail!(
+                    "refusing reparse point {} inside {}",
+                    p.display(),
+                    dir.display()
+                );
             }
             if meta.is_dir() {
                 ensure_trusted_pf_directory(&p)?;
@@ -1266,7 +1285,11 @@ mod win_security {
             } else if meta.is_file() {
                 verify_and_harden_pf_file(&p)?;
             } else {
-                bail!("refusing non-regular entry {} inside {}", p.display(), dir.display());
+                bail!(
+                    "refusing non-regular entry {} inside {}",
+                    p.display(),
+                    dir.display()
+                );
             }
         }
         Ok(())
@@ -1283,8 +1306,8 @@ mod win_security {
                 link.display()
             );
         }
-        let (pf_root, subdirs) = super::pf_subdirs_between_root_and_exe(exe, pf_roots)
-            .ok_or_else(|| {
+        let (pf_root, subdirs) =
+            super::pf_subdirs_between_root_and_exe(exe, pf_roots).ok_or_else(|| {
                 anyhow::anyhow!(
                     "{} is not inside a dedicated subdirectory under ProgramFiles",
                     exe.display()
@@ -1402,10 +1425,8 @@ async fn activate_platform_system_service(
 
     crate::win_service::install(&service_exe)
         .context("installing MeshHarbor Windows SCM service")?;
-    let _ = crate::win_service::environment::set_service_env_var(
-        "MESHHARBORD_ENABLE_SYSTEM_SWAP",
-        "1",
-    );
+    let _ =
+        crate::win_service::environment::set_service_env_var("MESHHARBORD_ENABLE_SYSTEM_SWAP", "1");
 
     crate::exec_service::anchor_cli(crate::exec_service::AnchorAction::Create {
         server: req.server_url.clone(),
@@ -1725,8 +1746,6 @@ async fn activate_platform_system_service(
     Ok(())
 }
 
-
-
 /// Merge a newly approved personal account enrollment into `existing` at
 /// `target_path`, turning on its overlay, promoting it to primary when the
 /// existing primary was invitation-only (SIAT), and clearing any temporary
@@ -1791,7 +1810,12 @@ fn merge_and_promote_personal_enrollment(
 mod tests {
     use super::*;
 
-    fn mk_cfg(server: &str, tenant: &str, agent_id: &str, name: &str) -> crate::config::AgentConfig {
+    fn mk_cfg(
+        server: &str,
+        tenant: &str,
+        agent_id: &str,
+        name: &str,
+    ) -> crate::config::AgentConfig {
         toml::from_str(&format!(
             "server_url = {server:?}\ntenant_id = {tenant:?}\nagent_id = {agent_id:?}\nagent_token = \"tok-{agent_id}\"\nmachine_id = \"mid-test-001\"\nmachine_name = {name:?}\n"
         ))
@@ -1857,7 +1881,10 @@ mod tests {
         let fresh = mk_cfg("https://mh.example", "t1", "aid-siat", "my-box");
         let (merged, _outcome) =
             merge_and_promote_personal_enrollment(&target, Some(existing), fresh, false).unwrap();
-        assert!(merged.overlay_enabled, "personal login enables primary overlay");
+        assert!(
+            merged.overlay_enabled,
+            "personal login enables primary overlay"
+        );
         let markers = device_invite::read_markers(&target);
         assert!(
             markers.is_empty(),
@@ -1927,7 +1954,10 @@ mod tests {
         let (merged, _outcome) =
             merge_and_promote_personal_enrollment(&target, Some(existing), fresh, false).unwrap();
         assert_eq!(merged.agent_id, "aid-own");
-        assert!(merged.overlay_enabled, "promoted primary must keep its overlay enabled");
+        assert!(
+            merged.overlay_enabled,
+            "promoted primary must keep its overlay enabled"
+        );
         assert_eq!(merged.orgs.len(), 1);
         assert_eq!(merged.orgs[0].agent_id, "aid-siat");
 
@@ -1955,7 +1985,12 @@ mod tests {
         crate::config::save(&target, &sys_cfg).unwrap();
 
         // User config holds SIAT Org A (primary, with legacy temporary.json) + secondary Org D.
-        let mut user_cfg = mk_cfg("https://mh.example", "tenant-siat-a", "aid-user-a", "my-box");
+        let mut user_cfg = mk_cfg(
+            "https://mh.example",
+            "tenant-siat-a",
+            "aid-user-a",
+            "my-box",
+        );
         user_cfg.overlay_enabled = true;
         let (user_cfg, _) = crate::enrollment::apply_enrollment(
             Some(user_cfg),
@@ -1985,11 +2020,24 @@ mod tests {
             merge_and_promote_personal_enrollment(&target, combined, fresh_c, false).unwrap();
 
         assert_eq!(merged.agent_id, "aid-sys-b");
-        assert!(merged.validate_orgs().is_empty(), "{:?}", merged.validate_orgs());
+        assert!(
+            merged.validate_orgs().is_empty(),
+            "{:?}",
+            merged.validate_orgs()
+        );
         let org_ids: HashSet<&str> = merged.orgs.iter().map(|o| o.agent_id.as_str()).collect();
-        assert!(org_ids.contains("aid-user-a"), "SIAT Org A must survive: {org_ids:?}");
-        assert!(org_ids.contains("aid-user-d"), "Secondary Org D must survive: {org_ids:?}");
-        assert!(org_ids.contains("aid-own-c"), "Personal Org C must be added: {org_ids:?}");
+        assert!(
+            org_ids.contains("aid-user-a"),
+            "SIAT Org A must survive: {org_ids:?}"
+        );
+        assert!(
+            org_ids.contains("aid-user-d"),
+            "Secondary Org D must survive: {org_ids:?}"
+        );
+        assert!(
+            org_ids.contains("aid-own-c"),
+            "Personal Org C must be added: {org_ids:?}"
+        );
 
         let markers = device_invite::read_markers(&target);
         assert!(
@@ -2063,10 +2111,19 @@ mod tests {
         let cfg = root.join("meshharbor");
         std::fs::create_dir_all(&cfg).unwrap();
         std::fs::write(cfg.join("config.toml"), "planted").unwrap();
-        assert!(!remove_dir_if_empty(&cfg).unwrap(), "a non-empty dir is kept");
-        assert!(cfg.join("config.toml").exists(), "and nothing inside it is touched");
+        assert!(
+            !remove_dir_if_empty(&cfg).unwrap(),
+            "a non-empty dir is kept"
+        );
+        assert!(
+            cfg.join("config.toml").exists(),
+            "and nothing inside it is touched"
+        );
         std::fs::remove_file(cfg.join("config.toml")).unwrap();
-        assert!(!remove_dir_if_empty(&root).unwrap(), "a parent holding a dir is kept");
+        assert!(
+            !remove_dir_if_empty(&root).unwrap(),
+            "a parent holding a dir is kept"
+        );
         assert!(remove_dir_if_empty(&cfg).unwrap());
         assert!(remove_dir_if_empty(&root).unwrap());
         assert!(remove_dir_if_empty(&root).unwrap(), "already gone is gone");
@@ -2074,7 +2131,9 @@ mod tests {
 
     #[test]
     fn daemon_cmdline_classifier_matches_only_daemon_invocations() {
-        assert!(is_meshharbord_daemon_cmdline(b"/usr/bin/meshharbord\0run\0"));
+        assert!(is_meshharbord_daemon_cmdline(
+            b"/usr/bin/meshharbord\0run\0"
+        ));
         assert!(is_meshharbord_daemon_cmdline(
             b"/usr/bin/meshharbord\0--config\0/etc/meshharbor/config.toml\0run\0"
         ));
@@ -2085,7 +2144,9 @@ mod tests {
         assert!(is_meshharbord_daemon_cmdline(b"meshharbor-agent\0run\0"));
 
         // Must NEVER match CLI verbs (`mh login` execs `meshharbord login ...`)!
-        assert!(!is_meshharbord_daemon_cmdline(b"/usr/bin/meshharbord\0login\0"));
+        assert!(!is_meshharbord_daemon_cmdline(
+            b"/usr/bin/meshharbord\0login\0"
+        ));
         assert!(!is_meshharbord_daemon_cmdline(
             b"/usr/bin/meshharbord\0--config\0/tmp/c.toml\0login\0--no-browser\0"
         ));
@@ -2094,9 +2155,13 @@ mod tests {
         ));
         assert!(!is_meshharbord_daemon_cmdline(b"meshharbord\0status\0"));
         assert!(!is_meshharbord_daemon_cmdline(b"meshharbord\0ssh\0box\0"));
-        assert!(!is_meshharbord_daemon_cmdline(b"meshharbord\0service\0status\0"));
+        assert!(!is_meshharbord_daemon_cmdline(
+            b"meshharbord\0service\0status\0"
+        ));
         assert!(!is_meshharbord_daemon_cmdline(b"meshharbord\0--version\0"));
-        assert!(!is_meshharbord_daemon_cmdline(b"meshharbord\0run\0--help\0"));
+        assert!(!is_meshharbord_daemon_cmdline(
+            b"meshharbord\0run\0--help\0"
+        ));
         assert!(!is_meshharbord_daemon_cmdline(b"/usr/bin/mh\0login\0"));
         assert!(!is_meshharbord_daemon_cmdline(b""));
     }
@@ -2110,8 +2175,11 @@ mod tests {
         for (pid, ppid) in [(100u32, 1u32), (200, 100), (300, 200), (400, 300)] {
             let pdir = dir.join(pid.to_string());
             std::fs::create_dir_all(&pdir).unwrap();
-            std::fs::write(pdir.join("status"), format!("Name:\tmeshharbord\nPPid:\t{ppid}\n"))
-                .unwrap();
+            std::fs::write(
+                pdir.join("status"),
+                format!("Name:\tmeshharbord\nPPid:\t{ppid}\n"),
+            )
+            .unwrap();
         }
         let anc = ancestor_pids_from_proc(&dir, 400);
         assert_eq!(anc, HashSet::from([400, 300, 200, 100]));
@@ -2143,11 +2211,8 @@ mod tests {
 
         // Directly inside Program Files root (no subdirectory) must return None!
         assert!(
-            pf_subdirs_between_root_and_exe(
-                Path::new(r"C:\Program Files\meshharbord.exe"),
-                &roots
-            )
-            .is_none()
+            pf_subdirs_between_root_and_exe(Path::new(r"C:\Program Files\meshharbord.exe"), &roots)
+                .is_none()
         );
 
         // Outside Program Files must return None!
@@ -2195,7 +2260,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn real_program_files_passes_and_user_dir_is_rejected_by_win_security() {
-        if let Some(pf) = std::env::var_os("ProgramW6432").or_else(|| std::env::var_os("ProgramFiles")) {
+        if let Some(pf) =
+            std::env::var_os("ProgramW6432").or_else(|| std::env::var_os("ProgramFiles"))
+        {
             let pf_path = PathBuf::from(pf);
             if pf_path.is_dir() {
                 win_security::verify_pf_root_readonly(&pf_path)

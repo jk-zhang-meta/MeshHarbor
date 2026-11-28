@@ -291,7 +291,8 @@ fn query_full_image_name(h: HANDLE) -> Option<PathBuf> {
     let mut buf = vec![0u16; 32_768];
     let mut len = buf.len() as u32;
     // SAFETY: `h` has at least `PROCESS_QUERY_LIMITED_INFORMATION`; `buf` & `len` valid.
-    let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
     if ok == 0 || len == 0 {
         return None;
     }

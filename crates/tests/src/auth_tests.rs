@@ -631,25 +631,48 @@ async fn logout_clears_the_refresh_cookie_too() {
 async fn public_account_identity_is_email_only_and_password_bytes_are_preserved() {
     let app = TestApp::spawn().await;
     let password = "  Deliberate.Password.  ";
-    let registered = app.client.post(app.url("/api/auth/register"))
+    let registered = app
+        .client
+        .post(app.url("/api/auth/register"))
         .json(&serde_json::json!({"email":" Alice.New@Example.test ","password":password}))
-        .send().await.unwrap();
-    assert_eq!(registered.status().as_u16(), 201, "email registration needs no independent username/display name");
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        registered.status().as_u16(),
+        201,
+        "email registration needs no independent username/display name"
+    );
     app.activate_user("alice.new@example.test").await;
-    let login = app.client.post(app.url("/api/auth/login"))
+    let login = app
+        .client
+        .post(app.url("/api/auth/login"))
         .json(&serde_json::json!({"email":" ALICE.NEW@example.test ","password":password}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(login.status().as_u16(), 200);
     let body: Value = login.json().await.unwrap();
     assert_eq!(body["user"]["email"], "alice.new@example.test");
     assert_eq!(body["user"]["email_verified"], true);
-    let trimmed = app.client.post(app.url("/api/auth/login"))
+    let trimmed = app
+        .client
+        .post(app.url("/api/auth/login"))
         .json(&serde_json::json!({"email":"alice.new@example.test","password":password.trim()}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(trimmed.status().as_u16(), 401);
     let legacy_handle = body["user"]["username"].as_str().unwrap();
-    let username_login = app.client.post(app.url("/api/auth/login"))
+    let username_login = app
+        .client
+        .post(app.url("/api/auth/login"))
         .json(&serde_json::json!({"username":legacy_handle,"password":password}))
-        .send().await.unwrap();
-    assert!(!username_login.status().is_success(), "internal handle is not a second public login identifier");
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !username_login.status().is_success(),
+        "internal handle is not a second public login identifier"
+    );
 }

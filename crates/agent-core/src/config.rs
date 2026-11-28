@@ -2761,7 +2761,9 @@ impl AgentConfig {
         match self.management_entry_port {
             Some(0) => None,
             Some(p) => Some(p),
-            None => Some(meshharbor_remote_control::management_entry::DEFAULT_MANAGEMENT_ENTRY_PORT),
+            None => {
+                Some(meshharbor_remote_control::management_entry::DEFAULT_MANAGEMENT_ENTRY_PORT)
+            }
         }
     }
     /// This device serves as an org relay (`None` = not decided locally).

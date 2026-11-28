@@ -283,7 +283,8 @@ impl AppState {
             .collect();
         let offline_cap = {
             use meshharbor_remote_control::offline_cap::OfflineCapSigner;
-            let derived = OfflineCapSigner::from_jwt_secrets(&settings.jwt.secret, &prev_jwt_secrets);
+            let derived =
+                OfflineCapSigner::from_jwt_secrets(&settings.jwt.secret, &prev_jwt_secrets);
             match settings.relay.offline_cap_private_key.as_deref() {
                 Some(key) if !key.trim().is_empty() => {
                     match OfflineCapSigner::from_pkcs8_b64(key, derived.public_keys_b64().to_vec())
@@ -334,9 +335,8 @@ impl AppState {
             relay_load: relay_load.clone(),
             hooks: meshharbor_core::HookRegistry::default(),
             agent_socket: meshharbor_core::AgentSocketRegistry::default(),
-            // FR-115 — plans bind only where they are sold (`saas` compiled
-            // in and switched on); self-hosting stays free and unlimited.
-            plans_sold: cfg!(feature = "saas") && settings.modules.saas,
+            // 0.5.0 is self-hosted only: no commercial plan gates.
+            plans_sold: false,
             offline_cap,
         };
         // FR-69 P2 — the module crates, after the core and before the host
@@ -476,24 +476,6 @@ impl AppState {
         // singleton per cycle via the same DB-name-scoped claim pattern.
         // No-op task when `stats.enabled=false`.
         crate::stats_rollup::spawn_stats_rollup(state.clone());
-        // FR-102 P1d — the daily growth digest: once the clock passes
-        // `growth.digest_hour_utc`, yesterday's digest is computed, stored
-        // and mailed once (the `growth_digests._id` insert decides which pod).
-        // No-op unless `growth.digest_enabled` (default OFF).
-        crate::growth::digest::spawn_digest_loop(state.clone());
-        // FR-102 P2 — the nightly `growth_org_daily` fold: once per UTC day
-        // per cluster (a Redis claim keyed by the day), the last three
-        // closed days are recomputed; an empty collection is first filled
-        // over the sources' horizon. No-op unless `growth.enabled`.
-        crate::growth::org_daily::spawn_org_daily_loop(state.clone());
-        // FR-102 P10 — the weekly roll-up (once the clock passes Monday
-        // `digest_hour_utc`, the past ISO week is computed, stored in
-        // `growth_weekly` and mailed once through the digest's claim) and
-        // the alert evaluator (hourly; a rule opens one `growth_alerts` row,
-        // mails once a day, clears itself). No-ops unless
-        // `growth.weekly_enabled` / `growth.alerts` (both default OFF).
-        crate::growth::weekly::spawn_weekly_loop(state.clone());
-        crate::growth::alerts::spawn_alert_loop(state.clone());
 
         // FR-69 P5a — the inverse edges (D6). Each mounted module registers
         // its hooks (since P7a that includes the network steps of the agent

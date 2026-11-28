@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use std::collections::HashMap;
-
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use meshharbor_core::attribution::{self, AttributionInput};
 use meshharbor_services::oauth::OAuthUserInfo;
 use serde::Deserialize;
-use tracing::debug;
 use uuid::Uuid;
 
 use crate::{core_state::Core, error::ApiError};
@@ -49,7 +45,6 @@ pub struct CallbackQuery {
 pub async fn oauth_redirect(
     State(state): State<Core>,
     Path(provider): Path<String>,
-    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
     let oauth = state
         .oauth
@@ -66,23 +61,6 @@ pub async fn oauth_redirect(
     let auth_url = oauth
         .build_auth_url(&provider, &csrf_state)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-
-    // FR-88 — park the attribution under the state the cookie below binds.
-    // Same TTL as the cookie, no cookie of its own, and a Redis that is
-    // absent, failing or not answering in time costs the attribution, never
-    // the sign-in (`park_for_oauth` gives up at `OAUTH_STORE_BUDGET`).
-    if let Some(attr) = attribution::sanitize(AttributionInput::from_query(&query)) {
-        match state.redis_pubsub.as_ref() {
-            Some(redis) => {
-                if let Err(e) =
-                    attribution::park_for_oauth(redis.as_ref(), &csrf_state, &attr).await
-                {
-                    debug!(%e, "oauth attribution not parked; continuing without it");
-                }
-            }
-            None => debug!("no redis — oauth attribution dropped"),
-        }
-    }
 
     let cookie = format!(
         "oauth_state={}; HttpOnly; Path=/; SameSite=Lax; Max-Age=600{}",
@@ -144,17 +122,8 @@ pub async fn oauth_callback(
 pub async fn complete_sign_in(
     state: &Core,
     user_info: OAuthUserInfo,
-    csrf_state: &str,
+    _csrf_state: &str,
 ) -> Result<Response, ApiError> {
-    // FR-88 — collect (and delete) whatever the redirect parked under this
-    // state. A missing, expired or unreadable key, and a Redis that does not
-    // answer within `OAUTH_STORE_BUDGET`, are all `None`; the DAO applies a
-    // `Some` only when it CREATES the account.
-    let signup_attribution = match state.redis_pubsub.as_ref() {
-        Some(redis) => attribution::take_for_oauth(redis.as_ref(), csrf_state).await,
-        None => None,
-    };
-
     // Find or create user
     let sign_in = state
         .users
@@ -165,7 +134,7 @@ pub async fn complete_sign_in(
             &user_info.name,
             user_info.avatar_url.as_deref(),
             user_info.email_verified,
-            signup_attribution,
+            None,
         )
         .await?;
     let user = sign_in.user;

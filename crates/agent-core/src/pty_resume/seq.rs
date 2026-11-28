@@ -523,8 +523,12 @@ impl VtScreenTracker {
             }
             // Restore attributes and exact cursor location (1-based CUP).
             out.extend_from_slice(
-                format!("\x1b[0m\x1b[{};{}H", cur_row.saturating_add(1), cur_col.saturating_add(1))
-                    .as_bytes(),
+                format!(
+                    "\x1b[0m\x1b[{};{}H",
+                    cur_row.saturating_add(1),
+                    cur_col.saturating_add(1)
+                )
+                .as_bytes(),
             );
             if !hide {
                 out.extend_from_slice(b"\x1b[?25h");
@@ -573,7 +577,10 @@ mod tests {
         assert!(ring.can_replay_from(0));
         assert_eq!(ring.read_from(0).unwrap(), expected);
         assert_eq!(ring.read_from(17).unwrap(), expected[17..]);
-        assert_eq!(ring.read_from(expected.len() as u64).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            ring.read_from(expected.len() as u64).unwrap(),
+            Vec::<u8>::new()
+        );
 
         // Push 8 KiB to force wrap-around beyond 4096.
         let big = vec![b'A'; 8192];

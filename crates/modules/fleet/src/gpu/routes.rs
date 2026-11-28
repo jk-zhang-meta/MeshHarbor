@@ -297,7 +297,9 @@ pub async fn build_fleet_response(
 ) -> GpuFleetResponse {
     let agents_only: Vec<Agent> = entries.iter().map(|(a, _, _)| a.clone()).collect();
     let fresh_presence = crate::agent::agent_presence_batch(state, &agents_only).await;
-    let live_interval_ms = state.gpu.effective_viewer_interval_ms(requested_interval_ms);
+    let live_interval_ms = state
+        .gpu
+        .effective_viewer_interval_ms(requested_interval_ms);
 
     if live {
         let lease_targets: Vec<(ObjectId, bool)> = entries
@@ -491,10 +493,12 @@ pub(super) fn project_host_view(
             let status_detail = if status == GpuHostStatus::Ok {
                 s.report.status_detail.clone()
             } else {
-                s.report
-                    .status_detail
-                    .clone()
-                    .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.status_detail.clone()))
+                s.report.status_detail.clone().or_else(|| {
+                    agent
+                        .gpu_inventory
+                        .as_ref()
+                        .and_then(|i| i.status_detail.clone())
+                })
             };
             let hf = host_status_fault(status, status_detail.as_deref());
             let cards: Vec<GpuCardFleetView> = if s.report.gpus.is_empty()
@@ -514,11 +518,12 @@ pub(super) fn project_host_view(
                 .backend
                 .clone()
                 .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.backend.clone()));
-            let driver_version = s
-                .report
-                .driver_version
-                .clone()
-                .or_else(|| agent.gpu_inventory.as_ref().and_then(|i| i.driver_version.clone()));
+            let driver_version = s.report.driver_version.clone().or_else(|| {
+                agent
+                    .gpu_inventory
+                    .as_ref()
+                    .and_then(|i| i.driver_version.clone())
+            });
             (
                 status,
                 status_detail,
@@ -621,7 +626,9 @@ pub(super) fn project_host_view(
         total_count,
         host,
         gpus,
-        inventory: include_inventory.then(|| agent.gpu_inventory.clone()).flatten(),
+        inventory: include_inventory
+            .then(|| agent.gpu_inventory.clone())
+            .flatten(),
     }
 }
 
@@ -786,12 +793,7 @@ pub(super) async fn is_agent_visible_to_subscriber(
                 .is_ok_and(|access| access.agent.gpu_server)
         }
         "org" => {
-            agent.tenant_id == tid
-                && state
-                    .tenants
-                    .is_member(tid, user_id)
-                    .await
-                    .unwrap_or(false)
+            agent.tenant_id == tid && state.tenants.is_member(tid, user_id).await.unwrap_or(false)
         }
         "invited" => {
             if agent.tenant_id != tid {
@@ -859,7 +861,8 @@ pub async fn get_fleet_host(
         .find(|(a, _, _)| a.id == Some(aid))
         .ok_or_else(|| ApiError::NotFound("GPU server not found".to_string()))?;
 
-    let mut resp = build_fleet_response(&state, vec![found], live, 0, true, query.interval_ms).await;
+    let mut resp =
+        build_fleet_response(&state, vec![found], live, 0, true, query.interval_ms).await;
     resp.hosts
         .pop()
         .map(Json)
@@ -932,7 +935,9 @@ pub async fn filter_live_gpu_reports(
     let mut live = HashMap::new();
     for a in agents {
         let Some(aid) = a.id else { continue };
-        let Some(snap) = snaps.get(&aid) else { continue };
+        let Some(snap) = snaps.get(&aid) else {
+            continue;
+        };
         let redis_fresh = fresh_presence.contains(&aid);
         let (_, is_online) = crate::agent::derive_agent_presence(state, a, redis_fresh);
         let recv_s = snap.received_at.timestamp_millis() / 1000;
@@ -1056,10 +1061,7 @@ pub async fn put_alert_rules(
         .core
         .db
         .collection::<GpuAlertRule>(RULES_COLLECTION)
-        .replace_one(
-            doc! { "tenant_id": tid, "user_id": auth.user_id },
-            &rule,
-        )
+        .replace_one(doc! { "tenant_id": tid, "user_id": auth.user_id }, &rule)
         .upsert(true)
         .await
         .map_err(|e| ApiError::Internal(format!("saving GPU alert rules failed: {e}")))?;
@@ -1322,9 +1324,7 @@ pub async fn test_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meshharbor_remote_control::gpu::{
-        GpuInventoryItem, GpuReport, GpuStateThresholds,
-    };
+    use meshharbor_remote_control::gpu::{GpuInventoryItem, GpuReport, GpuStateThresholds};
     use meshharbor_remote_control::models::OsKind;
     use meshharbor_services::dao::agent::AgentDao;
 
@@ -1472,10 +1472,28 @@ mod tests {
         );
 
         let view_a = project_host_view(
-            &agent_a, "org", false, true, Some(&snap_a), now_ms, now_s, true, thresholds, false,
+            &agent_a,
+            "org",
+            false,
+            true,
+            Some(&snap_a),
+            now_ms,
+            now_s,
+            true,
+            thresholds,
+            false,
         );
         let view_b = project_host_view(
-            &agent_b, "org", false, false, Some(&snap_b), now_ms, now_s, true, thresholds, false,
+            &agent_b,
+            "org",
+            false,
+            false,
+            Some(&snap_b),
+            now_ms,
+            now_s,
+            true,
+            thresholds,
+            false,
         );
 
         let mut sum = GpuFleetSummary {
@@ -1555,7 +1573,16 @@ mod tests {
             now_ms - 5_000,
         );
         let view = project_host_view(
-            &agent, "org", false, true, Some(&snap), now_ms, now_s, false, thresholds, false,
+            &agent,
+            "org",
+            false,
+            true,
+            Some(&snap),
+            now_ms,
+            now_s,
+            false,
+            thresholds,
+            false,
         );
         assert_eq!(view.gpus.len(), 1);
         assert_eq!(view.host_fault_severity.as_deref(), Some("critical"));
@@ -1587,7 +1614,16 @@ mod tests {
             now_ms - 15_000,
         );
         let lag_view = project_host_view(
-            &live_agent, "org", false, true, Some(&live_snap), now_ms, now_s, true, thresholds, false,
+            &live_agent,
+            "org",
+            false,
+            true,
+            Some(&live_snap),
+            now_ms,
+            now_s,
+            true,
+            thresholds,
+            false,
         );
         assert_eq!(lag_view.freshness, GpuFreshness::Fresh);
         assert!(lag_view.lagging);

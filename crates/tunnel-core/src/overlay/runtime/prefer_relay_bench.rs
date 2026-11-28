@@ -262,9 +262,7 @@ fn grade(
     {
         return Grade::Worse;
     }
-    if d_lost * 100 <= d_sent * 5
-        && dj <= 20
-        && (d_eff * 100 <= r_eff * 115 || d_eff <= r_eff + 30)
+    if d_lost * 100 <= d_sent * 5 && dj <= 20 && (d_eff * 100 <= r_eff * 115 || d_eff <= r_eff + 30)
     {
         return Grade::Healthy;
     }

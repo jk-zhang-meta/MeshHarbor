@@ -687,7 +687,7 @@ const UDP_ALLOC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 
 /// F2 — total wall-clock budget shared across all physical non-VPN uplinks
 /// tried during corp-VPN / multi-NIC UDP TURN rescue (`<= 3` NICs).
-#[cfg(any(feature = "overlay-l3", test))]
+#[cfg(feature = "overlay-l3")]
 const UDP_RESCUE_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// F2 — try up to 3 ordered physical uplinks under a single shared
@@ -696,7 +696,7 @@ const UDP_RESCUE_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_s
 /// budget so an early blackholed NIC (e.g. a cellular RNDIS uplink or isolated
 /// LAN) cannot starve subsequent reachable NICs, while a single-NIC host still
 /// receives the full budget.
-#[cfg(any(feature = "overlay-l3", test))]
+#[cfg(any(feature = "overlay-l3", all(test, feature = "overlay")))]
 async fn try_rescue_uplinks_bounded<T, F, Fut>(
     uplinks: &[(std::net::Ipv4Addr, Option<u32>)],
     total_budget: std::time::Duration,
@@ -1570,6 +1570,7 @@ mod turn_tests {
         );
     }
 
+    #[cfg(feature = "overlay")]
     #[tokio::test(start_paused = true)]
     async fn rescue_uplinks_succeeds_on_second_nic_after_first_stalls_and_bounds_total_time() {
         let turn_addr: SocketAddr = "127.0.0.1:3478".parse().unwrap();

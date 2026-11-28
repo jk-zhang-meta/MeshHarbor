@@ -50,9 +50,7 @@
 
 pub mod admission;
 pub mod agent_socket;
-pub mod attribution;
 pub mod business_authority;
-pub mod campaign;
 pub mod capabilities;
 pub mod client_ip;
 pub mod cluster;
@@ -61,7 +59,6 @@ pub mod cookies;
 pub mod error;
 pub mod extractors;
 pub mod graph;
-pub mod growth;
 pub mod guards;
 pub mod hooks;
 pub mod ice_zones;
@@ -86,8 +83,7 @@ pub use agent_socket::{
 pub use capabilities::{Capabilities, TenantCtx};
 pub use error::ApiError;
 pub use hooks::{
-    FleetLifecycle, HookRegistry, Hooks, ReleasedLease, RenamePropagation, RoleAsk, RoleVerdict,
-    SessionGate, TenantLifecycle,
+    FleetLifecycle, HookRegistry, Hooks, ReleasedLease, RenamePropagation, TenantLifecycle,
 };
 pub use job::{Cadence, Job, JobFuture};
 pub use meshharbor_db::indexes::{IndexOp, IndexPlan, IndexSet};

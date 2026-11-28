@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// `MESHHARBORD_MANAGEMENT_ENTRIES=0`: dial the centre directly, whatever it pushed.
@@ -309,9 +309,7 @@ pub fn load_effective(host: &str) -> Pushed {
     {
         return p.clone();
     }
-    state_path()
-        .map(|p| load(&p, &key))
-        .unwrap_or_default()
+    state_path().map(|p| load(&p, &key)).unwrap_or_default()
 }
 
 fn is_known_centre(host: &str) -> bool {
@@ -444,9 +442,7 @@ pub fn should_move(pushed: &Pushed, local: &[String]) -> bool {
     let (order, last_resort) = plan(pushed, local, None);
     match last_connected() {
         Some((Candidate::Direct, false)) => last_resort && order.len() > 1,
-        Some((Candidate::Entry(cur), _)) => {
-            !last_resort || !order.contains(&Candidate::Entry(cur))
-        }
+        Some((Candidate::Entry(cur), _)) => !last_resort || !order.contains(&Candidate::Entry(cur)),
         _ => false,
     }
 }
@@ -809,7 +805,11 @@ mod tests {
         assert!(last_resort);
         assert_eq!(
             order,
-            vec![Candidate::Entry(e2), Candidate::Entry(e1), Candidate::Direct]
+            vec![
+                Candidate::Entry(e2),
+                Candidate::Entry(e1),
+                Candidate::Direct
+            ]
         );
 
         // Unregistered third-party or loopback hosts stay strictly direct.

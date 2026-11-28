@@ -260,7 +260,7 @@ mod tests {
                             to_driver.send(ServerMsg::TunnelOpened {
                                 session_id:sid, transport:"webrtc-dc-v1".into(),
                                 dc_pool_size:1, sctp_rwnd_bytes:1 << 20, ice_servers:vec![],
-                                quic_auth_token:None, open_nonce:None, net_grant_id:None,
+                                quic_auth_token:None, open_nonce:None,
                             }).await.unwrap();
                         },
                         Some(ClientMsg::TunnelSdpOffer {sdp,..}) => {
@@ -329,7 +329,6 @@ mod tests {
                         let _ = tx.send(addr);
                     }
                 })),
-                net_grant: None,
             },
             vec!["webrtc-dc-v1".into()],
             "webrtc-dc-v1",

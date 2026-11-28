@@ -140,7 +140,12 @@ impl AscendBackend {
             }
 
             if let Ok(dcmi) = super::ascend_dcmi::DcmiSession::try_init() {
-                return (Some(Self { mode: AscendMode::Dcmi(dcmi) }), None);
+                return (
+                    Some(Self {
+                        mode: AscendMode::Dcmi(dcmi),
+                    }),
+                    None,
+                );
             }
 
             let smi_path = NPU_SMI_CANDIDATES
@@ -643,7 +648,10 @@ fn build_samples(
 ) -> Vec<GpuSample> {
     let mut procs_by_card: HashMap<(u16, u16), Vec<&ParsedNpuProc>> = HashMap::new();
     for p in &parsed.procs {
-        procs_by_card.entry((p.npu_id, p.chip_id)).or_default().push(p);
+        procs_by_card
+            .entry((p.npu_id, p.chip_id))
+            .or_default()
+            .push(p);
     }
 
     let has_multi_chip = parsed.cards.iter().any(|c| c.chip_id > 0);
@@ -1057,6 +1065,9 @@ mod tests {
     #[test]
     fn fr139_ascend_310p_memory_usage_fallback() {
         let (u, used, tot, is_hbm) = parse_card_line2_metrics("18  2400 / 24576  0 / 0");
-        assert_eq!((u, used, tot, is_hbm), (Some(18), Some(2400), Some(24576), false));
+        assert_eq!(
+            (u, used, tot, is_hbm),
+            (Some(18), Some(2400), Some(24576), false)
+        );
     }
 }

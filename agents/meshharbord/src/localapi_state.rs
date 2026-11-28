@@ -637,10 +637,7 @@ impl DaemonState {
         if row.tenant_id.is_empty() {
             return None;
         }
-        Some((
-            row.connected.load(Ordering::Relaxed),
-            row.tenant_id.clone(),
-        ))
+        Some((row.connected.load(Ordering::Relaxed), row.tenant_id.clone()))
     }
 
     /// FR-139 — synthesize a [`tunnel_core::localapi::DevicesPage`] while the
@@ -706,8 +703,7 @@ impl DaemonState {
                 })
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| tenant_id.clone());
-            let sec_name =
-                crate::p2pctl::tenant_self_name(&tenant_id).unwrap_or(primary_name);
+            let sec_name = crate::p2pctl::tenant_self_name(&tenant_id).unwrap_or(primary_name);
             (sec_id, sec_name)
         };
         if matches_query(&self_name, &self_id, view.self_ip.as_deref()) {
@@ -903,12 +899,20 @@ impl LocalApiState for DaemonState {
                 }) && crate::exec_service::advertised_for(&self.node_id)),
         );
         NodeStatus {
-            name_sync: self.remote_config.as_ref().and_then(|r| r.names.snapshot()).map(|s| s.1),
+            name_sync: self
+                .remote_config
+                .as_ref()
+                .and_then(|r| r.names.snapshot())
+                .map(|s| s.1),
             path_trials: connected
                 .then(|| self.overlay.borrow().path_trials.clone())
                 .flatten(),
             node_id: self.node_id.clone(),
-            name: self.remote_config.as_ref().and_then(|r| r.names.snapshot()).map(|s| s.0)
+            name: self
+                .remote_config
+                .as_ref()
+                .and_then(|r| r.names.snapshot())
+                .map(|s| s.0)
                 .unwrap_or_else(|| self.name.lock().map(|n| n.clone()).unwrap_or_default()),
             version: self.version.clone(),
             mode: self.mode,
@@ -1221,7 +1225,10 @@ impl LocalApiState for DaemonState {
                 p.org = primary_label.clone();
             }
             for (label, rx) in views.iter() {
-                let sec_connected = sec_conn_map.get(label).copied().unwrap_or(primary_connected);
+                let sec_connected = sec_conn_map
+                    .get(label)
+                    .copied()
+                    .unwrap_or(primary_connected);
                 let mut org_peers = rx.borrow().peers.clone();
                 if !sec_connected {
                     org_peers.retain(|p| p.connection == ConnectionType::Direct);
@@ -1446,8 +1453,13 @@ impl LocalApiState for DaemonState {
             };
         };
         match services.names.propose(name).await {
-            Ok((name, state)) => Response::DeviceNameSet { name, name_sync: Some(state) },
-            Err(error) => Response::Error { message: format!("device name proposal: {error}") },
+            Ok((name, state)) => Response::DeviceNameSet {
+                name,
+                name_sync: Some(state),
+            },
+            Err(error) => Response::Error {
+                message: format!("device name proposal: {error}"),
+            },
         }
     }
 
@@ -2140,55 +2152,6 @@ impl LocalApiState for DaemonState {
         }
     }
 
-    /// FR-90 P1h-2 — the root update helper (macOS) holds this daemon before
-    /// `installer(8)` restarts it: the same wait the in-process updater runs
-    /// (P1d-1), ended early only by the daemon stopping.
-    async fn hive_update_hold(&self) -> Response {
-        // Without a restart handle (tests, a daemon built without one) the
-        // sender lives here, for as long as the wait does.
-        let (_keep, idle) = watch::channel(false);
-        let shutdown = self
-            .restart
-            .as_ref()
-            .map(RestartHandle::shutdown_rx)
-            .unwrap_or(idle);
-        crate::updater::hold_for_install(shutdown).await
-    }
-
-    fn hive_update_release(&self) {
-        crate::updater::release_install_hold();
-    }
-
-    /// FR-90 P3-9-2b — `mh connect`: a person's endpoint, served to the
-    /// account the LocalAPI listener read, its leases asked for the device's
-    /// owner and renewed while the asking connection stays open.
-    #[cfg(all(hive_host, feature = "vault"))]
-    async fn connect(
-        &self,
-        asker: &tunnel_core::localapi::Asker,
-        args: &tunnel_core::localapi::ConnectArgs,
-    ) -> Response {
-        match crate::hive::person_connect::open(asker, args).await {
-            Ok((id, endpoint)) => Response::Connected { id, endpoint },
-            Err(message) => Response::Error { message },
-        }
-    }
-
-    #[cfg(all(hive_host, feature = "vault"))]
-    fn connect_status(&self, id: u64) -> Response {
-        match crate::hive::person_connect::state(id) {
-            Some(state) => Response::ConnectState(state),
-            None => Response::Error {
-                message: format!("no endpoint {id} is held"),
-            },
-        }
-    }
-
-    #[cfg(all(hive_host, feature = "vault"))]
-    fn connect_release(&self, id: u64) {
-        crate::hive::person_connect::release(id);
-    }
-
     /// Fleet RPC — relay an exec to another device over this daemon's own
     /// agent WS and wait for the answer.
     ///
@@ -2330,7 +2293,6 @@ impl LocalApiState for DaemonState {
                 public_key: public_key.to_string(),
                 session_secs,
                 // A person's request: no agent session's ticket (FR-90 P3-8).
-                ssh_ticket: None,
             })
             .await
             .is_err()
@@ -3063,7 +3025,10 @@ mod tests {
         )
         .with_config_persist(path.clone(), lock.clone())
         .with_remote_config(crate::remote_config::RemoteConfigServices::new(
-            path.clone(), lock, false, false,
+            path.clone(),
+            lock,
+            false,
+            false,
         ));
 
         // Rejections: empty + oversized names never touch the config.

@@ -18,106 +18,28 @@
 //! The write is spawned and best-effort (a refused request is answered at
 //! once whatever the database is doing), and off with `growth.enabled`.
 
-use std::collections::BTreeMap;
-
 use meshharbor_db::models::Tenant;
-use meshharbor_services::{
-    dao::growth::{GrowthDao, QUOTA_COLLISION_METRIC, QUOTA_SOURCE},
-    quota::{self, Limit, QuotaDenial},
-};
-use tracing::warn;
+use meshharbor_services::quota::{Limit, QuotaDenial};
 
 use crate::Core;
 
-/// [`quota::check`] for `tenant`, counting the collision.
-pub fn check(core: &Core, tenant: &Tenant, limit: Limit, used: u64) -> Result<(), QuotaDenial> {
-    check_delta(core, tenant, limit, used, 1)
+/// Self-hosted 0.5.0 carries no commercial plan gates; every org is unlimited.
+pub fn check(_core: &Core, _tenant: &Tenant, _limit: Limit, _used: u64) -> Result<(), QuotaDenial> {
+    Ok(())
 }
 
-/// [`quota::check_delta`] for `tenant`, counting the collision.
+/// Self-hosted 0.5.0 carries no commercial plan gates; every org is unlimited.
 pub fn check_delta(
-    core: &Core,
-    tenant: &Tenant,
-    limit: Limit,
-    current: u64,
-    delta: u64,
+    _core: &Core,
+    _tenant: &Tenant,
+    _limit: Limit,
+    _current: u64,
+    _delta: u64,
 ) -> Result<(), QuotaDenial> {
-    // FR-115 — a server that sells no plans holds no org to one: on a
-    // self-hosted server every org is `free` only because nobody sold it
-    // anything, and self-hosting is free and unlimited (`Core::plans_sold`).
-    // Nothing is counted either: no limit was hit.
-    if !core.plans_sold {
-        return Ok(());
-    }
-    // FR-115 — against the org's BILLED seats, so a per-seat limit
-    // (concurrency, storage) is the org's, not one seat's.
-    let verdict = quota::evaluate_for(
-        tenant.plan.clone(),
-        tenant.billed_seats(),
-        tenant.settings.plan_enforcement,
-        limit,
-        current,
-        delta,
-    );
-    if verdict.collision.is_some() {
-        record_collision(core, tenant, limit);
-    }
-    verdict.into_result()
+    Ok(())
 }
 
-/// [`quota::require_feature`] for `tenant`, counting the collision.
-pub fn require_feature(core: &Core, tenant: &Tenant, limit: Limit) -> Result<(), QuotaDenial> {
-    check(core, tenant, limit, 0)
-}
-
-/// The `growth_daily` dimensions of one collision: the org (its hex id) and
-/// the limit (its wire spelling). Never a person.
-pub fn collision_dims(tenant_hex: &str, limit: Limit) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("tenant".to_string(), tenant_hex.to_string()),
-        ("limit".to_string(), limit.as_str().to_string()),
-    ])
-}
-
-/// Count one collision for the org. [`check_delta`] calls it on every
-/// collision it sees; a caller that decides with the pure
-/// `quota::evaluate_for` and acts later (FR-115's meeting cap, which counts a
-/// meeting once, when the end it won lands) calls it itself.
-pub fn record_collision(core: &Core, tenant: &Tenant, limit: Limit) {
-    if !core.settings.growth.enabled {
-        return;
-    }
-    let Some(tenant_id) = tenant.id else {
-        return;
-    };
-    let db = core.db.clone();
-    // `YYYY-MM-DD`, UTC — the day the collision happened.
-    let day: String = bson::DateTime::now()
-        .try_to_rfc3339_string()
-        .unwrap_or_default()
-        .chars()
-        .take(10)
-        .collect();
-    tokio::spawn(async move {
-        let dims = collision_dims(&tenant_id.to_hex(), limit);
-        if let Err(e) = GrowthDao::new(&db)
-            .bump_daily(&day, QUOTA_SOURCE, QUOTA_COLLISION_METRIC, &dims, 1)
-            .await
-        {
-            warn!(%e, limit = limit.as_str(), "quota collision could not be counted");
-        }
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_collision_is_the_org_and_the_limit_never_a_person() {
-        let dims = collision_dims("65f000000000000000000001", Limit::MaxMembers);
-        assert_eq!(dims.len(), 2);
-        assert_eq!(dims["tenant"], "65f000000000000000000001");
-        assert_eq!(dims["limit"], "max_members");
-    }
+/// Self-hosted 0.5.0 carries no commercial plan gates; every org is unlimited.
+pub fn require_feature(_core: &Core, _tenant: &Tenant, _limit: Limit) -> Result<(), QuotaDenial> {
+    Ok(())
 }

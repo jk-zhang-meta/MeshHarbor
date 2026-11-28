@@ -215,7 +215,6 @@ async fn device_login_enrolls_into_the_approvers_org_exactly_once() {
         user_id: owner,
         display: "owner".into(),
         origin_agent_id: Some(id),
-        session: meshharbor_mod_network::routes::agent_ssh::CallerSession::None,
     };
     let gates = target.ssh_policy.clone().split().0;
     app.db

@@ -1477,7 +1477,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 local_relay: None,
                 initial_resolution: None,
                 replaces: None,
-            continues_from: None,
+                continues_from: None,
             })
             .unwrap()
             .into(),
@@ -1563,7 +1563,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 local_relay: None,
                 initial_resolution: None,
                 replaces: None,
-            continues_from: None,
+                continues_from: None,
             })
             .unwrap()
             .into(),

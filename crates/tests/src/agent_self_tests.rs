@@ -504,7 +504,7 @@ async fn acl_off_lists_every_live_node_with_display_names_sorted_and_paged() {
 /// fails at the set-equality assertion (the PR body carries that run).
 #[tokio::test]
 async fn enforce_lists_full_permanent_inventory_with_accurate_reachability_while_temporary_stays_isolated()
-{
+ {
     let mut rig = Rig::up("self-enforce").await;
 
     set_acl_mode(&rig.app, &rig.seeded, "enforce").await;
@@ -1474,14 +1474,18 @@ async fn account_devices_include_offline_and_cross_border_with_city_geoip_and_te
         );
     }
     let (_, q_zone) = get_devices(&app, &guest_tok, "?q=global").await;
-    assert_eq!(q_zone["total"], json!(0), "temporary caller search must not probe zone: {q_zone}");
+    assert_eq!(
+        q_zone["total"],
+        json!(0),
+        "temporary caller search must not probe zone: {q_zone}"
+    );
     drop(guest_ws);
     drop(us_ws);
 }
 
 #[tokio::test]
 async fn temporary_guest_without_node_stays_isolated_when_invitations_disabled_and_fails_closed_on_corrupt_invite()
-{
+ {
     let geo_dir = tempfile::tempdir().unwrap();
     let mmdb_path = geo_dir.path().join("dbip-city-lite.mmdb");
     std::fs::write(&mmdb_path, city_fixture_mmdb()).unwrap();

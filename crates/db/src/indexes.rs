@@ -233,17 +233,6 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
         ],
     ));
 
-    // S5 — Stripe webhook idempotency ledger: `_id` = the Stripe event
-    // id (natural unique key), rows expire after 30 days (Stripe stops
-    // retrying long before that).
-    sets.push(set(
-        "stripe_events",
-        vec![index_ttl(
-            bson::doc! { "processed_at": 1 },
-            30 * 24 * 60 * 60,
-        )],
-    ));
-
     // Notifications
     sets.push(set(
         "notifications",
@@ -428,192 +417,21 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
         ],
     ));
 
-    // Per-conference-instance sample buckets from the mediasoup sampler
-    // (owner pod of the room is the single writer).
-    sets.push(set(
-        "stats_call",
-        vec![
-            index(bson::doc! { "tenant_id": 1, "ts": 1 }),
-            index(bson::doc! { "tenant_id": 1, "room_id": 1, "ts": 1 }),
-            index(bson::doc! { "call_id": 1, "ts": 1 }),
-            index_ttl(bson::doc! { "ts": 1 }, 7 * 24 * 60 * 60),
-        ],
-    ));
-
-    // Wave 3 — the same sampler's PER-PARTICIPANT rows, backing per-user
-    // usage accounting. `user_id` leads its own index because the platform
-    // view queries one user ACROSS orgs, where a tenant-first index can't
-    // help.
-    sets.push(set(
-        "stats_call_user",
-        vec![
-            index(bson::doc! { "tenant_id": 1, "ts": 1 }),
-            index(bson::doc! { "tenant_id": 1, "user_id": 1, "ts": 1 }),
-            index(bson::doc! { "user_id": 1, "ts": 1 }),
-            index_ttl(bson::doc! { "ts": 1 }, 7 * 24 * 60 * 60),
-        ],
-    ));
-
-    // Wave 3 — the per-user usage reads' (user, time) indexes on
-    // `remote_sessions` and `tunnel_audit` are the `remote` (P6) and
-    // `network` (P7a) modules' now.
-
-    // ── Growth observability (FR-102) ─────────────────────────────────────
-    // Core-level like `stats_*` (spec §3o): written by the host's growth
-    // routes and jobs, read by every growth number.
-
-    // P1c — the platform admin's explicit exclusion list: one row per
-    // `(kind, id)`, so the same org cannot be listed twice with two reasons.
-    // The implicit exclusions (platform admins and the orgs they own) have
-    // no row — `meshharbor_core::growth::ExclusionSet` folds both in.
-    sets.push(set(
-        "growth_exclusions",
-        vec![index_unique(bson::doc! { "kind": 1, "id": 1 })],
-    ));
-
-    // P1d — one digest per closed UTC day, `_id` the day: the unique `_id`
-    // is the once-only claim (the insert decides which pod computes and
-    // sends). Kept 25 months (spec §3l) from the day it was computed; a row
-    // that never computed (a claim that died) has no `computed_at` and is
-    // re-claimed by the job, not reaped.
-    sets.push(set(
-        "growth_digests",
-        vec![index_ttl(
-            bson::doc! { "computed_at": 1 },
-            25 * 30 * 24 * 60 * 60,
-        )],
-    ));
-
-    // P2 — one row per org per UTC day with any activity, `_id` =
-    // `"{tenant}:{yyyy-mm-dd}"` (spec §3d). Read per org (the timeline, the
-    // first/last value day) and per day range (the funnel, cohorts, WAO —
-    // `day` is `YYYY-MM-DD`, which sorts as a date). Kept 25 months from the
-    // day itself; it outlives the 90-day audit rows it was computed from.
-    // `GrowthDao::purge_tenant` takes an org's rows with it, but no org
-    // hard-delete path exists yet, so the TTL is what bounds it for now.
-    sets.push(set(
-        "growth_org_daily",
-        vec![
-            index(bson::doc! { "tenant_id": 1, "day": 1 }),
-            index(bson::doc! { "day": 1 }),
-            index_ttl(bson::doc! { "day_start": 1 }, 25 * 30 * 24 * 60 * 60),
-        ],
-    ));
-
-    // P3 — the frozen daily totals: one row per `(source, metric, dims, day)`
-    // with `_id` the four joined (the upsert's own key). The digest reads one
-    // `(source, metric)` over a day range, which is this index. No TTL
-    // (spec §3o: kept indefinitely — they carry no person).
-    sets.push(set(
-        "growth_daily",
-        vec![index(bson::doc! { "source": 1, "metric": 1, "day": 1 })],
-    ));
-
-    // P6 — one pull-status row per `(source, UTC day)` a puller attempted,
-    // `_id = "<source>:<day>"` (the upsert's own key): whether the day was
-    // pulled, when, and what the newest attempt met. It is how a reader of
-    // `growth_daily` tells "not pulled" (no row) or "failed" from a pulled
-    // zero. Read per source over a day range. No TTL, like the rows it
-    // describes.
-    sets.push(set(
-        "growth_pulls",
-        vec![index(bson::doc! { "source": 1, "day": 1 })],
-    ));
-
-    // P8 — machine keys for the growth surface (D12): only a hash and a
-    // display prefix, never the key. The hash is what a request is looked
-    // up by, so it is unique (two keys colliding is a 2^-192 event, and the
-    // index makes it a refused insert rather than an ambiguous lookup).
-    sets.push(set(
-        "growth_keys",
-        vec![
-            index_unique(bson::doc! { "hash": 1 }),
-            index(bson::doc! { "kind": 1, "created_at": -1 }),
-        ],
-    ));
-
-    // P8 — social reach as the promotion pipeline pushes it: a post is
-    // `(platform, platform_id)` and a snapshot `(platform, platform_id,
-    // snapshot)`. The unique pairs ARE the idempotency (AC18: a snapshot
-    // pushed twice is stored once); the views read posts by publish time.
-    // No TTL — aggregates about our own content, no person (spec §3p).
-    sets.push(set(
-        "growth_posts",
-        vec![
-            index_unique(bson::doc! { "platform": 1, "platform_id": 1 }),
-            index(bson::doc! { "published_at": 1 }),
-        ],
-    ));
-    sets.push(set(
-        "growth_post_snapshots",
-        vec![index_unique(
-            bson::doc! { "platform": 1, "platform_id": 1, "snapshot": 1 },
-        )],
-    ));
-
-    // P10 — the weekly roll-ups: one row per closed ISO week, `_id =
-    // "YYYY-Www"`, the daily digest's claim and statuses in a collection of
-    // their own, and the same 25-month TTL from the compute.
-    sets.push(set(
-        "growth_weekly",
-        vec![index_ttl(
-            bson::doc! { "computed_at": 1 },
-            25 * 30 * 24 * 60 * 60,
-        )],
-    ));
-
-    // P10 — alerts: at most ONE open row per `(rule, key)`. The partial
-    // unique index is the fire's arbiter across pods (a second pod's insert
-    // is a duplicate key, read back as "already open", never a second
-    // alert); `$type: "null"` so only an explicit null — an open row —
-    // takes part, and a cleared row never blocks the next fire. Kept 90
-    // days from `fired_at` (spec §3o).
-    sets.push(set(
-        "growth_alerts",
-        vec![
-            index_unique_partial(
-                bson::doc! { "rule": 1, "key": 1 },
-                bson::doc! { "cleared_at": { "$type": "null" } },
-            ),
-            index_ttl(bson::doc! { "fired_at": 1 }, 90 * 24 * 60 * 60),
-        ],
-    ));
-
-    // P9a — remote-desktop quality per UTC day, scope and agent version,
-    // `_id = "{day}:{scope}:{version}"`, frozen nightly by the host: the one
-    // place FR-22's time to first frame survives the 7-day `agent_logs`
-    // TTL. Read per scope over a day range (the Quality view, the digest,
-    // the weekly roll-up). No TTL — aggregates about the product, no org
-    // and no person (spec §3o), like `growth_daily`.
-    sets.push(set(
-        "growth_quality_daily",
-        vec![index(bson::doc! { "scope": 1, "day": 1 })],
-    ));
-
     // Hourly rollups (90 d) and daily rollups (730 d). The rollup task
     // whole-bucket-replaces via $merge on _id, so these are also upserts.
     for (coll, ttl_days) in [
         ("stats_usage_1h", 90u64),
         ("stats_relay_1h", 90),
         ("stats_machine_1h", 90),
-        ("stats_call_1h", 90),
-        ("stats_call_user_1h", 90),
         ("stats_usage_1d", 730),
         ("stats_relay_1d", 730),
         ("stats_machine_1d", 730),
-        ("stats_call_1d", 730),
-        ("stats_call_user_1d", 730),
     ] {
         let mut idx = vec![index_ttl(bson::doc! { "ts": 1 }, ttl_days * 24 * 60 * 60)];
         if coll.starts_with("stats_relay") {
             idx.push(index(bson::doc! { "region": 1, "ts": 1 }));
         } else {
             idx.push(index(bson::doc! { "tenant_id": 1, "ts": 1 }));
-        }
-        // The rolled-up usage tiers are read per USER as well as per org
-        // (the platform view asks "this user, across every org").
-        if coll.starts_with("stats_call_user") {
-            idx.push(index(bson::doc! { "user_id": 1, "ts": 1 }));
         }
         sets.push(set(coll, idx));
     }

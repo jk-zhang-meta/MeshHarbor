@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //
 // Headless i18n parity, key coverage, and local-font / zero-CDN verification
-// for both meshharbor-desktop and meshharbor-setup front-ends.
+// for the meshharbor-desktop front-end.
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -11,10 +11,8 @@ const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DESKTOP_FRONT = path.join(REPO_ROOT, 'agents', 'meshharbor-desktop', 'src', 'front');
-const SETUP_FRONT = path.join(REPO_ROOT, 'agents', 'meshharbor-setup', 'src', 'front');
 
 const desktopI18n = require(path.join(DESKTOP_FRONT, 'i18n.js'));
-const setupI18n = require(path.join(SETUP_FRONT, 'i18n.js'));
 
 function placeholdersOf(str) {
   const found = new Set();
@@ -146,10 +144,8 @@ function checkFrontCoverageAndHygiene(label, frontDir, i18n) {
 }
 
 const desktopCount = checkDictionaryParity('meshharbor-desktop', desktopI18n);
-const setupCount = checkDictionaryParity('meshharbor-setup', setupI18n);
 
 checkFrontCoverageAndHygiene('meshharbor-desktop', DESKTOP_FRONT, desktopI18n);
-checkFrontCoverageAndHygiene('meshharbor-setup', SETUP_FRONT, setupI18n);
 
 // Check dynamic-prefix key tables in desktop JS match desktop i18n dictionary.
 const recSrc = fs.readFileSync(path.join(DESKTOP_FRONT, 'recordings.js'), 'utf8');
@@ -191,5 +187,5 @@ for (const m of featBlock[1].matchAll(/\['([a-z0-9_]+)',/g)) {
 }
 
 console.log(
-  `i18n parity & zero-CDN passed: desktop=${desktopCount} keys, setup=${setupCount} keys (100% en/zh-CN parity + placeholders + bundled IBM Plex fonts)`,
+  `i18n parity & zero-CDN passed: desktop=${desktopCount} keys (100% en/zh-CN parity + placeholders + bundled IBM Plex fonts)`,
 );

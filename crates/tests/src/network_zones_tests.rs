@@ -110,11 +110,19 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
     );
 
     // Non-member rejected on GET and PUT.
-    assert_eq!(get_json(&app, &nz_path, &other.admin.access_token).await.0, 403);
     assert_eq!(
-        put(&app, &nz_path, &other.admin.access_token, json!({ "zones": [] }))
-            .await
-            .0,
+        get_json(&app, &nz_path, &other.admin.access_token).await.0,
+        403
+    );
+    assert_eq!(
+        put(
+            &app,
+            &nz_path,
+            &other.admin.access_token,
+            json!({ "zones": [] })
+        )
+        .await
+        .0,
         403
     );
 
@@ -133,7 +141,10 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
     let mgr_role_id = mgr_role["id"].as_str().unwrap();
     assert_eq!(
         app.auth_post(
-            &tenant_url(&seeded, &format!("/role/{mgr_role_id}/assign/{}", seeded.member.id)),
+            &tenant_url(
+                &seeded,
+                &format!("/role/{mgr_role_id}/assign/{}", seeded.member.id)
+            ),
             admin,
         )
         .send()
@@ -170,7 +181,10 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
         .unwrap();
     assert_eq!(
         app.auth_delete(
-            &tenant_url(&seeded, &format!("/role/{mgr_role_id}/assign/{}", seeded.member.id)),
+            &tenant_url(
+                &seeded,
+                &format!("/role/{mgr_role_id}/assign/{}", seeded.member.id)
+            ),
             admin,
         )
         .send()
@@ -186,7 +200,12 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
     let too_many: Vec<Value> = (0..33)
         .map(|i| json!({ "id": format!("z{i}"), "name": format!("Zone {i}") }))
         .collect();
-    assert_eq!(put(&app, &nz_path, admin, json!({ "zones": too_many })).await.0, 400);
+    assert_eq!(
+        put(&app, &nz_path, admin, json!({ "zones": too_many }))
+            .await
+            .0,
+        400
+    );
 
     // Duplicate normalized slugs (`"CN"` vs `"cn"`) rejected:
     assert_eq!(
@@ -359,7 +378,10 @@ async fn network_zones_crud_permissions_gateway_redaction_and_validation_invaria
         );
     }
     let (_, admin_view) = get_json(&app, &nz_path, admin).await;
-    assert_eq!(admin_view["zones"][0]["gateway_relay_ids"], json!([relay_id]));
+    assert_eq!(
+        admin_view["zones"][0]["gateway_relay_ids"],
+        json!([relay_id])
+    );
 
     // 6. Zone assignment permissions + deletion protection:
     //    - FR-124: an ordinary member may NOT pin a device, not even their own
@@ -489,7 +511,8 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
         s.app.rate_limit_trusted_hops = 0;
         s.app.business_isolation = "off".into();
         s.turn.url = Some("turn:139.199.9.9:3478".into());
-        s.turn.worker_urls = Some("turn:139.199.9.9:3478,turn:202.181.7.9:3478,turn:8.8.4.4:3478".into());
+        s.turn.worker_urls =
+            Some("turn:139.199.9.9:3478,turn:202.181.7.9:3478,turn:8.8.4.4:3478".into());
         s.turn.shared_secret = Some("nz-fixture-secret".into());
         s.stats.geoip_mmdb = Some(mmdb);
     })
@@ -530,8 +553,20 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
     join_node(&mut hk_a_ws, 14, "202.181.7.10:41641", json!({})).await;
     join_node(&mut us_a_ws, 15, "8.8.8.8:41641", json!({})).await;
     join_node(&mut unk_ws, 16, "192.168.10.5:41641", json!({})).await;
-    join_node(&mut gz_ws, 17, "139.199.6.6:41641", json!({ "relay_backbone_ready": true })).await;
-    join_node(&mut dual_ws, 18, "139.199.6.7:41641", json!({ "relay_backbone_ready": true })).await;
+    join_node(
+        &mut gz_ws,
+        17,
+        "139.199.6.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
+    join_node(
+        &mut dual_ws,
+        18,
+        "139.199.6.7:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
 
     let cn_a_node = node_id(&app, &seeded, "nz3-cn-a").await;
     let cn_b_node = node_id(&app, &seeded, "nz3-cn-b").await;
@@ -595,10 +630,18 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
     assert_eq!(approve(&app, &seeded, &us_revoked_id, false).await, 200);
 
     // Drain the live full netmap pushed by `PUT /network-zones` to each online node.
-    let _ = recv_t(&mut cn_a_ws, "rc:overlay.netmap", wait).await.unwrap();
-    let _ = recv_t(&mut siat_ws, "rc:overlay.netmap", wait).await.unwrap();
-    let _ = recv_t(&mut hk_a_ws, "rc:overlay.netmap", wait).await.unwrap();
-    let unk_nm = recv_t(&mut unk_ws, "rc:overlay.netmap", wait).await.unwrap();
+    let _ = recv_t(&mut cn_a_ws, "rc:overlay.netmap", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut siat_ws, "rc:overlay.netmap", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut hk_a_ws, "rc:overlay.netmap", wait)
+        .await
+        .unwrap();
+    let unk_nm = recv_t(&mut unk_ws, "rc:overlay.netmap", wait)
+        .await
+        .unwrap();
 
     // Pin `siat_id` to `"siat"` (`auto_countries: []`, gateway `[gz_id]` in CN!) ->
     // `siat_ws` immediately receives a live-pushed full netmap!
@@ -700,10 +743,22 @@ async fn three_plus_zones_symmetric_router_only_direct_preferred_shared_gateway_
         !table.refuses_registration(&[14_u8; 32]),
         "DirectPreferred hk keeps the centre"
     );
-    assert!(table.permits(&[14_u8; 32], &[15_u8; 32]), "DirectPreferred hk <-> us DERP allowed");
-    assert!(!table.permits(&[11_u8; 32], &[14_u8; 32]), "cn -> hk DERP denied");
-    assert!(!table.permits(&[14_u8; 32], &[11_u8; 32]), "hk -> cn DERP denied");
-    assert!(!table.permits(&[16_u8; 32], &[14_u8; 32]), "UnresolvedStrict unk -> hk DERP denied");
+    assert!(
+        table.permits(&[14_u8; 32], &[15_u8; 32]),
+        "DirectPreferred hk <-> us DERP allowed"
+    );
+    assert!(
+        !table.permits(&[11_u8; 32], &[14_u8; 32]),
+        "cn -> hk DERP denied"
+    );
+    assert!(
+        !table.permits(&[14_u8; 32], &[11_u8; 32]),
+        "hk -> cn DERP denied"
+    );
+    assert!(
+        !table.permits(&[16_u8; 32], &[14_u8; 32]),
+        "UnresolvedStrict unk -> hk DERP denied"
+    );
 
     // 7. Single shared dual-zone gateway (`dual_id` in BOTH `cn` and `hk` `gateway_relay_ids`)
     //    serves `cn_a <-> hk_a` single-hop, while `siat <-> hk_a` (disjoint gateways `[gz]` vs `[dual]`,
@@ -826,12 +881,27 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     let mut siat_ws = connect_from(&app, &siat_tok, &[], Some("139.199.1.45")).await;
     let mut hk_leaf_ws = connect_from(&app, &hk_leaf_tok, &[], Some("202.181.7.20")).await;
     let mut us_ws = connect_from(&app, &us_tok, &[], Some("8.8.8.8")).await;
-    let mut gz_ws =
-        connect_from(&app, &gz_tok, &["relay-server", "relay-control"], Some("139.199.6.6")).await;
-    let mut hk_ws =
-        connect_from(&app, &hk_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
-    let mut hy_ws =
-        connect_from(&app, &hy_tok, &["relay-server", "relay-control"], Some("8.8.4.4")).await;
+    let mut gz_ws = connect_from(
+        &app,
+        &gz_tok,
+        &["relay-server", "relay-control"],
+        Some("139.199.6.6"),
+    )
+    .await;
+    let mut hk_ws = connect_from(
+        &app,
+        &hk_tok,
+        &["relay-server", "relay-control"],
+        Some("202.181.7.6"),
+    )
+    .await;
+    let mut hy_ws = connect_from(
+        &app,
+        &hy_tok,
+        &["relay-server", "relay-control"],
+        Some("8.8.4.4"),
+    )
+    .await;
 
     // Drain initial `peer_relay_serve = false` on the 3 routers.
     let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
@@ -841,9 +911,27 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     join_node(&mut siat_ws, 31, "139.199.1.45:41641", json!({})).await;
     join_node(&mut hk_leaf_ws, 32, "202.181.7.20:41641", json!({})).await;
     join_node(&mut us_ws, 33, "8.8.8.8:41641", json!({})).await;
-    join_node(&mut gz_ws, 34, "139.199.6.6:41641", json!({ "relay_backbone_ready": true })).await;
-    join_node(&mut hk_ws, 35, "202.181.7.6:41641", json!({ "relay_backbone_ready": true })).await;
-    join_node(&mut hy_ws, 36, "8.8.4.4:41641", json!({ "relay_backbone_ready": true })).await;
+    join_node(
+        &mut gz_ws,
+        34,
+        "139.199.6.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
+    join_node(
+        &mut hk_ws,
+        35,
+        "202.181.7.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
+    join_node(
+        &mut hy_ws,
+        36,
+        "8.8.4.4:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
 
     let siat_node = node_id(&app, &seeded, "rm-siat45").await;
     let hk_leaf_node = node_id(&app, &seeded, "rm-hk-leaf").await;
@@ -927,7 +1015,13 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
         "hyonix-la must auto-synthesize same-zone po0-hk endpoint: {hy_serve}"
     );
 
-    let hk_nm = join_node(&mut hk_ws, 35, "202.181.7.6:41641", json!({ "relay_backbone_ready": true })).await;
+    let hk_nm = join_node(
+        &mut hk_ws,
+        35,
+        "202.181.7.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
     let hk_bb_targets = hk_nm["network"]["backbone_probe_targets"]
         .as_array()
         .expect("hk backbone_probe_targets");
@@ -1025,12 +1119,19 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     let hk_auto_bridge = recv_t(&mut hk_ws, "rc:overlay.relay_bridge_serve", wait)
         .await
         .expect("po0-hk auto-bridges to same-zone hyonix-la");
-    assert_eq!(hk_auto_bridge["bridge"]["remote_endpoint"], json!("8.8.4.4:3478"));
+    assert_eq!(
+        hk_auto_bridge["bridge"]["remote_endpoint"],
+        json!("8.8.4.4:3478")
+    );
     let _ = recv_t(&mut hy_ws, "rc:overlay.relay_serve", wait)
         .await
         .expect("hyonix-la serves exit for same-zone 2-hop");
-    let _ = recv_t(&mut hk_leaf_ws, "rc:overlay.relay_session", wait).await.unwrap();
-    let _ = recv_t(&mut us_ws, "rc:overlay.relay_session", wait).await.unwrap();
+    let _ = recv_t(&mut hk_leaf_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut us_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
 
     // 4. Now Admin configures ONLY the cross-zone private link `po0-gz <-> po0-hk`
     //    (`10.42.2.114:3478` / `172.31.8.41:3478`) — STILL zero manual edges on `po0-hk -> hyonix-la`!
@@ -1130,7 +1231,10 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     let gz_bridge = recv_t(&mut gz_ws, "rc:overlay.relay_bridge_serve", wait)
         .await
         .expect("po0-gz bridges to po0-hk over private link");
-    assert_eq!(gz_bridge["bridge"]["remote_endpoint"], json!("10.42.2.114:3478"));
+    assert_eq!(
+        gz_bridge["bridge"]["remote_endpoint"],
+        json!("10.42.2.114:3478")
+    );
 
     let _ = recv_t(&mut hk_ws, "rc:overlay.relay_serve", wait)
         .await
@@ -1138,7 +1242,10 @@ async fn router_topology_same_zone_auto_mesh_vs_cross_zone_explicit_private_link
     let hk_bridge = recv_t(&mut hk_ws, "rc:overlay.relay_bridge_serve", wait)
         .await
         .expect("po0-hk bridges to hyonix-la over auto-synthesized same-zone mesh");
-    assert_eq!(hk_bridge["bridge"]["remote_endpoint"], json!("8.8.4.4:3478"));
+    assert_eq!(
+        hk_bridge["bridge"]["remote_endpoint"],
+        json!("8.8.4.4:3478")
+    );
 
     let _ = recv_t(&mut hy_ws, "rc:overlay.relay_serve", wait)
         .await
@@ -2168,10 +2275,14 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
     let connect_with_regions = |tok: String, xff: &'static str| {
         let addr = app.addr;
         async move {
-            let enc = tok.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+            let enc = tok
+                .replace('+', "%2B")
+                .replace('/', "%2F")
+                .replace('=', "%3D");
             let ws_url = format!("ws://{addr}/ws?token={enc}&role=agent");
             let mut req = ws_url.into_client_request().unwrap();
-            req.headers_mut().insert("x-forwarded-for", xff.parse().unwrap());
+            req.headers_mut()
+                .insert("x-forwarded-for", xff.parse().unwrap());
             let (mut ws, _) = connect_async(req).await.unwrap();
             ws.send(Message::Text(
                 json!({
@@ -2203,8 +2314,12 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
     // 1. Auto `roam` connects from HK IP (`202.181.7.10`) -> resolves to `"hk"` (`DirectPreferred`),
     //    receives both regions with `policy_revision = rev1`, and mints single-hop HK session.
     let mut roam_ws = connect_with_regions(roam_tok.clone(), "202.181.7.10").await;
-    let reg1 = recv_t(&mut roam_ws, "rc:relay.regions", wait).await.unwrap();
-    let rev1 = reg1["policy_revision"].as_u64().expect("policy_revision on RelayRegions");
+    let reg1 = recv_t(&mut roam_ws, "rc:relay.regions", wait)
+        .await
+        .unwrap();
+    let rev1 = reg1["policy_revision"]
+        .as_u64()
+        .expect("policy_revision on RelayRegions");
     let reg1_ids: Vec<&str> = reg1["regions"]
         .as_array()
         .unwrap()
@@ -2236,9 +2351,15 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
         ))
         .await
         .unwrap();
-    let _ = recv_t(&mut hk_relay_ws, "rc:overlay.relay_serve", wait).await.unwrap();
-    let s1 = recv_t(&mut roam_ws, "rc:overlay.relay_session", wait).await.unwrap();
-    let _ = recv_t(&mut hk_peer_ws, "rc:overlay.relay_session", wait).await.unwrap();
+    let _ = recv_t(&mut hk_relay_ws, "rc:overlay.relay_serve", wait)
+        .await
+        .unwrap();
+    let s1 = recv_t(&mut roam_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut hk_peer_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
     let vni = s1["vni"].as_u64().unwrap();
 
     // 2. Auto `roam` roams to Shenzhen IP (`139.199.1.45` -> `"cn"`, `RouterOnly`, `gateway_relay_ids: []`):
@@ -2247,9 +2368,16 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
     //    - Stale HK single-hop session `vni` is revoked!
     drop(roam_ws);
     let mut roam_cn_ws = connect_with_regions(roam_tok.clone(), "139.199.1.45").await;
-    let reg2 = recv_t(&mut roam_cn_ws, "rc:relay.regions", wait).await.unwrap();
-    let rev2 = reg2["policy_revision"].as_u64().expect("bumped policy_revision");
-    assert!(rev2 > rev1, "IP roam must bump policy_revision: {rev2} <= {rev1}");
+    let reg2 = recv_t(&mut roam_cn_ws, "rc:relay.regions", wait)
+        .await
+        .unwrap();
+    let rev2 = reg2["policy_revision"]
+        .as_u64()
+        .expect("bumped policy_revision");
+    assert!(
+        rev2 > rev1,
+        "IP roam must bump policy_revision: {rev2} <= {rev1}"
+    );
     let reg2_ids: Vec<&str> = reg2["regions"]
         .as_array()
         .unwrap()
@@ -2265,12 +2393,19 @@ async fn auto_zone_reconnect_ip_roam_vs_pinned_stability_and_revisioned_relay_re
         .expect("stale HK session revoked on roam to CN");
     assert_eq!(peer_rev["vni"].as_u64(), Some(vni));
 
-    let (_, ag_roam) = get_json(&app, &tenant_url(&seeded, &format!("/agent/{roam_id}")), admin).await;
+    let (_, ag_roam) = get_json(
+        &app,
+        &tenant_url(&seeded, &format!("/agent/{roam_id}")),
+        admin,
+    )
+    .await;
     assert_eq!(ag_roam["effective_zone_id"], json!("cn"));
 
     // 3. Pinned `"hk"` device connecting from CN IP (`139.199.1.45`) stays in `"hk"`!
     let mut pinned_ws = connect_with_regions(pinned_tok, "139.199.1.45").await;
-    let reg_pin = recv_t(&mut pinned_ws, "rc:relay.regions", wait).await.unwrap();
+    let reg_pin = recv_t(&mut pinned_ws, "rc:relay.regions", wait)
+        .await
+        .unwrap();
     let pin_ids: Vec<&str> = reg_pin["regions"]
         .as_array()
         .unwrap()
@@ -2316,7 +2451,13 @@ async fn residual_p1_finalized_trial_blocks_return_to_direct_when_zone_flips_to_
 
     join_node(&mut cn_ws, 81, "139.199.1.45:41641", json!({})).await;
     join_node(&mut hk_ws, 82, "202.181.7.10:41641", json!({})).await;
-    join_node(&mut dual_ws, 83, "202.181.7.6:41641", json!({ "relay_backbone_ready": true })).await;
+    join_node(
+        &mut dual_ws,
+        83,
+        "202.181.7.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
 
     let hk_node = node_id(&app, &seeded, "p1-hk").await;
     let dual_node = node_id(&app, &seeded, "p1-dual-relay").await;
@@ -2373,9 +2514,15 @@ async fn residual_p1_finalized_trial_blocks_return_to_direct_when_zone_flips_to_
         ))
         .await
         .unwrap();
-    let _ = recv_t(&mut dual_ws, "rc:overlay.relay_serve", wait).await.unwrap();
-    let start_cn = recv_t(&mut cn_ws, "rc:overlay.path_trial_start", wait).await.unwrap();
-    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_start", wait).await.unwrap();
+    let _ = recv_t(&mut dual_ws, "rc:overlay.relay_serve", wait)
+        .await
+        .unwrap();
+    let start_cn = recv_t(&mut cn_ws, "rc:overlay.path_trial_start", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_start", wait)
+        .await
+        .unwrap();
     let trial_id = start_cn["trial_id"].as_str().unwrap().to_string();
 
     for ws in [&mut cn_ws, &mut hk_ws] {
@@ -2387,8 +2534,12 @@ async fn residual_p1_finalized_trial_blocks_return_to_direct_when_zone_flips_to_
         .await
         .unwrap();
     }
-    let _ = recv_t(&mut cn_ws, "rc:overlay.path_trial_commit", wait).await.unwrap();
-    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_commit", wait).await.unwrap();
+    let _ = recv_t(&mut cn_ws, "rc:overlay.path_trial_commit", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_commit", wait)
+        .await
+        .unwrap();
     for ws in [&mut cn_ws, &mut hk_ws] {
         ws.send(Message::Text(
             json!({ "t": "rc:overlay.path_trial_committed", "trial_id": trial_id })
@@ -2398,8 +2549,12 @@ async fn residual_p1_finalized_trial_blocks_return_to_direct_when_zone_flips_to_
         .await
         .unwrap();
     }
-    let _ = recv_t(&mut cn_ws, "rc:overlay.path_trial_finalize", wait).await.unwrap();
-    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_finalize", wait).await.unwrap();
+    let _ = recv_t(&mut cn_ws, "rc:overlay.path_trial_finalize", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut hk_ws, "rc:overlay.path_trial_finalize", wait)
+        .await
+        .unwrap();
 
     // Now flip `"cn"` to `"router_only"` -> direct transport is forbidden, while the
     // finalized relay carrier on shared `dual_id` stays valid!
@@ -2497,8 +2652,20 @@ async fn sota_bound_single_relay_continuous_upgrade_via_make_before_break_trial_
 
     join_node(&mut a_ws, 91, "139.199.1.10:41641", json!({})).await;
     join_node(&mut b_ws, 92, "139.199.1.11:41641", json!({})).await;
-    join_node(&mut slow_ws, 93, "139.199.6.1:41641", json!({ "relay_backbone_ready": true })).await;
-    join_node(&mut fast_ws, 94, "139.199.6.2:41641", json!({ "relay_backbone_ready": true })).await;
+    join_node(
+        &mut slow_ws,
+        93,
+        "139.199.6.1:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
+    join_node(
+        &mut fast_ws,
+        94,
+        "139.199.6.2:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
 
     let a_node = node_id(&app, &seeded, "bu-leaf-a").await;
     let b_node = node_id(&app, &seeded, "bu-leaf-b").await;
@@ -2547,9 +2714,15 @@ async fn sota_bound_single_relay_continuous_upgrade_via_make_before_break_trial_
     ))
     .await
     .unwrap();
-    let _ = recv_t(&mut slow_ws, "rc:overlay.relay_serve", wait).await.unwrap();
-    let slow_sess = recv_t(&mut a_ws, "rc:overlay.relay_session", wait).await.unwrap();
-    let _ = recv_t(&mut b_ws, "rc:overlay.relay_session", wait).await.unwrap();
+    let _ = recv_t(&mut slow_ws, "rc:overlay.relay_serve", wait)
+        .await
+        .unwrap();
+    let slow_sess = recv_t(&mut a_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut b_ws, "rc:overlay.relay_session", wait)
+        .await
+        .unwrap();
     let slow_vni = slow_sess["vni"].as_u64().unwrap();
     assert_eq!(slow_sess["relay_node_id"], json!(slow_node));
 
@@ -2640,8 +2813,12 @@ async fn sota_bound_single_relay_continuous_upgrade_via_make_before_break_trial_
         .await
         .unwrap();
     }
-    let _ = recv_t(&mut a_ws, "rc:overlay.path_trial_commit", wait).await.unwrap();
-    let _ = recv_t(&mut b_ws, "rc:overlay.path_trial_commit", wait).await.unwrap();
+    let _ = recv_t(&mut a_ws, "rc:overlay.path_trial_commit", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut b_ws, "rc:overlay.path_trial_commit", wait)
+        .await
+        .unwrap();
     for ws in [&mut a_ws, &mut b_ws] {
         ws.send(Message::Text(
             json!({ "t": "rc:overlay.path_trial_committed", "trial_id": trial_id })
@@ -2651,8 +2828,12 @@ async fn sota_bound_single_relay_continuous_upgrade_via_make_before_break_trial_
         .await
         .unwrap();
     }
-    let _ = recv_t(&mut a_ws, "rc:overlay.path_trial_finalize", wait).await.unwrap();
-    let _ = recv_t(&mut b_ws, "rc:overlay.path_trial_finalize", wait).await.unwrap();
+    let _ = recv_t(&mut a_ws, "rc:overlay.path_trial_finalize", wait)
+        .await
+        .unwrap();
+    let _ = recv_t(&mut b_ws, "rc:overlay.path_trial_finalize", wait)
+        .await
+        .unwrap();
 
     // Once finalized, the superseded `slow_vni` session is cleanly retired on `slow_ws`!
     let slow_rev = recv_t(&mut slow_ws, "rc:overlay.relay_revoke", wait)
@@ -2663,7 +2844,7 @@ async fn sota_bound_single_relay_continuous_upgrade_via_make_before_break_trial_
 
 #[tokio::test]
 async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurrent_zone_policy_linearizability()
-{
+ {
     let geo = tempfile::tempdir().unwrap();
     let mmdb = geo.path().join("dbip-city-lite.mmdb");
     std::fs::write(&mmdb, city_fixture_mmdb()).unwrap();
@@ -2684,10 +2865,20 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
     let (r_b_id, r_b_tok) = enroll(&app, &seeded, "r2-router-b").await;
     let (leaf_id, leaf_tok) = enroll(&app, &seeded, "r2-leaf").await;
 
-    let mut r_a_ws =
-        connect_from(&app, &r_a_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
-    let mut r_b_ws =
-        connect_from(&app, &r_b_tok, &["relay-server", "relay-control"], Some("8.8.4.4")).await;
+    let mut r_a_ws = connect_from(
+        &app,
+        &r_a_tok,
+        &["relay-server", "relay-control"],
+        Some("202.181.7.6"),
+    )
+    .await;
+    let mut r_b_ws = connect_from(
+        &app,
+        &r_b_tok,
+        &["relay-server", "relay-control"],
+        Some("8.8.4.4"),
+    )
+    .await;
     let leaf_ws = connect_from(&app, &leaf_tok, &[], Some("202.181.7.20")).await;
 
     // Drain initial `serve = false` frames.
@@ -2706,7 +2897,10 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
         .await
         .unwrap();
     let rev1 = approve_a["revision"].as_u64().unwrap();
-    assert!(rev1 >= (1_u64 << 24), "expected composite revision >= 1<<24, got {rev1}");
+    assert!(
+        rev1 >= (1_u64 << 24),
+        "expected composite revision >= 1<<24, got {rev1}"
+    );
     assert!(rev1 > rev0);
 
     assert_eq!(approve(&app, &seeded, &r_b_id, true).await, 200);
@@ -2761,8 +2955,13 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
     // 3. Cold-start reconnect of `r_a` receives synthesized `["8.8.4.4:3478"]` immediately on WS connect
     //    at the exact composite revision `rev2`!
     drop(r_a_ws);
-    let mut r_a_ws =
-        connect_from(&app, &r_a_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
+    let mut r_a_ws = connect_from(
+        &app,
+        &r_a_tok,
+        &["relay-server", "relay-control"],
+        Some("202.181.7.6"),
+    )
+    .await;
     let reconn_a = recv_t(&mut r_a_ws, "rc:overlay.peer_relay_serve", wait)
         .await
         .unwrap();
@@ -2789,7 +2988,10 @@ async fn composite_peer_relay_serve_revisions_cold_start_synthesis_and_concurren
         .await
         .unwrap();
     let rev3 = moved_a["revision"].as_u64().unwrap();
-    assert!(rev3 > rev2, "cross-zone router move must strictly advance revision: {rev3} <= {rev2}");
+    assert!(
+        rev3 > rev2,
+        "cross-zone router move must strictly advance revision: {rev3} <= {rev2}"
+    );
     assert_eq!(moved_a["backbone_endpoints"], json!(["8.8.4.4:3478"]));
 
     // 5. Concurrent `set_zones` + `set_zone_assignment` moving `leaf` to `RouterOnly` `"cn"`
@@ -2878,10 +3080,20 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
 
     let mut siat_ws = connect_from(&app, &siat_tok, &[], Some("139.199.1.45")).await;
     let mut hk_leaf_ws = connect_from(&app, &hk_leaf_tok, &[], Some("202.181.7.20")).await;
-    let mut gz_ws =
-        connect_from(&app, &gz_tok, &["relay-server", "relay-control"], Some("139.199.6.6")).await;
-    let mut hk_ws =
-        connect_from(&app, &hk_tok, &["relay-server", "relay-control"], Some("202.181.7.6")).await;
+    let mut gz_ws = connect_from(
+        &app,
+        &gz_tok,
+        &["relay-server", "relay-control"],
+        Some("139.199.6.6"),
+    )
+    .await;
+    let mut hk_ws = connect_from(
+        &app,
+        &hk_tok,
+        &["relay-server", "relay-control"],
+        Some("202.181.7.6"),
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let _ = recv_t(&mut gz_ws, "rc:overlay.peer_relay_serve", wait).await;
@@ -3102,7 +3314,10 @@ async fn gateway_routers_usable_as_endpoint_devices_across_zones_via_terminal_se
         .await
         .expect("po0-hk receives self-relay leg for po0-gz <-> po0-hk");
     assert_eq!(hk_from_gz_sess["relay_node_id"], json!(hk_node));
-    assert_eq!(hk_from_gz_sess["relay_endpoints"][0], json!("127.0.0.1:3478"));
+    assert_eq!(
+        hk_from_gz_sess["relay_endpoints"][0],
+        json!("127.0.0.1:3478")
+    );
 
     // 4. Same-zone `po0-gz -> siat45` (where `po0-gz` is the ONLY CN gateway) MUST NOT
     //    mint a 1-hop self-relay `[po0-gz]`!
@@ -3183,7 +3398,9 @@ async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavail
                 .expect("send concurrent join");
             let netmap = recv_t(&mut ws, "rc:overlay.netmap", Duration::from_secs(10))
                 .await
-                .unwrap_or_else(|| panic!("node {idx} failed to receive netmap on concurrent join"));
+                .unwrap_or_else(|| {
+                    panic!("node {idx} failed to receive netmap on concurrent join")
+                });
             (ws, netmap)
         }));
     }
@@ -3197,7 +3414,11 @@ async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavail
         assert!(ips.insert(ip.clone()), "duplicate overlay IP allocated");
         initial_views.push((ws, ip, netmap));
     }
-    assert_eq!(ips.len(), 20, "all 20 concurrent joiners must succeed on first attempt");
+    assert_eq!(
+        ips.len(),
+        20,
+        "all 20 concurrent joiners must succeed on first attempt"
+    );
 
     // Verify full peer-table convergence across all 20 nodes under strict
     // monotonic `auth_revision` acceptance (rejecting any out-of-order delta!).
@@ -3217,7 +3438,9 @@ async fn twenty_concurrent_overlay_joins_serialize_cleanly_without_store_unavail
             .collect();
 
         while known_peers.len() < 19 {
-            let Some(frame) = recv_t(&mut ws, "rc:overlay.netmap_delta", Duration::from_secs(3)).await else {
+            let Some(frame) =
+                recv_t(&mut ws, "rc:overlay.netmap_delta", Duration::from_secs(3)).await
+            else {
                 break;
             };
             let delta_rev = frame["auth_revision"].as_u64().unwrap_or(0);
@@ -3340,7 +3563,11 @@ async fn an_unchanged_relay_readvert_does_not_bump_the_zone_revision() {
         .expect("a moved relay address re-publishes its peer's backbone endpoints");
     // FR-125: every address the relay holds is listed, the one its NAT now
     // exposes first; the relay's measurements say which still answers.
-    assert_eq!(moved["backbone_endpoints"][0], json!("8.8.8.8:3478"), "{moved}");
+    assert_eq!(
+        moved["backbone_endpoints"][0],
+        json!("8.8.8.8:3478"),
+        "{moved}"
+    );
     assert!(zone_and_auth_revision(&app, tid).await.0 > before.0);
 }
 
@@ -3822,7 +4049,8 @@ async fn zone_backbone_endpoint_returns_zones_centre_live_entries_and_gateway_li
         .unwrap();
 
     // Query GET /api/tenant/{tid}/network-zones/backbone.
-    let (status, body) = get_json(&app, &tenant_url(&seeded, "/network-zones/backbone"), admin).await;
+    let (status, body) =
+        get_json(&app, &tenant_url(&seeded, "/network-zones/backbone"), admin).await;
     assert_eq!(status, 200, "GET /network-zones/backbone: {body}");
     assert!(body["revision"].as_u64().unwrap() > 0);
 
@@ -3882,11 +4110,13 @@ async fn zone_backbone_endpoint_returns_zones_centre_live_entries_and_gateway_li
     assert_eq!(link["cross_zone"], json!(true));
     let ends = link["ends"].as_array().unwrap();
     assert_eq!(ends.len(), 2);
-    assert!(ends.iter().any(|e| e["node"] == gw_cn_id && e["carrier"] == "direct"));
     assert!(
         ends.iter()
-            .any(|e| e["node"] == gw_centre_id && e["carrier"] == "relay" && e["relay"] == "org_relay")
+            .any(|e| e["node"] == gw_cn_id && e["carrier"] == "direct")
     );
+    assert!(ends.iter().any(|e| e["node"] == gw_centre_id
+        && e["carrier"] == "relay"
+        && e["relay"] == "org_relay"));
 
     // Disconnecting dev-cn drops gw-cn's live entry_device_count back to 0.
     let _ = ws_dev_cn.close(None).await;

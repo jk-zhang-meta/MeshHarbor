@@ -688,7 +688,6 @@ async fn a_displaced_connections_late_offline_leaves_the_newer_hello_online() {
             "",
             "",
             "",
-            "",
             false,
             conn,
         )

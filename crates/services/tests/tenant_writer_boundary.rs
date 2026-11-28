@@ -32,7 +32,6 @@ use syn::{
 };
 const DAO: &str = "crates/services/src/dao/tenant.rs";
 const BASE: &str = "crates/services/src/dao/base.rs";
-const STRIPE: &str = "crates/services/src/stripe.rs";
 
 // Whole normalized bodies pin only the dynamic RC builders, DAO factory and
 // finite payload exceptions. Gateway implementation belongs to behavior tests.
@@ -47,10 +46,6 @@ const BODIES: &[(&str, &str, &str, &str)] = &[
     (DAO, "TenantDao", "set_rc_session_policy", "6077e4a63f3184cc0f34328f7d2bac00f8aaf7a267219b1f7c49218ffcb17ff5"),
     (DAO, "TenantDao", "set_magic_dns", "8f732a094cdb46cac367590f0cef427d9e96020f00f7f05ae09be558d549e2e4"),
     (DAO, "TenantDao", "set_keep_busy_settings", "4d1075f4f0cfa4e739d490f4c69809218e977eb1856d2b9e7475ceba7f85f9c4"),
-    (STRIPE, "StripeService", "create_checkout_session", "5f3e0f47b97a164e26dd673dfef3187dbac2bdce2db4536231c2bbdfeecf1d96"),
-    (STRIPE, "StripeService", "sync_seats", "947c00a263a9e8a3d1a6438e012ede8fc21a63cbd09b3f1dbd42f7b8de80dedf"),
-    (STRIPE, "StripeService", "apply_subscription", "7ad9aade188b45fa466ccd44bfc5fec8331184cd4d4ba7d3dc6cc2743dc8f238"),
-    (STRIPE, "StripeService", "process", "fc78007f966ee26e6b232c01da1970336375ac4e8491d2c52ccfbe091fb983c2"),
 ];
 // Only public acquisition/mutation API SIGNATURES, not BaseDao implementation
 // bodies. Existing behavior tests and review remain necessary for its internals.
@@ -711,9 +706,7 @@ fn same_name_exceptions_cannot_add_security_fields_or_operators() {
         ast.to_token_stream().to_string()
     }
     let dao = selected(DAO, include_str!("../src/dao/tenant.rs"));
-    let stripe = selected(STRIPE, include_str!("../src/stripe.rs"));
     scan(DAO, &dao, &BTreeMap::new()).unwrap();
-    scan(STRIPE, &stripe, &BTreeMap::new()).unwrap();
     for changed in [
         dao.replace("settings.magic_dns_domain", "settings.remote_ssh_enabled"),
         dao.replace("settings.keep_busy_denied", "settings.mfa_required"),
@@ -722,14 +715,6 @@ fn same_name_exceptions_cannot_add_security_fields_or_operators() {
     ] {
         assert!(scan(DAO, &changed, &BTreeMap::new()).is_err());
     }
-    assert!(
-        scan(
-            STRIPE,
-            &stripe.replace(r#""billing.seats""#, r#""settings.remote_ssh_enabled""#),
-            &BTreeMap::new()
-        )
-        .is_err()
-    );
 }
 
 #[test]

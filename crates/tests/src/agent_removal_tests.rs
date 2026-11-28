@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use bson::oid::ObjectId;
 use futures::{SinkExt, StreamExt};
-use serde_json::{Value, json};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use serde_json::Value;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::agent_presence_tests::{connect_agent, enroll};
 use crate::fixtures::test_app::TestApp;
@@ -250,128 +250,4 @@ async fn an_ephemeral_device_leaving_by_itself_is_not_told() {
         other => panic!("a device leaving by itself must not be told; heard {other:?}"),
     }
     assert!(!app.state.fleet().rc_hub.is_agent_online(aid));
-}
-
-// ─── #2294: a device Hive is purging ────────────────────────────────────────
-
-/// An agent socket whose hello advertises `rpc`, for the Hive cases.
-async fn connect_with_rpc(app: &TestApp, token: &str, rpc: &[&str]) -> Ws {
-    let url = format!(
-        "ws://{}/ws?token={}&role=agent",
-        app.addr,
-        token
-            .replace('+', "%2B")
-            .replace('/', "%2F")
-            .replace('=', "%3D")
-    );
-    let (mut ws, _) = connect_async(&url).await.expect("agent ws connect");
-    ws.send(Message::Text(
-        json!({
-            "t": "rc:agent.hello",
-            "machine_name": "removal test box",
-            "os": "linux",
-            "agent_version": "0.4.139",
-            "displays": [],
-            "caps": {
-                "hw_encoders": [],
-                "codecs": ["h264"],
-                "has_input_permission": true,
-                "supports_clipboard": false,
-                "supports_file_transfer": false,
-                "max_simultaneous_sessions": 1,
-                "rpc": rpc,
-            }
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .expect("send hello");
-    ws
-}
-
-/// The `t` of every text frame within `within`, until the socket closes.
-async fn frames_within(ws: &mut Ws, within: Duration) -> Vec<String> {
-    let deadline = tokio::time::Instant::now() + within;
-    let mut seen = Vec::new();
-    loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if left.is_zero() {
-            return seen;
-        }
-        match tokio::time::timeout(left, ws.next()).await {
-            Err(_) | Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => return seen,
-            Ok(Some(Ok(Message::Text(t)))) => {
-                if let Ok(v) = serde_json::from_str::<Value>(&t)
-                    && let Some(kind) = v["t"].as_str()
-                {
-                    seen.push(kind.to_string());
-                }
-            }
-            Ok(Some(Ok(_))) => {}
-        }
-    }
-}
-
-/// Remove a device, as its org's admin, while `hive.replicaset` is on: the
-/// removal's Hive hook sends the purge (FR-90 P2g-4a), then the kick runs.
-async fn remove_with_replicaset(rpc: &[&str], tag: &str) -> Vec<String> {
-    let app = TestApp::spawn_with_settings(|s| {
-        s.modules.hive = true;
-        s.hive.replicaset = true;
-    })
-    .await;
-    let seeded = app.seed_tenant(tag).await;
-    let (agent_id, agent_token) = enroll(&app, &seeded, &format!("mach-{tag}")).await;
-    let mut ws = connect_with_rpc(&app, &agent_token, rpc).await;
-    let aid = wait_registered(&app, &agent_id).await;
-    // The Hub records a connection's words right after it registers it, in
-    // the same step; give that step its moment before the removal reads them.
-    for _ in 0..100 {
-        if app.state.fleet().rc_hub.agent_supports_hive(aid) == Some(true) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let resp = app
-        .auth_delete(
-            &format!("/api/tenant/{}/agent/{}", seeded.tenant_id, agent_id),
-            &seeded.admin.access_token,
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200, "the removal itself");
-    frames_within(&mut ws, Duration::from_secs(3)).await
-}
-
-/// #2294 — a build that finishes its removal purge before its goodbye exit
-/// (`hive-purge-drain`) hears the purge and then the goodbye.
-#[tokio::test]
-async fn a_draining_device_hears_its_purge_then_the_goodbye() {
-    let seen = remove_with_replicaset(
-        &["hive", "hive-purge", "hive-purge-all", "hive-purge-drain"],
-        "rmgb6",
-    )
-    .await;
-    let at = |t: &str| seen.iter().position(|s| s == t);
-    let (purge, goodbye) = (at("rc:hive.purge_all"), at("rc:goodbye"));
-    assert!(purge.is_some(), "the removal's purge: {seen:?}");
-    assert!(goodbye.is_some(), "told, after it: {seen:?}");
-    assert!(purge < goodbye, "the purge's frame first: {seen:?}");
-}
-
-/// #2294's control — `agent-v0.4.137`/`0.4.138`: purges at its removal but
-/// exits at once on a goodbye, so its socket is left open, as since #2267.
-#[tokio::test]
-async fn a_build_that_does_not_drain_is_left_to_its_purge() {
-    let seen = remove_with_replicaset(&["hive", "hive-purge", "hive-purge-all"], "rmgb7").await;
-    assert!(
-        seen.iter().any(|s| s == "rc:hive.purge_all"),
-        "the removal's purge: {seen:?}"
-    );
-    assert!(
-        !seen.iter().any(|s| s == "rc:goodbye"),
-        "no goodbye behind a purge it would cut short: {seen:?}"
-    );
 }

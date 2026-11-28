@@ -522,12 +522,13 @@ impl HostCore {
             (ReplayKind::Bytes, None)
         };
 
-        let attached = WireFrame::Attached(meshharbor_node_core::pty_resume::frame::AttachedFrame {
-            server_proof: req.server_proof,
-            replay: replay_kind,
-            gap_bytes,
-            c2s_acked: self.dedup.next_expected(),
-        });
+        let attached =
+            WireFrame::Attached(meshharbor_node_core::pty_resume::frame::AttachedFrame {
+                server_proof: req.server_proof,
+                replay: replay_kind,
+                gap_bytes,
+                c2s_acked: self.dedup.next_expected(),
+            });
         if tx.try_send(IpcFrame::Wire(attached)).is_err() {
             self.conns.remove(&conn_id);
             self.detached_since = Some(Instant::now());
@@ -689,10 +690,7 @@ impl HostCore {
             && self.deadline_at.saturating_duration_since(now) <= Duration::from_secs(60)
         {
             self.deadline_warned = true;
-            let in_ms = self
-                .deadline_at
-                .saturating_duration_since(now)
-                .as_millis() as u64;
+            let in_ms = self.deadline_at.saturating_duration_since(now).as_millis() as u64;
             self.send_to_active(IpcFrame::Wire(WireFrame::Notice(
                 NoticeKind::DeadlineSoon { in_ms },
             )));

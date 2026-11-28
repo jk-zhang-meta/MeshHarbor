@@ -771,7 +771,7 @@ async fn invitation_consent_default_runs_exec_without_an_approval() {
     let aid = bson::oid::ObjectId::parse_str(&cfg.agent_id).unwrap();
     let agent = fleet.agents.base.find_by_id(aid).await.unwrap();
     meshharbor_mod_fleet::device_invite::create_bound(
-        &fleet,
+        fleet,
         agent.tenant_id,
         bson::oid::ObjectId::parse_str(&seeded.admin.id).unwrap(),
         &agent,

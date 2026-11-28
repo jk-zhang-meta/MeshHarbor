@@ -257,33 +257,95 @@ async fn email_change_atomic_collision_supersede_and_concurrent_consume() {
 
 #[tokio::test]
 async fn email_stepup_budget_cannot_be_reset_by_changing_destination() {
-    let app = TestApp::spawn_with_settings(|s| { s.app.auth_rate_limit_burst=2; s.app.auth_rate_limit_per_min=1; }).await;
-    let user=app.register_user("stepup@example.test","stepup","Stepup","Correct.Password.",None,None).await;
-    for (i, expected) in [(0,401),(1,401),(2,429)] {
-        let result=app.auth_post("/api/auth/email-change/request",&user.access_token)
+    let app = TestApp::spawn_with_settings(|s| {
+        s.app.auth_rate_limit_burst = 2;
+        s.app.auth_rate_limit_per_min = 1;
+    })
+    .await;
+    let user = app
+        .register_user(
+            "stepup@example.test",
+            "stepup",
+            "Stepup",
+            "Correct.Password.",
+            None,
+            None,
+        )
+        .await;
+    for (i, expected) in [(0, 401), (1, 401), (2, 429)] {
+        let result = app
+            .auth_post("/api/auth/email-change/request", &user.access_token)
             .json(&json!({"email":format!("different{i}@example.test"),"current_password":"wrong"}))
-            .send().await.unwrap();
-        assert_eq!(result.status().as_u16(),expected,"destination is not the authenticated account being guessed");
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            result.status().as_u16(),
+            expected,
+            "destination is not the authenticated account being guessed"
+        );
     }
 }
 
 #[tokio::test]
 async fn email_change_write_rejection_preserves_pending_and_credentials() {
-    use bson::{doc,oid::ObjectId,DateTime};
-    use meshharbor_services::dao::{email_change::{self,PendingEmailChange},user::UserDao};
-    let app=TestApp::spawn().await;
-    let u=app.register_user("writebefore@example.test","writebefore","Write","Before.Password.",None,None).await;
-    let user=UserDao::new(&app.db).base.find_by_id(ObjectId::parse_str(&u.id).unwrap()).await.unwrap();
-    let pending=PendingEmailChange {request_id:ObjectId::new(),email:"blocked@example.test".into(),token_hash:"known-test-only".into(),expires_at:DateTime::from_millis(DateTime::now().timestamp_millis()+60_000),security_revision:user.security_revision().unwrap(),approval_revision:user.account_approval.revision,new_password_hash:Some("test-new-hash".into())};
-    assert!(email_change::begin(&app.db,&user,pending.clone()).await.unwrap());
-    let c=app.db.collection::<bson::Document>("users");
-    let before=c.find_one(doc!{"_id":user.id}).await.unwrap().unwrap();
+    use bson::{DateTime, doc, oid::ObjectId};
+    use meshharbor_services::dao::{
+        email_change::{self, PendingEmailChange},
+        user::UserDao,
+    };
+    let app = TestApp::spawn().await;
+    let u = app
+        .register_user(
+            "writebefore@example.test",
+            "writebefore",
+            "Write",
+            "Before.Password.",
+            None,
+            None,
+        )
+        .await;
+    let user = UserDao::new(&app.db)
+        .base
+        .find_by_id(ObjectId::parse_str(&u.id).unwrap())
+        .await
+        .unwrap();
+    let pending = PendingEmailChange {
+        request_id: ObjectId::new(),
+        email: "blocked@example.test".into(),
+        token_hash: "known-test-only".into(),
+        expires_at: DateTime::from_millis(DateTime::now().timestamp_millis() + 60_000),
+        security_revision: user.security_revision().unwrap(),
+        approval_revision: user.account_approval.revision,
+        new_password_hash: Some("test-new-hash".into()),
+    };
+    assert!(
+        email_change::begin(&app.db, &user, pending.clone())
+            .await
+            .unwrap()
+    );
+    let c = app.db.collection::<bson::Document>("users");
+    let before = c.find_one(doc! {"_id":user.id}).await.unwrap().unwrap();
     // Isolated database validator rejects the entire Mongo write. No global failpoint.
     app.db.run_command(doc!{"collMod":"users","validator":{"email":{"$ne":"blocked@example.test"}},"validationLevel":"strict"}).await.unwrap();
-    assert!(email_change::confirm(&app.db,pending.request_id,"known-test-only").await.is_err());
-    assert_eq!(c.find_one(doc!{"_id":user.id}).await.unwrap().unwrap(),before);
-    app.db.run_command(doc!{"collMod":"users","validator":{}}).await.unwrap();
-    let after=email_change::confirm(&app.db,pending.request_id,"known-test-only").await.unwrap().unwrap();
-    assert_eq!(after.id,user.id);assert_eq!(after.email,"blocked@example.test");
-    assert_eq!(after.password_hash.as_deref(),Some("test-new-hash"));
+    assert!(
+        email_change::confirm(&app.db, pending.request_id, "known-test-only")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        c.find_one(doc! {"_id":user.id}).await.unwrap().unwrap(),
+        before
+    );
+    app.db
+        .run_command(doc! {"collMod":"users","validator":{}})
+        .await
+        .unwrap();
+    let after = email_change::confirm(&app.db, pending.request_id, "known-test-only")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.id, user.id);
+    assert_eq!(after.email, "blocked@example.test");
+    assert_eq!(after.password_hash.as_deref(), Some("test-new-hash"));
 }

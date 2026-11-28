@@ -225,7 +225,11 @@ impl TenantZoneSnapshot {
                     return Self::failed();
                 }
             };
-            let active_agents = match state.fleet.agents.list_all_active_for_tenant(tenant_id).await
+            let active_agents = match state
+                .fleet
+                .agents
+                .list_all_active_for_tenant(tenant_id)
+                .await
             {
                 Ok(rows) => rows,
                 Err(e) => {
@@ -263,14 +267,19 @@ impl TenantZoneSnapshot {
         snap
     }
 
-    async fn is_still_current_for_publish(&self, state: &NetworkState, tenant_id: ObjectId) -> bool {
+    async fn is_still_current_for_publish(
+        &self,
+        state: &NetworkState,
+        tenant_id: ObjectId,
+    ) -> bool {
         if self.read_failed || self.superseded {
             return false;
         }
         match state.overlay_networks.find_for_tenant(tenant_id).await {
             Ok(None) => self.revision == 0 && self.zones.is_empty(),
             Ok(Some(cur)) => {
-                cur.zone_revision <= self.revision && (!self.zones.is_empty() || cur.zones.is_empty())
+                cur.zone_revision <= self.revision
+                    && (!self.zones.is_empty() || cur.zones.is_empty())
             }
             Err(_) => false,
         }
@@ -394,9 +403,7 @@ impl TenantZoneSnapshot {
         b: DeviceZoneResolution<'_>,
     ) -> bool {
         match (a, b) {
-            (DeviceZoneResolution::Unconfigured, DeviceZoneResolution::Unconfigured) => {
-                false
-            }
+            (DeviceZoneResolution::Unconfigured, DeviceZoneResolution::Unconfigured) => false,
             (DeviceZoneResolution::UnresolvedStrict, _)
             | (_, DeviceZoneResolution::UnresolvedStrict) => true,
             (DeviceZoneResolution::Resolved(za), DeviceZoneResolution::Resolved(zb)) => {
@@ -459,10 +466,7 @@ impl TenantZoneSnapshot {
         a: &OverlayNode,
         b: &OverlayNode,
     ) -> bool {
-        Self::pair_requires_backbone_only(
-            self.resolve_node(state, a),
-            self.resolve_node(state, b),
-        )
+        Self::pair_requires_backbone_only(self.resolve_node(state, a), self.resolve_node(state, b))
     }
 
     pub async fn refs_require_backbone_only(
@@ -669,7 +673,9 @@ impl TenantZoneSnapshot {
             .unwrap_or_else(|| "100.64.0.0/10".to_string());
         let mut relays = Vec::new();
         let mut live_nodes = HashMap::new();
-        if self.has_zones() && !self.read_failed && !self.superseded
+        if self.has_zones()
+            && !self.read_failed
+            && !self.superseded
             && let Ok(rows) = state.fleet.agents.list_relay_approved(tenant_id).await
         {
             for peer in &rows {
@@ -844,7 +850,11 @@ impl TenantZoneSnapshot {
                 Ok(n) => n,
                 Err(_) => return,
             };
-            let Ok(active_agents) = state.fleet.agents.list_all_active_for_tenant(tenant_id).await
+            let Ok(active_agents) = state
+                .fleet
+                .agents
+                .list_all_active_for_tenant(tenant_id)
+                .await
             else {
                 return;
             };
@@ -987,7 +997,12 @@ impl TenantZoneSnapshot {
         let ids: Vec<ObjectId> = if self.agents_loaded {
             self.agents.keys().copied().collect()
         } else {
-            match state.fleet.agents.list_all_active_for_tenant(tenant_id).await {
+            match state
+                .fleet
+                .agents
+                .list_all_active_for_tenant(tenant_id)
+                .await
+            {
                 Ok(rows) => rows.into_iter().filter_map(|a| a.id).collect(),
                 Err(_) => return,
             }
@@ -1006,15 +1021,15 @@ pub fn central_relay_url(state: &NetworkState) -> String {
     state.core.settings.app.frontend_url.clone()
 }
 
-pub fn url_matches_countries(
-    state: &NetworkState,
-    url: &str,
-    allowed: &HashSet<String>,
-) -> bool {
+pub fn url_matches_countries(state: &NetworkState, url: &str, allowed: &HashSet<String>) -> bool {
     if allowed.is_empty() {
         return false;
     }
-    if state.fleet.rc_hub.url_matches_allowed_countries(url, allowed) {
+    if state
+        .fleet
+        .rc_hub
+        .url_matches_allowed_countries(url, allowed)
+    {
         return true;
     }
     if let Some((host, _)) = host_of(url)

@@ -141,8 +141,6 @@ pub async fn handle_agent_ssh_request(
     target: String,
     public_key: String,
     session_secs: u64,
-    // FR-90 P3-8-1b — an agent session's ticket, when a session asks.
-    ssh_ticket: Option<String>,
     // FR-129 — the person's two-factor code for the target, relayed to it.
     two_factor_code: Option<meshharbor_remote_control::models::Confidential>,
     reply_tx: meshharbor_remote_control::session::ClientTx,
@@ -158,7 +156,6 @@ pub async fn handle_agent_ssh_request(
         host_pubkey: None,
         expires_at_ms: None,
         error: Some(msg),
-        ssh_ticket_id: None,
         offline_cap: None,
         resume: false,
     };
@@ -190,35 +187,10 @@ pub async fn handle_agent_ssh_request(
             }
         };
 
-    // FR-90 P3-8-1b — an agent session's request is the session's. Its ticket
-    // is bound here, where the origin device and the resolved target are both
-    // known, and the outcome rides the caller into `dispatch`, which audits it
-    // whatever it is: a ticket that does not hold is refused there, never
-    // answered as the device owner's request instead.
-    use crate::routes::agent_ssh::{CallerSession, bind_ssh_ticket};
-    let session = match ssh_ticket.as_deref() {
-        None => CallerSession::None,
-        Some(token) => match bind_ssh_ticket(
-            &state.core.auth,
-            tenant_id,
-            Some(origin_agent_id),
-            agent.id.unwrap_or_default(),
-            token,
-        ) {
-            Ok(s) => CallerSession::Bound(s),
-            Err(why) => CallerSession::Refused(why),
-        },
-    };
-    // The person accountable: a session's owner, who need not own the device
-    // it runs on; else the origin device's owner.
-    let accountable = match &session {
-        CallerSession::Bound(s) => s.owner_user_id,
-        CallerSession::None | CallerSession::Refused(_) => origin.owner_user_id,
-    };
+    let accountable = origin.owner_user_id;
 
     // "<person> (via <device>)" — the target's log and consent prompt name
-    // both the human accountable and the box the request came from; for a
-    // session, the session too.
+    // both the human accountable and the box the request came from.
     let who = state
         .users
         .base
@@ -226,20 +198,11 @@ pub async fn handle_agent_ssh_request(
         .await
         .map(|u| u.display_name)
         .unwrap_or_else(|_| accountable.to_hex());
-    let display = match &session {
-        CallerSession::Bound(s) => {
-            format!(
-                "agent session {} of {who} (via {})",
-                s.session_id, origin.name
-            )
-        }
-        CallerSession::None | CallerSession::Refused(_) => format!("{who} (via {})", origin.name),
-    };
+    let display = format!("{who} (via {})", origin.name);
     let caller = crate::routes::agent_ssh::Caller {
         user_id: accountable,
         display,
         origin_agent_id: Some(origin_agent_id),
-        session,
     };
 
     let res = crate::routes::agent_ssh::dispatch(
@@ -269,24 +232,15 @@ pub async fn handle_agent_ssh_request(
         host_pubkey,
         expires_at_ms,
         error,
-        ssh_ticket_id,
         two_factor,
         resume,
     } = res;
     // FR-139 — mint an offline SSH capability ONLY when:
     //   1. the online SSH grant succeeded (`error.is_none()`),
-    //   2. NO FR-90 `ssh_ticket` was used (agent sessions never get offline caps),
-    //   3. the tenant explicitly opted into `TenantSettings::offline_access`,
-    //   4. both origin and target have live overlay nodes in the same network.
-    let offline_cap = if error.is_none() && ssh_ticket.is_none() {
-        maybe_mint_ssh_offline_cap(
-            state,
-            tenant_id,
-            origin_agent_id,
-            &agent,
-            &caller.display,
-        )
-        .await
+    //   2. the tenant explicitly opted into `TenantSettings::offline_access`,
+    //   3. both origin and target have live overlay nodes in the same network.
+    let offline_cap = if error.is_none() {
+        maybe_mint_ssh_offline_cap(state, tenant_id, origin_agent_id, &agent, &caller.display).await
     } else {
         None
     };
@@ -299,7 +253,6 @@ pub async fn handle_agent_ssh_request(
         host_pubkey,
         expires_at_ms,
         error,
-        ssh_ticket_id,
         two_factor,
         offline_cap,
         resume,

@@ -880,17 +880,19 @@ pub(crate) fn move_offer_from(
         .and_then(|o| o.tenant_id.as_deref())
         .or(live.tenant_id.as_deref())
         .is_some();
-    meshharbor_node_core::device_move::offer_for(meshharbor_node_core::device_move::MoveOfferInput {
-        personal_enrolled: live.personal_enrolled,
-        ephemeral: live.ephemeral,
-        primary_server: primary.map(|o| o.server_url.as_str()),
-        has_primary_tenant,
-        session_server,
-        is_member: member,
-        org_name,
-        protected,
-        two_factor: live.two_factor == Some(true),
-    })
+    meshharbor_node_core::device_move::offer_for(
+        meshharbor_node_core::device_move::MoveOfferInput {
+            personal_enrolled: live.personal_enrolled,
+            ephemeral: live.ephemeral,
+            primary_server: primary.map(|o| o.server_url.as_str()),
+            has_primary_tenant,
+            session_server,
+            is_member: member,
+            org_name,
+            protected,
+            two_factor: live.two_factor == Some(true),
+        },
+    )
 }
 
 /// After a sign-in: is there a move to offer? `None` when this is not a
@@ -921,7 +923,14 @@ pub(crate) async fn move_offer_after_sign_in() -> Option<MoveOffer> {
     let (org_name, protected) = match localapi::connect().await {
         Ok(mut c) => {
             let name = c
-                .devices("", &localapi::DevicesQuery { page: 1, per_page: 1, ..Default::default() })
+                .devices(
+                    "",
+                    &localapi::DevicesQuery {
+                        page: 1,
+                        per_page: 1,
+                        ..Default::default()
+                    },
+                )
                 .await
                 .ok()
                 .and_then(|p| p.org_name);
@@ -940,7 +949,10 @@ pub(crate) async fn move_offer_after_sign_in() -> Option<MoveOffer> {
 /// Move: start an ENROLLMENT device login, so the person approves this device
 /// into one of their own organizations (`MANAGE_AGENTS` there). It shares the
 /// sign-in slot, so the tray's cancel ends it the same way.
-pub(crate) async fn move_start(offer: &MoveOffer, device_name: &str) -> Result<LoginStarted, String> {
+pub(crate) async fn move_start(
+    offer: &MoveOffer,
+    device_name: &str,
+) -> Result<LoginStarted, String> {
     let pending = meshharbor_node_core::device_login::start_with_purpose(
         &offer.server,
         device_name.trim(),
@@ -948,7 +960,8 @@ pub(crate) async fn move_start(offer: &MoveOffer, device_name: &str) -> Result<L
     )
     .await
     .map_err(|e| format!("{e:#}"))?;
-    let opened = meshharbor_node_core::device_login::open_browser(&pending.verification_uri_complete);
+    let opened =
+        meshharbor_node_core::device_login::open_browser(&pending.verification_uri_complete);
     let out = LoginStarted {
         user_code: pending.user_code.clone(),
         url: pending.verification_uri_complete.clone(),
@@ -2328,7 +2341,8 @@ pub(crate) async fn open_network_globe_impl<R: tauri::Runtime>(
             let _ = tx.send(result);
         })
         .map_err(|_| "Cannot schedule the globe window".to_string())?;
-        rx.await.map_err(|_| "Globe window task ended".to_string())?
+        rx.await
+            .map_err(|_| "Globe window task ended".to_string())?
     }
     #[cfg(not(windows))]
     {
@@ -3077,22 +3091,23 @@ pub(crate) fn parse_cli_check_output(stdout: &str) -> localapi::UpdateStatusInfo
 #[tauri::command]
 pub async fn cmd_update_status() -> Result<localapi::UpdateStatusInfo, String> {
     match localapi::connect().await {
-        Ok(mut client) => match client.update_status().await {
-            Ok(info) => {
-                clear_fallback_update_status();
-                Ok(info)
+        Ok(mut client) => {
+            match client.update_status().await {
+                Ok(info) => {
+                    clear_fallback_update_status();
+                    Ok(info)
+                }
+                Err(e) if is_predates_update_verb(&e) => Ok(get_fallback_update_status()
+                    .unwrap_or(localapi::UpdateStatusInfo {
+                        current: env!("CARGO_PKG_VERSION").to_string(),
+                        stage: "idle".into(),
+                        owner: Some("cli".into()),
+                        ..Default::default()
+                    })),
+                Err(e) => get_fallback_update_status()
+                    .ok_or_else(|| format!("Reading update status: {e}")),
             }
-            Err(e) if is_predates_update_verb(&e) => Ok(get_fallback_update_status().unwrap_or(
-                localapi::UpdateStatusInfo {
-                    current: env!("CARGO_PKG_VERSION").to_string(),
-                    stage: "idle".into(),
-                    owner: Some("cli".into()),
-                    ..Default::default()
-                },
-            )),
-            Err(e) => get_fallback_update_status()
-                .ok_or_else(|| format!("Reading update status: {e}")),
-        },
+        }
         Err(e) => get_fallback_update_status().ok_or_else(|| daemon_unreachable(e)),
     }
 }
@@ -3193,7 +3208,10 @@ pub async fn cmd_apply_update() -> Result<localapi::UpdateStatusInfo, String> {
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 let combined = if stderr.is_empty() { stdout } else { stderr };
                 let lower = combined.to_ascii_lowercase();
-                if !out.status.success() || lower.contains("could not reach") || lower.contains("error") {
+                if !out.status.success()
+                    || lower.contains("could not reach")
+                    || lower.contains("error")
+                {
                     set_fallback_update_status(localapi::UpdateStatusInfo {
                         current: env!("CARGO_PKG_VERSION").to_string(),
                         stage: "failed".into(),
@@ -4935,7 +4953,10 @@ mod tests {
         assert_eq!(move_offer_from(&st, server, None, None, false), None);
         // Not a personal device, or the session is another server's.
         let admin_enrolled = grant_status(Some(false), Some(true), Some(T), "box");
-        assert_eq!(move_offer_from(&admin_enrolled, server, Some(false), None, false), None);
+        assert_eq!(
+            move_offer_from(&admin_enrolled, server, Some(false), None, false),
+            None
+        );
         assert_eq!(
             move_offer_from(&st, "https://other.example", Some(false), None, false),
             None
@@ -4946,16 +4967,28 @@ mod tests {
         assert_eq!(protected.org_label(), "another organization");
         let mut two_factor_st = st.clone();
         two_factor_st.two_factor = Some(true);
-        let tf = move_offer_from(&two_factor_st, server, Some(false), Some("Org A".into()), false)
-            .unwrap();
+        let tf = move_offer_from(
+            &two_factor_st,
+            server,
+            Some(false),
+            Some("Org A".into()),
+            false,
+        )
+        .unwrap();
         assert!(tf.refusal.as_deref().unwrap().contains("two-factor"));
         // An ephemeral device is never offered a move.
         let mut eph = st.clone();
         eph.ephemeral = true;
-        assert_eq!(move_offer_from(&eph, server, Some(false), None, false), None);
+        assert_eq!(
+            move_offer_from(&eph, server, Some(false), None, false),
+            None
+        );
         // The result names the old org, or passes the kept-row notice through.
         assert!(offer.done(None).contains("Org A"));
-        assert_eq!(offer.done(Some("an admin there must remove it")), "an admin there must remove it");
+        assert_eq!(
+            offer.done(Some("an admin there must remove it")),
+            "an admin there must remove it"
+        );
     }
 
     #[test]
@@ -6350,9 +6383,8 @@ mod system_login_purpose_tests {
         assert!(!up.update_available);
         assert_eq!(up.latest.as_deref(), Some("agent-v0.4.216"));
 
-        let err = parse_cli_check_output(
-            "Update check could not reach the release server: dns error",
-        );
+        let err =
+            parse_cli_check_output("Update check could not reach the release server: dns error");
         assert_eq!(err.stage, "failed");
         assert!(err.message.as_deref().unwrap_or("").contains("dns error"));
     }

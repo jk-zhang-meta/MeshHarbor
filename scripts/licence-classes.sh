@@ -48,7 +48,6 @@ CLIENT_PATHS=(
   agents/meshharbor-cli-shim
   agents/meshharbor-cli
   crates/agent-core
-  crates/hive-node
   crates/tunnel-core
   crates/remote_control
   crates/localapi
@@ -79,14 +78,9 @@ EXCLUDE_PATTERNS=(
 SERVER_CRATES=(
   meshharbor-api
   meshharbor-core
-  meshharbor-mod-saas
-  meshharbor-mod-chat
-  meshharbor-mod-conference
   meshharbor-mod-fleet
   meshharbor-mod-remote
   meshharbor-mod-network
-  meshharbor-mod-hive
-  meshharbor-mod-vault
   meshharbor-services
   meshharbor-db
   meshharbor-config
@@ -100,7 +94,6 @@ CLIENT_CRATES=(
   meshharbor-cli-shim
   meshharbor-cli
   meshharbor-node-core
-  meshharbor-hive-node
   meshharbor-tunnel-core
   meshharbor-remote-control
   meshharbor-localapi

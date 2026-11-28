@@ -4234,11 +4234,24 @@ mod tests {
 
         for i in 0..4u64 {
             let ti = t0 + Duration::from_secs(i);
-            m.on_death(&p, DirectTier::Lan, DeathReason::HandshakeDeadline, true, ti);
+            m.on_death(
+                &p,
+                DirectTier::Lan,
+                DeathReason::HandshakeDeadline,
+                true,
+                ti,
+            );
         }
         let fail_t = t0 + Duration::from_secs(3);
         assert_eq!(
-            m.decide(&p, Incumbent::None, offline_lan, true, fail_t + Duration::from_secs(5), false),
+            m.decide(
+                &p,
+                Incumbent::None,
+                offline_lan,
+                true,
+                fail_t + Duration::from_secs(5),
+                false
+            ),
             PathAction::Keep,
             "still inside 10 s offline backoff"
         );
@@ -4257,10 +4270,23 @@ mod tests {
 
         let fail2 = fail_t + Duration::from_secs(12);
         m.on_installed(&p, DirectTier::Lan, fail2);
-        m.on_death(&p, DirectTier::Lan, DeathReason::HandshakeDeadline, true, fail2);
+        m.on_death(
+            &p,
+            DirectTier::Lan,
+            DeathReason::HandshakeDeadline,
+            true,
+            fail2,
+        );
         m.on_network_changed();
         assert_eq!(
-            m.decide(&p, Incumbent::None, offline_lan, true, fail2 + Duration::from_millis(1), false),
+            m.decide(
+                &p,
+                Incumbent::None,
+                offline_lan,
+                true,
+                fail2 + Duration::from_millis(1),
+                false
+            ),
             PathAction::Install(DirectTier::Lan),
             "netstate change resets offline retry backoff immediately"
         );

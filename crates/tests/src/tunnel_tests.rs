@@ -1021,41 +1021,6 @@ pub(crate) async fn wait_agent_online(
     panic!("agent {agent_id} never came online");
 }
 
-/// Poll the agent row until it no longer says online: the closed
-/// connection's teardown has run. A reconnect waits for this first, as a real
-/// restart's gap does.
-///
-/// ⚠️ Without it, the new hello can race the old connection's teardown. The
-/// hello writes `online` before it registers with the hub, so the teardown
-/// can still find the hub's slot its own and write `offline`, and that write
-/// can land after the hello's. The row then reads offline while the hub holds
-/// the new connection. Only a heartbeat writes it online again, and no test
-/// device sends one.
-pub(crate) async fn wait_agent_offline(
-    app: &TestApp,
-    seeded: &crate::fixtures::seed::SeededTenant,
-    agent_id: &str,
-) {
-    for _ in 0..200 {
-        let row: Value = app
-            .auth_get(
-                &format!("/api/tenant/{}/agent/{}", seeded.tenant_id, agent_id),
-                &seeded.admin.access_token,
-            )
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        if row["status"].as_str() != Some("online") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("agent {agent_id} never went offline");
-}
-
 /// Read WS frames until one arrives whose `t` == `want`, or a 5 s deadline
 /// elapses. Non-matching frames are skipped.
 pub(crate) async fn read_until(ws: &mut AgentWs, want: &str) -> Option<Value> {

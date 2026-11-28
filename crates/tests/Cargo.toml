@@ -19,19 +19,10 @@ meshharbor-api = { path = "../api" }
 meshharbor-core = { path = "../core" }
 # FR-115 P3b — the session-slot tests age a lease by hand.
 redis.workspace = true
-# FR-69 P4 — the cluster + stats tests reach the conference module's state
-# (room manager, media claims) through `AppState::modules`.
-meshharbor-mod-conference = { path = "../modules/conference" }
 meshharbor-mod-fleet = { path = "../modules/fleet" }
 meshharbor-mod-network = { path = "../modules/network", features = ["path-planner-test-support", "access-authority-test-support"] }
 # FR-115 P3b — the external session's charge scope (`extauth::charge_scope`).
 meshharbor-mod-remote = { path = "../modules/remote" }
-# FR-102 P6 — the purestat puller is the `saas` module's; its test drives
-# `purestat_pull::run_once` with an injected clock against a fake purestat.
-meshharbor-mod-saas = { path = "../modules/saas" }
-# FR-90 P2e-3 — the promotion's compare-and-sets, raced at the store, where
-# two browsers racing past the route's gate cannot be timed from outside.
-meshharbor-mod-hive = { path = "../modules/hive" }
 # `external-access` so the FR-52 loopback proof runs the REAL device-side login
 # (the OPAQUE record, the guess budget, the live config read) rather than a
 # stand-in — the spec's bar for P3 is "proven on loopback against the real
@@ -54,6 +45,7 @@ tracing-subscriber.workspace = true
 axum.workspace = true
 tower.workspace = true
 hmac.workspace = true
+ring = "0.17"
 sha2.workspace = true
 hex.workspace = true
 
@@ -64,17 +56,6 @@ tempfile = { workspace = true }
 tokio-test = "0.4"
 tokio-tungstenite = "0.26"
 futures.workspace = true
-# FR-90 P0f — the canary test's browser writes binary DataChannel frames.
-bytes = "1"
-# FR-102 P5 — the newsletter tests sign SendGrid Event Webhook batches with a
-# test P-256 key (the version the workspace already builds).
-ring = "0.17"
-# FR-90 P3-1 — the vault tests make their KEK at run time, so no key is ever
-# written down in the tree.
-age.workspace = true
-# FR-90 P3-3b — the lease tests' device holds a vault key of its own and opens
-# what the vault sealed to it, as `meshharbord`'s `vault` feature does.
-crypto_box.workspace = true
 # FR-52 — the OUTSIDER's half of the login in `extauth_tests`, standing in for
 # the browser (P4). Same version and features as meshharbord's, so cargo unifies
 # them into one crate; `rand_opaque` is the rand 0.8 alias opaque-ke needs
@@ -82,18 +63,8 @@ crypto_box.workspace = true
 opaque-ke = { version = "4", default-features = false, features = ["ristretto255", "serde", "argon2", "std"] }
 rand_opaque = { package = "rand", version = "0.8" }
 
-# FR-90 P0f — the canary test (`tests/hive_canary.rs`) drives a REAL device:
-# the Hive supervisor, its replica store and its viewer peer, with sessions
-# launched as the test's own account (`hive-test-launcher` — never in a
-# release build). Linux only, like `hive`, and a DEV-dependency, so nothing
-# but a test build of this crate compiles it.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-meshharbord = { path = "../../agents/meshharbord", features = ["hive-test-launcher", "backbone-test-support"] }
-# FR-90 P2d-6 — the canary reads the member device's store, which its own
-# process wrote, after that process is gone.
-meshharbor-hive-node = { path = "../hive-node" }
-# FR-90 P2f-4 — the real hook client (`mh hive hook`) adopts the terminal
-# session `tests/hive_manage.rs` makes managed, through the device's socket.
+meshharbord = { path = "../../agents/meshharbord", features = ["backbone-test-support"] }
 meshharbor-cli = { path = "../../agents/meshharbor-cli" }
 
 [features]

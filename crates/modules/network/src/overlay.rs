@@ -478,7 +478,8 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
     if snap.has_zones() {
         let policy = snap.ice_policy_for(snap.resolve_node_sync(&self_node));
         if policy.strict {
-            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &policy.allowed_countries);
+            ice_servers =
+                filter_ice_for_allowed_countries(state, ice_servers, &policy.allowed_countries);
         }
     }
     debug!(node = %self_id, "overlay relay: warm-allocation creds granted (72h)");
@@ -491,8 +492,9 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
 }
 
 fn tenant_overlay_join_lock(tenant_id: ObjectId) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: std::sync::LazyLock<dashmap::DashMap<ObjectId, std::sync::Arc<tokio::sync::Mutex<()>>>> =
-        std::sync::LazyLock::new(dashmap::DashMap::new);
+    static LOCKS: std::sync::LazyLock<
+        dashmap::DashMap<ObjectId, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    > = std::sync::LazyLock::new(dashmap::DashMap::new);
     LOCKS
         .entry(tenant_id)
         .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
@@ -1137,10 +1139,7 @@ async fn handle_overlay_join(
     // the next policy edit. Spawned: it re-reads every node, and the joiner must
     // not wait on that to get its netmap. #21 enforce needs the table for its
     // zones even when the ACL is off.
-    if acl.gating()
-        || iso == business_isolation::Mode::Enforce
-        || lines.has_network_zones()
-    {
+    if acl.gating() || iso == business_isolation::Mode::Enforce || lines.has_network_zones() {
         schedule_derp_acl_rebuild(state, tenant_id, network_id);
     }
 
@@ -1162,7 +1161,12 @@ async fn handle_overlay_join(
     // near it, and a node that grew the space during its own join would hold a
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
-    let self_name_projection = state.overlay_nodes.name_projection(&self_node).await.ok().flatten();
+    let self_name_projection = state
+        .overlay_nodes
+        .name_projection(&self_node)
+        .await
+        .ok()
+        .flatten();
     let (stun_urls, strict_stun) = stun_policy_for_node(state, &self_node, &lines);
     let relay_probe_targets =
         crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
@@ -1181,8 +1185,7 @@ async fn handle_overlay_join(
         let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
-        let recipient_zone =
-            business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
+        let recipient_zone = business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
         let zones = lines.zones_for(
             iso,
             peer,
@@ -1259,9 +1262,15 @@ async fn handle_overlay_join(
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
-                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_name: self_name_projection
+                    .as_ref()
+                    .map(|(name, _)| name.clone())
+                    .filter(|name| !name.is_empty()),
                 self_node_id: self_node.id,
-                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
+                self_name_revision: self_name_projection
+                    .as_ref()
+                    .and_then(|(_, revision)| *revision)
+                    .map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
                 central_relay_denied: central_relay_denied_for(&self_node, &lines),
@@ -1521,9 +1530,7 @@ async fn try_complete_join_netmap(
         self_src: joiner_src,
         peers,
     } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
-    if (acl.gating()
-        || iso == business_isolation::Mode::Enforce
-        || lines.has_network_zones())
+    if (acl.gating() || iso == business_isolation::Mode::Enforce || lines.has_network_zones())
         && !super::derp_acl::rebuild(state, tenant_id, network_id).await
     {
         return false;
@@ -1536,7 +1543,12 @@ async fn try_complete_join_netmap(
         Err(_) => (None, Vec::new()),
     };
     let join_blocks = state.overlay_networks.block_list(&network).await;
-    let self_name_projection = state.overlay_nodes.name_projection(&self_node).await.ok().flatten();
+    let self_name_projection = state
+        .overlay_nodes
+        .name_projection(&self_node)
+        .await
+        .ok()
+        .flatten();
     let relay_probe_targets =
         crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
     let backbone_probe_targets =
@@ -1556,8 +1568,7 @@ async fn try_complete_join_netmap(
         let peer_src = overlay_source_of(state, peer).await;
         let joiner_ingress = peer_identity_required(&acl, peer, &self_node).then_some(&joiner_src);
         let verdict = server_relay_verdict(state, peer, &self_node);
-        let recipient_zone =
-            business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
+        let recipient_zone = business_isolation::zone_of_with_lines(state, iso, &lines, peer).await;
         let zones = lines.zones_for(
             iso,
             peer,
@@ -1633,9 +1644,15 @@ async fn try_complete_join_netmap(
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
-                self_name: self_name_projection.as_ref().map(|(name, _)| name.clone()).filter(|name| !name.is_empty()),
+                self_name: self_name_projection
+                    .as_ref()
+                    .map(|(name, _)| name.clone())
+                    .filter(|name| !name.is_empty()),
                 self_node_id: self_node.id,
-                self_name_revision: self_name_projection.as_ref().and_then(|(_, revision)| *revision).map(|revision| revision.to_string()),
+                self_name_revision: self_name_projection
+                    .as_ref()
+                    .and_then(|(_, revision)| *revision)
+                    .map(|revision| revision.to_string()),
                 stun_urls,
                 strict_stun,
                 central_relay_denied: central_relay_denied_for(&self_node, &lines),
@@ -2357,10 +2374,12 @@ async fn handle_overlay_relay_request(
         let pa = snap.ice_policy_for(snap.resolve_node_sync(&self_node));
         let pb = snap.ice_policy_for(snap.resolve_node_sync(&peer));
         if pa.strict {
-            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &pa.allowed_countries);
+            ice_servers =
+                filter_ice_for_allowed_countries(state, ice_servers, &pa.allowed_countries);
         }
         if pb.strict {
-            ice_servers = filter_ice_for_allowed_countries(state, ice_servers, &pb.allowed_countries);
+            ice_servers =
+                filter_ice_for_allowed_countries(state, ice_servers, &pb.allowed_countries);
         }
     }
 
@@ -2994,12 +3013,16 @@ pub async fn propagate_node_rename(
         .as_ref()
         .map(|a| a.name_sync.as_ref().map_or(0, |s| s.revision));
     if let Some(r) = revision {
-        match state.overlay_nodes.name_projected_at_least(node_id, r).await {
+        match state
+            .overlay_nodes
+            .name_projected_at_least(node_id, r)
+            .await
+        {
             Ok(Some(projected)) => {
                 send_projected_self_name(state, &projected).await;
                 return Some(projected.name);
-            },
-            Ok(None) => {},
+            }
+            Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, "name projection revision read failed");
                 return None;
@@ -3066,20 +3089,47 @@ pub async fn propagate_node_rename(
 /// Repeated delivery is revision-idempotent and also repairs a missed push.
 pub async fn send_projected_self_name(state: &NetworkState, node: &OverlayNode) {
     use meshharbor_remote_control::models::RpcCap;
-    let NodeRef::Agent { agent_id } = node.node_ref else { return; };
-    let Ok(agent) = state.fleet.agents.find_live_in_tenant(node.tenant_id, agent_id).await else { return; };
-    if !agent.capabilities.has_rpc(RpcCap::DeviceNameSync)
-        && !agent.capabilities.has_rpc(RpcCap::OrganizationNameAlias) { return; }
-    let Ok(Some((name, Some(revision)))) = state.overlay_nodes.name_projection(node).await else { return; };
-    let Some(node_id) = node.id else { return; };
-    let message = ServerMsg::OverlaySelfName {
-        agent_id: agent_id.to_hex(), tenant_id: node.tenant_id.to_hex(), node_id,
-        revision: revision.to_string(), name,
+    let NodeRef::Agent { agent_id } = node.node_ref else {
+        return;
     };
-    let _ = state.fleet.rc_hub.send_to_agent_in_tenant(agent_id, node.tenant_id, message.clone());
-    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(state, "overlay_self_name", serde_json::json!({
-        "tenant_id":node.tenant_id.to_hex(),"agent_id":agent_id.to_hex(),"message":message
-    })).await;
+    let Ok(agent) = state
+        .fleet
+        .agents
+        .find_live_in_tenant(node.tenant_id, agent_id)
+        .await
+    else {
+        return;
+    };
+    if !agent.capabilities.has_rpc(RpcCap::DeviceNameSync)
+        && !agent.capabilities.has_rpc(RpcCap::OrganizationNameAlias)
+    {
+        return;
+    }
+    let Ok(Some((name, Some(revision)))) = state.overlay_nodes.name_projection(node).await else {
+        return;
+    };
+    let Some(node_id) = node.id else {
+        return;
+    };
+    let message = ServerMsg::OverlaySelfName {
+        agent_id: agent_id.to_hex(),
+        tenant_id: node.tenant_id.to_hex(),
+        node_id,
+        revision: revision.to_string(),
+        name,
+    };
+    let _ = state
+        .fleet
+        .rc_hub
+        .send_to_agent_in_tenant(agent_id, node.tenant_id, message.clone());
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_self_name",
+        serde_json::json!({
+            "tenant_id":node.tenant_id.to_hex(),"agent_id":agent_id.to_hex(),"message":message
+        }),
+    )
+    .await;
 }
 
 /// What a successful [`release_overlay_node`] freed — for the route responses
@@ -6383,8 +6433,9 @@ fn stun_policy_for_node(
             candidates.push(u);
         }
     }
-    candidates
-        .retain(|u| crate::network_zones::url_matches_countries(state, u, &policy.allowed_countries));
+    candidates.retain(|u| {
+        crate::network_zones::url_matches_countries(state, u, &policy.allowed_countries)
+    });
     // A zone-pinned entry is the operator's explicit assignment, so it skips
     // the country filter. That filter cannot express "this zone only": it
     // judges a host by its country, and a zone that declares none borrows its
@@ -6580,7 +6631,10 @@ pub async fn repush_full_netmap_for_tenant(state: &NetworkState, tenant_id: Obje
         Err(_) => (None, Vec::new()),
     };
     for node in &all {
-        if node.id.is_some_and(|id| reach.get(&id).copied() == Some(true)) {
+        if node
+            .id
+            .is_some_and(|id| reach.get(&id).copied() == Some(true))
+        {
             repush_node_full_netmap(
                 state,
                 &network,

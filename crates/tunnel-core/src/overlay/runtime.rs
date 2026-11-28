@@ -1961,7 +1961,11 @@ async fn run_srflx_keepalive_shared(
 /// exactly the startup semantics.
 /// T12 — the device's own srflx STUN list when it set a non-empty one (and the
 /// zone policy does not enforce `strict_stun`), else the server's.
-fn pick_srflx_stun_urls(own: Option<&[String]>, server: &[String], strict_stun: bool) -> Vec<String> {
+fn pick_srflx_stun_urls(
+    own: Option<&[String]>,
+    server: &[String],
+    strict_stun: bool,
+) -> Vec<String> {
     if strict_stun {
         return server.to_vec();
     }
@@ -2013,7 +2017,10 @@ fn spawn_srflx_keepalive(
         stun_sink,
     ) {
         (Some((_, punch_sock)), Some(stun_server), Some(stun_sink))
-            if direct::srflx_enabled() && secs > 0 && !advertised.is_empty() && !stun_urls.is_empty() =>
+            if direct::srflx_enabled()
+                && secs > 0
+                && !advertised.is_empty()
+                && !stun_urls.is_empty() =>
         {
             Some(tokio::spawn(run_srflx_keepalive_shared(
                 punch_sock,
@@ -2513,8 +2520,7 @@ pub fn offline_continuity_max_age() -> Option<Duration> {
 }
 
 #[cfg(test)]
-static TEST_JOIN_RETRY_BASE_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static TEST_JOIN_RETRY_BASE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// FR-47 — exponential backoff + jitter for retrying a transiently refused
 /// `OverlayJoin` (`StoreUnavailable`) on a still-open control-WS session.
@@ -2986,10 +2992,7 @@ impl OverlayRuntime {
 
     /// FR-140 — share the live control-WS attachment flag with `p2pctl` so
     /// offline capabilities are refused while this host is actually online.
-    pub fn with_control_ws_attached(
-        mut self,
-        flag: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
+    pub fn with_control_ws_attached(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.control_ws_attached = flag;
         self
     }
@@ -3323,7 +3326,8 @@ impl OverlayRuntime {
                     && ctx.loopback_eligible
                     && !ctx.public_sock_pinned
             });
-            if inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan) || probe_loopback_only {
+            if inst.is_none_or(|i| !i.is_direct || i.tier != DirectTier::Lan) || probe_loopback_only
+            {
                 let mut adv_lan = super::runtime::establish::gather_lan_candidates(ctx, &cfg);
                 if probe_loopback_only {
                     adv_lan.retain(|c| c.kind == super::candidates::LanPathKind::Loopback);
@@ -3359,8 +3363,11 @@ impl OverlayRuntime {
                     else {
                         continue;
                     };
-                    let (nonce, frame) =
-                        prober.next_ping(&cfg.public_key, &self.keypair.secret, &self.keypair.public);
+                    let (nonce, frame) = prober.next_ping(
+                        &cfg.public_key,
+                        &self.keypair.secret,
+                        &self.keypair.public,
+                    );
                     let sent_at = Instant::now();
                     if sock.send_to(&frame, cand.dst).await.is_ok() {
                         prober.sent_at(cfg.public_key, cand.dst, nonce, sent_at);
@@ -3395,9 +3402,7 @@ impl OverlayRuntime {
                 let Some((dst, sock)) = pair else { continue };
                 // A relayed peer's public/srflx candidate answering again is
                 // the cue to probe it now (LAN keeps its own spacing, P8).
-                if revived.contains(&(cfg.public_key, dst))
-                    && !back.contains(&(*nid, tier))
-                {
+                if revived.contains(&(cfg.public_key, dst)) && !back.contains(&(*nid, tier)) {
                     back.push((*nid, tier));
                 }
                 let (nonce, frame) =
@@ -3861,8 +3866,7 @@ impl OverlayRuntime {
                         .store(false, std::sync::atomic::Ordering::Relaxed);
                     let sanitized_net =
                         super::netmap_cache::sanitize_network_for_offline_replay(&network);
-                    let sanitized_peers =
-                        super::netmap_cache::sanitize_for_offline_replay(&peers);
+                    let sanitized_peers = super::netmap_cache::sanitize_for_offline_replay(&peers);
                     info!(
                         peers = sanitized_peers.len(),
                         auth_revision = sanitized_net.auth_revision,
@@ -3913,10 +3917,10 @@ impl OverlayRuntime {
                     pre_join_retry_attempt = 0;
                     continue;
                 }
-                Some(OverlayEvent::RelayGrant { .. }) => continue,  // pre-netmap; ignore
+                Some(OverlayEvent::RelayGrant { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::WarmRelayGrant { .. }) => continue, // pre-netmap; ignore
-                Some(OverlayEvent::ForceDerp { .. }) => continue,   // pre-netmap; ignore
-                Some(OverlayEvent::RttSample { .. }) => continue,   // pre-netmap; ignore
+                Some(OverlayEvent::ForceDerp { .. }) => continue,  // pre-netmap; ignore
+                Some(OverlayEvent::RttSample { .. }) => continue,  // pre-netmap; ignore
                 Some(OverlayEvent::PathTrial(_)) => continue,
                 Some(OverlayEvent::OrgRelaySession { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::OrgRelayRevoke { .. }) => continue,  // pre-netmap; ignore
@@ -3925,7 +3929,7 @@ impl OverlayRuntime {
                     self.exit_server_ips = ips;
                     continue;
                 }
-                Some(OverlayEvent::RebuildDirect) => continue,          // pre-netmap; no plane yet
+                Some(OverlayEvent::RebuildDirect) => continue, // pre-netmap; no plane yet
                 None => return,
             }
         };
@@ -16442,7 +16446,10 @@ mod org_upgrade_tests {
                 break;
             }
         }
-        assert!(saw_hk_srflx, "initial netmap must gather srflx from HK STUN");
+        assert!(
+            saw_hk_srflx,
+            "initial netmap must gather srflx from HK STUN"
+        );
         let hk_before = hk_hits.load(std::sync::atomic::Ordering::SeqCst);
         assert!(hk_before >= 1);
         assert_eq!(cn_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -16724,10 +16731,7 @@ mod org_upgrade_tests {
 
         // 7. While detached, an overtaken stale full Netmap (`auth_revision: 1 < 3`)
         // is ignored without rollback AND schedules a fresh retry `OverlayJoin`.
-        evt_tx
-            .send(OverlayEvent::ControlDetached)
-            .await
-            .unwrap();
+        evt_tx.send(OverlayEvent::ControlDetached).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         while out_rx.try_recv().is_ok() {}
         evt_tx
@@ -16834,8 +16838,16 @@ mod org_upgrade_tests {
         use crate::overlay::runtime::tests::MockTun;
         use meshharbor_remote_control::signaling::RelayStrategyWire;
         for (label, strategy, paced) in [
-            ("dialer-unpaced", RelayStrategyWire::SingleRelayDialer, false),
-            ("anchor-unpaced", RelayStrategyWire::SingleRelayAnchor, false),
+            (
+                "dialer-unpaced",
+                RelayStrategyWire::SingleRelayDialer,
+                false,
+            ),
+            (
+                "anchor-unpaced",
+                RelayStrategyWire::SingleRelayAnchor,
+                false,
+            ),
             ("anchor-paced", RelayStrategyWire::SingleRelayAnchor, true),
         ] {
             let kp = WgKeypair::generate();
@@ -16980,7 +16992,8 @@ mod org_upgrade_tests {
 
         // 1. Stale bound org session while `by_node` is empty: `install_peers`
         // repairs it and sends `OverlayRelayRequest`.
-        let (serve1, conn1, _link1) = make_bound_org_session(&mut coord, nid, cfg.clone(), 51).await;
+        let (serve1, conn1, _link1) =
+            make_bound_org_session(&mut coord, nid, cfg.clone(), 51).await;
         let mut relay = Some(coord);
         let mut by_node = HashMap::new();
         let tun: Arc<dyn TunIo> = tun_mock;
@@ -17222,9 +17235,7 @@ mod org_upgrade_tests {
 
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if view_rx.borrow().peers.len() == 1
-                    && !snapshots.lock().unwrap().is_empty()
-                {
+                if view_rx.borrow().peers.len() == 1 && !snapshots.lock().unwrap().is_empty() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

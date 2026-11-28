@@ -38,8 +38,7 @@ static RUNTIME_RELAY_SERVER_OVERRIDE: std::sync::atomic::AtomicU8 =
 
 /// FR-127 — a protected device never serves as a relay, whatever its config, its env or the
 /// control plane's `rc:overlay.peer_relay_serve` says. Set once at startup from the config.
-static DEVICE_PROTECTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DEVICE_PROTECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_device_protected(on: bool) {
     DEVICE_PROTECTED.store(on, std::sync::atomic::Ordering::SeqCst);

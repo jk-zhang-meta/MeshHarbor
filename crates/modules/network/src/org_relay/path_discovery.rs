@@ -313,8 +313,7 @@ pub(super) fn scan_with_gateways(
                                         && last_relay.zone == requester_zone))
                         } else {
                             requester_gateways.is_none_or(|gw| gw.contains(&first_relay.agent_id))
-                                && peer_gateways
-                                    .is_none_or(|gw| gw.contains(&last_relay.agent_id))
+                                && peer_gateways.is_none_or(|gw| gw.contains(&last_relay.agent_id))
                                 && (!restrict_ends
                                     || (first_relay.zone == requester_zone
                                         && last_relay.zone == peer_zone))

@@ -229,10 +229,16 @@ pub async fn sign_out(server: &str) -> Result<(), String> {
         match user_session::refresh(server, &saved.refresh_token).await {
             Ok(session) => match user_session::revoke(server, &session.access_token).await {
                 Ok(()) => {}
-                Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+                Err(error)
+                    if error
+                        .downcast_ref::<user_session::SessionDenied>()
+                        .is_some() => {}
                 Err(error) => return Err(error.to_string()),
             },
-            Err(error) if error.downcast_ref::<user_session::SessionDenied>().is_some() => {}
+            Err(error)
+                if error
+                    .downcast_ref::<user_session::SessionDenied>()
+                    .is_some() => {}
             Err(error) => return Err(error.to_string()),
         }
         let del_scope = server.to_owned();
@@ -263,7 +269,12 @@ mod tests {
             checked_at: Some(std::time::Instant::now()),
         };
         assert_eq!(
-            super::label_for(Some(&badge), &badge.server, true, crate::tray_i18n::Lang::En),
+            super::label_for(
+                Some(&badge),
+                &badge.server,
+                true,
+                crate::tray_i18n::Lang::En
+            ),
             ("Signed in as person@example.com".into(), false)
         );
         assert_eq!(
@@ -276,9 +287,14 @@ mod tests {
             ("已登录：person@example.com".into(), false)
         );
         assert!(
-            super::label_for(Some(&badge), &badge.server, false, crate::tray_i18n::Lang::En)
-                .0
-                .contains("session unconfirmed")
+            super::label_for(
+                Some(&badge),
+                &badge.server,
+                false,
+                crate::tray_i18n::Lang::En
+            )
+            .0
+            .contains("session unconfirmed")
         );
         assert!(
             super::label_for(
@@ -310,9 +326,14 @@ mod tests {
         );
         badge.checked_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(91));
         assert!(
-            super::label_for(Some(&badge), &badge.server, true, crate::tray_i18n::Lang::En)
-                .0
-                .contains("session unconfirmed")
+            super::label_for(
+                Some(&badge),
+                &badge.server,
+                true,
+                crate::tray_i18n::Lang::En
+            )
+            .0
+            .contains("session unconfirmed")
         );
     }
 }

@@ -864,8 +864,11 @@ pub async fn flows(json: bool) -> Result<()> {
 pub async fn rename(name: &str) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
     let (effective, state) = client.propose_device_name(name).await.map_err(daemon_err)?;
-    println!("device name proposal queued: {} (canonical: {effective}; state: {})",
-        state.proposed_name.as_deref().unwrap_or(name), state.state);
+    println!(
+        "device name proposal queued: {} (canonical: {effective}; state: {})",
+        state.proposed_name.as_deref().unwrap_or(name),
+        state.state
+    );
     Ok(())
 }
 
@@ -2526,7 +2529,9 @@ fn format_egress_status_lines(eg: &tunnel_core::localapi::EgressProbeStatus) -> 
     } else {
         ""
     };
-    lines.push(format!("  egress      physical {phys}  current {cur}{vpn_note}"));
+    lines.push(format!(
+        "  egress      physical {phys}  current {cur}{vpn_note}"
+    ));
     if let Some(zone) = eg.zone_name.as_deref().or(eg.zone_id.as_deref()) {
         let src = eg
             .zone_source

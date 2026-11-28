@@ -73,9 +73,7 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
         term: "xterm-256color".into(),
         cols: 80,
         rows: 24,
-        command: Some(
-            "echo FR141_STEP1; sleep 1; echo FR141_WHILE_DETACHED; sleep 30".to_string(),
-        ),
+        command: Some("echo FR141_STEP1; sleep 1; echo FR141_WHILE_DETACHED; sleep 30".to_string()),
         env: vec![("LANG".into(), "C.UTF-8".into())],
         run_as: RunAsDescriptor::Daemon,
         ring_bytes: DEFAULT_RING_BYTES as u32,
@@ -104,7 +102,11 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
     let mut last_rx: u64 = 0;
     let step1_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < step1_deadline {
-        if let Ok(Ok(Some(IpcFrame::Wire(WireFrame::Data { stream: s, seq, bytes })))) =
+        if let Ok(Ok(Some(IpcFrame::Wire(WireFrame::Data {
+            stream: s,
+            seq,
+            bytes,
+        })))) =
             tokio::time::timeout(Duration::from_millis(500), IpcFrame::read_from(&mut stream)).await
             && s == STREAM_STDOUT
         {
@@ -147,7 +149,8 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
     assert_eq!(err, RefuseReason::BadProof);
 
     // Valid cryptographic HKDF/HMAC proof succeeds and replays missed bytes losslessly!
-    let good_proof = compute_client_proof(&resume_secret, &sid, &s_nonce, &c_nonce, host_fp, client_fp);
+    let good_proof =
+        compute_client_proof(&resume_secret, &sid, &s_nonce, &c_nonce, host_fp, client_fp);
     let attached = meshharbord::ssh_persist::verify_and_attach(
         org_id,
         &sid,
@@ -170,8 +173,11 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
     let mut replayed = Vec::new();
     let replay_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < replay_deadline {
-        match tokio::time::timeout(Duration::from_millis(500), IpcFrame::read_from(&mut stream2))
-            .await
+        match tokio::time::timeout(
+            Duration::from_millis(500),
+            IpcFrame::read_from(&mut stream2),
+        )
+        .await
         {
             Ok(Ok(Some(IpcFrame::Wire(WireFrame::Attached(a))))) => {
                 assert!(verify_server_proof(
@@ -183,7 +189,9 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
                 ));
                 got_attached = true;
             }
-            Ok(Ok(Some(IpcFrame::Wire(WireFrame::Data { stream: s, bytes, .. }))))
+            Ok(Ok(Some(IpcFrame::Wire(WireFrame::Data {
+                stream: s, bytes, ..
+            }))))
                 if s == STREAM_STDOUT =>
             {
                 replayed.extend_from_slice(&bytes);
@@ -194,7 +202,10 @@ async fn fr141_real_binary_pty_host_survives_daemon_restart_and_revokes_cleanly(
             _ => {}
         }
     }
-    assert!(got_attached, "must receive Attached with valid server_proof");
+    assert!(
+        got_attached,
+        "must receive Attached with valid server_proof"
+    );
     assert!(
         String::from_utf8_lossy(&replayed).contains("FR141_WHILE_DETACHED"),
         "must losslessly replay bytes written while detached, got {:?}",

@@ -298,7 +298,9 @@ fn merge_hardware_inventory(prev: &GpuInventory, report: &GpuReport) -> GpuInven
             uuid: g.uuid.clone(),
             idx: g.idx,
             name: g.name.clone().unwrap_or_else(|| format!("GPU {}", g.idx)),
-            mem_total_mb: g.mem_total_mb.or_else(|| by_key.get(&k).and_then(|o| o.mem_total_mb)),
+            mem_total_mb: g
+                .mem_total_mb
+                .or_else(|| by_key.get(&k).and_then(|o| o.mem_total_mb)),
             power_limit_w: g
                 .power_limit_w
                 .or_else(|| by_key.get(&k).and_then(|o| o.power_limit_w)),
@@ -397,14 +399,11 @@ pub fn run_child() -> anyhow::Result<()> {
     let mut last_internal: Option<Instant> = None;
 
     loop {
-        let state = ctrl
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or(ControlState {
-                interval_ms: 0,
-                include_procs: true,
-                stop: true,
-            });
+        let state = ctrl.lock().map(|g| g.clone()).unwrap_or(ControlState {
+            interval_ms: 0,
+            include_procs: true,
+            stop: true,
+        });
         if state.stop {
             break;
         }

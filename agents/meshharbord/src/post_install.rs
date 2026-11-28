@@ -155,8 +155,12 @@ const WINDOWS_LIVE_BUDGET: Duration = Duration::from_secs(120);
 const WINDOWS_OUTCOME_REPLACE_BUDGET: Duration = Duration::from_secs(2);
 #[cfg(target_os = "windows")]
 const WINDOWS_RECEIPT_BUDGET: Duration = Duration::from_secs(
-    2 * INSTALLER_BUDGET.as_secs() + 30 + 10 + POST_INSTALL_SETTLE.as_secs()
-        + WINDOWS_LIVE_BUDGET.as_secs() + 4 * WINDOWS_OUTCOME_REPLACE_BUDGET.as_secs(),
+    2 * INSTALLER_BUDGET.as_secs()
+        + 30
+        + 10
+        + POST_INSTALL_SETTLE.as_secs()
+        + WINDOWS_LIVE_BUDGET.as_secs()
+        + 4 * WINDOWS_OUTCOME_REPLACE_BUDGET.as_secs(),
 );
 
 #[cfg(target_os = "windows")]
@@ -169,13 +173,20 @@ fn receipt_in_progress_for_this_start(outcome: &InstallOutcome, now: u64, versio
 }
 
 #[cfg(target_os = "windows")]
-fn receipt_wait_continues(observed: &Result<Option<InstallOutcome>>, started: u64, now: u64, version: &str) -> bool {
+fn receipt_wait_continues(
+    observed: &Result<Option<InstallOutcome>>,
+    started: u64,
+    now: u64,
+    version: &str,
+) -> bool {
     match observed {
         // Only used AFTER a matching pending record was observed. Initial
         // unknown/missing is not evidence that an update exists.
         Err(_) | Ok(None) => true,
-        Ok(Some(current)) => current.started_unix == started
-            && receipt_in_progress_for_this_start(current, now, version),
+        Ok(Some(current)) => {
+            current.started_unix == started
+                && receipt_in_progress_for_this_start(current, now, version)
+        }
     }
 }
 
@@ -183,21 +194,34 @@ fn receipt_wait_continues(observed: &Result<Option<InstallOutcome>>, started: u6
 /// this exact version. Never turn a stale/failed/missing receipt into success.
 #[cfg(target_os = "windows")]
 pub async fn await_windows_update_receipt() {
-    let Ok(Some(first)) = read_outcome() else { return; };
-    if !receipt_in_progress_for_this_start(&first, unix_now(), env!("CARGO_PKG_VERSION")) { return; }
-    let remaining = WINDOWS_RECEIPT_BUDGET.as_secs().saturating_sub(unix_now().saturating_sub(first.started_unix));
+    let Ok(Some(first)) = read_outcome() else {
+        return;
+    };
+    if !receipt_in_progress_for_this_start(&first, unix_now(), env!("CARGO_PKG_VERSION")) {
+        return;
+    }
+    let remaining = WINDOWS_RECEIPT_BUDGET
+        .as_secs()
+        .saturating_sub(unix_now().saturating_sub(first.started_unix));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(remaining);
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if tokio::time::Instant::now() >= deadline {
-            tracing::warn!("companion reopen deferred: update verification receipt did not become terminal");
+            tracing::warn!(
+                "companion reopen deferred: update verification receipt did not become terminal"
+            );
             return;
         }
         let observed = read_outcome();
         if let Err(error) = &observed {
             tracing::warn!(error = %error, "waiting for update receipt after transient read failure");
         }
-        if !receipt_wait_continues(&observed, first.started_unix, unix_now(), env!("CARGO_PKG_VERSION")) {
+        if !receipt_wait_continues(
+            &observed,
+            first.started_unix,
+            unix_now(),
+            env!("CARGO_PKG_VERSION"),
+        ) {
             return;
         }
     }
@@ -229,7 +253,8 @@ pub fn write_outcome(outcome: &InstallOutcome) -> Result<PathBuf> {
 #[cfg(target_os = "windows")]
 fn atomic_windows_outcome(path: &std::path::Path, json: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().context("outcome has no parent")?)?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().context("outcome has no parent")?)?;
     temporary.write_all(json)?;
     temporary.as_file().sync_all()?;
     // Windows can transiently reject rename while a reader/AV has a handle.
@@ -238,8 +263,10 @@ fn atomic_windows_outcome(path: &std::path::Path, json: &[u8]) -> Result<()> {
     loop {
         match temporary.persist(path) {
             Ok(_) => return Ok(()),
-            Err(error) if matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
-                && std::time::Instant::now() < deadline => {
+            Err(error)
+                if matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
+                    && std::time::Instant::now() < deadline =>
+            {
                 temporary = error.file;
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -249,12 +276,20 @@ fn atomic_windows_outcome(path: &std::path::Path, json: &[u8]) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn prepare_windows_outcome(installer: &std::path::Path, expected: &str) -> Result<InstallOutcome> {
+pub(crate) fn prepare_windows_outcome(
+    installer: &std::path::Path,
+    expected: &str,
+) -> Result<InstallOutcome> {
     let outcome = InstallOutcome {
-        installer_pid: 0, installer_path: installer.display().to_string(),
-        expected_version: expected.to_owned(), started_unix: unix_now(),
-        finished_unix: None, installer_exit_code: None, new_binary_path: None,
-        new_binary_version: None, status: InstallStatus::InProgress,
+        installer_pid: 0,
+        installer_path: installer.display().to_string(),
+        expected_version: expected.to_owned(),
+        started_unix: unix_now(),
+        finished_unix: None,
+        installer_exit_code: None,
+        new_binary_path: None,
+        new_binary_version: None,
+        status: InstallStatus::InProgress,
         note: "independent owner prepared; installer not yet authorized".into(),
     };
     write_outcome(&outcome)?;
@@ -334,7 +369,13 @@ pub fn watch(
         status: InstallStatus::InProgress,
         note: String::new(),
     };
-    watch_inner(outcome, origin_exe, already_exited, installer_path, expected_version)
+    watch_inner(
+        outcome,
+        origin_exe,
+        already_exited,
+        installer_path,
+        expected_version,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -345,7 +386,13 @@ pub(crate) fn watch_prepared(
 ) -> Result<InstallOutcome> {
     let installer_path = PathBuf::from(&outcome.installer_path);
     let expected_version = outcome.expected_version.clone();
-    watch_inner(outcome, origin_exe, already_exited, installer_path, expected_version)
+    watch_inner(
+        outcome,
+        origin_exe,
+        already_exited,
+        installer_path,
+        expected_version,
+    )
 }
 
 fn watch_inner(
@@ -1371,14 +1418,42 @@ mod startup_receipt_tests {
     use super::*;
     #[test]
     fn only_fresh_matching_inprogress_waits_and_never_fakes_success() {
-        let mut outcome = InstallOutcome {installer_pid:7,installer_path:"fixture.msi".into(),expected_version:"agent-v0.4.160".into(),started_unix:1000,finished_unix:None,installer_exit_code:None,new_binary_path:None,new_binary_version:None,status:InstallStatus::InProgress,note:String::new()};
-        assert!(receipt_in_progress_for_this_start(&outcome,1001,"0.4.160"));
-        assert!(!receipt_in_progress_for_this_start(&outcome,999,"0.4.160"));
-        assert!(!receipt_in_progress_for_this_start(&outcome,1001,"0.4.159"));
-        assert!(!receipt_in_progress_for_this_start(&outcome,1000+WINDOWS_RECEIPT_BUDGET.as_secs(),"0.4.160"));
-        for status in [InstallStatus::InstallerFailed,InstallStatus::SucceededUnverified,InstallStatus::SucceededVerified,InstallStatus::Timeout] {
-            outcome.status=status;
-            assert!(!receipt_in_progress_for_this_start(&outcome,1001,"0.4.160"));
+        let mut outcome = InstallOutcome {
+            installer_pid: 7,
+            installer_path: "fixture.msi".into(),
+            expected_version: "agent-v0.4.160".into(),
+            started_unix: 1000,
+            finished_unix: None,
+            installer_exit_code: None,
+            new_binary_path: None,
+            new_binary_version: None,
+            status: InstallStatus::InProgress,
+            note: String::new(),
+        };
+        assert!(receipt_in_progress_for_this_start(
+            &outcome, 1001, "0.4.160"
+        ));
+        assert!(!receipt_in_progress_for_this_start(
+            &outcome, 999, "0.4.160"
+        ));
+        assert!(!receipt_in_progress_for_this_start(
+            &outcome, 1001, "0.4.159"
+        ));
+        assert!(!receipt_in_progress_for_this_start(
+            &outcome,
+            1000 + WINDOWS_RECEIPT_BUDGET.as_secs(),
+            "0.4.160"
+        ));
+        for status in [
+            InstallStatus::InstallerFailed,
+            InstallStatus::SucceededUnverified,
+            InstallStatus::SucceededVerified,
+            InstallStatus::Timeout,
+        ] {
+            outcome.status = status;
+            assert!(!receipt_in_progress_for_this_start(
+                &outcome, 1001, "0.4.160"
+            ));
         }
     }
 }
@@ -1388,27 +1463,62 @@ mod atomic_receipt_tests {
     use super::*;
     #[test]
     fn installer_start_reads_pending_and_atomic_terminal_has_no_partial_window() {
-        let dir = tempfile::tempdir().unwrap();let path=dir.path().join("outcome.json");
-        let mut outcome=InstallOutcome {installer_pid:0,installer_path:"fixture.msi".into(),expected_version:"agent-v0.4.160".into(),started_unix:1000,finished_unix:None,installer_exit_code:None,new_binary_path:None,new_binary_version:None,status:InstallStatus::InProgress,note:"prepared before MSI".into()};
-        atomic_windows_outcome(&path,&serde_json::to_vec(&outcome).unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("outcome.json");
+        let mut outcome = InstallOutcome {
+            installer_pid: 0,
+            installer_path: "fixture.msi".into(),
+            expected_version: "agent-v0.4.160".into(),
+            started_unix: 1000,
+            finished_unix: None,
+            installer_exit_code: None,
+            new_binary_path: None,
+            new_binary_version: None,
+            status: InstallStatus::InProgress,
+            note: "prepared before MSI".into(),
+        };
+        atomic_windows_outcome(&path, &serde_json::to_vec(&outcome).unwrap()).unwrap();
         // Installer launch boundary: complete matching pending already visible.
-        let at_launch:InstallOutcome=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(receipt_in_progress_for_this_start(&at_launch,1001,"0.4.160"));
-        assert!(!matches!(at_launch.status,InstallStatus::SucceededVerified));
-        let reader_path=path.clone();
-        let reader=std::thread::spawn(move || {
+        let at_launch: InstallOutcome =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(receipt_in_progress_for_this_start(
+            &at_launch, 1001, "0.4.160"
+        ));
+        assert!(!matches!(
+            at_launch.status,
+            InstallStatus::SucceededVerified
+        ));
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
             for _ in 0..2000 {
-                let observed:InstallOutcome=serde_json::from_slice(&std::fs::read(&reader_path).unwrap()).unwrap();
-                assert!(matches!(observed.status,InstallStatus::InProgress|InstallStatus::SucceededVerified));
+                let observed: InstallOutcome =
+                    serde_json::from_slice(&std::fs::read(&reader_path).unwrap()).unwrap();
+                assert!(matches!(
+                    observed.status,
+                    InstallStatus::InProgress | InstallStatus::SucceededVerified
+                ));
             }
         });
-        outcome.installer_pid=17;outcome.finished_unix=Some(1002);outcome.installer_exit_code=Some(0);outcome.status=InstallStatus::SucceededVerified;
-        for _ in 0..50 {atomic_windows_outcome(&path,&serde_json::to_vec(&outcome).unwrap()).unwrap();}
+        outcome.installer_pid = 17;
+        outcome.finished_unix = Some(1002);
+        outcome.installer_exit_code = Some(0);
+        outcome.status = InstallStatus::SucceededVerified;
+        for _ in 0..50 {
+            atomic_windows_outcome(&path, &serde_json::to_vec(&outcome).unwrap()).unwrap();
+        }
         reader.join().unwrap();
-        let final_value:InstallOutcome=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(matches!(final_value.status,InstallStatus::SucceededVerified));
-        assert_eq!(final_value.started_unix,at_launch.started_unix);
-        assert!(!receipt_in_progress_for_this_start(&final_value,1003,"0.4.160"));
+        let final_value: InstallOutcome =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(matches!(
+            final_value.status,
+            InstallStatus::SucceededVerified
+        ));
+        assert_eq!(final_value.started_unix, at_launch.started_unix);
+        assert!(!receipt_in_progress_for_this_start(
+            &final_value,
+            1003,
+            "0.4.160"
+        ));
     }
 }
 
@@ -1417,12 +1527,45 @@ mod transient_receipt_tests {
     use super::*;
     #[test]
     fn actual_wait_decision_tolerates_read_error_until_matching_terminal() {
-        let failure: Result<Option<InstallOutcome>> = Err(anyhow::anyhow!("sharing violation fixture"));
-        assert!(receipt_wait_continues(&failure,1000,1001,"0.4.160"));
-        assert!(receipt_wait_continues(&Ok(None),1000,1001,"0.4.160"));
-        let mut pending=InstallOutcome {installer_pid:17,installer_path:"fixture.msi".into(),expected_version:"agent-v0.4.160".into(),started_unix:1000,finished_unix:None,installer_exit_code:None,new_binary_path:None,new_binary_version:None,status:InstallStatus::InProgress,note:String::new()};
-        assert!(receipt_wait_continues(&Ok(Some(pending)),1000,1001,"0.4.160"));
-        pending=InstallOutcome {installer_pid:17,installer_path:"fixture.msi".into(),expected_version:"agent-v0.4.160".into(),started_unix:1000,finished_unix:Some(1002),installer_exit_code:Some(0),new_binary_path:None,new_binary_version:None,status:InstallStatus::SucceededVerified,note:String::new()};
-        assert!(!receipt_wait_continues(&Ok(Some(pending)),1000,1003,"0.4.160"));
+        let failure: Result<Option<InstallOutcome>> =
+            Err(anyhow::anyhow!("sharing violation fixture"));
+        assert!(receipt_wait_continues(&failure, 1000, 1001, "0.4.160"));
+        assert!(receipt_wait_continues(&Ok(None), 1000, 1001, "0.4.160"));
+        let mut pending = InstallOutcome {
+            installer_pid: 17,
+            installer_path: "fixture.msi".into(),
+            expected_version: "agent-v0.4.160".into(),
+            started_unix: 1000,
+            finished_unix: None,
+            installer_exit_code: None,
+            new_binary_path: None,
+            new_binary_version: None,
+            status: InstallStatus::InProgress,
+            note: String::new(),
+        };
+        assert!(receipt_wait_continues(
+            &Ok(Some(pending)),
+            1000,
+            1001,
+            "0.4.160"
+        ));
+        pending = InstallOutcome {
+            installer_pid: 17,
+            installer_path: "fixture.msi".into(),
+            expected_version: "agent-v0.4.160".into(),
+            started_unix: 1000,
+            finished_unix: Some(1002),
+            installer_exit_code: Some(0),
+            new_binary_path: None,
+            new_binary_version: None,
+            status: InstallStatus::SucceededVerified,
+            note: String::new(),
+        };
+        assert!(!receipt_wait_continues(
+            &Ok(Some(pending)),
+            1000,
+            1003,
+            "0.4.160"
+        ));
     }
 }

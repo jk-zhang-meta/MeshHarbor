@@ -240,10 +240,7 @@ struct PlaneState {
 }
 
 impl PlaneState {
-    fn owner_watch_sender(
-        &mut self,
-        owner_key: &[u8],
-    ) -> &tokio::sync::watch::Sender<SrflxShared> {
+    fn owner_watch_sender(&mut self, owner_key: &[u8]) -> &tokio::sync::watch::Sender<SrflxShared> {
         if !self.owner_watches.contains_key(owner_key) {
             let seed = self
                 .owner_policies
@@ -1991,7 +1988,12 @@ impl CarrierPlane {
                 st.refresh_legacy_srflx_watch();
                 None
             };
-            (st.rebuild_epoch, sink_owned_externally, reused_slot, to_abort)
+            (
+                st.rebuild_epoch,
+                sink_owned_externally,
+                reused_slot,
+                to_abort,
+            )
         };
         for h in to_abort {
             h.abort();
@@ -2786,8 +2788,8 @@ mod tests {
                 tasks: vec![t_lan, t_pub],
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
-            visible_lan: direct::VisibleLan::default(),
-            public_sock_pinned: false,
+                visible_lan: direct::VisibleLan::default(),
+                public_sock_pinned: false,
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -2889,8 +2891,8 @@ mod tests {
                 tasks: vec![t_pub],
                 stats: Vec::new(),
                 my_lan_ifaces: Vec::new(),
-            visible_lan: direct::VisibleLan::default(),
-            public_sock_pinned: false,
+                visible_lan: direct::VisibleLan::default(),
+                public_sock_pinned: false,
             });
         }
         let mut rx = plane.take_stun_events().unwrap();
@@ -3961,7 +3963,10 @@ mod tests {
         let regathered = plane
             .ensure_srflx(std::slice::from_ref(&stun_url), b"stun-policy-key")
             .await;
-        assert_eq!(regathered.candidates, vec!["203.0.113.42:43620".to_string()]);
+        assert_eq!(
+            regathered.candidates,
+            vec!["203.0.113.42:43620".to_string()]
+        );
         assert!(plane.lock().has_any_keepalive());
         let tightened = plane.ensure_srflx(&[], b"stun-policy-key").await;
         assert!(tightened.candidates.is_empty());
@@ -4059,8 +4064,14 @@ mod tests {
         let rx_b = plane.subscribe_srflx_for(&key_b);
         assert_eq!(shared_a.candidates, vec!["203.0.113.99:43621".to_string()]);
         assert_eq!(shared_b.candidates, vec!["203.0.113.99:43621".to_string()]);
-        assert_eq!(rx_a.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
-        assert_eq!(rx_b.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
+        assert_eq!(
+            rx_a.borrow().candidates,
+            vec!["203.0.113.99:43621".to_string()]
+        );
+        assert_eq!(
+            rx_b.borrow().candidates,
+            vec!["203.0.113.99:43621".to_string()]
+        );
 
         // Org A tightens its STUN policy to empty (`strict_stun: true`).
         // Org A's watch must clear immediately, while Org B's watch, punch state,
@@ -4096,7 +4107,10 @@ mod tests {
         // Detaching Org A must still preserve Org B; detaching Org B finally stops keepalive.
         drop(h_a);
         assert!(plane.lock().has_any_keepalive());
-        assert_eq!(rx_b.borrow().candidates, vec!["203.0.113.99:43621".to_string()]);
+        assert_eq!(
+            rx_b.borrow().candidates,
+            vec!["203.0.113.99:43621".to_string()]
+        );
         drop(h_b);
         assert!(!plane.lock().has_any_keepalive());
         assert!(rx_b.borrow().candidates.is_empty());
@@ -4185,10 +4199,7 @@ mod tests {
         let shared_b = plane
             .ensure_srflx(std::slice::from_ref(&url_b), &key_b)
             .await;
-        assert_eq!(
-            shared_b.candidates,
-            vec!["203.0.113.100:43622".to_string()]
-        );
+        assert_eq!(shared_b.candidates, vec!["203.0.113.100:43622".to_string()]);
         tokio::time::sleep(Duration::from_millis(30)).await;
         let baseline_b = queries_b.load(Ordering::Relaxed);
 
@@ -4197,9 +4208,8 @@ mod tests {
         // WHILE Org A's silent gather is still blocked waiting on silent targets!
         let plane_for_a = plane.clone();
         let urls_for_a = silent_urls.clone();
-        let gather_a = tokio::spawn(async move {
-            plane_for_a.ensure_srflx(&urls_for_a, &key_a).await
-        });
+        let gather_a =
+            tokio::spawn(async move { plane_for_a.ensure_srflx(&urls_for_a, &key_a).await });
 
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert!(

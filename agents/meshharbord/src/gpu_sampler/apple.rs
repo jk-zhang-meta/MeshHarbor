@@ -6,9 +6,7 @@
 //! provides no public per-process GPU attribution API). Guards broken zero
 //! readings (e.g. macOS 27 IOReport regression) as `None` rather than `0`.
 
-use meshharbor_remote_control::gpu::{
-    GpuHostStatus, GpuInventory, GpuSample,
-};
+use meshharbor_remote_control::gpu::{GpuHostStatus, GpuInventory, GpuSample};
 #[cfg(target_os = "macos")]
 use meshharbor_remote_control::gpu::{GpuInventoryItem, ProcsState};
 
@@ -30,8 +28,8 @@ impl AppleBackend {
                 sysinfo::RefreshKind::nothing()
                     .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
             );
-            let mem_total_mb = (sys.total_memory() > 0)
-                .then(|| (sys.total_memory() / (1024 * 1024)) as u32);
+            let mem_total_mb =
+                (sys.total_memory() > 0).then(|| (sys.total_memory() / (1024 * 1024)) as u32);
             let chip_name = "Apple Silicon GPU".to_string();
             Some(Self {
                 sampler,
@@ -80,22 +78,22 @@ impl AppleBackend {
             // macOS 27 IOReport zero-guard: if both gpu freq & active ratio are
             // strictly 0 while power is also 0, treat util as None rather than
             // fabricating 0%.
-            let util_pct =
-                if m.gpu_freq_mhz == 0 && m.gpu_active_ratio <= 0.0 && m.gpu_power <= 0.0 {
-                    None
-                } else {
-                    Some((m.gpu_active_ratio * 100.0).clamp(0.0, 100.0).round() as u8)
-                };
+            let util_pct = if m.gpu_freq_mhz == 0 && m.gpu_active_ratio <= 0.0 && m.gpu_power <= 0.0
+            {
+                None
+            } else {
+                Some((m.gpu_active_ratio * 100.0).clamp(0.0, 100.0).round() as u8)
+            };
             let temp_c = m
                 .temp
                 .gpu_temp_avg
                 .filter(|&t| t > 0.0)
                 .map(|t| t.round() as i16);
             let power_w = (m.gpu_power > 0.0).then(|| m.gpu_power.round() as u16);
-            let sm_clock_mhz = (m.gpu_freq_mhz > 0)
-                .then(|| u16::try_from(m.gpu_freq_mhz).unwrap_or(u16::MAX));
-            let mem_used_mb = (m.memory.ram_usage > 0)
-                .then(|| (m.memory.ram_usage / (1024 * 1024)) as u32);
+            let sm_clock_mhz =
+                (m.gpu_freq_mhz > 0).then(|| u16::try_from(m.gpu_freq_mhz).unwrap_or(u16::MAX));
+            let mem_used_mb =
+                (m.memory.ram_usage > 0).then(|| (m.memory.ram_usage / (1024 * 1024)) as u32);
             let mem_total_mb = (m.memory.ram_total > 0)
                 .then(|| (m.memory.ram_total / (1024 * 1024)) as u32)
                 .or(self.mem_total_mb);

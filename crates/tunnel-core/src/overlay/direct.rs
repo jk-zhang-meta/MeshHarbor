@@ -4140,19 +4140,37 @@ wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
         );
 
         // Linux /proc/self/status CapEff bit 13 (CAP_NET_RAW = 0x2000).
-        assert!(parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000002000\n"));
-        assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000000000\n"));
-        assert!(!parse_proc_status_has_cap_net_raw("Name:\tmeshharbord\nCapEff:\t0000000000001000\n"));
+        assert!(parse_proc_status_has_cap_net_raw(
+            "Name:\tmeshharbord\nCapEff:\t0000000000002000\n"
+        ));
+        assert!(!parse_proc_status_has_cap_net_raw(
+            "Name:\tmeshharbord\nCapEff:\t0000000000000000\n"
+        ));
+        assert!(!parse_proc_status_has_cap_net_raw(
+            "Name:\tmeshharbord\nCapEff:\t0000000000001000\n"
+        ));
     }
 
     #[test]
     fn fr139_netmask_aware_lan_matching_and_routed_same_nat() {
         // Clamping: /8 clamps to /16; /32 falls back to /24.
         assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 0, 0, 0)), 16);
-        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 252, 0)), 22);
-        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 254, 0)), 23);
-        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 240)), 28);
-        assert_eq!(LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 255)), 24);
+        assert_eq!(
+            LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 252, 0)),
+            22
+        );
+        assert_eq!(
+            LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 254, 0)),
+            23
+        );
+        assert_eq!(
+            LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 240)),
+            28
+        );
+        assert_eq!(
+            LanIface::clamped_prefix(Ipv4Addr::new(255, 255, 255, 255)),
+            24
+        );
 
         // /22 matches across adjacent third octets.
         let slash22 = LanIface {

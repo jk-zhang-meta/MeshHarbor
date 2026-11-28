@@ -1273,7 +1273,10 @@ impl OrgRelaySession {
     }
 }
 
-pub(super) fn prepend_loopback_relay_endpoint(relay_port: u16, endpoints: &[String]) -> Vec<String> {
+pub(super) fn prepend_loopback_relay_endpoint(
+    relay_port: u16,
+    endpoints: &[String],
+) -> Vec<String> {
     let port = if relay_port > 0 {
         relay_port
     } else {
@@ -1850,7 +1853,9 @@ impl OrgRelayState {
                 let leg = e.member_leg(i);
                 leg.relay_node_id == relay_node_id && e.member_bind_endpoints(i).contains(&endpoint)
             })
-        }) || self.trials.has_member_leg(reporter, relay_node_id, &endpoint);
+        }) || self
+            .trials
+            .has_member_leg(reporter, relay_node_id, &endpoint);
         let offered = |offers: &DashMap<ObjectId, Vec<(ObjectId, String)>>| {
             offers
                 .get(&reporter)
@@ -2698,7 +2703,10 @@ async fn probe_targets_inner(
     } else {
         None
     };
-    if member_gateways.as_ref().is_some_and(std::collections::HashSet::is_empty) {
+    if member_gateways
+        .as_ref()
+        .is_some_and(std::collections::HashSet::is_empty)
+    {
         return Vec::new();
     }
     let member_zone = if iso_mode != Mode::Off || (!servers.is_empty() && !nz_active) {
@@ -2995,7 +3003,8 @@ async fn backbone_probe_targets_inner(
                 .join_extras(exit_id)
                 .relay_port
                 .unwrap_or(limits::DEFAULT_RELAY_PORT);
-            let Ok(eps) = relay_endpoints(&exit_node, port, &exit.peer_relay_policy.static_endpoints)
+            let Ok(eps) =
+                relay_endpoints(&exit_node, port, &exit.peer_relay_policy.static_endpoints)
             else {
                 continue;
             };
@@ -3680,7 +3689,10 @@ async fn reoptimize_bound_sessions(state: &NetworkState, reporter: &OverlayNode)
             .bound_upgrade_considered
             .retain(|pair, _| live.contains(pair));
     }
-    let is_backbone_relay = state.org_relay.join_extras(reporter_id).relay_backbone_ready;
+    let is_backbone_relay = state
+        .org_relay
+        .join_extras(reporter_id)
+        .relay_backbone_ready;
     let mut bound = trial::bound_upgrade_candidates(
         &state.org_relay,
         reporter.tenant_id,
@@ -3739,10 +3751,10 @@ async fn reoptimize_bound_sessions(state: &NetworkState, reporter: &OverlayNode)
         else {
             continue;
         };
-        state
-            .org_relay
-            .bound_upgrade_cooldown
-            .insert(session.pair_key.clone(), Instant::now() + BOUND_UPGRADE_COOLDOWN);
+        state.org_relay.bound_upgrade_cooldown.insert(
+            session.pair_key.clone(),
+            Instant::now() + BOUND_UPGRADE_COOLDOWN,
+        );
         if let Some(trial_id) =
             trial::start_bound_upgrade(state, &m0, &m1, path.clone(), requester_at_exit).await
         {
@@ -4908,18 +4920,19 @@ pub async fn discover(
                     } else {
                         Vec::new()
                     };
-                    let onehop: Vec<OrgRelayCandidateWire> = plan_mint_candidates(state, requester, peer)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter_map(|p| {
-                            p.relay.id.map(|id| OrgRelayCandidateWire {
-                                path: RelayPathWire::new(vec![id]).expect("one relay"),
-                                requester_at_exit: false,
-                                endpoints: p.endpoints.into_iter().take(4).collect(),
+                    let onehop: Vec<OrgRelayCandidateWire> =
+                        plan_mint_candidates(state, requester, peer)
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter_map(|p| {
+                                p.relay.id.map(|id| OrgRelayCandidateWire {
+                                    path: RelayPathWire::new(vec![id]).expect("one relay"),
+                                    requester_at_exit: false,
+                                    endpoints: p.endpoints.into_iter().take(4).collect(),
+                                })
                             })
-                        })
-                        .collect();
+                            .collect();
                     if backbone.is_empty() && onehop.is_empty() {
                         candidates.clear();
                     } else {
@@ -6191,11 +6204,7 @@ pub async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &st
 /// Recheck every live `OrgRelaySession` and `PathTrial` in `tenant_id` after
 /// Logical Network Zone definitions, device zone assignments, or relay gateway
 /// approvals change.
-pub async fn recheck_tenant_zones(
-    state: &NetworkState,
-    tenant_id: ObjectId,
-    reason: &str,
-) -> bool {
+pub async fn recheck_tenant_zones(state: &NetworkState, tenant_id: ObjectId, reason: &str) -> bool {
     state.org_relay.invalidate_eligibility();
     let sessions: Vec<OrgRelaySession> = state
         .org_relay
@@ -7220,10 +7229,7 @@ mod tests {
         );
         assert_eq!(
             prepend_loopback_relay_endpoint(3478, &["139.199.6.6:443".into()]),
-            vec![
-                "127.0.0.1:3478".to_string(),
-                "139.199.6.6:443".to_string()
-            ],
+            vec!["127.0.0.1:3478".to_string(), "139.199.6.6:443".to_string()],
             "loopback bind endpoint must use actual listener relay_port rather than NAT-mapped static port"
         );
         assert!(st.record_probe(a, relay, "8.8.8.8:3478".into(), true, Some(12)));

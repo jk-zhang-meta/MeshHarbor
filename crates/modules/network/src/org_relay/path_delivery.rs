@@ -93,8 +93,10 @@ pub(super) fn build(s: &OrgRelaySession, now: Instant) -> Result<Delivery, Deliv
         // - Multi-hop (`total_relays >= 2`): `R_0` may match `members[0]` only,
         //   `R_{N-1}` may match `members[1]` only, and interior relays `0 < i < N-1`
         //   may match neither member.
-        let matches_m0 = s.members[0].party.node_id == node_id || &s.members[0].party.node_ref == node_ref;
-        let matches_m1 = s.members[1].party.node_id == node_id || &s.members[1].party.node_ref == node_ref;
+        let matches_m0 =
+            s.members[0].party.node_id == node_id || &s.members[0].party.node_ref == node_ref;
+        let matches_m1 =
+            s.members[1].party.node_id == node_id || &s.members[1].party.node_ref == node_ref;
         let forbidden_member_overlap = if total_relays == 1 {
             matches_m0 || matches_m1
         } else if relay_index == 0 {

@@ -59,7 +59,9 @@ pub fn format_banner_text(
         }
     } else if zh {
         let why = match reason {
-            OverlayReason::TargetUpdating { to_version: Some(v) } => {
+            OverlayReason::TargetUpdating {
+                to_version: Some(v),
+            } => {
                 format!("目标正在更新至 {v}")
             }
             OverlayReason::TargetUpdating { to_version: None } => "目标正在更新".to_string(),
@@ -77,7 +79,9 @@ pub fn format_banner_text(
         )
     } else {
         let why = match reason {
-            OverlayReason::TargetUpdating { to_version: Some(v) } => {
+            OverlayReason::TargetUpdating {
+                to_version: Some(v),
+            } => {
                 format!("target updating to {v}")
             }
             OverlayReason::TargetUpdating { to_version: None } => "target updating".to_string(),

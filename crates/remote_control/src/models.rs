@@ -983,174 +983,6 @@ pub enum RpcCap {
     /// `ssh` would wait out its whole bound on every grant to such a device.
     /// Equality-matched, locked by test.
     SshGrantAck,
-    /// FR-90 — `rc:hive.start` / `rc:hive.stop`: the agent runs Hive agent
-    /// sessions — it answers a start with `rc:hive.start_ack` and reports
-    /// each session's lifecycle with `rc:hive.state`
-    /// (`docs/meshharbor-hive-design.md` §3.4).
-    ///
-    /// ⚠️ Never sent blind, for the `exec` reason: a caller waits for the
-    /// start's answer, and a pre-feature agent drops the unknown tag at
-    /// `debug!`. Advertising it says the frames are UNDERSTOOD — the device's
-    /// own `hive_enabled` (default off), `hive_accounts` and `hive_roots`
-    /// still decide whether anything runs.
-    ///
-    /// ⚠️ `hive` is the prefix of `hive-replica` (P2c), and the two mean
-    /// different things — running sessions is not holding copies of other
-    /// devices' — so matching stays equality, as for `ssh` / `ssh-consent`.
-    Hive,
-    /// FR-90 P0d-2 — `rc:hive.view.*`: the agent serves a session's
-    /// transcript to a browser over a data-only WebRTC peer. It answers a view
-    /// grant with `rc:hive.view.grant_ack` before the browser is told to dial,
-    /// answers the relayed offer, and closes the peer when the grant ends.
-    ///
-    /// ⚠️ `hive` is its prefix and the two are different promises — a P0c
-    /// agent runs sessions and drops every `rc:hive.view.*` frame at `debug!`,
-    /// so a server that read `hive-view` out of `hive` would leave the viewer
-    /// waiting out its bound on every open. Equality-matched, locked by test.
-    HiveView,
-    /// FR-90 P1e — `rc:hive.memory`: the agent understands a session's
-    /// core-memory snapshot, sent just before its start. Advertising it says
-    /// the frame is UNDERSTOOD; the device's own `hive_core_memory` (default
-    /// off) still decides whether a session ever sees it, because the model
-    /// reads core memory as the user's own overriding instructions.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: an agent before P1e
-    /// drops the frame at `debug!`. Equality-matched, locked by test.
-    HiveMemory,
-    /// FR-90 P1j — `rc:hive.adopt`: the agent mirrors terminal sessions its
-    /// accounts adopted (`mh hive adopt`), and its own `hive_adopt` (default
-    /// off, never pushable) is on. Advertised only then: a device whose owner
-    /// has not allowed adopting offers nothing, and the server honours an
-    /// offer only from a device that advertises it.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise — running sessions
-    /// a person starts from MeshHarbor is not mirroring the ones they started in a
-    /// terminal. Equality-matched, locked by test.
-    HiveAdopt,
-    /// FR-90 P2c — the agent holds copies of its owner's sessions run on other
-    /// devices: its own `hive_replica` (default off, never pushable) is on.
-    /// Advertised only then — the gate that survives a compromised server — so
-    /// a device that does not advertise it is never placed in a replicaset,
-    /// and it refuses a join on its own word too.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: running sessions is
-    /// not holding copies of other devices'. Equality-matched, locked by test.
-    HiveReplica,
-    /// FR-90 P2c — the agent offers itself as an archive replica: its own
-    /// `hive_archive` (default off, never pushable) is on, beside
-    /// `hive_replica`. An archive holds every session the org's rules allow
-    /// once an `ADMINISTRATOR` designates it: offering is the device's,
-    /// designating the org's.
-    ///
-    /// ⚠️ Neither `hive` nor `hive-replica` is this promise: a replica that is
-    /// no archive holds its owner's own sessions only. Equality-matched,
-    /// locked by test.
-    HiveArchive,
-    /// FR-90 P2d — the agent carries replica streams: it serves a session it
-    /// holds to a member over QUIC (`rc:hive.replica.grant`), and, as a
-    /// member, asks for and dials one (`rc:hive.replica.want`). A build
-    /// capability, advertised while its store is open: a primary serves the
-    /// sessions it runs whether or not its owner lets it hold copies of
-    /// others' (`hive-replica`).
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before P2d
-    /// drops every stream frame. Equality-matched, locked by test.
-    HiveStream,
-    /// FR-90 P2e-2 — the agent holds a leased session to the server's word:
-    /// it runs one, and lets it call the model, after a restart or a
-    /// reconnect only once the server has said on THAT connection that it
-    /// still holds the session (`rc:hive.lease`). Only a connection with it
-    /// is sent the word, or a start that asks for it (`lease`).
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before P2e-2
-    /// runs what it hosts on its own word. Equality-matched, locked by test.
-    HiveLease,
-    /// FR-90 P2e-3 — the agent takes part in a promotion at either end: as
-    /// the member a session moves to, it answers `rc:hive.prepare` with
-    /// `rc:hive.prepare_ack` and runs the move (`rc:hive.move`, then the
-    /// start); as the primary it moves from, it answers `rc:hive.drain` with
-    /// `rc:hive.drained`, and a later `rc:hive.lease` at the same fence lifts
-    /// the drain. The server promotes only between two connections that
-    /// advertise it.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// drops every one of those frames, so a server that read it out of
-    /// `hive` would wait out every bound of a promotion and leave the
-    /// primary drained. Equality-matched, locked by test.
-    HivePromote,
-    /// FR-90 P2f-1a — the agent takes part in a teleport, a move to a device
-    /// that holds no copy of the session yet, at either end: as the target,
-    /// a `rc:hive.prepare` with `teleport` passes every start gate but the
-    /// copy, and admits that one session's `teleport` join whatever its
-    /// owner's `hive_replica`; as the primary, a join in the primary's role
-    /// takes the session's first checkpoint at once when no turn runs, and
-    /// says where its copy ends either way. A build property, like
-    /// `hive-promote`: the device still refuses what its own gates refuse.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// refuses a teleport's prepare for want of a copy, and its primary says
-    /// nothing at a join, so a server that read it out of `hive` would wait
-    /// out a teleport's every bound. Equality-matched, locked by test.
-    HiveTeleport,
-    /// FR-90 P2f-3a — `hive-fork`: the device starts a fork of a session it
-    /// holds a copy of. A start carrying `fork_of` takes the parent's last
-    /// checkpoint under the fork's ids and launches `--resume <parent>
-    /// --fork-session --session-id <fork>`, and the fork's checkpoints keep
-    /// the parent's history beside its own. A build property.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// ignores `fork_of` and starts the fork EMPTY, a new conversation in
-    /// the folder as it is. Equality-matched, locked by test.
-    HiveFork,
-    /// FR-90 P2f-4a — `hive-manage`: the device makes a terminal session it
-    /// adopted, whose terminal ended there, a managed one. A start carrying
-    /// `from_terminal` puts the terminal's own history in place as the
-    /// account it ran as, by this device's record of whose terminal it was,
-    /// and resumes it. A build property, on the platforms that adopt.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// ignores `from_terminal` and starts the conversation afresh, under the
-    /// terminal's session id. Equality-matched, locked by test.
-    HiveManage,
-    /// FR-90 P2g-1 — `hive-purge`: the device purges a session on
-    /// `rc:hive.purge` and answers `rc:hive.purge_ack` per part: its own copy,
-    /// and, as the session's account, its state directory and the refs its
-    /// checkpoints left. A build property, on every build that runs sessions.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// drops the frame, so a purge pushed to it would wait for an answer that
-    /// never comes. Equality-matched, locked by test.
-    HivePurge,
-    /// FR-90 P2g-4a — `hive-purge-all`: the device purges every session it
-    /// holds on `rc:hive.purge_all`, which its enrollment's removal sends. A
-    /// build property, on every build that runs sessions.
-    ///
-    /// ⚠️ `hive` and `hive-purge` are its prefixes and NOT the same promise:
-    /// `agent-v0.4.136` purges a session but cannot decode this frame, and
-    /// would log a dropped frame at every removal. Nothing waits on the frame,
-    /// so a build without it is sent nothing and keeps what it held, as one
-    /// offline at its removal does. Equality-matched, locked by test.
-    HivePurgeAll,
-    /// #2294 — `hive-purge-drain`: on a goodbye (`AgentDeleted`) the daemon
-    /// finishes the removal purge `rc:hive.purge_all` started before it exits,
-    /// bounded. So a removal's kick may tell it at once: the goodbye that
-    /// follows the purge's frame no longer cuts the purge short. A build
-    /// property, on every build that runs sessions.
-    ///
-    /// ⚠️ `hive` and `hive-purge` are its prefixes and NOT the same promise:
-    /// `agent-v0.4.137` purges at its removal but exits at once on the
-    /// goodbye, so the kick leaves its socket open instead. Equality-matched,
-    /// locked by test.
-    HivePurgeDrain,
-    /// FR-90 P2i-1 — `hive-search`: the device answers full-text search over
-    /// the copies it holds, for the sessions a `rc:hive.search.grant` names,
-    /// to that grant's viewer peer. Only while it offers itself as an
-    /// archive replica (`hive-archive`), whose copies it serves.
-    ///
-    /// ⚠️ `hive` is its prefix and NOT the same promise: a build before it
-    /// drops the grant, and a viewer would wait for an answer that never
-    /// comes. Equality-matched, locked by test.
-    HiveSearch,
     /// FR-94 — a Windows device runs Fleet RPC as SYSTEM through its
     /// session-0 service. An administrator anchored the device (the service
     /// holds its own credential, in a file only SYSTEM and Administrators can
@@ -1247,15 +1079,6 @@ pub enum RpcCap {
     /// session's `console_user` itself ("a Windows concept"), so that half
     /// fails closed either way, and the server still refuses to store it.
     ConsoleUser,
-    /// FR-90 P3-3b — the agent takes vault leases: it sends `rc:vault.lease`
-    /// for its sessions and opens the sealed `rc:vault.leased` with the key
-    /// its hello carried (`AgentHello::vault_key`). Advertised only while that
-    /// key is, on the primary enrollment's connection.
-    ///
-    /// ⚠️ The vault answers a lease request only from a connection that
-    /// advertises this AND whose hello stored a key: an agent without it
-    /// cannot open what it would be sent.
-    Vault,
     /// FR-52 — this device understands **cross-org remote access**: it honours
     /// `external_access_enabled` (gate 3), can verify the device-held password
     /// (gate 4), and tells the person at the machine that the controller is
@@ -1398,22 +1221,6 @@ impl RpcCap {
             Self::SharedFilesAsAccount => "shared-files-as-account",
             Self::KeyRotate => "key-rotate",
             Self::SshGrantAck => "ssh-grant-ack",
-            Self::Hive => "hive",
-            Self::HiveView => "hive-view",
-            Self::HiveMemory => "hive-memory",
-            Self::HiveAdopt => "hive-adopt",
-            Self::HiveReplica => "hive-replica",
-            Self::HiveArchive => "hive-archive",
-            Self::HiveStream => "hive-stream",
-            Self::HiveLease => "hive-lease",
-            Self::HivePromote => "hive-promote",
-            Self::HiveTeleport => "hive-teleport",
-            Self::HiveFork => "hive-fork",
-            Self::HiveManage => "hive-manage",
-            Self::HivePurge => "hive-purge",
-            Self::HivePurgeAll => "hive-purge-all",
-            Self::HivePurgeDrain => "hive-purge-drain",
-            Self::HiveSearch => "hive-search",
             Self::ExecSystem => "exec-system",
             Self::SshSystem => "ssh-system",
             Self::SshOneCommand => "ssh-one-command",
@@ -1423,7 +1230,6 @@ impl RpcCap {
             Self::IdleTimeout => "idle-timeout",
             Self::LockOnEnd => "lock-on-end",
             Self::ConsoleUser => "console-user",
-            Self::Vault => "vault",
             Self::ExternalAccess => "external-access",
             Self::ExternalSession => "external-session",
             Self::PeerAuth => "peer-auth",
@@ -1439,7 +1245,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 55] = [
+    pub const ALL: [RpcCap; 38] = [
         Self::DeviceNameSync,
         Self::OrganizationNameAlias,
         Self::Exec,
@@ -1452,22 +1258,6 @@ impl RpcCap {
         Self::RelayControl,
         Self::KeyRotate,
         Self::SshGrantAck,
-        Self::Hive,
-        Self::HiveView,
-        Self::HiveMemory,
-        Self::HiveAdopt,
-        Self::HiveReplica,
-        Self::HiveArchive,
-        Self::HiveStream,
-        Self::HiveLease,
-        Self::HivePromote,
-        Self::HiveTeleport,
-        Self::HiveFork,
-        Self::HiveManage,
-        Self::HivePurge,
-        Self::HivePurgeAll,
-        Self::HivePurgeDrain,
-        Self::HiveSearch,
         Self::ExecSystem,
         Self::SshSystem,
         Self::SshOneCommand,
@@ -1477,7 +1267,6 @@ impl RpcCap {
         Self::IdleTimeout,
         Self::LockOnEnd,
         Self::ConsoleUser,
-        Self::Vault,
         Self::ExternalAccess,
         Self::ExternalSession,
         Self::PeerAuth,
@@ -2363,18 +2152,6 @@ pub struct Agent {
     /// key on the device is enough to move the fleet view with it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ssh_host_pubkey: String,
-    /// FR-90 P3-3a — the public half of the vault key the device's daemon
-    /// holds now, as its last hello reported it (standard base64 of 32 bytes,
-    /// [`crate::signaling::vault_key_is_well_formed`]): what the vault seals
-    /// a leased value to.
-    ///
-    /// Written on EVERY hello, the empty string included, so it never outlives
-    /// the process that made it: the daemon makes a new key at each start and
-    /// keeps it in memory only. Empty = the device takes no leases (its
-    /// `vault_enabled` is off, a build without the `vault` feature, an agent
-    /// before P3-3a, or a hello whose key was not well formed).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub vault_key: String,
     /// FR-100 P1a — the public half of this enrollment's device key, as its
     /// last hello reported it ([`crate::signaling::peer_auth_key_is_well_formed`]).
     /// A HINT for a browser's first pin, never an authority: the browser
@@ -5537,10 +5314,6 @@ pub struct SshAuditEvent {
     /// Absent on every other row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<ObjectId>,
-    /// FR-90 P3-8-1b — the vault's ticket the session presented, by its id
-    /// (`ticket:<id>` in `vault_audit`). Absent on every other row.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ssh_ticket_id: Option<String>,
     /// Display name of the principal, as it was pushed to the device.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub caller: String,
@@ -7507,9 +7280,7 @@ pub fn normalize_zone_slug(raw: &str) -> Result<String, String> {
         ));
     }
     if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
-        return Err(format!(
-            "zone id '{raw}' must start with [a-z0-9]"
-        ));
+        return Err(format!("zone id '{raw}' must start with [a-z0-9]"));
     }
     if !bytes[1..]
         .iter()
@@ -7702,7 +7473,10 @@ pub fn auto_zone_for_country<'a>(
     if let Some(cc) = country.map(|c| c.trim().to_ascii_uppercase())
         && !cc.is_empty()
         && let Some(z) = zones.iter().find(|z| {
-            !z.is_centre && z.auto_countries.iter().any(|ac| ac.eq_ignore_ascii_case(&cc))
+            !z.is_centre
+                && z.auto_countries
+                    .iter()
+                    .any(|ac| ac.eq_ignore_ascii_case(&cc))
         })
     {
         return Some(z);
@@ -7733,7 +7507,11 @@ pub fn resolve_device_zone_with_source<'a>(
         return (DeviceZoneResolution::Unconfigured, None);
     }
     // (a) Admin pin.
-    if let Some(pin) = inputs.pinned_zone_id.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(pin) = inputs
+        .pinned_zone_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let normalized = pin.to_ascii_lowercase();
         return match zones.iter().find(|z| z.id == normalized) {
             Some(z) => (DeviceZoneResolution::Resolved(z), Some(ZoneSource::Pinned)),
@@ -8862,29 +8640,12 @@ mod tests {
         assert_eq!(RpcCap::KeyRotate.wire(), "key-rotate");
         assert_eq!(RpcCap::ManagedForwardNft.wire(), "managed-forward-nft");
         assert_eq!(RpcCap::SshGrantAck.wire(), "ssh-grant-ack");
-        assert_eq!(RpcCap::Hive.wire(), "hive");
-        assert_eq!(RpcCap::HiveView.wire(), "hive-view");
-        assert_eq!(RpcCap::HiveMemory.wire(), "hive-memory");
-        assert_eq!(RpcCap::HiveAdopt.wire(), "hive-adopt");
-        assert_eq!(RpcCap::HiveReplica.wire(), "hive-replica");
-        assert_eq!(RpcCap::HiveArchive.wire(), "hive-archive");
-        assert_eq!(RpcCap::HiveStream.wire(), "hive-stream");
-        assert_eq!(RpcCap::HiveLease.wire(), "hive-lease");
-        assert_eq!(RpcCap::HivePromote.wire(), "hive-promote");
-        assert_eq!(RpcCap::HiveTeleport.wire(), "hive-teleport");
-        assert_eq!(RpcCap::HiveFork.wire(), "hive-fork");
-        assert_eq!(RpcCap::HiveManage.wire(), "hive-manage");
-        assert_eq!(RpcCap::HivePurge.wire(), "hive-purge");
-        assert_eq!(RpcCap::HivePurgeAll.wire(), "hive-purge-all");
-        assert_eq!(RpcCap::HivePurgeDrain.wire(), "hive-purge-drain");
-        assert_eq!(RpcCap::HiveSearch.wire(), "hive-search");
         assert_eq!(RpcCap::PrivacyMode.wire(), "privacy-mode");
         assert_eq!(RpcCap::PrivacyAvailable.wire(), "privacy-available");
         assert_eq!(RpcCap::SessionPolicy.wire(), "session-policy");
         assert_eq!(RpcCap::IdleTimeout.wire(), "idle-timeout");
         assert_eq!(RpcCap::LockOnEnd.wire(), "lock-on-end");
         assert_eq!(RpcCap::ConsoleUser.wire(), "console-user");
-        assert_eq!(RpcCap::Vault.wire(), "vault");
         assert_eq!(RpcCap::ExternalAccess.wire(), "external-access");
         assert_eq!(RpcCap::ExternalSession.wire(), "external-session");
         assert_eq!(RpcCap::PeerAuth.wire(), "peer-auth");
@@ -9028,7 +8789,7 @@ mod tests {
     /// right on the devices that already exist.
     #[test]
     fn the_only_prefix_related_verbs_are_the_deliberate_ones() {
-        const KNOWN: [(RpcCap, RpcCap); 26] = [
+        const KNOWN: [(RpcCap, RpcCap); 9] = [
             (RpcCap::Ssh, RpcCap::SshConsent),
             (RpcCap::Config, RpcCap::ConfigReport),
             // MeshHarbor #20 — "runs managed forwards in userspace" is not
@@ -9039,54 +8800,6 @@ mod tests {
             // server" is not "confirms a grant". Locked by
             // `ssh_does_not_imply_ssh_grant_ack`.
             (RpcCap::Ssh, RpcCap::SshGrantAck),
-            // FR-90 P0d-2 — "runs sessions" is not "serves them to a
-            // browser". Locked by `hive_does_not_imply_hive_view`.
-            (RpcCap::Hive, RpcCap::HiveView),
-            // FR-90 P1e — nor "understands core memory". Locked by
-            // `hive_does_not_imply_hive_memory`.
-            (RpcCap::Hive, RpcCap::HiveMemory),
-            // FR-90 P1j — nor "mirrors adopted terminal sessions". Locked by
-            // `hive_does_not_imply_hive_adopt`.
-            (RpcCap::Hive, RpcCap::HiveAdopt),
-            // FR-90 P2c — nor "holds copies of other devices' sessions", nor
-            // "offers itself as an archive". Locked by
-            // `hive_replica_and_hive_archive_are_promises_of_their_own`.
-            (RpcCap::Hive, RpcCap::HiveReplica),
-            (RpcCap::Hive, RpcCap::HiveArchive),
-            // FR-90 P2d — nor "carries replica streams". Locked by
-            // `hive_stream_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveStream),
-            // FR-90 P2e-2 — nor "holds a leased session to the server's
-            // word". Locked by `hive_lease_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveLease),
-            // FR-90 P2e-3 — nor "takes part in a promotion". Locked by
-            // `hive_promote_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HivePromote),
-            // FR-90 P2f-1a — nor "takes part in a teleport". Locked by
-            // `hive_teleport_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveTeleport),
-            // FR-90 P2f-3a — nor "starts a fork from a copy". Locked by
-            // `hive_fork_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveFork),
-            // FR-90 P2f-4a — nor "makes an ended terminal session a managed
-            // one". Locked by `hive_manage_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveManage),
-            // FR-90 P2g-1 — nor "purges a session and answers it". Locked by
-            // `hive_purge_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HivePurge),
-            // FR-90 P2g-4a — nor "purges everything it holds at its removal",
-            // and neither is "purges a session". Locked by
-            // `hive_purge_all_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HivePurgeAll),
-            (RpcCap::HivePurge, RpcCap::HivePurgeAll),
-            // #2294 — nor "finishes a removal purge before its goodbye exit",
-            // and neither is "purges a session". Locked by
-            // `hive_purge_drain_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HivePurgeDrain),
-            (RpcCap::HivePurge, RpcCap::HivePurgeDrain),
-            // FR-90 P2i-1 — nor "answers a search over its copies". Locked by
-            // `hive_search_is_a_promise_of_its_own`.
-            (RpcCap::Hive, RpcCap::HiveSearch),
             // FR-94 — "runs Fleet RPC" is not "runs it as SYSTEM through a
             // service". Locked by `exec_does_not_imply_exec_system`.
             (RpcCap::Exec, RpcCap::ExecSystem),
@@ -9578,375 +9291,6 @@ mod tests {
         }
         assert_eq!(SshAccountMode::from_wire("root"), None);
         assert_eq!(SshAccountMode::from_wire("Daemon"), None);
-    }
-
-    /// FR-90 — `hive` is matched by equality, in both directions that
-    /// matter: the replica verb (P2c) must not read as "runs sessions", and no
-    /// other verb reads as `hive`. A device that holds copies of other
-    /// devices' sessions has not agreed to run them.
-    #[test]
-    fn hive_is_matched_by_equality() {
-        let runs = AgentCaps {
-            rpc: vec!["exec".into(), "hive".into()],
-            ..Default::default()
-        };
-        assert!(runs.has_rpc(RpcCap::Hive));
-
-        let replica_only = AgentCaps {
-            rpc: vec!["hive-replica".into(), "hives".into()],
-            ..Default::default()
-        };
-        assert!(
-            !replica_only.has_rpc(RpcCap::Hive),
-            "a verb that merely starts with `hive` must not read as `hive`"
-        );
-        assert_eq!(
-            RpcCap::from_wire("hive-replica"),
-            Some(RpcCap::HiveReplica),
-            "its own verb, never `hive`'s"
-        );
-    }
-
-    /// FR-90 P0d-2 — `hive` (runs sessions) does not imply `hive-view`
-    /// (serves them to a browser), nor the other way round: a P0c agent drops
-    /// every view frame, and a server that read the view verb out of `hive`
-    /// would leave each viewer waiting out its bound.
-    #[test]
-    fn hive_does_not_imply_hive_view() {
-        let runs = AgentCaps {
-            rpc: vec!["hive".into()],
-            ..Default::default()
-        };
-        assert!(runs.has_rpc(RpcCap::Hive));
-        assert!(!runs.has_rpc(RpcCap::HiveView));
-
-        let serves = AgentCaps {
-            rpc: vec!["hive-view".into()],
-            ..Default::default()
-        };
-        assert!(serves.has_rpc(RpcCap::HiveView));
-        assert!(!serves.has_rpc(RpcCap::Hive));
-        assert_eq!(RpcCap::HiveView.wire(), "hive-view");
-        assert_eq!(RpcCap::from_wire("hive-view"), Some(RpcCap::HiveView));
-        assert!(RpcCap::from_wire("hive-views").is_none());
-    }
-
-    /// FR-90 P1e — a device that runs sessions may still drop the core-memory
-    /// frame (every build before P1e does), so `hive` never implies it, and
-    /// `hive-memory` alone says nothing about running sessions.
-    #[test]
-    fn hive_does_not_imply_hive_memory() {
-        let runs = AgentCaps {
-            rpc: vec!["hive".into(), "hive-view".into()],
-            ..Default::default()
-        };
-        assert!(!runs.has_rpc(RpcCap::HiveMemory));
-        let understands = AgentCaps {
-            rpc: vec!["hive-memory".into()],
-            ..Default::default()
-        };
-        assert!(understands.has_rpc(RpcCap::HiveMemory));
-        assert!(!understands.has_rpc(RpcCap::Hive));
-        assert_eq!(RpcCap::from_wire("hive-memory"), Some(RpcCap::HiveMemory));
-        assert!(RpcCap::from_wire("hive-memories").is_none());
-    }
-
-    /// FR-90 P1j — running sessions is not mirroring adopted terminal ones:
-    /// a device advertising `hive` has not been allowed to adopt.
-    #[test]
-    fn hive_does_not_imply_hive_adopt() {
-        let runs = AgentCaps {
-            rpc: vec!["hive".into(), "hive-view".into(), "hive-memory".into()],
-            ..Default::default()
-        };
-        assert!(!runs.has_rpc(RpcCap::HiveAdopt));
-        let adopts = AgentCaps {
-            rpc: vec!["hive-adopt".into()],
-            ..Default::default()
-        };
-        assert!(adopts.has_rpc(RpcCap::HiveAdopt));
-        assert!(!adopts.has_rpc(RpcCap::Hive));
-        assert_eq!(RpcCap::from_wire("hive-adopt"), Some(RpcCap::HiveAdopt));
-        assert!(RpcCap::from_wire("hive-adopted").is_none());
-    }
-
-    /// FR-90 P2c — holding copies of other devices' sessions, and offering to
-    /// be an archive of the org's, are promises of their own: neither follows
-    /// from running sessions, nor one from the other. A device placed by a
-    /// verb it never advertised would be handed sessions its owner never
-    /// agreed to hold.
-    #[test]
-    fn hive_replica_and_hive_archive_are_promises_of_their_own() {
-        let runs = AgentCaps {
-            rpc: vec!["hive".into(), "hive-view".into(), "hive-adopt".into()],
-            ..Default::default()
-        };
-        assert!(!runs.has_rpc(RpcCap::HiveReplica));
-        assert!(!runs.has_rpc(RpcCap::HiveArchive));
-        let replica = AgentCaps {
-            rpc: vec!["hive-replica".into()],
-            ..Default::default()
-        };
-        assert!(replica.has_rpc(RpcCap::HiveReplica));
-        assert!(
-            !replica.has_rpc(RpcCap::HiveArchive),
-            "a replica is no archive"
-        );
-        assert!(!replica.has_rpc(RpcCap::Hive), "nor runs sessions");
-        let archive = AgentCaps {
-            rpc: vec!["hive-archive".into()],
-            ..Default::default()
-        };
-        assert!(archive.has_rpc(RpcCap::HiveArchive));
-        assert!(!archive.has_rpc(RpcCap::HiveReplica));
-        assert_eq!(RpcCap::from_wire("hive-archive"), Some(RpcCap::HiveArchive));
-        assert!(RpcCap::from_wire("hive-replicas").is_none());
-        assert!(RpcCap::from_wire("hive-archives").is_none());
-    }
-
-    /// FR-90 P2d — carrying replica streams is a promise of its own: a build
-    /// that runs sessions or holds copies but predates P2d drops every stream
-    /// frame, so a grant pushed to it would wait out its whole timeout. Nor
-    /// does carrying streams imply holding copies: a primary serves its own
-    /// sessions whatever its owner said of others'.
-    #[test]
-    fn hive_stream_is_a_promise_of_its_own() {
-        let older = AgentCaps {
-            rpc: vec!["hive".into(), "hive-replica".into(), "hive-archive".into()],
-            ..Default::default()
-        };
-        assert!(!older.has_rpc(RpcCap::HiveStream));
-        let streams = AgentCaps {
-            rpc: vec!["hive".into(), "hive-stream".into()],
-            ..Default::default()
-        };
-        assert!(streams.has_rpc(RpcCap::HiveStream));
-        assert!(
-            !streams.has_rpc(RpcCap::HiveReplica),
-            "serving its own sessions is not holding others'"
-        );
-        assert_eq!(RpcCap::from_wire("hive-stream"), Some(RpcCap::HiveStream));
-        assert!(RpcCap::from_wire("hive-streams").is_none());
-    }
-
-    /// FR-90 P2e-2 — holding a leased session to the server's word is its own
-    /// promise: a build that runs sessions but predates it runs what it hosts
-    /// on its own word, so it must never be read as one that waits.
-    #[test]
-    fn hive_lease_is_a_promise_of_its_own() {
-        let older = AgentCaps {
-            rpc: vec!["hive".into(), "hive-stream".into(), "hive-replica".into()],
-            ..Default::default()
-        };
-        assert!(!older.has_rpc(RpcCap::HiveLease));
-        let leased = AgentCaps {
-            rpc: vec!["hive".into(), "hive-lease".into()],
-            ..Default::default()
-        };
-        assert!(leased.has_rpc(RpcCap::HiveLease));
-        assert!(!leased.has_rpc(RpcCap::HiveStream));
-        assert_eq!(RpcCap::from_wire("hive-lease"), Some(RpcCap::HiveLease));
-        assert!(RpcCap::from_wire("hive-leases").is_none());
-    }
-
-    /// FR-90 P2e-3 — taking part in a promotion is a promise of its own: an
-    /// agent that holds leases (P2e-2) answers no prepare and no drain, and a
-    /// server that read the one out of the other would leave a primary
-    /// drained until every bound ran out.
-    #[test]
-    fn hive_promote_is_a_promise_of_its_own() {
-        let leased = AgentCaps {
-            rpc: vec![
-                "hive".into(),
-                "hive-replica".into(),
-                "hive-stream".into(),
-                "hive-lease".into(),
-            ],
-            ..Default::default()
-        };
-        assert!(!leased.has_rpc(RpcCap::HivePromote));
-        let promotes = AgentCaps {
-            rpc: vec!["hive".into(), "hive-promote".into()],
-            ..Default::default()
-        };
-        assert!(promotes.has_rpc(RpcCap::HivePromote));
-        assert!(!promotes.has_rpc(RpcCap::HiveLease));
-        assert_eq!(RpcCap::from_wire("hive-promote"), Some(RpcCap::HivePromote));
-        assert!(RpcCap::from_wire("hive-promotes").is_none());
-    }
-
-    /// FR-90 P2f-1a — taking part in a teleport is a promise of its own: an
-    /// agent that takes part in a promotion (P2e-3) refuses a teleport's
-    /// prepare for want of a copy, and its primary says nothing at a join, so
-    /// a server that read the one out of the other would wait out a
-    /// teleport's every bound.
-    #[test]
-    fn hive_teleport_is_a_promise_of_its_own() {
-        let promotes = AgentCaps {
-            rpc: vec![
-                "hive".into(),
-                "hive-stream".into(),
-                "hive-lease".into(),
-                "hive-promote".into(),
-            ],
-            ..Default::default()
-        };
-        assert!(!promotes.has_rpc(RpcCap::HiveTeleport));
-        let teleports = AgentCaps {
-            rpc: vec!["hive".into(), "hive-teleport".into()],
-            ..Default::default()
-        };
-        assert!(teleports.has_rpc(RpcCap::HiveTeleport));
-        assert!(!teleports.has_rpc(RpcCap::HivePromote));
-        assert_eq!(
-            RpcCap::from_wire("hive-teleport"),
-            Some(RpcCap::HiveTeleport)
-        );
-        assert!(RpcCap::from_wire("hive-teleports").is_none());
-    }
-
-    /// FR-90 P2f-3a — `hive-fork` is its own promise: a build before it would
-    /// start a fork empty, so a server that read it out of `hive`, or out of
-    /// `hive-teleport`, would hand a person a fresh conversation for a fork.
-    #[test]
-    fn hive_fork_is_a_promise_of_its_own() {
-        let teleports = AgentCaps {
-            rpc: vec!["hive".into(), "hive-teleport".into()],
-            ..Default::default()
-        };
-        assert!(!teleports.has_rpc(RpcCap::HiveFork));
-        let forks = AgentCaps {
-            rpc: vec!["hive".into(), "hive-fork".into()],
-            ..Default::default()
-        };
-        assert!(forks.has_rpc(RpcCap::HiveFork));
-        assert!(!forks.has_rpc(RpcCap::HiveTeleport));
-        assert_eq!(RpcCap::from_wire("hive-fork"), Some(RpcCap::HiveFork));
-        assert!(RpcCap::from_wire("hive-forks").is_none());
-    }
-
-    /// FR-90 P2f-4a — `hive-manage` is its own promise: a build before it
-    /// would start an adopted session's conversation afresh, so a server that
-    /// read it out of `hive`, or out of `hive-adopt`, would hand a person an
-    /// empty session for the terminal they ran.
-    #[test]
-    fn hive_manage_is_a_promise_of_its_own() {
-        let adopts = AgentCaps {
-            rpc: vec!["hive".into(), "hive-adopt".into(), "hive-fork".into()],
-            ..Default::default()
-        };
-        assert!(!adopts.has_rpc(RpcCap::HiveManage));
-        let manages = AgentCaps {
-            rpc: vec!["hive".into(), "hive-manage".into()],
-            ..Default::default()
-        };
-        assert!(manages.has_rpc(RpcCap::HiveManage));
-        assert!(!manages.has_rpc(RpcCap::HiveAdopt));
-        assert_eq!(RpcCap::from_wire("hive-manage"), Some(RpcCap::HiveManage));
-        assert!(RpcCap::from_wire("hive-managed").is_none());
-    }
-
-    /// FR-90 P2g-1 — `hive-purge` is its own promise: a build before it drops
-    /// `rc:hive.purge`, so a server that read it out of `hive` would push a
-    /// purge to a device that never answers, and wait on it for ever.
-    #[test]
-    fn hive_purge_is_a_promise_of_its_own() {
-        let runs = AgentCaps {
-            rpc: vec!["hive".into(), "hive-promote".into(), "hive-manage".into()],
-            ..Default::default()
-        };
-        assert!(!runs.has_rpc(RpcCap::HivePurge));
-        let purges = AgentCaps {
-            rpc: vec!["hive".into(), "hive-purge".into()],
-            ..Default::default()
-        };
-        assert!(purges.has_rpc(RpcCap::HivePurge));
-        assert!(!purges.has_rpc(RpcCap::HivePromote));
-        assert_eq!(RpcCap::from_wire("hive-purge"), Some(RpcCap::HivePurge));
-        assert!(RpcCap::from_wire("hive-purged").is_none());
-    }
-
-    /// FR-90 P2g-4a — `hive-purge-all` is its own promise: `agent-v0.4.136`
-    /// says `hive` and `hive-purge` and cannot decode `rc:hive.purge_all`, so
-    /// a server that read it out of either would send every such device, at
-    /// its removal, a frame it drops. Nor does it imply purging a session.
-    #[test]
-    fn hive_purge_all_is_a_promise_of_its_own() {
-        let v0_4_136 = AgentCaps {
-            rpc: vec!["hive".into(), "hive-purge".into()],
-            ..Default::default()
-        };
-        assert!(!v0_4_136.has_rpc(RpcCap::HivePurgeAll));
-        let at_removal = AgentCaps {
-            rpc: vec!["hive".into(), "hive-purge-all".into()],
-            ..Default::default()
-        };
-        assert!(at_removal.has_rpc(RpcCap::HivePurgeAll));
-        assert!(!at_removal.has_rpc(RpcCap::HivePurge));
-        assert_eq!(
-            RpcCap::from_wire("hive-purge-all"),
-            Some(RpcCap::HivePurgeAll)
-        );
-        assert!(RpcCap::from_wire("hive-purge-alls").is_none());
-    }
-
-    /// #2294 — `hive-purge-drain` is its own promise: `agent-v0.4.137` purges
-    /// at its removal (`hive-purge-all`) but exits at once on the goodbye that
-    /// follows, so a server that read the drain out of `hive-purge-all` (or
-    /// out of `hive-purge`, its prefix) would cut that purge short.
-    #[test]
-    fn hive_purge_drain_is_a_promise_of_its_own() {
-        let v0_4_137 = AgentCaps {
-            rpc: vec!["hive".into(), "hive-purge".into(), "hive-purge-all".into()],
-            ..Default::default()
-        };
-        assert!(!v0_4_137.has_rpc(RpcCap::HivePurgeDrain));
-        let drains = AgentCaps {
-            rpc: vec!["hive".into(), "hive-purge-drain".into()],
-            ..Default::default()
-        };
-        assert!(drains.has_rpc(RpcCap::HivePurgeDrain));
-        assert!(!drains.has_rpc(RpcCap::HivePurge));
-        assert!(!drains.has_rpc(RpcCap::HivePurgeAll));
-        assert_eq!(
-            RpcCap::from_wire("hive-purge-drain"),
-            Some(RpcCap::HivePurgeDrain)
-        );
-        assert!(RpcCap::from_wire("hive-purge-drains").is_none());
-    }
-
-    /// FR-90 P2i-1 — `hive-search` is its own promise: a device that holds
-    /// copies, an archive replica among them, but predates it drops
-    /// `rc:hive.search.grant`, so a server that read it out of `hive`,
-    /// `hive-replica` or `hive-archive` would leave a searcher waiting.
-    #[test]
-    fn hive_search_is_a_promise_of_its_own() {
-        let archive_before = AgentCaps {
-            rpc: vec!["hive".into(), "hive-replica".into(), "hive-archive".into()],
-            ..Default::default()
-        };
-        assert!(!archive_before.has_rpc(RpcCap::HiveSearch));
-        let searches = AgentCaps {
-            rpc: vec!["hive-archive".into(), "hive-search".into()],
-            ..Default::default()
-        };
-        assert!(searches.has_rpc(RpcCap::HiveSearch));
-        assert!(!searches.has_rpc(RpcCap::Hive));
-        assert_eq!(RpcCap::from_wire("hive-search"), Some(RpcCap::HiveSearch));
-        assert!(RpcCap::from_wire("hive-searches").is_none());
-    }
-
-    /// Forward compatibility: a NEWER agent may advertise verbs this build has
-    /// never heard of. An additive string list is only additive if an older
-    /// reader ignores what it does not recognise instead of choking.
-    #[test]
-    fn unknown_verbs_are_ignored_not_fatal() {
-        let future = AgentCaps {
-            rpc: vec!["exec".into(), "quantum-teleport".into()],
-            ..Default::default()
-        };
-        assert!(future.has_rpc(RpcCap::Exec));
-        assert!(!future.has_rpc(RpcCap::Ssh));
     }
 
     /// A pre-Fleet-RPC agent sends no `rpc` key at all; every gate must read
@@ -11516,8 +10860,13 @@ mod backbone_policy_tests {
         );
 
         // Centre zone refuses countries, is_default, and duplicates.
-        assert!(validate_and_normalize_network_zones(vec![mk("c", &["HK"], false, &[gw0], true)]).is_err());
-        assert!(validate_and_normalize_network_zones(vec![mk("c", &[], true, &[gw0], true)]).is_err());
+        assert!(
+            validate_and_normalize_network_zones(vec![mk("c", &["HK"], false, &[gw0], true)])
+                .is_err()
+        );
+        assert!(
+            validate_and_normalize_network_zones(vec![mk("c", &[], true, &[gw0], true)]).is_err()
+        );
         assert!(
             validate_and_normalize_network_zones(vec![
                 mk("c1", &[], false, &[gw0], true),
@@ -11852,7 +11201,10 @@ mod backbone_policy_tests {
     #[test]
     fn fr138_agent_caps_default_route_vpn_is_additive() {
         let mut legacy_val = serde_json::to_value(AgentCaps::default()).unwrap();
-        legacy_val.as_object_mut().unwrap().remove("default_route_vpn");
+        legacy_val
+            .as_object_mut()
+            .unwrap()
+            .remove("default_route_vpn");
         let legacy: AgentCaps = serde_json::from_value(legacy_val).unwrap();
         assert!(!legacy.default_route_vpn);
         let wire_false = serde_json::to_string(&legacy).unwrap();

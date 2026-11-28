@@ -2309,7 +2309,7 @@ async fn live_websocket_presence_token_uses_the_exact_overlay_connection_identit
                 network, aid,
             );
         let token = redis
-            .agent_presence_get_many(&[id.clone()])
+            .agent_presence_get_many(std::slice::from_ref(&id))
             .await
             .unwrap()
             .pop()

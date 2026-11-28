@@ -40,7 +40,6 @@ pub mod desktop_state;
 pub mod device_invite;
 pub mod device_login;
 pub mod device_move;
-pub mod user_session;
 pub mod enrollment;
 /// FR-84 D4 — the `files_dir` validator: shape (shared with the config
 /// surface), placement (the SYSTEM/root-inside-the-active-profile rule) and
@@ -76,3 +75,4 @@ pub mod tcc;
 /// FR-103 — one enrollment's live agent token, read at the moment of use.
 pub mod token_slot;
 pub mod two_factor;
+pub mod user_session;

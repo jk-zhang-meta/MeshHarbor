@@ -521,7 +521,12 @@ pub fn card_fault_reasons(sample: &GpuSample) -> Vec<GpuFaultReason> {
             .collect();
         out.push(GpuFaultReason {
             scope: "card".into(),
-            severity: if any_hw_critical { "critical" } else { "warning" }.into(),
+            severity: if any_hw_critical {
+                "critical"
+            } else {
+                "warning"
+            }
+            .into(),
             code: if any_hw_critical { "xid" } else { "xid_app" }.into(),
             device_uuid: uuid.clone(),
             device_idx: idx,
@@ -668,10 +673,7 @@ pub fn card_has_fault(sample: &GpuSample) -> bool {
 /// `ok`, `no_gpu`, `limited` (e.g. WSL2 or zero-package PCIe/TPU partial mode),
 /// `off_local` (operator opted out locally), and `unknown` (awaiting first
 /// sample) are NOT faults.
-pub fn host_status_fault(
-    status: GpuHostStatus,
-    detail: Option<&str>,
-) -> Option<GpuFaultReason> {
+pub fn host_status_fault(status: GpuHostStatus, detail: Option<&str>) -> Option<GpuFaultReason> {
     let (severity, default_summary) = match status {
         GpuHostStatus::DriverMissing => (
             "critical",
@@ -907,21 +909,57 @@ mod tests {
 
     #[test]
     fn fr139_freshness_respects_ws_and_server_receive_time() {
-        assert_eq!(compute_freshness(false, Some(1000), 1001, 30_000), GpuFreshness::Offline);
-        assert_eq!(compute_freshness(true, None, 1001, 30_000), GpuFreshness::Offline);
+        assert_eq!(
+            compute_freshness(false, Some(1000), 1001, 30_000),
+            GpuFreshness::Offline
+        );
+        assert_eq!(
+            compute_freshness(true, None, 1001, 30_000),
+            GpuFreshness::Offline
+        );
         // 30 s interval -> 90 s Fresh cutoff, 150 s Stale cutoff
-        assert_eq!(compute_freshness(true, Some(1000), 1089, 30_000), GpuFreshness::Fresh);
-        assert_eq!(compute_freshness(true, Some(1000), 1090, 30_000), GpuFreshness::Stale);
-        assert_eq!(compute_freshness(true, Some(1000), 1149, 30_000), GpuFreshness::Stale);
-        assert_eq!(compute_freshness(true, Some(1000), 1150, 30_000), GpuFreshness::Offline);
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1089, 30_000),
+            GpuFreshness::Fresh
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1090, 30_000),
+            GpuFreshness::Stale
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1149, 30_000),
+            GpuFreshness::Stale
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1150, 30_000),
+            GpuFreshness::Offline
+        );
         // 2 s live lease ending -> 90 s / 150 s floors prevent false offline flash
-        assert_eq!(compute_freshness(true, Some(1000), 1030, 2_000), GpuFreshness::Fresh);
-        assert_eq!(compute_freshness(true, Some(1000), 1100, 2_000), GpuFreshness::Stale);
-        assert_eq!(compute_freshness(true, Some(1000), 1150, 2_000), GpuFreshness::Offline);
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1030, 2_000),
+            GpuFreshness::Fresh
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1100, 2_000),
+            GpuFreshness::Stale
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1150, 2_000),
+            GpuFreshness::Offline
+        );
         // Larger 60 s interval scales proportionally (180 s / 300 s)
-        assert_eq!(compute_freshness(true, Some(1000), 1179, 60_000), GpuFreshness::Fresh);
-        assert_eq!(compute_freshness(true, Some(1000), 1180, 60_000), GpuFreshness::Stale);
-        assert_eq!(compute_freshness(true, Some(1000), 1300, 60_000), GpuFreshness::Offline);
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1179, 60_000),
+            GpuFreshness::Fresh
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1180, 60_000),
+            GpuFreshness::Stale
+        );
+        assert_eq!(
+            compute_freshness(true, Some(1000), 1300, 60_000),
+            GpuFreshness::Offline
+        );
     }
 
     #[test]
@@ -935,7 +973,10 @@ mod tests {
             procs_state: ProcsState::Ok,
             ..Default::default()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_none, now, t), GpuState::Unknown);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_none, now, t),
+            GpuState::Unknown
+        );
 
         // 0 MB used, no procs -> Free
         let s_free = GpuSample {
@@ -946,7 +987,10 @@ mod tests {
             procs: Some(vec![]),
             ..Default::default()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_free, now, t), GpuState::Free);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_free, now, t),
+            GpuState::Free
+        );
 
         // > 1 GiB used, procs_state == Ok, empty procs -> Unattributed (NEVER Free!)
         let s_unattr = GpuSample {
@@ -978,7 +1022,10 @@ mod tests {
             }]),
             ..Default::default()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_held, now, t), GpuState::HeldIdle);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_held, now, t),
+            GpuState::HeldIdle
+        );
 
         // Limited / WSL2 host status -> Unknown
         assert_eq!(
@@ -1003,7 +1050,10 @@ mod tests {
             }]),
             ..Default::default()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_xorg_idle, now, t), GpuState::Free);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_xorg_idle, now, t),
+            GpuState::Free
+        );
 
         // Low-VRAM compute process (even 200 MiB, 0% util) -> Busy (NOT Free)
         let s_small_compute = GpuSample {
@@ -1018,7 +1068,10 @@ mod tests {
             mem_used_mb: Some(200),
             ..s_xorg_idle.clone()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_small_compute, now, t), GpuState::Busy);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_small_compute, now, t),
+            GpuState::Busy
+        );
 
         // Huawei Ascend 910B idle firmware HBM baseline (3445/65536 MiB, 0% AICore, 0 procs) -> Free
         let s_ascend_free = GpuSample {
@@ -1031,7 +1084,10 @@ mod tests {
             procs: Some(vec![]),
             ..Default::default()
         };
-        assert_eq!(classify_gpu_state(GpuHostStatus::Ok, &s_ascend_free, now, t), GpuState::Free);
+        assert_eq!(
+            classify_gpu_state(GpuHostStatus::Ok, &s_ascend_free, now, t),
+            GpuState::Free
+        );
 
         // Ascend with large unattributed HBM (20000 MiB, 0 procs) -> STILL Unattributed
         let s_ascend_unattr = GpuSample {
@@ -1139,7 +1195,13 @@ mod tests {
         let codes: Vec<&str> = reasons.iter().map(|r| r.code.as_str()).collect();
         assert_eq!(
             codes,
-            vec!["xid", "ecc_uncorrected", "remapped_rows", "vendor_health", "thermal_throttle"]
+            vec![
+                "xid",
+                "ecc_uncorrected",
+                "remapped_rows",
+                "vendor_health",
+                "thermal_throttle"
+            ]
         );
         assert!(reasons[0].summary.contains("GPU fell off the bus"));
         assert!(reasons[0].summary.contains("Double-bit ECC"));
@@ -1152,7 +1214,13 @@ mod tests {
         ));
 
         // Host statuses: only real failures are host faults
-        assert!(host_status_fault(GpuHostStatus::DriverMissing, Some("NVIDIA H100 at 0000:65:00.0")).is_some());
+        assert!(
+            host_status_fault(
+                GpuHostStatus::DriverMissing,
+                Some("NVIDIA H100 at 0000:65:00.0")
+            )
+            .is_some()
+        );
         assert!(host_status_fault(GpuHostStatus::DriverRebootPending, None).is_some());
         assert!(host_status_fault(GpuHostStatus::SamplerStalled, None).is_some());
         assert!(host_status_fault(GpuHostStatus::DriverHung, None).is_some());

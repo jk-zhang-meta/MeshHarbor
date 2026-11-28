@@ -2092,9 +2092,7 @@ mod tests {
 
     #[test]
     fn linux_unit_files_recognizes_vendor_and_etc_fallback_paths() {
-        assert!(
-            system::LINUX_UNIT_FILES.contains(&"/usr/lib/systemd/system/meshharbord.service")
-        );
+        assert!(system::LINUX_UNIT_FILES.contains(&"/usr/lib/systemd/system/meshharbord.service"));
         assert!(system::LINUX_UNIT_FILES.contains(&"/lib/systemd/system/meshharbord.service"));
         assert!(system::LINUX_UNIT_FILES.contains(&"/etc/systemd/system/meshharbord.service"));
     }

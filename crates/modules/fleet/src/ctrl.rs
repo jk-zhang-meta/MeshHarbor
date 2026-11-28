@@ -12,12 +12,6 @@ use tracing::{debug, info};
 
 use crate::Hub;
 
-/// FR-90 P2g-3b — the most devices one `hive_purge` envelope is applied to:
-/// far above what a purge names (its session's location, members and the
-/// hosts it moved between), so a forged envelope cannot make a pod walk an
-/// unbounded list.
-pub const MAX_HIVE_PURGE_AGENTS: usize = 1024;
-
 /// C-2 — publish an rc control event on the global channel. Control
 /// events are IDEMPOTENT hub operations every pod applies locally (the
 /// one holding the session/agent acts; the rest no-op), which makes
@@ -158,7 +152,9 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                     scope,
                     principal,
                     sid,
-                    reason.clone().or_else(|| Some("org_ssh_disabled".to_string())),
+                    reason
+                        .clone()
+                        .or_else(|| Some("org_ssh_disabled".to_string())),
                 );
                 if n > 0 {
                     info!(tenant = %tid, scope, ?reason, agents = n, "rc ctrl: ssh_revoke applied to org agents from another pod");
@@ -417,65 +413,6 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
             };
             if hub.send_to_agent_in_tenant(aid, tid, msg).is_ok() {
                 info!(agent = %aid, "rc ctrl: cross-org join delivered from another pod");
-            }
-        }
-        // FR-90 P2g-3b — a Hive purge for devices whose sockets are on
-        // another pod: the purge was issued where the owner's DELETE, or the
-        // retention sweep, ran. `push_hive_purge` re-checks the tenant and
-        // the connection's `hive-purge`, so a mismatched envelope pushes
-        // nothing, and a device that gets one twice answers it once (the
-        // purge id).
-        Some("hive_purge") => {
-            let oid = |key: &str| {
-                ctrl.get(key)
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| ObjectId::parse_str(s).ok())
-            };
-            let (Some(tid), Some(pid), Some(sid), Some(aids)) = (
-                oid("tenant_id"),
-                oid("purge_id"),
-                oid("session_id"),
-                ctrl.get("agent_ids").and_then(|v| v.as_array()),
-            ) else {
-                return;
-            };
-            for aid in aids
-                .iter()
-                .take(MAX_HIVE_PURGE_AGENTS)
-                .filter_map(|v| v.as_str())
-                .filter_map(|s| ObjectId::parse_str(s).ok())
-            {
-                let msg = meshharbor_remote_control::signaling::ServerMsg::HivePurge {
-                    purge_id: pid,
-                    session_id: sid,
-                    // FR-90 P2k-3 — a leaving member's copy alone; absent
-                    // from a pod before it, which sent a whole session's.
-                    leaving: ctrl
-                        .get("leaving")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                };
-                if hub.push_hive_purge(aid, tid, msg).is_ok() {
-                    info!(agent = %aid, purge = %pid, "rc ctrl: hive purge delivered from another pod");
-                }
-            }
-        }
-        // FR-90 P2g-4a — a removed device whose socket is on another pod is
-        // told to purge what it holds, before the kick published after it.
-        // The hub's own checks: its tenant, and `hive-purge-all`.
-        Some("hive_purge_all") => {
-            let oid = |key: &str| {
-                ctrl.get(key)
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| ObjectId::parse_str(s).ok())
-            };
-            let (Some(tid), Some(aid), Some(pid)) =
-                (oid("tenant_id"), oid("agent_id"), oid("purge_id"))
-            else {
-                return;
-            };
-            if hub.push_hive_purge_all(aid, tid, pid).is_ok() {
-                info!(agent = %aid, purge = %pid, "rc ctrl: a removed device's purge delivered from another pod");
             }
         }
         // FR-130 P1b-2 — `resume_scope` is read from the store, which the hub

@@ -253,8 +253,8 @@ pub fn seal(
     let mut normalized = payload.clone();
     normalized.learned_endpoints =
         bound_learned_endpoints(&normalized.peers, &normalized.learned_endpoints);
-    let payload_json =
-        serde_json::to_string(&normalized).map_err(|e| CacheError::InvalidPayload(e.to_string()))?;
+    let payload_json = serde_json::to_string(&normalized)
+        .map_err(|e| CacheError::InvalidPayload(e.to_string()))?;
     let key = derive_cache_mac_key(wg_secret, id);
     let mac = compute_envelope_mac(&key, &payload_json);
     Ok(SignedNetmapCache {
@@ -370,9 +370,7 @@ pub fn sanitize_network_for_offline_replay(network: &OverlayNetworkInfo) -> Over
 
 /// Extract parsed valid learned endpoints per peer `node_id` hex from a
 /// verified cache payload.
-pub fn learned_socket_addrs(
-    payload: &NetmapCachePayload,
-) -> BTreeMap<String, Vec<SocketAddr>> {
+pub fn learned_socket_addrs(payload: &NetmapCachePayload) -> BTreeMap<String, Vec<SocketAddr>> {
     let mut out = BTreeMap::new();
     for (nid, list) in &payload.learned_endpoints {
         let addrs: Vec<SocketAddr> = list
@@ -399,7 +397,8 @@ pub fn peer_authority_narrowed(old: &NetmapPeer, new: &NetmapPeer) -> bool {
     // Any change to server-compiled ingress rules (including None -> Some([]),
     // Some(allow) -> Some([]), or rule edits) flushes immediately so a crash
     // cannot resurrect stale permissive rules.
-    if old.ingress_rules != new.ingress_rules || old.ingress_rules_preview != new.ingress_rules_preview
+    if old.ingress_rules != new.ingress_rules
+        || old.ingress_rules_preview != new.ingress_rules_preview
     {
         return true;
     }
@@ -473,22 +472,21 @@ pub fn delta_is_authority_reducing(
 /// its band or jumped to band 2 (`+512`).
 fn recovery_ports_for(port: u16, include_public_band: bool) -> Vec<u16> {
     let mut ports = Vec::new();
-    let base_band = if port >= DEFAULT_DIRECT_PORT
-        && port < DEFAULT_DIRECT_PORT.saturating_add(1024)
-    {
-        let offset = port - DEFAULT_DIRECT_PORT;
-        let slot_offset = offset % PUBLIC_DIAL_PORT_OFFSET;
-        let aligned_slot = (slot_offset / DIRECT_PORT_BAND) * DIRECT_PORT_BAND;
-        DEFAULT_DIRECT_PORT + aligned_slot
-    } else {
-        // Non-standard / custom direct port: probe a small +0..+3 neighborhood.
-        for delta in 0..4u16 {
-            if let Some(p) = port.checked_add(delta) {
-                ports.push(p);
+    let base_band =
+        if port >= DEFAULT_DIRECT_PORT && port < DEFAULT_DIRECT_PORT.saturating_add(1024) {
+            let offset = port - DEFAULT_DIRECT_PORT;
+            let slot_offset = offset % PUBLIC_DIAL_PORT_OFFSET;
+            let aligned_slot = (slot_offset / DIRECT_PORT_BAND) * DIRECT_PORT_BAND;
+            DEFAULT_DIRECT_PORT + aligned_slot
+        } else {
+            // Non-standard / custom direct port: probe a small +0..+3 neighborhood.
+            for delta in 0..4u16 {
+                if let Some(p) = port.checked_add(delta) {
+                    ports.push(p);
+                }
             }
-        }
-        return ports;
-    };
+            return ports;
+        };
 
     // Primary 8-port LAN band, then band-2 (+512) first 4 slots.
     for delta in 0..DIRECT_PORT_BAND {
@@ -675,7 +673,10 @@ mod tests {
         let deny_all = sample_peer("100.64.0.2", Some(vec![]), false);
         let acl_off = sample_peer("100.64.0.3", None, false);
         let backbone = sample_peer("100.64.0.4", Some(vec![]), true);
-        let mut payload = sample_payload(&id, vec![deny_all.clone(), acl_off.clone(), backbone.clone()]);
+        let mut payload = sample_payload(
+            &id,
+            vec![deny_all.clone(), acl_off.clone(), backbone.clone()],
+        );
         payload.network.central_relay_denied = true;
 
         let sealed = seal(&secret, &id, &payload).expect("seal succeeds");
@@ -837,13 +838,21 @@ mod tests {
 
         // Identical map is NOT narrowing.
         assert!(!is_authority_reducing(&net, &old_map, &net, &old_map));
-        assert!(!delta_is_authority_reducing(&old_map, std::slice::from_ref(&peer_a), &[]));
+        assert!(!delta_is_authority_reducing(
+            &old_map,
+            std::slice::from_ref(&peer_a),
+            &[]
+        ));
 
         // 1. Removed peer -> urgent flush.
         let mut dropped = old_map.clone();
         dropped.remove(&peer_b.node_id);
         assert!(is_authority_reducing(&net, &old_map, &net, &dropped));
-        assert!(delta_is_authority_reducing(&old_map, &[], &[peer_b.node_id]));
+        assert!(delta_is_authority_reducing(
+            &old_map,
+            &[],
+            &[peer_b.node_id]
+        ));
 
         // 2. Tighter ingress_rules -> urgent flush.
         let mut tighter = peer_a.clone();
@@ -863,7 +872,12 @@ mod tests {
         // 5. central_relay_denied flipped on -> urgent flush.
         let mut stricter_net = net.clone();
         stricter_net.central_relay_denied = true;
-        assert!(is_authority_reducing(&net, &old_map, &stricter_net, &old_map));
+        assert!(is_authority_reducing(
+            &net,
+            &old_map,
+            &stricter_net,
+            &old_map
+        ));
     }
 
     #[test]
@@ -890,9 +904,17 @@ mod tests {
         // Never duplicates the already-advertised port, never probes public IP,
         // and ALWAYS requires Disco verification.
         assert!(cands.iter().all(|c| c.requires_disco && c.learned));
-        assert!(cands.iter().all(|c| c.dst.ip() == IpAddr::V4(Ipv4Addr::new(192, 168, 50, 20))));
+        assert!(
+            cands
+                .iter()
+                .all(|c| c.dst.ip() == IpAddr::V4(Ipv4Addr::new(192, 168, 50, 20)))
+        );
         assert!(cands.iter().all(|c| c.dst.port() != 43648));
         assert!(cands.iter().any(|c| c.dst.port() == 43649));
-        assert!(cands.iter().any(|c| c.dst.port() == 43648 + SECOND_BAND_OFFSET));
+        assert!(
+            cands
+                .iter()
+                .any(|c| c.dst.port() == 43648 + SECOND_BAND_OFFSET)
+        );
     }
 }

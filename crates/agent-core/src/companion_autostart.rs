@@ -380,7 +380,10 @@ pub fn parse_lnk_target(data: &[u8]) -> Option<String> {
         if base.is_empty() {
             return None;
         }
-        match suffix.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        match suffix
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
             Some(suf) => {
                 if base.ends_with('\\') || suf.starts_with('\\') {
                     Some(format!("{base}{suf}"))
@@ -500,7 +503,10 @@ pub fn parse_lnk_target(data: &[u8]) -> Option<String> {
         if block_size < 4 {
             break;
         }
-        if pos.checked_add(block_size).is_none_or(|end| end > data.len()) {
+        if pos
+            .checked_add(block_size)
+            .is_none_or(|end| end > data.len())
+        {
             break;
         }
         if block_size >= 8 {
@@ -527,7 +533,10 @@ pub fn parse_lnk_target(data: &[u8]) -> Option<String> {
     // 5. Fallback: WorkingDir + non-traversing RelativePath.
     if let (Some(wd), Some(rel)) = (working_dir, relative_path) {
         let wd = wd.trim().trim_end_matches(['\\', '/']);
-        let rel = rel.trim().trim_start_matches(".\\").trim_start_matches("./");
+        let rel = rel
+            .trim()
+            .trim_start_matches(".\\")
+            .trim_start_matches("./");
         if !wd.is_empty() && !rel.is_empty() && !rel.contains("..") {
             return Some(format!("{wd}\\{rel}"));
         }
@@ -592,11 +601,7 @@ pub fn retire_stale_user_start_menu_shortcuts(
         }
     }
 
-    if !dry_run
-        && !retired.is_empty()
-        && !is_symlink(&meshharbor_dir)
-        && meshharbor_dir.is_dir()
-    {
+    if !dry_run && !retired.is_empty() && !is_symlink(&meshharbor_dir) && meshharbor_dir.is_dir() {
         // Non-recursive: succeeds only if the subfolder is completely empty.
         let _ = std::fs::remove_dir(&meshharbor_dir);
     }
@@ -711,7 +716,11 @@ pub mod registry {
         std::io::Error::from_raw_os_error(code as i32)
     }
 
-    fn read_value_from_hkey(root: HKEY, subkey: &str, name: &str) -> std::io::Result<Option<String>> {
+    fn read_value_from_hkey(
+        root: HKEY,
+        subkey: &str,
+        name: &str,
+    ) -> std::io::Result<Option<String>> {
         let (k, n) = (wide(subkey), wide(name));
         let mut bytes: u32 = 0;
         // SAFETY: a size query — null data pointer, valid out-param.
@@ -1228,7 +1237,8 @@ mod tests {
 
         // Redirected LocalAppData outside AppData\Local matches only when local_app_data is supplied.
         let redirected_lad = Some(Path::new(r"D:\Profiles\ana\LocalData"));
-        let redirected_exe = r"D:\Profiles\ana\LocalData\Programs\MeshHarbor\meshharbor-desktop.exe";
+        let redirected_exe =
+            r"D:\Profiles\ana\LocalData\Programs\MeshHarbor\meshharbor-desktop.exe";
         assert!(is_per_user_companion_path(redirected_exe, redirected_lad));
         assert!(!is_per_user_companion_path(redirected_exe, None));
 
@@ -1403,7 +1413,8 @@ mod tests {
     }
 
     #[test]
-    fn retire_stale_start_menu_shortcuts_removes_only_per_user_and_preserves_program_files_and_data() {
+    fn retire_stale_start_menu_shortcuts_removes_only_per_user_and_preserves_program_files_and_data()
+     {
         let tmp = tempfile::tempdir().unwrap();
         let roaming = tmp.path().join("AppData").join("Roaming");
         let local = tmp.path().join("AppData").join("Local");
@@ -1416,7 +1427,10 @@ mod tests {
         std::fs::create_dir_all(&mh_dir).unwrap();
 
         // User data that must NEVER be touched.
-        let user_data = local.join("meshharbor").join("desktop").join("desktop-state.json");
+        let user_data = local
+            .join("meshharbor")
+            .join("desktop")
+            .join("desktop-state.json");
         std::fs::create_dir_all(user_data.parent().unwrap()).unwrap();
         std::fs::write(&user_data, r#"{"first_run_done":true}"#).unwrap();
 
@@ -1432,10 +1446,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             &pf_lnk,
-            synthetic_lnk_link_info(
-                r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe",
-                false,
-            ),
+            synthetic_lnk_link_info(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe", false),
         )
         .unwrap();
 
@@ -1448,8 +1459,14 @@ mod tests {
         let removed = retire_stale_user_start_menu_shortcuts(&roaming, Some(&local), false);
         assert_eq!(removed, vec![stale_lnk.clone()]);
         assert!(!stale_lnk.exists());
-        assert!(!mh_dir.exists(), "empty Start Menu\\Programs\\MeshHarbor dir should be pruned");
-        assert!(pf_lnk.exists(), "Program Files shortcut must survive untouched");
+        assert!(
+            !mh_dir.exists(),
+            "empty Start Menu\\Programs\\MeshHarbor dir should be pruned"
+        );
+        assert!(
+            pf_lnk.exists(),
+            "Program Files shortcut must survive untouched"
+        );
         assert!(user_data.exists(), "user data must NEVER be deleted");
     }
 
@@ -1485,7 +1502,13 @@ mod tests {
         let user_cmd = windows_run_command(Path::new(
             r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe",
         ));
-        write_value(Hive::CurrentUser, &scratch, WINDOWS_RUN_VALUE_NAME, &user_cmd).unwrap();
+        write_value(
+            Hive::CurrentUser,
+            &scratch,
+            WINDOWS_RUN_VALUE_NAME,
+            &user_cmd,
+        )
+        .unwrap();
         assert!(retire_per_user_run_value_in_hkcu(&scratch, Some(lad)).unwrap());
         assert_eq!(
             read_value(Hive::CurrentUser, &scratch, WINDOWS_RUN_VALUE_NAME).unwrap(),

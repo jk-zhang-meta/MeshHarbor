@@ -39,9 +39,7 @@ use meshharbor_remote_control::{
         ClientMsg, CloseReason, REJECT_REASON_NO_SESSION, REJECT_REASON_SESSION_MISMATCH,
         RejectKind, ServerMsg,
     },
-    vault::{NET_GRANT_REFUSED, NetKind, canonical_net_host},
 };
-use meshharbor_services::auth::AuthService;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -399,7 +397,6 @@ pub async fn handle_tunnel_client_socket(
                 transport,
                 open_nonce,
                 derp_pubkey,
-                net_grant,
             } => {
                 // The dedicated CLI is single-open, so `open_nonce` is
                 // normally None; the server echoes back whatever it sent.
@@ -412,7 +409,6 @@ pub async fn handle_tunnel_client_socket(
                     transport,
                     open_nonce,
                     derp_pubkey,
-                    net_grant,
                     &client_supported_transports,
                 )
                 .await;
@@ -679,129 +675,6 @@ pub struct TunnelSession {
     agent_tenant_id: ObjectId,
     #[allow(dead_code)] // T2.6 will plumb this into the agent-WS relay
     transport: String,
-    /// FR-90 P3-7-2a — the grant this tunnel was opened under: its flows
-    /// are an agent SESSION's, decided for the session and held to the
-    /// grant. `None` for a device's or a person's own tunnel.
-    grant: Option<SessionGrant>,
-}
-
-impl TunnelSession {
-    /// FR-90 P3-7-2a — whose flows these are, as the audit records them: the
-    /// session's owner under a grant, else the originator's.
-    fn flow_user(&self, orig: &Originator) -> ObjectId {
-        self.grant
-            .as_ref()
-            .map_or(orig.owner_user_id, |g| g.owner_user_id)
-    }
-
-    /// FR-90 P3-7-2a — the session a row names, under a grant.
-    fn grant_session_id(&self) -> Option<ObjectId> {
-        self.grant.as_ref().map(|g| g.session_id)
-    }
-
-    /// FR-90 P3-7-2a — the grant a row names, under a grant.
-    fn grant_id(&self) -> Option<String> {
-        self.grant.as_ref().map(|g| g.grant_id.clone())
-    }
-}
-
-/// FR-90 P3-7-2a — a grant the vault signed (P3-7-1b), bound to one tunnel at
-/// its open. It holds only from the device it names, toward the exit it
-/// names, until its end; the flows it carries are the session's.
-#[derive(Debug, Clone)]
-struct SessionGrant {
-    session_id: ObjectId,
-    /// The device the session runs on: the connection that carries its flows.
-    device: ObjectId,
-    /// The person the session acts for: its flows' `user_id`.
-    owner_user_id: ObjectId,
-    /// The grant's id, as the vault recorded its allow (`grant:<id>`).
-    grant_id: String,
-    /// A forward's one destination, its host canonical; `None` for SOCKS.
-    dst: Option<(String, u16)>,
-    /// Its end, in seconds since the epoch.
-    exp: i64,
-}
-
-impl SessionGrant {
-    /// The principal its flows are decided for.
-    fn principal(&self) -> Principal {
-        Principal::Session {
-            session_id: self.session_id,
-            agent_id: self.device,
-        }
-    }
-
-    /// Whether one flow stays inside the grant: TCP only, before its end, and
-    /// for a forward toward its one destination, in the spelling the vault
-    /// decided it in (`canonical_net_host`). The reason it does not,
-    /// otherwise. Checked before any policy is read.
-    fn admits(
-        &self,
-        proto: ProtocolKind,
-        dst_host: &str,
-        dst_port: u16,
-        now_s: i64,
-    ) -> Result<(), &'static str> {
-        if proto != ProtocolKind::Tcp {
-            return Err("a session's grant carries TCP only");
-        }
-        if now_s >= self.exp {
-            return Err("the session's grant has ended");
-        }
-        if let Some((host, port)) = &self.dst
-            && (canonical_net_host(dst_host).as_deref() != Some(host.as_str()) || dst_port != *port)
-        {
-            return Err("outside the session's grant");
-        }
-        Ok(())
-    }
-}
-
-/// FR-90 P3-7-2a — verify a grant presented at `rc:tunnel.open` and bind it to
-/// the tunnel. `verify_net_grant` checks its signature, its audience, its
-/// kind, its destination and its life; this checks it names THIS
-/// connection's device as its origin, this open's target as its exit, and
-/// this originator's organization. The reason it does not hold, otherwise.
-///
-/// ⚠️ Only from an agent's own WS: a session's flows ride its device's
-/// connection, never a person's tunnel client.
-fn bind_net_grant(
-    auth: &AuthService,
-    orig: &Originator,
-    exit: ObjectId,
-    token: &str,
-) -> Result<SessionGrant, &'static str> {
-    let Principal::Agent(origin) = orig.principal else {
-        return Err("a session's grant rides only its own device's connection");
-    };
-    let claims = auth
-        .verify_net_grant(token)
-        .map_err(|_| "not a grant this server signed, or it has ended")?;
-    let id =
-        |hex: &str| ObjectId::parse_str(hex).map_err(|_| "a grant naming an id that is not one");
-    if id(&claims.tenant_id)? != orig.tenant_id {
-        return Err("a grant for another organization");
-    }
-    if id(&claims.origin_agent_id)? != origin {
-        return Err("a grant for another device");
-    }
-    if id(&claims.exit_agent_id)? != exit {
-        return Err("a grant for another exit");
-    }
-    let dst = match NetKind::from_wire(&claims.net) {
-        Some(NetKind::Socks) => None,
-        Some(NetKind::Forward) => Some((claims.dst_host.clone(), claims.dst_port)),
-        None => return Err("a grant of a kind this build cannot name"),
-    };
-    Ok(SessionGrant {
-        session_id: id(&claims.sub)?,
-        device: origin,
-        owner_user_id: id(&claims.owner_user_id)?,
-        grant_id: claims.jti,
-        dst,
-        exp: claims.exp,
-    })
 }
 
 /// Identity + reply channel of whoever originated a tunnel-CLIENT session
@@ -888,7 +761,6 @@ async fn handle_tunnel_open(
     // R4 - the client's DERP identity from TunnelOpen (quic-derp-v1 only).
     derp_pubkey: Option<String>,
     // FR-90 P3-7-2a - an agent session's grant, from the vault.
-    net_grant: Option<String>,
     client_supported: &[String],
 ) -> Option<TunnelSession> {
     // 1. Fetch the agent (any tenant — we need the row to enforce
@@ -1052,41 +924,6 @@ async fn handle_tunnel_open(
         }
     }
 
-    // 3c. FR-90 P3-7-2a — an agent SESSION's grant. Bound here, or the open
-    // is refused: a grant that does not hold must never fall back to the
-    // device's own principal, which would hand the session whatever its
-    // device may reach.
-    let grant = match net_grant.as_deref() {
-        None => None,
-        Some(token) => match bind_net_grant(&state.core.auth, orig, agent_id, token) {
-            Ok(g) => {
-                info!(
-                    origin = %orig.log_id(), %agent_id, session = %g.session_id,
-                    grant = %g.grant_id, forward = g.dst.is_some(),
-                    "tunnel open: bound to an agent session's grant"
-                );
-                Some(g)
-            }
-            Err(why) => {
-                warn!(
-                    origin = %orig.log_id(), %agent_id, why,
-                    "tunnel open refused: its session grant does not hold"
-                );
-                send_msg(
-                    &orig.outbound_tx,
-                    ServerMsg::Error {
-                        session_id: None,
-                        code: NET_GRANT_REFUSED.into(),
-                        message: why.into(),
-                        open_nonce: open_nonce.clone(),
-                    },
-                )
-                .await;
-                return None;
-            }
-        },
-    };
-
     // 3d. MeshHarbor #22 — the center brokers this tunnel's business bytes
     // (its TURN relay or `/derp`), so it is business traffic like any overlay
     // carrier: the two devices must be in one zone (#21). Only management
@@ -1201,7 +1038,6 @@ async fn handle_tunnel_open(
         agent_id,
         agent_tenant_id: agent.tenant_id,
         transport: negotiated_transport.clone(),
-        grant,
     };
     state
         .tunnel_clients_by_session
@@ -1287,8 +1123,6 @@ async fn handle_tunnel_open(
         }
     }
 
-    let grant_id = new_session.grant_id();
-
     // QUIC-over-TURN (Phase 3c): mint short-lived coturn creds for THIS
     // session and hand the SAME set to both peers so each can allocate
     // its own TURN relay. Empty when no TURN `shared_secret` is
@@ -1335,7 +1169,6 @@ async fn handle_tunnel_open(
             open_nonce,
             // P3-7-2a — the device's proof the grant was bound: a device
             // that sent one and finds no echo carries no session flow here.
-            net_grant_id: grant_id.clone(),
         },
     )
     .await
@@ -1364,8 +1197,7 @@ async fn handle_tunnel_open(
     // authorize this token now that `TunnelOpened` is committed to the
     // originator's outbound queue.
     if let Some(token) = quic_auth_token {
-        let is_quic_derp =
-            negotiated_transport == tunnel_core::transport::TRANSPORT_QUIC_DERP_V1;
+        let is_quic_derp = negotiated_transport == tunnel_core::transport::TRANSPORT_QUIC_DERP_V1;
         if let Err(e) = state.fleet.rc_hub.send_to_agent(
             agent_id,
             ServerMsg::TunnelQuicSetup {
@@ -1392,7 +1224,7 @@ async fn handle_tunnel_open(
             tunnel_client_id: orig.tunnel_client_id(),
             origin_agent_id: orig.origin_agent_id(),
             agent_id,
-            user_id: new_session.flow_user(orig),
+            user_id: orig.owner_user_id,
             at: DateTime::now(),
             kind: TunnelAuditKind::PeerOpen,
             flow_id: None,
@@ -1408,8 +1240,8 @@ async fn handle_tunnel_open(
             client_version: orig.client_version.clone(),
             client_os: orig.client_os,
             reason: None,
-            session_id: new_session.grant_session_id(),
-            grant_id,
+            session_id: None,
+            grant_id: None,
         })
         .await;
 
@@ -1528,39 +1360,6 @@ async fn handle_forward_request(
         )
         .await;
         return;
-    }
-
-    // FR-90 P3-7-2a — a session's flow is held to its grant before any
-    // policy is read: TCP only, before the grant's end, and a forward toward
-    // its one destination.
-    if let Some(g) = &s.grant {
-        let now_s = DateTime::now().timestamp_millis().div_euclid(1000);
-        if let Err(why) = g.admits(proto, dst_host, dst_port, now_s) {
-            info!(origin = %orig.log_id(), session = %g.session_id, %flow_id, %dst_host, %dst_port, ?proto, why, "session flow rejected by its grant");
-            audit_tcp_reject(
-                state,
-                s,
-                orig,
-                flow_id,
-                dst_host,
-                dst_port,
-                RejectKind::AclDenied,
-                why,
-            )
-            .await;
-            send_msg(
-                &orig.outbound_tx,
-                forward_reject_msg(
-                    proto,
-                    request_session_id,
-                    flow_id,
-                    RejectKind::AclDenied,
-                    why.into(),
-                ),
-            )
-            .await;
-            return;
-        }
     }
 
     // Re-fetch the agent row each time so a quarantine that lands
@@ -1702,7 +1501,7 @@ async fn handle_forward_request(
 
     let subject = ResolvedSubject {
         // FR-90 P3-7-2a — under a grant, the session's owner.
-        user_id: s.flow_user(orig),
+        user_id: orig.owner_user_id,
         // T2.6 will resolve role_ids via the existing tenant
         // membership lookup. For T2.5 we use an empty list — only
         // UserId / TunnelClientId / AgentId / AllUsers policy subjects
@@ -1714,10 +1513,7 @@ async fn handle_forward_request(
         // discriminates the id-specific subjects on the principal kind.
         // FR-90 P3-7-2a — a tunnel opened under a session's grant carries
         // `Principal::Session`, which no subject matches before decision 20.
-        principal: s
-            .grant
-            .as_ref()
-            .map_or(orig.principal, SessionGrant::principal),
+        principal: orig.principal,
     };
 
     let result = check_forward_request(
@@ -1746,7 +1542,7 @@ async fn handle_forward_request(
                     dst_host.to_string(),
                     dst_port,
                     // Under a grant, the session's owner (P3-7-2a).
-                    s.flow_user(orig),
+                    orig.owner_user_id,
                 ),
             );
             match relay {
@@ -1823,7 +1619,7 @@ async fn audit_tcp_accept(
             tunnel_client_id: orig.tunnel_client_id(),
             origin_agent_id: orig.origin_agent_id(),
             agent_id: session.agent_id,
-            user_id: session.flow_user(orig),
+            user_id: orig.owner_user_id,
             at: DateTime::now(),
             kind: TunnelAuditKind::TcpAccept,
             flow_id: Some(flow_id),
@@ -1839,8 +1635,8 @@ async fn audit_tcp_accept(
             client_version: orig.client_version.clone(),
             client_os: orig.client_os,
             reason: None,
-            session_id: session.grant_session_id(),
-            grant_id: session.grant_id(),
+            session_id: None,
+            grant_id: None,
         })
         .await;
 }
@@ -1865,7 +1661,7 @@ async fn audit_tcp_reject(
             tunnel_client_id: orig.tunnel_client_id(),
             origin_agent_id: orig.origin_agent_id(),
             agent_id: session.agent_id,
-            user_id: session.flow_user(orig),
+            user_id: orig.owner_user_id,
             at: DateTime::now(),
             kind: TunnelAuditKind::TcpReject,
             flow_id: Some(flow_id),
@@ -1881,8 +1677,8 @@ async fn audit_tcp_reject(
             client_version: orig.client_version.clone(),
             client_os: orig.client_os,
             reason: Some(format!("{kind:?}: {reason}")),
-            session_id: session.grant_session_id(),
-            grant_id: session.grant_id(),
+            session_id: None,
+            grant_id: None,
         })
         .await;
 }
@@ -1897,7 +1693,7 @@ async fn audit_peer_close(state: &NetworkState, session: &TunnelSession, orig: &
             tunnel_client_id: orig.tunnel_client_id(),
             origin_agent_id: orig.origin_agent_id(),
             agent_id: session.agent_id,
-            user_id: session.flow_user(orig),
+            user_id: orig.owner_user_id,
             at: DateTime::now(),
             kind: TunnelAuditKind::PeerClose,
             flow_id: None,
@@ -1913,8 +1709,8 @@ async fn audit_peer_close(state: &NetworkState, session: &TunnelSession, orig: &
             client_version: orig.client_version.clone(),
             client_os: orig.client_os,
             reason: None,
-            session_id: session.grant_session_id(),
-            grant_id: session.grant_id(),
+            session_id: None,
+            grant_id: None,
         })
         .await;
 }
@@ -2181,7 +1977,7 @@ async fn audit_tcp_close(
             tunnel_client_id: orig.tunnel_client_id(),
             origin_agent_id: orig.origin_agent_id(),
             agent_id: session.agent_id,
-            user_id: session.flow_user(orig),
+            user_id: orig.owner_user_id,
             at: DateTime::now(),
             kind: TunnelAuditKind::TcpClosed,
             flow_id: Some(flow_id),
@@ -2197,8 +1993,8 @@ async fn audit_tcp_close(
             client_version: orig.client_version.clone(),
             client_os: orig.client_os,
             reason: Some(format!("{reason:?}")),
-            session_id: session.grant_session_id(),
-            grant_id: session.grant_id(),
+            session_id: None,
+            grant_id: None,
         })
         .await;
 }
@@ -2321,7 +2117,6 @@ pub async fn relay_tunnel_client_msg_from_agent(
             transport,
             open_nonce,
             derp_pubkey,
-            net_grant,
         } => {
             if let Some(s) = handle_tunnel_open(
                 state,
@@ -2331,7 +2126,6 @@ pub async fn relay_tunnel_client_msg_from_agent(
                 open_nonce,
                 derp_pubkey,
                 // FR-90 P3-7-2a — an agent session's grant, bound here.
-                net_grant,
                 supported_transports,
             )
             .await
@@ -2658,7 +2452,9 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
 pub async fn reconcile_tunnel_sessions(state: &NetworkState, tenant_id: ObjectId) -> bool {
     let iso = crate::business_isolation::mode(state);
     let topo = crate::business_isolation::lines(state, iso, tenant_id).await;
-    if topo.restricted_read_failed || (iso != crate::business_isolation::Mode::Off && topo.roles_read_failed) {
+    if topo.restricted_read_failed
+        || (iso != crate::business_isolation::Mode::Off && topo.roles_read_failed)
+    {
         warn!(
             %tenant_id,
             restricted_read_failed = topo.restricted_read_failed,
@@ -2900,7 +2696,7 @@ async fn temporary_flow_refusal(
     if !meshharbor_mod_fleet::device_invite::allows_feature(
         &state.fleet,
         s.agent_id,
-        s.flow_user(orig),
+        orig.owner_user_id,
         meshharbor_remote_control::models::DeviceAccessFeature::Network,
     )
     .await
@@ -2911,7 +2707,7 @@ async fn temporary_flow_refusal(
     match grant_for_agent(&state.fleet, s.agent_id).await {
         Ok(None) => None,
         Ok(Some(grant)) => {
-            let user = s.flow_user(orig);
+            let user = orig.owner_user_id;
             let roles = state
                 .tenants
                 .member_role_ids(s.agent_tenant_id, user)
@@ -2943,209 +2739,5 @@ mod tests {
             ObjectId::new(),
             ObjectId::new(),
         ));
-    }
-
-    fn grant(dst: Option<(&str, u16)>, exp: i64) -> SessionGrant {
-        SessionGrant {
-            session_id: ObjectId::new(),
-            device: ObjectId::new(),
-            owner_user_id: ObjectId::new(),
-            grant_id: "g1".into(),
-            dst: dst.map(|(h, p)| (h.to_string(), p)),
-            exp,
-        }
-    }
-
-    /// FR-90 P3-7-2a — a flow stays inside its session's grant: TCP only,
-    /// before its end, and a forward toward its one destination, in any
-    /// spelling of its host. SOCKS names no destination: the policies decide.
-    #[test]
-    fn a_flow_is_held_to_its_sessions_grant() {
-        let now = 1_000;
-        let forward = grant(Some(("db.internal", 5432)), now + 60);
-        assert_eq!(
-            forward.admits(ProtocolKind::Tcp, "db.internal", 5432, now),
-            Ok(())
-        );
-        assert_eq!(
-            forward.admits(ProtocolKind::Tcp, "DB.Internal.", 5432, now),
-            Ok(()),
-            "one spelling"
-        );
-        for (host, port) in [
-            ("db.internal", 22),
-            ("other.internal", 5432),
-            ("010.0.0.5", 5432),
-            ("", 5432),
-        ] {
-            assert!(
-                forward.admits(ProtocolKind::Tcp, host, port, now).is_err(),
-                "{host}:{port}"
-            );
-        }
-        assert!(
-            forward
-                .admits(ProtocolKind::Udp, "db.internal", 5432, now)
-                .is_err(),
-            "TCP only"
-        );
-        assert!(
-            forward
-                .admits(ProtocolKind::Tcp, "db.internal", 5432, now + 60)
-                .is_err(),
-            "not at its end"
-        );
-        let socks = grant(None, now + 60);
-        assert_eq!(
-            socks.admits(ProtocolKind::Tcp, "anything.example", 443, now),
-            Ok(())
-        );
-        assert!(
-            socks
-                .admits(ProtocolKind::Udp, "anything.example", 53, now)
-                .is_err()
-        );
-        assert!(
-            socks
-                .admits(ProtocolKind::Tcp, "anything.example", 443, now + 61)
-                .is_err()
-        );
-    }
-
-    /// FR-90 P3-7-2a — a grant's flows are decided for its session, on the
-    /// device that carries them, never for the device itself.
-    #[test]
-    fn a_grants_flows_are_decided_for_its_session() {
-        let g = grant(None, 1);
-        assert_eq!(
-            g.principal(),
-            Principal::Session {
-                session_id: g.session_id,
-                agent_id: g.device,
-            }
-        );
-        assert_ne!(g.principal(), Principal::Agent(g.device));
-    }
-
-    /// An auth service under a secret made at run time.
-    fn auth() -> AuthService {
-        AuthService::new(meshharbor_config::JwtSettings {
-            secret: format!("p372a-{}-{}", ObjectId::new(), ObjectId::new()),
-            previous_secrets: String::new(),
-            access_token_ttl_secs: 3600,
-            refresh_token_ttl_secs: 3600,
-            issuer: "meshharbor-test".into(),
-        })
-    }
-
-    fn originator(principal: Principal, tenant_id: ObjectId) -> Originator {
-        let (outbound_tx, _) = mpsc::channel(1);
-        Originator {
-            principal,
-            tenant_id,
-            owner_user_id: ObjectId::new(),
-            client_version: String::new(),
-            client_os: OsKind::Linux,
-            outbound_tx,
-            dialed_tid: None,
-            conn_established_ms: 0,
-        }
-    }
-
-    /// FR-90 P3-7-2a — a grant binds only where it holds: on an agent's own
-    /// connection, signed by this server, in its organization, from the device
-    /// it names and toward the exit it names. What it binds is the session's,
-    /// as the grant names it. Each refusal is in its own words.
-    #[test]
-    fn a_grant_binds_only_where_it_holds() {
-        use meshharbor_services::auth::NetGrant;
-        let ours = auth();
-        let (tenant, device, exit) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-        let (session, owner, grant_id) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-        let exp = DateTime::now().timestamp_millis().div_euclid(1000) + 60;
-        let sign = |by: &AuthService, dst: Option<(&str, u16)>| {
-            by.issue_net_grant(&NetGrant {
-                session_id: session,
-                tenant_id: tenant,
-                fence: 1,
-                owner_user_id: owner,
-                origin_agent_id: device,
-                exit_agent_id: exit,
-                net: if dst.is_some() {
-                    NetKind::Forward
-                } else {
-                    NetKind::Socks
-                },
-                dst,
-                grant_id,
-                exp,
-            })
-            .expect("a grant that holds together is signed")
-        };
-        let on_device = originator(Principal::Agent(device), tenant);
-
-        let forward = sign(&ours, Some(("db.internal", 5432)));
-        let g = bind_net_grant(&ours, &on_device, exit, &forward).expect("it holds");
-        assert_eq!(
-            (g.session_id, g.device, g.owner_user_id, g.grant_id.as_str()),
-            (session, device, owner, grant_id.to_hex().as_str())
-        );
-        assert_eq!(
-            (g.dst, g.exp),
-            (Some(("db.internal".to_string(), 5432)), exp)
-        );
-        let socks = sign(&ours, None);
-        assert_eq!(
-            bind_net_grant(&ours, &on_device, exit, &socks)
-                .expect("it holds")
-                .dst,
-            None
-        );
-
-        let elsewhere = ObjectId::new();
-        for (orig, open_exit, token, why) in [
-            (
-                originator(Principal::TunnelClient(device), tenant),
-                exit,
-                socks.clone(),
-                "a session's grant rides only its own device's connection",
-            ),
-            (
-                originator(Principal::Agent(device), tenant),
-                exit,
-                sign(&auth(), None),
-                "not a grant this server signed, or it has ended",
-            ),
-            (
-                originator(Principal::Agent(device), tenant),
-                exit,
-                "a.b.c".to_string(),
-                "not a grant this server signed, or it has ended",
-            ),
-            (
-                originator(Principal::Agent(device), elsewhere),
-                exit,
-                socks.clone(),
-                "a grant for another organization",
-            ),
-            (
-                originator(Principal::Agent(elsewhere), tenant),
-                exit,
-                socks.clone(),
-                "a grant for another device",
-            ),
-            (
-                originator(Principal::Agent(device), tenant),
-                elsewhere,
-                socks.clone(),
-                "a grant for another exit",
-            ),
-        ] {
-            assert_eq!(
-                bind_net_grant(&ours, &orig, open_exit, &token).err(),
-                Some(why),
-                "{why}"
-            );
-        }
     }
 }

@@ -721,11 +721,7 @@ pub(super) fn has_active_or_incumbent_trial(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .values()
-        .any(|t| {
-            t.session.pair_key == pair
-                && t.session.expires_at > now
-                && !returned(t)
-        })
+        .any(|t| t.session.pair_key == pair && t.session.expires_at > now && !returned(t))
 }
 
 /// Bound sessions `reporter_id` may re-optimize: at most `limit`, past their
@@ -1151,10 +1147,7 @@ async fn request_inner(
                     requester_node_id: req_id,
                     requester_at_exit,
                     bound_upgrade,
-                    relay_zones: candidate
-                        .as_ref()
-                        .map(plan_relay_zones)
-                        .unwrap_or_default(),
+                    relay_zones: candidate.as_ref().map(plan_relay_zones).unwrap_or_default(),
                     member_zones: candidate.as_ref().and_then(|p| p.member_zones),
                     session,
                     backbone: None,
@@ -1998,8 +1991,9 @@ pub(super) async fn recheck_network_zone_trials(
     }
     if !events.is_empty() {
         for event in events {
-            let _ = tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
-                .await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                    .await;
         }
     }
     all_certain
@@ -2911,7 +2905,9 @@ mod tests {
             (0, eff)
         };
         assert_eq!(rank_r0, (0, 200));
-        assert!(path_trial_plan::bound_upgrade_clearly_better(rank_r1, rank_r0));
+        assert!(path_trial_plan::bound_upgrade_clearly_better(
+            rank_r1, rank_r0
+        ));
 
         // Step 2: Admit and finalize Trial 1 (R0 -> R1).
         let t1_id = {
@@ -3007,9 +3003,18 @@ mod tests {
             };
             // A third concurrent trial while Trial 2 is Preparing must be rejected.
             assert!(matches!(
-                admit_trial(&state, &mut entries, &[r0], &pair, tenant, a, 102, 0, 0, || {
-                    Some(fixture_trial(tenant, a, b, r0, 102, 13, 4))
-                }),
+                admit_trial(
+                    &state,
+                    &mut entries,
+                    &[r0],
+                    &pair,
+                    tenant,
+                    a,
+                    102,
+                    0,
+                    0,
+                    || { Some(fixture_trial(tenant, a, b, r0, 102, 13, 4)) }
+                ),
                 Admission::Rejected
             ));
             id
@@ -3031,7 +3036,9 @@ mod tests {
             let old: Vec<_> = entries
                 .values()
                 .filter(|t| {
-                    t.id != t2_id && t.session.pair_key == pair && matches!(t.phase, Phase::Finalized)
+                    t.id != t2_id
+                        && t.session.pair_key == pair
+                        && matches!(t.phase, Phase::Finalized)
                 })
                 .map(|t| t.id)
                 .collect();

@@ -271,30 +271,31 @@ pub async fn set_zone_assignment(
     let country_code = fresh_agent
         .as_ref()
         .and_then(|f| meshharbor_mod_fleet::socket::agent_effective_country(&state.fleet, f));
-    let (effective_zone_id, effective_zone_name, zone_source) =
-        if !snapshot.read_failed && !snapshot.superseded {
-            let (res, src) = snapshot.resolve_agent_with_source(aid);
-            match res {
-                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
-                _ => (None, None, src),
-            }
-        } else if let (Ok(Some(net)), Some(fresh)) = (
-            state.overlay_networks.find_for_tenant(tid).await,
-            fresh_agent.as_ref(),
-        ) {
-            let (res, src) = meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(
-                &state.fleet,
-                &net.zones,
-                fresh,
-                None,
-            );
-            match res {
-                DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
-                _ => (None, None, src),
-            }
-        } else {
-            (None, None, None)
-        };
+    let (effective_zone_id, effective_zone_name, zone_source) = if !snapshot.read_failed
+        && !snapshot.superseded
+    {
+        let (res, src) = snapshot.resolve_agent_with_source(aid);
+        match res {
+            DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
+            _ => (None, None, src),
+        }
+    } else if let (Ok(Some(net)), Some(fresh)) = (
+        state.overlay_networks.find_for_tenant(tid).await,
+        fresh_agent.as_ref(),
+    ) {
+        let (res, src) = meshharbor_mod_fleet::socket::resolve_agent_zone_with_source(
+            &state.fleet,
+            &net.zones,
+            fresh,
+            None,
+        );
+        match res {
+            DeviceZoneResolution::Resolved(z) => (Some(z.id.clone()), Some(z.name.clone()), src),
+            _ => (None, None, src),
+        }
+    } else {
+        (None, None, None)
+    };
 
     info!(
         tenant = %tid,

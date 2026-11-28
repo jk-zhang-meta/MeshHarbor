@@ -22,12 +22,6 @@ pub mod device;
 // authenticated. Host-owned for the same reason as `device`.
 #[cfg(feature = "fleet")]
 pub mod agent_self;
-// FR-88 P1a — the platform admin's activation view: sign-ups (core's users)
-// joined with device enrollments (fleet's agents, optional — `activated` is
-// `null` without them). A view over core and one optional module, so the
-// host's, next to its `/admin/stats` siblings.
-pub mod attribution;
-pub mod integration;
 pub mod invite;
 pub mod notification;
 pub mod oauth;

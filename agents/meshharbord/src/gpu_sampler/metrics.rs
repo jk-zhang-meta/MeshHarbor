@@ -10,9 +10,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
-use meshharbor_remote_control::gpu::{
-    GpuReport, GpuStateThresholds, classify_gpu_state,
-};
+use meshharbor_remote_control::gpu::{GpuReport, GpuStateThresholds, classify_gpu_state};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -193,9 +191,15 @@ mod tests {
             }],
         };
         let text = format_prometheus(Some(&rep), 10_000);
-        assert!(text.contains(r#"meshharbor_gpu_utilization_ratio{gpu="0",uuid="GPU-123",name="RTX 4090"} 0.5000"#));
-        assert!(text.contains(r#"meshharbor_gpu_memory_used_bytes{gpu="0",uuid="GPU-123",name="RTX 4090"} 1073741824"#));
+        assert!(text.contains(
+            r#"meshharbor_gpu_utilization_ratio{gpu="0",uuid="GPU-123",name="RTX 4090"} 0.5000"#
+        ));
+        assert!(text.contains(
+            r#"meshharbor_gpu_memory_used_bytes{gpu="0",uuid="GPU-123",name="RTX 4090"} 1073741824"#
+        ));
         // 50% active utilization MUST classify as busy, NEVER free!
-        assert!(text.contains(r#"meshharbor_gpu_state{gpu="0",uuid="GPU-123",name="RTX 4090",state="busy"} 1"#));
+        assert!(text.contains(
+            r#"meshharbor_gpu_state{gpu="0",uuid="GPU-123",name="RTX 4090",state="busy"} 1"#
+        ));
     }
 }

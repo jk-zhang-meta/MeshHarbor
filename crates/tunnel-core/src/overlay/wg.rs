@@ -1131,7 +1131,14 @@ impl Ingress {
                 })
                 && !g.router.is_exact_peer_src(&self.peer, src);
             if p2pctl_spoofed {
-                (RpfVerdict::Deny(super::router::RpfDeny::OtherPeer), true, None, None, false, true)
+                (
+                    RpfVerdict::Deny(super::router::RpfDeny::OtherPeer),
+                    true,
+                    None,
+                    None,
+                    false,
+                    true,
+                )
             } else {
                 let rules = g.ingress_acls.get(&self.peer).cloned();
                 let preview_rules = if rules.is_none() {
@@ -8366,7 +8373,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn fr139_p2pctl_port_enforces_exact_32_src_even_under_rpf_warn_and_refuses_routed_subnet() {
+    async fn fr139_p2pctl_port_enforces_exact_32_src_even_under_rpf_warn_and_refuses_routed_subnet()
+    {
         fn synthetic_tcp_ipv4(src: Ipv4Addr, dst: Ipv4Addr, sport: u16, dport: u16) -> Vec<u8> {
             let total_len: u16 = 40;
             let mut pkt = vec![0u8; 40];
@@ -8395,7 +8403,12 @@ mod tests {
 
         // 1. Spoofed source to P2P_CTL_PORT MUST be DROPPED even under RpfMode::Warn!
         let spoofed = Ipv4Addr::new(100, 64, 0, 99);
-        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(spoofed, IP_B, 55000, port)).await;
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_tcp_ipv4(spoofed, IP_B, 55000, port),
+        )
+        .await;
         assert!(
             tokio::time::timeout(Duration::from_millis(250), rx_b.recv())
                 .await
@@ -8405,7 +8418,12 @@ mod tests {
 
         // 2. Routed subnet source behind peer A MUST ALSO be dropped for P2P_CTL_PORT!
         let routed_lan = Ipv4Addr::new(192, 168, 77, 42);
-        send_until_ok(&dev_a, &pk_b, &synthetic_tcp_ipv4(routed_lan, IP_B, 55001, port)).await;
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_tcp_ipv4(routed_lan, IP_B, 55001, port),
+        )
+        .await;
         assert!(
             tokio::time::timeout(Duration::from_millis(250), rx_b.recv())
                 .await
@@ -8427,10 +8445,7 @@ mod tests {
             node_id: bson::oid::ObjectId::new(),
             overlay_ip: IP_A.to_string(),
             name: "peer-a".into(),
-            wg_public_key: base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                pk_a,
-            ),
+            wg_public_key: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pk_a),
             endpoints: vec![],
             lan_endpoints: vec![],
             srflx_endpoints: vec![],

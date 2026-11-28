@@ -1500,7 +1500,9 @@ fn start_login<R: Runtime>(app: &AppHandle<R>) {
                     // No browser could be opened: the window shows the link.
                     show_window(&app, "/onboarding");
                 }
-                crate::commands::cmd_login_wait(name.clone()).await.map(|_| ())
+                crate::commands::cmd_login_wait(name.clone())
+                    .await
+                    .map(|_| ())
             }
             Err(e) => Err(e),
         };
@@ -1618,7 +1620,10 @@ async fn offer_move<R: Runtime>(app: &AppHandle<R>, name: String) {
     ACCOUNT_WATCH_WAKE.notify_one();
     match outcome {
         Ok(notice) => {
-            tracing::info!(kept = notice.is_some(), "tray: device moved to the signed-in organization");
+            tracing::info!(
+                kept = notice.is_some(),
+                "tray: device moved to the signed-in organization"
+            );
             let body = if matches!(lang, crate::tray_i18n::Lang::En) {
                 offer.done(notice.as_deref())
             } else {
@@ -2179,7 +2184,10 @@ mod account_tests {
         assert_eq!(vt.status, "由 Alex 管理 · 剩余 2 天 2 小时");
         assert_eq!(
             vt.invitations,
-            vec![("aa".to_string(), "退出邀请 · Alex (Acme) · 剩余 2 天 2 小时".to_string())]
+            vec![(
+                "aa".to_string(),
+                "退出邀请 · Alex (Acme) · 剩余 2 天 2 小时".to_string()
+            )]
         );
 
         let rec = meshharbor_localapi::RecordingState {

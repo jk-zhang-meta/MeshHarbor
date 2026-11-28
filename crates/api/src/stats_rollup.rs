@@ -628,9 +628,6 @@ pub fn spawn_stats_rollup(state: AppState) {
                 }
             }
             let done = run_stats_rollup_once(&state).await;
-            // FR-69 P4 — the orphaned-call closer is conference's; a build
-            // without the module has no call sessions to close.
-            state.modules.close_orphaned_call_state().await;
             info!(passes = done, "stats rollup cycle complete");
         }
     });

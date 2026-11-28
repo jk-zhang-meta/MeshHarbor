@@ -85,7 +85,11 @@ impl IntelBackend {
         }
     }
 
-    pub fn sample(&self, include_procs: bool, proc_lookup: &ProcLookup) -> (GpuHostStatus, Vec<GpuSample>) {
+    pub fn sample(
+        &self,
+        include_procs: bool,
+        proc_lookup: &ProcLookup,
+    ) -> (GpuHostStatus, Vec<GpuSample>) {
         #[cfg(target_os = "linux")]
         {
             let (procs_by_pci, partial) = if include_procs {

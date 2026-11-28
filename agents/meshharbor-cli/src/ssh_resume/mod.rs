@@ -66,9 +66,13 @@ pub fn print_sessions(device: &str) -> Result<i32> {
     }
     let now = meshharbor_node_core::pty_resume::now_unix_ms();
     if zh {
-        println!("设备 {device} 的可恢复 SSH 会话（使用 `mh ssh {device} --resume <ID>` 重新接回）：");
+        println!(
+            "设备 {device} 的可恢复 SSH 会话（使用 `mh ssh {device} --resume <ID>` 重新接回）："
+        );
     } else {
-        println!("Saved resumable SSH sessions for {device} (use `mh ssh {device} --resume <ID>`):");
+        println!(
+            "Saved resumable SSH sessions for {device} (use `mh ssh {device} --resume <ID>`):"
+        );
     }
     for s in sessions {
         let rem_min = s.deadline_ms.saturating_sub(now) / 60_000;

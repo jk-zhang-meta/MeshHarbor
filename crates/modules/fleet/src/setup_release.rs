@@ -32,7 +32,7 @@ use meshharbor_core::{ApiError, client_ip::PeerAddr};
 use crate::{
     FleetState,
     agent_release::{AgentRelease, AgentReleaseAsset},
-    install_trace, releases,
+    releases,
 };
 
 #[derive(Deserialize)]
@@ -62,16 +62,9 @@ pub struct InstallerHealth {
 /// (filtered server-side from the mixed tag list the cache holds).
 pub async fn setup_latest_release(
     State(state): State<FleetState>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Result<Json<Vec<AgentRelease>>, ApiError> {
-    // FR-102 P3 — counted by client class; see `install_trace`.
-    install_trace::count_fetch(
-        &state,
-        &headers,
-        peer,
-        install_trace::asset::SETUP_LATEST_RELEASE,
-    );
     let base = crate::release_delivery::public_base(&state.settings.app.frontend_url)?;
     let releases = releases::cached(&state).await?;
     let filtered: Vec<AgentRelease> = releases
@@ -123,18 +116,11 @@ pub async fn setup_installer_proxy(
     State(state): State<FleetState>,
     Path(platform): Path<String>,
     Query(params): Query<InstallerQuery>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let normalised = normalise_platform(&platform)?;
     crate::release_delivery::validate_version(&params.version)?;
-    // FR-102 P3 — the wizard archive itself, usually a browser on the site.
-    install_trace::count_fetch(
-        &state,
-        &headers,
-        peer,
-        &install_trace::asset::setup(normalised),
-    );
     let releases = releases::cached(&state).await?;
     let release = pick_release_for(&releases, &params.version, "setup-v").ok_or_else(|| {
         ApiError::NotFound(format!(
@@ -324,11 +310,9 @@ fn script_response(body: Cow<'static, str>, content_type: &'static str) -> Respo
 /// `GET /api/setup/install.sh` — the Linux/macOS terminal installer.
 pub async fn install_script_sh(
     State(state): State<FleetState>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Response {
-    // FR-102 P3 — a fetch of the script, by client class (curl, a browser…).
-    install_trace::count_fetch(&state, &headers, peer, install_trace::asset::INSTALL_SH);
     let body = with_server_default(
         INSTALL_SH,
         SERVER_NEEDLE_SH,
@@ -341,10 +325,9 @@ pub async fn install_script_sh(
 /// `GET /api/setup/install.ps1` — the Windows terminal installer.
 pub async fn install_script_ps1(
     State(state): State<FleetState>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
+    PeerAddr(_peer): PeerAddr,
+    _headers: HeaderMap,
 ) -> Response {
-    install_trace::count_fetch(&state, &headers, peer, install_trace::asset::INSTALL_PS1);
     let body = with_server_default(
         INSTALL_PS1,
         SERVER_NEEDLE_PS1,

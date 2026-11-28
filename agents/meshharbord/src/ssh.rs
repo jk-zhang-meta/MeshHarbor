@@ -2704,20 +2704,21 @@ pub(crate) mod sshd {
                         "persistent SSH session storage is unavailable on this device.",
                     );
                 }
-                let open_auth = self.policy.as_ref().map(|p| {
-                    crate::ssh_persist::subsystem::OpenAuthContext {
-                        principal: p.principal.clone(),
-                        caller_label: p.caller.clone(),
-                        grant_id: p.grant_id.clone(),
-                        run_as: p.run_as.clone(),
-                        consent_sentinel: p.consent_sentinel.clone(),
-                        asker: self.asker.clone(),
-                        session_secs: p.session_secs,
-                        deadline: p.deadline,
-                        resume_allowed: p.resume_allowed,
-                        key_list_auth: p.key_list_auth,
-                    }
-                });
+                let open_auth =
+                    self.policy
+                        .as_ref()
+                        .map(|p| crate::ssh_persist::subsystem::OpenAuthContext {
+                            principal: p.principal.clone(),
+                            caller_label: p.caller.clone(),
+                            grant_id: p.grant_id.clone(),
+                            run_as: p.run_as.clone(),
+                            consent_sentinel: p.consent_sentinel.clone(),
+                            asker: self.asker.clone(),
+                            session_secs: p.session_secs,
+                            deadline: p.deadline,
+                            resume_allowed: p.resume_allowed,
+                            key_list_auth: p.key_list_auth,
+                        });
                 let activity = self.ctx.services.activity.clone().and_then(|sink| {
                     self.policy
                         .as_ref()
@@ -2742,9 +2743,8 @@ pub(crate) mod sshd {
                     activity,
                     cancel: self.cancellation(),
                 };
-                self.tasks.spawn(crate::ssh_persist::subsystem::run_subsystem(
-                    sub_ctx, in_rx,
-                ));
+                self.tasks
+                    .spawn(crate::ssh_persist::subsystem::run_subsystem(sub_ctx, in_rx));
                 return Ok(());
             }
             if self.resume_only.is_some() {
@@ -3471,8 +3471,7 @@ pub async fn serve_for_service<S>(
 /// waits while any is open: the likeliest way that binary gets replaced is an
 /// admin's `apt upgrade` typed INTO one of these sessions.
 static LIVE_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static CLASSIC_CONNECTIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static CLASSIC_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// How many SSH connections are open right now; zero in a build without the
 /// SSH server.
@@ -6067,59 +6066,6 @@ mod tests {
         )
         .await;
         assert_eq!(got.unwrap_err(), crate::ssh_client::RunError::NotAdmitted);
-    }
-
-    /// FR-90 P3-8-2b — one call, whole, through the OS's routes: the request
-    /// presents the ticket and the call's key, the "server" grants that key
-    /// on this device and answers with the echo, and the client dials, pins,
-    /// and runs the command.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn the_daemons_client_runs_a_whole_call() {
-        use meshharbor_remote_control::ClientMsg;
-
-        let _lock = grant_test().await;
-        let _slot = exec_slot().await;
-        let cfg = cfg_with(Vec::new());
-        let addr = serve_one(&cfg).await;
-        let host = super::host_public_key(&cfg);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let server = tokio::spawn(async move {
-            let Some(ClientMsg::SshRequest {
-                request_id,
-                public_key,
-                ssh_ticket,
-                ..
-            }) = rx.recv().await
-            else {
-                panic!("no rc:ssh.request");
-            };
-            assert_eq!(ssh_ticket.as_deref(), Some("the-ticket"));
-            one_command_grant_for(&public_key).unwrap();
-            crate::ssh_origin::deliver(
-                &request_id,
-                crate::ssh_origin::SshGrantAnswer {
-                    address: Some(addr.ip().to_string()),
-                    port: Some(addr.port()),
-                    host_pubkey: Some(host),
-                    ssh_ticket_id: Some("k1".into()),
-                    ..Default::default()
-                },
-            );
-        });
-        let ran = crate::ssh_client::run(
-            &tx,
-            &crate::ssh_client::OsDialer,
-            bson::oid::ObjectId::new(),
-            "the-ticket",
-            "k1",
-            "echo whole",
-            std::time::Duration::from_secs(30),
-        )
-        .await
-        .expect("ran");
-        server.await.unwrap();
-        assert_eq!(ran.exit_code, Some(0), "{ran:?}");
-        assert!(ran.stdout.contains("whole"), "{ran:?}");
     }
 
     // ── P8: activity reporting ───────────────────────────────────────────

@@ -620,7 +620,7 @@ async fn a_device_in_a_strict_zone_without_the_centre_is_told_its_entries_and_no
 
 #[tokio::test]
 async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_and_centre_zone_get_direct()
-{
+ {
     let app = spawn(true).await;
     let seeded = app.seed_tenant("fr134-paths").await;
     let (gw_cn, gw_cn_tok) = enroll(&app, &seeded, "fr134-gw-cn").await;
@@ -629,8 +629,7 @@ async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_an
     let (dev_cn, dev_cn_tok) = enroll(&app, &seeded, "fr134-dev-cn").await;
     let (dev_dp, dev_dp_tok) = enroll(&app, &seeded, "fr134-dev-dp").await;
     let (dev_centre, dev_centre_tok) = enroll(&app, &seeded, "fr134-dev-centre").await;
-    let (_dev_unresolved, dev_unresolved_tok) =
-        enroll(&app, &seeded, "fr134-dev-unresolved").await;
+    let (_dev_unresolved, dev_unresolved_tok) = enroll(&app, &seeded, "fr134-dev-unresolved").await;
 
     set_mode(&app, &seeded, "on").await;
     for gw in [&gw_cn, &gw_dp, &gw_centre] {
@@ -707,7 +706,9 @@ async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_an
         assert_eq!(p["direct"], json!(true), "{label} must dial direct: {p}");
         let k = recv_t(ws, "rc:agent.management_entry", WAIT)
             .await
-            .unwrap_or_else(|| panic!("{label} must receive derived entry key without manual port"));
+            .unwrap_or_else(|| {
+                panic!("{label} must receive derived entry key without manual port")
+            });
         assert!(!k["key"].as_str().unwrap_or("").is_empty(), "{label}: {k}");
     }
 
@@ -717,11 +718,22 @@ async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_an
     let mut dev_dp_ws = connect(&app, &dev_dp_tok, &dev_rpc, "198.51.100.21", None, None).await;
     let mut dev_centre_ws =
         connect(&app, &dev_centre_tok, &dev_rpc, "198.51.100.31", None, None).await;
-    let mut dev_unres_ws =
-        connect(&app, &dev_unresolved_tok, &dev_rpc, "198.51.100.41", None, None).await;
+    let mut dev_unres_ws = connect(
+        &app,
+        &dev_unresolved_tok,
+        &dev_rpc,
+        "198.51.100.41",
+        None,
+        None,
+    )
+    .await;
 
     let p_cn_initial = path_frame(&mut dev_cn_ws, "dev_cn initial").await;
-    assert_eq!(p_cn_initial["direct"], json!(false), "cn non-gw: {p_cn_initial}");
+    assert_eq!(
+        p_cn_initial["direct"],
+        json!(false),
+        "cn non-gw: {p_cn_initial}"
+    );
     let p_dp_initial = path_frame(&mut dev_dp_ws, "dev_dp initial").await;
     assert_eq!(
         p_dp_initial["direct"],
@@ -804,9 +816,20 @@ async fn fr134_every_non_gateway_zone_member_gets_entries_only_while_gateways_an
             break;
         }
     }
-    assert!(got_dp, "dev_dp (direct_preferred zone) must receive live entry 203.0.113.20:18443");
+    assert!(
+        got_dp,
+        "dev_dp (direct_preferred zone) must receive live entry 203.0.113.20:18443"
+    );
 
-    drop((gw_cn_ws, gw_dp_ws, gw_centre_ws, dev_cn_ws, dev_dp_ws, dev_centre_ws, dev_unres_ws));
+    drop((
+        gw_cn_ws,
+        gw_dp_ws,
+        gw_centre_ws,
+        dev_cn_ws,
+        dev_dp_ws,
+        dev_centre_ws,
+        dev_unres_ws,
+    ));
 }
 
 #[tokio::test]
@@ -874,7 +897,10 @@ async fn fr134_zone_without_gateway_is_refused_and_centre_zone_rejects_auto_rule
         }),
     )
     .await;
-    assert_eq!(s, 400, "centre zone with is_default must be refused: {body}");
+    assert_eq!(
+        s, 400,
+        "centre zone with is_default must be refused: {body}"
+    );
 
     // 4. Two centre zones -> 400.
     let (s, body) = put(
@@ -964,7 +990,11 @@ async fn fr134_live_gateway_demotion_revokes_entry_key_and_updates_zone_paths() 
     let revoke = recv_t(&mut gw_ws, "rc:agent.management_entry", WAIT)
         .await
         .expect("demoted gateway must receive empty revocation key");
-    assert_eq!(revoke["key"], json!(""), "revocation key must be empty: {revoke}");
+    assert_eq!(
+        revoke["key"],
+        json!(""),
+        "revocation key must be empty: {revoke}"
+    );
 
     let p2 = path_frame(&mut dev_ws, "dev after demotion").await;
     assert_eq!(p2["direct"], json!(false));
@@ -1091,8 +1121,16 @@ async fn fr134_centre_zone_allows_non_serving_gateway_while_other_zones_require_
     let rpc = ["management-path", "management-entry"];
     let mut host_ws = connect(&app, &centre_host_tok, &rpc, "203.0.113.30", None, None).await;
     let p_host = path_frame(&mut host_ws, "centre host").await;
-    assert_eq!(p_host["direct"], json!(true), "centre host direct: {p_host}");
-    assert_eq!(p_host["entries"], json!([]), "centre host entries: {p_host}");
+    assert_eq!(
+        p_host["direct"],
+        json!(true),
+        "centre host direct: {p_host}"
+    );
+    assert_eq!(
+        p_host["entries"],
+        json!([]),
+        "centre host entries: {p_host}"
+    );
     let host_extra = collect(&mut host_ws, Duration::from_millis(400)).await;
     assert!(
         !has_t(&host_extra, "rc:agent.management_entry"),
@@ -1106,7 +1144,11 @@ async fn fr134_centre_zone_allows_non_serving_gateway_while_other_zones_require_
         json!(true),
         "centre zone member must dial direct: {p_member}"
     );
-    assert_eq!(p_member["entries"], json!([]), "centre member entries: {p_member}");
+    assert_eq!(
+        p_member["entries"],
+        json!([]),
+        "centre member entries: {p_member}"
+    );
     let member_extra = collect(&mut member_ws, Duration::from_millis(400)).await;
     assert!(
         !has_t(&member_extra, "rc:agent.management_entry"),

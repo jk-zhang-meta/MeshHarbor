@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use meshharbor_remote_control::models::{
     AccessPolicy, Agent, AgentCaps, AgentStatus, DesiredConfig, DisplayInfo, ExecPolicy,
-    ExternalAccessPolicy, InstallInfo, OsKind, PeerRelayPolicy, RpcCap, SshPolicy,
+    ExternalAccessPolicy, InstallInfo, OsKind, PeerRelayPolicy, SshPolicy,
 };
 use mongodb::Database;
 
@@ -152,8 +152,6 @@ impl AgentDao {
             // Unknown until the device's first hello — enrolment does not
             // reach the machine, so there is nothing to record yet.
             ssh_host_pubkey: String::new(),
-            // FR-90 P3-3a — the same: only a running daemon holds a vault key.
-            vault_key: String::new(),
             // FR-100 P1a — and the device key is made on the device, at its
             // first hello.
             peer_auth_key: String::new(),
@@ -321,34 +319,6 @@ impl AgentDao {
             .await
     }
 
-    /// FR-90 P2c-2b — the live devices of `tenant_id` that could hold a copy
-    /// of a session `owner` runs: those whose last hello advertised
-    /// `hive-replica` and that are the owner's own (`owner_user_id` AND
-    /// `enrolled_by`) or among `archives`. A prefilter only: placement checks
-    /// every rule again on what this returns. The array match is equality,
-    /// so `hive-replicas` would not match — the `RpcCap` rule.
-    pub async fn list_replica_candidates(
-        &self,
-        tenant_id: ObjectId,
-        owner: ObjectId,
-        archives: &[ObjectId],
-    ) -> DaoResult<Vec<Agent>> {
-        self.base
-            .find_many(
-                doc! {
-                    "tenant_id": tenant_id,
-                    "deleted_at": null,
-                    "capabilities.rpc": RpcCap::HiveReplica.wire(),
-                    "$or": [
-                        { "owner_user_id": owner, "enrolled_by": owner },
-                        { "_id": { "$in": archives } },
-                    ],
-                },
-                None,
-            )
-            .await
-    }
-
     /// FR-88 P1a — `(tenant_id, created_at)` of every device ever enrolled
     /// in any of `tenant_ids`, tombstones included: the activation view asks
     /// whether an org enrolled a device within a window, and a device that
@@ -488,7 +458,6 @@ impl AgentDao {
         capabilities: &AgentCaps,
         advertised_routes: &[String],
         ssh_host_pubkey: &str,
-        vault_key: &str,
         peer_auth_key: &str,
         arch: &str,
         arch_emulated: bool,
@@ -507,10 +476,6 @@ impl AgentDao {
             "capabilities": caps_bson,
             "advertised_routes": advertised_bson,
             "ssh_host_pubkey": ssh_host_pubkey,
-            // FR-90 P3-3a — on every hello too, and for a stronger reason:
-            // the daemon makes a new vault key at each start, so a key left
-            // standing would name a process that is gone.
-            "vault_key": vault_key,
             // FR-100 P1a — on every hello, the empty string included, for
             // the host key's reason: a rollback to a build without a device
             // key must not leave browsers expecting its signature.

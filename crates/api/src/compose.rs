@@ -41,58 +41,28 @@ use tracing::{error, info, warn};
 
 /// The module ids whose crates exist — the switches that are effective.
 pub const EXTRACTED: &[&str] = &[
-    #[cfg(feature = "saas")]
-    "saas",
-    #[cfg(feature = "chat")]
-    "chat",
-    #[cfg(feature = "conference")]
-    "conference",
     #[cfg(feature = "fleet")]
     "fleet",
     #[cfg(feature = "remote")]
     "remote",
     #[cfg(feature = "network")]
     "network",
-    #[cfg(feature = "hive")]
-    "hive",
-    #[cfg(feature = "vault")]
-    "vault",
 ];
 
 /// The modules this build links, initialised — `None` where the operator
 /// switched one off.
 #[derive(Clone, Default)]
 pub struct Modules {
-    #[cfg(feature = "saas")]
-    pub saas: Option<meshharbor_mod_saas::SaasState>,
-    #[cfg(feature = "chat")]
-    pub chat: Option<meshharbor_mod_chat::ChatState>,
-    #[cfg(feature = "conference")]
-    pub conference: Option<meshharbor_mod_conference::ConferenceState>,
-    /// P5a/P7b — device management; `None` when switched off (the agent
-    /// socket is then refused with 503 and the device listing shows no
-    /// agents).
+    /// Device management; `None` when switched off (the agent socket is then
+    /// refused with 503 and the device listing shows no agents).
     #[cfg(feature = "fleet")]
     pub fleet: Option<meshharbor_mod_fleet::FleetState>,
-    /// P6 — built on `fleet`; `None` when switched off (the controller's
-    /// `rc:*` frames then fall through unhandled and the session routes are
-    /// absent, while the Hub — fleet's — keeps serving the agents).
+    /// Remote desktop/control, built on `fleet`.
     #[cfg(feature = "remote")]
     pub remote: Option<meshharbor_mod_remote::RemoteState>,
-    /// P7 — built on `fleet`; `None` when switched off (the tunnel-client
-    /// socket is refused with 503, `/derp` is not mounted, the overlay and
-    /// tunnel routes are absent).
+    /// Overlay mesh, DERP, and tunnels, built on `fleet`.
     #[cfg(feature = "network")]
     pub network: Option<meshharbor_mod_network::NetworkState>,
-    /// FR-90 — agent sessions, built on `fleet`; `None` when switched off
-    /// (the default): the session routes are absent and a device's
-    /// `rc:hive.*` frames reach no handler.
-    #[cfg(feature = "hive")]
-    pub hive: Option<meshharbor_mod_hive::HiveState>,
-    /// FR-90 P3-1 — the vault, on core alone; `None` when switched off (the
-    /// default): its routes are absent.
-    #[cfg(feature = "vault")]
-    pub vault: Option<meshharbor_mod_vault::VaultState>,
     /// Every mounted module's WebSocket namespace handlers, collected at
     /// init so the socket dispatch can look one up per message.
     ws: Vec<WsHandlerSpec>,
@@ -125,31 +95,6 @@ impl Modules {
         #[allow(unused_mut)]
         let mut modules = Self::default();
 
-        #[cfg(feature = "saas")]
-        {
-            modules.saas =
-                init_one::<meshharbor_mod_saas::SaasState>(core.clone(), settings, ()).await?;
-            if let Some(m) = &modules.saas {
-                modules.ws.extend(m.ws().handlers);
-            }
-        }
-        #[cfg(feature = "chat")]
-        {
-            modules.chat =
-                init_one::<meshharbor_mod_chat::ChatState>(core.clone(), settings, ()).await?;
-            if let Some(m) = &modules.chat {
-                modules.ws.extend(m.ws().handlers);
-            }
-        }
-        #[cfg(feature = "conference")]
-        {
-            modules.conference =
-                init_one::<meshharbor_mod_conference::ConferenceState>(core.clone(), settings, ())
-                    .await?;
-            if let Some(m) = &modules.conference {
-                modules.ws.extend(m.ws().handlers);
-            }
-        }
         #[cfg(feature = "fleet")]
         {
             modules.fleet =
@@ -160,10 +105,6 @@ impl Modules {
         }
         #[cfg(feature = "remote")]
         {
-            // `remote → fleet`: the Hub is one live object, so the module is
-            // built on fleet's state rather than re-creating it. A fleet
-            // that is switched off simply means no `remote` either — the
-            // switch is logged by `init_one` for fleet.
             if let Some(fleet) = modules.fleet.clone() {
                 modules.remote =
                     init_one::<meshharbor_mod_remote::RemoteState>(core.clone(), settings, fleet)
@@ -175,7 +116,6 @@ impl Modules {
         }
         #[cfg(feature = "network")]
         {
-            // `network → fleet`, the same seam.
             if let Some(fleet) = modules.fleet.clone() {
                 modules.network =
                     init_one::<meshharbor_mod_network::NetworkState>(core.clone(), settings, fleet)
@@ -183,41 +123,6 @@ impl Modules {
                 if let Some(m) = &modules.network {
                     modules.ws.extend(m.ws().handlers);
                 }
-            }
-        }
-        #[cfg(feature = "hive")]
-        {
-            // `hive → fleet`, the same seam: a session's frames ride the
-            // agent socket, and its gate reads the Hub's per-connection caps.
-            // `hive → chat` (P0d): a session is a room. Chat is stateless and
-            // hive re-creates what it needs of it, but a session nobody could
-            // read is no session — so chat switched off means no `hive` too.
-            if let Some(fleet) = modules.fleet.clone() {
-                if modules.chat.is_some() {
-                    modules.hive =
-                        init_one::<meshharbor_mod_hive::HiveState>(core.clone(), settings, fleet)
-                            .await?;
-                    if let Some(m) = &modules.hive {
-                        modules.ws.extend(m.ws().handlers);
-                    }
-                } else if settings.hive_on() {
-                    warn!(
-                        "module hive is switched on but chat is off — hive is not mounted \
-                         (a session is a chat room)"
-                    );
-                }
-            }
-        }
-        #[cfg(feature = "vault")]
-        {
-            // No module state as a dependency: its `vault → hive` edge
-            // (P3-3b) reads session records through hive's stateless DAO, so
-            // a vault mounted without hive simply finds no session to lease
-            // for. Its switch defaults off, like hive's.
-            modules.vault =
-                init_one::<meshharbor_mod_vault::VaultState>(core.clone(), settings, ()).await?;
-            if let Some(m) = &modules.vault {
-                modules.ws.extend(m.ws().handlers);
             }
         }
 
@@ -229,18 +134,6 @@ impl Modules {
     pub fn mounted(&self) -> Vec<&'static str> {
         #[allow(unused_mut)]
         let mut ids = Vec::new();
-        #[cfg(feature = "saas")]
-        if self.saas.is_some() {
-            ids.push("saas");
-        }
-        #[cfg(feature = "chat")]
-        if self.chat.is_some() {
-            ids.push("chat");
-        }
-        #[cfg(feature = "conference")]
-        if self.conference.is_some() {
-            ids.push("conference");
-        }
         #[cfg(feature = "fleet")]
         if self.fleet.is_some() {
             ids.push("fleet");
@@ -253,14 +146,6 @@ impl Modules {
         if self.network.is_some() {
             ids.push("network");
         }
-        #[cfg(feature = "hive")]
-        if self.hive.is_some() {
-            ids.push("hive");
-        }
-        #[cfg(feature = "vault")]
-        if self.vault.is_some() {
-            ids.push("vault");
-        }
         ids
     }
 
@@ -271,18 +156,6 @@ impl Modules {
     {
         #[allow(unused_mut)]
         let mut api = api;
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            api = api.merge(saas.routes().with_state(()));
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            api = api.merge(chat.routes().with_state(()));
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            api = api.merge(conference.routes().with_state(()));
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             api = api.merge(fleet.routes().with_state(()));
@@ -294,14 +167,6 @@ impl Modules {
         #[cfg(feature = "network")]
         if let Some(network) = &self.network {
             api = api.merge(network.routes().with_state(()));
-        }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            api = api.merge(hive.routes().with_state(()));
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            api = api.merge(vault.routes().with_state(()));
         }
         api
     }
@@ -455,26 +320,13 @@ impl Modules {
         NetworkGauges::default()
     }
 
-    /// Mount every module's ungoverned routes onto the root router (the
-    /// ones with their own authentication, like the Stripe webhook).
+    /// Mount every module's ungoverned routes onto the root router.
     pub fn mount_unlimited<S>(&self, root: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
         #[allow(unused_mut)]
         let mut root = root;
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            root = root.merge(saas.unlimited_routes().with_state(()));
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            root = root.merge(chat.unlimited_routes().with_state(()));
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            root = root.merge(conference.unlimited_routes().with_state(()));
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             root = root.merge(fleet.unlimited_routes().with_state(()));
@@ -487,14 +339,6 @@ impl Modules {
         if let Some(network) = &self.network {
             root = root.merge(network.unlimited_routes().with_state(()));
         }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            root = root.merge(hive.unlimited_routes().with_state(()));
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            root = root.merge(vault.unlimited_routes().with_state(()));
-        }
         root
     }
 
@@ -503,18 +347,6 @@ impl Modules {
     pub fn index_sets(&self) -> Vec<IndexSet> {
         #[allow(unused_mut)]
         let mut sets = Vec::new();
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            sets.extend(saas.indexes());
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            sets.extend(chat.indexes());
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            sets.extend(conference.indexes());
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             sets.extend(fleet.indexes());
@@ -527,35 +359,14 @@ impl Modules {
         if let Some(network) = &self.network {
             sets.extend(network.indexes());
         }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            sets.extend(hive.indexes());
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            sets.extend(vault.indexes());
-        }
         sets
     }
 
     /// The same sets for an explicit `multi_block` schema — what the
-    /// composition snapshot records, once per schema (P7a: the overlay block
-    /// registry's two plans are the network module's now).
+    /// composition snapshot records, once per schema.
     pub fn index_sets_for(&self, multi_block: bool) -> Vec<IndexSet> {
         #[allow(unused_mut)]
         let mut sets = Vec::new();
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            sets.extend(saas.indexes_for(multi_block));
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            sets.extend(chat.indexes_for(multi_block));
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            sets.extend(conference.indexes_for(multi_block));
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             sets.extend(fleet.indexes_for(multi_block));
@@ -568,14 +379,6 @@ impl Modules {
         if let Some(network) = &self.network {
             sets.extend(network.indexes_for(multi_block));
         }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            sets.extend(hive.indexes_for(multi_block));
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            sets.extend(vault.indexes_for(multi_block));
-        }
         sets
     }
 
@@ -583,18 +386,6 @@ impl Modules {
     fn jobs(&self) -> Vec<Job> {
         #[allow(unused_mut)]
         let mut jobs = Vec::new();
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            jobs.extend(saas.jobs());
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            jobs.extend(chat.jobs());
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            jobs.extend(conference.jobs());
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             jobs.extend(fleet.jobs());
@@ -607,38 +398,12 @@ impl Modules {
         if let Some(network) = &self.network {
             jobs.extend(network.jobs());
         }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            jobs.extend(hive.jobs());
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            jobs.extend(vault.jobs());
-        }
         jobs
     }
 
     /// Register every mounted module's hooks (its inverse edges) into the
-    /// core registry, under the module's id. The host adds its transitional
-    /// implementations for the modules not extracted yet right after this.
+    /// core registry, under the module's id.
     pub fn register_hooks(&self, core: &Core) {
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            core.hooks
-                .register(meshharbor_mod_saas::SaasState::ID, saas.hooks());
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            core.hooks
-                .register(meshharbor_mod_chat::ChatState::ID, chat.hooks());
-        }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            core.hooks.register(
-                meshharbor_mod_conference::ConferenceState::ID,
-                conference.hooks(),
-            );
-        }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             core.hooks
@@ -653,16 +418,6 @@ impl Modules {
         if let Some(network) = &self.network {
             core.hooks
                 .register(meshharbor_mod_network::NetworkState::ID, network.hooks());
-        }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            core.hooks
-                .register(meshharbor_mod_hive::HiveState::ID, hive.hooks());
-        }
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            core.hooks
-                .register(meshharbor_mod_vault::VaultState::ID, vault.hooks());
         }
     }
 
@@ -718,14 +473,6 @@ impl Modules {
     /// Orderly stop of every mounted module, in REVERSE composition order
     /// (a module stops before the ones it depends on).
     pub async fn shutdown(&self) {
-        #[cfg(feature = "vault")]
-        if let Some(vault) = &self.vault {
-            vault.shutdown().await;
-        }
-        #[cfg(feature = "hive")]
-        if let Some(hive) = &self.hive {
-            hive.shutdown().await;
-        }
         #[cfg(feature = "network")]
         if let Some(network) = &self.network {
             network.shutdown().await;
@@ -738,41 +485,10 @@ impl Modules {
         if let Some(fleet) = &self.fleet {
             fleet.shutdown().await;
         }
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            conference.shutdown().await;
-        }
-        #[cfg(feature = "chat")]
-        if let Some(chat) = &self.chat {
-            chat.shutdown().await;
-        }
-        #[cfg(feature = "saas")]
-        if let Some(saas) = &self.saas {
-            saas.shutdown().await;
-        }
     }
 
-    /// Conference's orphaned-call closer, for the host's stats rollup loop.
-    /// `(0, 0)` when the module is not mounted — there are no call sessions
-    /// to close then.
-    pub async fn close_orphaned_call_state(&self) -> (u64, u64) {
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            return meshharbor_mod_conference::maintenance::close_orphaned_call_state(conference)
-                .await;
-        }
-        (0, 0)
-    }
-
-    /// The live media gauges for the cluster status snapshot:
-    /// `(per-room rows, participants_total, consumers_total)`. Empty when
-    /// the module is not mounted.
+    /// Conference removed in 0.5.0; returns empty gauges for cluster status compatibility.
     pub fn media_gauges(&self) -> (Vec<serde_json::Value>, usize, usize) {
-        #[cfg(feature = "conference")]
-        if let Some(conference) = &self.conference {
-            let g = conference.media_gauges();
-            return (g.rooms, g.participants_total, g.consumers_total);
-        }
         (Vec::new(), 0, 0)
     }
 

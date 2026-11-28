@@ -681,5 +681,6 @@ fn test_settings() -> Settings {
         // 30 s, so existing tests never trip it). The reap test shortens it
         // via `spawn_with_settings`.
         rc: meshharbor_config::RcSettings::default(),
+        gpu: meshharbor_config::GpuSettings::default(),
     }
 }

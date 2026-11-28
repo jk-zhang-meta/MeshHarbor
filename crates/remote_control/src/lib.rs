@@ -45,7 +45,6 @@ pub mod device_access;
 pub mod error;
 /// FR-139 — GPU servers at a glance wire types and pure state/freshness helpers.
 pub mod gpu;
-pub mod hive;
 pub mod management_entry;
 pub mod models;
 pub mod net_inventory;
@@ -65,9 +64,6 @@ pub mod setup_diagnostics;
 pub mod signaling;
 pub mod turn_creds;
 pub mod turn_url;
-/// FR-90 P3-3b — the vault's lease vocabulary: refusal words and bounds both
-/// ends read.
-pub mod vault;
 pub mod worker_pick;
 
 pub use error::{Error, Result};

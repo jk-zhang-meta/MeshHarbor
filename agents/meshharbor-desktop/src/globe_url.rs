@@ -55,11 +55,7 @@ fn is_literal_loopback_authority(authority: &str) -> bool {
         inside
     } else {
         match authority.rsplit_once(':') {
-            Some((h, p))
-                if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) =>
-            {
-                h
-            }
+            Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => h,
             Some(_) => return false,
             None => authority,
         }
@@ -76,9 +72,7 @@ pub fn validate_server_origin(server: &str) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("This device isn't enrolled yet — no server to open.".to_string());
     }
-    if trimmed
-        .chars()
-        .any(|c| c.is_control() || c.is_whitespace())
+    if trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
         || trimmed.contains('?')
         || trimmed.contains('#')
     {
@@ -265,13 +259,24 @@ mod tests {
             "https://",
         ] {
             assert!(
-                build_network_globe_url(bad_server, Some(VALID_TID), Some("en"), "en", Some("dark"))
-                    .is_err(),
+                build_network_globe_url(
+                    bad_server,
+                    Some(VALID_TID),
+                    Some("en"),
+                    "en",
+                    Some("dark")
+                )
+                .is_err(),
                 "expected error for server={bad_server:?}"
             );
         }
 
-        for bad_tid in ["../admin", "short", "zzzzzzzzzzzzzzzzzzzzzzzz", "65f000000000000000000001/extra"] {
+        for bad_tid in [
+            "../admin",
+            "short",
+            "zzzzzzzzzzzzzzzzzzzzzzzz",
+            "65f000000000000000000001/extra",
+        ] {
             assert!(
                 build_network_globe_url(
                     "https://centre.example.test",

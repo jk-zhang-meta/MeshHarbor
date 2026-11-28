@@ -598,12 +598,7 @@ mod tests {
 
         // Trusted immediate peer (10.0.0.5 in 10.0.0.0/8), but suffix hop 198.51.100.9 is NOT trusted:
         // chain validation rejects attribution, so observed_public_ip MUST also be None.
-        let rejected_chain = captured(
-            "8.8.8.8, 198.51.100.9",
-            "10.0.0.5:443",
-            &["10.0.0.0/8"],
-            1,
-        );
+        let rejected_chain = captured("8.8.8.8, 198.51.100.9", "10.0.0.5:443", &["10.0.0.0/8"], 1);
         assert_eq!(rejected_chain.client_ip(), None);
         assert_eq!(
             rejected_chain.source(),

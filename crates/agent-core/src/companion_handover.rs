@@ -118,11 +118,7 @@ pub fn parse_semver(raw: &str) -> Option<SemVer> {
             }
             let mut idents = Vec::new();
             for seg in p.split('.') {
-                if seg.is_empty()
-                    || !seg
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-                {
+                if seg.is_empty() || !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                     return None;
                 }
                 if seg.chars().all(|c| c.is_ascii_digit()) {
@@ -229,8 +225,7 @@ pub fn parse_handover_version<S: AsRef<str>>(args: &[S]) -> Option<String> {
 /// Should a running companion at `my_version` immediately exit in response to
 /// forwarded single-instance `args` containing `--handover-version=<ver>`?
 pub fn should_yield_to_handover_arg<S: AsRef<str>>(my_version: &str, args: &[S]) -> bool {
-    parse_handover_version(args)
-        .and_then(|incoming| compare_semver(&incoming, my_version))
+    parse_handover_version(args).and_then(|incoming| compare_semver(&incoming, my_version))
         == Some(Ordering::Greater)
 }
 
@@ -244,13 +239,17 @@ pub fn pid_file_requests_pid(contents: &str, pid: u32) -> bool {
 
 /// `<per-user data dir>/desktop/companion-instance.json`.
 pub fn default_instance_path() -> Option<PathBuf> {
-    crate::appdirs::project_dirs().map(|d| d.data_local_dir().join("desktop").join(INSTANCE_FILE_NAME))
+    crate::appdirs::project_dirs()
+        .map(|d| d.data_local_dir().join("desktop").join(INSTANCE_FILE_NAME))
 }
 
 /// `<per-user data dir>/desktop/companion-handover.pid`.
 pub fn default_handover_pid_path() -> Option<PathBuf> {
-    crate::appdirs::project_dirs()
-        .map(|d| d.data_local_dir().join("desktop").join(HANDOVER_PID_FILE_NAME))
+    crate::appdirs::project_dirs().map(|d| {
+        d.data_local_dir()
+            .join("desktop")
+            .join(HANDOVER_PID_FILE_NAME)
+    })
 }
 
 /// Read the recorded companion instance; missing or corrupt ⇒ `None`.
@@ -326,7 +325,9 @@ pub mod unix_proc {
                 return Path::new(clean)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_ascii_lowercase())
-                    .is_some_and(|name| name == expected_name || name.contains("meshharbor-desktop"));
+                    .is_some_and(|name| {
+                        name == expected_name || name.contains("meshharbor-desktop")
+                    });
             }
             false
         }
@@ -338,18 +339,20 @@ pub mod unix_proc {
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_ascii_lowercase())
-                .is_some_and(|comm| comm.contains(&expected_name) || comm.contains("meshharbor-desktop"))
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .to_ascii_lowercase()
+                })
+                .is_some_and(|comm| {
+                    comm.contains(&expected_name) || comm.contains("meshharbor-desktop")
+                })
         }
     }
 
     /// Send `SIGTERM` to `pid` (after verifying it looks like a companion) and
     /// wait up to `timeout` for exit. Returns `true` when the process is gone.
-    pub fn terminate_verified_gracefully(
-        pid: u32,
-        expected_exe: &Path,
-        timeout: Duration,
-    ) -> bool {
+    pub fn terminate_verified_gracefully(pid: u32, expected_exe: &Path, timeout: Duration) -> bool {
         if !pid_looks_like_companion(pid, expected_exe) {
             return !is_pid_alive(pid);
         }
@@ -384,7 +387,10 @@ mod tests {
 
     #[test]
     fn semver_parsing_and_ordering() {
-        assert_eq!(compare_semver("0.4.214", "0.4.171"), Some(Ordering::Greater));
+        assert_eq!(
+            compare_semver("0.4.214", "0.4.171"),
+            Some(Ordering::Greater)
+        );
         assert_eq!(compare_semver("0.4.171", "0.4.214"), Some(Ordering::Less));
         assert_eq!(compare_semver("0.4.214", "0.4.214"), Some(Ordering::Equal));
         assert_eq!(compare_semver("v0.4.214", "0.4.214"), Some(Ordering::Equal));
@@ -401,10 +407,7 @@ mod tests {
             compare_semver("0.4.214-rc.10", "0.4.214-rc.2"),
             Some(Ordering::Greater)
         );
-        assert_eq!(
-            compare_semver("1.0.0", "0.99.99"),
-            Some(Ordering::Greater)
-        );
+        assert_eq!(compare_semver("1.0.0", "0.99.99"), Some(Ordering::Greater));
         // Malformed inputs return None.
         assert_eq!(parse_semver(""), None);
         assert_eq!(parse_semver("0.4"), None);
@@ -417,7 +420,8 @@ mod tests {
     #[test]
     fn decide_handover_newer_replaces_older() {
         let machine = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
-        let user = Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
+        let user =
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
         assert_eq!(
             decide_handover("0.4.214", machine, Some("0.4.171"), Some(user), &pf()),
             HandoverDecision::TakeOver
@@ -435,7 +439,8 @@ mod tests {
     #[test]
     fn decide_handover_same_or_unknown_version_machine_replaces_stale_per_user() {
         let machine = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
-        let user = Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
+        let user =
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
         // Same version: Program Files takes over from stale per-user tray.
         assert_eq!(
             decide_handover("0.4.214", machine, Some("0.4.214"), Some(user), &pf()),
@@ -447,7 +452,8 @@ mod tests {
             HandoverDecision::TakeOver
         );
         // Redirected LocalAppData works via the explicit variant too.
-        let redirected_user = Path::new(r"D:\Profiles\ana\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
+        let redirected_user =
+            Path::new(r"D:\Profiles\ana\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
         assert_eq!(
             decide_handover_with_local_app_data(
                 "0.4.214",
@@ -464,7 +470,8 @@ mod tests {
     #[test]
     fn decide_handover_older_or_same_scope_equal_yields() {
         let machine = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
-        let user = Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
+        let user =
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe");
         // Older incoming ALWAYS yields — even if incoming is Machine and running is User.
         assert_eq!(
             decide_handover("0.4.171", machine, Some("0.4.214"), Some(user), &pf()),

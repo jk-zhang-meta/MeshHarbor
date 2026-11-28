@@ -76,7 +76,6 @@ pub mod external_access;
 /// owner-only edge-triggered alerts, and SSRF-hardened bot channels.
 pub mod gpu;
 pub mod hub;
-pub mod install_trace;
 pub mod keep_busy;
 mod local_releases;
 pub mod management_path;
@@ -161,9 +160,6 @@ pub struct FleetState {
     /// The GitHub-releases cache behind every installer and latest-release
     /// proxy; busted fleet-wide over the bus by `POST /api/releases/refresh`.
     pub releases_cache: Arc<releases::ReleasesCache>,
-    /// FR-102 P3c — `growth.internal_networks`, parsed once at boot: a fetch
-    /// from inside is counted as `internal` (`install_trace::count_fetch`).
-    pub internal_networks: Arc<meshharbor_core::growth::InternalNetworks>,
     /// FR-139 — GPU fleet lease controller, snapshot waiters, alert engine,
     /// and bot dispatcher.
     pub gpu: Arc<gpu::GpuManager>,
@@ -182,30 +178,6 @@ impl FromRef<FleetState> for Core {
     fn from_ref(state: &FleetState) -> Self {
         state.core.clone()
     }
-}
-
-/// FR-102 P3c — `growth.internal_networks`, parsed once. An entry it cannot
-/// use (not an address, host bits set, a prefix too short to be one network)
-/// is echoed in a warning here, once, with its reason, so the operator can fix
-/// it, and skipped; the rest still apply. The networks in effect are logged
-/// as CIDRs, so a widened or missing range is visible at boot rather than as
-/// a quiet shift in the counts.
-fn internal_networks_from(settings: &Settings) -> meshharbor_core::growth::InternalNetworks {
-    let (nets, refused) =
-        meshharbor_core::growth::InternalNetworks::parse(&settings.growth.internal_networks);
-    if !refused.is_empty() {
-        tracing::warn!(
-            refused = ?refused,
-            "growth.internal_networks: skipping entries it cannot use, each with its reason; the rest still apply"
-        );
-    }
-    if !nets.is_empty() {
-        tracing::info!(
-            networks = ?nets.networks(),
-            "install trace: fetches from these internal networks count as `internal`"
-        );
-    }
-    nets
 }
 
 impl Module for FleetState {
@@ -354,7 +326,6 @@ impl Module for FleetState {
             agent_nudge_throttle: Arc::new(DashMap::new()),
             exec_rate_limiter: Arc::new(RateLimiter::new()),
             releases_cache,
-            internal_networks: Arc::new(internal_networks_from(settings)),
             gpu: Arc::new(gpu::GpuManager::new(settings.gpu.clone())),
             core,
         };

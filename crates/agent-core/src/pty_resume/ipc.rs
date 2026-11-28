@@ -15,9 +15,7 @@ use super::frame::{
     FrameError, WireFrame, encode_raw, is_wire_frame_type, json_decode, json_encode,
     read_raw_frame, write_raw_frame,
 };
-use super::{
-    ExitStatusInfo, PersistStatus, RunAsDescriptor, SessionMode, TerminateReason,
-};
+use super::{ExitStatusInfo, PersistStatus, RunAsDescriptor, SessionMode, TerminateReason};
 
 /// **FROZEN FOREVER** IPC type tag for terminating a PTY host.
 /// Never reassign or break backwards parsing of this frame!
@@ -153,9 +151,10 @@ impl IpcFrame {
             Self::SpawnError(e) => {
                 Ok((IPC_TYPE_SPAWN_ERROR, json_encode(IPC_TYPE_SPAWN_ERROR, e)?))
             }
-            Self::AttachStart(a) => {
-                Ok((IPC_TYPE_ATTACH_START, json_encode(IPC_TYPE_ATTACH_START, a)?))
-            }
+            Self::AttachStart(a) => Ok((
+                IPC_TYPE_ATTACH_START,
+                json_encode(IPC_TYPE_ATTACH_START, a)?,
+            )),
             Self::DaemonDetaching(d) => Ok((
                 IPC_TYPE_DAEMON_DETACHING,
                 json_encode(IPC_TYPE_DAEMON_DETACHING, d)?,
@@ -197,7 +196,10 @@ impl IpcFrame {
             IPC_TYPE_DAEMON_DETACHING => Ok(Self::DaemonDetaching(json_decode(frame_type, body)?)),
             IPC_TYPE_PING => {
                 if body.len() != 8 {
-                    return Err(FrameError::Malformed(frame_type, "ipc ping must be 8 bytes".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "ipc ping must be 8 bytes".into(),
+                    ));
                 }
                 Ok(Self::Ping {
                     t_ms: u64::from_be_bytes(body[0..8].try_into().unwrap()),
@@ -205,15 +207,16 @@ impl IpcFrame {
             }
             IPC_TYPE_PONG => {
                 if body.len() != 8 {
-                    return Err(FrameError::Malformed(frame_type, "ipc pong must be 8 bytes".into()));
+                    return Err(FrameError::Malformed(
+                        frame_type,
+                        "ipc pong must be 8 bytes".into(),
+                    ));
                 }
                 Ok(Self::Pong {
                     t_ms: u64::from_be_bytes(body[0..8].try_into().unwrap()),
                 })
             }
-            ty if is_wire_frame_type(ty) => {
-                WireFrame::decode_parts(ty, body).map(Self::Wire)
-            }
+            ty if is_wire_frame_type(ty) => WireFrame::decode_parts(ty, body).map(Self::Wire),
             other => Err(FrameError::UnknownType(other)),
         }
     }
@@ -242,7 +245,8 @@ mod tests {
         assert!(matches!(got, IpcFrame::Terminate(_)));
 
         // Unknown future payload still decodes as Terminate.
-        let got2 = IpcFrame::decode_parts(IPC_TYPE_TERMINATE, b"{\"future\":99}").expect("future 0x00");
+        let got2 =
+            IpcFrame::decode_parts(IPC_TYPE_TERMINATE, b"{\"future\":99}").expect("future 0x00");
         assert!(matches!(got2, IpcFrame::Terminate(_)));
 
         // Standard roundtrip.

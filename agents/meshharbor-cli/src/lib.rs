@@ -17,15 +17,10 @@
 /// duplicated crates the daemon already contains.
 pub mod cli;
 pub mod config;
-/// FR-90 P3-9-2b — `mh connect`: a vault secret's upstream through a
-/// local endpoint the daemon serves, held in the foreground.
-pub mod connectcmd;
 /// FR-103 — the tunnel client renews its own token, and the renewal rule
 /// `meshharbord` shares.
 pub mod credential;
 pub mod forward;
-/// FR-90 P1j-3 — `mh hive adopt | unadopt | hook`.
-pub mod hive_hooks;
 /// Thin-client read verbs (`status`/`peers`/`flows`) over the daemon LocalAPI.
 pub mod localclient;
 pub mod mesh;

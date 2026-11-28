@@ -2902,21 +2902,21 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_turn_relay" => cfg.overlay_turn_relay = parse_tribool(value)?,
         "overlay_netmap_cache" => cfg.overlay_netmap_cache = parse_tribool(value)?,
         "overlay_netmap_cache_max_days" => {
-            cfg.overlay_netmap_cache_max_days =
-                match value.map(str::trim).filter(|s| !s.is_empty()) {
-                    None => None,
-                    Some(v) => {
-                        let n: u32 = v.parse().map_err(|_| {
-                            format!("overlay_netmap_cache_max_days must be a number (got {v:?})")
-                        })?;
-                        if !(1..=90).contains(&n) {
-                            return Err(format!(
-                                "overlay_netmap_cache_max_days must be 1..=90 (got {n})"
-                            ));
-                        }
-                        Some(n)
+            cfg.overlay_netmap_cache_max_days = match value.map(str::trim).filter(|s| !s.is_empty())
+            {
+                None => None,
+                Some(v) => {
+                    let n: u32 = v.parse().map_err(|_| {
+                        format!("overlay_netmap_cache_max_days must be a number (got {v:?})")
+                    })?;
+                    if !(1..=90).contains(&n) {
+                        return Err(format!(
+                            "overlay_netmap_cache_max_days must be 1..=90 (got {n})"
+                        ));
                     }
-                };
+                    Some(n)
+                }
+            };
         }
         "p2p_control_enabled" => cfg.p2p_control_enabled = parse_tribool(value)?,
         "overlay_shared_carrier" => cfg.overlay_shared_carrier = parse_tribool(value)?,

@@ -13,9 +13,9 @@
 //! in `meshharbor_node_core::companion_handover` so every platform runs their
 //! unit tests.
 
+use meshharbor_node_core::companion_autostart::program_files_dirs;
 #[cfg(windows)]
 use meshharbor_node_core::companion_autostart::{InstallScope, windows_scope_for_exe};
-use meshharbor_node_core::companion_autostart::program_files_dirs;
 #[cfg(windows)]
 use meshharbor_node_core::companion_handover::default_handover_pid_path;
 use meshharbor_node_core::companion_handover::{

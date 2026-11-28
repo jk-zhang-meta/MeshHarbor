@@ -146,7 +146,6 @@ pub async fn handle_agent_socket(
             advertised_routes,
             supports_relay_regions,
             ssh_host_pubkey,
-            vault_key,
             peer_auth_key,
             // FR-130 — the sessions the device kept through the loss of its
             // last control socket, which this hello claims back.
@@ -160,7 +159,7 @@ pub async fn handle_agent_socket(
             caps,
             advertised_routes,
             supports_relay_regions,
-            (ssh_host_pubkey, vault_key, peer_auth_key, kept_sessions),
+            (ssh_host_pubkey, peer_auth_key, kept_sessions),
         ),
         other => {
             warn!(?other, "agent opened WS without rc:agent.hello — closing");
@@ -176,23 +175,8 @@ pub async fn handle_agent_socket(
         caps,
         advertised_routes,
         supports_relay_regions,
-        (ssh_host_pubkey, vault_key, peer_auth_key, kept_sessions),
+        (ssh_host_pubkey, peer_auth_key, kept_sessions),
     ) = hello;
-    // FR-90 P3-3a — a vault key is stored only as one the vault can seal to;
-    // anything else is stored as none, so the device takes no leases until a
-    // hello carries a key that is well formed.
-    let vault_key = if vault_key.is_empty()
-        || meshharbor_remote_control::signaling::vault_key_is_well_formed(&vault_key)
-    {
-        vault_key
-    } else {
-        warn!(
-            %agent_id,
-            len = vault_key.len(),
-            "agent hello carried a malformed vault key — storing none"
-        );
-        String::new()
-    };
     // FR-100 P1a — likewise a device key: stored only in its one canonical
     // shape, so a browser's first pin never starts from a key no browser can
     // import. A hint either way (the browser pins what signed), so this
@@ -260,7 +244,6 @@ pub async fn handle_agent_socket(
             &caps,
             &advertised_routes,
             &ssh_host_pubkey,
-            &vault_key,
             &peer_auth_key,
             &arch,
             arch_emulated,
@@ -348,54 +331,6 @@ pub async fn handle_agent_socket(
     // a recorder at all (`available`). Equality-matched: `remote` is a
     // prefix of `remote-audio`.
     let records = crate::hub::RecordSupport::from_caps(&caps);
-    // FR-90 — this connection runs Hive sessions. Equality-matched: the
-    // replica verb the design names next will have `hive` as its prefix.
-    let runs_hive = caps.has_rpc(RpcCap::Hive);
-    // FR-90 P0d-2 — and serves viewer peers. `hive` is its prefix and NOT
-    // the same promise: a P0c agent drops every view frame.
-    let serves_hive_views = caps.has_rpc(RpcCap::HiveView);
-    // FR-90 P1e — and understands core memory; `hive` is its prefix too.
-    let takes_hive_memory = caps.has_rpc(RpcCap::HiveMemory);
-    // FR-90 P1j — and mirrors adopted terminal sessions; `hive` is its
-    // prefix too.
-    let adopts_hive = caps.has_rpc(RpcCap::HiveAdopt);
-    // FR-90 P2c-3 — and holds copies of the org's sessions: it answers a
-    // join, and its owner's `hive_replica` is on. `hive` is its prefix too.
-    let holds_hive_copies = caps.has_rpc(RpcCap::HiveReplica);
-    // FR-90 P2d — and carries replica streams: it serves a session it holds
-    // to a member, and dials one as a member. `hive` is its prefix too.
-    let carries_hive_streams = caps.has_rpc(RpcCap::HiveStream);
-    // FR-90 P2e-2 — and holds a leased session to the server's word on each
-    // connection. `hive` is its prefix too.
-    let holds_hive_leases = caps.has_rpc(RpcCap::HiveLease);
-    // FR-90 P2e-3 — and takes part in a promotion, at either end. `hive` is
-    // its prefix too.
-    let takes_hive_promotions = caps.has_rpc(RpcCap::HivePromote);
-    // FR-90 P2f-1 — and in a teleport, at either end. `hive` is its prefix
-    // too.
-    let takes_hive_teleports = caps.has_rpc(RpcCap::HiveTeleport);
-    // FR-90 P2f-3 — and starts a fork from its parent's copy. `hive` is its
-    // prefix too: a build before it would start a fork empty.
-    let starts_hive_forks = caps.has_rpc(RpcCap::HiveFork);
-    // FR-90 P2f-4b — and makes a terminal session it adopted a managed one.
-    // `hive` is its prefix too: a build before it would start the
-    // conversation afresh.
-    let makes_hive_managed = caps.has_rpc(RpcCap::HiveManage);
-    // FR-90 P2g-2 — and purges a session on `rc:hive.purge`. `hive` is its
-    // prefix too: a build before it does not know the frame.
-    let purges_hive = caps.has_rpc(RpcCap::HivePurge);
-    // FR-90 P2g-4a — and purges every session it holds at its removal.
-    // `hive` and `hive-purge` are its prefixes too: a build of P2g-1 to P2g-3d
-    // purges a session and cannot decode `rc:hive.purge_all`.
-    let purges_hive_at_removal = caps.has_rpc(RpcCap::HivePurgeAll);
-    // #2294 — and finishes that purge before it exits on the removal's
-    // goodbye, so the kick may tell it. Its own word: a build before it
-    // exits at once.
-    let drains_hive_purge = caps.has_rpc(RpcCap::HivePurgeDrain);
-    // FR-90 P2i-2 — and, as an archive replica, answers a search over the
-    // copies it holds. `hive` is its prefix too: a build before P2i-1 drops
-    // `rc:hive.search.grant` unread.
-    let searches_hive = caps.has_rpc(RpcCap::HiveSearch);
     // FR-92 — it parses the org's keep-busy policy. Equality, never a prefix.
     let supports_keep_busy = advertises_keep_busy(&caps);
     // FR-130 — the window this connection is announced, if any: read before
@@ -516,49 +451,6 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_default_route_vpn(agent_id, caps.default_route_vpn);
-    state.rc_hub.set_agent_hive_support(agent_id, runs_hive);
-    state
-        .rc_hub
-        .set_agent_hive_view_support(agent_id, serves_hive_views);
-    state
-        .rc_hub
-        .set_agent_hive_memory_support(agent_id, takes_hive_memory);
-    state
-        .rc_hub
-        .set_agent_hive_adopt_support(agent_id, adopts_hive);
-    state
-        .rc_hub
-        .set_agent_hive_replica_support(agent_id, holds_hive_copies);
-    state
-        .rc_hub
-        .set_agent_hive_stream_support(agent_id, carries_hive_streams);
-    state
-        .rc_hub
-        .set_agent_hive_lease_support(agent_id, holds_hive_leases);
-    state
-        .rc_hub
-        .set_agent_hive_promote_support(agent_id, takes_hive_promotions);
-    state
-        .rc_hub
-        .set_agent_hive_teleport_support(agent_id, takes_hive_teleports);
-    state
-        .rc_hub
-        .set_agent_hive_fork_support(agent_id, starts_hive_forks);
-    state
-        .rc_hub
-        .set_agent_hive_manage_support(agent_id, makes_hive_managed);
-    state
-        .rc_hub
-        .set_agent_hive_purge_support(agent_id, purges_hive);
-    state
-        .rc_hub
-        .set_agent_hive_purge_all_support(agent_id, purges_hive_at_removal);
-    state
-        .rc_hub
-        .set_agent_hive_purge_drain_support(agent_id, drains_hive_purge);
-    state
-        .rc_hub
-        .set_agent_hive_search_support(agent_id, searches_hive);
     let pump_socket_tx = socket_tx.clone();
     let pump = tokio::spawn(pump_server_messages(rx, pump_socket_tx));
 
@@ -726,7 +618,8 @@ pub async fn handle_agent_socket(
             None
         }
     };
-    if supports_relay_regions && let Some((mut regions, rev)) = relay_regions_wire(&state.turn_map) {
+    if supports_relay_regions && let Some((mut regions, rev)) = relay_regions_wire(&state.turn_map)
+    {
         let eff = state.rc_hub.agent_zone_ice_policy(agent_id);
         let strict = eff.as_ref().is_some_and(|p| p.strict);
         if let Some(ref p) = eff
@@ -1922,7 +1815,11 @@ pub async fn resolve_exec_target(
     let meshharbor_remote_control::models::NodeRef::Agent { agent_id } = node.node_ref else {
         return None;
     };
-    state.agents.find_live_in_tenant(tenant_id, agent_id).await.ok()
+    state
+        .agents
+        .find_live_in_tenant(tenant_id, agent_id)
+        .await
+        .ok()
 }
 
 /// The agent's measured regions ordered by RTT (nearest first) — the
@@ -2138,13 +2035,9 @@ pub fn resolve_zone_from_fields_with_source<'a>(
     Option<meshharbor_remote_control::models::ZoneSource>,
 ) {
     let phys_cc = physical_ip_country(state, physical_public_ip);
-    let egress_cc = effective_country_from_sources(
-        state,
-        agent_id,
-        persisted_public_ip,
-        static_endpoints,
-    )
-    .or_else(|| fallback_egress_country.map(|c| c.to_ascii_uppercase()));
+    let egress_cc =
+        effective_country_from_sources(state, agent_id, persisted_public_ip, static_endpoints)
+            .or_else(|| fallback_egress_country.map(|c| c.to_ascii_uppercase()));
     meshharbor_remote_control::models::resolve_device_zone_with_source(
         zones,
         &meshharbor_remote_control::models::DeviceZoneInputs {
@@ -2185,8 +2078,10 @@ pub async fn maybe_record_clean_zone(
         agent.last_clean_zone_id.as_deref(),
         bson::DateTime::now().timestamp_millis(),
     );
-    if let (DeviceZoneResolution::Resolved(z), Some(ZoneSource::AutoPhysical | ZoneSource::AutoEgressIp)) =
-        (res, src)
+    if let (
+        DeviceZoneResolution::Resolved(z),
+        Some(ZoneSource::AutoPhysical | ZoneSource::AutoEgressIp),
+    ) = (res, src)
         && !z.is_centre
         && agent.last_clean_zone_id.as_deref() != Some(z.id.as_str())
         && let Err(e) = state
@@ -2635,7 +2530,11 @@ async fn load_consistent_connect_zone_and_relay_state(
             zone_revision,
             has_net: net1.is_some(),
             ice_policy,
-            peer_relay_serve: (fresh_agent.peer_relay_policy.serve, composite_rev, endpoints),
+            peer_relay_serve: (
+                fresh_agent.peer_relay_policy.serve,
+                composite_rev,
+                endpoints,
+            ),
             management_path,
             entry_key,
         };
@@ -3121,13 +3020,23 @@ mod tests {
 
         // 1. Fresh physical IP wins over VPN egress IP.
         assert_eq!(
-            display_location_ip(Some("192.0.2.10"), Some(fresh_seen_ms), Some(vpn_ip), now_ms),
+            display_location_ip(
+                Some("192.0.2.10"),
+                Some(fresh_seen_ms),
+                Some(vpn_ip),
+                now_ms
+            ),
             Some(phys_ip)
         );
 
         // 2. Stale physical IP (> 24 h) falls back to current egress IP.
         assert_eq!(
-            display_location_ip(Some("192.0.2.10"), Some(stale_seen_ms), Some(vpn_ip), now_ms),
+            display_location_ip(
+                Some("192.0.2.10"),
+                Some(stale_seen_ms),
+                Some(vpn_ip),
+                now_ms
+            ),
             Some(vpn_ip)
         );
 
@@ -3157,6 +3066,9 @@ mod tests {
             Some(vpn_ip),
             now_ms,
         );
-        assert_eq!(loc, meshharbor_core::user_analytics::GeoIpLocation::default());
+        assert_eq!(
+            loc,
+            meshharbor_core::user_analytics::GeoIpLocation::default()
+        );
     }
 }

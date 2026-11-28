@@ -245,8 +245,11 @@ async fn run(
         // own host through `ctl_dns`.
         let route_gen = meshharbor_node_core::management_path::route_generation();
         let dial_res = if is_central {
-            tokio::time::timeout(DERP_CONNECT_TIMEOUT, crate::ws_connect::connect_centre(&url))
-                .await
+            tokio::time::timeout(
+                DERP_CONNECT_TIMEOUT,
+                crate::ws_connect::connect_centre(&url),
+            )
+            .await
         } else {
             tokio::time::timeout(DERP_CONNECT_TIMEOUT, crate::ws_connect::connect(&url)).await
         };

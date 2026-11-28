@@ -66,17 +66,13 @@ pub fn validate_loopback_form_origin(raw: &str) -> Result<String, ApiError> {
         || port_str.starts_with('0')
         || !port_str.bytes().all(|b| b.is_ascii_digit())
     {
-        return Err(ApiError::BadRequest(
-            "Invalid loopback handoff port".into(),
-        ));
+        return Err(ApiError::BadRequest("Invalid loopback handoff port".into()));
     }
     let port: u16 = port_str
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid loopback handoff port".into()))?;
     if port == 0 {
-        return Err(ApiError::BadRequest(
-            "Invalid loopback handoff port".into(),
-        ));
+        return Err(ApiError::BadRequest("Invalid loopback handoff port".into()));
     }
     let url = reqwest::Url::parse(raw)
         .map_err(|_| ApiError::BadRequest("Invalid loopback handoff origin".into()))?;
@@ -106,7 +102,8 @@ fn require_frontend_origin(frontend_url: &str, headers: &HeaderMap) -> Result<()
     }
     let (expected, _) = meshharbor_core::admission::parse_trusted_frontend_url(frontend_url)
         .ok_or_else(|| ApiError::ServiceUnavailable("Invalid configured frontend URL".into()))?;
-    let got = reqwest::Url::parse(raw).map_err(|_| ApiError::Forbidden("Untrusted origin".into()))?;
+    let got =
+        reqwest::Url::parse(raw).map_err(|_| ApiError::Forbidden("Untrusted origin".into()))?;
     if got.path() != "/"
         || !got.username().is_empty()
         || got.password().is_some()

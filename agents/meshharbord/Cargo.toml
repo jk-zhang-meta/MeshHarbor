@@ -51,19 +51,7 @@ meshharbor-tunnel-core = { path = "../../crates/tunnel-core" }
 # Cheap to add: this crate's lib is CLI glue over tunnel-core + remote-control,
 # both of which are already in the graph above.
 meshharbor-cli = { path = "../meshharbor-cli" }
-# FR-90 — Hive's device core (transcript chain, stream-json adapter, replica
-# store, launch spec). Only the `hive` feature links it, and with it SQLite.
-meshharbor-hive-node = { path = "../../crates/hive-node", optional = true }
-# FR-90 P3-3 — the device's vault key, and the sealed boxes the vault sends to
-# it. Only the `vault` feature links it.
-crypto_box = { workspace = true, optional = true }
-# FR-90 P3-4a — a leased value is zeroed when the daemon lets it go.
 zeroize = { workspace = true, optional = true }
-# FR-90 P0e — the loopback model sidecar's HTTP/1.1 server (already in the
-# tree through reqwest, which makes the upstream call).
-hyper = { version = "1", features = ["server", "client", "http1"], optional = true }
-hyper-util = { version = "0.1", features = ["tokio"], optional = true }
-http-body-util = { version = "0.1", optional = true }
 
 # Async + networking
 tokio = { workspace = true }
@@ -243,15 +231,6 @@ hkdf = { version = "0.12", optional = true }
 # FR-52 P4 — the transport binding: HMAC-SHA256 over each side's DTLS
 # fingerprint under the verified login's key. In the graph via hkdf: +0 crates.
 hmac = { workspace = true, optional = true }
-# FR-90 P3-5b — the vault's proxies: TLS to an upstream (rustls on ring, as
-# the rest of the tree, so aws-lc-rs stays absent: no default features), the
-# system's roots (a corporate CA in the OS store is trusted, as the WS path's
-# is), and SCRAM-SHA-256 (PBKDF2 over HMAC-SHA256, SASLprep). Every crate
-# here is already in the lockfile.
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"], optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
-stringprep = { version = "0.1", optional = true }
 
 # ⚠️ NO direct `argon2` dependency, on purpose (FR-52 P3a). The KSF uses
 # `opaque_ke::argon2` — the crate opaque-ke's own hashing was written against —
@@ -747,28 +726,10 @@ uinput-input = []
 # ⚠️ Deliberately NOT in `full`: no release build compiles it until the P0
 # field cell has run, and even compiled, every gate is closed by default
 # (`hive_enabled = false`, an empty account map, empty roots = nowhere).
-hive = ["dep:meshharbor-hive-node", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
-# FR-90 P0f — TESTS ONLY: `hive::init_as_daemon`, a supervisor that launches
-# sessions as the daemon's OWN account, for the integration test that cannot
-# switch users (`crates/tests/tests/hive_canary.rs`).
-#
-# ⚠️ Never in a release build — it is in no aggregate, and the release
-# workflows name their features. Even compiled, `init_as_daemon` refuses when
-# the daemon is root, so it can never be how a session runs as root.
-hive-test-launcher = ["hive"]
 # Narrow local CP/dataplane oracle; no production profile enables this.
 # The daemon's native listener module requires an overlay surface. Use the
 # OS-free netstack surface (not overlay-l3/TUN); the harness opens no stack.
 backbone-test-support = ["overlay-netstack", "meshharbor-tunnel-core/path-trial-test-support"]
-# FR-90 P3-3 — the device's half of the vault: a key the daemon makes while the
-# device's own `vault_enabled` is on, kept in memory only and new at every
-# start, its public half in the primary enrollment's hello. Implies `hive`:
-# the vault leases values to agent sessions, so a build that runs none has
-# nothing to take them for.
-#
-# ⚠️ Not in `full` and in no release build yet: no tool asks for a lease before
-# P3-4c, and even compiled, `vault_enabled` is off by default.
-vault = ["hive", "dep:crypto_box", "dep:zeroize", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:hmac", "dep:pbkdf2", "dep:stringprep"]
 # Everything needed for a full remote-control session, software only.
 full = ["media", "enigo-input", "clipboard", "audio", "drm-capture", "uinput-input", "portal-capture", "recording", "external-access"]
 # Everything needed including the MF hardware encoder. Production

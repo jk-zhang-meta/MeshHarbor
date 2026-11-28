@@ -5,7 +5,6 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, header},
 };
-use meshharbor_core::attribution::{self, AttributionInput};
 use meshharbor_db::models::{TutorialState, User};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
@@ -22,13 +21,6 @@ pub struct RegisterRequest {
     pub tenant_name: Option<String>,
     pub tenant_slug: Option<String>,
     pub invite_code: Option<String>,
-    /// FR-88 — where the sign-up came from (`source`, `medium`, `campaign`,
-    /// `content`, `term`, `referrer_host`, `landing_path`, `self_reported`),
-    /// as the register view read them off its own URL. Optional, read
-    /// leniently, sanitised server-side; a malformed value never fails the
-    /// registration (`meshharbor_core::attribution`).
-    #[serde(default)]
-    pub attribution: Option<AttributionInput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,11 +176,6 @@ pub async fn register(
     let username = format!("user_{}", bson::oid::ObjectId::new().to_hex());
     let password_hash = state.auth.hash_password(&body.password)?;
 
-    // FR-88 — sanitised here, stored with the row, never touched again. Not
-    // logged: the values are the person's own answer to "how did you hear
-    // about us", and `info` lines end up in a pod log.
-    let signup_attribution = body.attribution.take().and_then(attribution::sanitize);
-
     let user = state
         .users
         .create(
@@ -196,7 +183,7 @@ pub async fn register(
             username,
             display_name.clone(),
             password_hash,
-            signup_attribution,
+            None,
         )
         .await?;
 

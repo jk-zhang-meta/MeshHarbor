@@ -16,11 +16,10 @@ const MARKER: &str = "fr-135: allowed";
 
 /// Native code: every agent binary and the crates they link. The server crates are not scanned —
 /// their outbound calls (push, OAuth, Stripe) are the server operator's network, not a device's.
-const ROOTS: [&str; 7] = [
+const ROOTS: [&str; 6] = [
     "agents",
     "crates/agent-core",
     "crates/tunnel-core",
-    "crates/hive-node",
     "crates/localapi",
     "crates/tcp-turn-conn",
     "crates/remote_control",

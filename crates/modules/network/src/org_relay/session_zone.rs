@@ -103,8 +103,10 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             else {
                 return Decision::Uncertain { retryable: true };
             };
-            let by_id: std::collections::HashMap<_, _> =
-                relays.iter().filter_map(|a| a.id.map(|id| (id, a))).collect();
+            let by_id: std::collections::HashMap<_, _> = relays
+                .iter()
+                .filter_map(|a| a.id.map(|id| (id, a)))
+                .collect();
             let mut prev_agent = session.relay_agent_id;
             let mut prev_node = session.relay.node_id;
             let now = std::time::Instant::now();

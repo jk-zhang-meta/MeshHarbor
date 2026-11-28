@@ -150,8 +150,9 @@ pub(super) async fn prepare_reusing(
         if req_gw.is_empty() || peer_gw.is_empty() {
             return Err(Deny::ZoneDenied);
         }
-        let bb_only =
-            crate::network_zones::TenantZoneSnapshot::pair_requires_backbone_only(req_res, peer_res);
+        let bb_only = crate::network_zones::TenantZoneSnapshot::pair_requires_backbone_only(
+            req_res, peer_res,
+        );
         if bb_only
             && req_gw.is_disjoint(&peer_gw)
             && (!a_extra.supports_backbone_only_v1 || !b_extra.supports_backbone_only_v1)
@@ -429,9 +430,10 @@ pub(super) async fn prepare_reusing(
                         continue;
                     }
                 }
-                let has_explicit = src.approved_edges.iter().any(|e| {
-                    ObjectId::parse_str(&e.relay_agent_id).ok() == Some(*dst_agent)
-                });
+                let has_explicit = src
+                    .approved_edges
+                    .iter()
+                    .any(|e| ObjectId::parse_str(&e.relay_agent_id).ok() == Some(*dst_agent));
                 if has_explicit {
                     continue;
                 }
@@ -493,8 +495,8 @@ pub(super) async fn prepare_reusing(
         (a, requester_gateways),
         (b, peer_gateways),
     );
-    let graph = path_graph::build(inputs, &network.cidr, iso_mode)
-        .map_err(|_| Deny::PolicyUnreadable)?;
+    let graph =
+        path_graph::build(inputs, &network.cidr, iso_mode).map_err(|_| Deny::PolicyUnreadable)?;
     // This detects known policy/join changes during reads, not all races; a
     // future mint must validate again under its own reservation boundary.
     if epoch != state.org_relay.eligibility_generation() {

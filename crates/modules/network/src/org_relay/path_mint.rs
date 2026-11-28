@@ -27,8 +27,7 @@ fn legacy_endpoint_zone_mismatch(
     if network_zones_active {
         return false;
     }
-    (same_zone_only
-        && (first_zone != last_zone || relay_zones.any(|rz| rz != first_zone)))
+    (same_zone_only && (first_zone != last_zone || relay_zones.any(|rz| rz != first_zone)))
         || (!same_zone_only && first_zone == last_zone)
 }
 

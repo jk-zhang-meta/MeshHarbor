@@ -74,6 +74,40 @@ pub async fn unread_count(
     Ok(Json(serde_json::json!({ "count": count })))
 }
 
+#[derive(Debug, Serialize)]
+pub struct TenantUnreadSummary {
+    pub tenant_id: String,
+    pub name: String,
+    /// Unread bell notifications scoped to this tenant.
+    pub notifications: u64,
+    /// Pending remote-control consent notifications.
+    pub consents: u64,
+}
+
+/// `GET /api/user/unread-summary` — caller's unread notifications & consents
+/// across every org they belong to, in one call (org switcher badge seed).
+pub async fn unread_summary(
+    State(state): State<Core>,
+    auth: AuthUser,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenants = state.tenants.find_user_tenants(auth.user_id).await?;
+    let notif_by_tenant = state.notifications.unread_by_tenant(auth.user_id).await?;
+
+    let mut out: Vec<TenantUnreadSummary> = Vec::with_capacity(tenants.len());
+    for t in tenants {
+        let Some(tid) = t.id else { continue };
+        let notif = notif_by_tenant.iter().find(|n| n.tenant_id == tid);
+        out.push(TenantUnreadSummary {
+            tenant_id: tid.to_hex(),
+            name: t.name,
+            notifications: notif.map(|n| n.total).unwrap_or(0),
+            consents: notif.map(|n| n.consents).unwrap_or(0),
+        });
+    }
+
+    Ok(Json(serde_json::json!({ "tenants": out })))
+}
+
 pub async fn mark_read(
     State(state): State<Core>,
     auth: AuthUser,

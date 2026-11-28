@@ -330,12 +330,7 @@ impl GpuManager {
 
     /// Drop any active browser WebSocket GPU subscriptions held by a removed
     /// member in `tenant_id` and immediately reconcile affected agent leases.
-    pub fn revoke_ws_for_member(
-        &self,
-        hub: &crate::Hub,
-        tenant_id: ObjectId,
-        user_id: ObjectId,
-    ) {
+    pub fn revoke_ws_for_member(&self, hub: &crate::Hub, tenant_id: ObjectId, user_id: ObjectId) {
         let conn_ids: Vec<String> = self
             .ws_subs
             .iter()
@@ -767,7 +762,12 @@ impl GpuManager {
     ) {
         let owner_id = agent.owner_user_id;
         // Owner-only invariant (D4): owner must STILL be a tenant member!
-        if !state.tenants.is_member(tenant_id, owner_id).await.unwrap_or(false) {
+        if !state
+            .tenants
+            .is_member(tenant_id, owner_id)
+            .await
+            .unwrap_or(false)
+        {
             return;
         }
         let rule = load_rule(&state.core.db, tenant_id, owner_id).await;
@@ -779,7 +779,15 @@ impl GpuManager {
 
         let fired = {
             let mut eval = self.evaluator.lock().await;
-            eval.evaluate_report(tenant_id, agent_id, host_name, report, now_s, &self.settings, &rule)
+            eval.evaluate_report(
+                tenant_id,
+                agent_id,
+                host_name,
+                report,
+                now_s,
+                &self.settings,
+                &rule,
+            )
         };
         if !fired.is_empty() {
             self.deliver_alerts(state, tenant_id, agent_id, owner_id, &rule.lang, fired)

@@ -37,7 +37,6 @@ use meshharbor_remote_control::signaling::{
     ClientMsg, CloseReason, Direction, IceServer, REJECT_REASON_NO_SESSION,
     REJECT_REASON_SESSION_GONE, REJECT_REASON_SESSION_MISMATCH, RejectKind, ServerMsg, TunnelRole,
 };
-use meshharbor_remote_control::vault::NET_GRANT_REFUSED;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tracing::{debug, error, info, warn};
@@ -408,10 +407,6 @@ pub struct SessionParams {
     /// [`ListeningHook`]). `None` when the caller has no liveness state to
     /// publish, or owns the listener itself (the daemon, FR-86 P1).
     pub on_listening: Option<ListeningHook>,
-    /// FR-90 P3-7-3a — an agent session's grant ([`SessionGrantRef`]): the
-    /// tunnel carries the session's flows, or none. `None` for a person's or
-    /// a device's own tunnel.
-    pub net_grant: Option<SessionGrantRef>,
 }
 
 /// Bind the session's loopback listener and, once it is bound, tell the owner
@@ -1020,9 +1015,6 @@ pub async fn establish_tunnel_session(
         // R4 — our DERP identity, so the server can hand it to the agent
         // when the derp flavor is negotiated. Harmless on other flavors.
         derp_pubkey: params.derp.as_ref().map(|d| d.self_pubkey_hex.clone()),
-        // FR-90 P3-7-3a — a session's grant, when this tunnel is a session's;
-        // none for a person's or a device's own.
-        net_grant: params.net_grant.as_ref().map(|g| g.token.clone()),
     })
     .await
     .context("send TunnelOpen")?;
@@ -1046,22 +1038,14 @@ pub async fn establish_tunnel_session(
                     // nonce to route this frame here; the single-session
                     // driver doesn't need it.
                     open_nonce: _,
-                    net_grant_id,
                 } => {
                     info!(
                         %session_id, %transport, dc_pool_size, sctp_rwnd_bytes,
                         ice_servers = ice_servers.len(),
                         quic = quic_auth_token.is_some(),
-                        grant = ?net_grant_id,
                         "rc:tunnel.opened"
                     );
-                    break anyhow::Ok((
-                        session_id,
-                        transport,
-                        ice_servers,
-                        quic_auth_token,
-                        net_grant_id,
-                    ));
+                    break anyhow::Ok((session_id, transport, ice_servers, quic_auth_token));
                 }
                 ServerMsg::TunnelRevoked { reason } => {
                     bail!("tunnel revoked by server during open: {reason}");
@@ -1072,11 +1056,6 @@ pub async fn establish_tunnel_session(
                     message,
                     open_nonce: _,
                 } => {
-                    // FR-90 P3-7-3a — the session's grant does not hold: the
-                    // end of that grant, never a reason to open again.
-                    if params.net_grant.is_some() && code == NET_GRANT_REFUSED {
-                        return Err(GrantError::Refused(message).into());
-                    }
                     bail!("server error during tunnel.open: {code}: {message}");
                 }
                 other => debug!(?other, "ignoring pre-opened ServerMsg"),
@@ -1085,7 +1064,7 @@ pub async fn establish_tunnel_session(
     })
     .await
     .context("waiting for rc:tunnel.opened")??;
-    let (session_id, negotiated_transport, ice_servers, quic_auth_token, net_grant_id) = opened;
+    let (session_id, negotiated_transport, ice_servers, quic_auth_token) = opened;
 
     // #1754 — from here we hold a server-side session id, and the exit agent
     // builds its per-session `AgentTunnelPeer` as soon as it sees our offer /
@@ -1099,20 +1078,6 @@ pub async fn establish_tunnel_session(
     // its `Drop` survives the abort by spawning the send. It moves INTO the
     // carrier on success (FR-86 P1), so the carrier's drop is the session's end.
     let terminate_guard = TerminateOnDrop::new(sink.clone(), session_id);
-
-    // FR-90 P3-7-3a — a session's tunnel carries its flows only where the
-    // server bound its grant: a server from before P3-7-2a ignores the grant
-    // and opens the tunnel as the device's own. Checked after the guard, so
-    // the exit is told as the session ends here.
-    if let Some(g) = &params.net_grant
-        && net_grant_id.as_deref() != Some(g.grant_id.as_str())
-    {
-        warn!(
-            %session_id, grant = %g.grant_id, echoed = ?net_grant_id,
-            "tunnel opened without the session's grant bound; ending it"
-        );
-        return Err(GrantError::NotBound.into());
-    }
 
     // ────────────── Dispatch on the negotiated transport ───────────
     if negotiated_transport == TRANSPORT_QUIC_DERP_V1 {
@@ -2354,42 +2319,6 @@ async fn handle_local_connection_quic(
         .await;
     active_flows.lock().await.remove(&flow_id);
     Ok(())
-}
-
-/// FR-90 P3-7-3a — an agent session's grant, as its device presents it at
-/// `rc:tunnel.open` ([`SessionParams::net_grant`]): the token the vault signed
-/// (P3-7-1b) and the grant's id. The server binds the tunnel to it and holds
-/// every flow of the tunnel to it, or refuses the open (P3-7-2a).
-///
-/// ⚠️ The token is a credential until its end, at most 900 s: `Debug` names the
-/// grant by its id alone, and nothing here logs the token.
-#[derive(Clone)]
-pub struct SessionGrantRef {
-    pub token: String,
-    pub grant_id: String,
-}
-
-impl std::fmt::Debug for SessionGrantRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionGrantRef")
-            .field("grant_id", &self.grant_id)
-            .finish_non_exhaustive()
-    }
-}
-
-/// FR-90 P3-7-3a — why a tunnel opened for a session's grant carries none of
-/// the session's flows. Each is the end of that grant, never a reason to open
-/// again: the session asks the vault for another.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum GrantError {
-    /// The server refused the open (`NET_GRANT_REFUSED`), in its words.
-    #[error("the server refused the session's grant: {0}")]
-    Refused(String),
-    /// `rc:tunnel.opened` did not echo the grant. A server from before
-    /// P3-7-2a ignores the field and opens the tunnel as the device's own,
-    /// which would carry the session's flows as the device's.
-    #[error("the server opened the tunnel without binding the session's grant")]
-    NotBound,
 }
 
 #[cfg(test)]
@@ -4186,171 +4115,5 @@ mod tests {
         // have ended the flow.
         drop(_exit_peer);
         drop(_client_peer);
-    }
-
-    /// FR-90 P3-7-3a — drive one `establish_tunnel_session` under `grant`:
-    /// the frames it sends, the channel the test answers it on, and the task.
-    #[allow(clippy::type_complexity)]
-    fn open_under(
-        grant: Option<SessionGrantRef>,
-    ) -> (
-        mpsc::UnboundedReceiver<ClientMsg>,
-        mpsc::Sender<ServerMsg>,
-        tokio::task::JoinHandle<Result<Establishment>>,
-    ) {
-        let (sink_tx, sink_rx) = mpsc::unbounded_channel::<ClientMsg>();
-        let (src_tx, src_rx) = mpsc::channel::<ServerMsg>(8);
-        let sink: Arc<dyn TunnelSignalingSink> = Arc::new(MockSink { tx: sink_tx });
-        let source: Box<dyn TunnelSignalingSource> = Box::new(MockSource { rx: src_rx });
-        let params = SessionParams {
-            agent_id: ObjectId::new(),
-            target: Target::Socks5,
-            client_version: "test".into(),
-            derp: None,
-            on_listening: None,
-            net_grant: grant,
-        };
-        let task = tokio::spawn(establish_tunnel_session(
-            sink,
-            source,
-            params,
-            vec![TRANSPORT_WEBRTC_DC_V1.to_string()],
-            TRANSPORT_WEBRTC_DC_V1,
-            Arc::new(SessionThroughput::default()),
-        ));
-        (sink_rx, src_tx, task)
-    }
-
-    fn opened_frame(session_id: ObjectId, net_grant_id: Option<&str>) -> ServerMsg {
-        ServerMsg::TunnelOpened {
-            session_id,
-            transport: TRANSPORT_WEBRTC_DC_V1.into(),
-            dc_pool_size: 1,
-            sctp_rwnd_bytes: 1 << 20,
-            ice_servers: vec![],
-            quic_auth_token: None,
-            open_nonce: None,
-            net_grant_id: net_grant_id.map(str::to_string),
-        }
-    }
-
-    fn a_grant() -> SessionGrantRef {
-        SessionGrantRef {
-            token: "header.claims.signature".into(),
-            grant_id: "g1".into(),
-        }
-    }
-
-    /// FR-90 P3-7-3a — a grant prints by its id alone: its token is a
-    /// credential until its end.
-    #[test]
-    fn a_grant_ref_prints_its_id_not_its_token() {
-        let shown = format!("{:?}", a_grant());
-        assert!(shown.contains("g1"), "{shown}");
-        assert!(!shown.contains("header.claims.signature"), "{shown}");
-    }
-
-    /// The grant's token, as the open carried it.
-    async fn open_carried(sink: &mut mpsc::UnboundedReceiver<ClientMsg>) -> Option<String> {
-        loop {
-            let msg = tokio::time::timeout(Duration::from_secs(2), sink.recv())
-                .await
-                .expect("the driver sends its hello and open")
-                .expect("sink open");
-            if let ClientMsg::TunnelOpen { net_grant, .. } = msg {
-                return net_grant;
-            }
-        }
-    }
-
-    /// FR-90 P3-7-3a — a session's tunnel presents its grant at the open, and
-    /// carries none of its flows unless the server bound it: an `opened` with
-    /// no echo, or another grant's, ends the tunnel `NotBound`, and the exit is
-    /// told.
-    #[tokio::test]
-    async fn a_session_tunnel_whose_grant_is_not_bound_ends() {
-        for echo in [None, Some("another grant")] {
-            let (mut sink, src, task) = open_under(Some(a_grant()));
-            assert_eq!(
-                open_carried(&mut sink).await.as_deref(),
-                Some("header.claims.signature")
-            );
-            let sid = ObjectId::new();
-            src.send(opened_frame(sid, echo)).await.unwrap();
-            let err = match tokio::time::timeout(Duration::from_secs(2), task)
-                .await
-                .expect("the open ends")
-                .expect("no panic")
-            {
-                Ok(_) => panic!("{echo:?}: an unbound grant carried the session's flows"),
-                Err(e) => e,
-            };
-            assert_eq!(
-                err.downcast_ref::<GrantError>(),
-                Some(&GrantError::NotBound),
-                "{echo:?}: {err:#}"
-            );
-            let told = loop {
-                match tokio::time::timeout(Duration::from_secs(1), sink.recv()).await {
-                    Ok(Some(ClientMsg::TunnelTerminate { session_id, .. })) => break session_id,
-                    Ok(Some(_)) => continue,
-                    other => panic!("{echo:?}: the exit was never told: {other:?}"),
-                }
-            };
-            assert_eq!(told, sid);
-        }
-    }
-
-    /// FR-90 P3-7-3a — a refused grant ends the open as `Refused`, in the
-    /// server's words. The same code on a tunnel that presented no grant is an
-    /// ordinary failure, not a grant's.
-    #[tokio::test]
-    async fn a_refused_grant_ends_the_open() {
-        for grant in [Some(a_grant()), None] {
-            let presented = grant.is_some();
-            let (mut sink, src, task) = open_under(grant);
-            let _ = open_carried(&mut sink).await;
-            src.send(ServerMsg::Error {
-                session_id: None,
-                code: NET_GRANT_REFUSED.into(),
-                message: "a grant for another exit".into(),
-                open_nonce: None,
-            })
-            .await
-            .unwrap();
-            let err = match tokio::time::timeout(Duration::from_secs(2), task)
-                .await
-                .expect("the open ends")
-                .expect("no panic")
-            {
-                Ok(_) => panic!("a refused open established"),
-                Err(e) => e,
-            };
-            let want = presented.then(|| GrantError::Refused("a grant for another exit".into()));
-            assert_eq!(err.downcast_ref::<GrantError>(), want.as_ref(), "{err:#}");
-        }
-    }
-
-    /// FR-90 P3-7-3a — a grant the server bound (its id echoed) lets the
-    /// tunnel go on to its data plane, as a device's own tunnel does with no
-    /// grant and no echo.
-    #[tokio::test]
-    async fn a_bound_grant_goes_on_to_the_data_plane() {
-        for (grant, echo) in [(Some(a_grant()), Some("g1")), (None, None)] {
-            let (mut sink, src, task) = open_under(grant);
-            let _ = open_carried(&mut sink).await;
-            src.send(opened_frame(ObjectId::new(), echo)).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            if task.is_finished() {
-                if let Err(e) = task.await.expect("no panic") {
-                    assert!(
-                        e.downcast_ref::<GrantError>().is_none(),
-                        "{echo:?}: a bound grant ended the tunnel: {e:#}"
-                    );
-                }
-            } else {
-                task.abort();
-            }
-        }
     }
 }

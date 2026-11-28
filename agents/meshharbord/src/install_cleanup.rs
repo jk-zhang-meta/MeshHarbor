@@ -316,12 +316,12 @@ fn cleanup_vacated_install_dir(target: TargetFlavour, report: &mut CleanupReport
 #[cfg(target_os = "windows")]
 fn retire_stale_per_user_companion(report: &mut CleanupReport, dry_run: bool) {
     use meshharbor_node_core::companion_autostart::{
-        WINDOWS_RUN_SUBKEY, WINDOWS_RUN_VALUE_NAME, retire_stale_user_start_menu_shortcuts,
-        should_retire_hkcu_run_value,
+        WINDOWS_RUN_SUBKEY, WINDOWS_RUN_VALUE_NAME,
         registry::{
             Hive, find_per_user_run_values_in_loaded_hku, read_value,
             retire_per_user_run_value_in_hkcu, retire_per_user_run_values_in_loaded_hku,
         },
+        retire_stale_user_start_menu_shortcuts, should_retire_hkcu_run_value,
     };
 
     let own_local = (!crate::win_identity::process_is_local_system())
@@ -329,7 +329,11 @@ fn retire_stale_per_user_companion(report: &mut CleanupReport, dry_run: bool) {
         .flatten();
 
     if dry_run {
-        match read_value(Hive::CurrentUser, WINDOWS_RUN_SUBKEY, WINDOWS_RUN_VALUE_NAME) {
+        match read_value(
+            Hive::CurrentUser,
+            WINDOWS_RUN_SUBKEY,
+            WINDOWS_RUN_VALUE_NAME,
+        ) {
             Ok(val) if should_retire_hkcu_run_value(val.as_deref(), own_local.as_deref()) => {
                 report.removed.push(format!(
                     "[dry-run] retire stale per-user HKCU\\{WINDOWS_RUN_SUBKEY}\\{WINDOWS_RUN_VALUE_NAME}"

@@ -246,7 +246,10 @@ impl GpuSupervisor {
         if let Ok(mut ring) = self.alerts.lock() {
             // Avoid duplicates if delivered across multiple orgs or retries.
             if ring.iter().any(|(rseq, a)| {
-                *rseq == remote_seq && a.at == alert.at && a.title == alert.title && a.body == alert.body
+                *rseq == remote_seq
+                    && a.at == alert.at
+                    && a.title == alert.title
+                    && a.body == alert.body
             }) {
                 return;
             }
@@ -417,11 +420,10 @@ impl GpuSupervisor {
                     status: GpuHostStatus::OffLocal,
                     status_detail: Some("GPU telemetry disabled locally on this host".into()),
                 };
-                let stale_inv = self
-                    .latest_inventory
-                    .read()
-                    .ok()
-                    .is_some_and(|g| g.as_ref().is_some_and(|i| i.status != GpuHostStatus::OffLocal));
+                let stale_inv = self.latest_inventory.read().ok().is_some_and(|g| {
+                    g.as_ref()
+                        .is_some_and(|i| i.status != GpuHostStatus::OffLocal)
+                });
                 if need_inv || stale_inv {
                     self.fanout_inventory(off_inv);
                 }
@@ -580,8 +582,7 @@ impl GpuSupervisor {
                     if need_inv {
                         let mut inv = cached_inv.clone().unwrap_or_default();
                         inv.status = status;
-                        inv.status_detail =
-                            Some("GPU sampler child exited unexpectedly".into());
+                        inv.status_detail = Some("GPU sampler child exited unexpectedly".into());
                         self.fanout_inventory(inv);
                     }
                     synthetic_seq += 1;
@@ -849,9 +850,7 @@ fn own_executable() -> Option<PathBuf> {
 /// Sample host CPU/RAM/root-disk/network load lazily on a blocking worker with
 /// a bounded 2 s timeout so slow `/proc` or filesystem calls never block tokio
 /// workers or daemon shutdown.
-async fn sample_host_load_nonblocking(
-    slot: &mut Option<Arc<Mutex<HostLoadSampler>>>,
-) -> HostLoad {
+async fn sample_host_load_nonblocking(slot: &mut Option<Arc<Mutex<HostLoadSampler>>>) -> HostLoad {
     let sampler = slot
         .get_or_insert_with(|| Arc::new(Mutex::new(HostLoadSampler::new())))
         .clone();
@@ -957,12 +956,16 @@ impl HostLoadSampler {
         let cpu_count = u16::try_from(self.sys.cpus().len()).ok();
         let load = sysinfo::System::load_average();
         let (load1, load5, load15) = if cfg!(unix) {
-            (Some(load.one as f32), Some(load.five as f32), Some(load.fifteen as f32))
+            (
+                Some(load.one as f32),
+                Some(load.five as f32),
+                Some(load.fifteen as f32),
+            )
         } else {
             (None, None, None)
         };
-        let mem_total_mb = (self.sys.total_memory() > 0)
-            .then(|| self.sys.total_memory() / (1024 * 1024));
+        let mem_total_mb =
+            (self.sys.total_memory() > 0).then(|| self.sys.total_memory() / (1024 * 1024));
         let mem_used_mb = mem_total_mb.map(|_| self.sys.used_memory() / (1024 * 1024));
         let swap_total_mb = Some(self.sys.total_swap() / (1024 * 1024));
         let swap_used_mb = Some(self.sys.used_swap() / (1024 * 1024));
@@ -1035,7 +1038,8 @@ mod tests {
         let mut saw_off_report = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline && (!saw_inv || !saw_off_report) {
-            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+            {
                 match msg {
                     ClientMsg::AgentGpuInventory { inventory } => {
                         assert_eq!(inventory.status, GpuHostStatus::OffLocal);
@@ -1055,7 +1059,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fr139_supervisor_stuck_child_reports_stalled_and_never_blocks_and_reaches_unavailable() {
+    async fn fr139_supervisor_stuck_child_reports_stalled_and_never_blocks_and_reaches_unavailable()
+    {
         // Use `/bin/sleep` (ignores stdin and prints nothing) to simulate a hung
         // driver child; `gpu-sampler` arg is passed but sleep fails or sleeps.
         // Better: a tiny python/sh script that ignores stdin and sleeps forever!
@@ -1148,8 +1153,14 @@ mod tests {
                     }],
                 },
             };
-            let inv_line = format!("{FRAME_PREFIX}{}", serde_json::to_string(&sample_inv).unwrap());
-            let rep_line = format!("{FRAME_PREFIX}{}", serde_json::to_string(&sample_rep).unwrap());
+            let inv_line = format!(
+                "{FRAME_PREFIX}{}",
+                serde_json::to_string(&sample_inv).unwrap()
+            );
+            let rep_line = format!(
+                "{FRAME_PREFIX}{}",
+                serde_json::to_string(&sample_rep).unwrap()
+            );
             let script = dir.path().join("fake-sampler.sh");
             std::fs::write(
                 &script,
@@ -1201,7 +1212,10 @@ mod tests {
                 }
             }
             let _ = shut_tx.send(true);
-            assert!(got_a_rep && got_b_rep, "both orgs must receive reports from single child");
+            assert!(
+                got_a_rep && got_b_rep,
+                "both orgs must receive reports from single child"
+            );
 
             // Alert ring deduplication & ordering
             sup.record_alert(GpuAlertWire {

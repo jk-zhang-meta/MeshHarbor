@@ -164,8 +164,8 @@ pub async fn cmd_pmtiles_range(
     let requested_etag = normalize_etag(etag.as_deref());
     let client = pmtiles_http_client().await?;
 
-    let mut resp = send_range_request(&client, &url, &range_header, requested_etag.as_deref())
-        .await?;
+    let mut resp =
+        send_range_request(&client, &url, &range_header, requested_etag.as_deref()).await?;
 
     // PMTiles initial header probe asks for 16 KiB at offset 0; if an archive is smaller,
     // retry with the exact archive length advertised by Content-Range.
@@ -276,10 +276,7 @@ mod tests {
     fn validates_and_formats_byte_ranges() {
         assert_eq!(validate_range(0, 1).unwrap(), (0, 0));
         assert_eq!(validate_range(0, 16384).unwrap(), (0, 16383));
-        assert_eq!(
-            format_range_header(4096, 2048).unwrap(),
-            "bytes=4096-6143"
-        );
+        assert_eq!(format_range_header(4096, 2048).unwrap(), "bytes=4096-6143");
         assert_eq!(
             validate_range(10, MAX_PMTILES_RANGE_BYTES).unwrap(),
             (10, 10 + MAX_PMTILES_RANGE_BYTES - 1)
@@ -291,7 +288,10 @@ mod tests {
 
     #[test]
     fn normalizes_etags_and_parses_content_range_totals() {
-        assert_eq!(normalize_etag(Some("\"abc123\"")), Some("\"abc123\"".into()));
+        assert_eq!(
+            normalize_etag(Some("\"abc123\"")),
+            Some("\"abc123\"".into())
+        );
         assert_eq!(normalize_etag(Some("  \"v1\"  ")), Some("\"v1\"".into()));
         assert_eq!(normalize_etag(Some("W/\"weak\"")), None);
         assert_eq!(normalize_etag(Some("w/\"weak\"")), None);

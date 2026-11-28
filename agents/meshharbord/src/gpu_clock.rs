@@ -296,8 +296,7 @@ impl Drop for GpuClockPin {
 }
 
 static PIN: Mutex<Option<GpuClockPin>> = Mutex::new(None);
-static ACTIVE_RC_SESSIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static ACTIVE_RC_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Number of active remote-control sessions last observed by the signaling loop.
 pub fn active_rc_sessions() -> usize {

@@ -128,7 +128,10 @@ fn derive_ed25519_from_secret(secret: &str) -> (Vec<u8>, String) {
 impl OfflineCapSigner {
     /// Load an explicit Ed25519 private key from base64(PKCS#8 DER), optionally
     /// adding fallback public verification keys derived from JWT rotation secrets.
-    pub fn from_pkcs8_b64(private_b64: &str, extra_public_keys_b64: Vec<String>) -> Result<Self, String> {
+    pub fn from_pkcs8_b64(
+        private_b64: &str,
+        extra_public_keys_b64: Vec<String>,
+    ) -> Result<Self, String> {
         let der = B64
             .decode(private_b64.trim())
             .map_err(|e| format!("offline_cap key: invalid base64: {e}"))?;
@@ -181,10 +184,7 @@ impl OfflineCapSigner {
             return Err(format!("offline_cap mint: unexpected aud {:?}", claims.aud));
         }
         if claims.verb != VERB_SSH && claims.verb != VERB_EXEC {
-            return Err(format!(
-                "offline_cap mint: invalid verb {:?}",
-                claims.verb
-            ));
+            return Err(format!("offline_cap mint: invalid verb {:?}", claims.verb));
         }
         if claims.exp <= claims.iat {
             return Err("offline_cap mint: exp must exceed iat".into());
@@ -353,11 +353,11 @@ mod tests {
         // After rotating jwt.secret from secret-v1 -> secret-v2 (keeping v1 in
         // previous_secrets), the new signer's public_keys_b64 still verifies
         // tokens minted before rotation!
-        let rotated =
-            OfflineCapSigner::from_jwt_secrets("secret-v2", &[String::from("secret-v1")]);
+        let rotated = OfflineCapSigner::from_jwt_secrets("secret-v2", &[String::from("secret-v1")]);
         assert_eq!(rotated.public_keys_b64().len(), 2);
-        let verified = verify_offline_cap(&token, rotated.public_keys_b64(), base_ctx(VERB_SSH, now))
-            .expect("rotated key set must verify pre-rotation capability");
+        let verified =
+            verify_offline_cap(&token, rotated.public_keys_b64(), base_ctx(VERB_SSH, now))
+                .expect("rotated key set must verify pre-rotation capability");
         assert_eq!(verified.verb, VERB_SSH);
         assert_eq!(verified.caller, "alice (via laptop-a)");
 

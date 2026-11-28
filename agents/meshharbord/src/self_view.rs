@@ -602,11 +602,7 @@ impl SelfView {
         guard.insert(host.to_string(), entry);
     }
 
-    fn evict_pooled(
-        pool: &Mutex<HashMap<String, PooledClient>>,
-        host: &str,
-        candidate: Candidate,
-    ) {
+    fn evict_pooled(pool: &Mutex<HashMap<String, PooledClient>>, host: &str, candidate: Candidate) {
         let mut guard = pool.lock().unwrap_or_else(|p| p.into_inner());
         if guard.get(host).is_some_and(|e| e.candidate == candidate) {
             guard.remove(host);
@@ -919,10 +915,7 @@ impl SelfView {
 fn is_answer(resp: &Response) -> bool {
     matches!(
         resp,
-        Response::Devices(_)
-            | Response::Mesh(_)
-            | Response::GpuFleet(_)
-            | Response::GpuUsers(_)
+        Response::Devices(_) | Response::Mesh(_) | Response::GpuFleet(_) | Response::GpuUsers(_)
     )
 }
 
@@ -2093,10 +2086,7 @@ mod tests {
         let centre = "selfview-failover.fr134.invalid";
         let url = format!("http://{centre}");
 
-        mp::note_config(
-            &url,
-            &[stalled_addr.to_string(), healthy.addr.to_string()],
-        );
+        mp::note_config(&url, &[stalled_addr.to_string(), healthy.addr.to_string()]);
         mp::note_pushed(
             centre,
             &mp::Pushed {

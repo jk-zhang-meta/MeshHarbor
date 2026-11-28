@@ -11278,6 +11278,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
             );
         }
     }
+    #[allow(clippy::too_many_arguments)]
     async fn member(
         mut ws: Ws,
         agent: String,

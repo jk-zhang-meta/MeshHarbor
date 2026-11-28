@@ -391,6 +391,7 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
             false,
             false,
             false,
+            false,
             &[],
             None,
         )
@@ -582,6 +583,7 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
             false,
             false,
             false,
+            false,
             &[],
             None,
         )
@@ -617,6 +619,7 @@ async fn rename_propagates_to_live_overlay_node_with_dedup() {
             &missing.wg_public_key,
             missing.key_epoch,
             &[],
+            false,
             false,
             false,
             false,

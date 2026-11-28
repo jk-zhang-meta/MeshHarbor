@@ -32,7 +32,11 @@ const MAX_CARDS_PER_HOST: usize = 64;
 const MAX_COOLDOWNS_PER_HOST: usize = 256;
 
 fn gpu_host_link(tenant_id: ObjectId, agent_id: ObjectId) -> String {
-    format!("/tenant/{}/gpu?host={}", tenant_id.to_hex(), agent_id.to_hex())
+    format!(
+        "/tenant/{}/gpu?host={}",
+        tenant_id.to_hex(),
+        agent_id.to_hex()
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,9 +246,7 @@ impl AlertEvaluator {
                         });
                     }
                 }
-            } else if affirmatively_recovered
-                && let Some(prev) = host.machine_status_bad.take()
-            {
+            } else if affirmatively_recovered && let Some(prev) = host.machine_status_bad.take() {
                 let key = format!("machine:clear:{}", prev.wire());
                 if can_fire(host, &key, now_s, settings.cooldown_secs) {
                     fired.push(FiredAlert {
@@ -406,7 +408,9 @@ impl AlertEvaluator {
                                 item: BotAlertItem {
                                     severity: sev_str.into(),
                                     title_en: format!("{host_name} {card_label} health: {vh}"),
-                                    title_zh: format!("{host_name} {card_label} 健康状态异常：{vh}"),
+                                    title_zh: format!(
+                                        "{host_name} {card_label} 健康状态异常：{vh}"
+                                    ),
                                     body_en: format!(
                                         "{card_label} on {host_name} reported vendor health '{vh}'."
                                     ),
@@ -475,9 +479,10 @@ impl AlertEvaluator {
                         Some(ts) => card.last_xid_at.is_none_or(|prev| ts > prev),
                         None => xids.iter().any(|c| !card.last_xids.contains(c)),
                     };
-                    let xid_sev = if xids.iter().any(|&c| {
-                        meshharbor_remote_control::gpu::xid_severity(c) == "critical"
-                    }) {
+                    let xid_sev = if xids
+                        .iter()
+                        .any(|&c| meshharbor_remote_control::gpu::xid_severity(c) == "critical")
+                    {
                         "critical"
                     } else {
                         "warning"
@@ -489,8 +494,8 @@ impl AlertEvaluator {
                         });
                     if is_new_xid && (now_s >= card.xid_coalesce_until || escalated_hw_xid) {
                         let key = format!("fault:xid:{}", g.uuid);
-                        let allowed = escalated_hw_xid
-                            || can_fire(host, &key, now_s, settings.cooldown_secs);
+                        let allowed =
+                            escalated_hw_xid || can_fire(host, &key, now_s, settings.cooldown_secs);
                         if allowed {
                             if escalated_hw_xid {
                                 host.cooldowns.insert(key.clone(), now_s);
@@ -498,9 +503,11 @@ impl AlertEvaluator {
                             card.xid_coalesce_until = now_s + 180; // 3-minute Xid coalesce window
                             let list = xids
                                 .iter()
-                                .map(|&c| match meshharbor_remote_control::gpu::decode_nvidia_xid(c) {
-                                    Some(desc) => format!("{c} ({desc})"),
-                                    None => c.to_string(),
+                                .map(|&c| {
+                                    match meshharbor_remote_control::gpu::decode_nvidia_xid(c) {
+                                        Some(desc) => format!("{c} ({desc})"),
+                                        None => c.to_string(),
+                                    }
                                 })
                                 .collect::<Vec<_>>()
                                 .join(", ");
@@ -550,10 +557,14 @@ impl AlertEvaluator {
                                 event_key: key,
                                 item: BotAlertItem {
                                     severity: "warning".into(),
-                                    title_en: format!("{host_name} {card_label} thermal/HW throttling"),
+                                    title_en: format!(
+                                        "{host_name} {card_label} thermal/HW throttling"
+                                    ),
                                     title_zh: format!("{host_name} {card_label} 持续硬件/过温降频"),
                                     body_en: format!("{card_label} throttled for > 60 s{temp_en}."),
-                                    body_zh: format!("{card_label} 已持续降频超过 60 秒{temp_zh}。"),
+                                    body_zh: format!(
+                                        "{card_label} 已持续降频超过 60 秒{temp_zh}。"
+                                    ),
                                     users_summary: users_str.clone(),
                                     link: host_link.clone(),
                                 },
@@ -732,16 +743,29 @@ mod tests {
         let rep = free_report();
 
         // t=0: starts hold timer, no alert yet
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule)
+                .is_empty()
+        );
         // t=60: still under 120s hold
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1060, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1060, &settings, &rule)
+                .is_empty()
+        );
         // t=120: fires once!
         let f = eval.evaluate_report(tid, aid, "gpu-01", &rep, 1120, &settings, &rule);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].event_key, "free:available");
-        assert!(f[0].item.link.starts_with(&format!("/tenant/{}/gpu", tid.to_hex())));
+        assert!(
+            f[0].item
+                .link
+                .starts_with(&format!("/tenant/{}/gpu", tid.to_hex()))
+        );
         // t=150: stays free -> edge already active -> does NOT repeat
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1150, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1150, &settings, &rule)
+                .is_empty()
+        );
 
         // Busy briefly, then free again within 10 min cooldown -> suppressed!
         let mut busy = rep.clone();
@@ -753,13 +777,28 @@ mod tests {
             mem_mb: Some(40_000),
             ..Default::default()
         }]);
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &busy, 1200, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1250, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1400, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &busy, 1200, &settings, &rule)
+                .is_empty()
+        );
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1250, &settings, &rule)
+                .is_empty()
+        );
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1400, &settings, &rule)
+                .is_empty()
+        );
 
         // Past 10 min cooldown -> fires again!
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &busy, 1750, &settings, &rule).is_empty());
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1800, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &busy, 1750, &settings, &rule)
+                .is_empty()
+        );
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1800, &settings, &rule)
+                .is_empty()
+        );
         let f2 = eval.evaluate_report(tid, aid, "gpu-01", &rep, 1925, &settings, &rule);
         assert_eq!(f2.len(), 1);
     }
@@ -778,7 +817,10 @@ mod tests {
         let mut rep = free_report();
         rep.gpus[0].ecc_uncorrected = Some(0);
         rep.gpus[0].throttle = Some(vec!["thermal".into()]);
-        assert!(eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule).is_empty());
+        assert!(
+            eval.evaluate_report(tid, aid, "gpu-01", &rep, 1000, &settings, &rule)
+                .is_empty()
+        );
 
         // ECC increases + throttle > 60s
         rep.gpus[0].ecc_uncorrected = Some(2);
@@ -788,7 +830,10 @@ mod tests {
         assert!(keys.contains(&"fault:throttle:GPU-0"), "{keys:?}");
 
         // Offline > 5 min
-        assert!(eval.evaluate_offline(tid, aid, "gpu-01", 2000, &settings, &rule).is_none());
+        assert!(
+            eval.evaluate_offline(tid, aid, "gpu-01", 2000, &settings, &rule)
+                .is_none()
+        );
         let off = eval.evaluate_offline(tid, aid, "gpu-01", 2305, &settings, &rule);
         assert!(off.is_some());
         assert_eq!(off.unwrap().event_key, "machine:offline");
@@ -809,7 +854,10 @@ mod tests {
         stalled.status = GpuHostStatus::SamplerStalled;
         stalled.gpus.clear();
         let f1 = eval.evaluate_report(tid, aid, "node-1", &stalled, 1000, &settings, &rule);
-        assert!(f1.iter().any(|x| x.event_key == "machine:sampler_stalled"), "{f1:?}");
+        assert!(
+            f1.iter().any(|x| x.event_key == "machine:sampler_stalled"),
+            "{f1:?}"
+        );
 
         // 2. Transition to OffLocal must NOT fire "recovered"
         let mut off_local = stalled.clone();
@@ -825,7 +873,10 @@ mod tests {
         drv.status = GpuHostStatus::DriverMissing;
         drv.status_detail = Some("Detected 2 NVIDIA GPUs without driver".into());
         let f3 = eval.evaluate_report(tid, aid, "node-1", &drv, 1120, &settings, &rule);
-        assert!(f3.iter().any(|x| x.event_key == "machine:driver_missing"), "{f3:?}");
+        assert!(
+            f3.iter().any(|x| x.event_key == "machine:driver_missing"),
+            "{f3:?}"
+        );
 
         // 4. Ascend vendor_health warning fires separate alert, and throttle with temp_c=None omits 0°C
         let mut ascend = free_report();
@@ -836,12 +887,19 @@ mod tests {
         ascend.gpus[0].temp_c = None;
         ascend.gpus[0].throttle = Some(vec!["thermal".into()]);
         let f4a = eval.evaluate_report(tid, aid, "npu-1", &ascend, 2000, &settings, &rule);
-        assert!(f4a.iter().any(|x| x.event_key == "fault:vendor_health:ASCEND-0-0"));
+        assert!(
+            f4a.iter()
+                .any(|x| x.event_key == "fault:vendor_health:ASCEND-0-0")
+        );
         let f4b = eval.evaluate_report(tid, aid, "npu-1", &ascend, 2070, &settings, &rule);
         let th = f4b
             .iter()
             .find(|x| x.event_key == "fault:throttle:ASCEND-0-0")
             .expect("throttle alert");
-        assert!(!th.item.body_en.contains("0 °C"), "must not fabricate 0 °C: {}", th.item.body_en);
+        assert!(
+            !th.item.body_en.contains("0 °C"),
+            "must not fabricate 0 °C: {}",
+            th.item.body_en
+        );
     }
 }

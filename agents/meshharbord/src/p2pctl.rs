@@ -43,13 +43,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use meshharbor_remote_control::p2pctl::P2pDeviceInfo;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use meshharbor_remote_control::models::{ConsentMode, exec_limits, ssh_limits};
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use meshharbor_remote_control::offline_cap::{
     OfflineCapClaims, VERB_EXEC, VERB_SSH, VerifyContext, verify_offline_cap,
 };
+use meshharbor_remote_control::p2pctl::P2pDeviceInfo;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 use meshharbor_remote_control::p2pctl::{
     P2P_CTL_FIRST_FRAME_TIMEOUT, P2P_CTL_PORT, P2P_CTL_VERSION, P2pClientRequest, P2pHelloInit,
@@ -222,7 +222,11 @@ pub fn store_offline_cap(tenant_id: &str, token: &str) {
         {
             return;
         }
-        let key = (tenant_id.to_string(), claims.tgt.clone(), claims.verb.clone());
+        let key = (
+            tenant_id.to_string(),
+            claims.tgt.clone(),
+            claims.verb.clone(),
+        );
         let mut guard = cap_cache().lock().unwrap_or_else(|e| e.into_inner());
         guard.insert(
             key,
@@ -343,7 +347,9 @@ fn fit_exec_resp_to_frame(mut resp: P2pResp) -> P2pResp {
         if total_out == 0 {
             break;
         }
-        let trim_stdout = (excess * stdout.len()).div_ceil(total_out).min(stdout.len());
+        let trim_stdout = (excess * stdout.len())
+            .div_ceil(total_out)
+            .min(stdout.len());
         let trim_stderr = excess.saturating_sub(trim_stdout).min(stderr.len());
         if trim_stdout > 0 {
             let target = stdout.len().saturating_sub(trim_stdout);
@@ -541,7 +547,8 @@ fn reserve_offline_exec_once(
     let line = serde_json::to_string(&rec).map_err(|e| format!("encode replay record: {e}"))?;
     let mut f = open_private_append(&path)?;
     writeln!(f, "{line}").map_err(|e| format!("write replay record: {e}"))?;
-    f.sync_all().map_err(|e| format!("sync replay record: {e}"))?;
+    f.sync_all()
+        .map_err(|e| format!("sync replay record: {e}"))?;
     entries.insert(key, eff_exp_ms);
     Ok(())
 }
@@ -600,7 +607,9 @@ fn append_offline_audit(config_path: &Path, entry: &OfflineAuditEntry) -> Result
             path = %path.display(),
             "p2pctl: offline audit journal reached 512 KiB cap; refusing further writes until control-WS reconnect drains it"
         );
-        return Err("offline audit journal reached 512 KiB capacity — reconnect control-WS to flush".into());
+        return Err(
+            "offline audit journal reached 512 KiB capacity — reconnect control-WS to flush".into(),
+        );
     }
     let mut redacted = entry.clone();
     redacted.detail = crate::exec::redactor()
@@ -608,8 +617,8 @@ fn append_offline_audit(config_path: &Path, entry: &OfflineAuditEntry) -> Result
         .chars()
         .take(512)
         .collect();
-    let line = serde_json::to_string(&redacted)
-        .map_err(|e| format!("encode offline audit entry: {e}"))?;
+    let line =
+        serde_json::to_string(&redacted).map_err(|e| format!("encode offline audit entry: {e}"))?;
     let mut f = open_private_append(&path)?;
     writeln!(f, "{line}")
         .and_then(|()| f.sync_all())
@@ -644,7 +653,10 @@ pub fn drain_offline_audit_on_reconnect(config_path: &Path, tenant_id: &str) -> 
         let rotated = {
             let _guard = audit_io_lock().lock().unwrap_or_else(|e| e.into_inner());
             let mut segments: Vec<PathBuf> = Vec::new();
-            let prefix = format!("offline-audit-{}.jsonl.draining.", sanitize_component(tenant_id));
+            let prefix = format!(
+                "offline-audit-{}.jsonl.draining.",
+                sanitize_component(tenant_id)
+            );
             if let Some(dir) = path.parent()
                 && let Ok(rd) = std::fs::read_dir(dir)
             {
@@ -911,10 +923,7 @@ impl ServerCtx {
         }
     }
 
-    pub fn with_control_ws_attached(
-        mut self,
-        flag: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
+    pub fn with_control_ws_attached(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.control_ws_attached = Some(flag);
         self
     }
@@ -952,10 +961,7 @@ impl ServerCtx {
 
 /// Accept loop for intercepted TCP connections to `<overlay_ip>:41642`.
 #[cfg(feature = "overlay-netstack")]
-pub async fn accept_loop(
-    mut listener: tunnel_core::overlay::netstack::NsListener,
-    ctx: ServerCtx,
-) {
+pub async fn accept_loop(mut listener: tunnel_core::overlay::netstack::NsListener, ctx: ServerCtx) {
     struct PeerConnGuard {
         counts: Arc<Mutex<HashMap<Ipv4Addr, usize>>>,
         peer_ip: Ipv4Addr,
@@ -973,8 +979,7 @@ pub async fn accept_loop(
         }
     }
 
-    let per_peer_conns: Arc<Mutex<HashMap<Ipv4Addr, usize>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let per_peer_conns: Arc<Mutex<HashMap<Ipv4Addr, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     info!(
         port = P2P_CTL_PORT,
         tenant = %ctx.tenant_id,
@@ -1103,7 +1108,10 @@ fn handle_offline_ssh_grant(
         return err_resp("overlay network state unavailable".into(), None);
     };
     let Some(net_id) = network.network_id else {
-        return err_resp("offline capabilities require network_id in netmap".into(), None);
+        return err_resp(
+            "offline capabilities require network_id in netmap".into(),
+            None,
+        );
     };
     let net_hex = net_id.to_hex();
     let claims = match verify_offline_cap(
@@ -1129,7 +1137,10 @@ fn handle_offline_ssh_grant(
                     tenant_id: ctx.tenant_id.clone(),
                     verb: "ssh_grant".into(),
                     caller: peer.name.clone(),
-                    origin_agent_id: peer.agent_id.clone().unwrap_or_else(|| peer.node_id.clone()),
+                    origin_agent_id: peer
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| peer.node_id.clone()),
                     cap_jti: String::new(),
                     request_id: request_id.to_string(),
                     allowed: false,
@@ -1242,10 +1253,9 @@ fn handle_offline_ssh_grant(
             "SSH grants requiring the Windows SYSTEM service cannot run offline".into(),
             None,
         ),
-        crate::ssh::SshGrantAdmitOutcome::UnsupportedBuild => err_resp(
-            "this build lacks the `ssh-server` feature".into(),
-            None,
-        ),
+        crate::ssh::SshGrantAdmitOutcome::UnsupportedBuild => {
+            err_resp("this build lacks the `ssh-server` feature".into(), None)
+        }
     }
 }
 
@@ -1307,7 +1317,10 @@ async fn handle_offline_exec(
                     tenant_id: ctx.tenant_id.clone(),
                     verb: "exec".into(),
                     caller: peer.name.clone(),
-                    origin_agent_id: peer.agent_id.clone().unwrap_or_else(|| peer.node_id.clone()),
+                    origin_agent_id: peer
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| peer.node_id.clone()),
                     cap_jti: String::new(),
                     request_id,
                     allowed: false,
@@ -1926,8 +1939,10 @@ pub async fn query_device_info(
                         .get(&peer_ip)
                         .is_some_and(|cur| cur.wg_public_key == peer.wg_public_key)
                 {
-                    dir.info_cache
-                        .insert((peer_ip, peer.wg_public_key.clone()), (Instant::now(), info.clone()));
+                    dir.info_cache.insert(
+                        (peer_ip, peer.wg_public_key.clone()),
+                        (Instant::now(), info.clone()),
+                    );
                 }
                 Some(info)
             }
@@ -2180,10 +2195,10 @@ pub async fn exec_offline(
 #[cfg(all(test, any(feature = "overlay-l3", feature = "overlay-netstack")))]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use meshharbor_remote_control::offline_cap::{
         OFFLINE_CAP_AUDIENCE, OFFLINE_CAP_MAX_SKEW_SECS, OfflineCapSigner,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tunnel_core::overlay::WgKeypair;
 
     fn test_services_and_remote(
@@ -2508,9 +2523,13 @@ mod tests {
 
         // Origin offline SSH and exec also refuse legacy peers cleanly.
         let ssh_resp = ssh_session_offline(&tid, "legacy", "ssh-ed25519 AAAA", 60, None).await;
-        assert!(matches!(ssh_resp, Response::Error { ref message } if message.contains("does not support offline p2pctl")));
+        assert!(
+            matches!(ssh_resp, Response::Error { ref message } if message.contains("does not support offline p2pctl"))
+        );
         let exec_resp = exec_offline(&tid, "legacy", "sh", "id", 5000, None).await;
-        assert!(matches!(exec_resp, Response::Error { ref message } if message.contains("does not support offline p2pctl")));
+        assert!(
+            matches!(exec_resp, Response::Error { ref message } if message.contains("does not support offline p2pctl"))
+        );
         clear_tenant_directory(&tid);
     }
 
@@ -2624,7 +2643,9 @@ mod tests {
                 .unwrap();
                 srv.await.unwrap().unwrap();
                 match resp {
-                    P2pResp::SshGrant { error, grant_id, .. } => {
+                    P2pResp::SshGrant {
+                        error, grant_id, ..
+                    } => {
                         assert!(grant_id.is_none());
                         error.expect("negative cap must return error")
                     }
@@ -2645,7 +2666,11 @@ mod tests {
             now + 3600,
             None,
         );
-        assert!(run_neg(exec_cap, base_ctx.clone()).await.contains("verb mismatch"));
+        assert!(
+            run_neg(exec_cap, base_ctx.clone())
+                .await
+                .contains("verb mismatch")
+        );
 
         // 3. Cross-net -> refused.
         let other_net_cap = mint_cap(
@@ -2659,7 +2684,11 @@ mod tests {
             now + 3600,
             None,
         );
-        assert!(run_neg(other_net_cap, base_ctx.clone()).await.contains("network mismatch"));
+        assert!(
+            run_neg(other_net_cap, base_ctx.clone())
+                .await
+                .contains("network mismatch")
+        );
 
         // 4. Cross-target -> refused.
         let other_tgt_cap = mint_cap(
@@ -2673,7 +2702,11 @@ mod tests {
             now + 3600,
             None,
         );
-        assert!(run_neg(other_tgt_cap, base_ctx.clone()).await.contains("target device mismatch"));
+        assert!(
+            run_neg(other_tgt_cap, base_ctx.clone())
+                .await
+                .contains("target device mismatch")
+        );
 
         // 5. Wrong opk -> refused.
         let wrong_opk_cap = mint_cap(
@@ -2687,7 +2720,11 @@ mod tests {
             now + 3600,
             None,
         );
-        assert!(run_neg(wrong_opk_cap, base_ctx.clone()).await.contains("origin WireGuard key mismatch"));
+        assert!(
+            run_neg(wrong_opk_cap, base_ctx.clone())
+                .await
+                .contains("origin WireGuard key mismatch")
+        );
 
         // 6. Expired -> refused.
         let expired_cap = mint_cap(
@@ -2701,7 +2738,11 @@ mod tests {
             now - 10,
             None,
         );
-        assert!(run_neg(expired_cap, base_ctx.clone()).await.contains("expired"));
+        assert!(
+            run_neg(expired_cap, base_ctx.clone())
+                .await
+                .contains("expired")
+        );
 
         // 7. Clock skew (future iat) -> refused.
         let skewed_cap = mint_cap(
@@ -2715,13 +2756,21 @@ mod tests {
             now + 7200,
             None,
         );
-        assert!(run_neg(skewed_cap, base_ctx.clone()).await.contains("clock skew"));
+        assert!(
+            run_neg(skewed_cap, base_ctx.clone())
+                .await
+                .contains("clock skew")
+        );
 
         // 8. Pre-not_before_ms revocation -> refused.
         let mut revoked_ctx = base_ctx.clone();
         revoked_ctx.net_override = Some((
             "100.64.0.22".into(),
-            test_net(net_id, signer.public_keys_b64().to_vec(), Some((now - 10) * 1000)),
+            test_net(
+                net_id,
+                signer.public_keys_b64().to_vec(),
+                Some((now - 10) * 1000),
+            ),
         ));
         assert!(run_neg(valid_cap, revoked_ctx).await.contains("not_before"));
     }

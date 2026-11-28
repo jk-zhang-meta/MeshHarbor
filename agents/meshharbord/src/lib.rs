@@ -21,9 +21,6 @@ pub use meshharbor_node_core::{
 pub mod apps;
 /// FR-97 P0d — the machine's native CPU architecture, for the hello.
 pub(crate) mod arch;
-/// FR-90 P2h-1 — `meshharbord enroll --archive-replica`: an archive replica's
-/// posture, written with the enrolled config.
-pub mod archive_replica;
 pub mod artifact_version;
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -38,15 +35,12 @@ pub mod companion;
 pub mod consent;
 pub mod crash_uploader;
 pub mod delegate;
-pub mod device_name;
-pub mod personal_system_exec;
-/// FR-141 — Sealed short-lived remote-desktop restart continuity records.
-pub mod rc_continuity;
 #[cfg(unix)]
 pub mod delegate_worker;
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
 pub mod derp;
 pub mod desktop_brief;
+pub mod device_name;
 pub mod display_match;
 pub mod displays;
 #[cfg(target_os = "windows")]
@@ -83,16 +77,6 @@ pub mod gpu_clock;
 /// vendor backends (NVML/AMD/Intel/Apple/PDH/fake), supervisor, and loopback
 /// Prometheus `/metrics`.
 pub mod gpu_sampler;
-/// FR-90 — Hive agent sessions on this device (`hive_enabled`, default off).
-/// Linux, macOS and Windows (`cfg(hive_host)`, set by `build.rs`): elsewhere
-/// the feature compiles nothing here and the build does not advertise `hive`,
-/// so no server sends it a session.
-#[cfg(hive_host)]
-pub mod hive;
-/// FR-90 P1i — agent sessions on Windows: the console user, the harness, the
-/// session's preparation, its toolbelt pipe and its directories' DACLs.
-#[cfg(all(windows, feature = "hive"))]
-pub mod hive_win;
 /// FR-99 P4 — the host's speakers are muted while a privacy curtain is up, and
 /// restored after it, after a crash too; the controller keeps the audio.
 pub mod host_mute;
@@ -122,7 +106,10 @@ pub mod macos_supervisor;
 pub mod mdns_resolve;
 pub mod mem_trim;
 pub mod mgmt_entry;
+pub mod personal_system_exec;
 pub mod power;
+/// FR-141 — Sealed short-lived remote-desktop restart continuity records.
+pub mod rc_continuity;
 pub mod remote_config;
 // P5 — crate-private: its surface leans on `peer::TargetResolution`
 // (pub(crate)) and nothing outside the agent consumes it. Compiled on
@@ -282,15 +269,6 @@ pub mod thread_dump;
 pub mod token_renewal;
 pub mod tunnel;
 pub mod updater;
-/// FR-90 P3-3 — the device's vault key: made while `vault_enabled` is on, in
-/// memory only, its public half in the primary enrollment's hello. Compiled
-/// everywhere; without the `vault` feature it makes nothing.
-pub mod vault;
-/// FR-90 P3-5 — the vault's proxies: an endpoint that authenticates upstream
-/// with a leased value. P3-5b-1 builds the engine; the endpoint
-/// (`hive::vault_connect`, P3-5b-2, and P3-5b-4 on Windows) serves it.
-#[cfg(feature = "vault")]
-pub(crate) mod vault_proxy;
 pub mod version_sweep;
 pub mod virtual_desktop;
 pub mod watchdog;

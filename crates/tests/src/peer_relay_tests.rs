@@ -690,7 +690,10 @@ async fn admin_relay_policy_pushes_peer_relay_serve_live_and_on_reconnect() {
     let rev1 = pushed_on["revision"]
         .as_u64()
         .expect("bumped revision on PUT serve=true");
-    assert!(rev1 > rev0, "revision must increase monotonically: {rev1} <= {rev0}");
+    assert!(
+        rev1 > rev0,
+        "revision must increase monotonically: {rev1} <= {rev0}"
+    );
 
     // 3. Offline/reconnecting agent reconciles immediately on WS connect with `rev1`.
     drop(ws);
@@ -711,5 +714,8 @@ async fn admin_relay_policy_pushes_peer_relay_serve_live_and_on_reconnect() {
     let rev2 = pushed_off["revision"]
         .as_u64()
         .expect("bumped revision on PUT serve=false");
-    assert!(rev2 > rev1, "revision must increase monotonically: {rev2} <= {rev1}");
+    assert!(
+        rev2 > rev1,
+        "revision must increase monotonically: {rev2} <= {rev1}"
+    );
 }

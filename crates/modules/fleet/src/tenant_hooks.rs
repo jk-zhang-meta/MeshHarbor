@@ -50,7 +50,9 @@ impl TenantLifecycle for FleetTenantHooks {
                 crate::removal::kick(&self.state, id, self.state.settings.rc.removal_goodbye).await;
             }
         }
-        self.state.gpu.revoke_ws_for_tenant(&self.state.rc_hub, tenant_id);
+        self.state
+            .gpu
+            .revoke_ws_for_tenant(&self.state.rc_hub, tenant_id);
         Ok(TenantArchived {
             devices_revoked,
             ..TenantArchived::default()
@@ -73,6 +75,5 @@ pub fn hooks(state: &FleetState) -> meshharbor_core::Hooks {
             state: state.clone(),
         })),
         fleet: None,
-        session: None,
     }
 }

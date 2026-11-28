@@ -83,8 +83,13 @@ fn resolve_windows_system32_nvml() -> Option<std::path::PathBuf> {
     // SAFETY: `dll` is NUL-terminated UTF-16; `LOAD_LIBRARY_SEARCH_SYSTEM32`
     // restricts search strictly to System32. NVML is intentionally never
     // unloaded across the lifetime of the child process.
-    let module =
-        unsafe { LoadLibraryExW(dll.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    let module = unsafe {
+        LoadLibraryExW(
+            dll.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
     if module.is_null() {
         return None;
     }
@@ -385,16 +390,15 @@ impl NvmlBackend {
                     .unwrap_or_else(|| format!("nvidia-{idx}")),
             };
 
-            let name = dev.name().ok().or_else(|| {
-                self.last_identity
-                    .get(&idx)
-                    .and_then(|r| r.name.clone())
-            });
-            let pci_bus = dev.pci_info().ok().map(|p| p.bus_id).or_else(|| {
-                self.last_identity
-                    .get(&idx)
-                    .and_then(|r| r.pci_bus.clone())
-            });
+            let name = dev
+                .name()
+                .ok()
+                .or_else(|| self.last_identity.get(&idx).and_then(|r| r.name.clone()));
+            let pci_bus = dev
+                .pci_info()
+                .ok()
+                .map(|p| p.bus_id)
+                .or_else(|| self.last_identity.get(&idx).and_then(|r| r.pci_bus.clone()));
             self.last_identity.insert(
                 idx,
                 RememberedIdentity {

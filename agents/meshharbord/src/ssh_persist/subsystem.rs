@@ -493,8 +493,8 @@ async fn relay_loop(
                         Ok(Some(IpcFrame::Wire(WireFrame::Exited(st)))) => {
                             mark_ended(&sid, st.clone());
                             terminated_or_exited = true;
-                            let _ = send_wire(&ctx.handle, ctx.channel, &WireFrame::Exited(st))
-                                .await;
+                            let _ =
+                                send_wire(&ctx.handle, ctx.channel, &WireFrame::Exited(st)).await;
                             break;
                         }
                         Ok(Some(IpcFrame::Wire(other))) => {
@@ -577,10 +577,7 @@ async fn send_wire(
     frame: &WireFrame,
 ) -> Result<(), ()> {
     let raw = frame.encode().map_err(|_| ())?;
-    handle
-        .data(channel, raw)
-        .await
-        .map_err(|_| ())
+    handle.data(channel, raw).await.map_err(|_| ())
 }
 
 async fn await_subsystem_consent(

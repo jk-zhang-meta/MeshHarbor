@@ -144,41 +144,6 @@ fn org_cost(mine: Option<&HashMap<String, f64>>, costs: &RelayCosts) -> Option<f
     any_priced.then_some(total)
 }
 
-/// FR-102 P4 — each org's priced cost over `range` (`24h|7d|30d|1y`), for
-/// the revenue view's margin: the same ledger and the same prices as
-/// [`admin_cost`], so the two cannot disagree on what an org cost.
-pub(crate) struct OrgCosts {
-    /// `relay_costs.currency` — the unit the costs are in (major units).
-    pub currency: Option<String>,
-    /// Whether any monitored meter carries a price.
-    pub priced: bool,
-    /// Tenant (hex) → its priced cost; an org with no ledger rows is absent
-    /// (`0.0` when priced — a monitored meter's zero is a measurement).
-    pub per_org: HashMap<String, f64>,
-}
-
-impl OrgCosts {
-    /// One org's cost: `None` when nothing is priced.
-    pub fn of(&self, tenant_hex: &str) -> Option<f64> {
-        self.priced
-            .then(|| self.per_org.get(tenant_hex).copied().unwrap_or(0.0))
-    }
-}
-
-pub(crate) async fn org_costs(state: &Core, range: &str) -> Result<OrgCosts, ApiError> {
-    let (window, tier) = range_spec(Some(range))?;
-    let costs = &state.settings.relay_costs;
-    let (per_org, _) = usage_per_org(state, window, tier).await?;
-    Ok(OrgCosts {
-        currency: costs.currency.clone(),
-        priced: costs.derp_gb.is_some() || costs.sfu_participant_hour.is_some(),
-        per_org: per_org
-            .iter()
-            .filter_map(|(t, mine)| Some((t.clone(), org_cost(Some(mine), costs)?)))
-            .collect(),
-    })
-}
-
 /// `GET /api/admin/stats/cost?range=24h|7d|30d|1y` — per-org metered cost,
 /// list-price MRR, and the fleet carrier mix.
 pub async fn admin_cost(
@@ -607,18 +572,5 @@ mod tests {
         let c = org_cost(Some(&used), &priced()).unwrap();
         assert!((c - 0.058).abs() < 1e-9, "{c}");
         assert_eq!(org_cost(None, &priced()), Some(0.0));
-
-        let costs = OrgCosts {
-            currency: Some("EUR".into()),
-            priced: true,
-            per_org: HashMap::from([("a".to_string(), 1.5)]),
-        };
-        assert_eq!(costs.of("a"), Some(1.5));
-        assert_eq!(costs.of("b"), Some(0.0), "priced, no ledger rows: a zero");
-        let unpriced = OrgCosts {
-            priced: false,
-            ..costs
-        };
-        assert_eq!(unpriced.of("a"), None);
     }
 }

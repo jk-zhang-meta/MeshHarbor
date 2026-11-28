@@ -121,18 +121,18 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let agent_map: HashMap<ObjectId, meshharbor_remote_control::models::Agent> = if devices.is_empty()
-    {
-        HashMap::new()
-    } else {
-        AgentDao::new(&core.db)
-            .base
-            .find_by_ids(&devices)
-            .await?
-            .into_iter()
-            .filter_map(|a| a.id.map(|id| (id, a)))
-            .collect()
-    };
+    let agent_map: HashMap<ObjectId, meshharbor_remote_control::models::Agent> =
+        if devices.is_empty() {
+            HashMap::new()
+        } else {
+            AgentDao::new(&core.db)
+                .base
+                .find_by_ids(&devices)
+                .await?
+                .into_iter()
+                .filter_map(|a| a.id.map(|id| (id, a)))
+                .collect()
+        };
     let gpu_device_ids: Vec<ObjectId> = agent_map
         .iter()
         .filter(|(_, a)| a.gpu_server)
@@ -152,8 +152,9 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
         while let Ok(Some(d)) = cur.try_next().await {
             if let Ok(aid) = d.get_object_id("_id")
                 && let Ok(rep_bson) = d.get_document("report")
-                && let Ok(rep) =
-                    bson::from_document::<meshharbor_remote_control::gpu::GpuReport>(rep_bson.clone())
+                && let Ok(rep) = bson::from_document::<meshharbor_remote_control::gpu::GpuReport>(
+                    rep_bson.clone(),
+                )
             {
                 let gpu_total = rep.gpus.len();
                 let gpu_free = rep
@@ -161,10 +162,7 @@ async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareVi
                     .iter()
                     .filter(|g| {
                         meshharbor_remote_control::gpu::classify_gpu_state(
-                            rep.status,
-                            g,
-                            now_s,
-                            thresholds,
+                            rep.status, g, now_s, thresholds,
                         ) == meshharbor_remote_control::gpu::GpuState::Free
                     })
                     .count();

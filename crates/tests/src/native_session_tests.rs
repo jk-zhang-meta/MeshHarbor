@@ -369,7 +369,7 @@ async fn enrollment_only_omits_session_and_pkce_deny_replay_or_unverified_email_
 
 #[tokio::test]
 async fn agent_jwt_and_sidless_jwt_cannot_handoff_or_revoke_and_ws_revokes_without_account_approval()
-{
+ {
     let app = TestApp::spawn_with_settings(|s| {
         s.auth.native_device_login_enabled = true;
         s.auth.account_approval.enabled = false;
@@ -511,13 +511,28 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
             (id, tok)
         }
     };
-    let (_, owner_access_sidless) = mk_user("owner-sso@example.test", "owner_sso", Some(owner_oid)).await;
-    let (recipient_oid, recipient_access_sidless) = mk_user("recipient-sso@example.test", "recipient_sso", None).await;
-    let (_outsider_oid, outsider_access_sidless) = mk_user("outsider-sso@example.test", "outsider_sso", None).await;
-    struct SimpleUser { id: String, access_token: String }
-    let owner = SimpleUser { id: owner_oid.to_hex(), access_token: owner_access_sidless };
-    let recipient = SimpleUser { id: recipient_oid.to_hex(), access_token: recipient_access_sidless };
-    let outsider = SimpleUser { id: String::new(), access_token: outsider_access_sidless };
+    let (_, owner_access_sidless) =
+        mk_user("owner-sso@example.test", "owner_sso", Some(owner_oid)).await;
+    let (recipient_oid, recipient_access_sidless) =
+        mk_user("recipient-sso@example.test", "recipient_sso", None).await;
+    let (_outsider_oid, outsider_access_sidless) =
+        mk_user("outsider-sso@example.test", "outsider_sso", None).await;
+    struct SimpleUser {
+        id: String,
+        access_token: String,
+    }
+    let owner = SimpleUser {
+        id: owner_oid.to_hex(),
+        access_token: owner_access_sidless,
+    };
+    let recipient = SimpleUser {
+        id: recipient_oid.to_hex(),
+        access_token: recipient_access_sidless,
+    };
+    let outsider = SimpleUser {
+        id: String::new(),
+        access_token: outsider_access_sidless,
+    };
     let tenant_oid = app
         .state
         .tenants
@@ -640,7 +655,10 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
         if let Some(o) = bad_consume_origin {
             req = req.header("Origin", o);
         }
-        assert!(matches!(req.send().await.unwrap().status().as_u16(), 401 | 403));
+        assert!(matches!(
+            req.send().await.unwrap().status().as_u16(),
+            401 | 403
+        ));
     }
 
     // Valid consume returns 303 to fixed subpath landing + HttpOnly cookies preserving native_sid
@@ -660,9 +678,8 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
         .unwrap()
         .to_owned();
     assert!(
-        location.starts_with(
-            "https://www.itachi.fans/meshharbor/native-session-complete?handoff_id="
-        ),
+        location
+            .starts_with("https://www.itachi.fans/meshharbor/native-session-complete?handoff_id="),
         "unexpected location: {location}"
     );
     assert!(!location.contains(ticket));
@@ -855,7 +872,10 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
     // Credential security_rev bump invalidates browser handoff refresh cookie too
     app.db
         .collection::<User>("users")
-        .update_one(doc! {"_id": owner_oid}, doc! {"$inc": {"security_rev": 1_i64}})
+        .update_one(
+            doc! {"_id": owner_oid},
+            doc! {"$inc": {"security_rev": 1_i64}},
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -871,7 +891,6 @@ async fn handoff_enforces_loopback_origin_single_use_cookie_only_complete_and_li
         401
     );
 }
-
 
 #[tokio::test]
 async fn real_node_core_user_session_and_browser_handoff_roundtrip_against_test_app() {
@@ -892,7 +911,11 @@ async fn real_node_core_user_session_and_browser_handoff_roundtrip_against_test_
         meshharbor_api::build_router(app.state.clone()),
     );
     let edge_task = tokio::spawn(async move {
-        let _ = axum::serve(edge_listener, edge_router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
+        let _ = axum::serve(
+            edge_listener,
+            edge_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
     });
 
     let owner = app
@@ -1016,15 +1039,17 @@ async fn real_node_core_user_session_and_browser_handoff_roundtrip_against_test_
     edge_task.abort();
 }
 
-
 #[tokio::test]
-async fn logout_propagates_db_failure_supports_refresh_before_revoke_and_rejects_empty_refresh_body() {
+async fn logout_propagates_db_failure_supports_refresh_before_revoke_and_rejects_empty_refresh_body()
+ {
     let (app1, app2) = Box::pin(TestApp::spawn_pair(|s| {
         s.auth.native_device_login_enabled = true;
         s.app.frontend_url = "https://www.itachi.fans/meshharbor".into();
         // Fast Mongo failure detection once DbGate is severed so the test stays snappy.
         if !s.database.url.contains('?') {
-            s.database.url.push_str("?serverSelectionTimeoutMS=400&connectTimeoutMS=400");
+            s.database
+                .url
+                .push_str("?serverSelectionTimeoutMS=400&connectTimeoutMS=400");
         }
     }))
     .await;
@@ -1185,7 +1210,10 @@ async fn logout_propagates_db_failure_supports_refresh_before_revoke_and_rejects
         }
     })
     .await;
-    assert!(ws_closed.is_ok(), "existing WS must close after logout revokes native_sid");
+    assert!(
+        ws_closed.is_ok(),
+        "existing WS must close after logout revokes native_sid"
+    );
 }
 
 #[tokio::test]
@@ -1408,7 +1436,6 @@ async fn ws_upgrade_preserves_403_401_and_503_admission_statuses() {
         .unwrap();
     assert_eq!(stale_rev_ws.status().as_u16(), 401);
 }
-
 
 #[tokio::test]
 async fn personal_device_login_mints_anchor_token_and_defaults_to_system_privileges() {
@@ -1704,7 +1731,10 @@ async fn native_session_mints_a_promotion_token_only_with_manage_agents() {
     )
     .await
     .unwrap_err();
-    assert!(err.downcast_ref::<EnrollmentNotPermitted>().is_some(), "{err:#}");
+    assert!(
+        err.downcast_ref::<EnrollmentNotPermitted>().is_some(),
+        "{err:#}"
+    );
 
     // Once the session is revoked (tray sign-out) it mints nothing.
     let revoked = app

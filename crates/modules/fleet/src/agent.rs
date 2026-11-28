@@ -831,7 +831,9 @@ pub async fn self_unenroll(
         crate::device_invite::grant_for_agent(&state, agent.agent_id).await?
     };
     if !agent.agent.ephemeral && temporary.is_none() {
-        return Err(ApiError::Forbidden(PERMANENT_SELF_REMOVAL_REFUSAL.to_string()));
+        return Err(ApiError::Forbidden(
+            PERMANENT_SELF_REMOVAL_REFUSAL.to_string(),
+        ));
     }
     // The reason is what keeps the removal's kick from telling a device that
     // is already leaving (#2267).
@@ -2112,15 +2114,14 @@ fn to_agent_response(
     let peer_auth_key = peer_auth_fingerprint
         .is_some()
         .then(|| a.peer_auth_key.clone());
-    let egress_ip = a
-        .id
-        .and_then(|aid| state.rc_hub.agent_live_public_ip(aid))
-        .or_else(|| {
-            a.public_ip
-                .as_deref()
-                .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-                .and_then(meshharbor_core::user_analytics::canonical_public_ip)
-        });
+    let egress_ip =
+        a.id.and_then(|aid| state.rc_hub.agent_live_public_ip(aid))
+            .or_else(|| {
+                a.public_ip
+                    .as_deref()
+                    .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    .and_then(meshharbor_core::user_analytics::canonical_public_ip)
+            });
     let public_ip = egress_ip.map(|ip| ip.to_string());
     let geo = crate::socket::lookup_display_location(
         &state.core.geoip,

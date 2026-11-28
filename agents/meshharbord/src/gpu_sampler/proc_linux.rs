@@ -21,11 +21,7 @@ use std::io::ErrorKind;
 
 /// Truncate an executable basename to at most 32 Unicode scalar values.
 pub fn truncate_proc_name(raw: &str) -> String {
-    let base = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(raw)
-        .trim();
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
     let mut out = String::new();
     for ch in base.chars().take(32) {
         out.push(ch);
@@ -51,7 +47,11 @@ pub fn parse_cgroup_attribution(cgroup_text: &str) -> Option<String> {
             for seg in path.split('/') {
                 if let Some(rest) = seg.strip_prefix("pod") {
                     let uid = rest.trim_end_matches(".slice");
-                    let short: String = uid.chars().filter(|c| *c != '_' && *c != '-').take(12).collect();
+                    let short: String = uid
+                        .chars()
+                        .filter(|c| *c != '_' && *c != '-')
+                        .take(12)
+                        .collect();
                     if !short.is_empty() {
                         return Some(format!("k8s:{short}"));
                     }
@@ -59,7 +59,11 @@ pub fn parse_cgroup_attribution(cgroup_text: &str) -> Option<String> {
                 if let Some(pos) = seg.find("-pod") {
                     let uid = &seg[pos + 4..];
                     let uid = uid.trim_end_matches(".slice");
-                    let short: String = uid.chars().filter(|c| *c != '_' && *c != '-').take(12).collect();
+                    let short: String = uid
+                        .chars()
+                        .filter(|c| *c != '_' && *c != '-')
+                        .take(12)
+                        .collect();
                     if !short.is_empty() {
                         return Some(format!("k8s:{short}"));
                     }
@@ -200,8 +204,10 @@ impl ProcLookup {
             attr.container = parse_cgroup_attribution(&cg);
         }
 
-        if let (Some(boot), Ok(stat)) = (self.boot_time_s, fs::read_to_string(format!("/proc/{pid}/stat")))
-            && let Some(rparen) = stat.rfind(')')
+        if let (Some(boot), Ok(stat)) = (
+            self.boot_time_s,
+            fs::read_to_string(format!("/proc/{pid}/stat")),
+        ) && let Some(rparen) = stat.rfind(')')
         {
             // Field 22 (1-indexed) is starttime in clock ticks since boot;
             // after `)` field 3 is index 0, so starttime is index 19.
@@ -246,9 +252,7 @@ mod tests {
             Some("docker:0123456789ab".into())
         );
         assert_eq!(
-            parse_cgroup_attribution(
-                "12:memory:/docker/abcdef1234567890abcdef\n"
-            ),
+            parse_cgroup_attribution("12:memory:/docker/abcdef1234567890abcdef\n"),
             Some("docker:abcdef123456".into())
         );
         assert_eq!(
@@ -258,9 +262,7 @@ mod tests {
             Some("k8s:9f8e7d6c1234".into())
         );
         assert_eq!(
-            parse_cgroup_attribution(
-                "0::/system.slice/vllm-worker.service\n"
-            ),
+            parse_cgroup_attribution("0::/system.slice/vllm-worker.service\n"),
             Some("systemd:vllm-worker".into())
         );
         assert_eq!(parse_cgroup_attribution("0::/\n"), None);

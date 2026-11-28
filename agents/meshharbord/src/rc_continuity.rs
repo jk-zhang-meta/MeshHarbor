@@ -297,7 +297,10 @@ pub fn load_and_consume_from_dir(dir: &Path) -> usize {
     let envelope = match serde_json::from_slice::<SealedContinuityFile>(&raw) {
         Ok(v) if v.version == 1 => v,
         Ok(v) => {
-            warn!(version = v.version, "fr141: unsupported rc-continuity file version");
+            warn!(
+                version = v.version,
+                "fr141: unsupported rc-continuity file version"
+            );
             return 0;
         }
         Err(e) => {
@@ -360,22 +363,27 @@ pub fn load_and_consume_from_dir(dir: &Path) -> usize {
         }
     }
     if loaded > 0 {
-        info!(count = loaded, "fr141: loaded sealed rc-continuity records on boot");
+        info!(
+            count = loaded,
+            "fr141: loaded sealed rc-continuity records on boot"
+        );
     }
     loaded
 }
 
 /// Peek the approved `Ask` feature bitmask for an unexpired record (non-consuming)
 /// so pre-masking can check whether a feature was already host-approved.
-pub fn peek_approved_ask_bits(prev_sid: ObjectId, org_id: &str, controller_user_id: ObjectId) -> u8 {
+pub fn peek_approved_ask_bits(
+    prev_sid: ObjectId,
+    org_id: &str,
+    controller_user_id: ObjectId,
+) -> u8 {
     let now = now_unix_ms();
     let g = store().lock().unwrap_or_else(|e| e.into_inner());
     let user_hex = controller_user_id.to_hex();
     g.pending
         .get(&prev_sid)
-        .filter(|r| {
-            r.expires_at_ms > now && r.org_id == org_id && r.controller_user_id == user_hex
-        })
+        .filter(|r| r.expires_at_ms > now && r.org_id == org_id && r.controller_user_id == user_hex)
         .map_or(0, |r| r.approved_ask_bits)
 }
 
@@ -398,7 +406,9 @@ pub fn take_matching(req: MatchRequest<'_>) -> Option<MatchedContinuity> {
     let no_audio_escalation = !req.requested_audio || rec.audio_enabled;
     let two_factor_ok = match req.current_two_factor_fp {
         None => true,
-        Some(cur_fp) => cur_fp != "unreadable" && rec.two_factor_fingerprint.as_deref() == Some(cur_fp),
+        Some(cur_fp) => {
+            cur_fp != "unreadable" && rec.two_factor_fingerprint.as_deref() == Some(cur_fp)
+        }
     };
     let consent_authority_ok = !req.requires_owner_side_consent || rec.owner_side_approved;
 
@@ -509,12 +519,48 @@ mod tests {
         };
 
         // Wrong org / wrong user / permission escalation / audio escalation / changed 2FA / newly required owner consent all fail.
-        assert!(take_matching(MatchRequest { org_id: "org-beta", ..base }).is_none());
-        assert!(take_matching(MatchRequest { controller_user_id: other_user, ..base }).is_none());
-        assert!(take_matching(MatchRequest { requested_permissions_bits: 0b0111, ..base }).is_none());
-        assert!(take_matching(MatchRequest { requested_audio: true, ..base }).is_none());
-        assert!(take_matching(MatchRequest { current_two_factor_fp: Some("fp-v2"), ..base }).is_none());
-        assert!(take_matching(MatchRequest { requires_owner_side_consent: true, ..base }).is_none());
+        assert!(
+            take_matching(MatchRequest {
+                org_id: "org-beta",
+                ..base
+            })
+            .is_none()
+        );
+        assert!(
+            take_matching(MatchRequest {
+                controller_user_id: other_user,
+                ..base
+            })
+            .is_none()
+        );
+        assert!(
+            take_matching(MatchRequest {
+                requested_permissions_bits: 0b0111,
+                ..base
+            })
+            .is_none()
+        );
+        assert!(
+            take_matching(MatchRequest {
+                requested_audio: true,
+                ..base
+            })
+            .is_none()
+        );
+        assert!(
+            take_matching(MatchRequest {
+                current_two_factor_fp: Some("fp-v2"),
+                ..base
+            })
+            .is_none()
+        );
+        assert!(
+            take_matching(MatchRequest {
+                requires_owner_side_consent: true,
+                ..base
+            })
+            .is_none()
+        );
 
         // Matching subset with same 2FA fingerprint succeeds once and returns preserved policy metadata.
         let matched = take_matching(base).expect("must match");

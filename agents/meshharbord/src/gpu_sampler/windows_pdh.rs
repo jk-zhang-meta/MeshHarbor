@@ -65,7 +65,7 @@ pub fn lookup_unambiguous_vram_mb(
 /// keyed by `(pid, adapter_luid)` to avoid summing across multiple GPUs.
 #[cfg(windows)]
 pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
-    use std::ffi::{c_void, OsStr};
+    use std::ffi::{OsStr, c_void};
     use std::os::windows::ffi::OsStrExt;
 
     type PdhStatus = i32;
@@ -113,8 +113,13 @@ pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
     };
     let dll_w: Vec<u16> = "pdh.dll\0".encode_utf16().collect();
     // SAFETY: NUL-terminated UTF-16; System32-only search flag.
-    let module =
-        unsafe { LoadLibraryExW(dll_w.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    let module = unsafe {
+        LoadLibraryExW(
+            dll_w.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
     if module.is_null() {
         return out;
     }
@@ -142,8 +147,7 @@ pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
         let Some(p_collect) = GetProcAddress(module, c"PdhCollectQueryData".as_ptr().cast()) else {
             return out;
         };
-        let Some(p_arr) =
-            GetProcAddress(module, c"PdhGetFormattedCounterArrayW".as_ptr().cast())
+        let Some(p_arr) = GetProcAddress(module, c"PdhGetFormattedCounterArrayW".as_ptr().cast())
         else {
             return out;
         };
@@ -187,8 +191,15 @@ pub fn sample_process_vram_mb() -> HashMap<(u32, String), u32> {
         if st == PDH_MORE_DATA && buf_size > 0 && item_count > 0 {
             let mut buf = vec![0u8; buf_size as usize];
             let items_ptr = buf.as_mut_ptr() as *mut PdhFmtCountervalueItemW;
-            if unsafe { get_arr(counter, PDH_FMT_LARGE, &mut buf_size, &mut item_count, items_ptr) }
-                == 0
+            if unsafe {
+                get_arr(
+                    counter,
+                    PDH_FMT_LARGE,
+                    &mut buf_size,
+                    &mut item_count,
+                    items_ptr,
+                )
+            } == 0
             {
                 let items = unsafe { std::slice::from_raw_parts(items_ptr, item_count as usize) };
                 for item in items {

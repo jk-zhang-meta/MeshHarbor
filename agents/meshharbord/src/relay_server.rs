@@ -756,9 +756,7 @@ machine_name = "box"
         remote_cfg.persist_relay_server_enabled(true).await.unwrap();
         assert!(orgrelay::relay_server_enabled());
         assert_eq!(
-            crate::config::load(&cfg_path)
-                .unwrap()
-                .relay_server_enabled,
+            crate::config::load(&cfg_path).unwrap().relay_server_enabled,
             Some(true)
         );
         assert!(set_serving_on_port(true, 0).await);
@@ -796,13 +794,16 @@ machine_name = "box"
         assert_eq!(listening_port(), None);
         assert!(stats().is_none() && handle().is_none());
         assert_eq!(
-            crate::config::load(&cfg_path)
-                .unwrap()
-                .relay_server_enabled,
+            crate::config::load(&cfg_path).unwrap().relay_server_enabled,
             Some(false)
         );
         let caps_off = crate::encode::caps::detect();
-        assert!(caps_off.rpc.iter().any(|c| c == RpcCap::RelayControl.wire()));
+        assert!(
+            caps_off
+                .rpc
+                .iter()
+                .any(|c| c == RpcCap::RelayControl.wire())
+        );
         assert!(!caps_off.rpc.iter().any(|c| c == RpcCap::RelayServer.wire()));
 
         // 3. Re-enabling starts cleanly again without restarting the daemon.
@@ -1214,7 +1215,7 @@ machine_name = "box"
 
     #[tokio::test]
     async fn apply_server_policy_protects_backbone_endpoints_against_stale_and_duplicate_equal_revisions()
-    {
+     {
         let _guard = global_state_test_lock().lock().await;
         set_serving(false).await;
         let dir = tempfile::tempdir().unwrap();
@@ -1248,7 +1249,9 @@ machine_name = "box"
         assert_eq!(runtime_server_backbone_endpoints(), ep_initial);
 
         // 2. Stale composite revision (`rev_stale < rev_v1`) is rejected (`false`) and preserves endpoints.
-        assert!(!apply_server_policy_on_port(true, Some(rev_stale), &ep_obsolete, &remote_cfg, 0).await);
+        assert!(
+            !apply_server_policy_on_port(true, Some(rev_stale), &ep_obsolete, &remote_cfg, 0).await
+        );
         assert!(orgrelay::relay_server_enabled());
         assert_eq!(runtime_server_backbone_endpoints(), ep_initial);
 
@@ -1257,7 +1260,9 @@ machine_name = "box"
         //    or `SERVER_BACKBONE_ENDPOINTS` even if a racing payload carried obsolete endpoints or serve=false!
         let mut readiness_rx = readiness();
         let _ = readiness_rx.borrow_and_update();
-        assert!(apply_server_policy_on_port(false, Some(rev_v1), &ep_obsolete, &remote_cfg, 0).await);
+        assert!(
+            apply_server_policy_on_port(false, Some(rev_v1), &ep_obsolete, &remote_cfg, 0).await
+        );
         assert!(readiness_rx.has_changed().unwrap());
         assert_eq!(*readiness_rx.borrow_and_update(), Some(bound_port));
         assert!(orgrelay::relay_server_enabled());
@@ -1285,14 +1290,24 @@ machine_name = "box"
             apply_server_policy_on_port(true, Some(rev_v3), &ep_v3, &remote_cfg, occupied_port)
                 .await
         );
-        assert_eq!(listening_port(), None, "port conflict prevented initial bind");
+        assert_eq!(
+            listening_port(),
+            None,
+            "port conflict prevented initial bind"
+        );
         assert_eq!(runtime_server_backbone_endpoints(), ep_v3);
 
         drop(occupied);
         let _ = readiness_rx.borrow_and_update();
         assert!(
-            apply_server_policy_on_port(false, Some(rev_v3), &ep_obsolete, &remote_cfg, occupied_port)
-                .await
+            apply_server_policy_on_port(
+                false,
+                Some(rev_v3),
+                &ep_obsolete,
+                &remote_cfg,
+                occupied_port
+            )
+            .await
         );
         assert_eq!(
             listening_port(),

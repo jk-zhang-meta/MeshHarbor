@@ -225,12 +225,10 @@ pub(super) fn launch(archive: &Path, version: &str, config: &Path) -> Result<()>
             if let Ok(raw) = std::fs::read(&result_path)
                 && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&raw)
                 && matches!(value.get("state").and_then(|v|v.as_str()), Some("activated" | "rolled_back" | "recovery_required")) {
-                super::release_install_hold();
                 tracing::info!(state=?value.get("state"), result=%result_path.display(), "same-user update transaction reached terminal state");
                 return;
             }
         }
-        super::release_install_hold();
         tracing::error!(result=%result_path.display(), "same-user update completion not observed; inspect transaction and run.log, submission is not success");
     });
     Ok(())

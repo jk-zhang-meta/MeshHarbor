@@ -130,16 +130,6 @@ enum Command {
         /// host; the server can never push it.
         #[arg(long)]
         relay_server: bool,
-        /// FR-90 P2h-1 — enroll as an archive replica of the organization, as
-        /// the archive image does: it holds copies of the org's sessions and
-        /// offers itself as an archive (`hive_replica`, `hive_archive`), runs
-        /// no session, takes no command or SSH session, is no tunnel exit,
-        /// and never updates itself. Written with the enrolled config, so the
-        /// first start is already one. Needs a fresh config, and a standard
-        /// (never an ephemeral) token; an `ADMINISTRATOR` still designates
-        /// the device before it holds anything.
-        #[arg(long)]
-        archive_replica: bool,
         /// FR-102 — how this daemon was installed, for the server's install
         /// trace: one of `wizard`, `script-sh`, `script-ps1`, `msi`, `deb`,
         /// `pkg`, `manual`, `container`, `other`. Falls back to the
@@ -1216,9 +1206,9 @@ fn two_factor_cmd(config_path: &std::path::Path, action: TwoFactorCmd) -> Result
             }
         }
         TwoFactorCmd::Reset => match std::fs::remove_file(&path) {
-            Ok(()) => println!(
-                "two-factor: off on this device (switch it on again from the admin page)"
-            ),
+            Ok(()) => {
+                println!("two-factor: off on this device (switch it on again from the admin page)")
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 println!("two-factor: already off")
             }
@@ -1493,12 +1483,9 @@ async fn login_cmd(
         )
         .context("reading existing user config before system promotion")?;
         let interactive_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-        let notice = personal_system::invoke_elevated_enroll_system_noticed(
-            &exe,
-            &req,
-            interactive_tty,
-        )
-        .map_err(anyhow::Error::msg)?;
+        let notice =
+            personal_system::invoke_elevated_enroll_system_noticed(&exe, &req, interactive_tty)
+                .map_err(anyhow::Error::msg)?;
         // FR-133 — a move whose old organization still lists this device.
         if let Some(notice) = notice {
             println!("{notice}");
@@ -1534,7 +1521,6 @@ async fn login_cmd(
             fresh_identity: false,
             overlay: true,
             relay_server: false,
-            archive_replica: false,
             install_method: None,
             install_scope: None,
             starts_service_itself: true,
@@ -1819,7 +1805,6 @@ async fn join_cmd(
                 fresh_identity: existing.is_none(),
                 overlay: true,
                 relay_server: false,
-                archive_replica: false,
                 install_method: None,
                 install_scope: None,
                 starts_service_itself: false,
@@ -2408,87 +2393,6 @@ async fn daemon_main() -> Result<()> {
         return Ok(());
     }
 
-    // FR-90 P1a — `meshharbord hive-mcp <socket>`: a Hive session's toolbelt
-    // relay, started by Claude Code as the session's account. Like the
-    // embedded CLI it runs none of the setup below, and it EXITS rather than
-    // returns: the runtime's shutdown would wait on a stdin read the harness
-    // may hold open.
-    #[cfg(hive_host)]
-    if let Some(socket) = meshharbord::hive::relay_args() {
-        let code = match meshharbord::hive::relay(&socket).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("meshharbord hive-mcp: {e:#}");
-                1
-            }
-        };
-        std::process::exit(code);
-    }
-
-    // FR-90 P2e-7 — `meshharbord hive-resume-note <file>`: a Hive session's
-    // `SessionStart` hook, run by Claude Code as the session's account. It
-    // prints the resume note the daemon left for a session moved here, if
-    // there is one. None of the setup below is its.
-    #[cfg(hive_host)]
-    if let Some(file) = meshharbord::hive::note_args() {
-        std::process::exit(meshharbord::hive::note_main(&file));
-    }
-
-    // FR-90 P2b-3a — `meshharbord hive-checkpoint <request>`: a session's
-    // checkpoint, which the daemon runs AS THE SESSION'S ACCOUNT at a turn's
-    // end; it writes the checkpoint to stdout. None of the setup below is its.
-    #[cfg(hive_host)]
-    if let Some(request) = meshharbord::hive::checkpoint_args() {
-        std::process::exit(meshharbord::hive::checkpoint_main(&request));
-    }
-
-    // FR-90 P2b-4a — `meshharbord hive-materialize`: its reverse, a checkpoint
-    // written back into a session's config directory AS THE ACCOUNT, from the
-    // frames the daemon streams on its stdin.
-    #[cfg(hive_host)]
-    if meshharbord::hive::materialize_args() {
-        std::process::exit(meshharbord::hive::materialize_main());
-    }
-
-    // FR-90 P2f-2a — `meshharbord hive-pack`: git's have and want for a
-    // session's workspace AS THE ACCOUNT — which commits its folder's
-    // repository holds, or a pack thin against them. P2f-2b — the request
-    // on stdin, the answer to stdout.
-    #[cfg(hive_host)]
-    if meshharbord::hive::pack_args() {
-        std::process::exit(meshharbord::hive::pack_main());
-    }
-
-    // FR-90 P2f-4a — `meshharbord hive-import`: an ended terminal session's own
-    // history, put in place as the managed session it is made AS THE
-    // TERMINAL'S ACCOUNT. The request on stdin, one line to stdout.
-    #[cfg(hive_host)]
-    if meshharbord::hive::import_args() {
-        std::process::exit(meshharbord::hive::import_main());
-    }
-
-    // FR-90 P2g-1 — `meshharbord hive-purge`: what a purged session's account
-    // holds of it (its state directory, its checkpoints' refs and index),
-    // deleted AS THE ACCOUNT. The request on stdin, one line to stdout.
-    #[cfg(hive_host)]
-    if meshharbord::hive::purge_args() {
-        std::process::exit(meshharbord::hive::purge_main());
-    }
-
-    // FR-90 P1i — `meshharbord hive-prep …`: a Windows session's preparation,
-    // which the daemon runs AS THE CONSOLE USER before the harness starts, as
-    // the Unix wrapper runs as the account. None of the setup below is its.
-    #[cfg(all(windows, feature = "hive"))]
-    if let Some(prep) = meshharbord::hive_win::PrepArgs::from_env() {
-        std::process::exit(match prep.and_then(|a| meshharbord::hive_win::prep(&a)) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("meshharbord hive-prep: {e}");
-                1
-            }
-        });
-    }
-
     // #1705 — the desktop companion's service probes (every 10 s) answer one
     // question about the service manager; none of the daemon setup below is
     // theirs, and its startup lines used to flood the per-user log.
@@ -2694,7 +2598,6 @@ async fn daemon_main() -> Result<()> {
             ephemeral,
             overlay,
             relay_server,
-            archive_replica,
             install_method,
             install_scope,
         } => {
@@ -2712,7 +2615,6 @@ async fn daemon_main() -> Result<()> {
                     fresh_identity: false,
                     overlay,
                     relay_server,
-                    archive_replica,
                     install_method: install_method.as_deref(),
                     install_scope: install_scope.as_deref(),
                     starts_service_itself: false,
@@ -2884,7 +2786,9 @@ async fn daemon_main() -> Result<()> {
             #[cfg(not(feature = "ssh-server"))]
             {
                 let _ = (action, target);
-                Err(anyhow::anyhow!("ssh-server feature is not enabled in this build"))
+                Err(anyhow::anyhow!(
+                    "ssh-server feature is not enabled in this build"
+                ))
             }
         }
         Command::PortalSession => {
@@ -3688,8 +3592,6 @@ struct EnrollOptions<'a> {
     fresh_identity: bool,
     overlay: bool,
     relay_server: bool,
-    /// FR-90 P2h-1 — the archive replica's posture ([`meshharbord::archive_replica`]).
-    archive_replica: bool,
     /// FR-102 P3 — the install trace, flag-first; `None` falls back to the
     /// env, then to `manual` / `unknown` (`enrollment::resolve_install`).
     install_method: Option<&'a str>,
@@ -3711,7 +3613,6 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         fresh_identity,
         overlay,
         relay_server,
-        archive_replica,
         install_method,
         install_scope,
         starts_service_itself,
@@ -3770,9 +3671,6 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
     }
     // FR-90 P2h-1 — before the single-use token is spent, so a refusal
     // leaves no device row behind.
-    if archive_replica {
-        meshharbord::archive_replica::preflight(existing.is_some(), ephemeral)?;
-    }
     let machine_id = match &existing {
         Some(cfg) => {
             tracing::info!(
@@ -3899,9 +3797,6 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
     }
     // FR-90 P2h-1 — the archive replica's posture, before the first save. The
     // preflight made this a fresh primary enrollment.
-    if archive_replica {
-        meshharbord::archive_replica::apply(&mut cfg);
-    }
     // FR-99 decision 3 — a fresh Windows service install (`--machine-global`)
     // starts at `lock_on_end = auto`; a refresh keeps what the device had.
     if enrollment::takes_service_install_defaults(machine_global, &outcome) {
@@ -4736,26 +4631,6 @@ async fn run_cmd(
              delegated sessions only (FR-43 P3)"
         );
     }
-    // FR-90 P2k-4 (F4) — an archive replica enrolled before its posture
-    // joined the mesh joins it at its first start in a newer image, before
-    // anything reads the overlay keys (the WG key is minted below from them).
-    if !unenrolled_worker
-        && meshharbord::archive_replica::reconcile_at_start(
-            &mut cfg,
-            std::env::var(meshharbord::archive_replica::IMAGE_ENV).is_ok_and(|v| v == "1"),
-        )
-    {
-        match config::save(config_path, &cfg) {
-            Ok(()) => tracing::info!(
-                "archive replica: joined the mesh, in the userspace stack (FR-90 P2k-4)"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "archive replica: on the mesh for this run; persisting it failed, so the \
-                 next start in the image joins it again"
-            ),
-        }
-    }
 
     // FR-84 D3 — who will relaunch this process if it exits, decided once,
     // from evidence the supervisor left (argv, environment, cgroup) — never
@@ -5340,8 +5215,7 @@ async fn run_cmd(
             // on Linux the companion's package moves inside the updater's loop.
             #[cfg(target_os = "windows")]
             if !host_refreshes_companion {
-                meshharbord::companion::refresh_periodically(respawn_ctx, initial_refresh_ok)
-                    .await;
+                meshharbord::companion::refresh_periodically(respawn_ctx, initial_refresh_ok).await;
             }
         });
     }
@@ -5673,26 +5547,6 @@ async fn run_cmd(
     remote_cfg
         .gpu()
         .spawn(cfg.gpu_metrics_listen.as_deref(), shutdown_rx.clone());
-    // FR-90 — the agent-session supervisor, from this start's `hive_*` keys
-    // (restart-required). Built with every gate closed too, so a start is
-    // answered with the device's actual refusal rather than silence.
-    #[cfg(hive_host)]
-    {
-        meshharbord::hive::init(&cfg);
-        // FR-90 P1d-2 — every way the daemon stops signals this first (an
-        // update, a requested restart, a rollback, an OS stop), before its
-        // connections close: from that moment, what its sessions do is going
-        // down with it, and what the device hosts is frozen for the next one.
-        let mut stopping = shutdown_rx.clone();
-        tokio::spawn(async move {
-            while stopping.changed().await.is_ok() {
-                if *stopping.borrow() {
-                    meshharbord::hive::begin_shutdown();
-                    break;
-                }
-            }
-        });
-    }
     // P6: the declared-route reconciler — converges `[[tunnel_routes]]`
     // from the loaded config into live hub flows, and backs the LocalAPI
     // Route* verbs (persisting through the write lock).
@@ -6499,11 +6353,6 @@ async fn run_cmd(
     tokio::select! {
         res = sig_task => {
             meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
-            // FR-90 P1d-2 — first, on every way out: a harness that ends from
-            // here on went down with the daemon, and its session is resumed
-            // by the next one instead of being ended.
-            #[cfg(hive_host)]
-            meshharbord::hive::begin_shutdown();
             // FR-84 D3 — an accepted restart leaves through the graceful door
             // whatever the signalling loop did on its way out (an error, even
             // a panic): the shutdown is our own, and a crash counted here
@@ -6540,8 +6389,6 @@ async fn run_cmd(
         }
         _ = tokio::signal::ctrl_c() => {
             meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
-            #[cfg(hive_host)]
-            meshharbord::hive::begin_shutdown();
             tracing::info!("shutdown requested");
             graceful_shutdown = true;
             os_initiated_stop = true;
@@ -6554,10 +6401,6 @@ async fn run_cmd(
         // Windows SCM service, where the stop arrived only as a hard kill).
         _ = terminate_signal(stop_event, config_path) => {
             meshharbord::ssh_persist::announce_restart("restart", 5_000, None).await;
-            // Under systemd the same stop reaches every harness a moment
-            // after this (`KillMode=control-group`).
-            #[cfg(hive_host)]
-            meshharbord::hive::begin_shutdown();
             tracing::info!("OS/service-manager stop received; shutting down gracefully");
             graceful_shutdown = true;
             os_initiated_stop = true;
@@ -6595,14 +6438,6 @@ async fn run_cmd(
     // `_virtual_desktop` and by `exit_for_requested_restart`.
     #[cfg(target_os = "linux")]
     virtual_desktop::teardown();
-    // FR-90 P1h — the same for the agent sessions this daemon launched: each
-    // harness leads its own process group, which a service manager reaches
-    // only when it kills a whole cgroup (systemd's `KillMode=control-group`).
-    // launchd does not, and nothing does for an unsupervised daemon, so the
-    // daemon takes them down itself — after `begin_shutdown`, so each session
-    // is kept for the next daemon to resume. Bounded.
-    #[cfg(hive_host)]
-    meshharbord::hive::wind_down().await;
     // On graceful shutdown, mark the config so the next startup
     // doesn't count this run as a crash. Reload-then-save again to
     // avoid clobbering any concurrent writes (clean_run_task may
@@ -8752,14 +8587,13 @@ mod tests {
                 replace,
                 overlay,
                 relay_server,
-                archive_replica,
                 ..
             } => {
                 assert_eq!(server, "https://example.invalid");
                 assert_eq!(token, "-");
                 assert_eq!(name, "node");
                 assert_eq!(label.as_deref(), Some("secondary"));
-                assert!(replace && overlay && relay_server && archive_replica);
+                assert!(replace && overlay && relay_server);
             }
             _ => panic!("expected the existing Enroll command"),
         }
@@ -9080,17 +8914,20 @@ mod tests {
     #[test]
     fn self_update_config_prefers_machine_global_when_user_config_is_absent() {
         let mg = Path::new(r"C:\ProgramData\meshharbor\meshharbor\config.toml");
-        let peruser = Path::new(r"C:\Users\u\AppData\Roaming\meshharbor\meshharbor\config\config.toml");
+        let peruser =
+            Path::new(r"C:\Users\u\AppData\Roaming\meshharbor\meshharbor\config\config.toml");
         let explicit = Path::new(r"C:\custom\config.toml");
 
         // Explicit --config always wins.
         assert_eq!(
-            pick_self_update_config_path(Some(explicit), explicit.to_path_buf(), Some(mg), |p| p == mg),
+            pick_self_update_config_path(Some(explicit), explicit.to_path_buf(), Some(mg), |p| p
+                == mg),
             explicit
         );
         // Existing per-user config is preserved.
         assert_eq!(
-            pick_self_update_config_path(None, peruser.to_path_buf(), Some(mg), |p| p == peruser || p == mg),
+            pick_self_update_config_path(None, peruser.to_path_buf(), Some(mg), |p| p == peruser
+                || p == mg),
             peruser
         );
         // Missing per-user config on perMachine install falls back to machine-global.

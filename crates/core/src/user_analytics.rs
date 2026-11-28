@@ -422,9 +422,7 @@ pub fn canonical_public_ip(ip: IpAddr) -> Option<IpAddr> {
     (!private_or_local_source(ip)).then_some(ip)
 }
 
-fn pick_localized_name(
-    names: Option<&std::collections::BTreeMap<&str, &str>>,
-) -> Option<String> {
+fn pick_localized_name(names: Option<&std::collections::BTreeMap<&str, &str>>) -> Option<String> {
     let names = names?;
     for lang in ["zh-CN", "en"] {
         if let Some(val) = names.get(lang).map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -1082,10 +1080,7 @@ mod tests {
         assert_eq!(loc_country_only.lon, None);
         assert_eq!(loc_country_only.accuracy_radius_km, None);
         assert_eq!(loc_country_only.geo_level, Some(GeoLevel::Country));
-        assert_eq!(
-            gc.zone_of_ip("8.8.8.8".parse().unwrap()),
-            Some(NonMainland)
-        );
+        assert_eq!(gc.zone_of_ip("8.8.8.8".parse().unwrap()), Some(NonMainland));
     }
 
     /// Build a minimal IPv4 MaxMind DB v2 from exact `(Ipv4Addr, record_bytes)` entries.

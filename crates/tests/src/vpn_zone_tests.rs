@@ -571,7 +571,8 @@ async fn fr138_vpn_resistant_auto_zones_and_hysteresis() {
 async fn fr138_egress_probe_honours_fr134_attested_management_entry() {
     let (app, _geo_dir) = spawn_geo_app(true).await;
     let seeded = app.seed_tenant("fr138-entry").await;
-    let (gw_cn_id, gw_cn_tok, _gw_us_id, _gw_us_tok) = setup_cn_and_non_cn_zones(&app, &seeded).await;
+    let (gw_cn_id, gw_cn_tok, _gw_us_id, _gw_us_tok) =
+        setup_cn_and_non_cn_zones(&app, &seeded).await;
 
     // Connect gateway-a advertising management entry on port 18443 from HK_IP so the server
     // recognises HK_IP as an active management entry address.

@@ -21,8 +21,7 @@ use meshharbor_node_core::pty_resume::TerminateReason;
 use meshharbor_node_core::pty_resume::{
     PersistStatus, RefuseReason, SessionDescriptor, SessionId,
     ipc::{
-        AttachStartFrame, DaemonDetachingFrame, HostHelloFrame, IpcFrame, SpawnSpec,
-        TerminateFrame,
+        AttachStartFrame, DaemonDetachingFrame, HostHelloFrame, IpcFrame, SpawnSpec, TerminateFrame,
     },
     now_unix_ms,
     proof::{
@@ -473,24 +472,27 @@ pub async fn spawn_session(
             detail: format!("send Spawn to host: {e}"),
         })?;
 
-    let child_pid = match tokio::time::timeout(Duration::from_secs(5), IpcFrame::read_from(&mut stream))
-        .await
-        .map_err(|_| RefuseReason::Internal {
-            detail: "timed out waiting for host Spawned reply".into(),
-        })?
-        .map_err(|e| RefuseReason::Internal {
-            detail: format!("read Spawned from host: {e}"),
-        })? {
-        Some(IpcFrame::Spawned(s)) => Some(s.child_pid),
-        Some(IpcFrame::SpawnError(err)) => {
-            return Err(RefuseReason::Policy { detail: err.message });
-        }
-        other => {
-            return Err(RefuseReason::Internal {
-                detail: format!("unexpected host reply to Spawn: {other:?}"),
-            });
-        }
-    };
+    let child_pid =
+        match tokio::time::timeout(Duration::from_secs(5), IpcFrame::read_from(&mut stream))
+            .await
+            .map_err(|_| RefuseReason::Internal {
+                detail: "timed out waiting for host Spawned reply".into(),
+            })?
+            .map_err(|e| RefuseReason::Internal {
+                detail: format!("read Spawned from host: {e}"),
+            })? {
+            Some(IpcFrame::Spawned(s)) => Some(s.child_pid),
+            Some(IpcFrame::SpawnError(err)) => {
+                return Err(RefuseReason::Policy {
+                    detail: err.message,
+                });
+            }
+            other => {
+                return Err(RefuseReason::Internal {
+                    detail: format!("unexpected host reply to Spawn: {other:?}"),
+                });
+            }
+        };
 
     #[cfg(windows)]
     {
@@ -768,7 +770,10 @@ fn start_keepalive_monitor(sid: SessionId, endpoint: String) {
         let Ok(mut stream) = connect_host_once(&endpoint, Duration::from_secs(2)).await else {
             return;
         };
-        if read_host_hello(&mut stream, Duration::from_secs(2)).await.is_err() {
+        if read_host_hello(&mut stream, Duration::from_secs(2))
+            .await
+            .is_err()
+        {
             return;
         }
         let mut iv = tokio::time::interval(Duration::from_secs(30));
@@ -967,14 +972,18 @@ where
             let _ = send_terminate(&mut stream, TerminateReason::Expired, 500).await;
             let _ = wait_stream_eof(&mut stream, Duration::from_millis(800)).await;
             stop_os_handle(hello.scope_unit.clone()).await;
-            reg().lock().unwrap_or_else(|e| e.into_inner()).tombstones.insert(
-                (desc.org_id.clone(), desc.client_key_fp.clone()),
-                Tombstone {
-                    sid: desc.sid,
-                    reason: RefuseReason::Expired,
-                    deadline_ms: desc.deadline_ms.max(now.saturating_add(300_000)),
-                },
-            );
+            reg()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tombstones
+                .insert(
+                    (desc.org_id.clone(), desc.client_key_fp.clone()),
+                    Tombstone {
+                        sid: desc.sid,
+                        reason: RefuseReason::Expired,
+                        deadline_ms: desc.deadline_ms.max(now.saturating_add(300_000)),
+                    },
+                );
             continue;
         }
         if let Err(why) = gate_allows(&desc) {
@@ -982,14 +991,18 @@ where
             let _ = send_terminate(&mut stream, TerminateReason::PolicyChanged, 1000).await;
             let _ = wait_stream_eof(&mut stream, Duration::from_millis(1200)).await;
             stop_os_handle(hello.scope_unit.clone()).await;
-            reg().lock().unwrap_or_else(|e| e.into_inner()).tombstones.insert(
-                (desc.org_id.clone(), desc.client_key_fp.clone()),
-                Tombstone {
-                    sid: desc.sid,
-                    reason: RefuseReason::Revoked { detail: why },
-                    deadline_ms: desc.deadline_ms,
-                },
-            );
+            reg()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tombstones
+                .insert(
+                    (desc.org_id.clone(), desc.client_key_fp.clone()),
+                    Tombstone {
+                        sid: desc.sid,
+                        reason: RefuseReason::Revoked { detail: why },
+                        deadline_ms: desc.deadline_ms,
+                    },
+                );
             continue;
         }
 
@@ -1020,7 +1033,10 @@ where
     }
 
     if adopted > 0 {
-        info!(adopted, "ssh-persist: adopted surviving detached SSH PTY sessions");
+        info!(
+            adopted,
+            "ssh-persist: adopted surviving detached SSH PTY sessions"
+        );
     }
     adopted
 }
@@ -1082,8 +1098,8 @@ pub async fn announce_restart(reason: &str, eta_ms: u64, to_version: Option<Stri
                 }
             }
         });
-        let _ = tokio::time::timeout(Duration::from_millis(300), futures::future::join_all(futs))
-            .await;
+        let _ =
+            tokio::time::timeout(Duration::from_millis(300), futures::future::join_all(futs)).await;
     }
     #[cfg(not(feature = "ssh-server"))]
     {
@@ -1203,7 +1219,10 @@ pub async fn kill_session(sid_or_prefix: &str) -> Result<bool, String> {
             return Ok(false);
         }
         if matched.len() > 1 {
-            return Err(format!("ambiguous session prefix `{q}` matches {} sessions", matched.len()));
+            return Err(format!(
+                "ambiguous session prefix `{q}` matches {} sessions",
+                matched.len()
+            ));
         }
         terminate_entry(&matched[0], TerminateReason::UserCancelled).await?;
         Ok(true)
@@ -1355,7 +1374,10 @@ async fn connect_host_once(endpoint: &str, timeout: Duration) -> Result<HostIpcS
 }
 
 #[cfg(feature = "ssh-server")]
-async fn connect_host_with_retry(endpoint: &str, budget: Duration) -> Result<HostIpcStream, String> {
+async fn connect_host_with_retry(
+    endpoint: &str,
+    budget: Duration,
+) -> Result<HostIpcStream, String> {
     let deadline = std::time::Instant::now() + budget;
     let mut last_err = String::from("host did not bind ipc");
     while std::time::Instant::now() < deadline {
@@ -1503,19 +1525,14 @@ fn spawn_detached_host(
             if unsafe { libc::geteuid() } != 0 {
                 cmd.arg("--user");
             }
-            cmd.args([
-                "--scope",
-                "--collect",
-                &format!("--unit={unit}"),
-                "--",
-            ])
-            .arg(&exe)
-            .arg(crate::ssh_pty_host::SUBCOMMAND)
-            .arg("--meta-file")
-            .arg(meta_path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            cmd.args(["--scope", "--collect", &format!("--unit={unit}"), "--"])
+                .arg(&exe)
+                .arg(crate::ssh_pty_host::SUBCOMMAND)
+                .arg("--meta-file")
+                .arg(meta_path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             match cmd.spawn() {
                 Ok(mut child) => {
                     // Reap launcher child in background so it never sits as a zombie.
@@ -1561,10 +1578,15 @@ fn spawn_detached_host(
                 .creation_flags(flags)
                 .spawn()
         };
-        try_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
-            .or_else(|_| try_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW))
-            .map(|_| ())
-            .map_err(|e| format!("CreateProcess ssh-pty-host: {e}"))
+        try_flags(
+            DETACHED_PROCESS
+                | CREATE_NEW_PROCESS_GROUP
+                | CREATE_BREAKAWAY_FROM_JOB
+                | CREATE_NO_WINDOW,
+        )
+        .or_else(|_| try_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW))
+        .map(|_| ())
+        .map_err(|e| format!("CreateProcess ssh-pty-host: {e}"))
     }
 }
 

@@ -200,9 +200,13 @@ pub fn delete_cache(config_path: &Path, tenant_id: &str) {
         return;
     };
     match std::fs::remove_file(&path) {
-        Ok(()) => info!(tenant = %tenant_id, path = %path.display(), "overlay cache: deleted on revocation/goodbye"),
+        Ok(()) => {
+            info!(tenant = %tenant_id, path = %path.display(), "overlay cache: deleted on revocation/goodbye")
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => warn!(tenant = %tenant_id, path = %path.display(), %e, "overlay cache: failed to delete cache file"),
+        Err(e) => {
+            warn!(tenant = %tenant_id, path = %path.display(), %e, "overlay cache: failed to delete cache file")
+        }
     }
 }
 
@@ -261,17 +265,17 @@ fn load_verified_at(
             // learned-endpoint updates preserve the exact original authoritative
             // timestamp and revision without ever extending them.
             let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
-            let entry = reg
-                .writers
-                .entry(cfg.tenant_id.clone())
-                .or_insert_with(|| TenantWriteState {
-                    last_authoritative_at_ms: payload.last_authoritative_at_ms,
-                    last_authoritative_revision: payload.last_authoritative_revision,
-                    monotonic_clock_floor_ms: payload.monotonic_clock_floor_ms.max(now_ms),
-                    generation: 0,
-                    first_dirty_at: None,
-                    pending_timer: None,
-                });
+            let entry =
+                reg.writers
+                    .entry(cfg.tenant_id.clone())
+                    .or_insert_with(|| TenantWriteState {
+                        last_authoritative_at_ms: payload.last_authoritative_at_ms,
+                        last_authoritative_revision: payload.last_authoritative_revision,
+                        monotonic_clock_floor_ms: payload.monotonic_clock_floor_ms.max(now_ms),
+                        generation: 0,
+                        first_dirty_at: None,
+                        pending_timer: None,
+                    });
             entry.last_authoritative_at_ms = payload.last_authoritative_at_ms;
             entry.last_authoritative_revision = payload.last_authoritative_revision;
             entry.monotonic_clock_floor_ms = entry
@@ -366,7 +370,9 @@ fn handle_snapshot(
             st.first_dirty_at = None;
             Duration::ZERO
         } else {
-            let first = *st.first_dirty_at.get_or_insert_with(std::time::Instant::now);
+            let first = *st
+                .first_dirty_at
+                .get_or_insert_with(std::time::Instant::now);
             let max_wait = MAX_DEBOUNCE_WAIT.max(debounce);
             let remaining = max_wait.saturating_sub(first.elapsed());
             debounce.min(remaining)
@@ -536,7 +542,11 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("renaming {} -> {}: {e}", tmp.display(), path.display()));
+        return Err(format!(
+            "renaming {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        ));
     }
     #[cfg(unix)]
     if let Ok(d) = std::fs::File::open(dir) {
@@ -682,8 +692,8 @@ mod tests {
 
         // Even after the old debounce window elapses, the revoked peer is NEVER resurrected.
         tokio::time::sleep(Duration::from_millis(120)).await;
-        let after = load_verified_at(&cfg_path, &cfg, &kp, 1_700_000_003_000)
-            .expect("cache still valid");
+        let after =
+            load_verified_at(&cfg_path, &cfg, &kp, 1_700_000_003_000).expect("cache still valid");
         assert_eq!(after.peers.len(), 1);
         assert_eq!(after.peers[0].node_id, p1.node_id);
 

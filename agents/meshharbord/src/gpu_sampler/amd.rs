@@ -83,7 +83,11 @@ impl AmdBackend {
         }
     }
 
-    pub fn sample(&self, include_procs: bool, proc_lookup: &ProcLookup) -> (GpuHostStatus, Vec<GpuSample>) {
+    pub fn sample(
+        &self,
+        include_procs: bool,
+        proc_lookup: &ProcLookup,
+    ) -> (GpuHostStatus, Vec<GpuSample>) {
         #[cfg(target_os = "linux")]
         {
             let (procs_by_pci, kfd_procs, partial) = if include_procs {
@@ -213,8 +217,8 @@ fn discover_cards() -> Vec<AmdCard> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("AMD GPU {idx}"));
-        let mem_total_mb = read_u64(&dev.join("mem_info_vram_total"))
-            .map(|b| (b / (1024 * 1024)) as u32);
+        let mem_total_mb =
+            read_u64(&dev.join("mem_info_vram_total")).map(|b| (b / (1024 * 1024)) as u32);
         let (_, _, power_limit_w, _) = read_hwmon(&dev);
 
         cards.push(AmdCard {

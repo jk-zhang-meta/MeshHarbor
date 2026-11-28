@@ -2668,7 +2668,6 @@ async fn established_grant_session_live_revoke() {
             transport: "webrtc-dc-v1".into(),
             open_nonce: None,
             derp_pubkey: None,
-            net_grant: None,
         })
         .unwrap()
         .into(),
@@ -3230,7 +3229,6 @@ async fn persistent_decision_audit() {
             transport: "webrtc-dc-v1".into(),
             open_nonce: None,
             derp_pubkey: None,
-            net_grant: None,
         })
         .unwrap()
         .into(),

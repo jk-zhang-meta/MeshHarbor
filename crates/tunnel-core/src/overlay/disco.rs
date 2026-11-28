@@ -1142,13 +1142,7 @@ mod tests {
         let sh = shared_secret(&b_s, &a_p);
         let observed: SocketAddr = "198.51.100.42:43904".parse().unwrap();
         let responder_src: SocketAddr = "192.168.10.20:43648".parse().unwrap();
-        let pong = build(
-            KIND_PONG,
-            [0x11; 8],
-            b_p.as_bytes(),
-            Some(observed),
-            &sh,
-        );
+        let pong = build(KIND_PONG, [0x11; 8], b_p.as_bytes(), Some(observed), &sh);
         match classify(&pong, responder_src, &a_s, &a_p, |pk| pk == b_p.as_bytes()) {
             Verdict::Pong(inb) => {
                 assert_eq!(inb.sender, *b_p.as_bytes());

@@ -1078,7 +1078,6 @@ impl Module for NetworkState {
             tenant: Some(Arc::new(hooks::NetworkTenantHooks {
                 state: self.clone(),
             })),
-            session: None,
         }
     }
 

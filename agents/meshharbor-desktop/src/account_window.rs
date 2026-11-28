@@ -24,8 +24,12 @@ impl CenterPolicy {
             .and_then(|base| base.as_ref().map(|base| viewer_link(base, url)))
             .unwrap_or(false)
     }
-    fn server_for(&self,url:&tauri::Url)->Option<String> {
-        self.0.lock().ok().and_then(|base|base.as_ref().filter(|base|viewer_link(base,url)).map(ToString::to_string))
+    fn server_for(&self, url: &tauri::Url) -> Option<String> {
+        self.0.lock().ok().and_then(|base| {
+            base.as_ref()
+                .filter(|base| viewer_link(base, url))
+                .map(ToString::to_string)
+        })
     }
 }
 
@@ -90,14 +94,32 @@ fn viewer_link(base: &tauri::Url, url: &tauri::Url) -> bool {
     }
 }
 /// The URL was issued by the bound private loopback handoff, not by web IPC.
-pub fn open_authorized<R:tauri::Runtime>(app:&tauri::AppHandle<R>,server:&str,launch:&str)->Result<(),String> {
-    let base=secure_server(server)?;
-    let url:tauri::Url=launch.parse().map_err(|_|"Invalid local account launch")?;
-    if url.scheme()!="http" || url.host_str()!=Some("127.0.0.1") || url.port().is_none() || !url.path().starts_with("/open/") || url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() { return Err("Unsafe account handoff URL".into()); }
-    open_destination(app,base,url)
+pub fn open_authorized<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    server: &str,
+    launch: &str,
+) -> Result<(), String> {
+    let base = secure_server(server)?;
+    let url: tauri::Url = launch.parse().map_err(|_| "Invalid local account launch")?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port().is_none()
+        || !url.path().starts_with("/open/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Unsafe account handoff URL".into());
+    }
+    open_destination(app, base, url)
 }
 
-fn open_destination<R:tauri::Runtime>(app:&tauri::AppHandle<R>,base:tauri::Url,url:tauri::Url)->Result<(),String> {
+fn open_destination<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base: tauri::Url,
+    url: tauri::Url,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         window
             .navigate(url)
@@ -119,10 +141,12 @@ fn open_destination<R:tauri::Runtime>(app:&tauri::AppHandle<R>,base:tauri::Url,u
         .title("MeshHarbor — My devices & sharing")
         .inner_size(1180.0, 820.0)
         .on_new_window(move |url, _| {
-            if let Some(server)=handle.state::<CenterPolicy>().server_for(&url) {
+            if let Some(server) = handle.state::<CenterPolicy>().server_for(&url) {
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::commands::open_account_viewer_link(&handle,&server,url.as_str()).await;
+                    let _ =
+                        crate::commands::open_account_viewer_link(&handle, &server, url.as_str())
+                            .await;
                 });
             }
             tauri::webview::NewWindowResponse::Deny

@@ -691,7 +691,6 @@ async fn run(
         grant_id: Some(setup.ssh_grant_id.clone()),
         source: "device_share".into(),
         session_id: Some(sid),
-        ssh_ticket_id: None,
         caller: setup.caller.clone(),
         account_mode: Some(setup.account_mode.wire().into()),
         session_secs: Some(session_secs),
@@ -759,10 +758,10 @@ async fn run(
                 if !valid(&state,&s).await {break;}
                 match msg {
                     ClientMsg::TunnelHello {..}=>{},
-                    ClientMsg::TunnelOpen {agent_id,transport,net_grant,derp_pubkey,open_nonce} if !opened && agent_id==s.device && transport=="webrtc-dc-v1" && net_grant.is_none() && derp_pubkey.is_none()=> {
+                    ClientMsg::TunnelOpen {agent_id,transport,derp_pubkey,open_nonce} if !opened && agent_id==s.device && transport=="webrtc-dc-v1" && derp_pubkey.is_none()=> {
                         opened=true;
                         let ice=meshharbor_remote_control::turn_creds::ice_servers_for(&meshharbor_remote_control::turn_creds::charged(&sid.to_hex(),&access.agent.tenant_id.to_hex()),state.turn_map.cfg_for(None));
-                        let m=ServerMsg::TunnelOpened {session_id:sid,transport:"webrtc-dc-v1".into(),dc_pool_size:8,sctp_rwnd_bytes:8*1024*1024,ice_servers:ice,quic_auth_token:None,open_nonce,net_grant_id:None};
+                        let m=ServerMsg::TunnelOpened {session_id:sid,transport:"webrtc-dc-v1".into(),dc_pool_size:8,sctp_rwnd_bytes:8*1024*1024,ice_servers:ice,quic_auth_token:None,open_nonce};
                         if out.try_send(m).is_err(){break;}
                     }
                     ClientMsg::TunnelSdpOffer {session_id,sdp} if opened && !offered && session_id==sid=> {

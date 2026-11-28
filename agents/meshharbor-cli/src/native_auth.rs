@@ -85,10 +85,7 @@ async fn login(server: &str, share: &str, email: &str, password: String) -> Resu
     let server = server_base(server)?;
     let share = bson::oid::ObjectId::parse_str(share)
         .map_err(|_| anyhow::anyhow!("Exact share ID required"))?;
-    if !valid_email(email)
-        || password.is_empty()
-        || password.len() > 4096
-    {
+    if !valid_email(email) || password.is_empty() || password.len() > 4096 {
         bail!("Account email and nonempty password required");
     }
     let response=http_client(&server)?.post(format!("{server}/api/auth/native/share-ssh/login"))
@@ -107,7 +104,14 @@ async fn login(server: &str, share: &str, email: &str, password: String) -> Resu
     }
     Ok(body.access_token)
 }
-fn valid_email(email:&str)->bool { let email=email.trim();email.len()<=254 && email.split_once('@').is_some_and(|(a,b)|!a.is_empty() && b.contains('.')) && !email.chars().any(|c|c.is_control()||c.is_whitespace()) }
+fn valid_email(email: &str) -> bool {
+    let email = email.trim();
+    email.len() <= 254
+        && email
+            .split_once('@')
+            .is_some_and(|(a, b)| !a.is_empty() && b.contains('.'))
+        && !email.chars().any(|c| c.is_control() || c.is_whitespace())
+}
 pub async fn interactive(
     server: &str,
     share: &str,

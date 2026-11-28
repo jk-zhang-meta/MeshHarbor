@@ -229,7 +229,9 @@ pub async fn member_tenant_ids(server: &str, access_token: &str) -> Result<Vec<S
         .context("account server is unavailable")?;
     match reply.status().as_u16() {
         401 => return Err(SessionDenied(401).into()),
-        s if !(200..300).contains(&s) => bail!("the server could not list your organizations (HTTP {s})"),
+        s if !(200..300).contains(&s) => {
+            bail!("the server could not list your organizations (HTTP {s})")
+        }
         _ => {}
     }
     #[derive(Deserialize)]

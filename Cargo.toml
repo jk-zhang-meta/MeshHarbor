@@ -7,9 +7,6 @@ members = [
     "crates/remote_control",
     "crates/localapi",
     "crates/agent-core",
-    # FR-90 — Hive on the device: transcript events, the replica store, the
-    # stream-json adapter, the launch spec. Daemon-side only (MPL).
-    "crates/hive-node",
     "crates/tunnel-core",
     # P5 — the webrtc-ice fork's substance (TURNS/TCP Conn adapter), extracted
     # so the vendored tree is a mechanical patch. Consumed by tunnel-core AND
@@ -23,18 +20,9 @@ members = [
     # capabilities) and the composition snapshot that gates every module move.
     "crates/core",
     # FR-69 — the module crates, one per pillar, behind features on `crates/api`.
-    "crates/modules/saas",
-    "crates/modules/chat",
-    "crates/modules/conference",
     "crates/modules/fleet",
     "crates/modules/remote",
     "crates/modules/network",
-    # FR-90 — agent sessions, the server side: the session record and its
-    # lifecycle, never what is in a session.
-    "crates/modules/hive",
-    # FR-90 P3 — the vault: secrets under envelope encryption, and the audit
-    # of every decision. Never a value in an answer.
-    "crates/modules/vault",
 
     "crates/api",
     "crates/tests",
@@ -223,10 +211,6 @@ reqwest = { version = "0.12", features = ["json", "multipart", "cookies", "strea
 # wants direct SMTP delivery, flip on `tokio1-rustls-tls` and switch
 # to `starttls_relay`.
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "builder", "hostname"] }
-# FR-58 — newsletter issue bodies are authored as markdown (the same file is
-# the Medium post) and rendered server-side; raw-HTML events are filtered out
-# before push_html, so the only HTML in an email body is renderer-emitted.
-pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -246,22 +230,11 @@ bitflags = "2"
 # Background tasks
 tokio-cron-scheduler = "0.13"
 
-# Export
-rust_xlsxwriter = { version = "0.82", features = ["zlib"] }
-genpdf = "0.2"
-
 # File handling
 tempfile = "3"
 
-# FR-90 Hive — the device-side replica store and its event hash chain
-rusqlite = { version = "0.40", features = ["bundled"] }
-blake3 = "1.8"
-
 # Redis
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-
-# mediasoup
-mediasoup = "0.20"
 
 # Testing
 tokio-test = "0.4"
@@ -303,26 +276,8 @@ sha1 = "0.10"
 sha2 = "0.10"
 hex = "0.4"
 
-# FR-90 P3 — the vault's envelope encryption: an XChaCha20-Poly1305 data key
-# per version (the version the tree already builds), wrapped to an `age`
-# X25519 KEK. `age` is the reference implementation's library, so a wrapped
-# key opens with the stock `age` tool and the KEK is an `age-keygen` file.
-# ⚠️ 0.11, not 0.12: 0.12's post-quantum recipients pull `ml-kem` 0.2, which
-# needs `kem` 0.3.0-pre.0 — while russh already resolves `ml-kem` 0.3 onto
-# `kem` 0.3.0, and one lockfile holds one `kem` 0.3.x. The X25519 recipient and
-# the file format are the same in both.
-age = { version = "0.11", default-features = false }
-# FR-90 P3-2 — the vault's policy language (design §8.4): Rust-native,
-# schema-validated, formally analysed. No extensions: the vault's policies
-# compare strings, sets and integers.
-cedar-policy = { version = "4.14", default-features = false }
 chacha20poly1305 = "0.10"
 zeroize = "1"
-# FR-90 P3-3 — a leased value crosses to a device as a libsodium-compatible
-# sealed box (`crypto_box_seal`: X25519, XSalsa20-Poly1305) for the key the
-# daemon holds. The device's half is `meshharbord`'s `vault` feature. RustCrypto,
-# on the `curve25519-dalek` 4 and `aead` 0.5 the tree already builds.
-crypto_box = { version = "0.9.1", features = ["seal"] }
 
 # Agent-specific
 clap = { version = "4", features = ["derive"] }

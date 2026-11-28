@@ -244,9 +244,8 @@ pub fn discover_user_app_data_roots() -> Vec<(std::path::PathBuf, Option<std::pa
         let profile_local = crate::win_identity::profile_dir_of_token(token.raw())
             .map(|p| PathBuf::from(p).join("AppData").join("Local"));
         // SAFETY: `token` is a live user token returned by `WTSQueryUserToken`.
-        let roaming = unsafe {
-            crate::win_service::companion_spawn::roaming_app_data_for_token(token.raw())
-        };
+        let roaming =
+            unsafe { crate::win_service::companion_spawn::roaming_app_data_for_token(token.raw()) };
         if let Some(roaming) = roaming {
             push_unique(roaming, profile_local);
         } else if let Some(ref local) = profile_local
@@ -268,8 +267,9 @@ pub fn discover_user_app_data_roots() -> Vec<(std::path::PathBuf, Option<std::pa
 #[cfg(target_os = "windows")]
 pub fn retire_stale_per_user_companion_logged() {
     use meshharbor_node_core::companion_autostart::{
-        WINDOWS_RUN_SUBKEY, retire_stale_user_start_menu_shortcuts,
+        WINDOWS_RUN_SUBKEY,
         registry::{retire_per_user_run_value_in_hkcu, retire_per_user_run_values_in_loaded_hku},
+        retire_stale_user_start_menu_shortcuts,
     };
 
     let own_local = (!crate::win_identity::process_is_local_system())
@@ -1983,8 +1983,14 @@ mod tests {
         use super::companion_retry_delay;
         assert_eq!(companion_retry_delay(0), crate::updater::CHECK_INTERVAL);
         assert_eq!(companion_retry_delay(1), std::time::Duration::from_secs(30));
-        assert_eq!(companion_retry_delay(2), std::time::Duration::from_secs(120));
-        assert_eq!(companion_retry_delay(3), std::time::Duration::from_secs(600));
+        assert_eq!(
+            companion_retry_delay(2),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            companion_retry_delay(3),
+            std::time::Duration::from_secs(600)
+        );
         assert_eq!(
             companion_retry_delay(4),
             std::time::Duration::from_secs(3600)

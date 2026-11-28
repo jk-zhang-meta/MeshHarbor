@@ -54,11 +54,11 @@ async fn connect_ws_via_management_path(
     let build_req = || -> Result<tungstenite::http::Request<()>, tungstenite::Error> {
         let mut req = url.into_client_request()?;
         if let Some(tok) = bearer_auth {
-            let val = format!("Bearer {tok}")
-                .parse()
-                .map_err(|e: tungstenite::http::header::InvalidHeaderValue| {
+            let val = format!("Bearer {tok}").parse().map_err(
+                |e: tungstenite::http::header::InvalidHeaderValue| {
                     tungstenite::Error::Io(std::io::Error::other(e.to_string()))
-                })?;
+                },
+            )?;
             req.headers_mut().insert("Authorization", val);
         }
         Ok(req)
@@ -373,13 +373,10 @@ async fn run_session(
         urlencoding_lite(&cfg.tunnel_client_token)
     );
     info!(%ws_base, "connecting websocket");
-    let (ws_stream, _resp) = connect_ws_via_management_path(
-        &ws_url,
-        None,
-        std::time::Duration::from_secs(15),
-    )
-    .await
-    .with_context(|| format!("WS connect to {ws_base}"))?;
+    let (ws_stream, _resp) =
+        connect_ws_via_management_path(&ws_url, None, std::time::Duration::from_secs(15))
+            .await
+            .with_context(|| format!("WS connect to {ws_base}"))?;
     info!("websocket connected");
     let (mut ws_sink, ws_source) = ws_stream.split();
 
@@ -440,8 +437,6 @@ async fn run_session(
             // #1685: one forward per process and no liveness state to
             // publish — the daemon's route reconciler is the consumer.
             on_listening: None,
-            // FR-90 P3-7-3a: a person's own tunnel, never a session's grant.
-            net_grant: None,
         },
         supported_transports,
         request_transport,
@@ -669,13 +664,10 @@ pub async fn run_shared_ssh_transport(
         "{base}/api/device-shares/{share}/ssh/ws?public_key={}&session_secs={session_secs}",
         urlencoding_lite(&public_key)
     );
-    let (socket, _) = connect_ws_via_management_path(
-        &url,
-        Some(&token),
-        std::time::Duration::from_secs(8),
-    )
-    .await
-    .context("shared SSH WS authorization")?;
+    let (socket, _) =
+        connect_ws_via_management_path(&url, Some(&token), std::time::Duration::from_secs(8))
+            .await
+            .context("shared SSH WS authorization")?;
     let (mut writer, reader) = socket.split();
     let (tx, mut rx) = mpsc::channel::<ClientMsg>(64);
     struct AbortWriter(tokio::task::JoinHandle<()>);
@@ -707,7 +699,6 @@ pub async fn run_shared_ssh_transport(
             client_version: env!("CARGO_PKG_VERSION").into(),
             derp: None,
             on_listening: Some(ready),
-            net_grant: None,
         },
         vec![TRANSPORT_WEBRTC_DC_V1.into()],
         TRANSPORT_WEBRTC_DC_V1,

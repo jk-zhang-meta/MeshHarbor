@@ -321,7 +321,7 @@ pub(super) fn classify_inbound_lan_hint(
             && ctx.loopback_eligible
             && !ctx.public_sock_pinned
             && ctx.public_sock.is_some())
-            .then_some((LanEgress::Wildcard, LanPathKind::Loopback));
+        .then_some((LanEgress::Wildcard, LanPathKind::Loopback));
     }
     if !direct::is_usable_lan_ipv4(ip) || ctx.all_self_ips().contains(&ip) {
         return None;
@@ -330,9 +330,7 @@ pub(super) fn classify_inbound_lan_hint(
     if let Some(iface) = ifaces.iter().find(|me| me.same_prefix(ip)) {
         return Some((LanEgress::Owned(iface.ip), LanPathKind::Subnet));
     }
-    if ctx.public_sock.is_some()
-        && ctx.visible_lan.ifaces().iter().any(|me| me.same_prefix(ip))
-    {
+    if ctx.public_sock.is_some() && ctx.visible_lan.ifaces().iter().any(|me| me.same_prefix(ip)) {
         return Some((LanEgress::Wildcard, LanPathKind::Subnet));
     }
     if !direct::is_public_v4(ip) && ctx.public_sock.is_some() {
@@ -2347,15 +2345,15 @@ impl OverlayRuntime {
                     lan: s.mon.strikes(&np.node_id, DirectTier::Lan),
                 })
                 .unwrap_or_default();
-            let cands = self.planner(|pl| {
-                resolve_direct_candidates_with(direct_ctx, &cfg, rot, Some(pl), now)
-            });
+            let cands = self
+                .planner(|pl| resolve_direct_candidates_with(direct_ctx, &cfg, rot, Some(pl), now));
             // FR-33 P2 — a LAN candidate inside a captured prefix is a dial
             // the OS has already said it will misroute; hand the verdict to
             // the monitor so `decide` never proposes it and `why` names it.
             let lan_captured = cands.lan.is_some_and(|c| match c.dst {
                 std::net::SocketAddr::V4(sa) => {
-                    !sa.ip().is_loopback() && lan_captures.iter().any(|cap| cap.contains_v4(*sa.ip()))
+                    !sa.ip().is_loopback()
+                        && lan_captures.iter().any(|cap| cap.contains_v4(*sa.ip()))
                 }
                 std::net::SocketAddr::V6(_) => false,
             });
@@ -2467,9 +2465,9 @@ impl OverlayRuntime {
             let installed = match installed {
                 Some((_, pk, _, _))
                     if cfg.backbone_only
-                        && by_node
-                            .get(&np.node_id)
-                            .is_some_and(|e| e.is_direct || e.relay_kind != Some(RelayKind::Org)) =>
+                        && by_node.get(&np.node_id).is_some_and(|e| {
+                            e.is_direct || e.relay_kind != Some(RelayKind::Org)
+                        }) =>
                 {
                     let old_subnets: Vec<crate::overlay::router::Cidr> = wg
                         .peer_subnets(&pk)
@@ -3199,9 +3197,7 @@ impl OverlayRuntime {
                             lan_probing = true;
                         }
                     }
-                    if !lan_probing
-                        && let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst)
-                    {
+                    if !lan_probing && let (Some(ctx), Some(cand)) = (direct_ctx, direct_dst) {
                         record(
                             "install_peers:fresh",
                             path::PathAction::Install(DirectTier::Lan),
@@ -4569,7 +4565,9 @@ impl OverlayRuntime {
         &mut self,
         direct_ctx: &mut Option<DirectCtx>,
         stun_urls: &[String],
-        stun_sink: Option<&Arc<tokio::sync::Mutex<mpsc::Receiver<crate::transport::stun::StunInbound>>>>,
+        stun_sink: Option<
+            &Arc<tokio::sync::Mutex<mpsc::Receiver<crate::transport::stun::StunInbound>>>,
+        >,
     ) -> SrflxGather {
         let mut out = SrflxGather {
             stun_server: None,
@@ -5323,7 +5321,10 @@ mod tests {
             Some(&planner),
             t0,
         );
-        assert!(silent.lan.is_none(), "routed RFC 1918 must require Disco pong");
+        assert!(
+            silent.lan.is_none(),
+            "routed RFC 1918 must require Disco pong"
+        );
 
         // Planner schedules the routed candidate for Disco probing.
         let adv = gather_lan_candidates(&c, &p);
@@ -5346,7 +5347,9 @@ mod tests {
             Some(&planner),
             t0 + Duration::from_millis(5),
         );
-        let chosen = verified.lan.expect("Disco-verified routed LAN becomes dialable");
+        let chosen = verified
+            .lan
+            .expect("Disco-verified routed LAN becomes dialable");
         assert_eq!(chosen.kind, LanPathKind::Routed);
         assert_eq!(chosen.dst, "10.42.0.9:43648".parse().unwrap());
     }
@@ -5381,7 +5384,11 @@ mod tests {
             gather_lan_candidates(&c, &win_host).is_empty(),
             "mirrored guest must never dial host's mirrored LAN IP"
         );
-        assert!(resolve_direct_candidates(Some(&c), &win_host, Default::default()).lan.is_none());
+        assert!(
+            resolve_direct_candidates(Some(&c), &win_host, Default::default())
+                .lan
+                .is_none()
+        );
 
         // Sibling LAN peer on same Wi-Fi IS matched via wildcard public_sock.
         let sibling = peer(&["192.168.10.42:43648"], &[], None);
@@ -5459,7 +5466,11 @@ mod tests {
             ingress_rules_preview: None,
             backbone_only: false,
         };
-        let np_b = mk_np(&kp_b, "100.64.0.2", vec![format!("198.51.100.9:{}", addr_b.port())]);
+        let np_b = mk_np(
+            &kp_b,
+            "100.64.0.2",
+            vec![format!("198.51.100.9:{}", addr_b.port())],
+        );
         let np_a = mk_np(&kp_a, "100.64.0.1", vec![]);
         dev_a.sync_peer_ingress(&HashMap::from([(np_b.node_id, np_b.clone())]));
         dev_b.sync_peer_ingress(&HashMap::from([(np_a.node_id, np_a.clone())]));
@@ -6138,7 +6149,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backbone_only_flip_immediately_retires_established_direct_carrier_and_pending_probes() {
+    async fn backbone_only_flip_immediately_retires_established_direct_carrier_and_pending_probes()
+    {
         let mut f = live_direct_pair().await;
         let now = Instant::now();
         f.by_node.insert(
@@ -6222,7 +6234,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_turn_build_without_installed_carrier_is_invalidated_and_rejected_on_backbone_only_full_and_delta() {
+    async fn pending_turn_build_without_installed_carrier_is_invalidated_and_rejected_on_backbone_only_full_and_delta()
+     {
         let mut f = live_direct_pair().await;
         // Ensure NO carrier is installed (`by_node` empty) when an off-loop TURN build is pending.
         f.by_node.clear();

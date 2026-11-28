@@ -205,7 +205,11 @@ async fn connect_and_auth(
                 "HOST KEY MISMATCH — refusing to connect (pinned key verification failed)".into(),
             ));
         }
-        Err(e) => return Err(ConnectError::Transient(format!("SSH handshake failed: {e}"))),
+        Err(e) => {
+            return Err(ConnectError::Transient(format!(
+                "SSH handshake failed: {e}"
+            )));
+        }
     };
 
     let hash = handle
@@ -338,41 +342,35 @@ pub async fn run_open(params: OpenParams) -> Result<i32> {
     .await?;
 
     // Wait for `Opened` (allows up to 35 s if target prompts operator consent).
-    let opened =
-        match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(35)).await? {
-            Some(WireFrame::Opened(o)) => o,
-            Some(WireFrame::Refused(reason)) if open_refusal_allows_classic_fallback(&reason) => {
-                let zh = prefers_zh();
-                let why = format_refuse(&reason, zh);
-                let msg = if zh {
-                    format!(
-                        "\x1b[2mmeshharbor: 无法启动断线恢复会话（{why}），已回退为经典交互会话。\x1b[0m\r\n"
-                    )
-                } else {
-                    format!(
-                        "\x1b[2mmeshharbor: resumable session unavailable ({why}); falling back to classic shell.\x1b[0m\r\n"
-                    )
-                };
-                let _ = std::io::stderr().write_all(msg.as_bytes());
-                let _ = channel.close().await;
-                return run_classic_fallback(
-                    handle,
-                    &params.device,
-                    &term,
-                    cols,
-                    rows,
-                    params.command,
+    let opened = match read_wire_from_channel(&mut channel, &mut decoder, Duration::from_secs(35))
+        .await?
+    {
+        Some(WireFrame::Opened(o)) => o,
+        Some(WireFrame::Refused(reason)) if open_refusal_allows_classic_fallback(&reason) => {
+            let zh = prefers_zh();
+            let why = format_refuse(&reason, zh);
+            let msg = if zh {
+                format!(
+                    "\x1b[2mmeshharbor: 无法启动断线恢复会话（{why}），已回退为经典交互会话。\x1b[0m\r\n"
                 )
+            } else {
+                format!(
+                    "\x1b[2mmeshharbor: resumable session unavailable ({why}); falling back to classic shell.\x1b[0m\r\n"
+                )
+            };
+            let _ = std::io::stderr().write_all(msg.as_bytes());
+            let _ = channel.close().await;
+            return run_classic_fallback(handle, &params.device, &term, cols, rows, params.command)
                 .await;
-            }
-            Some(WireFrame::Refused(reason)) => {
-                bail!(
-                    "target refused resumable session: {}",
-                    format_refuse(&reason, prefers_zh())
-                );
-            }
-            other => bail!("unexpected reply to Open: {other:?}"),
-        };
+        }
+        Some(WireFrame::Refused(reason)) => {
+            bail!(
+                "target refused resumable session: {}",
+                format_refuse(&reason, prefers_zh())
+            );
+        }
+        other => bail!("unexpected reply to Open: {other:?}"),
+    };
 
     if !opened.persist.survives_restart {
         let zh = prefers_zh();
@@ -1541,9 +1539,7 @@ async fn run_interactive_loop(
         }
     }
 
-    if overlay_visible
-        && let Some(restore) = shadow_vt.render_top_row_restore()
-    {
+    if overlay_visible && let Some(restore) = shadow_vt.render_top_row_restore() {
         write_stdout_all(&restore);
     }
     raw_guard.restore_now();
@@ -1826,7 +1822,10 @@ fn format_refuse(reason: &RefuseReason, zh: bool) -> String {
             if zh {
                 format!("远端会话已正常结束（退出码 {}）。", status.ssh_exit_code())
             } else {
-                format!("remote session ended (exit code {}).", status.ssh_exit_code())
+                format!(
+                    "remote session ended (exit code {}).",
+                    status.ssh_exit_code()
+                )
             }
         }
         RefuseReason::Policy { detail } => detail.clone(),

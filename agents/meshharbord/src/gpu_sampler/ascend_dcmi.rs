@@ -195,8 +195,7 @@ type FnGetDriverVersion = unsafe extern "C" fn(*mut c_char, c_uint) -> c_int;
 #[cfg(target_os = "linux")]
 type FnGetCardList = unsafe extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
 #[cfg(target_os = "linux")]
-type FnGetDeviceIdInCard =
-    unsafe extern "C" fn(c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
+type FnGetDeviceIdInCard = unsafe extern "C" fn(c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
 #[cfg(target_os = "linux")]
 type FnGetChipInfo = unsafe extern "C" fn(c_int, c_int, *mut DcmiChipInfo) -> c_int;
 #[cfg(target_os = "linux")]
@@ -257,10 +256,7 @@ unsafe impl Sync for DcmiApi {}
 #[cfg(target_os = "linux")]
 impl DcmiApi {
     fn load() -> Result<Self, String> {
-        let Some(path) = DCMI_LIB_CANDIDATES
-            .iter()
-            .find(|p| Path::new(p).is_file())
-        else {
+        let Some(path) = DCMI_LIB_CANDIDATES.iter().find(|p| Path::new(p).is_file()) else {
             return Err("libdcmi.so not found in standard Ascend driver paths".into());
         };
         // SAFETY: loading the host-installed Ascend DCMI shared library from a
@@ -444,30 +440,31 @@ impl DcmiSession {
     ) -> (GpuHostStatus, Vec<GpuSample>) {
         let workers = self.cards.len().clamp(1, 8);
         let chunk_size = self.cards.len().div_ceil(workers);
-        let (raw_samples, any_panic): (Vec<RawDcmiCardSample>, bool) = std::thread::scope(|scope| {
-            let handles: Vec<_> = self
-                .cards
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    let api = Arc::clone(&self.api);
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|meta| sample_card_raw(&api, meta, include_procs))
-                            .collect::<Vec<_>>()
+        let (raw_samples, any_panic): (Vec<RawDcmiCardSample>, bool) =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = self
+                    .cards
+                    .chunks(chunk_size)
+                    .map(|chunk| {
+                        let api = Arc::clone(&self.api);
+                        scope.spawn(move || {
+                            chunk
+                                .iter()
+                                .map(|meta| sample_card_raw(&api, meta, include_procs))
+                                .collect::<Vec<_>>()
+                        })
                     })
-                })
-                .collect();
-            let mut out = Vec::with_capacity(self.cards.len());
-            let mut panicked = false;
-            for h in handles {
-                match h.join() {
-                    Ok(part) => out.extend(part),
-                    Err(_) => panicked = true,
+                    .collect();
+                let mut out = Vec::with_capacity(self.cards.len());
+                let mut panicked = false;
+                for h in handles {
+                    match h.join() {
+                        Ok(part) => out.extend(part),
+                        Err(_) => panicked = true,
+                    }
                 }
-            }
-            (out, panicked)
-        });
+                (out, panicked)
+            });
         if any_panic {
             return (GpuHostStatus::SamplerStalled, Vec::new());
         }
@@ -584,11 +581,7 @@ struct RawDcmiCardSample {
 }
 
 #[cfg(target_os = "linux")]
-fn sample_card_raw(
-    api: &DcmiApi,
-    meta: &DcmiCardMeta,
-    include_procs: bool,
-) -> RawDcmiCardSample {
+fn sample_card_raw(api: &DcmiApi, meta: &DcmiCardMeta, include_procs: bool) -> RawDcmiCardSample {
     let cid = meta.card_id;
     let did = meta.device_id;
     let mut any_metric_ok = false;
@@ -670,7 +663,12 @@ fn sample_card_raw(
                 let rows = buf[..n]
                     .iter()
                     .filter(|p| p.proc_id > 0)
-                    .map(|p| (p.proc_id as u32, dcmi_proc_mem_bytes_to_mb(p.proc_mem_usage)))
+                    .map(|p| {
+                        (
+                            p.proc_id as u32,
+                            dcmi_proc_mem_bytes_to_mb(p.proc_mem_usage),
+                        )
+                    })
                     .collect();
                 Some(rows)
             } else {
@@ -905,9 +903,6 @@ mod tests {
             format_dcmi_chip_name("Ascend", "910B4-1", "910B4-1"),
             "Ascend 910B4-1"
         );
-        assert_eq!(
-            format_dcmi_chip_name("", "Ascend 910B", ""),
-            "Ascend 910B"
-        );
+        assert_eq!(format_dcmi_chip_name("", "Ascend 910B", ""), "Ascend 910B");
     }
 }

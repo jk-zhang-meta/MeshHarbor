@@ -23,17 +23,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use bson::oid::ObjectId;
 use russh::keys::ssh_key::{
     PublicKey,
     private::{Ed25519Keypair, PrivateKey},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
-
-use meshharbor_remote_control::ClientMsg;
-
-use crate::ssh_origin::SshGrantAnswer;
 
 /// The longest command line, in bytes: one line for the target's own shell.
 pub const MAX_COMMAND: usize = 8 * 1024;
@@ -140,79 +134,6 @@ pub fn mint_key() -> PrivateKey {
     let mut key = PrivateKey::from(Ed25519Keypair::from_seed(&seed));
     key.set_comment("meshharbor-hive-session");
     key
-}
-
-/// Where the answer lets the call go, once checked.
-#[derive(Debug, Clone)]
-pub struct Admission {
-    pub address: String,
-    pub port: u16,
-    pub host_key: PublicKey,
-}
-
-/// Check the server's answer before anything dials. A refusal is the
-/// server's word. Otherwise it must echo `ticket_id`, and name an address, a
-/// port and a host key that parses.
-pub fn admit(answer: &SshGrantAnswer, ticket_id: &str) -> Result<Admission, RunError> {
-    if let Some(why) = &answer.error {
-        return Err(RunError::Refused(why.clone()));
-    }
-    if answer.ssh_ticket_id.as_deref() != Some(ticket_id) {
-        return Err(RunError::NotEchoed);
-    }
-    let host_key = answer
-        .host_pubkey
-        .as_deref()
-        .filter(|k| !k.trim().is_empty())
-        .ok_or(RunError::NoHostKey)?;
-    let host_key = PublicKey::from_openssh(host_key.trim())
-        .map_err(|_| RunError::BadAnswer("its host key does not parse"))?;
-    let address = answer
-        .address
-        .clone()
-        .filter(|a| !a.is_empty())
-        .ok_or(RunError::BadAnswer("it names no address"))?;
-    let port = answer.port.ok_or(RunError::BadAnswer("it names no port"))?;
-    Ok(Admission {
-        address,
-        port,
-        host_key,
-    })
-}
-
-/// Ask the server for `target`'s grant through `sink`, the primary's
-/// control connection, presenting `ticket` and the call key's public half.
-/// The waiter is registered before the frame is sent, so a fast answer has
-/// somewhere to land.
-pub async fn ask(
-    sink: &mpsc::Sender<ClientMsg>,
-    target: ObjectId,
-    public_key: &str,
-    session_secs: u64,
-    ticket: &str,
-    wait: Duration,
-) -> Result<SshGrantAnswer, RunError> {
-    let request_id = ObjectId::new().to_hex();
-    let (_guard, rx) = crate::ssh_origin::expect_response(&request_id);
-    sink.send(ClientMsg::SshRequest {
-        request_id,
-        target: target.to_hex(),
-        public_key: public_key.to_string(),
-        session_secs,
-        ssh_ticket: Some(ticket.to_string()),
-        // FR-129 — an agent session has no person to type a code: a device that asks for one
-        // refuses it.
-        two_factor_code: None,
-    })
-    .await
-    .map_err(|_| RunError::Session("the server connection is down".into()))?;
-    match tokio::time::timeout(wait, rx).await {
-        Ok(Ok(answer)) => Ok(answer),
-        Ok(Err(_)) => Err(RunError::Session(
-            "the server connection dropped while awaiting the grant".into(),
-        )),
-        Err(_) => Err(RunError::TimedOut),
-    }
 }
 
 /// A stream an SSH session runs over: an OS socket, or the netstack's.
@@ -368,68 +289,9 @@ where
         .map_err(|_| RunError::TimedOut)?
 }
 
-/// One call, whole: check the command, mint the key, ask the server for the
-/// grant under `ticket_id`'s ticket, check the answer, dial the target and
-/// run the command, all within `timeout` plus the target's prompt.
-pub async fn run(
-    sink: &mpsc::Sender<ClientMsg>,
-    dialer: &dyn OverlayDialer,
-    target: ObjectId,
-    ticket: &str,
-    ticket_id: &str,
-    command: &str,
-    timeout: Duration,
-) -> Result<Ran, RunError> {
-    check_command(command)?;
-    let timeout = timeout.min(Duration::from_secs(MAX_TIMEOUT_SECS));
-    let key = mint_key();
-    let public = key
-        .public_key()
-        .to_openssh()
-        .map_err(|e| RunError::Session(e.to_string()))?;
-    // The SSH session is bounded by the command's time and the prompt; the
-    // network module clamps it to what is left of the ticket.
-    let session_secs = timeout.as_secs() + PROMPT_SECS;
-    let answer = ask(sink, target, &public, session_secs, ticket, ASK_WAIT).await?;
-    let admission = admit(&answer, ticket_id)?;
-    let stream = dialer
-        .dial(&admission.address, admission.port)
-        .await
-        .map_err(RunError::Dial)?;
-    exec_one(
-        stream,
-        admission.host_key,
-        key,
-        command,
-        timeout + Duration::from_secs(PROMPT_SECS),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn host_key_line(seed: u8) -> String {
-        PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32]))
-            .public_key()
-            .to_openssh()
-            .unwrap()
-    }
-
-    fn answer(ticket_id: Option<&str>, host: Option<String>) -> SshGrantAnswer {
-        SshGrantAnswer {
-            address: Some("100.64.0.9".into()),
-            port: Some(2222),
-            host_pubkey: host,
-            grant_id: Some("g1".into()),
-            expires_at_ms: Some(1),
-            error: None,
-            ssh_ticket_id: ticket_id.map(String::from),
-            two_factor: None,
-            resume: false,
-        }
-    }
 
     /// One line, within the bound, not empty: a second line would be a
     /// second command for the target's shell.
@@ -449,48 +311,6 @@ mod tests {
         ));
     }
 
-    /// Nothing dials on an answer that does not echo the ticket presented:
-    /// a server before P3-8-1b ignored the ticket and answered as the
-    /// device owner's. Nor on one with no host key, or one that refused.
-    #[test]
-    fn nothing_dials_without_the_echo_and_a_host_key() {
-        let key = host_key_line(7);
-        let admitted = admit(&answer(Some("k1"), Some(key.clone())), "k1").expect("admitted");
-        assert_eq!(
-            (admitted.address.as_str(), admitted.port),
-            ("100.64.0.9", 2222)
-        );
-
-        assert_eq!(
-            admit(&answer(None, Some(key.clone())), "k1").unwrap_err(),
-            RunError::NotEchoed,
-            "an older server's answer, as the owner's"
-        );
-        assert_eq!(
-            admit(&answer(Some("k2"), Some(key.clone())), "k1").unwrap_err(),
-            RunError::NotEchoed,
-            "another ticket's"
-        );
-        assert_eq!(
-            admit(&answer(Some("k1"), None), "k1").unwrap_err(),
-            RunError::NoHostKey
-        );
-        assert_eq!(
-            admit(&answer(Some("k1"), Some("  ".into())), "k1").unwrap_err(),
-            RunError::NoHostKey
-        );
-        assert!(matches!(
-            admit(&answer(Some("k1"), Some("not a key".into())), "k1").unwrap_err(),
-            RunError::BadAnswer(_)
-        ));
-        let mut refused = answer(Some("k1"), Some(key));
-        refused.error = Some("no SSH policy on this device admits agent sessions".into());
-        assert_eq!(
-            admit(&refused, "k1").unwrap_err(),
-            RunError::Refused("no SSH policy on this device admits agent sessions".into())
-        );
-    }
-
     /// A stream keeps at most its bound, and says when it dropped any.
     #[test]
     fn a_stream_keeps_its_bound_and_says_when_it_cut() {
@@ -502,56 +322,6 @@ mod tests {
         assert!(cut);
         push_bounded(&mut buf, b"d", &mut cut);
         assert_eq!(buf.len(), MAX_STREAM);
-    }
-
-    /// The request presents the ticket and the key, and its answer comes
-    /// back to its asker; the server connection's end is said as such.
-    #[tokio::test]
-    async fn the_request_presents_the_ticket_and_waits_for_its_answer() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let target = ObjectId::new();
-        let asker = tokio::spawn(async move {
-            ask(
-                &tx,
-                target,
-                "ssh-ed25519 AAAA",
-                90,
-                "the-ticket",
-                Duration::from_secs(5),
-            )
-            .await
-        });
-        let request_id = match rx.recv().await.unwrap() {
-            ClientMsg::SshRequest {
-                request_id,
-                target: t,
-                public_key,
-                session_secs,
-                ssh_ticket,
-                two_factor_code,
-            } => {
-                assert_eq!(t, target.to_hex());
-                assert!(
-                    two_factor_code.is_none(),
-                    "an agent session carries no code"
-                );
-                assert_eq!(public_key, "ssh-ed25519 AAAA");
-                assert_eq!(session_secs, 90);
-                assert_eq!(ssh_ticket.as_deref(), Some("the-ticket"));
-                request_id
-            }
-            other => panic!("{other:?}"),
-        };
-        crate::ssh_origin::deliver(&request_id, answer(Some("k1"), None));
-        let got = asker.await.unwrap().expect("answered");
-        assert_eq!(got.ssh_ticket_id.as_deref(), Some("k1"));
-
-        let (tx, rx) = mpsc::channel(1);
-        drop(rx);
-        assert!(matches!(
-            ask(&tx, target, "k", 1, "t", Duration::from_secs(1)).await,
-            Err(RunError::Session(_))
-        ));
     }
 
     /// The call's key is ed25519 and new each time.

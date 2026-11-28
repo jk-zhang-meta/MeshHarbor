@@ -297,9 +297,8 @@ impl CandidatePlanner {
             * 1000.0;
         let peer_state = self.peers.entry(pending.peer).or_default();
         let prev = peer_state.verified.get(&pending.cand.dst).copied();
-        let newly_verified = prev.is_none_or(|v| {
-            pong.at.saturating_duration_since(v.last_pong) > VERIFIED_PATH_TTL
-        });
+        let newly_verified =
+            prev.is_none_or(|v| pong.at.saturating_duration_since(v.last_pong) > VERIFIED_PATH_TTL);
         let ewma_rtt = match prev {
             Some(v) if !newly_verified => v.rtt_ms * 0.7 + rtt_ms * 0.3,
             _ => rtt_ms,
@@ -400,9 +399,8 @@ impl CandidatePlanner {
             }
         }
         if self.last_sent.len() > MAX_LAST_SENT_ENTRIES {
-            self.last_sent.retain(|_, t| {
-                now.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING
-            });
+            self.last_sent
+                .retain(|_, t| now.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING);
         }
 
         let mut list: Vec<(LanCandidate, bool)> = merged
@@ -439,9 +437,8 @@ impl CandidatePlanner {
     ) {
         self.last_sent.insert((peer, cand.dst), at);
         if self.last_sent.len() > MAX_LAST_SENT_ENTRIES {
-            self.last_sent.retain(|_, t| {
-                at.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING
-            });
+            self.last_sent
+                .retain(|_, t| at.saturating_duration_since(*t) < CANDIDATE_PROBE_MIN_SPACING);
         }
         self.pending.insert(
             nonce,
@@ -499,8 +496,7 @@ impl CandidatePlanner {
                 let better = match best {
                     None => true,
                     Some((cur, cur_rtt)) => {
-                        cand.kind < cur.kind
-                            || (cand.kind == cur.kind && v.rtt_ms < cur_rtt)
+                        cand.kind < cur.kind || (cand.kind == cur.kind && v.rtt_ms < cur_rtt)
                     }
                 };
                 if better {
@@ -605,7 +601,10 @@ pub(crate) fn loopback_candidates(
     };
     for ep in lan_endpoints {
         if let Ok(SocketAddr::V4(sa)) = ep.trim().parse::<SocketAddr>() {
-            if let Some(pub_p) = sa.port().checked_add(super::direct::PUBLIC_DIAL_PORT_OFFSET) {
+            if let Some(pub_p) = sa
+                .port()
+                .checked_add(super::direct::PUBLIC_DIAL_PORT_OFFSET)
+            {
                 push_port(pub_p);
             }
             push_port(sa.port());
@@ -684,7 +683,13 @@ mod tests {
             t0 + Duration::from_millis(2),
         ));
         assert_eq!(
-            planner.best_lan(&peer, &adv, &[nic1, nic2], true, t0 + Duration::from_millis(20)),
+            planner.best_lan(
+                &peer,
+                &adv,
+                &[nic1, nic2],
+                true,
+                t0 + Duration::from_millis(20)
+            ),
             Some(c_second),
             "faster verified subnet must beat slower first-listed subnet"
         );
@@ -698,7 +703,13 @@ mod tests {
             t0 + Duration::from_millis(5),
         ));
         assert_eq!(
-            planner.best_lan(&peer, &adv, &[nic1, nic2], true, t0 + Duration::from_millis(20)),
+            planner.best_lan(
+                &peer,
+                &adv,
+                &[nic1, nic2],
+                true,
+                t0 + Duration::from_millis(20)
+            ),
             Some(c_loop),
             "verified loopback beats verified subnet"
         );
@@ -740,7 +751,13 @@ mod tests {
         let nic = Ipv4Addr::new(192, 168, 10, 2);
         let hint_dst = sa("192.168.10.77:43648");
 
-        planner.on_inbound_ping(peer, hint_dst, LanEgress::Owned(nic), LanPathKind::Subnet, t0);
+        planner.on_inbound_ping(
+            peer,
+            hint_dst,
+            LanEgress::Owned(nic),
+            LanPathKind::Subnet,
+            t0,
+        );
         // Hint alone must NOT make the path selectable.
         assert_eq!(planner.best_lan(&peer, &[], &[nic], true, t0), None);
 
@@ -754,7 +771,12 @@ mod tests {
         // Sending and getting a source-matched pong verifies it.
         planner.record_sent([42; 8], peer, planned[0], t0);
         let hit = planner
-            .on_pong(&pong(peer, [42; 8], hint_dst, t0 + Duration::from_millis(1)))
+            .on_pong(&pong(
+                peer,
+                [42; 8],
+                hint_dst,
+                t0 + Duration::from_millis(1),
+            ))
             .expect("source-matched pong verifies hint");
         assert!(hit.newly_verified);
         assert_eq!(
@@ -788,7 +810,12 @@ mod tests {
         // Genuine source-matched pong still succeeds.
         assert!(
             planner
-                .on_pong(&pong(peer_a, [9; 8], cand.dst, t0 + Duration::from_millis(3)))
+                .on_pong(&pong(
+                    peer_a,
+                    [9; 8],
+                    cand.dst,
+                    t0 + Duration::from_millis(3)
+                ))
                 .is_some()
         );
     }
@@ -803,10 +830,7 @@ mod tests {
             let peer = [i; 32];
             let cands: Vec<LanCandidate> = (0u16..5)
                 .map(|j| {
-                    LanCandidate::subnet(
-                        nic,
-                        SocketAddr::from(([192, 168, 10, 10 + i], 43648 + j)),
-                    )
+                    LanCandidate::subnet(nic, SocketAddr::from(([192, 168, 10, 10 + i], 43648 + j)))
                 })
                 .collect();
             let planned = planner.plan_probes(peer, &cands, t0);

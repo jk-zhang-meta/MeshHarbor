@@ -352,7 +352,13 @@ pub async fn devices(
                 .await?
             {
                 let node = c.id.and_then(|i| node_by_client.get(&i).copied());
-                let row = client_row(&state.core.geoip, &vis.zones, c, node, dns_domain.as_deref());
+                let row = client_row(
+                    &state.core.geoip,
+                    &vis.zones,
+                    c,
+                    node,
+                    dns_domain.as_deref(),
+                );
                 let in_netmap = row
                     .overlay_node_id
                     .as_deref()

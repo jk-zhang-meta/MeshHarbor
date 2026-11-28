@@ -34,7 +34,9 @@ pub fn run_if_requested() -> Option<std::io::Result<()>> {
                 "invalid MSI task transaction request",
             ));
         }
-        let script = format!("{SCRIPT}\nInvoke-TaskTransaction $env:MH_MSI_OPERATION $env:MH_MSI_PRODUCT $env:MH_MSI_EXE\n");
+        let script = format!(
+            "{SCRIPT}\nInvoke-TaskTransaction $env:MH_MSI_OPERATION $env:MH_MSI_PRODUCT $env:MH_MSI_EXE\n"
+        );
         let powershell = std::path::PathBuf::from(
             std::env::var_os("SystemRoot")
                 .ok_or_else(|| std::io::Error::other("SystemRoot missing"))?,

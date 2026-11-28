@@ -19,9 +19,6 @@
 //!   the exclusion set applied, and reads "off" with the switch off.
 
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
-use chrono::NaiveDate;
-use meshharbor_api::growth::digest;
-use meshharbor_core::growth::ExclusionSet;
 use meshharbor_remote_control::models::{SessionFeedback, SessionFeedbackRequest};
 use meshharbor_services::dao::session_feedback::SessionFeedbackDao;
 use serde_json::{Value, json};
@@ -428,92 +425,4 @@ async fn purge_user_takes_one_persons_ratings_and_nobody_elses() {
     let left = rows(&app).await;
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].get_object_id("user_id").unwrap(), b);
-}
-
-/// The digest's `quality.ratings`: the thumbs per window, the reasons over
-/// 28 days, the exclusion set applied by org and by person; "off" with the
-/// switch off, never zeros.
-#[tokio::test]
-async fn the_digest_counts_the_ratings_and_reads_off_when_the_prompt_is_off() {
-    let admin_id = ObjectId::new();
-    let app = TestApp::spawn_with_settings(move |s| {
-        s.stats.platform_admins = Some(admin_id.to_hex());
-    })
-    .await;
-    let day = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
-    let at = |days: i64, h: u32| {
-        DateTime::from_millis(
-            (day + chrono::Duration::days(days))
-                .and_hms_opt(h, 0, 0)
-                .unwrap()
-                .and_utc()
-                .timestamp_millis(),
-        )
-    };
-    let dao = SessionFeedbackDao::new(&app.db);
-    let (org, excluded_org, person) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-    // The platform admin's own org is implicitly excluded.
-    app.db
-        .collection::<Document>("tenants")
-        .insert_one(doc! {
-            "_id": excluded_org, "name": "adm", "slug": "adm", "owner_id": admin_id, "plan": "free",
-            "features": [], "settings": {}, "created_at": at(-40, 1), "updated_at": at(-40, 1),
-            "deleted_at": Bson::Null, "is_archived": false,
-        })
-        .await
-        .unwrap();
-    let row = |tenant: ObjectId, user: ObjectId, rating: &str, reasons: Vec<&str>, ts: DateTime| {
-        SessionFeedback {
-            id: None,
-            session_id: ObjectId::new(),
-            tenant_id: tenant,
-            user_id: user,
-            agent_id: ObjectId::new(),
-            rating: meshharbor_remote_control::models::FeedbackRating::parse(rating).unwrap(),
-            reasons: reasons.into_iter().map(str::to_string).collect(),
-            ts,
-        }
-    };
-    for r in [
-        row(org, person, "up", vec![], at(0, 10)),
-        row(org, person, "down", vec!["lag", "picture"], at(0, 11)),
-        row(org, person, "down", vec!["lag"], at(-3, 9)),
-        row(org, person, "up", vec![], at(-20, 9)),
-        // Out of the 28-day window; and the excluded org's; and the admin's own.
-        row(org, person, "down", vec!["input"], at(-40, 9)),
-        row(excluded_org, person, "down", vec!["other"], at(0, 12)),
-        row(org, admin_id, "down", vec!["other"], at(0, 13)),
-    ] {
-        dao.record(&r).await.unwrap();
-    }
-    let set = ExclusionSet::load(&app.state.core).await.unwrap();
-    assert_eq!(set.counts(), (1, 1));
-    let sections = digest::compute(&app.state, day, &set, DateTime::now())
-        .await
-        .unwrap();
-    let j = serde_json::to_value(&sections).unwrap();
-    let r = &j["quality"]["ratings"];
-    assert_eq!(r["up"], json!({ "day": 1, "d7": 1, "d28": 2 }), "{r}");
-    assert_eq!(r["down"], json!({ "day": 1, "d7": 2, "d28": 2 }));
-    assert_eq!(r["rated"], json!({ "day": 2, "d7": 3, "d28": 4 }));
-    assert!(r.get("up_share_28d").is_none(), "n < 30: counts only");
-    assert_eq!(r["n_floor"], 30);
-    assert_eq!(
-        r["reasons_28d"],
-        json!([{ "key": "lag", "count": 2 }, { "key": "picture", "count": 1 }])
-    );
-    // The stored shape round-trips typed; a row from before P9b reads the
-    // section as "arrives with P9b".
-    let back: digest::Sections =
-        bson::from_document(bson::to_document(&sections).unwrap()).unwrap();
-    assert_eq!(back, sections);
-
-    let off = TestApp::spawn_with_settings(|s| s.growth.feedback = false).await;
-    let set = ExclusionSet::load(&off.state.core).await.unwrap();
-    let sections = digest::compute(&off.state, day, &set, DateTime::now())
-        .await
-        .unwrap();
-    let j = serde_json::to_value(&sections).unwrap();
-    let reason = j["quality"]["ratings"]["not_measured"].as_str().unwrap();
-    assert!(reason.contains("off on this server"), "{reason}");
 }

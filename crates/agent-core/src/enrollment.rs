@@ -758,11 +758,18 @@ pub fn unique_org_label(
 /// correct in every ordinary setup.
 pub fn preserve_operator_config(fresh: AgentConfig, existing: AgentConfig) -> AgentConfig {
     let same_primary = fresh.server_url == existing.server_url
-        && fresh.tenant_id == existing.tenant_id && fresh.agent_id == existing.agent_id;
+        && fresh.tenant_id == existing.tenant_id
+        && fresh.agent_id == existing.agent_id;
     let machine_name = if same_primary && existing.name_sync.is_some() {
         existing.machine_name.clone()
-    } else { fresh.machine_name };
-    let name_sync = if same_primary { existing.name_sync.clone() } else { None };
+    } else {
+        fresh.machine_name
+    };
+    let name_sync = if same_primary {
+        existing.name_sync.clone()
+    } else {
+        None
+    };
     AgentConfig {
         server_url: fresh.server_url,
         ws_url: fresh.ws_url,
@@ -1266,11 +1273,16 @@ mod tests {
         let mut existing = crate::config::test_fixture();
         existing.machine_name = "canonical".into();
         existing.name_sync = Some(crate::config::DeviceNameJournal {
-            server_url: existing.server_url.clone(), tenant_id: existing.tenant_id.clone(),
-            agent_id: existing.agent_id.clone(), revision: Some("9".into()),
-            canonical_name: Some("canonical".into()), error: None,
+            server_url: existing.server_url.clone(),
+            tenant_id: existing.tenant_id.clone(),
+            agent_id: existing.agent_id.clone(),
+            revision: Some("9".into()),
+            canonical_name: Some("canonical".into()),
+            error: None,
             pending: Some(crate::config::DeviceNameProposal {
-                name: "queued".into(), base_revision: "9".into(), error: None,
+                name: "queued".into(),
+                base_revision: "9".into(),
+                error: None,
             }),
         });
         let mut fresh = crate::config::test_fixture();

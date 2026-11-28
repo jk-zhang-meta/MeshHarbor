@@ -89,7 +89,10 @@ pub fn has_verified_account_email(user: &User) -> bool {
         && domain.contains('.')
         && !domain.eq_ignore_ascii_case("invalid")
         && !domain.to_ascii_lowercase().ends_with(".invalid")
-        && !user.email.chars().any(|c| c.is_control() || c.is_whitespace())
+        && !user
+            .email
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
 }
 
 pub fn parse_trusted_frontend_url(raw: &str) -> Option<(reqwest::Url, Vec<String>)> {

@@ -221,7 +221,9 @@ pub fn validate_channel_url(kind: BotKind, raw: &str) -> Result<Url, String> {
         .to_ascii_lowercase();
 
     // Reject IP literals that are non-public immediately.
-    if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>()
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
         && !is_public_ip(ip)
     {
         return Err(format!("Webhook host {host} is not a public IP address"));
@@ -284,7 +286,10 @@ pub async fn resolve_and_validate_public(url: &Url) -> Result<Vec<SocketAddr>, S
         .ok_or_else(|| "Webhook URL missing host".to_string())?;
     let port = url.port_or_known_default().unwrap_or(443);
 
-    if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>() {
+    if let Ok(ip) = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
         if !is_public_ip(ip) {
             return Err(format!("Refusing non-public webhook IP {ip}"));
         }
@@ -403,7 +408,12 @@ pub fn build_bot_payload(
         if idx == 0 {
             first_title = title.clone();
         }
-        lines.push(format!("[{}] {} — {}", it.severity.to_uppercase(), title, body));
+        lines.push(format!(
+            "[{}] {} — {}",
+            it.severity.to_uppercase(),
+            title,
+            body
+        ));
     }
     let combined = lines.join("\n");
 
@@ -502,15 +512,22 @@ fn check_provider_body(kind: BotKind, body: &str) -> Result<(), String> {
                     .get("StatusMessage")
                     .and_then(|v| v.as_str())
                     .unwrap_or("error");
-                return Err(format!("feishu rejected webhook (StatusCode {code}): {msg}"));
+                return Err(format!(
+                    "feishu rejected webhook (StatusCode {code}): {msg}"
+                ));
             }
         }
         BotKind::Dingtalk | BotKind::Wecom => {
             if let Some(code) = val.get("errcode").and_then(|v| v.as_i64())
                 && code != 0
             {
-                let msg = val.get("errmsg").and_then(|v| v.as_str()).unwrap_or("error");
-                return Err(format!("bot provider rejected webhook (errcode {code}): {msg}"));
+                let msg = val
+                    .get("errmsg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("error");
+                return Err(format!(
+                    "bot provider rejected webhook (errcode {code}): {msg}"
+                ));
             }
         }
         BotKind::Webhook => {}
@@ -544,7 +561,9 @@ pub async fn send_once(channel: &GpuAlertChannel, items: &[BotAlertItem]) -> Res
         .map_err(|e| format!("webhook send failed: {}", e.without_url()))?;
     let status = resp.status();
     if status.is_redirection() {
-        return Err(format!("webhook redirected ({status}), refused for SSRF safety"));
+        return Err(format!(
+            "webhook redirected ({status}), refused for SSRF safety"
+        ));
     }
     let body = read_bounded_body(resp, 8 * 1024).await;
     if !status.is_success() {
@@ -678,7 +697,8 @@ mod tests {
         // Verify independently with direct Hmac<Sha256>
         let mut mac = HmacSha256::new_from_slice(b"1599360473\ndemo_secret").unwrap();
         mac.update(b"");
-        let expected_f = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let expected_f =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
         assert_eq!(f_sig, expected_f);
         assert_eq!(f_sig.len(), 44);
 
@@ -686,7 +706,8 @@ mod tests {
         let d_sig = dingtalk_sign(1700000000000, "SEC1234");
         let mut dmac = HmacSha256::new_from_slice(b"SEC1234").unwrap();
         dmac.update(b"1700000000000\nSEC1234");
-        let expected_d = base64::engine::general_purpose::STANDARD.encode(dmac.finalize().into_bytes());
+        let expected_d =
+            base64::engine::general_purpose::STANDARD.encode(dmac.finalize().into_bytes());
         assert_eq!(d_sig, expected_d);
         assert!(!url_encode_component(&d_sig).contains('+'));
         assert!(!url_encode_component(&d_sig).contains('/'));
@@ -696,17 +717,55 @@ mod tests {
     #[test]
     fn fr139_bot_ssrf_and_pinning_refuse_private_http_and_wrong_hosts() {
         // Valid pinned hosts
-        assert!(validate_channel_url(BotKind::Feishu, "https://open.feishu.cn/open-apis/bot/v2/hook/abc-123").is_ok());
-        assert!(validate_channel_url(BotKind::Feishu, "https://open.larksuite.com/open-apis/bot/v2/hook/abc-123").is_ok());
-        assert!(validate_channel_url(BotKind::Dingtalk, "https://oapi.dingtalk.com/robot/send?access_token=abc").is_ok());
-        assert!(validate_channel_url(BotKind::Wecom, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc").is_ok());
+        assert!(
+            validate_channel_url(
+                BotKind::Feishu,
+                "https://open.feishu.cn/open-apis/bot/v2/hook/abc-123"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_channel_url(
+                BotKind::Feishu,
+                "https://open.larksuite.com/open-apis/bot/v2/hook/abc-123"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_channel_url(
+                BotKind::Dingtalk,
+                "https://oapi.dingtalk.com/robot/send?access_token=abc"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_channel_url(
+                BotKind::Wecom,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+            )
+            .is_ok()
+        );
         assert!(validate_channel_url(BotKind::Webhook, "https://hooks.example.com/gpu").is_ok());
 
         // Refused: HTTP, wrong host/path, loopback/private/link-local/CGNAT/ULA/IPv4-mapped
-        assert!(validate_channel_url(BotKind::Feishu, "http://open.feishu.cn/open-apis/bot/v2/hook/abc").is_err());
-        assert!(validate_channel_url(BotKind::Feishu, "https://evil.example.com/open-apis/bot/v2/hook/abc").is_err());
+        assert!(
+            validate_channel_url(
+                BotKind::Feishu,
+                "http://open.feishu.cn/open-apis/bot/v2/hook/abc"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_channel_url(
+                BotKind::Feishu,
+                "https://evil.example.com/open-apis/bot/v2/hook/abc"
+            )
+            .is_err()
+        );
         assert!(validate_channel_url(BotKind::Feishu, "https://open.feishu.cn/other").is_err());
-        assert!(validate_channel_url(BotKind::Dingtalk, "https://evil.example.com/robot/send").is_err());
+        assert!(
+            validate_channel_url(BotKind::Dingtalk, "https://evil.example.com/robot/send").is_err()
+        );
         assert!(validate_channel_url(BotKind::Wecom, "https://qyapi.weixin.qq.com/other").is_err());
         for bad in [
             "http://hooks.example.com/gpu",
