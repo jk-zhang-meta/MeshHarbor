@@ -203,7 +203,7 @@ impl CpalLoopbackCapture {
         let ring = Arc::new(AudioRing::new(CHANNEL_DEPTH));
 
         let err_ring = Arc::clone(&ring);
-        let err_fn = move |err| {
+        let err_fn = move |err: cpal::StreamError| {
             tracing::warn!(%err, "audio: cpal stream error");
             err_ring.set_error(err.to_string());
         };
