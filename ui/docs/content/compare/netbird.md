@@ -39,9 +39,9 @@ shell share **one enrolment, one access model and one audit trail**.
 
 With no `sshd` and no bound port, on Windows as well as Unix.
 
-### Chat, rooms and video calls
+### GPU / NPU fleet monitoring
 
-Included on the same server and accounts.
+Live GPU and NPU telemetry, history, process visibility and webhook alerts on the same agent and server.
 
 ## Side by side
 
@@ -54,7 +54,7 @@ Included on the same server and accounts.
 | SSO / SCIM | **No** | **Yes** |
 | Mobile clients | **No** | Yes |
 | Kubernetes operator | **No** | Yes |
-| Chat and video | **Included** | No |
+| GPU / NPU fleet monitoring | **Built in** | No |
 | Self-host the control plane | Yes | Yes |
 | Maturity | Young | More mature |
 

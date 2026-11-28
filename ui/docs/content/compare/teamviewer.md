@@ -27,14 +27,8 @@ tracked openly rather than glossed over.
 
 The single most common complaint about the free tier of the incumbents is being
 flagged as a commercial user and locked out mid-session, with a slow appeals
-process. MeshHarbor's plans are counted by devices and users, and there is no
-heuristic deciding whether you look like a business.
-
-### Price shape
-
-Per-user pricing with a generous device count, rather than per-seat pricing that
-climbs with concurrent sessions. And a free tier that is genuinely usable rather
-than a trial.
+process. MeshHarbor has no commercial-use heuristic and no artificial session
+lockouts — self-host it freely on your own infrastructure.
 
 ### You can host the whole thing
 

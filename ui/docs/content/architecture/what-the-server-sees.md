@@ -1,6 +1,6 @@
 ---
 title: What the server sees
-description: Precisely what the MeshHarbor control plane can and cannot observe — including the one feature that is deliberately an exception to the rule.
+description: Precisely what the MeshHarbor control plane can and cannot observe — and why the data planes stay end-to-end encrypted off the server.
 tags: [architecture, security, privacy, design]
 order: 4
 ---
@@ -15,9 +15,9 @@ than what it is configured to do.
 |---|---|
 | Accounts, organizations, memberships | It authenticates you |
 | Device rows, names, addresses, versions | It is the registry |
-| Permissions and policies | It is the decision point |
+| Permissions, ACLs and device policies | It is the decision point |
 | **Audit records** — who asked for what, when, and the outcome | That is the whole point of them |
-| Chat messages, rooms, and uploaded files | It is a chat product; these live there |
+| GPU/NPU telemetry and alert rules (for monitored GPU hosts) | It powers fleet dashboards and alerts |
 | Presence and connection metadata | It routes and notifies |
 
 ## What the server does not hold
@@ -45,18 +45,6 @@ Several settings — whether SSH is enabled, whether remote commands are allowed
 whether the machine accepts remote configuration at all — live on the machine
 and **cannot be written by the server**. That is not belt-and-braces; it is what
 makes them meaningful if the control plane is ever compromised.
-:::
-
-## The exception, stated plainly
-
-:::danger Conference media passes through the server
-Video calls use a selective forwarding unit: each participant sends their stream
-to the server, which forwards it to the others. The server therefore **does**
-handle call media, because that is what a forwarding unit is.
-
-It is not recorded unless someone in the call presses record. But if your threat
-model distinguishes "handled" from "not handled", conferencing is on the other
-side of that line from every other feature.
 :::
 
 ## Self-hosting

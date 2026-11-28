@@ -1,12 +1,12 @@
 ---
 title: Ports and firewall
-description: What MeshHarbor needs to reach, what it never needs opened inbound, and the one port range that matters if you self-host video calls.
+description: What MeshHarbor needs to reach, what it never needs opened inbound, and the single port a self-hosted server exposes.
 tags: [reference, network, firewall, ports, self-hosting]
 order: 3
 ---
 
 The short version: **agents need outbound access and no inbound ports at all.**
-A self-hosted server needs one HTTP port and, for video calls, a UDP range.
+A self-hosted server needs only one HTTP port behind your TLS terminator.
 
 ## What an agent needs
 
@@ -55,18 +55,7 @@ against a key built into the agent.
 | Port | Protocol | For | Exposure |
 |---|---|---|---|
 | Your HTTP port | TCP | API, web app, control connections, the relay floor | Behind your TLS terminator |
-| The RTC range | UDP | Conference media | Reachable from participants |
 | Database | TCP | The application only | **Internal** |
-| Object store | TCP | The application only | **Internal** |
-
-:::danger The conference media range does not go through your reverse proxy
-Browsers send call media **straight at an address the server advertises**, on a
-UDP port range. If it is not reachable, signalling succeeds perfectly and no
-video ever arrives.
-
-A small range is mapped by default — enough to try it. A real deployment wants
-the full range. On Linux, host networking is the clean answer.
-:::
 
 ## Optional: your own relay
 

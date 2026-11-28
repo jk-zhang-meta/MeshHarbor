@@ -7,7 +7,7 @@
 
     <!-- Fleet tiles: Devices online | Tunnels -->
     <v-row>
-      <v-col v-if="caps.has('fleet')" cols="6" sm="6" md="4">
+      <v-col v-if="caps.has('fleet')" cols="6" sm="6" md="6">
         <v-card :to="showFleet ? `/tenant/${tenantId}/devices` : undefined" :hover="showFleet">
           <v-card-text class="mh-stat">
             <span class="mh-stat__icon"><v-icon size="20">mdi-monitor-multiple</v-icon></span>
@@ -16,7 +16,7 @@
           </v-card-text>
         </v-card>
       </v-col>
-      <v-col v-if="caps.has('network')" cols="6" sm="6" md="4">
+      <v-col v-if="caps.has('network')" cols="6" sm="6" md="6">
         <v-card
           :to="showFleet ? `/tenant/${tenantId}/devices?type=tunnel` : undefined"
           :hover="showFleet"

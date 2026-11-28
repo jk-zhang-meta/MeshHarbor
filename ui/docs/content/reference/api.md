@@ -16,8 +16,8 @@ https://meshharbor.itachi.fans/api/...
 Almost every route is **scoped to an organization** and nested accordingly:
 
 ```
-/api/tenant/{organization_id}/room/{room_id}/message/...
 /api/tenant/{organization_id}/agent/{agent_id}/...
+/api/tenant/{organization_id}/gpu/...
 ```
 
 :::warning Organization scoping is enforced, not decorative
@@ -66,9 +66,9 @@ grant out of existence.
 |---|---|
 | `auth`, `oauth`, `user` | Sign-in, registration, profile |
 | `tenant`, `member`, `role`, `invite` | Organizations, membership, permissions |
-| `room`, `message`, `reaction`, `file` | Chat and files |
-| `recording`, `export`, `search` | Call recordings, exports, search |
-| `agent`, `session`, `turn` | Devices, remote sessions, relay credentials |
+| `agent`, `device`, `device-shares`, `turn` | Devices, remote sessions, sharing, relay credentials |
+| `overlay-acl`, `tunnel-policy`, `network-zones`, `magic-dns`, `managed-forward` | Private mesh, zones, ACLs, DNS and forwards |
+| `gpu` | GPU/NPU fleet telemetry, history, alert rules and channels |
 | `notification`, `push` | Notifications |
 | `health` | Liveness and readiness |
 
@@ -89,9 +89,9 @@ Useful for a self-hosted deployment's monitoring.
 
 ## Realtime
 
-A websocket at `/ws` carries chat, presence, call signalling and the agent
-protocol. The same endpoint serves users and agents with different credential
-audiences.
+A websocket at `/ws` carries device presence, notifications, GPU telemetry
+updates, remote-control signalling and the agent protocol. The same endpoint
+serves users and agents with different credential audiences.
 
 ## Full route list
 

@@ -56,7 +56,7 @@ const { t } = useI18n()
 const facts = [
   { key: 'factRemote', icon: 'mdi-monitor-share' },
   { key: 'factMesh', icon: 'mdi-lan-connect' },
-  { key: 'factTeam', icon: 'mdi-account-group-outline' },
+  { key: 'factFleet', icon: 'mdi-expansion-card' },
 ]
 </script>
 

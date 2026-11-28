@@ -46,10 +46,9 @@ Tailscale SSH is excellent and does the same job on Unix. MeshHarbor's also serv
 socket layer, so there is nothing for endpoint security software to terminate
 and nothing listening even locally.
 
-### Chat, rooms and video calls are included
+### GPU / NPU fleet monitoring is built in
 
-On the same server and the same accounts, rather than as a separate product with
-its own identity system.
+Track NVIDIA, AMD and Ascend GPUs/NPUs across your mesh hosts with live telemetry, history and webhook alerts on the same agent.
 
 ## Side by side
 
@@ -61,7 +60,7 @@ its own identity system.
 | Exit nodes | Yes | Yes |
 | Subnet routers | Yes | Yes |
 | Public ingress | **No** | Yes |
-| Chat and video | **Included** | No |
+| GPU / NPU fleet monitoring | **Built in** | No |
 | Self-host the control plane | **Yes, same code** | Community reimplementation |
 | Mobile apps | **No** | Yes |
 | SSO / SCIM | **No** | Yes |

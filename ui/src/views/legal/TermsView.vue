@@ -10,7 +10,7 @@
         </router-link>
 
         <h1 class="text-h4 text-md-h3 font-weight-bold mb-2">Terms of Service</h1>
-        <p class="text-body-2 legal-muted mb-8">Last updated: August 2026</p>
+        <p class="text-body-2 legal-muted mb-8">Last updated: November 2026</p>
 
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">1. Introduction and Acceptance</h2>
@@ -20,15 +20,15 @@
             operated by G ROX EOOD (see our <router-link to="/imprint" class="text-primary">Imprint</router-link>).
           </p>
           <p class="text-body-1 legal-muted mb-2">
-            MeshHarbor is three products on one platform:
+            MeshHarbor provides a unified platform for your enrolled devices:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-4">
-            <li class="mb-1"><strong>Remote desktop</strong> — viewing and controlling the screen, keyboard and mouse of devices you have enrolled, from your browser.</li>
+            <li class="mb-1"><strong>Remote desktop</strong> — viewing and controlling the screen, keyboard, mouse, clipboard, P2P file transfer and device-side screen recording of enrolled devices from your browser.</li>
             <li class="mb-1"><strong>Private networking</strong> — an encrypted mesh network between your devices, with subnet routers, exit nodes, tunnels, a SOCKS5 proxy and SSH access.</li>
-            <li class="mb-1"><strong>Collaboration</strong> — rooms, chat, threads, file sharing and video conferencing.</li>
+            <li class="mb-1"><strong>Fleet &amp; GPU/NPU operations</strong> — device enrollment, updates, remote configuration, access control, audit trails, and GPU/NPU telemetry and alerts.</li>
           </ul>
           <p class="text-body-1 legal-muted">
-            Using the first two requires installing our agent software on the devices concerned. Sections 4 to 6
+            Using these capabilities requires installing our agent software on the devices concerned. Sections 4 to 6
             set out obligations specific to those features; they matter more than the rest of this document,
             because they concern access to real machines and real networks. By creating an account or using
             MeshHarbor, you agree to be bound by these Terms. If you do not agree, please do not use the platform.
@@ -57,11 +57,9 @@
             <li class="mb-1">Accept responsibility for all activities that occur under your account</li>
           </ul>
           <p class="text-body-1 legal-muted">
-            You may authenticate using email and password, or through a third-party sign-in provider (Google,
-            Microsoft, GitHub, LinkedIn or Facebook). You are responsible for maintaining the security of your
-            chosen authentication method. Because your account can be used to reach enrolled devices, its
-            compromise is more consequential here than on a chat product alone — we strongly recommend
-            protecting it accordingly.
+            You may authenticate using email and password, or through a configured third-party sign-in provider.
+            You are responsible for maintaining the security of your chosen authentication method. Because your
+            account can be used to reach enrolled devices, we strongly recommend protecting it accordingly.
           </p>
         </section>
 
@@ -132,14 +130,12 @@
             <li class="mb-1">Route, tunnel or proxy traffic in a way that evades a network restriction you are not authorised to evade</li>
             <li class="mb-1">Scan, probe, attack or interfere with systems you do not own or have written permission to test</li>
             <li class="mb-1">Operate the platform as anonymising infrastructure for unlawful activity</li>
-            <li class="mb-1">Harass, bully, threaten, or intimidate other users in chat rooms, direct messages, or video calls</li>
-            <li class="mb-1">Share, upload, or transmit illegal, obscene, defamatory, or harmful content</li>
-            <li class="mb-1">Distribute malware, spam, or phishing content through messages, file uploads or an enrolled device</li>
+            <li class="mb-1">Distribute malware or abuse enrolled devices or network relays</li>
             <li class="mb-1">Impersonate any person or entity, or misrepresent your identity</li>
             <li class="mb-1">Attempt to gain unauthorized access to other users' accounts, workspaces, devices or data</li>
             <li class="mb-1">Interfere with or disrupt the platform, servers, relays, or networks connected to MeshHarbor</li>
             <li class="mb-1">Use the platform to violate any applicable law or regulation, including export control and sanctions law</li>
-            <li class="mb-1">Record, screenshot, or redistribute calls, sessions or content without the consent of all participants</li>
+            <li class="mb-1">Record or capture a remote device's screen without authorization and any consent required by law</li>
             <li class="mb-1">Use automated bots or scripts to access the platform without our prior written consent</li>
           </ul>
           <p class="text-body-1 legal-muted">
@@ -149,69 +145,32 @@
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">8. Content Ownership and User-Generated Content</h2>
-          <p class="text-body-1 legal-muted mb-4">
-            You retain ownership of all content you create, upload, or share on MeshHarbor, including chat messages,
-            files, documents, and any other materials ("User Content"). By uploading or sharing User Content, you
-            grant us a limited, non-exclusive, worldwide license to store, process, transmit, and display
-            your content solely for the purpose of providing the platform services to you and your workspace members.
-          </p>
-          <p class="text-body-1 legal-muted">
-            You are solely responsible for your User Content and represent that you have all necessary rights
-            to share it. We do not claim ownership over your User Content, and this license terminates when you
-            delete your content or your account. Data that passes through the private network or a remote-desktop
-            session is not User Content in this sense — we do not receive it in a readable form at all.
-          </p>
-        </section>
-
-        <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">9. Intellectual Property</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">8. Intellectual Property</h2>
           <p class="text-body-1 legal-muted">
             The MeshHarbor platform, including its software, agent, design, logos, trademarks, and documentation, is
             owned by <strong>G ROX EOOD</strong> and is protected by intellectual property laws. These Terms do not
             grant you any right to use our trademarks, logos, or brand assets without our prior written permission.
-            You may not reverse engineer, decompile or redistribute the agent except to the extent that applicable
-            law expressly permits it notwithstanding this restriction. All rights not expressly granted to you are
-            reserved. Third-party open-source components remain governed by their own licences.
+            All rights not expressly granted to you are reserved. Open-source components remain governed by their
+            applicable licences (AGPL-3.0 for the server, MPL-2.0 for the agent, and third-party licences).
           </p>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">10. Recording Consent</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">9. Screen Recording Consent</h2>
           <p class="text-body-1 legal-muted mb-4">
-            MeshHarbor offers call recording features for video and audio conferences.
-            By using these features, you acknowledge and agree to the following:
+            MeshHarbor offers optional device-side screen recording during remote-desktop sessions. By using this
+            feature, you acknowledge and agree that:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
-            <li class="mb-1">Recording can only be initiated by authorized participants with appropriate workspace permissions</li>
-            <li class="mb-1">All participants in a call will be notified when recording begins</li>
-            <li class="mb-1">By remaining in a call after recording notification, participants consent to being recorded</li>
-            <li class="mb-1">Recordings are stored according to workspace settings and your subscription plan</li>
+            <li class="mb-1">Remote screen recording requires both device-local approval and the appropriate workspace permission</li>
+            <li class="mb-1">The device displays a visible indicator while recording is active, and anyone at the device can stop it immediately</li>
+            <li class="mb-1">Recordings are stored locally on the device and transferred peer-to-peer on download — never stored on our servers</li>
             <li class="mb-1">You are responsible for complying with all applicable laws regarding recording consent in your jurisdiction</li>
           </ul>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">11. Billing and Subscriptions</h2>
-          <p class="text-body-1 legal-muted mb-2">
-            MeshHarbor offers free and paid subscription plans. For paid plans:
-          </p>
-          <ul class="text-body-1 legal-muted ml-6 mb-2">
-            <li class="mb-1">All payments are processed securely by Stripe. We do not store your full payment card details.</li>
-            <li class="mb-1">Subscriptions are billed on a recurring basis (monthly or annually) according to your chosen plan.</li>
-            <li class="mb-1">You may upgrade, downgrade, or cancel your subscription at any time through your workspace billing settings.</li>
-            <li class="mb-1">Cancellation takes effect at the end of the current billing period. No prorated refunds are provided for partial periods.</li>
-            <li class="mb-1">We reserve the right to modify pricing with at least 30 days' advance notice. Price changes will apply at your next renewal.</li>
-            <li class="mb-1">If payment fails, we may suspend access to paid features after a reasonable grace period.</li>
-          </ul>
-          <p class="text-body-1 legal-muted">
-            If you are a consumer in the EU, statutory withdrawal rights apply where the law provides them; nothing
-            in these Terms limits rights you have that cannot be waived by agreement.
-          </p>
-        </section>
-
-        <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">12. Termination</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">10. Termination</h2>
           <p class="text-body-1 legal-muted mb-4">
             You may terminate your account at any time by contacting us or through your account settings.
             We may suspend or terminate your account if you violate these Terms, engage in prohibited conduct,
@@ -219,50 +178,47 @@
           </p>
           <p class="text-body-1 legal-muted">
             Upon termination, your right to use the platform ceases immediately and enrolled devices lose access
-            to the private network. We may retain certain data as required by law or for legitimate business
-            purposes. Content shared in workspaces may persist if other members of the workspace retain access
-            to it. Uninstalling the agent from your devices remains your responsibility.
+            to the private network. We may retain certain data as required by law. Uninstalling the agent from your
+            devices remains your responsibility.
           </p>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">13. Disclaimers</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">11. Disclaimers</h2>
           <p class="text-body-1 legal-muted">
             MeshHarbor is provided on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind, whether
             express or implied, including but not limited to warranties of merchantability, fitness for a
             particular purpose, and non-infringement. We do not warrant that the platform will be uninterrupted,
-            error-free, or secure. Real-time performance — call quality, remote-desktop responsiveness and
-            network throughput — depends on network conditions between the devices involved, which are outside
-            our control, and MeshHarbor is not a substitute for physical access to a device or for your own backups.
+            error-free, or secure. Real-time performance — remote-desktop responsiveness and network throughput —
+            depends on network conditions between the devices involved, which are outside our control, and MeshHarbor
+            is not a substitute for physical access to a device or for your own backups.
           </p>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">14. Limitation of Liability</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">12. Limitation of Liability</h2>
           <p class="text-body-1 legal-muted">
             To the maximum extent permitted by applicable law, G ROX EOOD and its officers, directors,
             employees, and agents shall not be liable for any indirect, incidental, special, consequential, or
             punitive damages, including but not limited to loss of data, loss of profits, or business
-            interruption, arising out of or in connection with your use of the platform. Our total aggregate
-            liability for any claims arising under these Terms shall not exceed the amount you paid to us in
-            the twelve (12) months preceding the claim. Nothing in these Terms excludes liability that cannot
-            lawfully be excluded, including for death or personal injury caused by negligence, for fraud, or
-            under mandatory consumer protection law.
+            interruption, arising out of or in connection with your use of the platform. Nothing in these Terms
+            excludes liability that cannot lawfully be excluded, including for death or personal injury caused by
+            negligence, for fraud, or under mandatory consumer protection law.
           </p>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">15. Indemnification</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">13. Indemnification</h2>
           <p class="text-body-1 legal-muted">
             You agree to indemnify, defend, and hold harmless G ROX EOOD from and against any
             claims, liabilities, damages, losses, and expenses (including reasonable legal fees) arising from
-            your use of the platform, your User Content, devices you enroll, traffic you route through the
-            private network, your violation of these Terms, or your violation of any rights of a third party.
+            your use of the platform, devices you enroll, traffic you route through the private network, your
+            violation of these Terms, or your violation of any rights of a third party.
           </p>
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">16. Governing Law and Disputes</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">14. Governing Law and Disputes</h2>
           <p class="text-body-1 legal-muted">
             These Terms are governed by the laws of the <strong>Republic of Bulgaria</strong>, where G ROX EOOD is
             established, without regard to conflict of law principles. Any dispute shall first be attempted to be
@@ -275,7 +231,7 @@
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">17. Changes to These Terms</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">15. Changes to These Terms</h2>
           <p class="text-body-1 legal-muted">
             We may update these Terms from time to time. We will notify you of material changes by posting
             the updated Terms on this page and updating the "Last updated" date. For significant changes, we
@@ -285,7 +241,7 @@
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">18. Severability</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">16. Severability</h2>
           <p class="text-body-1 legal-muted">
             If any provision of these Terms is found to be unenforceable or invalid, that provision shall be
             limited or eliminated to the minimum extent necessary, and the remaining provisions shall continue
@@ -294,7 +250,7 @@
         </section>
 
         <section class="mb-8">
-          <h2 class="text-h5 font-weight-bold mb-3">19. Contact Us</h2>
+          <h2 class="text-h5 font-weight-bold mb-3">17. Contact Us</h2>
           <p class="text-body-1 legal-muted">
             If you have any questions or concerns about these Terms of Service, please contact us at:
           </p>

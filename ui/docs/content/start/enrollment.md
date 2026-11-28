@@ -22,7 +22,8 @@ device**. It is:
 
 :::danger Treat a token like a password
 Anyone holding a live token can join a machine to your organization. Paste it
-into a terminal, not into a chat room, and mint a fresh one if it goes astray.
+directly into a terminal, never into a shared public channel, and mint a fresh
+one if it goes astray.
 :::
 
 ## What happens during enrollment

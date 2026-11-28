@@ -15,9 +15,7 @@ export interface SeriesPoint {
 export interface TenantOverview {
   enabled: boolean
   machines?: { online: number; total: number }
-  calls?: { active: number; minutes_today: number }
   spark_machines?: SeriesPoint[]
-  spark_minutes?: SeriesPoint[]
 }
 
 export interface SeriesPayload {
@@ -31,8 +29,6 @@ export interface SeriesPayload {
     cpu_pct?: number | null
     peer_rtt_ms?: number | null
   }>
-  /** calls endpoint */
-  totals?: { calls?: number; minutes?: number; participant_minutes?: number }
   /** machines endpoint: per-agent presence intervals for the uptime strip */
   uptime?: Array<{
     agent_id: string
@@ -83,11 +79,7 @@ export interface CostOrg {
   tenant_id: string
   name?: string
   slug?: string
-  plan?: string
-  subscription_status?: string
   seats: number
-  /** list-price estimate (plan price x seats), NOT billed revenue */
-  mrr_cents: number
   meters: Record<string, CostMeter>
   cost: number | null
 }
@@ -112,57 +104,12 @@ export interface CostPayload {
   } | null
 }
 
-/**
- * FR-20 P6 - an org's OWN metered consumption, in UNITS not money.
- *
- * No currency here on purpose: these are our costs, not the org's bill, and
- * there are no quotas yet for a figure to mean anything against. The value of
- * the surface is that a high relayed share is a *networking* finding the org's
- * own IT can act on, and pricing it would obscure that.
- */
-export interface ResourcesPayload {
-  enabled: boolean
-  range?: string
-  window_secs?: number
-  meters?: Record<string, { total: number | null; monitored: boolean }>
-  storage?: { bytes: number; files: number } | null
-  carrier_mix?: {
-    direct: number
-    relay: number
-    derp: number
-    relayed_fraction: number | null
-    basis?: string
-    window?: string
-  } | null
-  /** null where plans are not sold; the slot renders dark rather than as satisfied */
-  quota?: { relay?: RelayAllowance | null } | null
-}
-
-/**
- * FR-115 P4a — the org's relay allowance this month, by the throttle's own
- * arithmetic: bytes relayed through DERP since the first of the month (UTC)
- * against the plan's allowance for its seats. Units, never money.
- */
-export interface RelayAllowance {
-  month_start: string
-  resets_at: string
-  used_bytes: number
-  /** null = the plan has no allowance (unlimited) */
-  allowance_bytes: number | null
-  /** the rate past the allowance: relay slows to it, it is never cut off */
-  rate_kbps: number | null
-  /** the throttle is on for this deployment; off, the allowance is only shown */
-  enforced: boolean
-  throttled: boolean
-}
-
 export interface OrgsPayload {
   enabled: boolean
   tenants?: Array<{ id: string; name: string; slug?: string }>
   machines?: Array<{ tenant_id: string; total: number; online: number }>
-  /** membership counts — the third activity signal for hiding test orgs */
+  /** membership counts — activity signal for hiding test orgs */
   members?: Array<{ tenant_id: string; members: number }>
-  calls?: Array<{ tenant_id: string; calls_30d: number; minutes_30d: number }>
 }
 
 export interface MeshPayload {
@@ -255,7 +202,6 @@ export interface UsageUserRow {
   user_id: string
   name: string
   rc: UsageClass
-  call: UsageClass
   tunnel: UsageClass
   total_minutes: number
   /** Platform scope only — which orgs this user was active in. */
@@ -295,22 +241,11 @@ export interface UsageDetailPayload {
   totals?: {
     rc_minutes: number
     rc_bytes: number
-    call_minutes: number
-    call_bytes: number
     tunnel_minutes: number
     tunnel_bytes: number
   }
   /** The headline: every window this user spent looking at a screen. */
   viewing?: UsageViewingWindow[]
-  calls?: Array<{
-    room_id: string
-    room_name?: string
-    tenant_id: string
-    tenant_name?: string
-    started_at: number
-    ended_at?: number | null
-    seconds: number
-  }>
   tunnels?: Array<{
     session_id?: string
     agent_id?: string
@@ -354,9 +289,6 @@ export const useStatsStore = defineStore('stats', () => {
   async function fetchMachines(tenantId: string, range: string): Promise<SeriesPayload> {
     return api.get<SeriesPayload>(`/tenant/${tenantId}/stats/machines?range=${range}`)
   }
-  async function fetchCalls(tenantId: string, range: string): Promise<SeriesPayload> {
-    return api.get<SeriesPayload>(`/tenant/${tenantId}/stats/calls?range=${range}`)
-  }
   async function fetchTunnels(tenantId: string, range: string): Promise<SeriesPayload> {
     return api.get<SeriesPayload>(`/tenant/${tenantId}/stats/tunnels?range=${range}`)
   }
@@ -396,18 +328,11 @@ export const useStatsStore = defineStore('stats', () => {
   async function fetchCost(range: string): Promise<CostPayload> {
     return api.get<CostPayload>(`/admin/stats/cost?range=${range}`)
   }
-  async function fetchResources(tenantId: string, range: string): Promise<ResourcesPayload> {
-    return api.get<ResourcesPayload>(`/tenant/${tenantId}/stats/resources?range=${range}`)
-  }
   async function fetchUsers(range: string): Promise<UsersPayload> {
     return api.get<UsersPayload>(`/admin/stats/users?range=${range}`)
   }
   async function fetchAdminMachines(tenantId: string, range: string): Promise<SeriesPayload> {
     return api.get<SeriesPayload>(`/admin/stats/machines?tenant_id=${tenantId}&range=${range}`)
-  }
-  async function fetchAdminCalls(range: string, tenantId?: string): Promise<SeriesPayload> {
-    const t = tenantId ? `tenant_id=${tenantId}&` : ''
-    return api.get<SeriesPayload>(`/admin/stats/calls?${t}range=${range}`)
   }
 
   // ── Wave 3 — per-user usage ──────────────────────────────────────────
@@ -443,17 +368,14 @@ export const useStatsStore = defineStore('stats', () => {
     error,
     fetchOverview,
     fetchMachines,
-    fetchCalls,
     fetchTunnels,
     fetchMesh,
     fetchRelayCurrent,
     fetchRelayHistory,
     fetchOrgs,
     fetchCost,
-    fetchResources,
     fetchUsers,
     fetchAdminMachines,
-    fetchAdminCalls,
     fetchTenantUsage,
     fetchTenantUsageDetail,
     fetchAdminUsage,

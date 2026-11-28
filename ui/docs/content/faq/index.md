@@ -1,17 +1,18 @@
 ---
 title: Frequently asked questions
-description: Short answers about MeshHarbor — what it is, what it costs, whether it can see your screen, how it compares to Tailscale and RustDesk, and how to self-host it.
-tags: [faq, overview, getting-started, security, self-hosting, pricing]
+description: Short answers about MeshHarbor — what it is, whether it can see your screen, how it compares to Tailscale and RustDesk, and how to self-host it.
+tags: [faq, overview, getting-started, security, self-hosting]
 faq: true
 order: 0
 ---
 
 ## What is MeshHarbor?
 
-MeshHarbor is three products on one agent: a browser-based remote desktop, a private
-WireGuard-style mesh network between your machines, and team chat with video
-calls. You install one agent per machine and use everything from a browser tab.
-It runs on Windows, macOS and Linux, and you can host the whole thing yourself.
+MeshHarbor combines a browser-based remote desktop (with P2P file transfer and
+screen recording), a private WireGuard-style mesh network with tunnels and SSH,
+and GPU/NPU fleet monitoring on one agent. You install one agent per machine
+and use everything from a browser tab. It runs on Windows, macOS and Linux, and
+you can host the whole thing yourself.
 
 ## Do I need to install anything to view a remote screen?
 
@@ -24,20 +25,15 @@ machine you are reaching runs an agent.
 No. Remote-desktop video and input travel directly between your browser and the
 machine, encrypted end to end. When no direct path exists the traffic falls back
 through a relay, and the relay forwards ciphertext it cannot read. The pixel
-stream is never recorded.
+stream is never stored on the server.
 
-The one exception is video conferencing: a call's media passes through the
-server, because a multi-party call needs a forwarding unit. No other feature
-works that way.
+## Is it free and self-hostable?
 
-## Is it free?
-
-There is a free plan for up to 10 users and 100 devices, and commercial use is
-allowed on it: a business can run on the free plan, and nothing tries to detect
-one. The private network, remote desktop, tunnels, chat and calls are all
-included. Paid plans are billed per user; they raise the limits and add features
-like exit nodes, and the [pricing page](/pricing) shows the billing periods and
-currencies on offer. Self-hosting has no plan limits at all.
+Yes. Self-hosting is a first-class path rather than a stripped-down one, with no
+plan limits or commercial-use detection. One compose file and published
+container images bring up the full server — remote desktop, private mesh,
+tunnels, SSH and GPU/NPU fleet monitoring — on your own infrastructure. See
+[self-hosting](/docs/start/self-hosting/).
 
 ## Can I host it myself?
 
@@ -110,11 +106,10 @@ independent gates. See [SSH](/docs/network/ssh/).
 
 ## Which browsers work?
 
-Chat, calls, the dashboard and the remote-desktop viewer all work in current
-Chromium browsers, Firefox and Safari. For remote desktop we recommend Chrome,
-Edge or another Chromium browser: that is where the viewer's low-latency decode
-path has had the most testing. Safari and Firefox work too, with less testing so
-far.
+The dashboard and the remote-desktop viewer work in current Chromium browsers,
+Firefox and Safari. For remote desktop we recommend Chrome, Edge or another
+Chromium browser: that is where the viewer's low-latency decode path has had
+the most testing. Safari and Firefox work too, with less testing so far.
 
 ## Can one machine be in two organizations?
 
@@ -144,12 +139,14 @@ Yes. The server is AGPL-3.0 and the agent that runs on your machines is MPL-2.0.
 The source is at
 [github.com/jk-zhang-meta/MeshHarbor](https://github.com/jk-zhang-meta/MeshHarbor).
 
-## Can it record remote sessions for compliance?
+## Can it record remote sessions?
 
-No, and this is deliberate rather than unimplemented. Recording a terminal or a
-desktop means shipping whatever an operator typed — passwords, credentials — off
-the machine. Session *metadata* is audited in detail; contents are not. If you
-need session recording, this is a genuine gap.
+Yes — on the device itself, never on the server. When both the machine's owner
+and the controller's role allow it, a controller can record a remote screen to
+an MP4 file directly on that machine and download it peer-to-peer, with a
+visible banner on the recorded desktop. See [screen
+recording](/docs/remote-desktop/recording/). Server-side compliance recording of
+terminals or video streams is deliberately not built.
 
 ## Where do I report a problem?
 

@@ -34,9 +34,9 @@ import {
 } from './shell.ts'
 import { graph, organization, videoObject, website } from './structured.ts'
 
-export const HOME_TITLE = 'MeshHarbor — remote desktop & private mesh network'
+export const HOME_TITLE = 'MeshHarbor — remote desktop, private mesh & GPU fleet'
 export const HOME_DESCRIPTION =
-  'Remote desktop in a browser tab and a private WireGuard-style mesh between your machines. Self-hostable, end-to-end encrypted.'
+  'Remote desktop with screen recording, a private WireGuard-style mesh with SSH and tunnels, and GPU/NPU fleet monitoring. Self-hostable, end-to-end encrypted.'
 
 /** The SPA's Material icons, drawn on this page with the docs' inline SVGs.
  *  An icon the map does not know FAILS the build, like an unknown icon
@@ -45,6 +45,7 @@ const ICON: Record<string, string> = {
   'mdi-monitor-eye': 'monitor',
   'mdi-shield-lock-outline': 'shield',
   'mdi-monitor-multiple': 'monitor',
+  'mdi-expansion-card': 'chip',
   'mdi-lan': 'network',
   'mdi-router-network': 'network',
   'mdi-dns-outline': 'link',

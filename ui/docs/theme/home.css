@@ -64,40 +64,11 @@
 .home-more { text-align: center; margin: 24px 0 0; }
 .home-more a { text-decoration: underline; text-underline-offset: 2px; }
 
-/* ── pricing ──────────────────────────────────────────────────────────── */
-.home-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; max-width: 980px; margin: 0 auto; }
-.home-plan {
-  padding: 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
-  display: flex; flex-direction: column;
-}
-.home-plan--featured { border-color: var(--teal); box-shadow: var(--shadow-card); }
-.home-plan__badge {
-  align-self: flex-start; margin: 0 0 10px; padding: 3px 10px; border-radius: 999px;
-  background: var(--teal-soft); color: var(--teal-deep); font-size: .78rem; font-weight: 700;
-}
-.home-plan__name { font-size: 1.3rem; margin: 0; }
-.home-plan__price { margin: 12px 0 16px; }
-.home-plan__amount { font-size: 2.4rem; font-weight: 700; }
-.home-plan__unit { color: var(--ink-muted); }
-.home-plan__features { list-style: none; margin: 0 0 20px; padding: 0; flex-grow: 1; }
-.home-plan__features li { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
-.home-plan__features svg { flex: 0 0 auto; color: var(--teal); margin-top: 3px; }
-.home-plan__cta { justify-content: center; }
-
 /* ── call to action ───────────────────────────────────────────────────── */
 .home-cta { padding: 64px 0; background: linear-gradient(135deg, var(--teal-deep) 0%, #00897b 100%); color: #fff; }
 .home-cta__inner { text-align: center; }
 .home-cta .home-h2 { color: #fff; }
 .home-cta__lead { color: rgba(255, 255, 255, .88); font-size: 1.1rem; margin: 0 0 22px; }
-.home-news { max-width: 540px; margin: 36px auto 0; padding-top: 28px; border-top: 1px solid rgba(255, 255, 255, .25); }
-.home-news p { color: rgba(255, 255, 255, .88); }
-.home-news a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
-.home-news__form { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 12px 0; }
-.home-news__form input {
-  flex: 1 1 240px; min-width: 0; padding: 10px 12px; font: inherit;
-  border: 1px solid rgba(255, 255, 255, .5); border-radius: var(--radius); background: #fff; color: var(--ink);
-}
-.home-news__fine { font-size: .82rem; }
 
 /* ── the link hub (FR-88 P2, `/links/`) ─────────────────────────────────
  * One narrow column: most visitors arrive from a profile on a phone. */

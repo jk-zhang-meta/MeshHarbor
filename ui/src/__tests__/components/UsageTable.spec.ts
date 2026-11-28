@@ -49,8 +49,8 @@ const cls = (minutes: number, bytes: number) => ({
   bytes_known: bytes > 0,
 })
 const users: UsageUserRow[] = [
-  { user_id: 'u1', name: 'Sam Support', rc: cls(1204, 9e9), call: cls(12, 1e8), tunnel: cls(0, 0), total_minutes: 1216 },
-  { user_id: 'u2', name: 'Alex Admin', rc: cls(312, 4e9), call: cls(95, 1e9), tunnel: cls(44, 2e8), total_minutes: 451 },
+  { user_id: 'u1', name: 'Sam Support', rc: cls(1204, 9e9), tunnel: cls(0, 0), total_minutes: 1204 },
+  { user_id: 'u2', name: 'Alex Admin', rc: cls(312, 4e9), tunnel: cls(44, 2e8), total_minutes: 356 },
 ]
 
 function mountAt(width: 'phone' | 'wide') {

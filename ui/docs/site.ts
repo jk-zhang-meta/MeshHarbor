@@ -125,7 +125,7 @@ export const ORG = {
 export const OG_IMAGE_META = {
   width: 1280,
   height: 640,
-  alt: 'The MeshHarbor logo, with the line: remote desktop, private mesh network, chat & video',
+  alt: 'The MeshHarbor logo, with the line: remote desktop, private mesh network, SSH & GPU fleet',
 } as const
 
 // ── the blog (FR-87 P4) ─────────────────────────────────────────────────
@@ -134,7 +134,7 @@ export const OG_IMAGE_META = {
 export const BLOG_BASE = '/blog'
 export const BLOG_TITLE = 'MeshHarbor blog'
 export const BLOG_DESCRIPTION =
-  'Why MeshHarbor exists and how it is built: remote desktop from a browser tab, a private mesh network and team collaboration on one open-source agent.'
+  'Why MeshHarbor exists and how it is built: remote desktop from a browser tab, a private mesh network, SSH/tunnels and GPU fleet monitoring on one open-source agent.'
 export const POSTS_PER_PAGE = 10
 /** As with docs tags: a tag page below this is a doorway page, not a page. */
 export const MIN_POSTS_PER_TAG_INDEX = 3
@@ -269,9 +269,8 @@ export interface SectionDef {
 
 /**
  * Section order IS the sidebar order and the sitemap order. Reading order
- * follows the product's own pivot (#490): remote access first, the private
- * network second, collaboration as the included bonus — then the
- * cross-cutting material, then reference.
+ * follows the product's core pillars: remote access first, the private
+ * network second, then the cross-cutting material, then reference.
  */
 export const SECTIONS: SectionDef[] = [
   {

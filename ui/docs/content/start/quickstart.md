@@ -12,12 +12,8 @@ run a command on.
 
 ## 1 · Create a workspace
 
-Sign up at [meshharbor.itachi.fans](/register) and give the organization a name your team
+Sign up on your MeshHarbor server (or [meshharbor.itachi.fans](/register)) and give the organization a name your team
 will recognise — it labels **every device and every invite** you issue from it.
-
-The free plan covers **10 users and 100 devices**, commercial use included, with
-the private network, remote desktop, tunnels, chat and calls, so nothing below
-needs a card.
 
 ## 2 · Mint an enrollment token
 
@@ -25,8 +21,8 @@ In the dashboard, open **Devices → Enroll device**.
 
 :::warning A token is a credential
 An enrollment token is **single-use and short-lived**, and anyone holding it can
-join a machine to your organization. Paste it into a terminal, not into a chat
-room, and mint a fresh one if it goes astray.
+join a machine to your organization. Paste it directly into a terminal, never
+into a shared public channel, and mint a fresh one if it goes astray.
 :::
 
 ## 3 · Install the agent

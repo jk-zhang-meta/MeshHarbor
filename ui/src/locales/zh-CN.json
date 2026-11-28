@@ -705,7 +705,7 @@
         "agent_on_other_pod": "你的设备现在连在另一台服务器上，自动重试暂时还没连到，请稍后再试。",
         "agent_offline": "这台设备离线了。请确认它已开机并联网。",
         "agent_busy": "这台设备的同时会话数已满，请稍后再试。",
-        "org_session_limit": "你的组织套餐同一时间只能有一个远程会话，现在已经有一个在进行。结束它，或者升级套餐让每位用户各有一个会话。",
+        "org_session_limit": "你的组织已达到同时远程会话数上限。请先结束一个现有会话再试。",
         "forbidden": "你没有控制这台设备的权限。",
         "invalid_token": "登录已过期，请刷新页面重新登录。"
       },
@@ -780,7 +780,7 @@
         "no_answer": "设备没有回应，可能已经离线。",
         "malformed": "请求无法识别。请刷新页面后再试。",
         "unavailable": "这台设备不对外开放访问。请核对连接码，或者询问设备的主人。",
-        "session_limit": "你的组织已经达到套餐允许的远程会话数。结束一个，或者以另一个组织的身份连接。",
+        "session_limit": "你的组织已达到同时远程会话数上限。请结束一个会话，或者以另一个组织的身份连接。",
         "other": "设备拒绝了请求。"
       },
       "says": {
@@ -2324,13 +2324,11 @@
     },
     "search": {
       "close": "关闭搜索",
-      "placeholder": "搜索消息、房间和用户…",
-      "intro": "输入内容以搜索消息、房间和用户",
+      "placeholder": "搜索设备和成员…",
+      "intro": "输入内容以搜索设备和成员",
       "noResults": "没有找到与“{query}”相关的结果",
-      "messages": "消息",
-      "rooms": "房间",
       "people": "用户",
-      "inRoom": "{author} 在 #{room}"
+      "devices": "设备"
     },
     "layout": {
       "collapseSidebar": "收起侧边栏",
@@ -2339,21 +2337,7 @@
       "allOrgs": "全部组织",
       "openDevices": "打开设备页面",
       "searchDevices": "搜索设备",
-      "openRooms": "打开房间页面",
-      "searchRooms": "搜索房间",
       "menu": "菜单",
-      "inCallMuted": "通话中（已静音）· 通话控制",
-      "inCall": "通话中 · 通话控制",
-      "call": "通话",
-      "returnToCall": "返回通话",
-      "cameraOff": "关闭摄像头",
-      "cameraOn": "打开摄像头",
-      "hangUp": "挂断",
-      "activeCallOne": "{n} 个进行中的通话",
-      "activeCallMany": "{n} 个进行中的通话",
-      "activeCalls": "进行中的通话",
-      "unreadOne": "{n} 条未读消息",
-      "unreadMany": "{n} 条未读消息",
       "lightMode": "浅色模式",
       "darkMode": "深色模式",
       "profile": "个人资料",
@@ -2365,9 +2349,7 @@
       "create": "创建",
       "createOrgFailed": "创建组织失败",
       "slugTaken": "该标识已被占用，请换一个",
-      "connecting": "正在连接…",
-      "titleChat": "聊天",
-      "titleCall": "通话"
+      "connecting": "正在连接…"
     },
     "notFound": {
       "title": "页面不存在",
@@ -2817,34 +2799,19 @@
       "overview": "工作区概览",
       "devicesOnline": "在线设备",
       "tunnels": "隧道",
-      "rooms": "房间",
-      "activeCalls": "进行中的通话",
-      "messages": "消息",
       "insights": "洞察",
       "machinesOnline": "在线机器 · 24 小时",
       "online": "在线",
       "noSamples": "暂无采样数据，一小时内会出现",
-      "callMinutes": "通话分钟数 · 7 天",
-      "today": "今天 {n}",
-      "minutes": "分钟",
-      "noCalls": "最近 7 天没有通话",
       "network": "网络",
-      "quick": "快捷操作",
-      "newRoom": "新建房间",
-      "startCall": "发起通话",
-      "uploadFile": "上传文件",
       "manage": "管理",
       "devices": "设备",
-      "devicesHint": "远程控制、注册、更新",
+      "devicesHint": "远程控制、GPU 服务器、接入、更新",
       "networkHint": "覆盖网格、隧道、ACL、路由、DNS",
       "membersRoles": "成员与角色",
       "membersHint": "人员、权限、组织设置",
       "invites": "邀请",
-      "invitesHint": "邀请队友加入此组织",
-      "analytics": "分析",
-      "analyticsHint": "机器、通话和隧道流量的趋势",
-      "callName": "通话 - {when}",
-      "explore": "发现"
+      "invitesHint": "邀请队友加入此组织"
     },
     "mesh": {
       "empty": "此组织还没有设备",
@@ -3094,10 +3061,10 @@
     },
     "authShell": {
       "headline": "你的每一台电脑，随时就在手边。",
-      "lede": "浏览器里直接远程控制，设备之间组成 WireGuard 私有网络，团队的会议和聊天也在这里。服务器只负责协调，看不到你的画面、键盘输入和流量。",
+      "lede": "浏览器直接远程桌面与录屏，设备之间组成 WireGuard 私有网络与免配置 SSH/隧道，同时实时监控 GPU/NPU 算力集群。服务器只负责协调，看不到你的画面、键盘输入和流量。",
       "factRemote": "在浏览器里控制电脑，控制端什么都不用装",
       "factMesh": "能直连就直连，连不上自动走中继",
-      "factTeam": "会议、聊天、文件和设备在同一个组织里"
+      "factFleet": "零配置 SSH、端口隧道与 GPU/NPU 算力监控尽在同一个组织"
     },
     "phone": {
       "uptimeBarAria": "{name}：在线情况时间轴。点一下，或用左右方向键，查看某一时段",
@@ -3111,15 +3078,12 @@
       "joinedOn": "{when} 加入",
       "downloadFile": "下载 {name}",
       "deleteFile": "删除 {name}",
-      "noRoom": "无房间",
       "fileMeta": "{type} · 上传于 {date}",
       "copyInviteFor": "复制发给 {who} 的邀请链接",
       "copyInviteCode": "复制邀请链接 {code}",
       "revokeInviteCode": "撤销邀请 {code}",
       "inviteUsage": "已用 {used} / {max} · 创建于 {date}",
       "revoke": "撤销",
-      "searchRooms": "搜索房间",
-      "noRoomMatches": "没有名称含“{q}”的房间。",
       "olderLines": "显示更早的 {n} 行"
     },
     "gpu": {
@@ -3475,7 +3439,7 @@
       "terminal": "在终端里运行："
     },
     "footer": {
-      "tagline": "为你的设备和团队提供远程访问、私有组网与协作。",
+      "tagline": "远程桌面与录屏、私有组网、隧道与 SSH，以及 GPU/NPU 算力集群管理。",
       "product": "产品",
       "docs": "文档",
       "install": "安装",

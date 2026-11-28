@@ -4535,8 +4535,8 @@ describe('FR-115 P3: friendlyRcError for the org session cap', () => {
 
   it('still says what to do when the server sent no message', () => {
     const msg = friendlyRcError('org_session_limit', null)
-    expect(msg).toContain('one remote session at a time')
-    expect(msg).toContain('upgrade')
+    expect(msg).toContain('concurrent remote session limit')
+    expect(msg).toContain('End an existing session')
   })
 })
 

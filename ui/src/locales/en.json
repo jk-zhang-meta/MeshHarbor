@@ -705,7 +705,7 @@
         "agent_on_other_pod": "Your device is connected to a different server right now. Automatic retries could not reach it yet; try again in a moment.",
         "agent_offline": "This device is offline. Check that it is powered on and connected.",
         "agent_busy": "This device has reached its concurrent session limit. Try again in a moment.",
-        "org_session_limit": "Your organization's plan runs one remote session at a time, and one is open now. End it, or upgrade the plan for one remote session per user.",
+        "org_session_limit": "Your organization has reached its concurrent remote session limit. End an existing session and try again.",
         "forbidden": "You do not have permission to control this device.",
         "invalid_token": "Your session has expired. Refresh the page and sign in again."
       },
@@ -780,7 +780,7 @@
         "no_answer": "The device did not answer. It may be offline.",
         "malformed": "The request could not be read. Reload the page and try again.",
         "unavailable": "This device is not available for outside access. Check the code, or ask the device owner.",
-        "session_limit": "Your organization already runs as many remote sessions as its plan allows. End one, or connect for another organization.",
+        "session_limit": "Your organization has reached its concurrent remote session limit. End one, or connect for another organization.",
         "other": "The device refused the request."
       },
       "says": {
@@ -2324,13 +2324,11 @@
     },
     "search": {
       "close": "Close search",
-      "placeholder": "Search messages, rooms, people...",
-      "intro": "Type to search across messages, rooms, and people",
+      "placeholder": "Search devices and people...",
+      "intro": "Type to search devices and people",
       "noResults": "No results found for \"{query}\"",
-      "messages": "Messages",
-      "rooms": "Rooms",
       "people": "People",
-      "inRoom": "{author} in #{room}"
+      "devices": "Devices"
     },
     "layout": {
       "collapseSidebar": "Collapse sidebar",
@@ -2339,21 +2337,7 @@
       "allOrgs": "All organizations",
       "openDevices": "Open the devices page",
       "searchDevices": "Search devices",
-      "openRooms": "Open the rooms page",
-      "searchRooms": "Search rooms",
       "menu": "Menu",
-      "inCallMuted": "In a call, muted — call controls",
-      "inCall": "In a call — call controls",
-      "call": "Call",
-      "returnToCall": "Return to call",
-      "cameraOff": "Turn camera off",
-      "cameraOn": "Turn camera on",
-      "hangUp": "Hang up",
-      "activeCallOne": "{n} active call",
-      "activeCallMany": "{n} active calls",
-      "activeCalls": "Active Calls",
-      "unreadOne": "{n} unread message",
-      "unreadMany": "{n} unread messages",
       "lightMode": "Light mode",
       "darkMode": "Dark mode",
       "profile": "Profile",
@@ -2365,9 +2349,7 @@
       "create": "Create",
       "createOrgFailed": "Failed to create organization",
       "slugTaken": "That slug is already taken — pick another",
-      "connecting": "Connecting…",
-      "titleChat": "Chat",
-      "titleCall": "Call"
+      "connecting": "Connecting…"
     },
     "notFound": {
       "title": "Page Not Found",
@@ -2817,34 +2799,19 @@
       "overview": "Workspace Overview",
       "devicesOnline": "Devices Online",
       "tunnels": "Tunnels",
-      "rooms": "Rooms",
-      "activeCalls": "Active Calls",
-      "messages": "Messages",
       "insights": "Insights",
       "machinesOnline": "Machines online — 24h",
       "online": "Online",
       "noSamples": "No samples yet — data appears within the hour",
-      "callMinutes": "Call minutes — 7d",
-      "today": "{n} today",
-      "minutes": "Minutes",
-      "noCalls": "No calls in the last 7 days",
       "network": "Network",
-      "quick": "Quick Actions",
-      "newRoom": "New Room",
-      "startCall": "Start Call",
-      "uploadFile": "Upload File",
       "manage": "Manage",
       "devices": "Devices",
-      "devicesHint": "Remote control, enrollment, updates",
+      "devicesHint": "Remote control, GPU servers, enrollment, updates",
       "networkHint": "Overlay mesh, tunnels, ACL, routes, DNS",
       "membersRoles": "Members & Roles",
       "membersHint": "People, permissions, org settings",
       "invites": "Invites",
-      "invitesHint": "Bring teammates into this org",
-      "analytics": "Analytics",
-      "analyticsHint": "Machines, calls, tunnel traffic over time",
-      "callName": "Call - {when}",
-      "explore": "Explore"
+      "invitesHint": "Bring teammates into this org"
     },
     "mesh": {
       "empty": "No devices in this organization yet",
@@ -3094,10 +3061,10 @@
     },
     "authShell": {
       "headline": "Every computer you have, one click away.",
-      "lede": "Remote desktop from any browser, a private WireGuard network between your machines, and the meetings and chat your team works in. The server coordinates; it never sees your screens, keystrokes or traffic.",
+      "lede": "Remote desktop with screen recording from any browser, a private WireGuard mesh with SSH and tunnels, and GPU/NPU fleet monitoring. The server coordinates; it never sees your screens, keystrokes or traffic.",
       "factRemote": "Control a computer from the browser; nothing to install on your side",
       "factMesh": "Machines connect directly when they can, and through a relay when they cannot",
-      "factTeam": "Meetings, chat and files live in the same organization as your devices"
+      "factFleet": "Zero-config SSH, port tunnels and GPU/NPU fleet monitoring in one organization"
     },
     "phone": {
       "uptimeBarAria": "{name}: presence over time. Tap, or use the arrow keys, to read a period",
@@ -3111,15 +3078,12 @@
       "joinedOn": "Joined {when}",
       "downloadFile": "Download {name}",
       "deleteFile": "Delete {name}",
-      "noRoom": "no room",
       "fileMeta": "{type} · uploaded {date}",
       "copyInviteFor": "Copy the invite link for {who}",
       "copyInviteCode": "Copy the invite link {code}",
       "revokeInviteCode": "Revoke the invite {code}",
       "inviteUsage": "Used {used} / {max} · made {date}",
       "revoke": "Revoke",
-      "searchRooms": "Search rooms",
-      "noRoomMatches": "No room's name contains \"{q}\".",
       "olderLines": "Show {n} older lines"
     },
     "gpu": {
@@ -3475,7 +3439,7 @@
       "terminal": "From a terminal:"
     },
     "footer": {
-      "tagline": "Remote access, private networking, and collaboration for your devices and your team.",
+      "tagline": "Remote desktop, private mesh networking, tunnels, SSH, and GPU/NPU fleet management.",
       "product": "Product",
       "docs": "Documentation",
       "install": "Install",

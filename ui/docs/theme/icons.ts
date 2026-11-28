@@ -28,9 +28,8 @@ const STROKE: Record<string, IconBody> = {
     '<circle cx="12" cy="4.6" r="2.4"/><circle cx="4.6" cy="18" r="2.4"/><circle cx="19.4" cy="18" r="2.4"/><path d="M10.4 6.7 6.2 15.9m5.4-9.2 4.2 9.2M7 18h10"/>',
   video:
     '<rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.8 6-3.3v9l-6-3.3z"/>',
-  // FR-87: the static homepage's collaboration cards.
-  chat:
-    '<path d="M4.5 5h15A1.5 1.5 0 0 1 21 6.5v8.5a1.5 1.5 0 0 1-1.5 1.5H10L5.5 20v-3.5h-1A1.5 1.5 0 0 1 3 15V6.5A1.5 1.5 0 0 1 4.5 5z"/><path d="M7.5 9.5h9M7.5 12.5h6"/>',
+  chip:
+    '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M9.5 3v4M14.5 3v4M9.5 17v4M14.5 17v4M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
   file:
     '<path d="M13.5 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M13.5 3v5h5M9 13h6M9 16.5h4"/>',
   blueprint:

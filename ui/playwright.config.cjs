@@ -145,9 +145,6 @@ module.exports = defineConfig({
     if (process.env.E2E_SKIP_PHASE_3 === '1') {
       always.push(
         '**/oauth.spec.ts',
-        '**/conference.spec.ts',
-        '**/conference-chat.spec.ts',
-        '**/conference-multi.spec.ts',
         '**/rc-vp9-444.spec.ts',
       )
     }

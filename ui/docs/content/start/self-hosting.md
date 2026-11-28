@@ -1,20 +1,18 @@
 ---
 title: Self-hosting MeshHarbor
-description: Run the whole MeshHarbor server yourself with one compose file and a published container image — accounts, signalling, chat, conferencing and relays.
+description: Run the whole MeshHarbor server yourself with one compose file and a published container image — accounts, signalling, mesh coordination and relays.
 tags: [self-hosting, install, docker, getting-started, operations]
 order: 15
 ---
 
-Self-hosting is a first-class path, not a stripped-down one. The same server that
-runs the hosted service runs on your own box, minus its billing, with **no feature
-held back** and no plan limits: no device or user count, no cap on remote
-sessions, no meeting length.
+Self-hosting is a first-class path, not a stripped-down one. The same server runs
+on your own box with **no feature held back** and no artificial device, user, or
+session caps.
 
 ## What you are about to run
 
-One container with the API, the web app, the signalling plane, the chat and
-conferencing server and the relay floor — plus MongoDB and MinIO for state and
-file storage.
+One container with the API, the web app, the signalling plane, mesh coordination
+and the relay floor — plus MongoDB for state.
 
 **You need** Docker with Compose v2, about **4 GB RAM** and **10 GB disk**.
 
@@ -85,46 +83,21 @@ already run — nginx, Caddy, Traefik, a cloud load balancer. Point the proxy at
 the container's HTTP port and set your public origin in the environment so
 sign-in returns, invite links and the CORS policy all agree about who you are.
 
-## Conference media — the one part a proxy cannot fix
-
-:::danger This is the failure people hit
-Remote desktop, tunnels, SSH and the mesh are peer-to-peer with a relay
-fallback, and work through anything. **Conference video is different**: browsers
-send media straight at an address the server advertises, on a UDP port range,
-with no reverse proxy involved.
-
-If signalling looks perfect and no video ever arrives, this is nearly always the
-cause. A successful transport connect proves only that the browser *sent its
-parameters* — it says nothing about whether packets can flow.
-:::
-
-Two settings decide it:
-
-| Setting | What it must be |
-|---|---|
-| The **announced IP** | The address browsers should send media to. `127.0.0.1` works only for calls made on the host itself. |
-| The **RTC port range** | 32 ports are mapped by default — enough to try it. A real deployment wants the full range. |
-
-On **Linux**, the clean answer is host networking: give the `meshharbor` service
-`network_mode: host` and drop its `ports:` block, and the whole range is
-reachable. That is how the hosted service runs. It is not available on Docker
-Desktop for macOS or Windows, which is why the port-mapped form is the default.
-
 ## Optional integrations
 
 All off by default; each is a block of environment variables:
 
 :::cards
 - **Email** icon:info — Invites, notifications and account activation.
-- **OAuth sign-in** icon:shield — Google, GitHub, Microsoft, LinkedIn and Facebook.
+- **OAuth sign-in** icon:shield — Google and other configured OAuth providers.
 - **Web push** icon:video — Browser notifications when someone is offline.
-- **Billing** icon:book — Stripe, if you are reselling access.
+- **GPU alert webhooks** icon:chip — Telegram, Slack, Discord, WeCom, DingTalk or Feishu bot alerts.
 :::
 
 ## Upgrading and backups
 
-Upgrading is `pull` then `up -d`. State lives in the MongoDB and MinIO volumes —
-back those up, not the container.
+Upgrading is `pull` then `up -d`. State lives in the MongoDB volume —
+back that up, not the container.
 
 ## Known limitations, stated plainly
 

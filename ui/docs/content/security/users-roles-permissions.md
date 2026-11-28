@@ -15,10 +15,9 @@ set, and you can define your own.
 
 | Role | Broadly |
 |---|---|
-| **Owner** | Everything, including billing and deletion |
+| **Owner** | Everything, including organization deletion |
 | **Administrator** | Manage members, roles, devices and settings |
-| **Member** | Use rooms, calls and files; use the devices they are granted |
-| **Guest** | Limited to the rooms they were invited to |
+| **Member** | Use the devices and network resources they are granted |
 
 ## Permissions
 
@@ -28,7 +27,6 @@ knowing:
 | Permission | Grants |
 |---|---|
 | **Manage members** | Invite, remove, assign roles |
-| **Manage channels** | Create, archive and delete rooms |
 | **Manage devices** | Enroll, rename, remove, configure |
 | **Remote control** | Open a device's screen |
 | **Run commands on a device** | Execute a command remotely |
@@ -81,9 +79,9 @@ and an invitation cannot grant a role more powerful than the inviter's own.
 
 :::tip Membership is not authorisation
 Being a member of an organization is not permission to touch a specific object
-in it. Every request that names a room, message or device resolves that object
-**within** the organization first — so a reference to something in another
-organization is not found, rather than being checked afterwards.
+in it. Every request that names a device, policy or audit record resolves that
+object **within** the organization first — so a reference to something in
+another organization is not found, rather than being checked afterwards.
 
 That distinction matters because anyone can create an organization, and
 therefore anyone can satisfy a bare "is a member of *some* organization" check.
@@ -92,5 +90,5 @@ therefore anyone can satisfy a bare "is a member of *some* organization" check.
 ## Multiple organizations
 
 A user can be in several, with a different role in each. Everything — devices,
-rooms, files, audit — is scoped per organization, and there is no view that
-crosses them.
+network policies, GPU alerts and audit — is scoped per organization, and there
+is no view that crosses them.

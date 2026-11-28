@@ -11,9 +11,9 @@ Four pieces, and the important part is which arrows are thick.
 
 | Piece | What it is | Where it runs |
 |---|---|---|
-| **The agent** (`meshharbord`) | A native binary: remote-desktop target, mesh node, tunnel endpoint, SSH server | Every machine you enroll |
+| **The agent** (`meshharbord`) | A native binary: remote-desktop target, mesh node, tunnel endpoint, SSH server, GPU/NPU telemetry | Every machine you enroll |
 | **The CLI** (`mh`) | Status, peers, tunnels, forwards, exec, ssh, diagnostics | The same machine |
-| **The server** | Accounts, permissions, device registry, signalling, chat, conferencing | Our cloud, or yours |
+| **The server** | Accounts, permissions, device registry, signalling, mesh coordination, GPU telemetry | Our cloud, or yours |
 | **The controller** | A browser (Chromium browsers work best; Safari and Firefox work too) | Wherever you are |
 
 ## How a remote session actually happens
@@ -47,15 +47,15 @@ broken thing.
 
 ## What the server stores
 
-Accounts, organizations, device rows, permissions, room and message contents,
-files you uploaded, and audit records. **Not** session video, **not** keystrokes,
-**not** the contents of your tunnels.
+Accounts, organizations, device rows, permissions, network zone & ACL rules,
+GPU/NPU telemetry snapshots, and audit records. **Not** session video, **not**
+keystrokes, **not** the contents of your tunnels or SSH sessions.
 
 ## Scaling
 
-The hosted service runs several server instances. Users, agents and rooms in one
-organization are grouped onto the same instance, because the session registries
-are per-instance; chat, presence and notifications are shared across instances.
+A multi-instance deployment groups an organization's users and agents onto the
+same instance, because the session and tunnel registries are per-instance;
+presence and notifications are shared across instances.
 
 A self-hosted deployment is a single instance, which is more than enough for
 almost everyone — the multi-instance topology is a Kubernetes arrangement rather

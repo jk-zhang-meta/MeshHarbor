@@ -49,9 +49,9 @@ Hardware encoding with a probe-and-rollback cascade, adaptive rate control, and 
 browser decode path that bypasses the roughly 80 ms of buffering a normal video
 element enforces — aimed at dragging windows, not just reading a screen.
 
-### Chat, rooms and video calls
+### GPU / NPU fleet monitoring
 
-On the same server and accounts.
+Live GPU/NPU utilization, memory, process visibility and webhook alerts on the same server and agent.
 
 ## Side by side
 
@@ -63,7 +63,7 @@ On the same server and accounts.
 | Private mesh between devices | **Yes** | No |
 | RDP / VNC / SSH relaying to third-party devices | **No** | Yes |
 | Hardware inventory, power control, OOB | **No** | Yes |
-| Chat and video | **Included** | No |
+| GPU / NPU fleet monitoring | **Built in** | No |
 | Licence | AGPL server / MPL agent | Apache-2.0 |
 | Maturity | Young | Very mature |
 

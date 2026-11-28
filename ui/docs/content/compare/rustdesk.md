@@ -66,7 +66,7 @@ independent default-deny gates on the powerful ones and every decision audited.
 | SSH / tunnels to the machine | **Yes** | No |
 | Self-hostable | Yes | Yes |
 | Signed releases + publisher check | Yes | Varies |
-| Chat and video | **Included** | No |
+| GPU / NPU fleet monitoring | **Built in** | No |
 | Maturity | Young | Mature |
 
 ## Choosing

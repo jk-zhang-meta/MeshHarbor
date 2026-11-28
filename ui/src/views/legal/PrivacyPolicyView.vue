@@ -10,7 +10,7 @@
         </router-link>
 
         <h1 class="text-h4 text-md-h3 font-weight-bold mb-2">Privacy Policy</h1>
-        <p class="text-body-2 legal-muted mb-8">Last updated: October 2026</p>
+        <p class="text-body-2 legal-muted mb-8">Last updated: November 2026</p>
 
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">1. Introduction</h2>
@@ -22,11 +22,11 @@
             <a href="https://meshharbor.itachi.fans" class="text-primary">meshharbor.itachi.fans</a>.
           </p>
           <p class="text-body-1 legal-muted">
-            MeshHarbor is three things at once: a <strong>remote desktop</strong> for devices you enroll, a
-            <strong>private encrypted network</strong> between them (with tunnels, subnet routers, exit nodes and
-            SSH), and a <strong>collaboration</strong> layer of rooms, chat, files and video calls. Each collects
-            different data, and section 3 is the one worth reading first — it describes the categories of data
-            that never reach us at all.
+            MeshHarbor combines <strong>remote desktop</strong> (with peer-to-peer file transfer and device-side
+            screen recording), a <strong>private encrypted mesh network</strong> (with tunnels, subnet routers, exit
+            nodes and SSH), and <strong>GPU/NPU fleet monitoring</strong>. Each collects different operational
+            metadata, and section 3 is the one worth reading first — it describes the categories of data that never
+            reach us at all.
           </p>
         </section>
 
@@ -43,49 +43,19 @@
           <h3 class="text-h6 font-weight-bold mb-2">2.2 Tenant and Workspace Data</h3>
           <p class="text-body-1 legal-muted mb-4">
             We collect data related to the tenants (workspaces) you create or join, including workspace names,
-            settings, room configurations, membership roles, and invite links. This data is used to manage your
-            collaborative environment.
+            settings, membership roles, network zone definitions, access-control rules, and invite links.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.3 Chat Messages and Content</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.3 Sign-In Provider Data</h3>
           <p class="text-body-1 legal-muted mb-4">
-            Messages you send in rooms, direct messages, threads, reactions, mentions, and pinned items are stored
-            to provide the chat functionality. Message history is retained according to your workspace plan limits.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.4 Files and Uploads</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            Files you upload to MeshHarbor are stored in our S3-compatible object storage. This includes
-            documents, images, and any other files shared within rooms or direct messages. Files are associated
-            with your account and the workspace where they were shared.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.5 Call Recordings</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            If recording is enabled for a video or audio call, the recording
-            is stored on our servers. Recordings are only created when explicitly initiated by an authorized
-            participant, and all participants are notified when recording begins.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.6 Sign-In Provider Data</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            When you sign in using Google, Microsoft, GitHub, LinkedIn or Facebook, we receive your email address,
+            When you sign in using Google or another configured OAuth provider, we receive your email address,
             display name, and profile picture from the respective provider. We do not receive or store your
             passwords from these services. We use this information solely to create and authenticate your MeshHarbor
             account. Where a provider does not confirm that it has verified an email address, we record the claim
             separately and do not treat it as proof of ownership of that address.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.7 Conferencing Data</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            During video and audio calls, your media streams are routed through our media server for delivery to
-            other participants. They are processed in real time and are <strong>not stored</strong> unless
-            recording has been explicitly enabled for the call. Connection metadata (IP addresses, codec
-            information, bandwidth statistics) may be temporarily logged for quality monitoring and
-            troubleshooting.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.8 Devices You Enroll</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.4 Devices You Enroll</h3>
           <p class="text-body-1 legal-muted mb-4">
             When you enroll a device, we store a record of it so it can be addressed on your private network and
             shown in your workspace: a machine identifier, the device name you choose, its operating system,
@@ -93,10 +63,11 @@
             network, which user enrolled and owns it, and how it was installed (the setup wizard, an install
             script or by hand, and for the whole machine or one user). The agent reports periodic status so the workspace can
             show whether a device is online, together with capability information (for example which video
-            encoders and displays it has).
+            encoders and displays it has) and, where GPU/NPU monitoring is enabled for a server, hardware utilization
+            and alert telemetry.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.9 Network and Connection Data</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.5 Network and Connection Data</h3>
           <p class="text-body-1 legal-muted mb-4">
             To connect two devices directly wherever possible, the agent and our servers exchange candidate
             network addresses — including public and local IP addresses and ports — and measurements about which
@@ -107,7 +78,7 @@
             measure remote-desktop quality. This is metadata about connections; it is not the contents of them.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.10 Access and Audit Records</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.6 Access and Audit Records</h3>
           <p class="text-body-1 legal-muted mb-4">
             Because this platform grants access to real machines, we record access <em>events</em> so that you can
             audit them: who started a remote-desktop session and against which device; who ran a command or
@@ -119,7 +90,7 @@
             remove credentials before it leaves the device.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.11 Diagnostics, Crash Reports and Logs</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.7 Diagnostics, Crash Reports and Logs</h3>
           <p class="text-body-1 legal-muted mb-4">
             If the agent crashes it may send us a report containing the reason, the agent version, the operating
             system, the device hostname, the process identifier and a short tail of its own log. You can also
@@ -127,140 +98,28 @@
             connections, errors, decisions — and are not a record of what you did inside a session.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.12 Billing Information</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            Payment processing is handled by Stripe. We do not store your credit card numbers, CVV, or full
-            payment card details on our servers. We may store your Stripe customer ID, subscription plan details,
-            billing email, and transaction history for account management and invoicing purposes.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            For a workspace with a paid subscription we keep a record of what Stripe reports about it: the
-            subscription being created, changed, cancelled or reaching the end of its trial, and each invoice
-            paid or failed — with the plan, the number of seats, the amount billed and its currency, the billing
-            period, and Stripe's identifiers for the invoice and the subscription. It names the workspace, never a
-            card, an address or a person. We use it for one purpose: to know what the service earns — billed
-            revenue, renewals, cancellations — and what serving each workspace costs against it. We also count,
-            per workspace and per day, how often it reaches one of its plan's limits (for example the number of
-            members or devices), to see which workspaces outgrow their plan. Both are kept for as long as the
-            workspace exists and are deleted with it; monthly revenue totals, which name no workspace, are kept.
-            The legal basis is our legitimate interest in running the service as a business (Art. 6(1)(f) GDPR).
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.13 Notifications and Email</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.8 Notifications and Email</h3>
           <p class="text-body-1 legal-muted mb-4">
             If you enable browser push notifications, we store the subscription your browser issues so we can
-            deliver them. We send service email (account verification, invitations, security and billing notices)
-            through an email delivery provider.
+            deliver them. We send service email (account verification, invitations, and security or GPU alert
+            notices) through an email delivery provider.
           </p>
 
-          <h3 class="text-h6 font-weight-bold mb-2">2.14 Product Update Emails</h3>
+          <h3 class="text-h6 font-weight-bold mb-2">2.9 Diagnostics and Session Feedback</h3>
           <p class="text-body-1 legal-muted mb-4">
-            If you give us your email address through the "keep me posted" form on our website, we store that
-            address, which page you submitted it from (or, if a campaign link brought you there, that campaign's
-            name, as described in 2.16), and the times you submitted it and confirmed it. We use it
-            for one purpose: occasional email about the product. We do not need an account for this, and the
-            address is <strong>not linked to any account you may separately hold</strong>.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            We use confirmed opt-in: after you submit the form we send one message asking you to confirm, and
-            <strong>we send nothing else unless you click that link</strong>. Every email carries a one-click
-            unsubscribe link that works without signing in. If you unsubscribe, we keep a record that this address
-            opted out — so that it is not silently added again — and stop sending. We do not sell, rent or share
-            this list, and we do not use it for advertising.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            For each issue we send, we keep a record of which addresses it was sent to and whether our email
-            delivery provider accepted it. The provider then reports, and we record with that send, whether the
-            message was <strong>delivered, bounced, dropped, or reported as spam</strong>. We use this for one
-            purpose: to keep the list deliverable and to know how each issue fared. If the provider reports that an
-            address does not exist (a hard bounce) or that its owner marked the email as spam, we stop sending to
-            it until you subscribe again. <strong>We never record whether you opened an email or clicked a
-            link</strong>: there are no tracking pixels, and the provider's open and click tracking is switched off.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            The links in an issue that point to our own website carry that issue's name (for example
-            <code>utm_campaign=nl-october-notes</code>) so our analytics (2.15) can count visits per issue. The tag is
-            <strong>identical for every reader</strong> — the only part of the email that is specific to you is
-            your unsubscribe link, which also names the issue it came in. If you unsubscribe through it, we note
-            which issue it was. This record is kept with the subscription record (see section 7) and erased with it
-            on request; the legal basis is our legitimate interest in sending a newsletter people want
-            (Art. 6(1)(f) GDPR).
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.15 Analytics</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            We use our own self-hosted analytics to understand how the site is used. For each page you view, it
-            records the page's address, the address of the page that sent you to it (in full, as your browser
-            reports it), and coarse information such as the country a request came from, derived from the IP
-            address. It also records a few named events: creating an account, subscribing to product updates,
-            copying an install command, and following a link to our source code. We do not use third-party
-            advertising or cross-site tracking services.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            The setup wizard can also send us <strong>anonymous setup diagnostics</strong>, but only if you tick
-            the box on its first page; it is unticked by default and not remembered for the next run. If you do,
-            it sends one record per step of the install: the step's name, whether it passed, failed or was
-            cancelled, how long it took, a short error code from a fixed list when it failed, the operating
-            system family and the wizard's version — under a random identifier for that run. The record cannot
-            carry the enrollment token, a name, a file path, a hostname or a network address, and we store
-            neither the address nor the browser-style identifier the request came with. The records go to the
-            server you enroll into: a self-hosted server receives its own and sends nothing to us. We use them
-            to see where installs stop, and keep them for 90 days; after that only daily counts remain.
+            The setup wizard can send <strong>anonymous setup diagnostics</strong> if you tick the box on its first
+            page; it is unticked by default and not remembered for the next run. If you do, it sends one record per
+            step of the install: the step's name, whether it passed, failed or was cancelled, how long it took, a
+            short error code from a fixed list when it failed, the operating system family and the wizard's version
+            — under a random identifier for that run. The records go to the server you enroll into: a self-hosted
+            server receives its own and sends nothing to us.
           </p>
           <p class="text-body-1 legal-muted mb-4">
             After a remote-desktop session of thirty seconds or more, the viewer may ask how it went: a thumbs
             up or down and, if you like, one or more reasons from a fixed list (lag, picture, mouse or
             keyboard, couldn't connect, something else). It asks <strong>at most once a day</strong>, you can
-            dismiss it, and there is no text field. If you answer, the server you are signed in to stores the
-            rating with that session's identifier, the workspace, your account identifier and the time, for
-            25 months; it is deleted with your account, and we read it only as counts — how many sessions
-            were rated well or badly, and which reasons were given. A self-hosted server keeps its own
-            ratings and sends none to us, and its administrator can switch the question off entirely.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.16 How You Found Us</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            Links we publish, for example under a video or in a post, can carry campaign tags: the
-            <code>utm_source</code>, <code>utm_medium</code>, <code>utm_campaign</code>, <code>utm_content</code>,
-            <code>utm_term</code> or <code>ref</code> parameters in the address. When you arrive through such a link,
-            our pages pass the tags on in the address of their own sign-in, sign-up, install and download links,
-            and give the campaign's name to the product-updates form (2.14). Our analytics (2.15) sees them too,
-            because it records the address of each page you view. If you then create an account, we store with it
-            the source, medium, campaign, content and term from those tags, the name of the website that sent you
-            (for example <code>www.youtube.com</code>), and the path of the first page you visited on our site. The
-            account keeps only that website's name, never the full address of the page that linked to you; our
-            analytics records that full address, as your browser reports it (2.15).
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            The sign-up form also asks "How did you hear about MeshHarbor?". Answering is optional; if you choose an
-            answer, we store it with the account in the same way. If you sign up through Google or another
-            provider, these details wait on our server for at most ten minutes while you sign in there, and are
-            then attached to the new account or discarded.
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            We use this for one purpose: to learn which of our channels bring people to MeshHarbor, and we look at it
-            as counts per channel. It is recorded once, when the account is created, and never changed. It is not
-            shown on your profile or to anyone in your workspace, and it is deleted together with your account. The
-            legal basis is our legitimate interest in knowing which of our channels work (Art. 6(1)(f) GDPR); you
-            can object to it at any time (section 9).
-          </p>
-          <p class="text-body-1 legal-muted mb-4">
-            <strong>Nothing about this is stored on your device</strong>: no cookie, no local storage, no session
-            storage. The tags travel only in the links you follow.
-          </p>
-
-          <h3 class="text-h6 font-weight-bold mb-2">2.17 YouTube</h3>
-          <p class="text-body-1 legal-muted mb-4">
-            MeshHarbor uses YouTube API Services to publish MeshHarbor's own videos to the MeshHarbor YouTube channel and to
-            read that channel's statistics. This tool is used only by MeshHarbor; it does not access, collect or store
-            data about other YouTube users or channels. Using it is subject to the
-            <a href="https://www.youtube.com/t/terms" class="text-primary" target="_blank" rel="noopener">YouTube Terms of Service</a>
-            and the
-            <a href="https://policies.google.com/privacy" class="text-primary" target="_blank" rel="noopener">Google Privacy Policy</a>.
-            We store only the statistics of our own videos. Access we granted can be revoked at any time through
-            <a href="https://myaccount.google.com/permissions" class="text-primary" target="_blank" rel="noopener">Google's security settings</a>,
-            and we delete the stored YouTube data within 30 days of a revocation or on request to
-            <a href="mailto:privacy@meshharbor.itachi.fans" class="text-primary">privacy@meshharbor.itachi.fans</a>.
+            dismiss it, and there is no text field. A self-hosted server keeps its own ratings and sends none to us,
+            and its administrator can switch the question off entirely.
           </p>
         </section>
 
@@ -279,18 +138,17 @@
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-4">
             <li class="mb-1">The contents of a remote-desktop session — the screen you view, or the keystrokes and mouse input you send</li>
+            <li class="mb-1">Screen recordings — recorded directly on the device and transferred peer-to-peer when downloaded, never stored on the server</li>
             <li class="mb-1">Anything typed into, or printed by, an SSH or remote shell session</li>
-            <li class="mb-1">Files transferred between your devices over the private network</li>
+            <li class="mb-1">Files transferred between your devices over remote control or the private network</li>
             <li class="mb-1">The contents of traffic routed through a tunnel, a subnet router or an exit node</li>
             <li class="mb-1">Clipboard contents synchronised during a session</li>
           </ul>
           <p class="text-body-1 legal-muted">
-            We deliberately do not record session content even though we operate the signalling: recording a
-            terminal would mean shipping whatever an operator typed into it — passwords included — off the
-            machine, which is precisely the property this design exists to avoid. What we do keep is the
-            <em>metadata</em> in sections 2.9 and 2.10: that a session happened, between whom, and when. Chat
-            messages, uploaded files and call recordings are different — those are stored on our servers, as
-            described above, because delivering them is what the collaboration features do.
+            We deliberately do not record session content on the server even though we operate the signalling:
+            recording a terminal or screen server-side would mean shipping whatever an operator typed — passwords
+            included — off the machine, which is precisely the property this design exists to avoid. What we do keep
+            is the <em>metadata</em> in sections 2.5 and 2.6: that a session happened, between whom, and when.
           </p>
         </section>
 
@@ -304,8 +162,8 @@
           <p class="text-body-1 legal-muted">
             Your browser's local storage holds only non-credential conveniences — a flag recording that you appear
             to be signed in, so the app knows which screen to show, and interface preferences such as table column
-            choices. We also maintain a WebSocket connection for real-time messaging and presence. We do not use
-            third-party tracking cookies.
+            choices. We also maintain a WebSocket connection for real-time device status, signalling and notifications.
+            We do not use third-party tracking cookies.
           </p>
         </section>
 
@@ -315,13 +173,10 @@
           <ul class="text-body-1 legal-muted ml-6 mb-2">
             <li class="mb-1">Provide, maintain, and improve the MeshHarbor platform</li>
             <li class="mb-1">Authenticate your identity and manage your account</li>
-            <li class="mb-1">Deliver chat messages, files, and video/audio streams to the intended recipients</li>
             <li class="mb-1">Establish connections between your devices and route them over the private network</li>
             <li class="mb-1">Enforce the access rules you configure, and give you an audit trail of who reached what</li>
-            <li class="mb-1">Process call recordings when recording is enabled</li>
-            <li class="mb-1">Process payments and manage subscription billing</li>
+            <li class="mb-1">Deliver GPU/NPU fleet telemetry and alerts you configure</li>
             <li class="mb-1">Send service-related communications (e.g., account verification, security alerts)</li>
-            <li class="mb-1">Learn which of our channels bring people to MeshHarbor, counted per channel (section 2.16)</li>
             <li class="mb-1">Diagnose faults, monitor performance and reliability, and detect abuse</li>
             <li class="mb-1">Comply with legal obligations</li>
           </ul>
@@ -333,9 +188,9 @@
             We do not sell your personal data. We may share your information only in the following circumstances:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
-            <li class="mb-1"><strong>With workspace members:</strong> Your profile information, messages, and shared files are visible to members of the same workspace according to room permissions. Device names, their status, and audit records are visible to workspace administrators.</li>
+            <li class="mb-1"><strong>With workspace members:</strong> Your profile information is visible to members of the same workspace. Device names, their status, GPU telemetry and audit records are visible according to workspace roles and permissions.</li>
             <li class="mb-1"><strong>Between your own devices:</strong> Devices on the same private network learn each other's addresses and public keys — that is how the network functions.</li>
-            <li class="mb-1"><strong>Service providers:</strong> We use Stripe for payment processing, an email delivery provider for service email, and infrastructure providers for hosting, all bound by data processing agreements.</li>
+            <li class="mb-1"><strong>Service providers:</strong> Where configured, an email delivery provider for service email and infrastructure providers for hosting, bound by data processing agreements.</li>
             <li class="mb-1"><strong>Legal requirements:</strong> We may disclose information if required by law, regulation, legal process, or governmental request. Note that for session and network contents there is nothing for us to disclose — see section 3.</li>
             <li class="mb-1"><strong>Business transfers:</strong> In the event of a merger, acquisition, or sale of assets, your data may be transferred as part of that transaction.</li>
           </ul>
@@ -347,22 +202,17 @@
             We retain your account data for as long as your account is active. Beyond that:
           </p>
           <ul class="text-body-1 legal-muted ml-6 mb-2">
-            <li class="mb-1">Chat message history is retained according to your workspace plan limits.</li>
-            <li class="mb-1">Files are retained until deleted by you or a workspace administrator; call recordings according to your workspace settings.</li>
             <li class="mb-1">Access and audit records — the audit trail of remote sessions, command execution, SSH decisions and device-reported activity — are deleted automatically <strong>90 days</strong> after they are written.</li>
             <li class="mb-1">The record of a remote-desktop session itself — who controlled which device, when, for how long, its connection quality and the kind of network path it used — is deleted automatically <strong>25 months</strong> after the session began. Daily counts derived from these records name no one and are kept.</li>
-            <li class="mb-1">Short-lived operational data such as connection diagnostics is deleted automatically on a shorter cycle, typically <strong>7 days</strong>. Crash reports (2.11) are deleted automatically <strong>30 days</strong> after we receive them.</li>
+            <li class="mb-1">Short-lived operational data such as connection diagnostics is deleted automatically on a shorter cycle, typically <strong>7 days</strong>. Crash reports (2.7) are deleted automatically <strong>30 days</strong> after we receive them.</li>
             <li class="mb-1">Enrollment tokens and similar one-time credentials expire within minutes to hours. The record that an administrator issued one, and whether a device used it — never the token itself — is deleted automatically after <strong>90 days</strong>.</li>
-            <li class="mb-1">Product-update subscriptions are kept until you unsubscribe. After that we retain only the fact that the address opted out, so it cannot be re-added silently; ask us and we will erase that too.</li>
-            <li class="mb-1">The record of which issues were sent to an address — with the delivery status our email provider reported (delivered, bounced, dropped, reported as spam) and, if you unsubscribed through an issue's link, which issue — is kept with that subscription record and erased with it on request.</li>
-            <li class="mb-1">A workspace's billing events (what Stripe reported about its subscription and invoices) and its daily count of plan-limit hits are kept for as long as the workspace exists and deleted with it; monthly revenue totals, which name no workspace, are kept.</li>
-            <li class="mb-1">Setup diagnostics the wizard sent with your consent (2.15) are deleted automatically <strong>90 days</strong> after they are written; the daily counts derived from them name no one and are kept.</li>
-            <li class="mb-1">A rating you give a remote-desktop session from the viewer (2.15) is kept for <strong>25 months</strong> and deleted with your account.</li>
+            <li class="mb-1">Setup diagnostics sent with your consent (2.9) are deleted automatically <strong>90 days</strong> after they are written.</li>
+            <li class="mb-1">A rating you give a remote-desktop session from the viewer (2.9) is kept for <strong>25 months</strong> and deleted with your account.</li>
           </ul>
           <p class="text-body-1 legal-muted">
             These deletions are enforced by the database itself rather than by a manual process. When you delete
             your account, we will remove your personal data within 30 days, except where retention is required by
-            law or for legitimate business purposes (such as billing records).
+            law.
           </p>
         </section>
 

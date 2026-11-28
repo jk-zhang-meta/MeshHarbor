@@ -131,4 +131,3 @@ In **Recordings**, press **Edit** on a recording.
   audio.
 - Recording arrived with agent **0.4.110**. A machine on an older agent shows no
   Record control.
-- This page is about screens. MeshHarbor does not record video calls.

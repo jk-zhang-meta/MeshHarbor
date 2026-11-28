@@ -46,26 +46,18 @@ allowed. That is the safe default; widening it is a deliberate act.
 | Should be reachable | Should not be |
 |---|---|
 | The HTTP port, behind your TLS terminator | The database |
-| The conference media port range | The object store's admin port |
 
-The database and object store are for the application, not for the internet.
-Keep them on an internal network.
-
-## Conference media
-
-The one thing a reverse proxy cannot fix — see
-[self-hosting](/docs/start/self-hosting/). Getting it wrong yields perfect
-signalling and no video, which is a confusing failure to debug from the
-application logs.
+The database is for the application, not for the internet. Keep it on an
+internal network.
 
 ## Backups
 
-Back up the **database** and the **object store** volumes. Not the container —
-it is rebuilt from an image.
+Back up the **database** volume. Not the container — it is rebuilt from an
+image.
 
 :::tip Test a restore before you need one
 An untested backup is a hypothesis. Restore into a throwaway stack once and
-confirm the application comes up and your files are there.
+confirm the application comes up and your data is there.
 :::
 
 ## Keep it updated
@@ -87,5 +79,4 @@ configuring rather than leaving open because "it is only us".
 1. The health endpoint returns success.
 2. A device still shows online.
 3. A remote session still connects.
-4. A call still carries video — the most fragile of the four, and the one most likely to be affected by a network change.
 :::

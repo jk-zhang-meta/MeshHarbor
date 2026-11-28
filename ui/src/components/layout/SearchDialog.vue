@@ -40,13 +40,35 @@
           {{ t('mh.search.noResults', { query }) }}
         </div>
         <div v-else>
+          <!-- Devices -->
+          <div v-if="results.devices.length > 0">
+            <div class="text-overline px-4 pt-2">{{ t('mh.search.devices') }}</div>
+            <v-list density="compact">
+              <v-list-item
+                v-for="device in results.devices"
+                :key="device.id"
+                @click="goToDevice(device)"
+              >
+                <template #prepend>
+                  <span
+                    class="mh-presence__dot mr-3"
+                    :class="`mh-presence--${device.presence === 'online' || device.presence === 'stale' ? device.presence : 'offline'}`"
+                    aria-hidden="true"
+                  />
+                </template>
+                <v-list-item-title>{{ device.display_name || device.name }}</v-list-item-title>
+                <v-list-item-subtitle>{{ device.overlay_ip || device.kind }}</v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </div>
+
           <!-- People -->
           <div v-if="results.users.length > 0">
             <div class="text-overline px-4 pt-2">{{ t('mh.search.people') }}</div>
             <v-list density="compact">
               <v-list-item
                 v-for="user in results.users"
-                :key="user.id"
+                :key="user.user_id"
                 @click="goToProfile(user)"
               >
                 <template #prepend>
@@ -55,7 +77,7 @@
                   </v-avatar>
                 </template>
                 <v-list-item-title>{{ user.display_name }}</v-list-item-title>
-                <v-list-item-subtitle>@{{ user.username }}</v-list-item-subtitle>
+                <v-list-item-subtitle v-if="user.email">{{ user.email }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
           </div>
@@ -70,20 +92,30 @@ import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useTenantStore } from '@/stores/tenant'
+import { useCapabilitiesStore } from '@/stores/capabilities'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
-interface SearchUserResult {
+interface SearchDeviceResult {
   id: string
+  kind: string
+  name: string
+  display_name?: string
+  presence: 'online' | 'stale' | 'offline'
+  overlay_ip?: string | null
+}
+
+interface SearchMemberResult {
+  user_id: string
   display_name: string
-  username: string
-  avatar?: string
+  email?: string
 }
 
 interface SearchResultsData {
-  users: SearchUserResult[]
+  devices: SearchDeviceResult[]
+  users: SearchMemberResult[]
 }
 
 const props = defineProps<{
@@ -101,6 +133,7 @@ const dialogModel = computed({
 
 const router = useRouter()
 const tenantStore = useTenantStore()
+const caps = useCapabilitiesStore()
 const { fullscreen } = useResponsiveDialog()
 
 const query = ref('')
@@ -108,6 +141,7 @@ const loading = ref(false)
 const searchInput = ref<HTMLInputElement | null>(null)
 
 const results = ref<SearchResultsData>({
+  devices: [],
   users: [],
 })
 
@@ -115,6 +149,7 @@ const noResults = computed(() => {
   return (
     query.value.trim().length > 0 &&
     !loading.value &&
+    results.value.devices.length === 0 &&
     results.value.users.length === 0
   )
 })
@@ -125,7 +160,7 @@ watch(query, (val) => {
   if (debounceTimer) clearTimeout(debounceTimer)
   const q = val.trim()
   if (!q) {
-    results.value = { users: [] }
+    results.value = { devices: [], users: [] }
     loading.value = false
     return
   }
@@ -138,7 +173,7 @@ watch(query, (val) => {
 watch(dialogModel, (val) => {
   if (!val) {
     query.value = ''
-    results.value = { users: [] }
+    results.value = { devices: [], users: [] }
     loading.value = false
   }
 })
@@ -150,21 +185,43 @@ async function doSearch(q: string) {
     return
   }
   try {
-    const data = await api.get<Partial<SearchResultsData>>(
-      `/tenant/${tenantId}/search?q=${encodeURIComponent(q)}&limit=20`,
-    )
+    const enc = encodeURIComponent(q)
+    const [devRes, memRes] = await Promise.allSettled([
+      caps.has('fleet')
+        ? api.get<{ items: SearchDeviceResult[] }>(
+            `/tenant/${tenantId}/device?q=${enc}&per_page=10&sort=status`,
+          )
+        : Promise.resolve({ items: [] as SearchDeviceResult[] }),
+      api.get<{ items: SearchMemberResult[] }>(
+        `/tenant/${tenantId}/member?q=${enc}&per_page=10`,
+      ),
+    ])
     if (query.value.trim() === q) {
-      results.value = { users: data.users ?? [] }
+      results.value = {
+        devices: devRes.status === 'fulfilled' ? (devRes.value.items ?? []) : [],
+        users: memRes.status === 'fulfilled' ? (memRes.value.items ?? []) : [],
+      }
     }
   } catch {
-    results.value = { users: [] }
+    results.value = { devices: [], users: [] }
   } finally {
     loading.value = false
   }
 }
 
-function goToProfile(user: SearchUserResult) {
-  router.push({ name: 'profile', params: { userId: user.id } })
+function goToDevice(device: SearchDeviceResult) {
+  const tenantId = tenantStore.current?.id
+  if (!tenantId) return
+  if (device.kind === 'agent' && device.presence !== 'offline' && caps.has('remote')) {
+    router.push({ name: 'agent-remote', params: { tenantId, agentId: device.id } })
+  } else {
+    router.push({ name: 'devices', params: { tenantId } })
+  }
+  dialogModel.value = false
+}
+
+function goToProfile(user: SearchMemberResult) {
+  router.push({ name: 'profile', params: { userId: user.user_id } })
   dialogModel.value = false
 }
 </script>

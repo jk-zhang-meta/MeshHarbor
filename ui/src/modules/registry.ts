@@ -11,8 +11,8 @@
  *    an operator builds a bundle for one profile. Unset ⇒ every module is
  *    built in, which is the published bundle and the kill switch.
  * 2. **Run time** — `GET /api/capabilities` says which modules THIS server
- *    mounts (`stores/capabilities.ts`). A `mesh` server never grows a chat
- *    tab because the bundle happened to carry one.
+ *    mounts (`stores/capabilities.ts`). A server profile without `remote`
+ *    never grows a remote-control route because the bundle carried one.
  *
  * Routes carry `meta.module`; the router guard and the layout's navigation
  * read the same predicate (`useCapabilitiesStore().has`), so a pillar that

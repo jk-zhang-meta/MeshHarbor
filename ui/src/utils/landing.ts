@@ -28,7 +28,7 @@ export interface LandingPillar {
 export const HERO = {
   titleLead: 'Every device you own,',
   titleAccent: 'one secure network',
-  lead: 'Remote desktop from any browser and a private WireGuard-style mesh between your machines — self-hostable and end-to-end encrypted.',
+  lead: 'Remote desktop with screen recording, a private WireGuard-style mesh with SSH and tunnels, and GPU/NPU fleet monitoring — self-hostable and end-to-end encrypted.',
 }
 
 /** FR-88 P3: the video section under the capability chips. The video itself is
@@ -40,22 +40,24 @@ export const VIDEO_TOUR = {
 
 export const CAPABILITIES = [
   'Remote desktop',
+  'Screen recording',
   'Private mesh network',
   'Tunnels & SOCKS5',
   'Exit nodes',
   'MagicDNS',
   'Zero-config SSH',
+  'GPU / NPU fleet',
 ]
 
 export const PILLARS: LandingPillar[] = [
   {
-    title: 'Reach any of your devices',
-    subtitle: 'A TeamViewer-style remote desktop that lives in your browser',
+    title: 'Reach and monitor your fleet',
+    subtitle: 'Browser-based remote desktop, recording, and GPU/NPU fleet visibility on one daemon',
     features: [
       {
         icon: 'mdi-monitor-eye',
-        title: 'Remote desktop in the browser',
-        description: 'Hardware-encoded H.264/HEVC/VP9 with sub-100 ms input latency. No viewer install — any Chromium browser is the controller.',
+        title: 'Remote desktop & screen recording',
+        description: 'Hardware-encoded H.264/HEVC/AV1/VP9 with sub-100 ms input latency, P2P file transfer, clipboard sync, keep-busy, and full-quality MP4 screen recording.',
         color: '#009688',
       },
       {
@@ -65,9 +67,9 @@ export const PILLARS: LandingPillar[] = [
         color: '#ef5350',
       },
       {
-        icon: 'mdi-monitor-multiple',
-        title: 'Fleet management built in',
-        description: 'Enroll unattended machines, push updates from the web, transfer files and clipboard, and audit every session.',
+        icon: 'mdi-expansion-card',
+        title: 'Fleet & GPU/NPU monitoring',
+        description: 'Enroll unattended servers and workstations, track live NVIDIA/AMD/Ascend GPU & NPU telemetry with alerts, push updates, and audit every session.',
         color: '#009688',
       },
     ],
@@ -90,8 +92,8 @@ export const PILLARS: LandingPillar[] = [
       },
       {
         icon: 'mdi-dns-outline',
-        title: 'MagicDNS & tunnels',
-        description: 'Reach machines by name, forward ports, and run SOCKS5 tunnels into networks only one of your devices can see.',
+        title: 'MagicDNS, tunnels & SSH',
+        description: 'Reach machines by name, open zero-config resumable SSH sessions, forward ports, and run SOCKS5 tunnels into private networks.',
         color: '#ef5350',
       },
     ],
@@ -107,7 +109,7 @@ export const DOWNLOAD = {
 
 export const CTA = {
   title: 'Take your devices with you',
-  lead: 'Remote desktop from any browser, a private encrypted mesh, tunnels and SSH — self-hostable on one lightweight daemon.',
+  lead: 'Remote desktop with recording, a private encrypted mesh, tunnels, SSH, and GPU/NPU fleet monitoring — self-hostable on one lightweight daemon.',
   button: 'Create Your Workspace',
 }
 
@@ -132,22 +134,22 @@ const ZH: LandingCopy = {
   HERO: {
     titleLead: '你的所有设备，',
     titleAccent: '一张安全的网络',
-    lead: '在任何浏览器里远程桌面，设备之间组成类似 WireGuard 的私有网络，支持自托管且全程端到端加密。',
+    lead: '浏览器远程桌面与录屏、WireGuard 式私有组网与免配置 SSH/隧道，以及 GPU/NPU 算力集群监控——支持自托管，全程端到端加密。',
   },
   VIDEO_TOUR: {
     title: '看看实际效果',
     lead: '在 Windows、macOS 和 Linux 上装好客户端，从浏览器标签页直接连接。看看 MeshHarbor 能做到 TeamViewer 和 AnyDesk 的哪些事，又有哪些地方它们仍然做得更好。',
   },
-  CAPABILITIES: ['远程桌面', '私有组网', '隧道与 SOCKS5', '出口节点', 'MagicDNS', '免配置 SSH'],
+  CAPABILITIES: ['远程桌面', '屏幕录制', '私有组网', '隧道与 SOCKS5', '出口节点', 'MagicDNS', '免配置 SSH', 'GPU / NPU 集群'],
   PILLARS: [
     {
-      title: '连上你的任何一台设备',
-      subtitle: '类似 TeamViewer 的远程桌面，直接在浏览器里用',
+      title: '随时连接并掌控你的设备集群',
+      subtitle: '集浏览器远程桌面、屏幕录制与 GPU/NPU 算力监控于一体的轻量级守护进程',
       features: [
         {
           ...PILLARS[0]!.features[0]!,
-          title: '浏览器里的远程桌面',
-          description: '硬件编码 H.264/HEVC/VP9，输入延迟低于 100 毫秒。控制端不用装任何软件，Chromium 内核的浏览器都能用。',
+          title: '浏览器远程桌面与录屏',
+          description: '硬件编码 H.264/HEVC/AV1/VP9，输入延迟低于 100 毫秒；支持 P2P 文件传输、剪贴板同步、防休眠以及原画质 MP4 录屏。',
         },
         {
           ...PILLARS[0]!.features[1]!,
@@ -156,8 +158,8 @@ const ZH: LandingCopy = {
         },
         {
           ...PILLARS[0]!.features[2]!,
-          title: '自带设备管理',
-          description: '无人值守的机器也能加入；从网页推送更新、传文件和剪贴板，每次会话都有审计记录。',
+          title: '设备与 GPU/NPU 集群监控',
+          description: '无人值守机器一键接入，实时监控 NVIDIA/AMD/昇腾 GPU 与 NPU 指标并配置告警，支持网页推送更新与全量会话审计。',
         },
       ],
     },
@@ -177,8 +179,8 @@ const ZH: LandingCopy = {
         },
         {
           ...PILLARS[1]!.features[2]!,
-          title: 'MagicDNS 与隧道',
-          description: '按名字访问机器、转发端口，还能开 SOCKS5 隧道，进入只有某一台设备才连得到的网络。',
+          title: 'MagicDNS、隧道与 SSH',
+          description: '按名字访问机器、发起免配置可续传 SSH 会话、转发端口，并通过 SOCKS5 隧道访问私网服务。',
         },
       ],
     },
@@ -189,7 +191,7 @@ const ZH: LandingCopy = {
   },
   CTA: {
     title: '带上你的所有设备',
-    lead: '浏览器远程桌面、端到端加密私有网络、隧道与 SSH，一套轻量级守护进程即可自托管部署。',
+    lead: '浏览器远程桌面与录屏、端到端加密私有网络、隧道与 SSH 以及 GPU/NPU 集群监控，一套轻量级守护进程即可自托管部署。',
     button: '创建工作区',
   },
 }

@@ -143,31 +143,6 @@ mh org set-primary <org>
 mh org rm <org>
 ```
 
-## Agent sessions you run in a terminal
-
-```bash
-mh hive adopt      # mirror the Claude Code sessions you run in a terminal into MeshHarbor
-mh hive unadopt    # take the hooks out again
-```
-
-`adopt` adds three hooks to **your own** user-level Claude Code settings
-(`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`) and leaves
-every other setting and hook in that file as it was; `unadopt` takes out
-exactly those three. On Windows each hook runs `mh.exe` from the PATH the
-installer set. Each session you then run in a terminal is mirrored by
-this machine and listed for you alone in MeshHarbor, read-only: nobody prompts it
-from there, and you may name readers. Nothing happens until this machine's
-owner turns on `hive_adopt` and maps your account in `hive_accounts`
-([configuration](/docs/reference/configuration/)). **Stop mirroring** in
-MeshHarbor stops watching that terminal run; the terminal goes on. A
-`claude --resume` of it later is mirrored afresh, as a new session.
-
-:::tip What leaves the machine
-The server keeps that a session exists, its folder and its turns' sizes —
-never what you typed or what came back. The transcript stays on this machine
-and reaches your browser over a direct, encrypted peer.
-:::
-
 ## Getting help
 
 Every command takes `--help`, and that is authoritative for the version you have

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="cdp-t cdp-d">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="cdp-t cdp-d">
   <title id="cdp-t">The control plane coordinates; the data planes do not pass through it</title>
-  <desc id="cdp-d">The MeshHarbor server exchanges only control messages with a browser and an agent. Video, input, mesh traffic, tunnels and SSH flow directly between the browser and the agent, or through a relay that carries only ciphertext. Conference media is the one exception and passes through the server.</desc>
+  <desc id="cdp-d">The MeshHarbor server exchanges only control messages with a browser and an agent. Video, input, mesh traffic, tunnels and SSH flow directly between the browser and the agent, or through a relay that carries only ciphertext.</desc>
 
   <defs>
     <marker id="cdp-arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -71,9 +71,4 @@
   <text x="380" y="205.5" font-size="10" font-weight="700" fill="#00796b" text-anchor="middle">pixels · input · mesh · tunnels · SSH</text>
   <text x="380" y="234" font-size="10.5" font-weight="700" fill="#009688" text-anchor="middle" letter-spacing="0.06em">DATA PLANE — PEER-TO-PEER, END-TO-END ENCRYPTED</text>
   <text x="380" y="250" font-size="9.5" fill="rgba(26,26,46,0.6)" text-anchor="middle">falls back to a relay that carries only ciphertext</text>
-
-  <!-- ── the exception ──────────────────────────────────────────── -->
-  <rect x="242" y="300" width="276" height="30" rx="7" fill="#ffebee" stroke="rgba(239,83,80,0.35)"/>
-  <path d="M380 92 L 380 296" fill="none" stroke="#ef5350" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#cdp-arrow-coral)" opacity="0.75"/>
-  <text x="380" y="319" font-size="10" font-weight="700" fill="#c62828" text-anchor="middle">Exception: conference media passes through the server</text>
 </svg>

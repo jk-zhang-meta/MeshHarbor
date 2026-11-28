@@ -27,7 +27,6 @@ describe('stats store', () => {
     const payload = {
       enabled: true,
       machines: { online: 2, total: 5 },
-      calls: { active: 1, minutes_today: 12 },
       spark_machines: [{ t: 1_700_000_000, online: 2 }],
     }
     mockApi.get.mockResolvedValueOnce(payload)
@@ -56,10 +55,8 @@ describe('stats store', () => {
     expect(mockApi.get).toHaveBeenCalledWith('/tenant/t1/stats/tunnels?range=30d')
     await store.fetchRelayHistory('us-east', '24h')
     expect(mockApi.get).toHaveBeenCalledWith('/admin/stats/relay/history?region=us-east&range=24h')
-    await store.fetchAdminCalls('1y')
-    expect(mockApi.get).toHaveBeenCalledWith('/admin/stats/calls?range=1y')
-    await store.fetchAdminCalls('1y', 't9')
-    expect(mockApi.get).toHaveBeenCalledWith('/admin/stats/calls?tenant_id=t9&range=1y')
+    await store.fetchAdminMachines('t9', '1y')
+    expect(mockApi.get).toHaveBeenCalledWith('/admin/stats/machines?tenant_id=t9&range=1y')
   })
 
   it('fetchRelayCurrent caches for the realtime poll', async () => {
