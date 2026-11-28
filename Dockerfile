@@ -35,14 +35,10 @@ COPY agents agents
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
-# FR-69 P8 (D9/D13) — which pillars this image carries. `full` | `collab` |
-# `remote` | `mesh` | `access`; every profile is the same server composed from
-# fewer modules, and `/health` lists the ones it mounts. `SAAS=1` adds the
-# hosted service's billing + newsletter module: the default HERE so the
-# operator's manual prod build (no build args) keeps it; the self-host publish
-# workflow passes `SAAS=0` and asserts the image does not mount it.
-ARG PROFILE=full
-ARG SAAS=1
+# FR-69 — which pillars this image carries: `access` (fleet + remote + network,
+# the 0.5.0 default), `remote` (fleet + remote), or `mesh` (fleet + network).
+# `/health` lists the modules it mounts.
+ARG PROFILE=access
 COPY --from=planner /app/recipe.json recipe.json
 # The `[patch.crates-io]` crates (`rtp`, `webrtc-ice`, `webrtc`) and the
 # other path dependencies under crates/vendored are NOT part of the recipe —
@@ -73,10 +69,10 @@ COPY crates/vendored crates/vendored
 # build context's OLDER mtimes, and cargo would otherwise keep the skeleton's
 # empty artefacts as "fresh" — a server whose main() is `{}`.
 RUN cargo chef cook --no-build --release --recipe-path recipe.json -p meshharbor-api -p derp-relay --no-default-features \
-      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )"
+      --features "meshharbor-api/profile-${PROFILE}"
 COPY crates/tcp-turn-conn crates/tcp-turn-conn
 RUN cargo build --release -p meshharbor-api -p derp-relay --no-default-features \
-      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )" \
+      --features "meshharbor-api/profile-${PROFILE}" \
  && cargo metadata --no-deps --format-version 1 \
       | python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))' \
       | xargs -n1 cargo clean --release -p
@@ -94,7 +90,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY scripts/install.sh scripts/install.ps1 scripts/
 RUN cargo build --release -p meshharbor-api -p derp-relay --no-default-features \
-      --features "meshharbor-api/profile-${PROFILE}$( [ "$SAAS" = "1" ] && printf ',meshharbor-api/saas' )"
+      --features "meshharbor-api/profile-${PROFILE}"
 
 # --- Stage 2: Vue SPA build ---
 FROM oven/bun:1 AS ui-builder

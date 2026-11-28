@@ -13,25 +13,9 @@
 # first organization. Full walkthrough, including putting it behind a real
 # hostname with TLS: docs/self-hosting.md
 #
-# ── Networking note, read before you file an issue about video calls ──────────
-# Conference media (mediasoup) is the one part that cannot be proxied. It needs
-# a UDP port range reachable at an address the browser can actually send to, so
-# two knobs matter and the defaults are deliberately conservative:
-#
-#   MESHHARBOR__MEDIASOUP__ANNOUNCED_IP  the address browsers send RTP to. `127.0.0.1`
-#                                     works only for calls made on this machine.
-#                                     Set it to the host's LAN or public IP.
-#   RTC_MIN_PORT / RTC_MAX_PORT       mapped below. 32 ports is enough to try
-#                                     the product; widen for real use.
-#
-# On Linux you can skip all of that by giving the `meshharbor` service
-# `network_mode: host` and deleting its `ports:` block — then the full
-# 40000-49999 range is reachable and ANNOUNCED_IP is just the host's IP. That is
-# how the hosted service runs. It is not available on Docker Desktop for
-# macOS/Windows, which is why it is not the default here.
-#
-# Remote desktop, tunnels, SSH and the overlay mesh do NOT use mediasoup and are
-# unaffected by any of the above — they are peer-to-peer with a relay fallback.
+# Remote desktop, tunnels, SSH, GPU fleet and the WireGuard overlay mesh are
+# peer-to-peer with a DERP/TURN relay fallback — no extra UDP media range on
+# the API container is required.
 
 services:
   mongo:
@@ -157,13 +141,8 @@ services:
       context: .
       args:
         VERSION: selfhost
-        # FR-69 P8 — which pillars a source build carries (`full` | `collab` |
-        # `remote` | `mesh` | `access`; docs/self-hosting.md "Choose a
-        # profile"). A pulled image picks its profile by TAG instead
-        # (`MESHHARBOR_IMAGE=…:<tag>-mesh`). `SAAS=0`: a self-host build never
-        # carries the hosted service's billing module.
-        PROFILE: ${MESHHARBOR_PROFILE:-full}
-        SAAS: "0"
+        # FR-69 — which pillars a source build carries (`access` | `remote` | `mesh`).
+        PROFILE: ${MESHHARBOR_PROFILE:-access}
     restart: unless-stopped
     depends_on:
       mongo: { condition: service_healthy }
@@ -171,9 +150,6 @@ services:
       minio: { condition: service_healthy }
     ports:
       - "${MESHHARBOR_HTTP_PORT:-8080}:80"
-      # Conference media. Must match RTC_MIN_PORT/RTC_MAX_PORT below.
-      - "40000-40031:40000-40031/udp"
-      - "40000-40031:40000-40031/tcp"
     environment:
       # ── identity + security ────────────────────────────────────────────────
       # `production` makes the server REFUSE to boot on the built-in default
@@ -192,11 +168,6 @@ services:
       MESHHARBOR__S3__ACCESS_KEY: ${MINIO_ROOT_USER}
       MESHHARBOR__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MESHHARBOR__S3__BUCKET: ${MESHHARBOR_S3_BUCKET:-meshharbor}
-      # ── conference media ───────────────────────────────────────────────────
-      MESHHARBOR__MEDIASOUP__ANNOUNCED_IP: ${MESHHARBOR_ANNOUNCED_IP:-127.0.0.1}
-      MESHHARBOR__MEDIASOUP__RTC_MIN_PORT: "40000"
-      MESHHARBOR__MEDIASOUP__RTC_MAX_PORT: "40031"
-      MESHHARBOR__MEDIASOUP__NUM_WORKERS: ${MESHHARBOR_MEDIASOUP_WORKERS:-2}
       # ── TURN (see the coturn service above) ────────────────────────────────
       MESHHARBOR__TURN__URL: ${MESHHARBOR_TURN_URL:-turn:127.0.0.1:3478}
       MESHHARBOR__TURN__SHARED_SECRET: ${MESHHARBOR_TURN_SECRET}

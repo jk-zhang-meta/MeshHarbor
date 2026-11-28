@@ -4,20 +4,22 @@
 
 ## 1. What MeshHarbor is
 
-MeshHarbor is **one open-source product that replaces three** — Tailscale, TeamViewer
-and Microsoft Teams — on one daemon and one web app:
+MeshHarbor (0.5.0+) is **one open-source product that unifies remote access,
+private networking, and fleet/GPU management** on one daemon and one web app:
 
 - **Remote desktop & control from any browser**, to any of your machines anywhere
-  in the world, with nothing to install on the controlling side.
+  in the world, with nothing to install on the controlling side — including
+  local/remote screen recording (FR-85) and keep-busy (FR-92).
 - **A secure private WireGuard network** between those machines — the mesh that
-  the remote desktop, SSH and tunnels all ride on. End-to-end encrypted; the
-  server coordinates and **never carries plaintext**.
-- **Team collaboration on top of it** — video conferencing, chat, rooms, files.
+  the remote desktop, resumable SSH (FR-141), tunnels, zones (FR-134/138), and
+  offline LAN fallback (FR-140) all ride on. End-to-end encrypted; the server
+  coordinates and **never carries plaintext**.
+- **Fleet & GPU/NPU management** — device enrollment, remote config, Fleet RPC
+  (`mh exec`), and GPU/NPU fleet monitoring & alerts (FR-139).
 
-Three products, one binary, one identity, one install. That packaging is the
-product thesis, not an implementation detail: the reason the mesh exists is so
-the remote desktop and the meeting work from anywhere, and the reason they are
-one daemon is that a customer should not have to operate three of them.
+One binary, one identity, one install. (Legacy collaboration, conference, Hive,
+Vault, and SaaS billing modules live on the archived `master` / `archive/full-0.4.221`
+reference branch.)
 
 ## 2. The acceptance bar is "it just works"
 
@@ -96,9 +98,9 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 
 | # | Pillar | What it is | Start here |
 |---|---|---|---|
-| 1 | **Remote desktop** | TeamViewer-class remote control, in Rust | `docs/remote-control.md` |
-| 2 | **Networking** | a WireGuard overlay mesh (Tailscale-class) **+** userspace tunnels (ngrok-class), DERP relays, meshharbor SSH | `docs/overlay-communication.md`, `docs/tunnels.md` |
-| 3 | **Collaboration** | chat · video conferencing · file sharing · rooms | `docs/real-time.md`, `docs/ui.md` |
+| 1 | **Remote desktop** | TeamViewer-class remote control, screen recording (FR-85), keep-busy (FR-92), in Rust | `docs/remote-control.md` |
+| 2 | **Networking** | a WireGuard overlay mesh (Tailscale-class) **+** userspace tunnels (ngrok-class), DERP relays, zones, resumable SSH | `docs/overlay-communication.md`, `docs/tunnels.md` |
+| 3 | **Fleet & GPU** | device management, remote config, Fleet RPC (`mh exec`), GPU/NPU fleet telemetry & alerts (FR-139) | `docs/agent-tunnel-architecture.md` |
 
 Two invariants, load-bearing in both directions:
 
@@ -112,7 +114,7 @@ Two invariants, load-bearing in both directions:
   ciphertext. Any design that would make the control plane a data path is wrong on
   those grounds alone, not merely on performance grounds.
 
-Stack: Rust (Axum) + MongoDB + Vue 3/Vuetify 3 + Pinia + Mediasoup (WebRTC SFU) +
+Stack: Rust (Axum) + MongoDB + Vue 3/Vuetify 3 + Pinia +
 webrtc-rs (P2P remote-control) + WireGuard/smoltcp (overlay). The agent ships as a
 separate native binary (`meshharbord`) that runs on controlled hosts.
 

@@ -1,8 +1,9 @@
 # MeshHarbor
 
-One daemon and one web app that replace three products: remote desktop and
-control, a private WireGuard mesh, and team collaboration. This file is the
-glossary of the words the product, the code and the docs use for one concept.
+One daemon and one web app that unify remote desktop and control (with
+recording), a private WireGuard mesh (with SSH and tunnels), and GPU/NPU fleet
+management. This file is the glossary of the words the product, the code and
+the docs use for one concept.
 When several words are in use for one thing, the bold one is canonical.
 
 ## Language

@@ -11,7 +11,7 @@
 Put the desktop of any machine you own into a browser tab, and join all of those
 machines into one private encrypted network that travels with you — so a laptop
 in a hotel, a GPU box at home and a server in a rack behave as if they shared a
-LAN. Chat and video conferencing come with it.
+LAN.
 
 It is one small agent per machine and one server you can run yourself. Traffic
 goes **peer-to-peer** and is end-to-end encrypted: the server introduces the two
@@ -59,16 +59,14 @@ docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost pull
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
 ```
 
-Then open <http://localhost:8080>. Full walkthrough — TLS, reverse proxy, media
-ports, backups — in **[`docs/self-hosting.md`](docs/self-hosting.md)**.
+Then open <http://localhost:8080>. Full walkthrough — TLS, reverse proxy,
+backups — in **[`docs/self-hosting.md`](docs/self-hosting.md)**.
 
 Images are published at
 [`ghcr.io/jk-zhang-meta/meshharbor`](https://github.com/jk-zhang-meta/MeshHarbor/pkgs/container/meshharbor)
 for **linux/amd64 and linux/arm64** — a Raspberry Pi, an Apple Silicon Mac or an
 ARM VPS pulls the same tag. To build from source instead — always supported, and
-never merely a fallback — swap the last two lines for `up -d --build`; that
-compiles Rust and mediasoup, measured 6 minutes on a 16-core laptop, 15–20 on a
-small VPS.
+never merely a fallback — swap the last two lines for `up -d --build`.
 
 **Hosted** — create a workspace at [meshharbor.itachi.fans](https://meshharbor.itachi.fans) and skip to
 the next step. Free for 10 users and 100 devices, commercial use included.
@@ -98,21 +96,17 @@ mh socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the network as
 …or open the machine's desktop from the web app and use it as if you were
 sitting at it.
 
-Prefer a GUI? The **meshharbor-setup** wizard installs any role on any OS —
-see [`docs/installation.md`](docs/installation.md).
-
 ## What it replaces
 
 | If you use… | …for | MeshHarbor does it |
 |---|---|---|
-| **TeamViewer / AnyDesk / RustDesk** | reaching a desktop | browser-based, hardware-encoded, consent-gated, works through corporate firewalls |
-| **Tailscale / ZeroTier / NetBird** | a private network between machines | WireGuard mesh, stable IPs, MagicDNS, subnet routers, exit nodes |
+| **TeamViewer / AnyDesk / RustDesk** | reaching a desktop | browser-based, hardware-encoded, consent-gated, local/remote recording, works through corporate firewalls |
+| **Tailscale / ZeroTier / NetBird** | a private network between machines | WireGuard mesh, stable IPs, MagicDNS, zones, subnet routers, exit nodes |
 | **ngrok / Cloudflare Tunnel** | reaching one service behind a NAT | `mh forward`, SOCKS5, daemon-supervised declared routes |
-| **`sshd` + a jump host** | a shell on a remote box | `mh ssh` — no daemon to install, no port to open, no bastion |
-| **Slack + Zoom** | the team layer | rooms, threads, files, HD calls on the same server and accounts |
+| **`sshd` + a jump host** | a shell on a remote box | `mh ssh` — no daemon to install, no port to open, no bastion, resumable PTYs |
 
 Not a claim that it beats each of those at its own game — a claim that you stop
-running five things, on one identity, with one agent, and can host the whole lot
+running four things, on one identity, with one agent, and can host the whole lot
 yourself. Head-to-head write-ups, each naming what the other product does
 better: [**vs Tailscale**](docs/compare/vs-tailscale.md) ·
 [vs RustDesk](docs/compare/vs-rustdesk.md) ·
@@ -181,33 +175,7 @@ machine when you travel.
 | **Exit nodes** | Route a client's entire internet egress (v4+v6, DNS included) through a chosen mesh peer — with a never-self-wedge safety model |
 | **Multi-org** | One daemon can join several organizations at once, with per-org WireGuard keys and disjoint address blocks |
 | **Policy & audit** | Default-deny tunnel ACLs, overlay ACLs (`off`/`warn`/`enforce`), subnet-route + exit-node approval in the admin UI, audit trail per flow |
-| **Fleet operations** | `mh exec` remote command execution (four independent default-deny gates), device console, live observability: mesh graph, per-carrier stats, relay usage |
-
-## 💬 Bonus · Video conferencing & team collaboration
-
-<p align="center">
-  <img src="docs/assets/collaboration.svg" alt="A four-person video call with screen sharing next to a chat room with threads, reactions and typing indicators" width="760">
-</p>
-
-The team layer is built in, not bolted on: organized rooms with threaded chat,
-reactions, mentions and file sharing, plus HD video calls with screen sharing and
-recordings — on the same server and the same accounts as everything above. If
-your team already lives here to reach its machines, meetings and chat come free.
-
-<!-- Same GitHub limitation as the demo above, and worse here: this file is
-     10 MB. "Watch" was a promise the blob page cannot keep. -->
-<a href="https://raw.githubusercontent.com/jk-zhang-meta/MeshHarbor/master/meshharbor-intro.mp4">
-  <img src="https://img.shields.io/badge/Collaboration%20Walkthrough-2%3A24%20%C2%B7%2010%20MB%20MP4-009688?style=for-the-badge" alt="Download the collaboration walkthrough video (2:24, 10 MB MP4)" />
-</a>
-
-| In detail | |
-|---|---|
-| **Rooms & chat** | Hierarchical room tree (text + voice/video), threaded messages, reactions, custom emoji, @mentions (TipTap editor), pins, embeds, typing indicators, presence |
-| **Video conferencing** | [mediasoup](https://mediasoup.org/) WebRTC SFU, per-room calls, multiple producers/consumers, in-call chat, recordings |
-| **Multi-tenancy** | Organizations with plans + Stripe billing, roles & permissions, invite links / email / batch invites, OAuth (Google, Facebook, GitHub, LinkedIn, Microsoft) |
-| **Files** | Versioned + multipart uploads (S3/MinIO), cloud sync (Google Drive, OneDrive, Dropbox), AI document recognition (Claude vision) |
-| **Search & export** | Global full-text search (Ctrl+K), XLSX + PDF conversation export, background task pipeline |
-| **Notifications** | Real-time WebSocket + Web Push (VAPID), unread counts, mark-read flows |
+| **Fleet operations** | `mh exec` remote command execution (four independent default-deny gates), GPU/NPU fleet monitoring & alerts (`mh nvitop`), device console, live observability: mesh graph, 3D globe, per-carrier stats, relay usage |
 
 ## How it all fits together
 
@@ -222,13 +190,12 @@ own encrypted paths:
 ```mermaid
 flowchart LR
     subgraph you["🧑 You"]
-        B["Browser<br/>chat · calls · remote desktop<br/>· admin · observability"]
-        T["meshharbor CLI<br/>forwards · SOCKS5 · exec"]
+        B["Browser<br/>remote desktop · recordings<br/>· GPU fleet · admin · observability"]
+        T["mh CLI<br/>SSH · forwards · SOCKS5 · exec · nvitop"]
     end
 
-    subgraph cloud["☁️ meshharbor.itachi.fans — coordination, not data"]
+    subgraph cloud["☁️ Control plane — coordination, not data"]
         S["API + signalling<br/>auth · enrollment · consent<br/>ACL policy · audit"]
-        M["mediasoup SFU<br/>(conference media)"]
         R["TURN + DERP relays<br/>(fallback paths — ciphertext only)"]
     end
 
@@ -240,13 +207,12 @@ flowchart LR
 
     B -->|"sign in · policy · consent"| S
     T -->|"authenticate · ACL check"| S
-    B <-->|"WebRTC (SFU):<br/>team video calls"| M
     A1 -.->|"always-on control link<br/>(outbound WSS)"| S
     A2 -.-> S
     A3 -.-> S
 
-    B <==>|"WebRTC P2P, E2E-encrypted:<br/>screen · input · clipboard<br/>· files · apps · audio"| A1
-    T <==>|"QUIC / WebRTC tunnels:<br/>TCP forward · SOCKS5"| A2
+    B <==>|"WebRTC P2P, E2E-encrypted:<br/>screen · input · clipboard<br/>· files · recording · apps · audio"| A1
+    T <==>|"QUIC / WebRTC tunnels:<br/>TCP forward · SOCKS5 · SSH"| A2
     A2 <-.->|"WireGuard overlay mesh:<br/>stable private IPs + MagicDNS,<br/>LAN-direct when possible"| A3
 
     B <-.->|"no direct path? relayed —<br/>still end-to-end encrypted"| R
@@ -265,12 +231,11 @@ they cannot read. Full picture: [`docs/architecture.md`](docs/architecture.md).
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Rust (edition 2024), Axum 0.8, Tokio, MongoDB 7, Redis (multi-pod fan-out) |
-| **Remote desktop** | webrtc-rs (P2P, vendored forks for H.265 payloading + TURNS/TCP), OpenH264, Media Foundation, FFmpeg (NVENC/QSV/AMF), libvpx VP9 4:4:4, WebCodecs viewer |
-| **Overlay / tunnels** | boringtun (WireGuard), quinn (QUIC), smoltcp userspace netstack, Wintun / tun / utun, coturn + standalone DERP relays |
-| **Conference media** | mediasoup 0.20 SFU + mediasoup-client |
-| **Native apps** | `meshharbord` daemon (Rust), `mh` CLI, `meshharbor-desktop` tray companion (Tauri 2), `meshharbor-setup` install wizard (Tauri 2) |
-| **Frontend** | Vue 3, Vuetify 3, Pinia, TipTap v3, d3 (observability) |
-| **Auth** | JWT (6 audience-checked token types), Argon2, OAuth 2.0 |
+| **Remote desktop** | webrtc-rs (P2P, vendored forks for H.265 payloading + TURNS/TCP), OpenH264, Media Foundation, FFmpeg (NVENC/QSV/AMF), libvpx VP9 4:4:4, WebCodecs viewer, local/remote screen recording + desktop editor |
+| **Overlay / tunnels** | boringtun (WireGuard), quinn (QUIC), smoltcp userspace netstack, Wintun / tun / utun, coturn + standalone DERP relays, resumable SSH |
+| **Native apps** | `meshharbord` daemon (Rust), `mh` CLI, `meshharbor-desktop` tray companion & recording editor (Tauri 2) |
+| **Frontend** | Vue 3, Vuetify 3, Pinia, d3 / maplibre (mesh, 3D globe & observability) |
+| **Auth** | JWT (audience-checked token types), Argon2, OAuth 2.0 |
 | **Infrastructure** | Docker multi-stage image (nginx + API), docker-compose dev stack (MongoDB, Redis, MinIO, coturn), Kubernetes-ready |
 
 ## Building from source (development)
