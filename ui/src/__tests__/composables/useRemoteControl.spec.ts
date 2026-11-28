@@ -161,6 +161,7 @@ import {
   type RcCodecChoice,
   resolutionCapAnnotation,
   displayScale,
+  computeAutoScrollTarget,
   resolutionOverrideHint,
   codecLabelFromDecoderConfig,
   captureArmLabel,
@@ -5540,6 +5541,47 @@ describe("FR-74 P4 — the viewer's pixel chain (displayScale)", () => {
     expect(displayScale({ ...frame, stageW: 0, stageH: 0, dpr: 1, mode: 'adaptive', customPct: 100 }).scale).toBeNull()
     // A bogus devicePixelRatio reads as 1 rather than poisoning the label.
     expect(displayScale({ ...frame, stageW: 1920, stageH: 1200, dpr: Number.NaN, mode: 'adaptive', customPct: 100 }).label).toBe('1:1 pixels')
+  })
+
+  it('computes geometric mean scale in fill mode (edge-to-edge without black bars)', () => {
+    const s = displayScale({ frameW: 1920, frameH: 1080, stageW: 1920, stageH: 1200, dpr: 1, mode: 'fill', customPct: 100 })
+    expect(s.scale).toBeCloseTo(Math.sqrt(1200 / 1080), 4)
+    expect(s.label).toBe('shown at 1.05×')
+  })
+})
+
+describe('computeAutoScrollTarget (0.5.0 GhostDesk-style Scroll Auto)', () => {
+  it('returns null when the surface fits without overflowing', () => {
+    expect(computeAutoScrollTarget({
+      localX: 200,
+      localY: 200,
+      clientWidth: 1280,
+      clientHeight: 720,
+      scrollWidth: 1280,
+      scrollHeight: 720,
+    })).toBeNull()
+  })
+
+  it('clamps to 0 inside the leading dead zone and maxScroll inside the trailing dead zone', () => {
+    const base = {
+      clientWidth: 1000,
+      clientHeight: 500,
+      scrollWidth: 2000,
+      scrollHeight: 1500,
+      edgeRatio: 0.1,
+    }
+    expect(computeAutoScrollTarget({ ...base, localX: 50, localY: 25 })).toEqual({
+      scrollLeft: 0,
+      scrollTop: 0,
+    })
+    expect(computeAutoScrollTarget({ ...base, localX: 950, localY: 475 })).toEqual({
+      scrollLeft: 1000,
+      scrollTop: 1000,
+    })
+    expect(computeAutoScrollTarget({ ...base, localX: 500, localY: 250 })).toEqual({
+      scrollLeft: 500,
+      scrollTop: 500,
+    })
   })
 })
 

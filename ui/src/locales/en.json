@@ -86,6 +86,8 @@
         "showToolbar": "Show the toolbar",
         "notNow": "Not now",
         "fullScreen": "Full screen",
+        "expandScreen": "Fill viewport",
+        "exitExpandScreen": "Exit fill viewport",
         "setting": "Immersive when sideways on a phone",
         "settingHint": "The bars step aside and the remote desktop takes the whole screen; the tab at the top brings them back"
       },
@@ -500,9 +502,13 @@
         "trial": "{fps} fps, on trial until this host has shown it can keep up"
       },
       "scale": {
-        "adaptive": "Adaptive",
-        "original": "Original",
-        "hint": "Adaptive fits the frame to this window; Original is 1:1 in CSS pixels (not on a scaled display); Custom sets the zoom"
+        "adaptive": "Adaptive (aspect fit)",
+        "fill": "Fill screen (edge to edge)",
+        "original": "Original (1:1)",
+        "quickTitle": "Display scaling ({mode})",
+        "scrollAuto": "Auto-pan when hovering edges",
+        "scrollAutoHint": "In Original or Custom zoom mode, moving the pointer smoothly pans across the full remote desktop",
+        "hint": "Adaptive keeps aspect ratio; Fill stretches edge-to-edge with no black bars; Original is 1:1 CSS pixels; Custom sets zoom"
       },
       "match": {
         "unavailable": "Match remote display — {why}",

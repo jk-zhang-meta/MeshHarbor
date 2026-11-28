@@ -1376,13 +1376,15 @@ export function displayScale(args: {
   }
   const dpr = known(args.dpr) ? args.dpr : 1
   // The CSS box the frame is painted into, per scale mode (mirrors
-  // `videoScaleStyle` + the adaptive contain-fit in the view).
+  // `videoScaleStyle` + the adaptive contain-fit / edge-to-edge fill in the view).
   const cssFactor =
     mode === 'original'
       ? 1
       : mode === 'custom'
         ? Math.max(5, Math.min(1000, customPct)) / 100
-        : Math.min(stageW / frameW, stageH / frameH)
+        : mode === 'fill'
+          ? Math.sqrt((stageW / frameW) * (stageH / frameH))
+          : Math.min(stageW / frameW, stageH / frameH)
   const scale = cssFactor * dpr
   const exact = Math.abs(scale - 1) <= 0.001
   const label = exact ? rcT('remote.viewer.dscale.exactLabel') : rcT('remote.viewer.dscale.shownAt', { x: scale.toFixed(2) })
@@ -2368,10 +2370,12 @@ function persistPreferredCodec(c: RcPreferredCodec | null) {
 /** How the remote video is rendered inside the viewer stage.
  *  - `adaptive`: fit-to-stage with aspect preserved (default;
  *    equivalent to `object-fit: contain`).
+ *  - `fill`: fill the entire stage edge-to-edge (`object-fit: fill`),
+ *    eliminating black letterbox bars on mismatched aspect ratios.
  *  - `original`: 1:1 intrinsic pixels; stage shows scrollbars if the
  *    remote is larger than the viewport.
  *  - `custom`: scaled to `scaleCustomPercent` of intrinsic size. */
-export type RcScaleMode = 'adaptive' | 'original' | 'custom'
+export type RcScaleMode = 'adaptive' | 'fill' | 'original' | 'custom'
 
 /** Which capture/encode resolution the REMOTE agent should use.
  *  - `original`: the agent's native monitor resolution.
@@ -2402,15 +2406,63 @@ export const RESOLUTION_STORAGE_PREFIX = 'meshharbor-rc-resolution.v2:'
 
 const SCALE_MODE_STORAGE_KEY = 'meshharbor-rc-scale-mode'
 const SCALE_CUSTOM_PCT_STORAGE_KEY = 'meshharbor-rc-scale-pct'
+const SCROLL_AUTO_STORAGE_KEY = 'meshharbor-rc-scroll-auto'
 
 function readStoredScaleMode(): RcScaleMode {
   try {
     const raw = globalThis.localStorage?.getItem(SCALE_MODE_STORAGE_KEY)
-    if (raw === 'adaptive' || raw === 'original' || raw === 'custom') return raw
+    if (raw === 'adaptive' || raw === 'fill' || raw === 'original' || raw === 'custom') return raw
   } catch {
     /* privacy mode → default */
   }
   return 'adaptive'
+}
+
+function readStoredScrollAuto(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(SCROLL_AUTO_STORAGE_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+
+function persistScrollAuto(on: boolean) {
+  try {
+    if (on) globalThis.localStorage?.removeItem(SCROLL_AUTO_STORAGE_KEY)
+    else globalThis.localStorage?.setItem(SCROLL_AUTO_STORAGE_KEY, 'off')
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** GhostDesk-style proportional auto-pan for overflow modes (`original` /
+ *  `custom`). Maps pointer position inside `[edgeRatio, 1 - edgeRatio]` of the
+ *  visible viewport smoothly onto `[0, maxScroll]` so hovering toward any edge
+ *  reveals the full 1:1 or zoomed desktop without dragging scrollbars. Pure
+ *  helper for unit tests. */
+export function computeAutoScrollTarget(args: {
+  localX: number
+  localY: number
+  clientWidth: number
+  clientHeight: number
+  scrollWidth: number
+  scrollHeight: number
+  edgeRatio?: number
+}): { scrollLeft: number; scrollTop: number } | null {
+  const maxX = Math.max(0, args.scrollWidth - args.clientWidth)
+  const maxY = Math.max(0, args.scrollHeight - args.clientHeight)
+  if (maxX <= 0 && maxY <= 0) return null
+  const edge = Math.min(0.25, Math.max(0, args.edgeRatio ?? 0.08))
+  const span = Math.max(1e-6, 1 - 2 * edge)
+  const norm = (pos: number, size: number) => {
+    if (size <= 0) return 0
+    const r = pos / size
+    return Math.min(1, Math.max(0, (r - edge) / span))
+  }
+  return {
+    scrollLeft: maxX > 0 ? Math.round(norm(args.localX, args.clientWidth) * maxX) : 0,
+    scrollTop: maxY > 0 ? Math.round(norm(args.localY, args.clientHeight) * maxY) : 0,
+  }
 }
 
 function persistScaleMode(m: RcScaleMode) {
@@ -6149,7 +6201,10 @@ export function useRemoteControl(
   const preferredCodec = ref<RcPreferredCodec | null>(readStoredPreferredCodec())
   /** How the remote video is rendered inside the viewer stage. See
    *  `RcScaleMode`. Persisted per-browser in localStorage. */
+  /** Persisted `RcScaleMode` in localStorage. */
   const scaleMode = ref<RcScaleMode>(readStoredScaleMode())
+  /** GhostDesk-style pointer auto-pan in overflow modes (`original` / `custom`). */
+  const scrollAuto = ref<boolean>(readStoredScrollAuto())
   /** Percent for `scaleMode === 'custom'`. Range 5-1000, clamped at
    *  read/write time. */
   const scaleCustomPercent = ref<number>(readStoredScalePct())
@@ -7981,6 +8036,11 @@ export function useRemoteControl(
   function setScaleMode(m: RcScaleMode) {
     scaleMode.value = m
     persistScaleMode(m)
+  }
+
+  function setScrollAuto(on: boolean) {
+    scrollAuto.value = on
+    persistScrollAuto(on)
   }
 
   /** Update the custom-scale percent (clamped to [5, 1000]). Takes
@@ -12544,6 +12604,29 @@ export function useRemoteControl(
         scheduleRel()
         return
       }
+      // SOTA (0.5.0) — GhostDesk-style proportional auto-pan in `original` /
+      // `custom` modes when the scaled surface overflows the stage viewport.
+      // Runs BEFORE `normalisedXY(ev)` so the coordinate sent to the host
+      // matches the freshly scrolled visual position under the cursor.
+      if (
+        scrollAuto.value &&
+        (scaleMode.value === 'original' || scaleMode.value === 'custom') &&
+        ev.pointerType !== 'touch'
+      ) {
+        const sRect = surface.getBoundingClientRect()
+        const target = computeAutoScrollTarget({
+          localX: ev.clientX - sRect.left,
+          localY: ev.clientY - sRect.top,
+          clientWidth: surface.clientWidth,
+          clientHeight: surface.clientHeight,
+          scrollWidth: surface.scrollWidth,
+          scrollHeight: surface.scrollHeight,
+        })
+        if (target) {
+          if (surface.scrollLeft !== target.scrollLeft) surface.scrollLeft = target.scrollLeft
+          if (surface.scrollTop !== target.scrollTop) surface.scrollTop = target.scrollTop
+        }
+      }
       const { x, y, insideVideo } = normalisedXY(ev)
       if (!insideVideo) return
       // FR-93 — every synthetic button-up reuses this (`releaseHeldInputs` on
@@ -12711,6 +12794,9 @@ export function useRemoteControl(
     function onWheel(ev: WheelEvent) {
       if (fromOverlayUi(ev)) return
       ev.preventDefault()
+      // SOTA (0.5.0) — flush any coalesced pointer move before dispatching a
+      // wheel tick so scrolling always lands on the hovered window/pane.
+      flushPendingMove()
       // Browser uses positive Y for down; agent does the same.
       if (ev.deltaMode !== 0) {
         sendInput({
@@ -13558,9 +13644,13 @@ export function useRemoteControl(
     const stopPauseWatch = watch(keyboardPaused, (paused) => {
       if (paused) releaseHeldInputs()
     })
+    const stopScaleModeWatch = watch(scaleMode, () => {
+      releaseHeldInputs()
+    })
 
     return () => {
       stopPauseWatch()
+      stopScaleModeWatch()
       if (benchSurface === surface) benchSurface = null
       surface.removeEventListener('pointermove', onPointerMove)
       if ('onpointerrawupdate' in surface) {
@@ -15823,8 +15913,10 @@ export function useRemoteControl(
     setPreferredCodec,
     scaleMode,
     scaleCustomPercent,
+    scrollAuto,
     setScaleMode,
     setScaleCustomPercent,
+    setScrollAuto,
     resolution,
     setResolution,
     setFitDimensions,

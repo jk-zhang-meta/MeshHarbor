@@ -4,12 +4,13 @@
   <v-app class="app-layout-root">
     <v-navigation-drawer
       v-if="!embedChromeHidden"
-      v-model="drawer"
+      :model-value="drawer && !immersiveViewer"
       :rail="!mobile && rail"
-      :permanent="!mobile"
-      :temporary="mobile"
+      :permanent="!mobile && !immersiveViewer"
+      :temporary="mobile || immersiveViewer"
       :width="mobile ? undefined : navWidth"
       class="app-nav"
+      @update:model-value="(v) => { if (!immersiveViewer) drawer = v }"
     >
       <!-- Drag the right edge to resize (persisted). Hidden in rail mode —
            rail width is Vuetify's own. -->

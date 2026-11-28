@@ -450,6 +450,12 @@ fn encoder_options(
         if let Some(v) = lowlat_knob("FFMPEG_AMF_QUERY_TIMEOUT", "1") {
             lowlat.push(("query_timeout".into(), v));
         }
+        // SOTA (0.5.0) — AMF ultra-low-latency usage preset matches GhostDesk /
+        // Sunshine AMF pipelines; stays in tier-protected `lowlat` so older
+        // drivers that reject it still retain `rc=vbr_latency` + QP + HRD.
+        if let Some(v) = lowlat_knob("FFMPEG_AMF_USAGE", "ultralowlatency") {
+            lowlat.push(("usage".into(), v));
+        }
     } else if name.ends_with("_vaapi") {
         // FR-77 P4 — VAAPI (Linux: Intel iHD, AMD radeonsi, Mesa's D3D12
         // frontend on WSL2). `rc_mode=VBR` anchored on `b:v` = `maxrate`
@@ -3347,6 +3353,20 @@ mod tests {
         );
         let (_, _, s) = encoder_options("h264_vaapi", 3_000_000, 22, true, false, false);
         assert!(s.contains("rc_mode=VBR") && !s.contains("profile"), "{s}");
+    }
+
+    #[test]
+    fn amf_options_include_ultralowlatency_usage_in_protected_tier() {
+        let (base, lowlat, s) = encoder_options("hevc_amf", 3_000_000, 22, true, false, false);
+        assert!(base.iter().any(|(k, v)| k == "rc" && v == "vbr_latency"), "{s}");
+        assert!(
+            lowlat.iter().any(|(k, v)| k == "usage" && v == "ultralowlatency"),
+            "{lowlat:?}"
+        );
+        assert!(
+            lowlat.iter().any(|(k, v)| k == "query_timeout" && v == "1"),
+            "{lowlat:?}"
+        );
     }
 
     /// FR-78 P1 — D3D12 and Vulkan take the same rate-control shape as

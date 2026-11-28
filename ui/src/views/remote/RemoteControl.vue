@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!-- Copyright (C) 2026 G ROX EOOD -->
 <template>
-  <v-container
-    fluid
+  <div
+    ref="wrapperEl"
     class="pa-0 remote-control-wrapper"
     :class="{ 'rc-immersive': immersive, 'rc-chrome-revealed': immersive && chromeRevealed }"
   >
@@ -21,6 +21,8 @@
       color="surface"
       class="px-2 rc-toolbar-primary"
       @pointerdown.capture="onChromeTouched"
+      @mouseenter="onChromeMouseEnter"
+      @mouseleave="onChromeMouseLeave"
     >
       <v-btn
         icon="mdi-arrow-left"
@@ -904,6 +906,52 @@
         <!-- Icon-only on a phone, where the row has no room for the word. -->
         <span class="d-none d-sm-inline">{{ t('remote.viewer.disconnect') }}</span>
       </v-btn>
+      <!-- Quick display scale picker (Adaptive / Fill Screen / 1:1 / Custom):
+           one click to eliminate black letterbox bars and fill the screen. -->
+      <v-menu v-if="rc.phase.value === 'connected'" location="bottom end">
+        <template #activator="{ props: scaleMenuProps }">
+          <v-btn
+            v-bind="scaleMenuProps"
+            icon
+            variant="text"
+            size="small"
+            class="ml-1"
+            :color="rc.scaleMode.value === 'fill' ? 'primary' : undefined"
+            :aria-label="quickScaleTitle"
+            :title="quickScaleTitle"
+            data-testid="rc-quick-scale"
+          >
+            <v-icon>{{ rc.scaleMode.value === 'fill' ? 'mdi-fit-to-screen' : 'mdi-fit-to-screen-outline' }}</v-icon>
+          </v-btn>
+        </template>
+        <v-list density="compact">
+          <v-list-item
+            v-for="opt in scaleOptions"
+            :key="opt.value"
+            :active="scaleMode === opt.value"
+            :title="opt.title"
+            :data-testid="`rc-quick-scale-${opt.value}`"
+            @click="scaleMode = opt.value as RcScaleMode"
+          />
+        </v-list>
+      </v-menu>
+      <!-- Desktop Expand-to-Fill-Viewport (Theater Mode): hides left sidebar,
+           app bar, and card padding so the remote screen takes 100% of the
+           browser window; hover/click the top-center tab to reveal controls. -->
+      <v-btn
+        v-if="rc.phase.value === 'connected' && !coarsePointer && !isFullscreen"
+        icon
+        variant="text"
+        size="small"
+        class="ml-1"
+        :color="desktopExpanded ? 'primary' : undefined"
+        :aria-label="desktopExpanded ? t('remote.viewer.immersive.exitExpandScreen') : t('remote.viewer.immersive.expandScreen')"
+        :title="desktopExpanded ? t('remote.viewer.immersive.exitExpandScreen') : t('remote.viewer.immersive.expandScreen')"
+        data-testid="rc-expand-viewport"
+        @click="toggleDesktopExpanded"
+      >
+        <v-icon>{{ desktopExpanded ? 'mdi-arrow-collapse-all' : 'mdi-arrow-expand-all' }}</v-icon>
+      </v-btn>
       <!-- Fullscreen: gated on (a) connected session AND (b) the
            document supports the Fullscreen API. iOS Safari only
            supports `webkitEnterFullscreen` on `<video>` elements,
@@ -935,6 +983,7 @@
       :aria-label="t('remote.viewer.immersive.showToolbar')"
       data-testid="rc-pulltab"
       @click="revealChrome"
+      @mouseenter="onPulltabMouseEnter"
     >
       <span class="rc-pulltab-tab"><v-icon size="14">mdi-chevron-down</v-icon></span>
     </button>
@@ -1860,6 +1909,16 @@
             :label="t('remote.viewer.settings.customZoom')"
             class="mb-4"
           />
+          <v-checkbox
+            v-if="scaleMode === 'original' || scaleMode === 'custom'"
+            v-model="scrollAuto"
+            density="compact"
+            hide-details="auto"
+            class="mb-3"
+            :label="t('remote.viewer.scale.scrollAuto')"
+            :messages="t('remote.viewer.scale.scrollAutoHint')"
+            data-testid="rc-scroll-auto"
+          />
           <v-btn
             block
             variant="tonal"
@@ -2603,7 +2662,7 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -2789,6 +2848,8 @@ const coarsePointer = (() => {
     return false
   }
 })()
+const wrapperEl = ref<HTMLElement | null>(null)
+const desktopExpanded = ref(false)
 // The setting is the kill switch (FR-125 §3.4): on unless this browser turned
 // it off; holding the phone upright or ending the session also leaves the mode.
 const immersiveSetting = ref(readImmersiveSetting())
@@ -2796,9 +2857,21 @@ watch(immersiveSetting, (on) => writeImmersiveSetting(on))
 const immersive = computed(
   () =>
     rc.phase.value === 'connected' &&
-    immersiveSetting.value &&
-    isPhoneSideways(coarsePointer, displayWidth.value, displayHeight.value),
+    (desktopExpanded.value ||
+      isFullscreen.value ||
+      (immersiveSetting.value &&
+        isPhoneSideways(coarsePointer, displayWidth.value, displayHeight.value))),
 )
+watch(
+  () => rc.phase.value,
+  (phase) => {
+    if (phase !== 'connected') desktopExpanded.value = false
+  },
+)
+function toggleDesktopExpanded() {
+  desktopExpanded.value = !desktopExpanded.value
+  if (desktopExpanded.value) hideChrome()
+}
 const chromeRevealed = ref(false)
 let chromeHideTimer: ReturnType<typeof setTimeout> | null = null
 function clearChromeHide() {
@@ -2829,6 +2902,15 @@ function hideChrome() {
 }
 function onChromeTouched() {
   if (immersive.value && chromeRevealed.value) armChromeHide()
+}
+function onPulltabMouseEnter() {
+  if (!coarsePointer && immersive.value && !chromeRevealed.value) revealChrome()
+}
+function onChromeMouseEnter() {
+  if (!coarsePointer && immersive.value && chromeRevealed.value) clearChromeHide()
+}
+function onChromeMouseLeave() {
+  if (!coarsePointer && immersive.value && chromeRevealed.value) armChromeHide()
 }
 /** A tap on the stage while the toolbar is down puts it away; the tap itself
  *  still reaches the remote desktop. */
@@ -3686,9 +3768,14 @@ async function uploadMany(
 // composable stays the source of truth (persists across reloads).
 const scaleOptions = computed(() => [
   { title: t('remote.viewer.scale.adaptive'), value: 'adaptive' },
+  { title: t('remote.viewer.scale.fill'), value: 'fill' },
   { title: t('remote.viewer.scale.original'), value: 'original' },
   { title: t('remote.viewer.res.customEdit'), value: 'custom' },
 ])
+const quickScaleTitle = computed(() => {
+  const cur = scaleOptions.value.find((o) => o.value === scaleMode.value)?.title ?? scaleMode.value
+  return t('remote.viewer.scale.quickTitle', { mode: cur })
+})
 const scaleMode = computed<RcScaleMode>({
   get: () => rc.scaleMode.value,
   set: (v: RcScaleMode) => rc.setScaleMode(v),
@@ -3696,6 +3783,10 @@ const scaleMode = computed<RcScaleMode>({
 const scalePercent = computed<number>({
   get: () => rc.scaleCustomPercent.value,
   set: (v: number) => rc.setScaleCustomPercent(v),
+})
+const scrollAuto = computed<boolean>({
+  get: () => rc.scrollAuto.value,
+  set: (v: boolean) => rc.setScrollAuto(v),
 })
 
 // Intrinsic remote-frame dimensions. The composable is the source of
@@ -4324,7 +4415,7 @@ const fullscreenButtonTooltip = computed<string>(() =>
     : t('remote.viewer.fs.title'),
 )
 function toggleFullscreen() {
-  const el = stageEl.value
+  const el = wrapperEl.value ?? stageEl.value
   if (!el) return
   if (document.fullscreenElement) {
     void document.exitFullscreen().catch(() => { /* user cancelled; ignore */ })
@@ -5035,6 +5126,14 @@ function cursorMapping(): { sx: number; sy: number; offsetX: number; offsetY: nu
     : (video?.videoHeight ?? 0)
   if (!stage || !srcW || !srcH) {
     return { sx: 1, sy: 1, offsetX: 0, offsetY: 0 }
+  }
+  if (rc.scaleMode.value === 'fill') {
+    return {
+      sx: stage.clientWidth / srcW,
+      sy: stage.clientHeight / srcH,
+      offsetX: 0,
+      offsetY: 0,
+    }
   }
   if (rc.scaleMode.value === 'original') {
     return { sx: 1, sy: 1, offsetX: 0, offsetY: 0 }
@@ -5844,6 +5943,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
 }
+.remote-control-wrapper:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #0b0b0b;
+}
 /* Row 1 (primary toolbar): keep on a single line at every viewport
    so Back / title / Connect-Disconnect / Fullscreen never push off-
    screen. Vuetify's outer wrapper clips overflow by default; the
@@ -6174,6 +6278,13 @@ onBeforeUnmount(() => {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+.remote-video.scale-fill {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: fill;
 }
 .remote-video.scale-original,
 .remote-video.scale-custom {
