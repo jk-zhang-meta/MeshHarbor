@@ -401,18 +401,34 @@ impl Clipboard {
     /// set of echo self-marks) serves every consumer — the per-session
     /// DC handlers AND the loopback bridge — so a bridge write is
     /// never echoed back by a concurrently-subscribed session watcher.
-    /// `None` when the OS clipboard is unavailable (headless).
+    /// Caches ONLY a working `Clipboard`, with a short retry backoff on
+    /// transient failure so a daemon started before the desktop session comes
+    /// up recovers cleanly instead of locking clipboard off permanently.
     pub fn shared() -> Option<Clipboard> {
-        static SHARED: std::sync::OnceLock<Option<Clipboard>> = std::sync::OnceLock::new();
-        SHARED
-            .get_or_init(|| match Clipboard::new() {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    tracing::warn!(%e, "clipboard: shared worker init failed — clipboard disabled");
-                    None
-                }
-            })
-            .clone()
+        const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+        static SHARED: std::sync::Mutex<(Option<Clipboard>, Option<std::time::Instant>)> =
+            std::sync::Mutex::new((None, None));
+        let mut guard = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = guard.0.as_ref() {
+            return Some(c.clone());
+        }
+        if let Some(failed_at) = guard.1
+            && failed_at.elapsed() < RETRY_BACKOFF
+        {
+            return None;
+        }
+        match Clipboard::new() {
+            Ok(c) => {
+                guard.0 = Some(c.clone());
+                guard.1 = None;
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!(%e, "clipboard: shared worker init failed — will retry on later session");
+                guard.1 = Some(std::time::Instant::now());
+                None
+            }
+        }
     }
 
     /// v2 — install a change-watcher SUBSCRIPTION. Changes arrive on `tx`;

@@ -109,6 +109,100 @@ impl FrameHeader {
     }
 }
 
+/// A single-slot, newest-wins handoff between a capture producer and its
+/// consumer. Unlike a bounded `sync_channel` with `try_send` (which drops the
+/// *incoming* newer frame when full and can lose the final Wayland repaint
+/// before the desktop goes idle), `push` overwrites any unconsumed older frame
+/// with the latest one.
+pub struct LatestFrameTx<T> {
+    inner: std::sync::Arc<(std::sync::Mutex<LatestSlotState<T>>, std::sync::Condvar)>,
+}
+
+pub struct LatestFrameRx<T> {
+    inner: std::sync::Arc<(std::sync::Mutex<LatestSlotState<T>>, std::sync::Condvar)>,
+}
+
+struct LatestSlotState<T> {
+    latest: Option<T>,
+    closed: bool,
+}
+
+pub fn latest_frame_slot<T>() -> (LatestFrameTx<T>, LatestFrameRx<T>) {
+    let inner = std::sync::Arc::new((
+        std::sync::Mutex::new(LatestSlotState {
+            latest: None,
+            closed: false,
+        }),
+        std::sync::Condvar::new(),
+    ));
+    (
+        LatestFrameTx {
+            inner: std::sync::Arc::clone(&inner),
+        },
+        LatestFrameRx { inner },
+    )
+}
+
+impl<T> LatestFrameTx<T> {
+    /// Store `frame` as the newest unconsumed frame. Returns `true` if an
+    /// older unconsumed frame was superseded and discarded.
+    pub fn push(&self, frame: T) -> bool {
+        let (lock, cv) = &*self.inner;
+        let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let replaced = st.latest.replace(frame).is_some();
+        drop(st);
+        cv.notify_one();
+        replaced
+    }
+}
+
+impl<T> Drop for LatestFrameTx<T> {
+    fn drop(&mut self) {
+        let (lock, cv) = &*self.inner;
+        let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        st.closed = true;
+        drop(st);
+        cv.notify_all();
+    }
+}
+
+impl<T> LatestFrameRx<T> {
+    /// Wait up to `timeout` for the newest frame, returning `Disconnected`
+    /// once the producer has exited and no buffered frame remains.
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        let (lock, cv) = &*self.inner;
+        let deadline = std::time::Instant::now() + timeout;
+        let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(frame) = st.latest.take() {
+                return Ok(frame);
+            }
+            if st.closed {
+                return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
+            }
+            let Some(rem) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+            };
+            let (guard, wait_res) = cv
+                .wait_timeout(st, rem)
+                .unwrap_or_else(|e| e.into_inner());
+            st = guard;
+            if let Some(frame) = st.latest.take() {
+                return Ok(frame);
+            }
+            if st.closed {
+                return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
+            }
+            if wait_res.timed_out() {
+                return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +261,20 @@ mod tests {
         let mut h = hdr();
         h.width = 0;
         assert!(FrameHeader::decode(&h.encode()).is_err());
+    }
+
+    #[test]
+    fn latest_frame_slot_overwrites_stale_frame_and_preserves_final_before_eof() {
+        let (tx, rx) = latest_frame_slot::<u32>();
+        assert!(!tx.push(1), "first frame fills empty slot");
+        assert!(tx.push(2), "second frame supersedes stale first frame");
+        drop(tx);
+        // Consumer must receive the newest frame (2), never the superseded (1),
+        // even after the producer closed, and then see Disconnected.
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_millis(50)), Ok(2));
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 }

@@ -68,7 +68,17 @@ impl Capturer {
             CGError::Success => Ok(Capturer {
                 stream, queue, stop, width, height, format, display
             }),
-            x => Err(x)
+            x => {
+                unsafe {
+                    if !stream.is_null() {
+                        CFRelease(stream);
+                    }
+                    if !queue.is_null() {
+                        dispatch_release(queue);
+                    }
+                }
+                Err(x)
+            }
         }
     }
 

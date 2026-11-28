@@ -661,8 +661,9 @@ struct Shared {
     format: Option<NegotiatedFormat>,
     first_frame: Option<FrameReport>,
     /// Where copied frames go, when streaming. `None` = P3c-i's
-    /// count-and-report mode.
-    frame_tx: Option<std::sync::mpsc::SyncSender<(super::wire::FrameHeader, Vec<u8>)>>,
+    /// count-and-report mode. Uses a newest-wins slot so the final Wayland
+    /// repaint before idle overwrites a stale frame instead of being dropped.
+    frame_tx: Option<super::wire::LatestFrameTx<(super::wire::FrameHeader, Vec<u8>)>>,
     /// Frames thrown away because the consumer was behind. Counted rather than
     /// silent: a capture dropping most of what it produces is a very different
     /// problem from one producing nothing.
@@ -773,11 +774,11 @@ unsafe extern "C" fn on_process(data: *mut c_void) {
             && let Some(fmt) = &shared.format
             && let Some((h, bytes)) = unsafe { copy_out(pw_buf, fmt) }
         {
-            // ⚠️ DROP when the consumer is behind; never block. This runs on
-            // PipeWire's own thread, so waiting here stalls the compositor's
-            // producer — and a capture pipeline wants the NEWEST frame, not a
-            // queue of stale ones.
-            if tx.try_send((h, bytes)).is_err() {
+            // ⚠️ Replace stale frame when the consumer is behind; never block.
+            // Runs on PipeWire's own thread, so waiting here stalls the
+            // compositor, while dropping the *incoming* frame would lose the
+            // final repaint before a Wayland desktop goes idle.
+            if tx.push((h, bytes)) {
                 shared.dropped += 1;
             }
         }
@@ -1064,7 +1065,7 @@ fn negotiate_blocking(
     node_id: u32,
     max_fps: u32,
     want_frames: u32,
-    frame_tx: Option<std::sync::mpsc::SyncSender<(super::wire::FrameHeader, Vec<u8>)>>,
+    frame_tx: Option<super::wire::LatestFrameTx<(super::wire::FrameHeader, Vec<u8>)>>,
     state: Option<Arc<std::sync::atomic::AtomicI32>>,
 ) -> Result<(NegotiatedFormat, Option<FrameReport>), PwError> {
     let lib = Lib::load()?;
@@ -1172,9 +1173,9 @@ fn negotiate_blocking(
 /// A running capture: the agreed format, plus frames as they arrive.
 pub struct StreamHandle {
     pub format: NegotiatedFormat,
-    /// ⚠️ Bounded and lossy by design — see the `try_send` in `on_process`.
-    /// A closed channel means the PipeWire loop stopped.
-    pub frames: std::sync::mpsc::Receiver<(super::wire::FrameHeader, Vec<u8>)>,
+    /// ⚠️ Single-slot newest-wins handoff — see `on_process`.
+    /// A disconnected slot means the PipeWire loop stopped.
+    pub frames: super::wire::LatestFrameRx<(super::wire::FrameHeader, Vec<u8>)>,
     /// FR-93 P5c — the stream's `pw_stream_state` as its loop last reported
     /// it ([`PW_STREAM_STATE_STREAMING`] while frames can flow).
     pub state: Arc<std::sync::atomic::AtomicI32>,
@@ -1191,9 +1192,9 @@ pub struct StreamHandle {
 /// Acceptable for the same reason the negotiation timeout was — this is a
 /// short-lived helper, not the daemon.
 pub fn stream(source: PwSource, node_id: u32, max_fps: u32) -> Result<StreamHandle, PwError> {
-    // Depth 2: enough that a brief hiccup in the writer costs no frame, small
-    // enough that what arrives is always nearly current.
-    let (frame_tx, frames) = std::sync::mpsc::sync_channel(2);
+    // Newest-wins single slot: brief writer stalls overwrite stale pixels
+    // rather than dropping the newest repaint before idle.
+    let (frame_tx, frames) = super::wire::latest_frame_slot();
     let (err_tx, err_rx) = std::sync::mpsc::channel();
     // FR-93 P5c — the stream's state, for a caller that must tell a stream
     // whose source vanished (paused, no error) from an idle one.

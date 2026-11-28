@@ -244,6 +244,19 @@ describe('FR-77 remembered decode failures', () => {
     globalThis.localStorage?.setItem(CELL_FAILURE_PREFIX + A, '{not json')
     expect(rememberedCellFailures(A, 'UA/1')).toEqual(new Set())
   })
+
+  it('expires remembered decode failures after 24h so transient GPU faults self-heal', () => {
+    const expiredAt = Date.now() - 25 * 60 * 60 * 1000
+    const freshAt = Date.now() - 1000
+    globalThis.localStorage?.setItem(
+      CELL_FAILURE_PREFIX + A,
+      JSON.stringify({
+        'hevc:yuv444': { ua: 'UA/1', at: expiredAt },
+        'vp9:yuv444': { ua: 'UA/1', at: freshAt },
+      }),
+    )
+    expect(rememberedCellFailures(A, 'UA/1')).toEqual(new Set(['vp9:yuv444']))
+  })
 })
 
 describe('FR-77 picker subtitles read from the live site (2026-09-07)', () => {

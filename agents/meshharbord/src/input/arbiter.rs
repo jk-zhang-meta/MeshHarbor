@@ -639,6 +639,9 @@ enum Cmd {
         session: ObjectId,
         token: String,
     },
+    /// Lightweight wake nudge on the bounded motion channel when a priority
+    /// control/cleanup command is queued on the unbounded control channel.
+    WakeControl,
 }
 
 /// FR-92 — a keep-busy request, answered on `reply` from the arbiter thread
@@ -691,12 +694,14 @@ struct Sinks {
     last_ghost: Instant,
 }
 
-/// Process-global handle. Cheap to clone; all methods are non-blocking
-/// sends into the worker (a full queue drops the event — input is a
-/// realtime stream, stale events are worse than lost ones).
+/// Process-global handle. Cheap to clone; ordinary pointer/key events ride a
+/// bounded queue (512) while lifecycle and held-key cleanup commands ride a
+/// dedicated unbounded high-priority control queue so motion floods can never
+/// discard `Close` or `ReleaseHeld` and strand OS keys/buttons.
 #[derive(Clone)]
 pub struct Arbiter {
     tx: std::sync::mpsc::SyncSender<Cmd>,
+    ctl_tx: std::sync::mpsc::Sender<Cmd>,
 }
 
 /// The global arbiter. First call must happen inside a tokio runtime (the
@@ -705,16 +710,25 @@ pub fn global() -> &'static Arbiter {
     static ARBITER: OnceLock<Arbiter> = OnceLock::new();
     ARBITER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Cmd>(512);
+        let (ctl_tx, ctl_rx) = std::sync::mpsc::channel::<Cmd>();
         let handle = tokio::runtime::Handle::current();
         std::thread::Builder::new()
             .name("input-arbiter".into())
-            .spawn(move || worker(rx, handle))
+            .spawn(move || worker(rx, ctl_rx, handle))
             .expect("spawn input-arbiter worker");
-        Arbiter { tx }
+        Arbiter { tx, ctl_tx }
     })
 }
 
 impl Arbiter {
+    /// Deliver a lifecycle/cleanup command reliably and wake the worker. If
+    /// the bounded event channel is full, the worker is already awake draining
+    /// it and will drain `ctl_rx` before the next event.
+    fn send_control(&self, cmd: Cmd) {
+        let _ = self.ctl_tx.send(cmd);
+        let _ = self.tx.try_send(Cmd::WakeControl);
+    }
+
     pub fn session_open(
         &self,
         session: ObjectId,
@@ -724,7 +738,7 @@ impl Arbiter {
         control: DcStash,
         cursor: DcStash,
     ) {
-        let _ = self.tx.try_send(Cmd::Open {
+        self.send_control(Cmd::Open {
             session,
             name,
             can_input,
@@ -734,16 +748,16 @@ impl Arbiter {
         });
     }
     pub fn session_closed(&self, session: ObjectId) {
-        let _ = self.tx.try_send(Cmd::Close { session });
+        self.send_control(Cmd::Close { session });
     }
     /// Input DC died mid-session — release this session's held keys/buttons
     /// without removing it from the participants rail.
     pub fn release_held(&self, session: ObjectId) {
-        let _ = self.tx.try_send(Cmd::ReleaseHeld { session });
+        self.send_control(Cmd::ReleaseHeld { session });
     }
     /// A session's control DC opened — (re)deliver `rc:control.state`.
     pub fn control_ready(&self, session: ObjectId) {
-        let _ = self.tx.try_send(Cmd::ControlReady { session });
+        self.send_control(Cmd::ControlReady { session });
     }
     pub fn event(&self, session: ObjectId, msg: InputMsg) {
         if self.tx.try_send(Cmd::Event { session, msg }).is_err() {
@@ -751,18 +765,18 @@ impl Arbiter {
         }
     }
     pub fn request_floor(&self, session: ObjectId) {
-        let _ = self.tx.try_send(Cmd::RequestFloor { session });
+        self.send_control(Cmd::RequestFloor { session });
     }
     /// FR-27 — the holder grants the floor to the waiting session.
     pub fn grant_floor(&self, holder: ObjectId, to: ObjectId) {
-        let _ = self.tx.try_send(Cmd::GrantFloor { holder, to });
+        self.send_control(Cmd::GrantFloor { holder, to });
     }
     /// FR-27 — the holder declines, or the requester withdraws.
     pub fn clear_floor_request(&self, session: ObjectId) {
-        let _ = self.tx.try_send(Cmd::ClearFloorRequest { session });
+        self.send_control(Cmd::ClearFloorRequest { session });
     }
     pub fn set_mode(&self, session: ObjectId, mode: Mode) {
-        let _ = self.tx.try_send(Cmd::SetMode { session, mode });
+        self.send_control(Cmd::SetMode { session, mode });
     }
 
     /// FR-92 — run one keep-busy request on the injector and wait (bounded)
@@ -770,20 +784,14 @@ impl Arbiter {
     /// a tokio task.
     pub fn keep_busy(&self, op: KbOp) -> KbReply {
         let (reply, rx) = std::sync::mpsc::sync_channel(1);
-        if self
-            .tx
-            .try_send(Cmd::KeepBusy(KbReq { op, reply }))
-            .is_err()
-        {
-            return KbReply::Failed("input arbiter queue full".into());
-        }
+        self.send_control(Cmd::KeepBusy(KbReq { op, reply }));
         rx.recv_timeout(KB_REPLY_TIMEOUT)
             .unwrap_or_else(|_| KbReply::Failed("input arbiter did not answer".into()))
     }
 
     /// FR-92 — a controller's `rc:keep-busy.set`.
     pub fn keep_busy_set(&self, session: ObjectId, request: crate::keep_busy::SetRequest) {
-        let _ = self.tx.try_send(Cmd::KeepBusySet { session, request });
+        self.send_control(Cmd::KeepBusySet { session, request });
     }
 
     /// FR-97 P3e — a controller's `rc:layout.set` ([`Cmd::LayoutSet`]).
@@ -792,7 +800,7 @@ impl Arbiter {
         feature = "enigo-input"
     ))]
     pub fn layout_set(&self, session: ObjectId, token: String) {
-        let _ = self.tx.try_send(Cmd::LayoutSet { session, token });
+        self.send_control(Cmd::LayoutSet { session, token });
     }
 }
 
@@ -823,7 +831,11 @@ fn layout_set_if_allowed(
     }
 }
 
-fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
+fn worker(
+    rx: std::sync::mpsc::Receiver<Cmd>,
+    ctl_rx: std::sync::mpsc::Receiver<Cmd>,
+    handle: tokio::runtime::Handle,
+) {
     let mut state = ArbiterState::default();
     let mut sinks: HashMap<ObjectId, Sinks> = HashMap::new();
     // ONE OS injector for the whole process — created lazily so the
@@ -831,9 +843,37 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
     // pre-P6 per-session open timing.
     let mut injector: Option<Box<dyn super::InputInjector + Send>> = None;
 
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Cmd::Open {
+    loop {
+        while let Ok(ctl) = ctl_rx.try_recv() {
+            handle_cmd(ctl, &mut state, &mut sinks, &mut injector, &handle);
+        }
+        let Ok(cmd) = rx.recv() else {
+            // Drain any final control/cleanup commands before exiting.
+            while let Ok(ctl) = ctl_rx.try_recv() {
+                handle_cmd(ctl, &mut state, &mut sinks, &mut injector, &handle);
+            }
+            break;
+        };
+        while let Ok(ctl) = ctl_rx.try_recv() {
+            handle_cmd(ctl, &mut state, &mut sinks, &mut injector, &handle);
+        }
+        if !matches!(cmd, Cmd::WakeControl) {
+            handle_cmd(cmd, &mut state, &mut sinks, &mut injector, &handle);
+        }
+    }
+    tracing::debug!("input arbiter worker exiting (channel closed)");
+}
+
+fn handle_cmd(
+    cmd: Cmd,
+    state: &mut ArbiterState,
+    sinks: &mut HashMap<ObjectId, Sinks>,
+    injector: &mut Option<Box<dyn super::InputInjector + Send>>,
+    handle: &tokio::runtime::Handle,
+) {
+    match cmd {
+        Cmd::WakeControl => {}
+        Cmd::Open {
                 session,
                 name,
                 can_input,
@@ -865,21 +905,21 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                         released = releases.len(),
                         "input arbiter: release-all on session close"
                     );
-                    inject_all(&mut injector, &releases);
+                    inject_all(injector, &releases);
                     // FR-92 — a released button moves the pointer first
                     // (#1945): keep-busy must re-anchor, not fight it.
                     crate::keep_busy::note_remote_input();
                 }
                 sinks.remove(&session);
                 if state.session_count() > 0 {
-                    broadcast_state(&state, &sinks, &handle);
+                    broadcast_state(state, sinks, handle);
                 }
             }
             Cmd::ControlReady { session } => {
                 tracing::debug!(%session, "input arbiter: control DC ready — re-broadcasting state");
-                broadcast_state(&state, &sinks, &handle);
+                broadcast_state(state, sinks, handle);
                 if state.can_input(session) {
-                    warm(&mut injector);
+                    warm(injector);
                 }
             }
             Cmd::ReleaseHeld { session } => {
@@ -890,7 +930,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                         released = releases.len(),
                         "input arbiter: input DC closed — released held keys"
                     );
-                    inject_all(&mut injector, &releases);
+                    inject_all(injector, &releases);
                     crate::keep_busy::note_remote_input();
                 }
             }
@@ -900,7 +940,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                 if let InputMsg::MouseMove { x, y, mon } = msg
                     && sinks.len() > 1
                 {
-                    ghost_broadcast(&state, &mut sinks, &handle, session, x, y, mon);
+                    ghost_broadcast(state, sinks, handle, session, x, y, mon);
                 }
                 match state.plan(session, &msg, Instant::now()) {
                     EventPlan::Deny => {}
@@ -911,9 +951,9 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                                 fenced = pre.len(),
                                 "input arbiter: cross-session modifier fence"
                             );
-                            inject_all(&mut injector, &pre);
+                            inject_all(injector, &pre);
                         }
-                        inject_all(&mut injector, std::slice::from_ref(&msg));
+                        inject_all(injector, std::slice::from_ref(&msg));
                         // FR-92 — a controller's input reached the OS: a
                         // remote person is active. A heartbeat is not input.
                         if !matches!(msg, InputMsg::Heartbeat { .. }) {
@@ -923,7 +963,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                 }
             }
             Cmd::KeepBusy(req) => {
-                let reply = keep_busy_op(&state, &mut injector, req.op);
+                let reply = keep_busy_op(state, injector, req.op);
                 let _ = req.reply.try_send(reply);
             }
             Cmd::KeepBusySet { session, request } => {
@@ -967,21 +1007,21 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                 let (granted, releases) = state.request_floor(session, Instant::now());
                 tracing::info!(%session, granted, "input arbiter: floor request");
                 if !releases.is_empty() {
-                    inject_all(&mut injector, &releases);
+                    inject_all(injector, &releases);
                     crate::keep_busy::note_remote_input();
                 }
-                broadcast_state(&state, &sinks, &handle);
+                broadcast_state(state, sinks, handle);
             }
             Cmd::GrantFloor { holder, to } => {
                 let (granted, releases) = state.grant_floor(holder, to);
                 tracing::info!(%holder, %to, granted, "input arbiter: floor grant");
                 if !releases.is_empty() {
-                    inject_all(&mut injector, &releases);
+                    inject_all(injector, &releases);
                     crate::keep_busy::note_remote_input();
                 }
                 // Broadcast even on a refusal: the requester may have left, or
                 // the floor may have moved, and both ends need the truth.
-                broadcast_state(&state, &sinks, &handle);
+                broadcast_state(state, sinks, handle);
             }
             Cmd::ClearFloorRequest { session } => {
                 if state.clear_floor_request(session) {
@@ -995,9 +1035,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Cmd>, handle: tokio::runtime::Handle) {
                 }
                 broadcast_state(&state, &sinks, &handle);
             }
-        }
     }
-    tracing::debug!("input arbiter worker exiting (channel closed)");
 }
 
 /// FR-93 P4c — open the ONE injector (or replace a stale one) as soon as a
@@ -1991,5 +2029,32 @@ mod tests {
             keep_busy_op(&st, &mut injector, KbOp::Move { x: 1, y: 1 }),
             KbReply::Unsupported
         );
+    }
+
+    #[tokio::test]
+    async fn control_channel_preempts_saturated_event_queue() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Cmd>(2);
+        let (ctl_tx, ctl_rx) = std::sync::mpsc::channel::<Cmd>();
+        let arbiter = Arbiter { tx, ctl_tx };
+
+        let a = sid();
+        // Saturate the bounded event queue completely before queuing control work.
+        arbiter.event(a, InputMsg::MouseMove { x: 0.1, y: 0.1, mon: 0 });
+        arbiter.event(a, InputMsg::MouseMove { x: 0.2, y: 0.2, mon: 0 });
+        // Third event drops (queue full), proving event channel is saturated.
+        arbiter.event(a, InputMsg::MouseMove { x: 0.3, y: 0.3, mon: 0 });
+
+        // Control commands (ReleaseHeld / Close) must never drop even when
+        // the bounded event channel is 100% full.
+        arbiter.release_held(a);
+        arbiter.send_control(Cmd::Close { session: a });
+
+        // The priority control channel holds both commands intact.
+        assert!(matches!(ctl_rx.try_recv(), Ok(Cmd::ReleaseHeld { session }) if session == a));
+        assert!(matches!(ctl_rx.try_recv(), Ok(Cmd::Close { session }) if session == a));
+        // And the event channel remained bounded at 2 items (no deadlock).
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Event { .. })));
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Event { .. })));
+        assert!(rx.try_recv().is_err());
     }
 }

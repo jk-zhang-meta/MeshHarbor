@@ -339,6 +339,11 @@ export function chromaSelectable(a: Availability, codec: PickerCodec, chroma: Pi
 
 export const CELL_FAILURE_PREFIX = 'meshharbor-rc-cell-failed.v1:'
 
+/** Expire remembered browser-side decode failures after 24 h so a transient
+ *  GPU/tab resource hiccup or a host driver upgrade does not permanently ban
+ *  a healthy codec cell on the same browser UA. */
+export const CELL_FAILURE_TTL_MS = 24 * 60 * 60 * 1000
+
 interface StoredFailures {
   [key: string]: { ua: string; at: number }
 }
@@ -355,26 +360,53 @@ function readFailures(agentId: string): StoredFailures {
 }
 
 /** Record that `codec:chroma` failed to decode real bytes from `agentId` in
- *  this browser. Keyed with the user-agent string so a browser (or, on
- *  Chromium, a GPU driver bump that changes it) gets a fresh trial. */
-export function rememberCellFailure(agentId: string, codec: CellCodec, chroma: CellChroma, ua: string): void {
+ *  this browser. Keyed with the user-agent string and timestamped with a
+ *  bounded TTL so browser/driver bumps or transient failures self-heal. */
+export function rememberCellFailure(
+  agentId: string,
+  codec: CellCodec,
+  chroma: CellChroma,
+  ua: string,
+  now = Date.now(),
+): void {
   try {
     const all = readFailures(agentId)
-    all[cellKey(codec, chroma)] = { ua, at: Date.now() }
+    all[cellKey(codec, chroma)] = { ua, at: now }
     globalThis.localStorage?.setItem(CELL_FAILURE_PREFIX + agentId, JSON.stringify(all))
   } catch {
     /* best-effort */
   }
 }
 
-/** The cells remembered as failed for `agentId` under THIS `ua`; entries
- *  recorded under another user-agent string are ignored (the trial is worth
- *  repeating after an upgrade) and dropped. */
-export function rememberedCellFailures(agentId: string, ua: string): Set<string> {
+/** The cells remembered as failed for `agentId` under THIS `ua` within
+ *  [`CELL_FAILURE_TTL_MS`]; entries past TTL are pruned so transient failures
+ *  recover cleanly, while entries recorded under a different UA are ignored
+ *  without clobbering other browser builds' records. */
+export function rememberedCellFailures(agentId: string, ua: string, now = Date.now()): Set<string> {
   const all = readFailures(agentId)
   const out = new Set<string>()
+  let pruned = false
+  const kept: StoredFailures = {}
   for (const [key, v] of Object.entries(all)) {
-    if (v && v.ua === ua) out.add(key)
+    const valid = v && typeof v.ua === 'string' && typeof v.at === 'number'
+    const unexpired = valid && now - v.at < CELL_FAILURE_TTL_MS
+    if (unexpired) {
+      kept[key] = v
+      if (v.ua === ua) out.add(key)
+    } else {
+      pruned = true
+    }
+  }
+  if (pruned) {
+    try {
+      if (Object.keys(kept).length === 0) {
+        globalThis.localStorage?.removeItem(CELL_FAILURE_PREFIX + agentId)
+      } else {
+        globalThis.localStorage?.setItem(CELL_FAILURE_PREFIX + agentId, JSON.stringify(kept))
+      }
+    } catch {
+      /* best-effort */
+    }
   }
   return out
 }

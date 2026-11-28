@@ -130,8 +130,10 @@ describe('rc-chunk-framing under UNORDERED delivery (FR-17 stages B + C)', () =>
     stripChunkPrefix(st, framed(1, 0, 3, [1])) // frame 1 loses chunks 1-2
     const r = stripChunkPrefix(st, framed(2, 0, 1, [9]))
     // The newer frame is still DELIVERED — dropping it too would turn one
-    // lost frame into two.
+    // lost frame into two — AND gap is signaled immediately so the worker
+    // can request a repairing IDR on delta loss.
     expect(bytes(r)).toEqual([9])
+    expect(r.gap).toBe(true)
     expect(st.gaps).toBe(1)
     expect(st.partials.size).toBe(0)
   })
@@ -223,6 +225,7 @@ describe('rc-chunk-framing under UNORDERED delivery (FR-17 stages B + C)', () =>
     stripChunkPrefix(st, framed(3, 0, 4, [1]))
     const r = stripChunkPrefix(st, framed(3, 1, 2, [2]))
     expect(r.payload).toBeNull()
+    expect(r.gap).toBe(true)
     expect(st.gaps).toBe(1)
     expect(st.partials.size).toBe(0)
   })

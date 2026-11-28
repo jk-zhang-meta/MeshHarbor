@@ -373,9 +373,17 @@ pub mod helper {
     /// The human-readable line goes to **stderr**, which the parent inherits,
     /// so the daemon's log carries the child's own account of what it saw next
     /// to the parent's verdict. Same reasoning as the caps probe.
-    pub fn run(screencast: bool, stream: bool, input: bool, mutter: bool, window: bool) {
+    pub fn run(
+        screencast: bool,
+        stream: bool,
+        input: bool,
+        mutter: bool,
+        window: bool,
+        fps: Option<u32>,
+    ) {
         if stream {
-            run_stream(input, mutter, window);
+            let max_fps = fps.filter(|&v| v > 0).unwrap_or(DEFAULT_MAX_FPS);
+            run_stream(input, mutter, window, max_fps);
             return;
         }
         if screencast {
@@ -719,8 +727,8 @@ pub mod helper {
                 video_format: 8,
                 len: 4,
             };
-            let (tx, frames) = std::sync::mpsc::sync_channel(2);
-            tx.send((header(2), vec![2u8; 4])).unwrap();
+            let (tx, frames) = crate::capture::portal::wire::latest_frame_slot();
+            tx.push((header(2), vec![2u8; 4]));
             // The loop ends where the stream does: the sender goes away.
             drop(tx);
             let mut handle = StreamHandle {
@@ -807,7 +815,7 @@ pub mod helper {
     /// ⚠️ **stdout is binary after the handshake line.** Everything
     /// diagnostic goes to stderr, which the parent inherits: a stray
     /// `println!` here does not add a log line, it corrupts a frame.
-    fn run_stream(with_input: bool, use_mutter: bool, window: bool) {
+    fn run_stream(with_input: bool, use_mutter: bool, window: bool, max_fps: u32) {
         use super::screencast::{SessionKind, SourceKind};
         // FR-56 P4 — one application window instead of the whole screen.
         // ⚠️ The portal picks it, not us: `SelectSources(types=WINDOW)`
@@ -826,7 +834,7 @@ pub mod helper {
         // silent fallback from "asks" to "does not ask" is precisely the kind
         // of thing that must never happen by accident.
         if use_mutter {
-            run_stream_mutter(with_input);
+            run_stream_mutter(with_input, max_fps);
             return;
         }
         // The session shape is decided by what the portal OFFERS, not by
@@ -895,7 +903,7 @@ pub mod helper {
         let mut handle = match super::pipewire::stream(
             super::pipewire::PwSource::Fd(fd),
             node_id,
-            DEFAULT_MAX_FPS,
+            max_fps,
         ) {
             Ok(h) => h,
             Err(e) => fail_stream(e),
@@ -1024,7 +1032,7 @@ pub mod helper {
     /// variant. It exists for hosts where no portal backend can run at all —
     /// measured on WSL2, where `xdg-desktop-portal-gnome` exits immediately
     /// without a GNOME session while mutter itself works fine.
-    fn run_stream_mutter(with_input: bool) {
+    fn run_stream_mutter(with_input: bool, max_fps: u32) {
         eprintln!(
             "portal-helper: opening an org.gnome.Mutter.ScreenCast session (UNATTENDED){}",
             if with_input {
@@ -1072,7 +1080,7 @@ pub mod helper {
         let mut handle = match super::pipewire::stream(
             super::pipewire::PwSource::Session,
             session.report.node_id,
-            DEFAULT_MAX_FPS,
+            max_fps,
         ) {
             Ok(h) => h,
             Err(e) => fail_stream(e),
@@ -1172,23 +1180,28 @@ pub mod helper {
     /// Unlike [`spawn_in_session`], this does NOT wait: the child lives as
     /// long as the capture does.
     pub fn spawn_streaming(
-        _target_fps: u32,
+        target_fps: u32,
         with_input: bool,
         use_mutter: bool,
         window: bool,
     ) -> anyhow::Result<std::process::Child> {
-        let mut args: Vec<&str> = vec!["--stream"];
+        let mut owned_args: Vec<String> = vec!["--stream".into()];
+        if target_fps > 0 {
+            owned_args.push("--fps".into());
+            owned_args.push(target_fps.to_string());
+        }
         if use_mutter {
-            args.push("--mutter");
+            owned_args.push("--mutter".into());
         }
         // FR-93 P4 — `--input` with `--mutter` means mutter's RemoteDesktop,
         // which drives the screencast it records.
         if with_input {
-            args.push("--input");
+            owned_args.push("--input".into());
         }
         if window {
-            args.push("--window");
+            owned_args.push("--window".into());
         }
+        let args: Vec<&str> = owned_args.iter().map(String::as_str).collect();
         // stdin is the input wire, piped exactly when input is wanted — a
         // helper that will never read it should see EOF, not a pipe nothing
         // writes to.

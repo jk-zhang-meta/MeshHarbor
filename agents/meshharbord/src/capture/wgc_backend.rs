@@ -94,6 +94,9 @@ const NEXT_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
 /// dropped, matching scrap's DXGI behaviour.
 struct SharedSlot {
     latest: Mutex<Option<FramePayload>>,
+    /// Terminal worker/capture error surfaced after (or during) startup so
+    /// `next_frame` fails fast instead of returning silent `Ok(None)` forever.
+    fatal_error: Mutex<Option<String>>,
     output_cap: Mutex<Option<(u32, u32)>>,
     notify: Notify,
     /// Total `FrameArrived` events the handler processed. Includes
@@ -298,6 +301,7 @@ impl WgcCapture {
         let pointer_in_frame = bake_cursor(pointer, tunnel_core::env::flag("WGC_CURSOR", false));
         let shared = Arc::new(SharedSlot {
             latest: Mutex::new(None),
+            fatal_error: Mutex::new(None),
             output_cap: Mutex::new(None),
             notify: Notify::new(),
             arrived_total: std::sync::atomic::AtomicU64::new(0),
@@ -324,12 +328,14 @@ impl WgcCapture {
                 let hmon = HMONITOR(hmon_value as *mut _);
                 if let Err(e) = worker_main(
                     hmon,
-                    shared_for_worker,
+                    shared_for_worker.clone(),
                     shutdown_for_worker,
                     pointer_in_frame,
                     ready_tx.clone(),
                 ) {
-                    tracing::error!(%e, "wgc worker init failed");
+                    tracing::error!(%e, "wgc worker failed");
+                    *shared_for_worker.fatal_error.lock().unwrap() = Some(e.to_string());
+                    shared_for_worker.notify.notify_waiters();
                     let _ = ready_tx.send(Err(e));
                 }
             })
@@ -391,6 +397,9 @@ impl WgcCapture {
     /// the gate pace it (`capture::gate`). The legacy gate in `next_frame`
     /// sleeps first and looks second.
     async fn next_frame_slot_first(&mut self) -> Result<Option<Frame>> {
+        if let Some(err) = self.shared.fatal_error.lock().unwrap().as_ref() {
+            return Err(anyhow!("wgc capture failed: {err}"));
+        }
         let mut payload = self.shared.latest.lock().unwrap().take();
         if payload.is_none() {
             // Same wait as the legacy path: bail with None on timeout so the
@@ -401,7 +410,13 @@ impl WgcCapture {
                 .await
                 .is_err()
             {
+                if let Some(err) = self.shared.fatal_error.lock().unwrap().as_ref() {
+                    return Err(anyhow!("wgc capture failed: {err}"));
+                }
                 return Ok(None);
+            }
+            if let Some(err) = self.shared.fatal_error.lock().unwrap().as_ref() {
+                return Err(anyhow!("wgc capture failed: {err}"));
             }
             payload = self.shared.latest.lock().unwrap().take();
         }
@@ -473,6 +488,9 @@ impl ScreenCapture for WgcCapture {
         }
         self.last_frame_at = Some(Instant::now());
 
+        if let Some(err) = self.shared.fatal_error.lock().unwrap().as_ref() {
+            return Err(anyhow!("wgc capture failed: {err}"));
+        }
         // Fast path: a frame is already waiting in the slot.
         let payload = self.shared.latest.lock().unwrap().take();
         if let Some(payload) = payload {
@@ -762,28 +780,18 @@ fn worker_main(
     let _ = session.SetIsCursorCaptureEnabled(bake_cursor);
     tracing::debug!(
         elapsed_us = init_t0.elapsed().as_micros() as u64,
-        "wgc worker_main: step 5c session properties configured, sending ready_tx ack"
+        "wgc worker_main: step 5c session properties configured; registering handler and starting capture before ready_tx ack"
     );
 
-    // Size is known now — ack to the constructor so it can return. If the
-    // constructor already timed out (`shutdown` set or `ready_rx` dropped),
-    // close the pool/session and exit immediately so we never leak the
-    // worker thread or D3D11/WinRT objects.
-    if shutdown.load(std::sync::atomic::Ordering::Acquire) || ready_tx.send(Ok(size)).is_err() {
-        tracing::warn!(
-            elapsed_us = init_t0.elapsed().as_micros() as u64,
-            width = size.Width,
-            height = size.Height,
-            "wgc: caller timed out before init ack — closing session/pool and exiting worker without StartCapture"
-        );
+    if shutdown.load(std::sync::atomic::Ordering::Acquire) {
         session.Close().ok();
         pool.Close().ok();
         return Ok(());
     }
 
-    // 5. Register the FrameArrived handler. State captured into the
-    //    closure: the frame pool (for TryGetNextFrame), a reusable
-    //    readback/cache state, the d3d context (for CopyResource +
+    // 5. Register the FrameArrived handler BEFORE acknowledging readiness.
+    //    State captured into the closure: the frame pool (for TryGetNextFrame),
+    //    a reusable readback/cache state, the d3d context (for CopyResource +
     //    Map), and the shared slot + notify.
     let readback = Arc::new(Mutex::new(ReadbackState::default()));
     let handler_d3d_device = d3d_device.clone();
@@ -923,9 +931,34 @@ fn worker_main(
             handler_shared.notify.notify_waiters();
             Ok(())
         });
-    let _token = pool.FrameArrived(&handler)?;
+    let _token = match pool.FrameArrived(&handler) {
+        Ok(tok) => tok,
+        Err(e) => {
+            session.Close().ok();
+            pool.Close().ok();
+            return Err(e.into());
+        }
+    };
 
-    session.StartCapture()?;
+    if let Err(e) = session.StartCapture() {
+        session.Close().ok();
+        pool.Close().ok();
+        return Err(e.into());
+    }
+    // Only acknowledge readiness AFTER FrameArrived + StartCapture both
+    // succeeded so a failure falls back cleanly to DXGI/GDI instead of
+    // leaving a connected session on a dead WGC black screen.
+    if shutdown.load(std::sync::atomic::Ordering::Acquire) || ready_tx.send(Ok(size)).is_err() {
+        tracing::warn!(
+            elapsed_us = init_t0.elapsed().as_micros() as u64,
+            width = size.Width,
+            height = size.Height,
+            "wgc: caller timed out before StartCapture ack — closing session/pool and exiting worker"
+        );
+        session.Close().ok();
+        pool.Close().ok();
+        return Ok(());
+    }
     tracing::info!(
         width = size.Width,
         height = size.Height,

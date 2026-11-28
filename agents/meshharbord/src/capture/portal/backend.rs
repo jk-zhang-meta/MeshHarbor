@@ -28,9 +28,10 @@ use crate::capture::{Damage, Frame, PixelFormat, ScreenCapture};
 /// A portal capture session: a child in the user's session, and its frames.
 pub struct PortalCapture {
     child: std::process::Child,
-    /// Depth 1 and lossy: the pump wants the newest frame, and a queue of
-    /// stale ones is latency with extra steps.
-    rx: std::sync::mpsc::Receiver<Frame>,
+    /// Newest-wins single slot: the pump always receives the latest completed
+    /// frame (overwriting stale unread frames rather than dropping the newest
+    /// repaint right before a Wayland desktop goes idle).
+    rx: super::wire::LatestFrameRx<Frame>,
     width: u32,
     height: u32,
     /// P4 — the generation token of the input route this capture registered,
@@ -149,7 +150,7 @@ impl PortalCapture {
         //    otherwise park that worker forever. A bounded wait fails the
         //    open instead, and the capture cascade falls through with a reason.
         let (hs_tx, hs_rx) = std::sync::mpsc::channel::<Result<super::helper::StreamStarted>>();
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let (tx, rx) = super::wire::latest_frame_slot();
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(stdout);
             let handshake = super::helper::read_stream_handshake(&mut reader);
@@ -159,12 +160,13 @@ impl PortalCapture {
                 // handshake itself failed — nothing to stream either way.
                 return;
             }
-            // Frames. Bounded at 1: dropping a stale frame is the correct
-            // behaviour for a live capture.
+            // Frames. Newest-wins slot: if the pump is mid-encode, replace the
+            // stale unconsumed frame with the newer one so the final repaint
+            // before an idle desktop is never dropped.
             loop {
                 match read_frame(&mut reader) {
                     Ok(Some(f)) => {
-                        let _ = tx.try_send(f);
+                        let _ = tx.push(f);
                     }
                     Ok(None) => break, // clean EOF — the helper exited
                     Err(e) => {
@@ -177,7 +179,13 @@ impl PortalCapture {
 
         let started = match hs_rx.recv_timeout(HANDSHAKE_DEADLINE) {
             Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(e)) => {
+                // Reap the helper child on explicit handshake failure too so
+                // repeated refused opens never leak zombie processes.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();

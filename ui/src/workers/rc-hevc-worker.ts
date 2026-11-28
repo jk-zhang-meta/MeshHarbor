@@ -116,6 +116,8 @@ type InitCanvasMessage = {
   /** FR-131 P2 — this session's video channel is unordered (`videoDcOptions`),
    *  so a chunk gap is routine and keeps the deltas moving. Sticks the same way. */
   unorderedVideo?: boolean
+  /** Surface generation: 0 = synthetic 2x2 bootstrap canvas; >= 1 = visible canvas. */
+  surfaceGen?: number
 }
 type ChunkMessage = {
   type: 'chunk'
@@ -178,6 +180,9 @@ const paintGap = createPaintGapMark()
 
 let canvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
+let surfaceGen = 0
+let visibleFramesDecoded = 0
+let lastPostedVisibleGen = -1
 let decoder: VideoDecoder | null = null
 let configured = false
 let framesDecoded = 0
@@ -358,6 +363,9 @@ function maybeEmitStats(): void {
     width: statsLastWidth,
     height: statsLastHeight,
     framesDecodedTotal: framesDecoded,
+    visibleFramesDecoded,
+    surfaceGen,
+    surfaceVisible: surfaceGen > 0,
     bytesReceivedTotal: statsBytesTotal,
     decodeQueueSize: decoder?.decodeQueueSize ?? 0,
     framesDroppedBacklog,
@@ -427,6 +435,7 @@ workerScope.onmessage = (e) => {
   if (msg.type === 'init-canvas') {
     if (typeof msg.chunkFraming === 'boolean') chunkFraming = msg.chunkFraming
     canvas = msg.canvas
+    surfaceGen = typeof msg.surfaceGen === 'number' ? msg.surfaceGen : 1
     // P1 — ctx mode sticks across the idempotent visible-canvas re-init.
     if (msg.ctxMode !== undefined) ctxMode = normalizeCtxMode(msg.ctxMode)
     if (typeof msg.perFrameMsg === 'boolean') perFrameMsg = msg.perFrameMsg
@@ -479,18 +488,19 @@ workerScope.onmessage = (e) => {
       const { payload, gap } = stripChunkPrefix(framingState, u8)
       if (gap) {
         resetAssembler()
-        // FR-131 P2 (upstream FR-135 R1) — the deltas behind the gap reference
-        // the frame it lost, so they wait at the gate for the IDR asked for
-        // below. Decoded, they paint garbage until it lands, or fail the
-        // decoder. Not where a gap is routine, or with the switch off
-        // (`gapClosesGate`).
-        if (decodeRecovery.gapClosesGate()) sawKeyframe = false
+        const payloadIsKeyframe =
+          payload !== null
+          && payload.byteLength >= HEADER_BYTES
+          && (payload[4]! & FLAG_KEYFRAME) !== 0
+        if (!payloadIsKeyframe) {
+          if (decodeRecovery.gapClosesGate()) sawKeyframe = false
+          requestKeyframeResync()
+        }
         workerScope.postMessage({
           type: 'frame-rejected',
           reason: 'chunk-gap',
           gaps: framingState.gaps,
         })
-        requestKeyframeResync()
       }
       if (payload) consumeBytes(payload)
     } else {
@@ -631,8 +641,10 @@ function initDecoder() {
       const drew = paintFrame(render, renderW, renderH)
       const paintDone = performance.now()
       paintStats.add(paintDone - paintT0)
+      const isVisibleSurface = drew && surfaceGen > 0
+      if (isVisibleSurface) visibleFramesDecoded++
       // FR-130 — the first frame painted after a held session's cut.
-      const gapClosed = drew ? paintGap.painted(paintDone) : null
+      const gapClosed = isVisibleSurface ? paintGap.painted(paintDone) : null
       if (gapClosed) workerScope.postMessage({ type: PAINT_GAP_CLOSED, gapMs: gapClosed.gapMs })
       if (benchClone) bench.settle(benchClone, epochNowMs())
       // FR-131 P2 — this paint ends an outage, if one is open.
@@ -656,15 +668,32 @@ function initDecoder() {
         }
         viewerStats.add((arrivalUs - arrivedUs) / 1000)
       }
-      // FR-59 P3 — unconditional: the drift needs no probe lock.
-      queueDrift.add(wireTsUs, arrivalUs)
+      // FR-59 P3 — compute transit drift from complete-frame INGRESS (`arrivedUs`),
+      // not post-paint `arrivalUs`, so local decoder/GPU delay is never
+      // misreported to the host congestion controller as network queuing.
+      queueDrift.add(wireTsUs, arrivedUs ?? arrivalUs)
       if (rewrapped) frame.close() // paintFrame closed `render`; close the original too
       if (firstFrameMsg) {
-        workerScope.postMessage(firstFrameMsg)
+        if (isVisibleSurface) lastPostedVisibleGen = surfaceGen
+        workerScope.postMessage({ ...firstFrameMsg, surfaceGen, surfaceVisible: isVisibleSurface })
+      } else if (isVisibleSurface && surfaceGen !== lastPostedVisibleGen) {
+        lastPostedVisibleGen = surfaceGen
+        workerScope.postMessage({
+          type: 'first-frame',
+          width: renderW,
+          height: renderH,
+          surfaceGen,
+          surfaceVisible: true,
+        })
       } else if (perFrameMsg) {
         // P1 — legacy per-frame counter message, OFF by default (see the
         // vp9-444 worker); the 1 s stats message carries framesDecodedTotal.
-        workerScope.postMessage({ type: 'frame-decoded', count: framesDecoded })
+        workerScope.postMessage({
+          type: 'frame-decoded',
+          count: framesDecoded,
+          surfaceGen,
+          surfaceVisible: isVisibleSurface,
+        })
       }
       maybeEmitStats()
     },
@@ -919,6 +948,9 @@ function teardown(): void {
   ctx = null
   framesDecoded = 0
   framesReceived = 0
+  surfaceGen = 0
+  visibleFramesDecoded = 0
+  lastPostedVisibleGen = -1
   lastPostedW = 0
   lastPostedH = 0
   // rc.103 — re-arm the leading-delta gate so a fresh decoder (re-connect

@@ -1458,15 +1458,18 @@ impl AgentPeer {
                     // was decorative). The server's single-INPUT-holder rule
                     // strips INPUT from a 2nd concurrent session; without this
                     // gate that stripping would be advisory.
-                    "input" if !permissions.contains(Permissions::INPUT) => {
+                    "input" | "input-reliable" if !permissions.contains(Permissions::INPUT) => {
                         info!(
                             session = %session_id,
+                            label = %label,
                             "input DC attached in DROP-ONLY mode — session lacks INPUT \
                              permission (view-effective)"
                         );
                         attach_log_only(dc, session_id);
                     }
-                    "input" => attach_input_handler(dc, lock_state_rx_for_input, session_id),
+                    "input" | "input-reliable" => {
+                        attach_input_handler(dc, lock_state_rx_for_input, session_id)
+                    }
                     "control" => {
                         // Stash a clone for the lock-state emitter
                         // BEFORE handing the DC to the inbound handler.
@@ -3423,9 +3426,9 @@ async fn media_pump(
                         crate::encode::cells::names_444(
                             meshharbor_remote_control::models::VideoCodec::Vp9,
                         )
-                        .first()
+                        .iter()
                         .copied()
-                        .and_then(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
+                        .find_map(|name| FfmpegEncoder::new_named_probe(name, 480, 270, true).ok())
                     } else {
                         FfmpegEncoder::new_vp9(480, 270).ok()
                     }
@@ -3639,6 +3642,7 @@ async fn media_pump(
     let mut frames_keepalive: u64 = 0;
     let mut bytes_written: u64 = 0;
     let mut write_errors: u64 = 0;
+    let mut consecutive_encode_errors: u32 = 0;
     // Per-stage wall-time accumulators (microseconds) so the heartbeat
     // can attribute the per-frame budget. When users report "only 7 fps"
     // the breakdown makes it obvious whether capture is blocking
@@ -4424,9 +4428,38 @@ async fn media_pump(
             };
         let encode_started = std::time::Instant::now();
         let packets = match enc.encode(frame).await {
-            Ok(p) => p,
+            Ok(p) => {
+                consecutive_encode_errors = 0;
+                p
+            }
             Err(e) => {
-                warn!(%session_id, %e, "encode error — stopping media pump");
+                consecutive_encode_errors += 1;
+                if consecutive_encode_errors < 5 {
+                    warn!(
+                        %session_id,
+                        %e,
+                        consecutive_encode_errors,
+                        "RTP encode error — requesting keyframe and retrying"
+                    );
+                    enc.request_keyframe();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+                warn!(
+                    %session_id,
+                    %e,
+                    consecutive_encode_errors,
+                    "persistent RTP encode error — notifying viewer and stopping media pump"
+                );
+                if let Some(dc) = control_dc.lock().await.clone() {
+                    let payload = serde_json::json!({
+                        "t": "rc:media.error",
+                        "reason": "encode_failed",
+                        "detail": e.to_string(),
+                    })
+                    .to_string();
+                    let _ = dc.send_text(payload).await;
+                }
                 return;
             }
         };

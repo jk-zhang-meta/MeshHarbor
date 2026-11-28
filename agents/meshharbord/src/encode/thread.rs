@@ -125,6 +125,7 @@ const CMD_DEPTH: usize = 8;
 pub struct EncoderThread<E: EncoderOps> {
     tx: Option<SyncSender<Cmd<E>>>,
     join: Option<std::thread::JoinHandle<()>>,
+    exited: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     caps: EncoderCaps,
     maxrate_bps: u32,
     name: String,
@@ -142,6 +143,8 @@ impl<E: EncoderOps> EncoderThread<E> {
         let maxrate_bps = enc.current_maxrate_bps();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Cmd<E>>(CMD_DEPTH);
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<E>(1);
+        let exited = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let exited_thread = Arc::clone(&exited);
         let name = format!("rc-enc-{label}");
         let join = match std::thread::Builder::new()
             .name(name.clone())
@@ -156,6 +159,9 @@ impl<E: EncoderOps> EncoderThread<E> {
                 if let Ok(enc) = init_rx.recv() {
                     serve(enc, rx);
                 }
+                let (lock, cv) = &*exited_thread;
+                *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                cv.notify_all();
             }) {
             Ok(join) => join,
             Err(e) => return Err((enc, e)),
@@ -166,6 +172,7 @@ impl<E: EncoderOps> EncoderThread<E> {
         Ok(Self {
             tx: Some(tx),
             join: Some(join),
+            exited,
             caps,
             maxrate_bps,
             name,
@@ -266,15 +273,71 @@ impl<E: EncoderOps> EncoderThread<E> {
     }
 }
 
+static STUCK_ENCODER_REAPERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of dropped encoder threads currently still finishing native
+/// `encode_sync` / teardown on background reaper threads (diagnostic).
+pub fn active_encoder_reapers() -> usize {
+    STUCK_ENCODER_REAPERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl<E: EncoderOps> Drop for EncoderThread<E> {
     fn drop(&mut self) {
-        // Close the channel first so the thread's `recv` returns, then join:
-        // the encoder is destroyed on the thread that owned it. A join on a
-        // thread that panicked yields `Err`, which there is nothing to do
-        // about here — the panic was already reported when it happened.
+        // Close the channel first so the thread's `recv` returns.
         self.tx.take();
-        if let Some(join) = self.join.take() {
+        let Some(join) = self.join.take() else {
+            return;
+        };
+        // Fast path: wait up to a tiny grace window (15 ms) for a healthy
+        // idle encoder thread to drop its encoder and exit synchronously with
+        // zero extra OS thread spawned. If a native driver call inside
+        // `encode_sync` is wedged, immediately hand the join off to a reaper
+        // thread so Tokio runtime workers and the watchdog are never blocked.
+        let (lock, cv) = &*self.exited;
+        let done = {
+            let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if *guard {
+                true
+            } else {
+                let (guard, _) = cv
+                    .wait_timeout_while(guard, std::time::Duration::from_millis(15), |exited| {
+                        !*exited
+                    })
+                    .unwrap_or_else(|e| e.into_inner());
+                *guard
+            }
+        };
+        if done || join.is_finished() {
             let _ = join.join();
+            return;
+        }
+        // Offload the potentially blocking `join()` off Tokio runtime workers:
+        // a stalled native driver call inside `encode_sync` survives task
+        // cancellation and would otherwise starve runtime heartbeats/watchdog.
+        let active = STUCK_ENCODER_REAPERS.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+        if active > 4 {
+            tracing::warn!(
+                active_reapers = active,
+                "encoder thread teardown backlog elevated (stalled native encode calls?)"
+            );
+        }
+        let spawned = std::thread::Builder::new()
+            .name("rc-enc-reaper".into())
+            .spawn(move || {
+                let t0 = std::time::Instant::now();
+                let _ = join.join();
+                let elapsed = t0.elapsed();
+                if elapsed >= std::time::Duration::from_secs(2) {
+                    tracing::warn!(
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "encoder thread took long to exit after session teardown"
+                    );
+                }
+                STUCK_ENCODER_REAPERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            });
+        if spawned.is_err() {
+            STUCK_ENCODER_REAPERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         }
     }
 }
@@ -735,5 +798,94 @@ mod tests {
             .await;
         assert_eq!(log.lock().unwrap().clone(), vec!["inline-speed"]);
         assert_eq!(h.name(), "fake");
+    }
+
+    #[tokio::test]
+    async fn drop_of_wedged_encoder_does_not_block_caller_beyond_grace() {
+        struct Wedged {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        }
+        impl EncoderOps for Wedged {
+            type Rebuilt = ();
+            type RebuildSpec = ();
+            type Stats = ();
+            fn encode_sync(
+                &mut self,
+                _frame: &Frame,
+            ) -> Result<Vec<crate::encode::EncodedPacket>> {
+                self.entered.notify_one();
+                let (lock, cv) = &*self.release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = cv.wait(released).unwrap();
+                }
+                Ok(Vec::new())
+            }
+            fn set_bitrate(&mut self, _bps: u32) {}
+            fn request_keyframe(&mut self) {}
+            fn adopt_rebuilt(&mut self, _: ()) -> bool {
+                false
+            }
+            fn rebuild_spec(&self, _bps: u32) -> Option<()> {
+                None
+            }
+            fn caps(&self) -> EncoderCaps {
+                EncoderCaps {
+                    name: "wedged",
+                    supports_dynamic_bitrate: false,
+                    reconfig_forces_idr: false,
+                    chroma444: false,
+                }
+            }
+            fn current_maxrate_bps(&self) -> u32 {
+                1_000_000
+            }
+            fn rate_stats(&self) {}
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let t = EncoderThread::spawn(
+            Wedged {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+            "wedged",
+        )
+        .ok()
+        .expect("spawn");
+
+        // Trigger a blocking `encode_sync` on the encoder thread, then abort
+        // the caller future (simulating session teardown during a GPU hang).
+        let enc_task = tokio::spawn(async move {
+            let _ = t.encode(frame(1)).await;
+        });
+        entered.notified().await;
+        let t0 = std::time::Instant::now();
+        enc_task.abort();
+        let _ = enc_task.await;
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(250),
+            "dropping wedged EncoderThread must offload join instead of stalling caller"
+        );
+        assert!(
+            active_encoder_reapers() >= 1,
+            "reaper thread should be tracking the wedged encoder"
+        );
+
+        // Unblock the simulated driver call so the reaper exits cleanly.
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        for _ in 0..100 {
+            if active_encoder_reapers() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(active_encoder_reapers(), 0);
     }
 }

@@ -67,6 +67,9 @@ import {
 type InitCanvasMessage = {
   type: 'init-canvas'
   canvas: OffscreenCanvas
+  /** Surface generation: 0 = synthetic 2x2 bootstrap canvas (not visible);
+   *  >= 1 = transferred visible `<canvas>` element. */
+  surfaceGen?: number
   /** FR-16 L4 — bench mode: sample the probe marker while a probe is armed.
    *  Set only when the knob is on AND the agent advertised `bench`; sticks
    *  across the idempotent visible-canvas re-init, like `ctxMode`. */
@@ -168,6 +171,9 @@ const paintGap = createPaintGapMark()
 
 let canvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
+let surfaceGen = 0
+let visibleFramesDecoded = 0
+let lastPostedVisibleGen = -1
 let decoder: VideoDecoder | null = null
 let configured = false
 let framesDecoded = 0
@@ -336,6 +342,9 @@ function maybeEmitStats(): void {
     width: statsLastWidth,
     height: statsLastHeight,
     framesDecodedTotal: framesDecoded,
+    visibleFramesDecoded,
+    surfaceGen,
+    surfaceVisible: surfaceGen > 0,
     bytesReceivedTotal: statsBytesTotal,
     decodeQueueSize: decoder?.decodeQueueSize ?? 0,
     framesDroppedBacklog,
@@ -410,6 +419,7 @@ workerScope.onmessage = (e) => {
   if (msg.type === 'init-canvas') {
     if (typeof msg.chunkFraming === 'boolean') chunkFraming = msg.chunkFraming
     canvas = msg.canvas
+    surfaceGen = typeof msg.surfaceGen === 'number' ? msg.surfaceGen : 1
     // P1 — ctx mode sticks across the idempotent visible-canvas re-init
     // (the watcher's second init-canvas omits it).
     if (msg.ctxMode !== undefined) ctxMode = normalizeCtxMode(msg.ctxMode)
@@ -463,18 +473,22 @@ workerScope.onmessage = (e) => {
       const { payload, gap } = stripChunkPrefix(framingState, u8)
       if (gap) {
         resetAssembler()
-        // FR-131 P2 (upstream FR-135 R1) — the deltas behind the gap reference
-        // the frame it lost, so they wait at the gate for the IDR asked for
-        // below. Decoded, they paint garbage until it lands, or fail the
-        // decoder. Not where a gap is routine, or with the switch off
-        // (`gapClosesGate`).
-        if (decodeRecovery.gapClosesGate()) sawKeyframe = false
+        const payloadIsKeyframe =
+          payload !== null
+          && payload.byteLength >= HEADER_BYTES
+          && (payload[4]! & FLAG_KEYFRAME) !== 0
+        // FR-131 P2 — deltas behind the gap reference the lost frame, so gate
+        // until an IDR arrives; skip redundant IDR request when this assembled
+        // frame is itself a keyframe that restores the reference chain.
+        if (!payloadIsKeyframe) {
+          if (decodeRecovery.gapClosesGate()) sawKeyframe = false
+          requestKeyframeResync()
+        }
         workerScope.postMessage({
           type: 'frame-rejected',
           reason: 'chunk-gap',
           gaps: framingState.gaps,
         })
-        requestKeyframeResync()
       }
       if (payload) consumeBytes(payload)
     } else {
@@ -555,8 +569,10 @@ function initDecoder() {
       const drew = paintFrame(frame, w, h)
       const paintDone = performance.now()
       paintStats.add(paintDone - paintT0)
+      const isVisibleSurface = drew && surfaceGen > 0
+      if (isVisibleSurface) visibleFramesDecoded++
       // FR-130 — the first frame painted after a held session's cut.
-      const gapClosed = drew ? paintGap.painted(paintDone) : null
+      const gapClosed = isVisibleSurface ? paintGap.painted(paintDone) : null
       if (gapClosed) workerScope.postMessage({ type: PAINT_GAP_CLOSED, gapMs: gapClosed.gapMs })
       if (benchClone) bench.settle(benchClone, epochNowMs())
       // FR-131 P2 — this paint ends an outage, if one is open.
@@ -578,21 +594,35 @@ function initDecoder() {
         }
         viewerStats.add((arrivalUs - arrivedUs) / 1000)
       }
-      // FR-59 P3 — unconditional: the drift needs no probe lock.
-      queueDrift.add(wireTsUs, arrivalUs)
-      // rc.187 — report dims on frame 1 AND on every size change (live
-      // downscale), so the composable updates the cursor-mapping intrinsic.
-      if (w !== lastPostedW || h !== lastPostedH) {
+      // FR-59 P3 — compute transit drift from complete-frame INGRESS (`arrivedUs`),
+      // not post-paint `arrivalUs`, so local decoder/GPU delay is never
+      // misreported to the host congestion controller as network queuing.
+      queueDrift.add(wireTsUs, arrivedUs ?? arrivalUs)
+      // rc.187 — report dims on frame 1, on every size change, AND on the first
+      // paint to a newly attached visible surface generation.
+      if (
+        w !== lastPostedW
+        || h !== lastPostedH
+        || (isVisibleSurface && surfaceGen !== lastPostedVisibleGen)
+      ) {
         lastPostedW = w
         lastPostedH = h
-        workerScope.postMessage({ type: 'first-frame', width: w, height: h })
+        if (isVisibleSurface) lastPostedVisibleGen = surfaceGen
+        workerScope.postMessage({
+          type: 'first-frame',
+          width: w,
+          height: h,
+          surfaceGen,
+          surfaceVisible: isVisibleSurface,
+        })
       }
       if (perFrameMsg && framesDecoded > 1) {
-        // P1 — legacy per-frame counter message, OFF by default (a pure
-        // main-thread tax at 60 fps); the 1 s stats message carries
-        // framesDecodedTotal. localStorage meshharbor-rc-per-frame-msg
-        // restores it for A/B.
-        workerScope.postMessage({ type: 'frame-decoded', count: framesDecoded })
+        workerScope.postMessage({
+          type: 'frame-decoded',
+          count: framesDecoded,
+          surfaceGen,
+          surfaceVisible: isVisibleSurface,
+        })
       }
       // Emit on every output too so dims update promptly during
       // resolution changes (rc:resolution / DPI flip / monitor swap).
@@ -840,6 +870,9 @@ function teardown(): void {
   ctx = null
   framesDecoded = 0
   framesReceived = 0
+  surfaceGen = 0
+  visibleFramesDecoded = 0
+  lastPostedVisibleGen = -1
   lastPostedW = 0
   lastPostedH = 0
   // rc.103 — re-arm the leading-delta gate for the next decoder.

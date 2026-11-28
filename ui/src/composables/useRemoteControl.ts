@@ -4488,6 +4488,10 @@ export interface HeldInputTracker {
   size(): number
   /** Whether the host was sent this key's press and not yet its release. */
   hasKey(code: number): boolean
+  /** Whether the host was sent this mouse button's press and not yet its release. */
+  hasButton(btn: string): boolean
+  /** Whether any mouse button is currently tracked as held down. */
+  hasAnyButton(): boolean
 }
 
 export interface LocalIceOutbox {
@@ -4580,6 +4584,12 @@ export function createHeldInputTracker(): HeldInputTracker {
     },
     hasKey(code: number) {
       return keys.has(code)
+    },
+    hasButton(btn: string) {
+      return buttons.has(btn)
+    },
+    hasAnyButton() {
+      return buttons.size > 0
     },
   }
 }
@@ -6346,6 +6356,7 @@ export function useRemoteControl(
   // RTCRtpScriptTransform path above — uses its OWN worker
   // (rc-vp9-444-worker.ts) fed off `video-bytes` DC binary messages.
   let vp9_444Worker: Worker | null = null
+  let vp9SurfaceGen = 0
   /** `true` once the worker has been spun up and the DC opened. The
    *  view (Y.4) reads this to swap a `<canvas>` in for the `<video>`
    *  element, mirroring how `webcodecsActive` drives the WebCodecs
@@ -6385,6 +6396,7 @@ export function useRemoteControl(
   // decoder configure differ, and we want a clean failure isolation
   // boundary if one path regresses.
   let hevcWorker: Worker | null = null
+  let hevcSurfaceGen = 0
   /** Whether HEVC decode is supported on this browser. Probe runs
    *  once on composable construction (and re-checks in connect()).
    *  HEVC has NO software fallback in WebCodecs — Linux Chromium
@@ -6509,28 +6521,32 @@ export function useRemoteControl(
   const clipboardSyncBlocked = ref(false)
   const clipboardEchoGate = createClipboardEchoGate()
 
-  /** Write-acks: id → settle. Resolved by clipboard:write-ack,
-   *  clipboard:error{id}, or the timeout — always resolves (void), the
-   *  waiter just proceeds. */
+  /** Write-acks: id → shared promise + settle. Multiple hash aliases (e.g.
+   *  rich HTML + plain text for the same clipboard transfer id) share ONE
+   *  entry so one immediate ACK settles every alias in 0 ms instead of
+   *  overwriting an earlier waiter and stalling it until timeout. */
   const pendingClipboardAcks = new Map<
     string,
-    { onSettle: () => void; timer: ReturnType<typeof setTimeout> }
+    { promise: Promise<void>; onSettle: () => void; timer: ReturnType<typeof setTimeout> }
   >()
   function awaitClipboardAck(id: string, timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+    const existing = pendingClipboardAcks.get(id)
+    if (existing) return existing.promise
+    let onSettle!: () => void
+    let timer!: ReturnType<typeof setTimeout>
+    const promise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
         pendingClipboardAcks.delete(id)
         resolve()
       }, timeoutMs)
-      pendingClipboardAcks.set(id, {
-        onSettle: () => {
-          clearTimeout(timer)
-          pendingClipboardAcks.delete(id)
-          resolve()
-        },
-        timer,
-      })
+      onSettle = () => {
+        clearTimeout(timer)
+        pendingClipboardAcks.delete(id)
+        resolve()
+      }
     })
+    pendingClipboardAcks.set(id, { promise, onSettle, timer })
+    return promise
   }
   function settleClipboardAck(id: unknown) {
     if (typeof id !== 'string') return
@@ -7506,7 +7522,14 @@ export function useRemoteControl(
     // input DC is in drop-only mode anyway; suppressing here saves the
     // wire and makes the state observable (`inputGranted` export).
     if (!inputGranted.value) return
-    const ch = channels.input
+    // Route stateful transitions (key edges, text, mouse button edges) over
+    // the reliable ordered `input-reliable` DC when open so packet loss or
+    // reordering cannot leave a key or mouse button stuck down; keep coalesced
+    // motion/wheel on the unreliable unordered `input` lane for lowest jitter.
+    const t = msg.t
+    const stateful = t === 'key' || t === 'key_text' || t === 'mouse_button'
+    const reliable = stateful ? channels.inputReliable : undefined
+    const ch = reliable && reliable.readyState === 'open' ? reliable : channels.input
     if (!ch || ch.readyState !== 'open') return
     // FR-101 P4b-2b — this input is activity: the device withdraws its idle
     // warning on its next look, and the countdown goes now, not seconds later.
@@ -8600,10 +8623,16 @@ export function useRemoteControl(
         && typeof msg.height === 'number') {
         mediaIntrinsicW.value = msg.width
         mediaIntrinsicH.value = msg.height
-        vp9_444FramesDecoded.value = Math.max(vp9_444FramesDecoded.value, 1)
-        markConnect('first_frame')
-        logConnectTiming('first-frame')
-        console.info('[rc] vp9-444 first frame', msg.width, 'x', msg.height)
+        // Only treat paint to the mounted visible canvas (or legacy messages
+        // that omit `surfaceVisible`) as viewer readiness — never the 2x2 synthetic
+        // OffscreenCanvas used to bootstrap the worker before mount.
+        if (msg.surfaceVisible !== false) {
+          vp9_444FramesDecoded.value = Math.max(vp9_444FramesDecoded.value, 1)
+          hasMedia.value = true
+          markConnect('first_frame')
+          logConnectTiming('first-frame')
+        }
+        console.info('[rc] vp9-444 first frame', msg.width, 'x', msg.height, 'visible:', msg.surfaceVisible !== false)
       } else if (msg.type === 'decoder-configured') {
         // `pref` (round 3) = the hardwareAcceleration ACTUALLY passed to
         // configure() — proves whether the meshharbor-rc-decode-pref A/B took.
@@ -8615,21 +8644,7 @@ export function useRemoteControl(
       } else if (msg.type === 'decoder-error'
         || msg.type === 'decoder-configure-error'
         || msg.type === 'decode-error') {
-        // rc.43 — Chrome 148 field repro: VideoDecoder.configure() with
-        // vp09.01.10.08 (profile 1, 4:4:4 8-bit) reports success but the
-        // first real frame errors out with "Unsupported configuration"
-        // and the decoder closes; every subsequent frame logs
-        // "Cannot call 'decode' on a closed codec" indefinitely. Pre-
-        // rc.43 just logged the warn — the canvas stayed blank until the
-        // user disconnected. Tear down so the view re-mounts <video> and
-        // the standard RTP H.264 track (which the agent sends in parallel
-        // to the DC path) renders normally.
-        console.warn('[rc] vp9-444 worker', msg.type, msg.error, '— auto-fallback to <video>')
-        // Same ban-and-renegotiate as the HEVC handler: a pre-first-frame
-        // failure means the probe lied (this worker serves the vp9-444,
-        // av1 AND h264 DC transports - ban whichever THIS session
-        // negotiated, `sessionDcTransport`). Post-first-frame errors stay
-        // transient and keep today's behaviour.
+        console.warn('[rc] vp9-444 worker', msg.type, msg.error, '— renegotiating transport')
         const vp9NeverDecoded = vp9_444FramesDecoded.value === 0
         const failedTransport = sessionDcTransport
         stopVp9_444Path()
@@ -8642,6 +8657,12 @@ export function useRemoteControl(
           }
           console.warn(`[rc] ${failedTransport} banned for this page (decoder failed before first frame) - reconnecting on the next-best transport`)
           if (lastConnectArgs) scheduleReconnect()
+        } else if (lastConnectArgs) {
+          // Terminal post-first-frame decoder failure after in-place retries:
+          // a DC session's RTP track is a silent placeholder, so reconnect now
+          // instead of sitting black until the 45-tick media watchdog.
+          console.warn('[rc] vp9-444 terminal decoder failure after first frame — scheduling reconnect')
+          scheduleReconnect()
         }
       } else if (msg.type === 'decode-recovering') {
         // FR-131 P2 (upstream FR-135 R1) — the worker replaced the decoder
@@ -8672,10 +8693,9 @@ export function useRemoteControl(
         // reverted to the byte-identical 2D paint path.
         console.warn('[rc] vp9-444 FSR unavailable — 2D paint path:', msg.reason)
       } else if (msg.type === 'frame-decoded') {
-        // Worker emits this for every decoded frame after the first.
-        // Driven by the worker's `output` callback, used by tests +
-        // view-side diagnostics.
-        vp9_444FramesDecoded.value++
+        if (msg.surfaceVisible !== false) {
+          vp9_444FramesDecoded.value++
+        }
       } else if (msg.type === 'stats') {
         // rc.35 — rolling-window bitrate / fps / resolution from the
         // worker. Surfaces the actual DC-receive throughput so the
@@ -8690,6 +8710,8 @@ export function useRemoteControl(
           framesDroppedBacklog?: number
           decodeQueueSize?: number
           framesDecodedTotal?: number
+          visibleFramesDecoded?: number
+          surfaceVisible?: boolean
           paint?: HopWindow
           fwd?: HopWindow
           decode?: HopWindow
@@ -8710,10 +8732,19 @@ export function useRemoteControl(
           height: typeof m.height === 'number' ? m.height : 0,
           bytesReceivedTotal: typeof m.bytesReceivedTotal === 'number' ? m.bytesReceivedTotal : 0,
         }
-        // P1 — the per-frame `frame-decoded` message is off by default; keep
-        // the diagnostics counter monotonic from the 1 s window total.
-        if (typeof m.framesDecodedTotal === 'number') {
-          vp9_444FramesDecoded.value = Math.max(vp9_444FramesDecoded.value, m.framesDecodedTotal)
+        // Only count frames actually painted onto the mounted visible canvas
+        // (when worker reports `visibleFramesDecoded`) so synthetic 2x2 paints
+        // cannot satisfy `mediaAdvanced` while the stage is blank.
+        const visibleCount =
+          typeof m.visibleFramesDecoded === 'number'
+            ? m.visibleFramesDecoded
+            : m.surfaceVisible === false
+              ? 0
+              : typeof m.framesDecodedTotal === 'number'
+                ? m.framesDecodedTotal
+                : 0
+        if (visibleCount > 0) {
+          vp9_444FramesDecoded.value = Math.max(vp9_444FramesDecoded.value, visibleCount)
         }
         updateDecodeDiag(m)
         // rc.188 — feed the agent this viewer's real decode rate so it caps fps.
@@ -8750,6 +8781,7 @@ export function useRemoteControl(
         {
           type: 'init-canvas',
           canvas: synthetic,
+          surfaceGen: 0,
           codec: workerCodec,
           decodePref: storedDecodePref(),
           ctxMode: storedCtxMode(),
@@ -8843,11 +8875,18 @@ export function useRemoteControl(
     if (!el || !vp9_444Worker) return
     try {
       const off = el.transferControlToOffscreen()
-      vp9_444Worker.postMessage({ type: 'init-canvas', canvas: off }, [off])
+      const nextGen = ++vp9SurfaceGen
+      vp9_444Worker.postMessage({ type: 'init-canvas', canvas: off, surfaceGen: nextGen }, [off])
       // P7 — start reporting the element box for the FSR sizing policy.
       vp9ViewportCleanup = startViewportReporter(el, vp9_444Worker)
     } catch (err) {
-      console.warn('[rc] vp9-444: transferControlToOffscreen failed', err)
+      console.warn('[rc] vp9-444: transferControlToOffscreen failed — falling back off canvas path', err)
+      const failedTransport = sessionDcTransport
+      stopVp9_444Path()
+      if (failedTransport && failedTransport !== 'auto' && failedTransport !== 'webrtc') {
+        failedDcTransports.add(failedTransport)
+      }
+      if (lastConnectArgs) scheduleReconnect()
     }
   })
 
@@ -8896,16 +8935,16 @@ export function useRemoteControl(
         && typeof msg.height === 'number') {
         mediaIntrinsicW.value = msg.width
         mediaIntrinsicH.value = msg.height
-        hevcFramesDecoded.value = Math.max(hevcFramesDecoded.value, 1)
-        markConnect('first_frame')
-        logConnectTiming('first-frame')
-        // rc.100 — the worker now reports the CODED size as width/height and
-        // forwards coded/display/visibleRect for field diagnosis. Logging the
-        // gap localises the NVDEC HEVC dim mismatch (DEVBOX: agent
-        // encodes 2560×1600 but display came out 1280×720).
+        if (msg.surfaceVisible !== false) {
+          hevcFramesDecoded.value = Math.max(hevcFramesDecoded.value, 1)
+          hasMedia.value = true
+          markConnect('first_frame')
+          logConnectTiming('first-frame')
+        }
         console.info(
           '[rc] hevc first frame', msg.width, 'x', msg.height,
-          '| coded', msg.coded, 'display', msg.display, 'visible', msg.visible,
+          '| surfaceVisible', msg.surfaceVisible !== false,
+          '| coded', msg.coded, 'display', msg.display, 'visibleRect', msg.visible,
           '| crop', msg.crop, 'rewrapped', msg.rewrapped,
         )
       } else if (msg.type === 'decoder-configured') {
@@ -8915,20 +8954,7 @@ export function useRemoteControl(
       } else if (msg.type === 'decoder-error'
         || msg.type === 'decoder-configure-error'
         || msg.type === 'decode-error') {
-        // Mid-session HEVC HW driver hiccup OR the decoder
-        // claimed support then rejected real bytes. Tear down so
-        // the view re-mounts <video> and the standard RTP path
-        // (which the agent sends in parallel) renders normally.
-        console.warn('[rc] hevc worker', msg.type, msg.error, '— auto-fallback to <video>')
-        // A failure BEFORE the first decoded frame means the pre-connect
-        // probe was wrong for this browser, and it will be wrong again on
-        // the next rank (field: Edge, where MediaCapabilities says HEVC is
-        // hardware-smooth while WebCodecs refuses hev1) - ban the transport
-        // for this page and re-negotiate NOW instead of leaving a black
-        // canvas for the watchdog to find ~10 s later (a DC session's
-        // <video> has no parallel RTP samples, so this fallback renders
-        // nothing). A post-first-frame error is a transient (driver
-        // hiccup) - the same codec may work again on reconnect.
+        console.warn('[rc] hevc worker', msg.type, msg.error, '— renegotiating transport')
         const hevcNeverDecoded = hevcFramesDecoded.value === 0
         stopHevcPath()
         if (hevcNeverDecoded) {
@@ -8940,6 +8966,9 @@ export function useRemoteControl(
           }
           console.warn('[rc] data-channel-hevc banned for this page (decoder failed before first frame) - reconnecting on the next-best transport')
           if (lastConnectArgs) scheduleReconnect()
+        } else if (lastConnectArgs) {
+          console.warn('[rc] hevc terminal decoder failure after first frame — scheduling reconnect')
+          scheduleReconnect()
         }
       } else if (msg.type === 'decode-recovering') {
         // FR-131 P2 — see the vp9-444 handler.
@@ -8970,7 +8999,9 @@ export function useRemoteControl(
         // reverted to the byte-identical 2D paint path.
         console.warn('[rc] hevc FSR unavailable — 2D paint path:', msg.reason)
       } else if (msg.type === 'frame-decoded') {
-        hevcFramesDecoded.value++
+        if (msg.surfaceVisible !== false) {
+          hevcFramesDecoded.value++
+        }
       } else if (msg.type === 'stats') {
         const m = msg as {
           bitrateBps?: number
@@ -8981,6 +9012,8 @@ export function useRemoteControl(
           framesDroppedBacklog?: number
           decodeQueueSize?: number
           framesDecodedTotal?: number
+          visibleFramesDecoded?: number
+          surfaceVisible?: boolean
           paint?: HopWindow
           fwd?: HopWindow
           decode?: HopWindow
@@ -9001,9 +9034,16 @@ export function useRemoteControl(
           height: typeof m.height === 'number' ? m.height : 0,
           bytesReceivedTotal: typeof m.bytesReceivedTotal === 'number' ? m.bytesReceivedTotal : 0,
         }
-        // P1 — see the vp9-444 handler.
-        if (typeof m.framesDecodedTotal === 'number') {
-          hevcFramesDecoded.value = Math.max(hevcFramesDecoded.value, m.framesDecodedTotal)
+        const visibleCount =
+          typeof m.visibleFramesDecoded === 'number'
+            ? m.visibleFramesDecoded
+            : m.surfaceVisible === false
+              ? 0
+              : typeof m.framesDecodedTotal === 'number'
+                ? m.framesDecodedTotal
+                : 0
+        if (visibleCount > 0) {
+          hevcFramesDecoded.value = Math.max(hevcFramesDecoded.value, visibleCount)
         }
         updateDecodeDiag(m)
         // rc.188 — feed the agent this viewer's real decode rate so it caps fps.
@@ -9019,6 +9059,7 @@ export function useRemoteControl(
         {
           type: 'init-canvas',
           canvas: synthetic,
+          surfaceGen: 0,
           // P7 — Rext 4:4:4 sessions override the Main-profile default
           // (hev1.4.10.L153.B0 vs hev1.1.6.L153.B0); undefined keeps it.
           codec: codecOverride,
@@ -9112,11 +9153,15 @@ export function useRemoteControl(
     if (!el || !hevcWorker) return
     try {
       const off = el.transferControlToOffscreen()
-      hevcWorker.postMessage({ type: 'init-canvas', canvas: off }, [off])
+      const nextGen = ++hevcSurfaceGen
+      hevcWorker.postMessage({ type: 'init-canvas', canvas: off, surfaceGen: nextGen }, [off])
       // P7 — start reporting the element box for the FSR sizing policy.
       hevcViewportCleanup = startViewportReporter(el, hevcWorker)
     } catch (err) {
-      console.warn('[rc] hevc: transferControlToOffscreen failed', err)
+      console.warn('[rc] hevc: transferControlToOffscreen failed — falling back off canvas path', err)
+      stopHevcPath()
+      failedDcTransports.add('data-channel-hevc')
+      if (lastConnectArgs) scheduleReconnect()
     }
   })
 
@@ -10537,7 +10582,9 @@ export function useRemoteControl(
       // applies to an audio track.
       if (ev.track.kind === 'audio') {
         remoteAudioStream.value = new MediaStream([ev.track])
-        hasMedia.value = true
+        // Do NOT flip `hasMedia` on an audio track: restart recovery uses
+        // `hasMedia` to hold the frozen pre-restart frame until replacement
+        // VIDEO actually paints.
         return
       }
       // Replace rather than append. addTrack accumulates across ICE
@@ -10716,6 +10763,11 @@ export function useRemoteControl(
     channels.input = pc.createDataChannel('input', {
       ordered: false,
       maxRetransmits: 0,
+    })
+    // Reliable ordered companion lane for stateful key/button/text edges so
+    // loss or reordering on the unreliable motion lane cannot strand held keys.
+    channels.inputReliable = pc.createDataChannel('input-reliable', {
+      ordered: true,
     })
     channels.control = pc.createDataChannel('control', { ordered: true })
     // #2638 - a request held for an earlier session's channel never carries
@@ -11986,27 +12038,23 @@ export function useRemoteControl(
     // will only actually pump bytes through it when its caps include
     // the same transport, so opening it speculatively is harmless on
     // older agents (they ignore the channel entirely).
+    let dcWorker: Worker | null = null
     if (preferredTransport === 'data-channel-vp9-444') {
-      // rc.190 — when the pick forced 4:2:0 (auto-rank / HEVC fallback),
-      // configure the worker for profile 0 explicitly so the codec
-      // string matches the bitstream the agent will emit, instead of
-      // deriving from the user's chroma pref (which may say 4:4:4).
-      startVp9_444Path(chromaOverride === 'yuv420' ? 'vp09.00.10.08' : undefined)
+      dcWorker = startVp9_444Path(chromaOverride === 'yuv420' ? 'vp09.00.10.08' : undefined)
     } else if (preferredTransport === 'data-channel-hevc') {
-      // P7 — the Rext pick reconfigures the worker's VideoDecoder with the
-      // Rext codec string (same Annex-B no-description contract; only the
-      // profile fields differ).
-      startHevcPath(hevcRextPick ? HEVC_REXT_CODEC_STRING : undefined)
+      dcWorker = startHevcPath(hevcRextPick ? HEVC_REXT_CODEC_STRING : undefined)
     } else if (preferredTransport === 'data-channel-av1') {
-      // rc.190 — AV1 rides the SAME wire format + worker as VP9-over-DC
-      // (13-byte length-prefix framing; the worker's VideoDecoder just
-      // gets the AV1 codec string). No separate worker file needed.
-      startVp9_444Path(AV1_CODEC_STRING)
+      dcWorker = startVp9_444Path(AV1_CODEC_STRING)
     } else if (preferredTransport === 'data-channel-h264') {
-      // P2 — H.264 rides the same worker via the avc1 codec override
-      // (the AV1 precedent). The probe ladder already picked the codec
-      // string this browser accepts.
-      startVp9_444Path(h264DcCodec ?? H264_DC_CODEC_CANDIDATES[0])
+      dcWorker = startVp9_444Path(h264DcCodec ?? H264_DC_CODEC_CANDIDATES[0])
+    }
+    if (preferredTransport !== null && dcWorker === null) {
+      // Never ask the host to stream over a DC transport whose worker failed
+      // to construct or create its DataChannel — fall back cleanly to RTP.
+      console.warn(`[rc] ${preferredTransport} worker startup failed — falling back to webrtc RTP`)
+      failedDcTransports.add(preferredTransport)
+      preferredTransport = null
+      sessionChunkFraming = false
     }
 
     // Kick off the rc:* handshake. browser_caps lets the agent pick
@@ -12452,6 +12500,35 @@ export function useRemoteControl(
       return result
     }
 
+    /** W3C Pointer Events delivers chorded button transitions (e.g. pressing
+     *  right mouse while holding left) through `pointermove.buttons` rather
+     *  than separate pointerdown/pointerup events. Reconcile the bitmask. */
+    const POINTER_BUTTON_BITS: ReadonlyArray<readonly [number, 'left' | 'right' | 'middle' | 'back' | 'forward']> = [
+      [1, 'left'],
+      [2, 'right'],
+      [4, 'middle'],
+      [8, 'back'],
+      [16, 'forward'],
+    ]
+    function reconcileChordedButtons(ev: PointerEvent, x: number, y: number) {
+      if (ev.pointerType === 'touch') return
+      const mask = ev.buttons
+      if (mask === 0 && !heldInputs.hasAnyButton()) return
+      for (const [bit, btn] of POINTER_BUTTON_BITS) {
+        const isDown = (mask & bit) !== 0
+        const wasDown = heldInputs.hasButton(btn)
+        if (isDown === wasDown) continue
+        if (relativeMouse.value) {
+          flushRel()
+          sendInput(relativeButtonMessage(btn, isDown))
+        } else {
+          cancelPendingMove()
+          sendInput({ t: 'mouse_button', btn, down: isDown, x, y, mon: 0 })
+        }
+        heldInputs.button(btn, isDown)
+      }
+    }
+
     function onPointerMove(ev: PointerEvent) {
       if (fromOverlayUi(ev)) return
       // FR-111 — a finger's moves are the recognizer's to read.
@@ -12462,6 +12539,7 @@ export function useRemoteControl(
       // FR-109 — under Pointer Lock the position is frozen and only the
       // deltas mean anything; they go out as `mouse_rel` at the input gap.
       if (relativeMouse.value) {
+        reconcileChordedButtons(ev, lastPointerNorm.x, lastPointerNorm.y)
         relAcc.add(ev.movementX, ev.movementY)
         scheduleRel()
         return
@@ -12475,6 +12553,7 @@ export function useRemoteControl(
       // (0.5,0.5) after the drag had reached (0.6,0.6), and the host's cursor
       // snapped back to where the drag began.
       lastPointerNorm = { x, y }
+      reconcileChordedButtons(ev, x, y)
       pendingMove = { x, y, mon: 0 }
       schedulePendingMove()
     }
@@ -12991,8 +13070,27 @@ export function useRemoteControl(
       const mods = pendingCtrlV.mods
       if (pendingCtrlV.timer) clearTimeout(pendingCtrlV.timer)
       pendingCtrlV = null
+      // Enigo and uinput ignore the `mods` bitmask on key events and rely on
+      // physical modifier state on the host. If the operator already released
+      // Ctrl/Cmd while waiting for the clipboard ACK, bracket V with an
+      // explicit modifier press+release instead of typing a literal 'v'.
+      const wantMeta = (mods & 0x08) !== 0 || (hostIsMac.value && ctrlAsCmd.value && (mods & 0x02) !== 0)
+      const wantCtrl = !wantMeta && (mods & 0x02) !== 0
+      const modHid = wantMeta ? 0xe3 : wantCtrl ? 0xe0 : null
+      const modAlreadyHeld =
+        modHid === 0xe3
+          ? heldInputs.hasKey(0xe3) || heldInputs.hasKey(0xe7)
+          : modHid === 0xe0
+            ? heldInputs.hasKey(0xe0) || heldInputs.hasKey(0xe4)
+            : true
+      if (modHid !== null && !modAlreadyHeld) {
+        sendInput({ t: 'key', code: modHid, down: true, mods })
+      }
       sendInput({ t: 'key', code: KEY_V_HID, down: true, mods })
       sendInput({ t: 'key', code: KEY_V_HID, down: false, mods })
+      if (modHid !== null && !modAlreadyHeld) {
+        sendInput({ t: 'key', code: modHid, down: false, mods: 0 })
+      }
     }
 
     function isCtrlVOverViewer(ev: KeyboardEvent): boolean {

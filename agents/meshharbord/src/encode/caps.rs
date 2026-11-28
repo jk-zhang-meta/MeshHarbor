@@ -1837,30 +1837,34 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                                 }
                             }
                         }
-                        video_cells.push(VideoCell::new(cell_codec, backend, &chroma, qsv_hw));
+                        let hw = match backend {
+                            VideoBackend::Qsv => qsv_hw,
+                            _ => true,
+                        };
+                        video_cells.push(VideoCell::new(cell_codec, backend, &chroma, hw));
                     }
                     // P4 — measure whether THIS host's vp9_qsv honours
-                    // runtime forced IDRs, per low_power mode. Hosts that
-                    // do get GOP 64800 + on-demand-only keys (kills the
-                    // residual ~1 Hz natural-key pulse on VP9-over-DC);
-                    // hosts that don't keep the rc.219 containment. Escape
-                    // hatch MESHHARBORD_VP9_QSV_IDR_PROBE=0.
-                    if tunnel_core::env::node_env("VP9_QSV_IDR_PROBE").as_deref() != Some("0") {
-                        let t_idr = std::time::Instant::now();
-                        if let Some((lp1, lp0)) =
-                            crate::encode::ffmpeg::FfmpegEncoder::probe_and_cache_vp9_qsv_idr()
-                        {
+                    // runtime forced IDRs, per low_power mode. Run ONLY when
+                    // `vp9_qsv` actually won (never probe a denied QSV backend
+                    // when `vp9_vaapi` won).
+                    if name == "vp9_qsv" {
+                        if tunnel_core::env::node_env("VP9_QSV_IDR_PROBE").as_deref() != Some("0") {
+                            let t_idr = std::time::Instant::now();
+                            if let Some((lp1, lp0)) =
+                                crate::encode::ffmpeg::FfmpegEncoder::probe_and_cache_vp9_qsv_idr()
+                            {
+                                tracing::info!(
+                                    honors_low_power = lp1,
+                                    honors_vme = lp0,
+                                    elapsed_ms = t_idr.elapsed().as_millis(),
+                                    "caps probe: vp9_qsv runtime-IDR verdict (either true → long GOP + on-demand keys; both false → GOP-60 containment)"
+                                );
+                            }
+                        } else {
                             tracing::info!(
-                                honors_low_power = lp1,
-                                honors_vme = lp0,
-                                elapsed_ms = t_idr.elapsed().as_millis(),
-                                "caps probe: vp9_qsv runtime-IDR verdict (either true → long GOP + on-demand keys; both false → GOP-60 containment)"
+                                "caps probe: vp9_qsv IDR probe disabled (MESHHARBORD_VP9_QSV_IDR_PROBE=0) — keeping GOP-60 containment"
                             );
                         }
-                    } else {
-                        tracing::info!(
-                            "caps probe: vp9_qsv IDR probe disabled (MESHHARBORD_VP9_QSV_IDR_PROBE=0) — keeping GOP-60 containment"
-                        );
                     }
                 }
                 Err(e) => {
@@ -1901,6 +1905,10 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
             let start = std::time::Instant::now();
             let mut winner: Option<&'static str> = None;
             let mut winner_has_444 = false;
+            let mut eligible: u32 = 0;
+            let mut attempted: u32 = 0;
+            let mut denied: u32 = 0;
+            let mut last_err: Option<String> = None;
             for name in FfmpegEncoder::cascade_names(codec) {
                 // A table name outside the vocabulary would open and then
                 // advertise nothing; `every_cascade_name_is_in_the_cell_vocabulary`
@@ -1908,18 +1916,21 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                 let Some((cell_codec, backend)) = VideoBackend::from_ffmpeg_name(name) else {
                     continue;
                 };
+                eligible += 1;
                 // FR-77 P4 — the denylist is the kill switch for BOTH chroma
                 // forms. Until this arm it gated only the 4:4:4 open, so
                 // `hevc_vaapi:yuv420` in `encoder_cells_deny` still opened the
                 // cell (measured on jupiter): an operator's one lever against
                 // a driver that faults on open did nothing for 4:2:0.
                 if cell_denied(&deny, name, ChromaFormat::Yuv420) {
+                    denied += 1;
                     tracing::info!(
                         encoder = name,
                         "caps probe: 4:2:0 cell on the denylist — not opened, not advertised"
                     );
                     continue;
                 }
+                attempted += 1;
                 let t = std::time::Instant::now();
                 match FfmpegEncoder::new_named_probe(name, PROBE_WIDTH, PROBE_HEIGHT, false) {
                     Ok(enc) => {
@@ -1964,6 +1975,7 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                         video_cells.push(VideoCell::new(cell_codec, backend, &chroma, hw));
                     }
                     Err(e) => {
+                        last_err = Some(format!("{name}: {e}"));
                         // A backend the host lacks failing is the matrix doing
                         // its job — DEBUG, like the cascade's own candidates.
                         tracing::debug!(encoder = name, %e, "caps probe: ffmpeg encoder cell did not open");
@@ -1991,10 +2003,26 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
                         hevc_chroma.push("yuv444".into());
                     }
                 }
-                (VideoCodec::Hevc, None) => tracing::warn!(
-                    elapsed_ms,
-                    "caps probe: ffmpeg HEVC encoder failed to init — NOT advertising data-channel-hevc"
-                ),
+                (VideoCodec::Hevc, None) => {
+                    if attempted == 0 && denied > 0 {
+                        tracing::info!(
+                            elapsed_ms,
+                            eligible,
+                            attempted,
+                            denied,
+                            "caps probe: ffmpeg HEVC skipped (all eligible cells denied by policy) — NOT advertising data-channel-hevc"
+                        );
+                    } else {
+                        tracing::warn!(
+                            elapsed_ms,
+                            eligible,
+                            attempted,
+                            denied,
+                            last_error = last_err.as_deref().unwrap_or("none"),
+                            "caps probe: ffmpeg HEVC encoder failed to init — NOT advertising data-channel-hevc"
+                        );
+                    }
+                }
                 (VideoCodec::Av1, Some(name)) => {
                     tracing::info!(
                         encoder = name,

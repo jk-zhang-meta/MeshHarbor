@@ -234,7 +234,7 @@ export function stripChunkPrefix(
       // report the loss and keep assembling, because dropping the new
       // frame too would turn one lost frame into two.
       placeChunk(st, partial, idx, payload)
-      const done = finish(st, seq, partial)
+      const { payload: done } = finish(st, seq, partial)
       return { payload: done, gap: true }
     }
   } else if (partial.slots.length !== count) {
@@ -244,7 +244,7 @@ export function stripChunkPrefix(
     st.partials.delete(seq)
     st.lastSeq = seq
     st.gaps++
-    return { payload: null, gap: false }
+    return { payload: null, gap: true }
   }
 
   if (partial.slots[idx] !== null) {
@@ -254,8 +254,8 @@ export function stripChunkPrefix(
     return { payload: null, gap: false }
   }
   placeChunk(st, partial, idx, payload)
-  const done = finish(st, seq, partial)
-  return { payload: done, gap: false }
+  const { payload: done, abandoned } = finish(st, seq, partial)
+  return { payload: done, gap: abandoned }
 }
 
 function placeChunk(
@@ -274,23 +274,26 @@ function placeChunk(
 
 /** Emit `seq` if it is now complete, abandoning any OLDER partials — they
  *  can no longer be delivered in order, and the codec's delta chain is
- *  broken past them regardless. Returns the assembled bytes, or null. */
+ *  broken past them regardless. Returns the assembled bytes and whether any
+ *  older incomplete frame was abandoned (so the caller can request resync). */
 function finish(
   st: ChunkFramingState,
   seq: number,
   partial: PartialFrame,
-): Uint8Array | null {
-  if (partial.filled < partial.slots.length) return null
+): { payload: Uint8Array | null; abandoned: boolean } {
+  if (partial.filled < partial.slots.length) return { payload: null, abandoned: false }
   const out = assemble(partial)
   st.partials.delete(seq)
+  let abandoned = false
   for (const older of [...st.partials.keys()]) {
     if (!isNewer(older, seq)) {
       st.partials.delete(older)
       st.gaps++
+      abandoned = true
     }
   }
   st.lastSeq = seq
-  return out
+  return { payload: out, abandoned }
 }
 
 /** An unclassifiable message: nothing in flight can be trusted.

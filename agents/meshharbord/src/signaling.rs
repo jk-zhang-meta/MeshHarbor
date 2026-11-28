@@ -547,6 +547,90 @@ const WS_SLOWNESS_TREADMILL_CAP: u32 = 2;
 /// chance. Connections convicted younger than this are treadmill evidence.
 const WS_TREADMILL_FRESH_WINDOW: Duration = Duration::from_secs(600);
 
+/// Tracks the currently in-flight keepalive ping and any recently timed-out
+/// ping payloads whose strike has already been counted, so a single delayed
+/// pong for ping A cannot BOTH clear replacement ping B AND book a second
+/// strike (double-counting one slow RTT as two consecutive strikes).
+#[derive(Default)]
+struct KeepalivePingTracker {
+    in_flight: Option<(std::time::Instant, Vec<u8>)>,
+    timed_out_payloads: std::collections::VecDeque<Vec<u8>>,
+    last_stamp_ms: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PongVerdict {
+    /// Pong belonged to a ping that already timed out (and was already
+    /// counted); keep any newer in-flight ping intact and do not strike again.
+    LateAlreadyCounted,
+    /// Matched the current ping (or another uncounted stamped ping) with this
+    /// RTT.
+    Measured(Duration),
+    /// Foreign or unstamped pong payload — proves socket liveness only.
+    Foreign,
+}
+
+impl KeepalivePingTracker {
+    fn next_payload(&mut self, epoch: std::time::Instant) -> Vec<u8> {
+        let now_ms = epoch.elapsed().as_millis() as u64;
+        // Strictly monotonic stamp guarantees distinct payloads even when a
+        // replacement ping goes out within the same millisecond.
+        let stamp = now_ms.max(self.last_stamp_ms.saturating_add(1));
+        self.last_stamp_ms = stamp;
+        stamp.to_be_bytes().to_vec()
+    }
+
+    fn record_sent(&mut self, sent_at: std::time::Instant, payload: Vec<u8>) {
+        self.in_flight = Some((sent_at, payload));
+    }
+
+    fn is_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    fn in_flight_sent_at(&self) -> Option<std::time::Instant> {
+        self.in_flight.as_ref().map(|(at, _)| *at)
+    }
+
+    /// Move the current in-flight ping into the already-counted set when its
+    /// timeout strike is booked before sending a replacement ping.
+    fn mark_current_timed_out(&mut self) {
+        if let Some((_, payload)) = self.in_flight.take() {
+            if self.timed_out_payloads.len() >= 8 {
+                self.timed_out_payloads.pop_front();
+            }
+            self.timed_out_payloads.push_back(payload);
+        }
+    }
+
+    fn on_pong(&mut self, payload: &[u8], epoch: std::time::Instant) -> PongVerdict {
+        if let Some(pos) = self
+            .timed_out_payloads
+            .iter()
+            .position(|p| p.as_slice() == payload)
+        {
+            self.timed_out_payloads.remove(pos);
+            return PongVerdict::LateAlreadyCounted;
+        }
+        let matches_current = self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(_, p)| p.as_slice() == payload);
+        if matches_current || self.in_flight.is_none() {
+            if matches_current {
+                self.in_flight = None;
+            }
+            return match pong_rtt(payload, epoch) {
+                Some(rtt) => PongVerdict::Measured(rtt),
+                None => PongVerdict::Foreign,
+            };
+        }
+        // Unrecognised older payload while a newer ping is still awaiting its
+        // own reply: do not clear the newer ping or double-count.
+        PongVerdict::Foreign
+    }
+}
+
 /// `true` = HOLD the degraded-but-alive WS (cycling has been shown not to
 /// help); `false` = cycle as before. Books this conviction on the
 /// cross-connection counter either way.
@@ -2489,7 +2573,7 @@ async fn connect_once(
     // the stamp itself). Checked at each keepalive tick: still outstanding
     // past the degradation bound = a strike WITHOUT waiting for the late
     // pong to crawl back.
-    let mut outstanding_ping: Option<std::time::Instant> = None;
+    let mut ping_tracker = KeepalivePingTracker::default();
 
     // A5 — resume detection. Every timer here runs on the MONOTONIC clock,
     // which excludes suspend on Windows/Linux — so after a sleep the RX
@@ -2721,7 +2805,7 @@ async fn connect_once(
                 // socket and every second of blind trust stalls the whole
                 // grants/netmap plane behind a dead WS.
                 if let Some((probed, misses)) = netchange_probe {
-                    if outstanding_ping.is_none() || last_rx.elapsed() < probed.elapsed() {
+                    if !ping_tracker.is_in_flight() || last_rx.elapsed() < probed.elapsed() {
                         netchange_probe = None;
                     } else if probed.elapsed() >= WS_NETCHANGE_PROBE_DEADLINE {
                         let misses = misses + 1;
@@ -2747,9 +2831,8 @@ async fn connect_once(
                             unanswered_s = probed.elapsed().as_secs(),
                             "net-change probe window missed once — re-probing (2-strike rule)"
                         );
-                        if let Err(e) =
-                            send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
-                        {
+                        let payload = ping_tracker.next_payload(ws_epoch);
+                        if let Err(e) = send_frame(&mut ws, Message::Ping(payload.into())).await {
                             warn!(%e, "net-change re-probe ping failed — reconnecting");
                             peers.end_connection(ConnExit::NetChangeReprobe).await;
                             close_all_tunnel_peers(&mut tunnel_peers).await;
@@ -2768,8 +2851,9 @@ async fn connect_once(
                 // rides — sending a replacement would reset its clock and
                 // the deadline could never accrue under the accelerated
                 // cadence.
-                let send_fresh_ping = match outstanding_ping {
+                let send_fresh_ping = match ping_tracker.in_flight_sent_at() {
                     Some(sent) if sent.elapsed() >= WS_PONG_RTT_DEGRADED => {
+                        ping_tracker.mark_current_timed_out();
                         slow_pongs += 1;
                         warn!(
                             unanswered_s = sent.elapsed().as_secs(),
@@ -2802,8 +2886,9 @@ async fn connect_once(
                     None => true,
                 };
                 if send_fresh_ping {
+                    let payload = ping_tracker.next_payload(ws_epoch);
                     if let Err(e) =
-                        send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
+                        send_frame(&mut ws, Message::Ping(payload.clone().into())).await
                     {
                         warn!(%e, "keepalive ping failed — will reconnect");
                         peers.end_connection(ConnExit::KeepaliveSendFailed).await;
@@ -2811,7 +2896,7 @@ async fn connect_once(
                         park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                         return Err(ConnectError::Transient(e.context("ws ping")));
                     }
-                    outstanding_ping = Some(std::time::Instant::now());
+                    ping_tracker.record_sent(std::time::Instant::now(), payload);
                 }
                 if slow_pongs > 0 {
                     // One strike in: check again quickly instead of waiting
@@ -2848,8 +2933,9 @@ async fn connect_once(
                 // already in flight rides — its verdict covers this change.
                 if netchange_probe.is_none() {
                     info!(change = %summary, "MAJOR network change — probing the control WS now");
+                    let payload = ping_tracker.next_payload(ws_epoch);
                     if let Err(e) =
-                        send_frame(&mut ws, Message::Ping(ping_payload(ws_epoch).into())).await
+                        send_frame(&mut ws, Message::Ping(payload.clone().into())).await
                     {
                         warn!(%e, "net-change probe ping failed — reconnecting");
                         peers.end_connection(ConnExit::NetChangePingFailed).await;
@@ -2857,8 +2943,8 @@ async fn connect_once(
                         park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
                         return Err(ConnectError::Transient(e.context("net-change probe ping")));
                     }
-                    if outstanding_ping.is_none() {
-                        outstanding_ping = Some(std::time::Instant::now());
+                    if !ping_tracker.is_in_flight() {
+                        ping_tracker.record_sent(std::time::Instant::now(), payload);
                     }
                     netchange_probe = Some((std::time::Instant::now(), 0));
                     keepalive.reset_after(WS_NETCHANGE_PROBE_DEADLINE);
@@ -3744,45 +3830,54 @@ async fn connect_once(
                 Some(Ok(Message::Pong(payload))) => {
                     let _stage = watchdog::enter(ctx.pump, "ws.pong");
                     last_rx = std::time::Instant::now();
-                    outstanding_ping = None;
                     // Zombie-slow WS detector (see [`WS_PONG_RTT_DEGRADED`]):
-                    // a pong echoing one of OUR stamped pings measures the
-                    // true application round trip. Two consecutive verdicts
-                    // over the bound mean the path is unusable for the
-                    // request/reply traffic that rides it (relay grants,
-                    // exec) — cycle to a fresh connection; the persistent
-                    // overlay runtime rides through WS reconnects untouched.
-                    if let Some(rtt) = pong_rtt(&payload, ws_epoch) {
-                        if rtt >= WS_PONG_RTT_DEGRADED {
-                            slow_pongs += 1;
-                            warn!(
-                                rtt_s = rtt.as_secs(),
-                                strikes = slow_pongs,
-                                "control WS pong RTT degraded"
+                    // match the echoed payload to its ping so a late pong from
+                    // an already-timed-out ping neither clears the newer probe
+                    // nor double-books a second strike.
+                    match ping_tracker.on_pong(&payload, ws_epoch) {
+                        PongVerdict::LateAlreadyCounted => {
+                            debug!(
+                                "late pong for already-timed-out control WS ping received; keeping replacement ping in flight"
                             );
-                            if slow_pongs >= WS_PONG_RTT_STRIKES {
-                                if slowness_treadmill_holds(slowness_cycles, ws_epoch.elapsed()) {
-                                    warn!(
-                                        rtt_s = rtt.as_secs(),
-                                        treadmill_cycles = *slowness_cycles,
-                                        "control WS degraded but HELD — fresh connections re-throttled repeatedly, cycling is not improving the path; keeping the alive-but-slow WS (deadness still convicts via the rx deadline)"
-                                    );
-                                    slow_pongs = 0;
-                                } else {
-                                    peers.end_connection(ConnExit::PongRttDegraded).await;
-                                    close_all_tunnel_peers(&mut tunnel_peers).await;
-                                    park_survived_quic_peers(&mut tunnel_quic_peers, &cfg.tenant_id).await;
-                                    return Err(ConnectError::Transient(anyhow::anyhow!(
-                                        "control WS degraded: pong rtt {} s ({} consecutive over \
-                                         the {} s bound) — cycling to a fresh connection",
-                                        rtt.as_secs(),
-                                        slow_pongs,
-                                        WS_PONG_RTT_DEGRADED.as_secs()
-                                    )));
+                        }
+                        PongVerdict::Foreign => {}
+                        PongVerdict::Measured(rtt) => {
+                            if rtt >= WS_PONG_RTT_DEGRADED {
+                                slow_pongs += 1;
+                                warn!(
+                                    rtt_s = rtt.as_secs(),
+                                    strikes = slow_pongs,
+                                    "control WS pong RTT degraded"
+                                );
+                                if slow_pongs >= WS_PONG_RTT_STRIKES {
+                                    if slowness_treadmill_holds(slowness_cycles, ws_epoch.elapsed())
+                                    {
+                                        warn!(
+                                            rtt_s = rtt.as_secs(),
+                                            treadmill_cycles = *slowness_cycles,
+                                            "control WS degraded but HELD — fresh connections re-throttled repeatedly, cycling is not improving the path; keeping the alive-but-slow WS (deadness still convicts via the rx deadline)"
+                                        );
+                                        slow_pongs = 0;
+                                    } else {
+                                        peers.end_connection(ConnExit::PongRttDegraded).await;
+                                        close_all_tunnel_peers(&mut tunnel_peers).await;
+                                        park_survived_quic_peers(
+                                            &mut tunnel_quic_peers,
+                                            &cfg.tenant_id,
+                                        )
+                                        .await;
+                                        return Err(ConnectError::Transient(anyhow::anyhow!(
+                                            "control WS degraded: pong rtt {} s ({} consecutive over \
+                                             the {} s bound) — cycling to a fresh connection",
+                                            rtt.as_secs(),
+                                            slow_pongs,
+                                            WS_PONG_RTT_DEGRADED.as_secs()
+                                        )));
+                                    }
                                 }
+                            } else {
+                                slow_pongs = 0;
                             }
-                        } else {
-                            slow_pongs = 0;
                         }
                     }
                     watchdog::tick(ctx.pump);
@@ -9721,6 +9816,40 @@ mod tests {
             slow >= WS_PONG_RTT_DEGRADED,
             "a 25 s echo must read degraded, got {slow:?}"
         );
+    }
+
+    #[test]
+    fn late_pong_for_timed_out_ping_does_not_clear_replacement_or_double_strike() {
+        let epoch = std::time::Instant::now();
+        let mut tracker = KeepalivePingTracker::default();
+
+        // Ping A goes out and times out (strike 1 booked by caller).
+        let ping_a = tracker.next_payload(epoch);
+        tracker.record_sent(epoch, ping_a.clone());
+        tracker.mark_current_timed_out();
+
+        // Replacement Ping B goes out immediately after.
+        let ping_b = tracker.next_payload(epoch);
+        assert_ne!(ping_a, ping_b, "replacement ping must have a distinct stamp");
+        tracker.record_sent(epoch, ping_b.clone());
+
+        // Delayed Pong A arrives: must be classified as LateAlreadyCounted and
+        // MUST leave Ping B in flight instead of clearing it or striking twice.
+        assert_eq!(
+            tracker.on_pong(&ping_a, epoch),
+            PongVerdict::LateAlreadyCounted
+        );
+        assert!(
+            tracker.is_in_flight(),
+            "late pong for A must not clear replacement ping B"
+        );
+
+        // Prompt Pong B arrives: clears in_flight and measures healthy RTT.
+        match tracker.on_pong(&ping_b, epoch) {
+            PongVerdict::Measured(rtt) => assert!(rtt < Duration::from_secs(1)),
+            other => panic!("expected Measured for ping B, got {other:?}"),
+        }
+        assert!(!tracker.is_in_flight());
     }
 
     #[test]

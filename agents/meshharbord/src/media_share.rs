@@ -76,6 +76,12 @@ pub const SPILL_RESET_RATIO: u32 = 2;
 /// AIMD floor react, so the depth is a burst buffer, not a latency budget.
 const FOLLOWER_SEND_DEPTH: usize = 12;
 
+/// Maximum continuous time a single stalled follower may hold the shared
+/// owner's production gate before being desynced until the next keyframe.
+/// Prevents one dead/backgrounded follower tab from freezing every other
+/// healthy viewer on the shared pipeline.
+const FOLLOWER_STALL_GRACE: Duration = Duration::from_secs(2);
+
 /// Hard profile key — the part of a session's negotiated video profile that
 /// CANNOT merge (the browser built its decoder for it).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -145,6 +151,9 @@ struct Follower {
     divisor: u32,
     /// Consecutive spill-qualifying windows (see [`SPILL_AFTER_WINDOWS`]).
     spill_strikes: u32,
+    /// When this follower's send queue first became continuously full while
+    /// synced. Cleared as soon as capacity returns or it desyncs.
+    congested_since: Option<std::time::Instant>,
     detach: Arc<DetachState>,
 }
 
@@ -421,12 +430,50 @@ impl Pipeline {
             .fold(own, u8::min)
     }
 
-    /// True when any follower's send queue is full — folded into the
+    /// True when any *synced* follower's send queue is full — folded into the
     /// owner's rc.111 production gate so the whole pipeline paces to the
-    /// slowest link (the pre-encode floor; never per-viewer delta drops).
+    /// slowest healthy link (the pre-encode floor; never per-viewer delta drops).
+    ///
+    /// Bounded by [`FOLLOWER_STALL_GRACE`]: a follower whose queue remains full
+    /// continuously past the grace window is desynced (`synced = false`, IDR
+    /// flagged for once it drains) so a single wedged/backgrounded follower can
+    /// never freeze the owner and other healthy viewers indefinitely.
     pub fn followers_congested(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.followers.iter().any(|f| f.send_tx.capacity() == 0)
+        self.followers_congested_at(std::time::Instant::now())
+    }
+
+    fn followers_congested_at(&self, now: std::time::Instant) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let mut any_congested = false;
+        let mut need_kf = false;
+        for f in inner.followers.iter_mut() {
+            if !f.synced {
+                f.congested_since = None;
+                continue;
+            }
+            if f.send_tx.capacity() == 0 {
+                let since = *f.congested_since.get_or_insert(now);
+                if now.saturating_duration_since(since) >= FOLLOWER_STALL_GRACE {
+                    tracing::warn!(
+                        session = %f.sink.session_id,
+                        owner = %self.owner_session,
+                        stalled_ms = now.saturating_duration_since(since).as_millis() as u64,
+                        "media_share: follower send queue wedged past grace — desyncing to unblock owner"
+                    );
+                    f.synced = false;
+                    f.congested_since = None;
+                    need_kf = true;
+                } else {
+                    any_congested = true;
+                }
+            } else {
+                f.congested_since = None;
+            }
+        }
+        if need_kf {
+            inner.kf_needed = true;
+        }
+        any_congested
     }
 
     /// Step every follower's viewer-rate controller for this ~1 s window and
@@ -524,13 +571,16 @@ impl Pipeline {
                 f.synced = true;
             }
             match f.send_tx.try_send(wire.clone()) {
-                Ok(()) => {}
+                Ok(()) => {
+                    f.congested_since = None;
+                }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Whatever was dropped (delta OR the IDR later deltas
                     // will reference), this viewer's chain is broken —
                     // desync and resync at the next keyframe. The
                     // production-gate floor makes this a race-only path.
                     f.synced = false;
+                    f.congested_since = None;
                     need_kf = true;
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -693,6 +743,7 @@ pub fn try_join(
         viewer_rate: ViewerRateController::new(capture_fps_hint.max(1)),
         divisor: 1,
         spill_strikes: 0,
+        congested_since: None,
         detach: detach.clone(),
     });
     // The joiner needs an IDR before anything it receives decodes.
@@ -1334,6 +1385,48 @@ mod tests {
         assert_eq!(
             smaller_target(TargetResolution::Native, TargetResolution::Native),
             TargetResolution::Native
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_follower_desyncs_after_grace_and_unblocks_owner() {
+        let _s = serial();
+        let key = PipelineKey::FfmpegDc("TEST-STALL-GRACE");
+        let owner = Pipeline::register(key, ObjectId::new());
+        let follower_sink = sink(ObjectId::new());
+        let _guard = try_join(key, follower_sink, 60).expect("join");
+
+        // Replace follower's send channel with a closed-off (undrained) capacity-1
+        // channel so we deterministically hold it at capacity == 0.
+        let (stalled_tx, _held_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(1);
+        stalled_tx.try_send(bytes::Bytes::from_static(b"fill")).unwrap();
+        {
+            let mut inner = owner.inner.lock().unwrap();
+            let f = &mut inner.followers[0];
+            f.send_tx = stalled_tx;
+            f.synced = true;
+        }
+
+        let t0 = std::time::Instant::now();
+        assert!(
+            owner.followers_congested_at(t0),
+            "within grace, congested synced follower gates owner"
+        );
+        assert!(
+            owner.followers_congested_at(t0 + Duration::from_millis(500)),
+            "still inside 2s grace window"
+        );
+        assert!(
+            !owner.followers_congested_at(t0 + FOLLOWER_STALL_GRACE),
+            "past grace window, stalled follower is desynced so owner resumes"
+        );
+        assert!(
+            owner.take_keyframe_requested(),
+            "desyncing the stalled follower schedules an IDR for when it drains"
+        );
+        assert!(
+            !owner.followers_congested_at(t0 + FOLLOWER_STALL_GRACE + Duration::from_secs(1)),
+            "unsynced follower stays out of the owner production gate"
         );
     }
 }

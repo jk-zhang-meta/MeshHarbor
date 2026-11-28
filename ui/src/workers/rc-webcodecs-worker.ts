@@ -75,9 +75,22 @@ let canvas: OffscreenCanvas | null = null
 let ctx: OffscreenCanvasRenderingContext2D | null = null
 let decoder: VideoDecoder | null = null
 let configured = false
+let sawKeyframe = false
 let framesDecoded = 0
 let framesReceived = 0
 let framesFedToDecoder = 0
+let lastPostedW = 0
+let lastPostedH = 0
+let lastKeyframeReqMs = 0
+const MAX_DECODE_QUEUE = 4
+const KEYFRAME_REQ_DEBOUNCE_MS = 1000
+
+function requestKeyframeResync(): void {
+  const now = performance.now()
+  if (now - lastKeyframeReqMs < KEYFRAME_REQ_DEBOUNCE_MS) return
+  lastKeyframeReqMs = now
+  workerScope.postMessage({ type: 'request-keyframe' })
+}
 
 workerScope.onmessage = (e) => {
   const msg = e.data
@@ -102,7 +115,10 @@ workerScope.onmessage = (e) => {
     canvas = null
     ctx = null
     configured = false
+    sawKeyframe = false
     framesDecoded = 0
+    lastPostedW = 0
+    lastPostedH = 0
     paintGap.reset()
   }
 }
@@ -112,11 +128,17 @@ workerScope.onrtctransform = async (event) => {
   const codec = transformer.options?.codec ?? 'h264'
   const codecString = codecMimeForShort(codec)
 
+  let watchdogCleared = false
   decoder = new VideoDecoder({
     output: (frame) => {
       framesDecoded++
+      if (!watchdogCleared) {
+        watchdogCleared = true
+        clearTimeout(watchdog)
+      }
       // Snapshot before paint closes the frame (a closed one reports 0).
-      const firstDims = framesDecoded === 1 ? { w: frame.displayWidth, h: frame.displayHeight } : null
+      const w = frame.displayWidth
+      const h = frame.displayHeight
       // FR-16 L4 — a clone for the probe read; null unless a probe is armed.
       const benchClone = bench.take(frame)
       const drew = paintFrame(frame)
@@ -124,15 +146,21 @@ workerScope.onrtctransform = async (event) => {
       const gapClosed = drew ? paintGap.painted(performance.now()) : null
       if (gapClosed) workerScope.postMessage({ type: PAINT_GAP_CLOSED, gapMs: gapClosed.gapMs })
       if (benchClone) bench.settle(benchClone, epochNowMs())
-      if (firstDims) {
+      // Publish on frame 1 AND on every live dimension change so adaptive
+      // cursor/input coordinate mapping stays accurate after resize.
+      if (w > 0 && h > 0 && (w !== lastPostedW || h !== lastPostedH)) {
+        lastPostedW = w
+        lastPostedH = h
         workerScope.postMessage({
           type: 'first-frame',
-          width: firstDims.w,
-          height: firstDims.h,
+          width: w,
+          height: h,
+          visible: drew,
         })
       }
     },
     error: (err) => {
+      sawKeyframe = false
       workerScope.postMessage({
         type: 'decoder-error',
         error: extractErrorMessage(err),
@@ -183,18 +211,17 @@ workerScope.onrtctransform = async (event) => {
     pickedConfig: picked ? 'with-optimize-for-latency' : 'fallback',
   })
 
-  // Watchdog: if 3 seconds pass after onrtctransform fires and no
-  // frame callback has run, surface a loud warning. Lets us
-  // distinguish "Chrome doesn't forward HEVC to scripted transforms
-  // at all" from "it does but our decoder silently drops". Armed
-  // once per onrtctransform call; cleared by the first read.
+  // Watchdog: if 3 seconds pass after onrtctransform fires and no frame has
+  // actually DECODED (not merely arrived encoded), surface a loud warning.
   let watchdogFired = false
   const watchdog = setTimeout(() => {
-    if (framesReceived === 0 && !watchdogFired) {
+    if (framesDecoded === 0 && !watchdogFired) {
       watchdogFired = true
       workerScope.postMessage({
         type: 'watchdog',
-        message: 'no encoded frames in 3s after transform-active — Chrome may be holding frames on the default path',
+        message: framesReceived === 0
+          ? 'no encoded frames in 3s after transform-active — Chrome may be holding frames on the default path'
+          : 'encoded frames arrived but 0 decoded in 3s — decoder stalled or awaiting keyframe',
       })
     }
   }, 3000)
@@ -215,7 +242,6 @@ workerScope.onrtctransform = async (event) => {
           // modes show up as "transform never called once".
           framesReceived++
           if (framesReceived <= 3) {
-            clearTimeout(watchdog)
             const sig = (() => {
               try {
                 const f = value as unknown as EncodedFrameLike
@@ -272,15 +298,33 @@ workerScope.onrtctransform = async (event) => {
               return
             }
           }
+          const isKey = encFrame.type === 'key'
+          if (!isKey && !sawKeyframe) {
+            // Leading-delta gate: VideoDecoder requires a keyframe first after
+            // configure() or backlog shed; request one and keep default path fed.
+            requestKeyframeResync()
+            controller.enqueue(value)
+            return
+          }
+          if (!isKey && decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
+            // Bounded queue backpressure: shed delta frames and re-arm keyframe
+            // gate instead of growing unbounded decode latency.
+            sawKeyframe = false
+            requestKeyframeResync()
+            controller.enqueue(value)
+            return
+          }
           try {
             const chunk = new EncodedVideoChunk({
-              type: encFrame.type === 'key' ? 'key' : 'delta',
+              type: isKey ? 'key' : 'delta',
               timestamp: encFrame.timestamp,
               data: encFrame.data,
             })
             decoder.decode(chunk)
+            if (isKey) sawKeyframe = true
             framesFedToDecoder++
           } catch (err) {
+            sawKeyframe = false
             workerScope.postMessage({
               type: 'decode-error',
               error: extractErrorMessage(err),

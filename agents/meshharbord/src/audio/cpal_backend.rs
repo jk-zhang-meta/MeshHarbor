@@ -20,32 +20,119 @@
 //! back-pressure the audio device into an xrun). `next_frame` reads the
 //! receiver from the async pump task.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
 use super::{AudioCapture, AudioFrame};
 #[cfg(target_os = "windows")]
 use crate::audio_source::{AudioUnavailable, AudioUnavailableCode};
 use async_trait::async_trait;
 
-/// Bounded channel depth between the RT capture callback and the async
+/// Bounded ring depth between the RT capture callback and the async
 /// pump. ~64 × 10 ms cpal buffers ≈ 640 ms of slack — plenty to ride
 /// out a scheduling hiccup without unbounded memory growth. On overflow
-/// we drop the OLDEST frame (see the callback) so latency stays capped.
+/// we drop the OLDEST queued frame so latency stays capped.
 const CHANNEL_DEPTH: usize = 64;
 
+#[derive(Default)]
+struct RingState {
+    frames: VecDeque<AudioFrame>,
+    error: Option<String>,
+    closed: bool,
+}
+
+struct AudioRing {
+    capacity: usize,
+    state: Mutex<RingState>,
+    notify: Notify,
+}
+
+impl AudioRing {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            state: Mutex::new(RingState {
+                frames: VecDeque::with_capacity(capacity.max(1)),
+                error: None,
+                closed: false,
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    /// Push a frame from the RT callback, evicting the oldest queued frame
+    /// when full so end-to-end latency stays bounded to `capacity` buffers.
+    fn push_drop_oldest(&self, frame: AudioFrame) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.closed {
+            return;
+        }
+        while st.frames.len() >= self.capacity {
+            st.frames.pop_front();
+        }
+        st.frames.push_back(frame);
+        drop(st);
+        self.notify.notify_one();
+    }
+
+    /// Record a fatal stream error reported by cpal's error callback and wake
+    /// the pump so it can log/reopen instead of hanging silently forever.
+    fn set_error(&self, err: String) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.error.is_none() {
+            st.error = Some(err);
+        }
+        drop(st);
+        self.notify.notify_waiters();
+    }
+
+    fn close(&self) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.closed = true;
+        drop(st);
+        self.notify.notify_waiters();
+    }
+
+    async fn pop(&self) -> Result<Option<AudioFrame>> {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(frame) = st.frames.pop_front() {
+                    return Ok(Some(frame));
+                }
+                if let Some(err) = st.error.take() {
+                    return Err(anyhow!("cpal audio stream error: {err}"));
+                }
+                if st.closed {
+                    return Ok(None);
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
 /// Live cpal loopback capture. Holds the `Stream` (dropping it stops
-/// capture) and the receiving half of the RT→async bridge.
+/// capture) and the shared drop-oldest RT→async ring.
 pub struct CpalLoopbackCapture {
     // The stream must stay alive for the callback to keep firing; it is
     // `!Send` on some platforms, but we never move it across threads —
-    // it lives on the pump's task alongside the receiver. Kept in an
-    // Option only so `Drop` reads cleanly; always `Some` while live.
+    // it lives on the pump's task alongside the ring.
     _stream: cpal::Stream,
-    rx: mpsc::Receiver<AudioFrame>,
+    ring: Arc<AudioRing>,
     channels: u16,
     sample_rate: u32,
+}
+
+impl Drop for CpalLoopbackCapture {
+    fn drop(&mut self) {
+        self.ring.close();
+    }
 }
 
 // cpal's `Stream` is `!Send` on Windows (the WASAPI client is
@@ -113,15 +200,12 @@ impl CpalLoopbackCapture {
             "audio: cpal capture config resolved"
         );
 
-        let (tx, rx) = mpsc::channel::<AudioFrame>(CHANNEL_DEPTH);
+        let ring = Arc::new(AudioRing::new(CHANNEL_DEPTH));
 
-        let err_tx = tx.clone();
+        let err_ring = Arc::clone(&ring);
         let err_fn = move |err| {
             tracing::warn!(%err, "audio: cpal stream error");
-            // Nothing to forward; the receiver just sees a gap. Keep the
-            // clone alive so the closure type is consistent across
-            // platforms.
-            let _ = &err_tx;
+            err_ring.set_error(err.to_string());
         };
 
         // Build an `AudioFrame` from a ready i16 buffer. `channels` /
@@ -135,7 +219,7 @@ impl CpalLoopbackCapture {
 
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
-                let tx = tx.clone();
+                let data_ring = Arc::clone(&ring);
                 device
                     .build_input_stream(
                         &config,
@@ -144,7 +228,7 @@ impl CpalLoopbackCapture {
                             for &s in data {
                                 out.push(f32_to_i16(s));
                             }
-                            push_drop_oldest(&tx, mk_frame(out));
+                            data_ring.push_drop_oldest(mk_frame(out));
                         },
                         err_fn,
                         None,
@@ -152,12 +236,12 @@ impl CpalLoopbackCapture {
                     .context("build_input_stream f32")?
             }
             cpal::SampleFormat::I16 => {
-                let tx = tx.clone();
+                let data_ring = Arc::clone(&ring);
                 device
                     .build_input_stream(
                         &config,
                         move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                            push_drop_oldest(&tx, mk_frame(data.to_vec()));
+                            data_ring.push_drop_oldest(mk_frame(data.to_vec()));
                         },
                         err_fn,
                         None,
@@ -165,7 +249,7 @@ impl CpalLoopbackCapture {
                     .context("build_input_stream i16")?
             }
             cpal::SampleFormat::U16 => {
-                let tx = tx.clone();
+                let data_ring = Arc::clone(&ring);
                 device
                     .build_input_stream(
                         &config,
@@ -175,7 +259,7 @@ impl CpalLoopbackCapture {
                                 // u16 → i16 centred at 0.
                                 out.push((s as i32 - 32768) as i16);
                             }
-                            push_drop_oldest(&tx, mk_frame(out));
+                            data_ring.push_drop_oldest(mk_frame(out));
                         },
                         err_fn,
                         None,
@@ -191,7 +275,7 @@ impl CpalLoopbackCapture {
 
         Ok(Self {
             _stream: stream,
-            rx,
+            ring,
             channels,
             sample_rate,
         })
@@ -201,43 +285,17 @@ impl CpalLoopbackCapture {
 #[async_trait]
 impl AudioCapture for CpalLoopbackCapture {
     async fn next_frame(&mut self) -> Result<Option<AudioFrame>> {
-        // `recv` yields None only when every sender is dropped, which
-        // for us means the stream was torn down — signal exhaustion.
-        match self.rx.recv().await {
-            Some(f) => Ok(Some(f)),
-            None => {
+        match self.ring.pop().await {
+            Ok(Some(f)) => Ok(Some(f)),
+            Ok(None) => {
                 tracing::debug!(
                     channels = self.channels,
                     sample_rate = self.sample_rate,
-                    "audio: cpal capture channel closed"
+                    "audio: cpal capture ring closed"
                 );
                 Ok(None)
             }
-        }
-    }
-}
-
-/// Push a frame, dropping the OLDEST queued frame first if the channel
-/// is full. Called from the RT audio callback — must never block. A
-/// full channel means the async encoder is behind; shedding the oldest
-/// frame caps end-to-end latency at the channel depth instead of
-/// letting WASAPI/Pulse xrun on a stalled callback.
-fn push_drop_oldest(tx: &mpsc::Sender<AudioFrame>, frame: AudioFrame) {
-    use mpsc::error::TrySendError;
-    match tx.try_send(frame) {
-        Ok(()) => {}
-        Err(TrySendError::Full(frame)) => {
-            // Best-effort: we can't pop the receiver from here, so send
-            // again after the consumer drains one slot. If it's STILL
-            // full we simply drop this frame (bounded, no growth).
-            // `try_send` a second time keeps the callback wait-free.
-            if tx.try_send(frame).is_err() {
-                // Silent drop — logging on the RT thread is itself a
-                // hazard. The pump logs aggregate frames-sent counts.
-            }
-        }
-        Err(TrySendError::Closed(_)) => {
-            // Receiver gone (pump ended); nothing to do.
+            Err(e) => Err(e),
         }
     }
 }
@@ -322,5 +380,27 @@ mod tests {
         // Out of range clamps rather than wrapping.
         assert_eq!(f32_to_i16(2.0), 32767);
         assert_eq!(f32_to_i16(-2.0), -32768);
+    }
+
+    #[tokio::test]
+    async fn audio_ring_drops_oldest_and_surfaces_stream_errors() {
+        let ring = AudioRing::new(2);
+        let mk = |tag: i16| AudioFrame {
+            samples: vec![tag],
+            channels: 2,
+            sample_rate: 48_000,
+        };
+        ring.push_drop_oldest(mk(1));
+        ring.push_drop_oldest(mk(2));
+        ring.push_drop_oldest(mk(3)); // evicts 1, retains 2 and 3
+        assert_eq!(ring.pop().await.unwrap().unwrap().samples, vec![2]);
+        assert_eq!(ring.pop().await.unwrap().unwrap().samples, vec![3]);
+
+        ring.set_error("device invalidated".into());
+        let err = ring.pop().await.unwrap_err().to_string();
+        assert!(err.contains("device invalidated"), "{err}");
+
+        ring.close();
+        assert!(ring.pop().await.unwrap().is_none());
     }
 }
