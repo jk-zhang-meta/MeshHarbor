@@ -314,6 +314,7 @@ pub async fn handle_agent_socket(
     // P6 — an arbiter-capable agent serializes + fences concurrent input
     // itself; the hub then skips the P3 single-INPUT-holder downgrade.
     let input_arbiter = caps.input.iter().any(|c| c == "arbiter");
+    let supports_silent_monitor = caps.input.iter().any(|c| c == "silent-monitor");
     // Fleet RPC — distilled here so the Hub can refuse a pre-feature agent
     // with 412 instead of pushing a frame it drops in its unknown-tag branch,
     // which would leave the caller waiting out its whole deadline.
@@ -426,6 +427,9 @@ pub async fn handle_agent_socket(
     state
         .rc_hub
         .set_agent_fr141_support(agent_id, supports_ssh_resume, supports_rc_continue);
+    state
+        .rc_hub
+        .set_agent_silent_monitor(agent_id, supports_silent_monitor);
     state
         .rc_hub
         .set_agent_relay_control_support(agent_id, caps.has_rpc(RpcCap::RelayControl));

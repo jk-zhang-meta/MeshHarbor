@@ -2253,7 +2253,12 @@ fn compute_caps(run_hw_probes: bool, attempt_444: bool) -> AgentCaps {
         // Noop without enigo-input, but the arbitration/floor semantics
         // hold), so the server can safely lift the P3 single-INPUT-holder
         // downgrade for this agent.
-        input: vec!["arbiter".into(), "exclusive".into(), "ghost-cursor".into()],
+        input: vec![
+            "arbiter".into(),
+            "exclusive".into(),
+            "ghost-cursor".into(),
+            "silent-monitor".into(),
+        ],
         // Multi-org — this agent honours `rc:agent.join_org` (enroll into an
         // additional org from a pushed token, no restart). Build-independent:
         // the enroll + config paths are in every flavour.

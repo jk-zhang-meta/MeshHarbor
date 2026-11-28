@@ -144,6 +144,9 @@ pub struct LiveSession {
     /// 0.5.0 — Admin silent monitoring session (watch/takeover). Excluded from
     /// regular user session lists, host capacity, and `remote_sessions` history.
     pub silent_monitor: bool,
+    /// 0.5.0 — Specific active regular session bound to this silent monitor
+    /// (when selected from the live monitoring table).
+    pub monitor_target_session_id: Option<ObjectId>,
     /// 0.5.0 — True while this silent monitoring session currently holds
     /// active takeover control over the target device.
     pub admin_takeover_active: bool,
@@ -398,6 +401,7 @@ impl LiveSession {
             controller_user_id,
             controller_name: String::new(),
             silent_monitor: false,
+            monitor_target_session_id: None,
             admin_takeover_active: false,
             permissions,
             file_children_opted_in: false,
@@ -1037,6 +1041,7 @@ impl LiveSession {
             controller_user_id,
             controller_name: String::new(),
             silent_monitor: false,
+            monitor_target_session_id: None,
             admin_takeover_active: false,
             permissions,
             file_children_opted_in: false,

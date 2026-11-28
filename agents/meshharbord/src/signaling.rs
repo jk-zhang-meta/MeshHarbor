@@ -4637,7 +4637,7 @@ async fn handle_server_msg(
             // link's or an outsider's session has nobody with the device's authenticator app,
             // so it is refused outright; a person's session without a right code is refused
             // with the reason, so the viewer asks for one.
-            if !silent_monitor && meshharbor_node_core::two_factor::active() {
+            if meshharbor_node_core::two_factor::active() {
                 if shared_lease.is_some() || external.is_some() {
                     info!(%session_id, %controller_user_id, "two-factor: a shared or external session refused");
                     let _ = reply_for_session(
@@ -5094,19 +5094,29 @@ async fn handle_server_msg(
                         // open on this connection, the worker advertised
                         // `keep-delegated`, and the session is neither
                         // external nor a device share.
-                        keepable: if silent_monitor {
-                            false
-                        } else {
-                            crate::delegate::session_keepable(
-                                peers.window_open(),
-                                delegate.worker_keeps(),
-                                external_consent.is_some() || shared_lease.is_some(),
-                            )
-                        },
+                        keepable: crate::delegate::session_keepable(
+                            peers.window_open(),
+                            delegate.worker_keeps(),
+                            external_consent.is_some() || shared_lease.is_some() || silent_monitor,
+                        ),
                         silent_monitor,
                     }),
                 ));
                 if !sent {
+                    if silent_monitor {
+                        warn!(%session_id, "silent monitor: failed to deliver SessionParams to worker — refusing");
+                        let _ = reply_for_session(
+                            ws,
+                            delegated,
+                            &ClientMsg::Terminate {
+                                session_id,
+                                reason: EndReason::Error,
+                                limit: None,
+                            },
+                        )
+                        .await;
+                        return Ok(());
+                    }
                     // No worker, or its queue is full. Not fatal — the daemon
                     // still serves the session itself, which on macOS means a
                     // blank screen but a working, terminable session.
@@ -5474,8 +5484,26 @@ async fn handle_server_msg(
                 pending_file_child_parent,
                 initial_resolution,
                 silent_monitor,
-            ) = pending_session_meta.remove(&session_id).unwrap_or_else(|| {
-                (
+            ) = match pending_session_meta.remove(&session_id) {
+                Some(meta) => meta,
+                None if peers.is_worker() => {
+                    warn!(
+                        %session_id,
+                        "delegated worker received rc:sdp.offer without SessionParams — refusing fail-closed"
+                    );
+                    let _ = reply_for_session(
+                        ws,
+                        delegated,
+                        &ClientMsg::Terminate {
+                            session_id,
+                            reason: EndReason::Error,
+                            limit: None,
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+                None => (
                     "Controller".to_string(),
                     None,
                     None,
@@ -5486,8 +5514,8 @@ async fn handle_server_msg(
                     None,
                     None,
                     false,
-                )
-            });
+                ),
+            };
             // FR-121 — the route the hub settled at the offer supersedes the
             // request's (the controller may have named its mesh node only now).
             let rc_overlay = match zone_route.as_deref() {
@@ -5539,7 +5567,9 @@ async fn handle_server_msg(
             // table (`is_worker()`), its link points at the delegation channel
             // instead, and the table switches it on the daemon's orders. With
             // the switch off every session takes its connection's sender.
-            let link = (peers.keeps_sessions() && (delegated.is_none() || peers.is_worker()))
+            let link = (!silent_monitor
+                && peers.keeps_sessions()
+                && (delegated.is_none() || peers.is_worker()))
                 .then(|| peers.link(session_id, delegated.unwrap_or(outbound_tx)));
             let session_tx = link.as_ref().map_or_else(
                 || delegated.unwrap_or(outbound_tx).clone(),
@@ -5579,6 +5609,7 @@ async fn handle_server_msg(
                 // loop that holds it (the clone drops with the peer).
                 carrier_ready_tx.clone(),
                 silent_monitor,
+                agent_cfg.tenant_id.clone(),
             )
             .await
             {
@@ -7196,6 +7227,19 @@ async fn handle_server_msg(
                     resume,
                 },
             );
+        }
+
+        // 0.5.0 — Server-authorized admin takeover toggle (only sent over the
+        // authenticated server→agent WebSocket after live RBAC verification).
+        // Scoped to sessions owned by THIS org's peer table so one org cannot
+        // toggle a session belonging to another enrolled org.
+        ServerMsg::AdminTakeover { session_id, active } => {
+            if peers.holds(&session_id) {
+                info!(%session_id, active, org = %agent_cfg.tenant_id, "server-authorized rc:admin.takeover applied");
+                crate::input::arbiter::global().set_admin_takeover(session_id, active);
+            } else {
+                warn!(%session_id, active, org = %agent_cfg.tenant_id, "rc:admin.takeover ignored: session not in this org's peer table");
+            }
         }
 
         // FR-141 — server-initiated revocation of surviving persistent SSH PTY

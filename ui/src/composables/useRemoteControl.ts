@@ -1449,6 +1449,10 @@ export interface RcControlState {
   /** 0.5.0 — true while an administrator has actively taken over control of
    *  this host; regular controllers enter view-only mode until cleared. */
   adminTakeover?: boolean
+  /** 0.5.0 — session hex of the administrator currently holding takeover
+   *  control (present ONLY on silent monitor viewers; omitted on regular
+   *  controllers to preserve stealth). */
+  adminTakeoverHolder?: string | null
 }
 
 /** P6 — a ghost cursor: another session's pointer, rebroadcast by the
@@ -1811,6 +1815,9 @@ export function parseControlInbound(data: unknown): RcControlInbound {
         participants,
         pendingRequest,
         ...(typeof obj.admin_takeover === 'boolean' ? { adminTakeover: obj.admin_takeover } : {}),
+        ...(obj.admin_takeover_holder === null || typeof obj.admin_takeover_holder === 'string'
+          ? { adminTakeoverHolder: obj.admin_takeover_holder }
+          : {}),
       },
     }
   }
@@ -5132,9 +5139,15 @@ export function useRemoteControl(
     /**
      * 0.5.0 — Admin silent monitoring mode (watch + optional takeover of an
      * active RC session). Suppresses host-mutating resolution/display-match
-     * requests and keeps input disabled until `setAdminTakeover(true)`.
+     * requests and keeps input disabled until the server authorizes takeover
+     * and the agent confirms ownership in `rc:control.state`.
      */
     silentMonitor?: boolean
+    /**
+     * 0.5.0 — Optional specific active regular RC session ID to bind a silent
+     * monitor to (forwarded as `monitor_target_session_id` on `rc:session.request`).
+     */
+    monitorTargetSessionId?: () => string | null
   },
 ) {
   const ws = useWsStore()
@@ -6106,21 +6119,29 @@ export function useRemoteControl(
    *  holder). Null until the first `rc:control.state` broadcast; old
    *  agents never send it, so the multi-user UI self-hides. */
   const controlState = ref<RcControlState | null>(null)
-  /** 0.5.0 — On a silent monitor viewer: whether THIS admin currently holds
-   *  active takeover control (defaults to view-only false). */
-  const adminTakeoverActive = ref(false)
+  /** 0.5.0 — On a silent monitor viewer: whether THIS admin session is the
+   *  agent-acknowledged owner of active takeover control (strictly derived from
+   *  authoritative `rc:control.state` `adminTakeoverHolder`). */
+  const adminTakeoverActive = computed(
+    () =>
+      silentMonitor &&
+      Boolean(sessionId.value) &&
+      controlState.value?.adminTakeover === true &&
+      controlState.value?.adminTakeoverHolder === sessionId.value,
+  )
+  /** 0.5.0 — On a silent monitor viewer: true when a DIFFERENT administrator
+   *  currently holds takeover control on this target device. */
+  const adminTakeoverOtherHolder = computed(
+    () =>
+      silentMonitor &&
+      controlState.value?.adminTakeover === true &&
+      Boolean(controlState.value?.adminTakeoverHolder) &&
+      controlState.value?.adminTakeoverHolder !== sessionId.value,
+  )
   /** 0.5.0 — On a regular controller: true while an administrator has taken
    *  over control, switching this controller to view-only mode. */
   const adminTakenOver = computed(
     () => !silentMonitor && controlState.value?.adminTakeover === true,
-  )
-  watch(
-    () => controlState.value?.adminTakeover,
-    (active) => {
-      if (silentMonitor && active === false) {
-        adminTakeoverActive.value = false
-      }
-    },
   )
   /** P6 — ghost cursors: other sessions' pointers keyed by session hex. */
   const peerCursors = ref<Record<string, PeerCursor>>({})
@@ -8089,20 +8110,12 @@ export function useRemoteControl(
    *  Safe to call while the channel is closed — no-op until open; the
    *  `channels.control.onopen` handler calls this automatically so a
    *  page reload re-emits the stored preference without user action. */
-  /** 0.5.0 — Silent admin monitor toggles active control takeover on/off.
-   *  Sends `rc:admin.takeover` directly over the session's control DC so the
-   *  agent's InputArbiter fences held inputs and notifies regular controllers. */
-  function setAdminTakeover(active: boolean): boolean {
-    if (!silentMonitor) return false
-    const ch = channels.control
-    if (!ch || ch.readyState !== 'open') return false
-    try {
-      ch.send(JSON.stringify({ t: 'rc:admin.takeover', active }))
-      adminTakeoverActive.value = active
-      return true
-    } catch {
-      return false
-    }
+  /** 0.5.0 — Browser-side `rc:admin.takeover` over WebRTC DC is deliberately
+   *  disabled; takeover is authorized exclusively by the server HTTP route
+   *  `POST /api/tenant/:tid/monitoring/takeover` -> `ServerMsg::AdminTakeover`,
+   *  and `adminTakeoverActive` updates upon agent `rc:control.state` ack. */
+  function setAdminTakeover(_active: boolean): boolean {
+    return false
   }
 
   function sendResolutionPreference() {
@@ -10472,7 +10485,6 @@ export function useRemoteControl(
     featuresRefused.value = {}
     // P6 — fresh session, fresh multi-user state.
     controlState.value = null
-    adminTakeoverActive.value = false
     peerCursors.value = {}
     phase.value = 'requesting'
 
@@ -12214,7 +12226,14 @@ export function useRemoteControl(
                 ? permissions
                 : withPrivacyAsked(permissions, askedCaps),
             ...(sharedMode && !silentMonitor ? { share_grant_id: opts?.shareGrantId?.() } : {}),
-            ...(silentMonitor ? { silent_monitor: true } : {}),
+            ...(silentMonitor
+              ? {
+                  silent_monitor: true,
+                  ...(opts?.monitorTargetSessionId?.()
+                    ? { monitor_target_session_id: opts.monitorTargetSessionId() }
+                    : {}),
+                }
+              : {}),
             browser_caps: browserCaps,
           }
     // loopback-TURN corp-relay (Phase 2): forward the probed descriptor so the
@@ -15890,6 +15909,7 @@ export function useRemoteControl(
     controlState,
     adminTakenOver,
     adminTakeoverActive,
+    adminTakeoverOtherHolder,
     setAdminTakeover,
     peerCursors,
     requestControl,

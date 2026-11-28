@@ -120,6 +120,30 @@ pub fn apply_rc_ctrl(hub: &Hub, ctrl: &serde_json::Value) {
                 info!(tenant = %tid, denied, agents = n, "rc ctrl: keep-busy policy applied from another pod");
             }
         }
+        Some("admin_takeover") => {
+            let (Some(tid), Some(sid), Some(uid), Some(active)) = (
+                ctrl.get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("session_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("user_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| ObjectId::parse_str(s).ok()),
+                ctrl.get("active").and_then(|v| v.as_bool()),
+            ) else {
+                return;
+            };
+            match hub.set_silent_monitor_takeover(tid, sid, uid, active) {
+                Ok(aid) => {
+                    info!(tenant = %tid, session = %sid, agent = %aid, active, "rc ctrl: admin takeover applied from another pod");
+                }
+                Err(e) => {
+                    debug!(tenant = %tid, session = %sid, %e, "rc ctrl: admin takeover ignored on non-owner pod");
+                }
+            }
+        }
         Some("ssh_revoke") => {
             let Some(tid) = ctrl
                 .get("tenant_id")

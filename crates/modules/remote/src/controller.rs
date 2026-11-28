@@ -938,9 +938,18 @@ async fn resolve_session_authz_with_origin(
     if let Ok(ClientMsg::SessionRequest {
         agent_id,
         permissions,
+        silent_monitor,
         ..
     }) = serde_json::from_str::<ClientMsg>(text)
     {
+        let effective_perms = if silent_monitor {
+            // Effective monitor grant is strictly a subset of `VIEW | INPUT`
+            // (never widened beyond what the caller requested).
+            permissions & (meshharbor_remote_control::permissions::Permissions::VIEW
+                | meshharbor_remote_control::permissions::Permissions::INPUT)
+        } else {
+            permissions
+        };
         let ceiling = meshharbor_mod_fleet::device_invite::features_for_caller(
             &state.fleet,
             agent_id,
@@ -948,7 +957,7 @@ async fn resolve_session_authz_with_origin(
         )
         .await
         .map_err(|_| "Could not verify device access selection".to_string())?;
-        if ceiling.is_some_and(|f| !f.permits_session(permissions)) {
+        if ceiling.is_some_and(|f| !f.permits_session(effective_perms)) {
             return Err(
                 "The personal or temporary device holder has not allowed these capabilities for this caller".into(),
             );
@@ -1053,20 +1062,65 @@ async fn resolve_session_authz_with_origin(
 
     // 0.5.0 — Admin silent monitoring (watch + optional takeover of an active
     // remote control session). Requires org ADMINISTRATOR or both
-    // VIEW_REMOTE_AUDIT and REMOTE_CONTROL in the device's org. The Hub then
-    // enforces that an active non-monitor RC session actually exists on the
-    // target device before admitting the monitor.
+    // VIEW_REMOTE_AUDIT and REMOTE_CONTROL in the device's org. Non-admin
+    // operators remain subject to the device's access allowlist, and temporary
+    // device invites stay bound to their inviter/allowed roles.
     if silent_monitor {
         let perms = state
             .tenants
             .get_member_permissions(agent.tenant_id, controller_user_id)
             .await
             .unwrap_or(0);
-        let allowed = permissions::has(perms, permissions::ADMINISTRATOR)
+        let is_org_admin = permissions::has(perms, permissions::ADMINISTRATOR);
+        let allowed = is_org_admin
             || (permissions::has(perms, permissions::VIEW_REMOTE_AUDIT)
                 && permissions::has(perms, permissions::REMOTE_CONTROL));
         if !allowed {
             return Err("you don't have permission to monitor remote sessions".to_string());
+        }
+        // Respect temporary-device invite bounds (even for ADMINISTRATOR,
+        // matching the regular path below).
+        if state.settings.auth.native_device_invite_enabled
+            && agent.owner_user_id != controller_user_id
+        {
+            match meshharbor_mod_fleet::device_invite::grant_for_agent(&state.fleet, agent_id).await
+            {
+                Ok(None) => {}
+                Ok(Some(grant)) => {
+                    let roles = state
+                        .tenants
+                        .member_role_ids(agent.tenant_id, controller_user_id)
+                        .await
+                        .unwrap_or_default();
+                    if !grant.allows(Some(controller_user_id), &roles) {
+                        return Err(
+                            "this is a temporary device; only the person who invited it can monitor it"
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(_) => {
+                    return Err("could not verify this device's access; please retry".to_string());
+                }
+            }
+        }
+        // For non-ADMINISTRATOR operators, enforce the device's user/role allowlist.
+        if !is_org_admin && agent.owner_user_id != controller_user_id {
+            let policy = &agent.access_policy;
+            if !policy.allowed_user_ids.is_empty() || !policy.allowed_role_ids.is_empty() {
+                let mut permitted = policy.allowed_user_ids.contains(&controller_user_id);
+                if !permitted && !policy.allowed_role_ids.is_empty() {
+                    let role_ids = state
+                        .tenants
+                        .member_role_ids(agent.tenant_id, controller_user_id)
+                        .await
+                        .unwrap_or_default();
+                    permitted = role_ids.iter().any(|r| policy.allowed_role_ids.contains(r));
+                }
+                if !permitted {
+                    return Err("this device's access policy does not allow you to monitor it".to_string());
+                }
+            }
         }
         return Ok(SessionAuthz {
             mode: ConsentMode::Auto,

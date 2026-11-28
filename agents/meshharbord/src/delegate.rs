@@ -386,6 +386,7 @@ pub(crate) fn server_session_id(msg: &ServerMsg) -> Option<bson::oid::ObjectId> 
         | ServerMsg::SdpOffer { session_id, .. }
         | ServerMsg::SdpAnswer { session_id, .. }
         | ServerMsg::Ice { session_id, .. }
+        | ServerMsg::AdminTakeover { session_id, .. }
         | ServerMsg::Terminate { session_id, .. } => Some(*session_id),
         _ => None,
     }
@@ -664,6 +665,7 @@ pub fn delegable_inbound(msg: &ServerMsg) -> bool {
             | ServerMsg::SdpOffer { .. }
             | ServerMsg::SdpAnswer { .. }
             | ServerMsg::Ice { .. }
+            | ServerMsg::AdminTakeover { .. }
             | ServerMsg::Terminate { .. }
     )
 }
@@ -2400,6 +2402,10 @@ mod routing_tests {
         assert!(delegable_inbound(&ServerMsg::Ice {
             session_id: oid(),
             candidate: serde_json::Value::Null,
+        }));
+        assert!(delegable_inbound(&ServerMsg::AdminTakeover {
+            session_id: oid(),
+            active: true,
         }));
         assert!(delegable_inbound(&ServerMsg::Terminate {
             session_id: oid(),

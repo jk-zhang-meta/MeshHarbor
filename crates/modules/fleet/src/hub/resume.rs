@@ -1394,6 +1394,7 @@ mod tests {
                 replaces: None,
                 continues_from: None,
                 silent_monitor: false,
+                monitor_target_session_id: None,
             },
             meshharbor_remote_control::session::FileChildPolicySnapshot::new(Some(2), Some(4)),
         )

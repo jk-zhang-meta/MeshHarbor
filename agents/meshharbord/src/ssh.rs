@@ -3793,6 +3793,27 @@ pub fn revoke_classic_sessions(
     sid_or_grant: Option<&str>,
     reason: Option<&str>,
 ) -> usize {
+    // 0.5.0 — Also atomically cancel matching PENDING unredeemed grants so a
+    // session disconnected while in `granted` phase can never authenticate
+    // afterward with the revoked grant.
+    let cancelled_grants = {
+        let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+        let before = grants.len();
+        grants.retain(|g| {
+            if g.org_id.as_deref() != Some(org_id) {
+                return true;
+            }
+            let matches = match scope {
+                "session" => sid_or_grant.is_some_and(|target| g.grant_id == target),
+                "principal" => principal.is_some_and(|p| {
+                    g.principal_id.as_deref() == Some(p) || g.caller == p
+                }),
+                _ => true,
+            };
+            !matches
+        });
+        before - grants.len()
+    };
     let matched: Vec<LiveClassicSshEntry> = {
         let mut map = LIVE_CLASSIC_SSH.lock().unwrap_or_else(|e| e.into_inner());
         let keys: Vec<u64> = map
@@ -3814,7 +3835,7 @@ pub fn revoke_classic_sessions(
             .collect();
         keys.into_iter().filter_map(|k| map.remove(&k)).collect()
     };
-    let count = matched.len();
+    let count = matched.len() + cancelled_grants;
     let msg = format!(
         "meshharbor-ssh: session disconnected ({})",
         reason.unwrap_or("revoked")
@@ -6677,6 +6698,66 @@ mod tests {
         super::unregister_live_classic_session(id1);
         super::unregister_live_classic_session(id2);
         super::unregister_live_classic_session(id3);
+    }
+
+    #[tokio::test]
+    async fn revoke_classic_sessions_cancels_pending_unredeemed_grants_scoped_by_org() {
+        let _lock = grant_test().await;
+        let (_k1, line1) = client_key(91);
+        let (_k2, line2) = client_key(92);
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 30_000;
+
+        super::record_grant_ex(
+            "pending-g1".into(),
+            line1.clone(),
+            "alice@org-a".into(),
+            "daemon".into(),
+            None,
+            None,
+            exp,
+            60,
+            false,
+            Some("org-a".into()),
+            Some("user-a".into()),
+            Some(false),
+        )
+        .unwrap();
+        super::record_grant_ex(
+            "pending-g1".into(),
+            line2.clone(),
+            "bob@org-b".into(),
+            "daemon".into(),
+            None,
+            None,
+            exp,
+            60,
+            false,
+            Some("org-b".into()),
+            Some("user-b".into()),
+            Some(false),
+        )
+        .unwrap();
+
+        // Revoking `pending-g1` in org-a atomically cancels org-a's unredeemed grant
+        // while leaving org-b's pending grant untouched.
+        assert_eq!(
+            super::revoke_classic_sessions("org-a", "session", None, Some("pending-g1"), Some("admin")),
+            1
+        );
+        let parsed1 = russh::keys::ssh_key::PublicKey::from_openssh(&line1).unwrap();
+        let parsed2 = russh::keys::ssh_key::PublicKey::from_openssh(&line2).unwrap();
+        assert!(
+            super::take_grant_for(&parsed1, "org-a").is_none(),
+            "revoked pending grant in org-a must not be redeemable"
+        );
+        assert!(
+            super::take_grant_for(&parsed2, "org-b").is_some(),
+            "org-b pending grant must remain redeemable"
+        );
     }
 
     #[test]

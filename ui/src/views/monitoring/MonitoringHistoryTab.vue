@@ -486,6 +486,7 @@ const timelineDialog = ref(false)
 const timelineLoading = ref(false)
 const timelineError = ref('')
 const timelineItems = ref<SshGrantActivityItem[]>([])
+let historySeq = 0
 
 const kindOptions = computed(() => [
   { title: t('mh.monitoring.filter.all'), value: 'all' },
@@ -599,6 +600,7 @@ function applyFilters() {
 
 async function loadHistory(showSpinner = false) {
   if (!props.tenantId) return
+  const seq = ++historySeq
   if (showSpinner) loading.value = true
   try {
     const res = await fetchMonitoringHistory(props.tenantId, {
@@ -612,6 +614,7 @@ async function loadHistory(showSpinner = false) {
       page: page.value,
       per_page: 50,
     })
+    if (seq !== historySeq) return
     items.value = res.items
     total.value = res.total
     totalPages.value = res.total_pages
@@ -622,9 +625,14 @@ async function loadHistory(showSpinner = false) {
       expandedGroups.value = [groupedDevices.value[0].agentId]
     }
   } catch (e) {
+    if (seq !== historySeq) return
+    items.value = []
+    total.value = 0
+    totalPages.value = 1
+    summary.value = { total_remote: 0, total_ssh: 0, denied_ssh: 0 }
     historyError.value = e instanceof Error ? e.message : t('mh.monitoring.history.loadFailed')
   } finally {
-    loading.value = false
+    if (seq === historySeq) loading.value = false
   }
 }
 
@@ -647,8 +655,13 @@ async function openSshTimeline(row: HistoryMonitoringItem) {
 watch(
   () => props.tenantId,
   () => {
+    items.value = []
+    total.value = 0
+    totalPages.value = 1
+    summary.value = { total_remote: 0, total_ssh: 0, denied_ssh: 0 }
     page.value = 1
     expandedGroups.value = []
+    timelineDialog.value = false
     void loadHistory(true)
   },
 )

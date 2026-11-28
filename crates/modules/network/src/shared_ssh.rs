@@ -499,7 +499,10 @@ fn terminate(state: &NetworkState, sid: ObjectId, s: &SharedSshSession) {
     if let Some(mut set) = state.tunnel_sessions_by_target_agent.get_mut(&s.device) {
         set.remove(&sid);
     }
-    state.fleet.rc_hub.remove_live_ssh(&s.ssh_grant_id);
+    state
+        .fleet
+        .rc_hub
+        .remove_live_ssh_scoped(s.tenant_id, Some(s.device), &s.ssh_grant_id);
     let msg = ServerMsg::TunnelTerminate {
         session_id: sid,
         reason: CloseReason::IoError,

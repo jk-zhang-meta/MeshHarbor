@@ -1034,7 +1034,7 @@ pub async fn history(
     #[cfg(feature = "network")]
     let (ssh_rows, ssh_envelopes): (
         Vec<meshharbor_remote_control::models::SshAuditEvent>,
-        HashMap<String, (Option<DateTime>, Option<DateTime>, u64)>,
+        HashMap<(ObjectId, String), (Option<DateTime>, Option<DateTime>, u64)>,
     ) = if want_ssh
         && let Some(network) = state.modules.network.as_ref()
     {
@@ -1066,14 +1066,16 @@ pub async fn history(
             rows.push(r);
         }
 
-        // Batch-load activity envelopes for all grant_ids in one query.
+        // Batch-load activity envelopes for all grant_ids in one query, keyed
+        // by `(agent_id, grant_id)` so a report from a different agent can
+        // never alter another target device's SSH history or duration.
         let grant_ids: Vec<String> = rows
             .iter()
             .filter_map(|r| r.grant_id.clone())
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
-        let mut envelopes: HashMap<String, (Option<DateTime>, Option<DateTime>, u64)> =
+        let mut envelopes: HashMap<(ObjectId, String), (Option<DateTime>, Option<DateTime>, u64)> =
             HashMap::new();
         if !grant_ids.is_empty() {
             use meshharbor_remote_control::models::SshActivityKind;
@@ -1090,7 +1092,7 @@ pub async fn history(
             {
                 while let Ok(Some(ev)) = ac.try_next().await {
                     let Some(gid) = ev.grant_id else { continue };
-                    let entry = envelopes.entry(gid).or_insert((None, None, 0));
+                    let entry = envelopes.entry((ev.agent_id, gid)).or_insert((None, None, 0));
                     match ev.kind {
                         SshActivityKind::SessionOpen => {
                             if entry.0.is_none() {
@@ -1117,7 +1119,7 @@ pub async fn history(
     #[cfg(not(feature = "network"))]
     let (ssh_rows, ssh_envelopes): (
         Vec<meshharbor_remote_control::models::SshAuditEvent>,
-        HashMap<String, (Option<DateTime>, Option<DateTime>, u64)>,
+        HashMap<(ObjectId, String), (Option<DateTime>, Option<DateTime>, u64)>,
     ) = {
         let _ = want_ssh;
         (Vec::new(), HashMap::new())
@@ -1263,7 +1265,7 @@ pub async fn history(
         let env = s
             .grant_id
             .as_deref()
-            .and_then(|gid| ssh_envelopes.get(gid))
+            .and_then(|gid| ssh_envelopes.get(&(s.agent_id, gid.to_string())))
             .copied();
         let is_live = s
             .grant_id
@@ -1398,18 +1400,36 @@ pub async fn ssh_grant_activities(
     }
     #[cfg(feature = "network")]
     let items = if let Some(network) = state.modules.network.as_ref() {
-        let params = meshharbor_services::dao::base::PaginationParams {
-            page: 1,
-            per_page: 200,
-            before: None,
-        };
-        let page = network
+        // Pin the authoritative target agent_id from `ssh_audit` so a report
+        // from a different agent claiming the same `grant_id` cannot pollute
+        // this session's activity timeline.
+        let audit_agent: Option<ObjectId> = network
+            .ssh_audit
+            .base
+            .collection()
+            .find_one(doc! { "tenant_id": tid, "grant_id": &grant_id })
+            .await
+            .map_err(db_err)?
+            .map(|r| r.agent_id);
+        let mut filter = doc! { "tenant_id": tid, "grant_id": &grant_id };
+        if let Some(aid) = audit_agent {
+            filter.insert("agent_id", aid);
+        }
+        let opts = mongodb::options::FindOptions::builder()
+            .sort(doc! { "at": 1 })
+            .limit(200)
+            .build();
+        let mut cursor = network
             .ssh_activity
-            .list_for_grant(tid, &grant_id, &params)
-            .await?;
-        page.items
-            .into_iter()
-            .map(|ev| SshGrantActivityItem {
+            .base
+            .collection()
+            .find(filter)
+            .with_options(opts)
+            .await
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        while let Some(ev) = cursor.try_next().await.map_err(db_err)? {
+            out.push(SshGrantActivityItem {
                 id: ev.id.map(|i| i.to_hex()).unwrap_or_default(),
                 kind: serde_json::to_value(ev.kind)
                     .ok()
@@ -1420,8 +1440,9 @@ pub async fn ssh_grant_activities(
                 allowed: ev.allowed,
                 caller: ev.caller,
                 at: iso_string(ev.at),
-            })
-            .collect()
+            });
+        }
+        out
     } else {
         Vec::new()
     };
@@ -1465,31 +1486,59 @@ pub async fn disconnect(
             {
                 return Err(ApiError::NotFound("Session not found".into()));
             }
-            let terminated_local = fleet
-                .rc_hub
-                .terminate(sid, EndReason::AdminTerminated)
-                .is_ok();
+            let terminated_local = live.is_some()
+                && fleet
+                    .rc_hub
+                    .terminate(sid, EndReason::AdminTerminated)
+                    .is_ok();
             #[cfg(feature = "remote")]
-            if live.is_none()
+            let row_end_written = if live.is_none()
                 && let Some(remote) = state.modules.remote.as_ref()
             {
-                let _ = meshharbor_mod_remote::row_end::admin_end(remote, tid, sid).await;
+                let res = meshharbor_mod_remote::row_end::admin_end(remote, tid, sid).await;
+                if res == meshharbor_mod_remote::row_end::Written::Failed {
+                    return Err(ApiError::ServiceUnavailable(
+                        "Failed to record remote session termination; retry".into(),
+                    ));
+                }
+                matches!(res, meshharbor_mod_remote::row_end::Written::Wrote { .. })
+            } else {
+                false
+            };
+            #[cfg(not(feature = "remote"))]
+            let row_end_written = false;
+
+            let broadcast = if state.redis_pubsub.is_some() {
+                meshharbor_mod_fleet::ctrl::publish_rc_ctrl_checked(
+                    &state,
+                    "terminate",
+                    serde_json::json!({
+                        "session_id": sid.to_hex(),
+                        "tenant_id": tid.to_hex(),
+                    }),
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::ServiceUnavailable(format!(
+                        "Failed to broadcast disconnect across cluster: {e}"
+                    ))
+                })?;
+                true
+            } else {
+                false
+            };
+            if !terminated_local && !row_end_written && !broadcast {
+                return Err(ApiError::NotFound(
+                    "Remote control session is no longer active on this server".into(),
+                ));
             }
-            meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
-                &state,
-                "terminate",
-                serde_json::json!({
-                    "session_id": sid.to_hex(),
-                    "tenant_id": tid.to_hex(),
-                }),
-            )
-            .await;
             Ok(Json(serde_json::json!({
-                "disconnected": true,
+                "disconnected": terminated_local || row_end_written,
+                "accepted": true,
                 "kind": "remote",
                 "id": sid.to_hex(),
                 "delivered_local": terminated_local,
-                "broadcast": true,
+                "broadcast": broadcast,
             })))
         }
         "ssh" => {
@@ -1503,6 +1552,29 @@ pub async fn disconnect(
                 .reason
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or_else(|| "admin_disconnect".to_string());
+
+            // Verify any caller-supplied agent_id belongs to `tid` (prevents
+            // cross-tenant probing or misdirected revokes).
+            let verified_agent_id = match live.as_ref().map(|l| l.agent_id) {
+                Some(aid) => Some(aid),
+                None => match body
+                    .agent_id
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    Some(raw) => {
+                        let aid = ObjectId::parse_str(raw)
+                            .map_err(|_| ApiError::BadRequest("Invalid agent_id".into()))?;
+                        fleet
+                            .agents
+                            .find_any_in_tenant(tid, aid)
+                            .await
+                            .map_err(|_| ApiError::NotFound("Target device not found in tenant".into()))?;
+                        Some(aid)
+                    }
+                    None => None,
+                },
+            };
 
             // 1. Shared SSH bridge teardown if applicable.
             let mut delivered_local = false;
@@ -1520,12 +1592,7 @@ pub async fn disconnect(
                 }
             }
 
-            // 2. Determine target agent and scope for `ServerMsg::SshRevoke`.
-            let agent_id = live.as_ref().map(|l| l.agent_id).or_else(|| {
-                body.agent_id
-                    .as_deref()
-                    .and_then(|s| ObjectId::parse_str(s).ok())
-            });
+            // 2. Determine target scope for `ServerMsg::SshRevoke`.
             let (scope, principal, sid) = if let Some(ref entry) = live {
                 if let Some(gid) = entry.grant_id.clone() {
                     ("session", None, Some(gid))
@@ -1539,7 +1606,7 @@ pub async fn disconnect(
                 ("session", None, Some(body.id.clone()))
             };
 
-            if let Some(aid) = agent_id {
+            if let Some(aid) = verified_agent_id {
                 if fleet.rc_hub.push_ssh_revoke_agent(
                     tid,
                     aid,
@@ -1550,19 +1617,6 @@ pub async fn disconnect(
                 ) {
                     delivered_local = true;
                 }
-                meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
-                    &state,
-                    "ssh_revoke",
-                    serde_json::json!({
-                        "tenant_id": tid.to_hex(),
-                        "agent_id": aid.to_hex(),
-                        "scope": scope,
-                        "principal": principal,
-                        "sid": sid,
-                        "reason": reason,
-                    }),
-                )
-                .await;
             } else {
                 let n = fleet.rc_hub.push_ssh_revoke_org_scoped(
                     tid,
@@ -1574,27 +1628,44 @@ pub async fn disconnect(
                 if n > 0 {
                     delivered_local = true;
                 }
-                meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
-                    &state,
-                    "ssh_revoke",
-                    serde_json::json!({
-                        "tenant_id": tid.to_hex(),
-                        "scope": scope,
-                        "principal": principal,
-                        "sid": sid,
-                        "reason": reason,
-                    }),
-                )
-                .await;
             }
-            let _ = fleet.rc_hub.remove_live_ssh(&body.id);
+
+            let broadcast = if state.redis_pubsub.is_some() {
+                let mut payload = serde_json::json!({
+                    "tenant_id": tid.to_hex(),
+                    "scope": scope,
+                    "principal": principal,
+                    "sid": sid,
+                    "reason": reason,
+                });
+                if let Some(aid) = verified_agent_id {
+                    payload["agent_id"] = serde_json::json!(aid.to_hex());
+                }
+                meshharbor_mod_fleet::ctrl::publish_rc_ctrl_checked(&state, "ssh_revoke", payload)
+                    .await
+                    .map_err(|e| {
+                        ApiError::ServiceUnavailable(format!(
+                            "Failed to broadcast SSH revoke across cluster: {e}"
+                        ))
+                    })?;
+                true
+            } else {
+                false
+            };
+
+            if !delivered_local && !broadcast {
+                return Err(ApiError::ServiceUnavailable(
+                    "Target device is offline and did not receive SSH disconnect".into(),
+                ));
+            }
 
             Ok(Json(serde_json::json!({
-                "disconnected": true,
+                "disconnected": delivered_local,
+                "accepted": true,
                 "kind": "ssh",
                 "id": body.id,
                 "delivered_local": delivered_local,
-                "broadcast": true,
+                "broadcast": broadcast,
             })))
         }
         _ => Err(ApiError::BadRequest(
@@ -1628,22 +1699,54 @@ pub async fn takeover(
         .ok_or_else(|| ApiError::ServiceUnavailable("fleet module unavailable".into()))?;
     let sid = ObjectId::parse_str(&body.session_id)
         .map_err(|_| ApiError::BadRequest("Invalid session_id".into()))?;
-    let live = fleet
-        .rc_hub
-        .session_snapshot(sid)
-        .ok_or_else(|| ApiError::NotFound("Silent monitor session not found".into()))?;
-    if live.0 != tid {
-        return Err(ApiError::NotFound("Silent monitor session not found".into()));
-    }
-    let agent_id = fleet
-        .rc_hub
-        .set_silent_monitor_takeover(sid, auth.user_id, body.active)
-        .map_err(|e| ApiError::Forbidden(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "session_id": sid.to_hex(),
-        "agent_id": agent_id.to_hex(),
-        "active": body.active,
-    })))
+    match fleet
+        .rc_hub
+        .set_silent_monitor_takeover(tid, sid, auth.user_id, body.active)
+    {
+        Ok(agent_id) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "session_id": sid.to_hex(),
+            "agent_id": agent_id.to_hex(),
+            "active": body.active,
+            "delivered_local": true,
+        }))),
+        Err(meshharbor_remote_control::error::Error::AgentBusy) => Err(ApiError::Conflict(
+            "Another administrator currently holds takeover control on this device".into(),
+        )),
+        Err(meshharbor_remote_control::error::Error::SessionNotFound(_))
+            if state.redis_pubsub.is_some() =>
+        {
+            meshharbor_mod_fleet::ctrl::publish_rc_ctrl_checked(
+                &state,
+                "admin_takeover",
+                serde_json::json!({
+                    "tenant_id": tid.to_hex(),
+                    "session_id": sid.to_hex(),
+                    "user_id": auth.user_id.to_hex(),
+                    "active": body.active,
+                }),
+            )
+            .await
+            .map_err(|e| {
+                ApiError::ServiceUnavailable(format!(
+                    "Failed to forward admin takeover across cluster: {e}"
+                ))
+            })?;
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "session_id": sid.to_hex(),
+                "active": body.active,
+                "delivered_local": false,
+                "broadcast": true,
+            })))
+        }
+        Err(meshharbor_remote_control::error::Error::SessionNotFound(_)) => {
+            Err(ApiError::NotFound("Silent monitor session not found".into()))
+        }
+        Err(meshharbor_remote_control::error::Error::AgentOffline(_)) => Err(
+            ApiError::ServiceUnavailable("Target device is offline".into()),
+        ),
+        Err(e) => Err(ApiError::Forbidden(e.to_string())),
+    }
 }

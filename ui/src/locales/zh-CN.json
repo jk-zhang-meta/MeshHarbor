@@ -1138,6 +1138,7 @@
       "watch": {
         "watchingBadge": "无感监控中（只读）",
         "takingOverBadge": "已接管控制（原主控仅可观看）",
+        "otherAdminTakeoverBadge": "另一名管理员已接管控制",
         "controllerLabel": "原主控：{name}",
         "takeOver": "接管控制",
         "releaseControl": "释放控制权",
@@ -1165,6 +1166,7 @@
         "closedDesc": "您已退出本次画面监控。",
         "errorTitle": "无法建立监控画面",
         "takeoverChannelNotReady": "控制通道尚未就绪，请稍候重试",
+        "takeoverFailed": "切换控制权失败",
         "takeoverEnabledToast": "已接管控制权，原主控端已切换为仅观看模式",
         "takeoverReleasedToast": "已释放控制权，原主控端已恢复操作权限"
       }

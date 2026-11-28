@@ -223,8 +223,10 @@
                   color="primary"
                   variant="tonal"
                   prepend-icon="mdi-monitor-eye"
+                  :href="watchHref(row)"
+                  target="_blank"
+                  rel="noopener"
                   :data-testid="`watch-rc-${row.id}`"
-                  @click="openWatch(row)"
                 >
                   {{ t('mh.monitoring.live.watchTakeover') }}
                 </v-btn>
@@ -348,6 +350,7 @@ const disconnecting = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let tickTimer: ReturnType<typeof setInterval> | null = null
 let inFlight = false
+let requestSeq = 0
 
 const effectiveTenantId = computed(() => props.tenantId)
 
@@ -388,8 +391,10 @@ function sourceLabel(row: LiveMonitoringItem): string {
   return translated === key ? row.source : translated
 }
 
-async function loadLive(showSpinner = false) {
-  if (!effectiveTenantId.value || inFlight) return
+async function loadLive(showSpinner = false, force = false) {
+  if (!effectiveTenantId.value) return
+  if (!force && inFlight) return
+  const seq = ++requestSeq
   inFlight = true
   if (showSpinner) loading.value = true
   try {
@@ -397,6 +402,7 @@ async function loadLive(showSpinner = false) {
       kind: kindFilter.value,
       q: searchQuery.value,
     })
+    if (seq !== requestSeq) return
     items.value = res.items
     counts.value = res.counts
     capabilities.value = res.capabilities
@@ -404,17 +410,20 @@ async function loadLive(showSpinner = false) {
     liveError.value = ''
     lastSyncedAt.value = new Date().toLocaleTimeString()
   } catch (e) {
+    if (seq !== requestSeq) return
     items.value = []
     counts.value = { total: 0, remote: 0, ssh: 0 }
     liveError.value = e instanceof Error ? e.message : t('mh.monitoring.live.unavailable')
   } finally {
-    loading.value = false
-    inFlight = false
+    if (seq === requestSeq) {
+      loading.value = false
+      inFlight = false
+    }
   }
 }
 
-function openWatch(row: LiveMonitoringItem) {
-  const target = router.resolve({
+function watchHref(row: LiveMonitoringItem): string {
+  return router.resolve({
     name: 'monitoring-watch',
     params: { tenantId: effectiveTenantId.value, agentId: row.agent_id },
     query: {
@@ -422,11 +431,7 @@ function openWatch(row: LiveMonitoringItem) {
       deviceName: row.target.device_name || '',
       controller: row.initiator.account_name || row.initiator.device_name || '',
     },
-  })
-  const popup = window.open(target.href, '_blank', 'noopener')
-  if (!popup) {
-    void router.push(target.fullPath)
-  }
+  }).href
 }
 
 function askDisconnect(row: LiveMonitoringItem) {
@@ -479,8 +484,14 @@ function onVisibilityChange() {
   }
 }
 
-watch([() => props.tenantId, kindFilter], () => {
-  void loadLive(true)
+watch([() => props.tenantId, kindFilter], ([newTid], [oldTid]) => {
+  if (newTid !== oldTid) {
+    items.value = []
+    counts.value = { total: 0, remote: 0, ssh: 0 }
+    disconnectDialog.value = false
+    pendingDisconnect.value = null
+  }
+  void loadLive(true, true)
 })
 
 onMounted(() => {

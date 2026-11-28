@@ -1138,6 +1138,7 @@
       "watch": {
         "watchingBadge": "Silent watch (View-only)",
         "takingOverBadge": "Control taken over (Controller view-only)",
+        "otherAdminTakeoverBadge": "Another admin holds control",
         "controllerLabel": "Controller: {name}",
         "takeOver": "Take over",
         "releaseControl": "Release control",
@@ -1165,6 +1166,7 @@
         "closedDesc": "You left this monitoring session.",
         "errorTitle": "Unable to attach monitor",
         "takeoverChannelNotReady": "Control channel is not ready yet",
+        "takeoverFailed": "Failed to update takeover control",
         "takeoverEnabledToast": "Control taken over — original controller is now view-only",
         "takeoverReleasedToast": "Control released — original controller can operate again"
       }

@@ -10,7 +10,7 @@
     <header class="mw-toolbar">
       <div class="mw-toolbar__left">
         <v-chip
-          :color="rc.adminTakeoverActive.value ? 'warning' : 'teal'"
+          :color="rc.adminTakeoverActive.value ? 'warning' : rc.adminTakeoverOtherHolder.value ? 'deep-orange' : 'teal'"
           size="small"
           variant="flat"
           :prepend-icon="rc.adminTakeoverActive.value ? 'mdi-shield-account' : 'mdi-eye-outline'"
@@ -18,7 +18,9 @@
           {{
             rc.adminTakeoverActive.value
               ? t('mh.monitoring.watch.takingOverBadge')
-              : t('mh.monitoring.watch.watchingBadge')
+              : rc.adminTakeoverOtherHolder.value
+                ? t('mh.monitoring.watch.otherAdminTakeoverBadge')
+                : t('mh.monitoring.watch.watchingBadge')
           }}
         </v-chip>
 
@@ -39,7 +41,7 @@
       </div>
 
       <div class="mw-toolbar__right">
-        <!-- Scale mode quick toggle -->
+        <!-- Scale mode quick toggle (exact values matching useRemoteControl coordinate mapping) -->
         <v-btn-toggle
           v-model="rc.scaleMode.value"
           density="compact"
@@ -48,7 +50,7 @@
           mandatory
           class="mw-scale-toggle"
         >
-          <v-btn value="fit" size="x-small" :title="t('mh.monitoring.watch.scaleFit')">
+          <v-btn value="adaptive" size="x-small" :title="t('mh.monitoring.watch.scaleFit')">
             {{ t('mh.monitoring.watch.scaleFitShort') }}
           </v-btn>
           <v-btn value="fill" size="x-small" :title="t('mh.monitoring.watch.scaleFill')">
@@ -69,14 +71,14 @@
           @click="toggleFullscreen"
         />
 
-        <!-- Silent Takeover / Release toggle -->
+        <!-- Server-authorized Silent Takeover / Release toggle -->
         <v-btn
           v-if="!rc.adminTakeoverActive.value"
           color="warning"
           variant="flat"
           size="small"
           prepend-icon="mdi-hand-back-left"
-          :disabled="rc.phase.value !== 'connected' || takeoverBusy"
+          :disabled="rc.phase.value !== 'connected' || takeoverBusy || rc.adminTakeoverOtherHolder.value"
           :loading="takeoverBusy"
           data-testid="mw-takeover-btn"
           @click="toggleTakeover(true)"
@@ -97,7 +99,7 @@
           {{ t('mh.monitoring.watch.releaseControl') }}
         </v-btn>
 
-        <!-- Ctrl+Alt+Del (only while taken over) -->
+        <!-- Ctrl+Alt+Del (only while THIS admin holds agent-acknowledged takeover) -->
         <v-btn
           v-if="rc.adminTakeoverActive.value"
           size="small"
@@ -157,7 +159,7 @@
       <span>{{ rc.adminTakeoverActive.value ? t('mh.monitoring.watch.takingOverBadge') : t('mh.monitoring.watch.watchingBadge') }}</span>
     </button>
 
-    <!-- Takeover subtle frame border cue when actively controlling -->
+    <!-- Multi-transport video stage (WebRTC RTP + WebCodecs + VP9-444 DC + HEVC DC) -->
     <div
       ref="stageRef"
       tabindex="0"
@@ -167,20 +169,36 @@
         'mw-stage--scroll': rc.scaleMode.value === 'original',
         'mw-stage--fill': rc.scaleMode.value === 'fill',
       }"
+      :style="stageCursorStyle"
     >
       <video
-        v-show="!rc.webcodecsActive.value"
+        v-show="!isCanvasRenderer"
         ref="videoRef"
         autoplay
         playsinline
         muted
-        class="mw-media"
+        class="mw-media rc-video-canvas"
         :style="mediaStyle"
       />
       <canvas
-        v-show="rc.webcodecsActive.value"
-        ref="canvasRef"
-        class="mw-media"
+        v-if="rc.webcodecsActive.value"
+        :key="`wc-${canvasGen}`"
+        :ref="bindWebcodecsCanvas"
+        class="mw-media rc-video-canvas"
+        :style="mediaStyle"
+      />
+      <canvas
+        v-if="rc.vp9_444Active.value"
+        :key="`vp9-${canvasGen}`"
+        :ref="bindVp9Canvas"
+        class="mw-media rc-video-canvas"
+        :style="mediaStyle"
+      />
+      <canvas
+        v-if="rc.hevcActive.value"
+        :key="`hevc-${canvasGen}`"
+        :ref="bindHevcCanvas"
+        class="mw-media rc-video-canvas"
         :style="mediaStyle"
       />
 
@@ -188,7 +206,7 @@
       <div v-if="overlayMessage" class="mw-overlay">
         <v-card max-width="460" class="pa-5 text-center" color="surface">
           <v-progress-circular
-            v-if="isConnecting"
+            v-if="isConnecting || loadingDevice"
             indeterminate
             color="primary"
             size="36"
@@ -205,7 +223,7 @@
           <div class="text-body-2 text-medium-emphasis mb-4">{{ overlayMessage }}</div>
           <div class="d-flex justify-center ga-2">
             <v-btn
-              v-if="!isConnecting && !endedNaturally"
+              v-if="!isConnecting && !loadingDevice && !endedNaturally"
               color="primary"
               variant="flat"
               @click="reconnect"
@@ -240,12 +258,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { useAgentStore } from '@/stores/agents'
-import { useRemoteControl } from '@/composables/useRemoteControl'
+import { useWsStore } from '@/stores/ws'
+import type { Agent } from '@/stores/agents'
+import { useRemoteControl, localPointerCursorCss } from '@/composables/useRemoteControl'
 import { disconnectLiveSession, setMonitorTakeover } from '@/api/monitoring'
 import { useSnackbar } from '@/composables/useSnackbar'
 
@@ -253,7 +273,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const agentStore = useAgentStore()
+const wsStore = useWsStore()
 const { showSuccess, showError } = useSnackbar()
 
 const tenantId = computed(() => String(route.params.tenantId || ''))
@@ -268,33 +288,80 @@ const controllerLabel = computed(() =>
   typeof route.query.controller === 'string' ? route.query.controller : '',
 )
 
-const agentRef = computed(
-  () => agentStore.agents.find((a) => a.id === agentId.value) ?? null,
-)
+// Exact target device row fetched directly by ID so signed peer verification
+// (`peer_auth_key`) is NEVER skipped on fleets with >100 devices.
+const targetAgent = ref<Agent | null>(null)
+const loadingDevice = ref(false)
+const deviceLoadError = ref('')
+
 const targetDeviceLabel = computed(
   () =>
     queryDeviceName.value ||
-    agentRef.value?.display_name ||
-    agentRef.value?.name ||
+    targetAgent.value?.display_name ||
+    targetAgent.value?.name ||
     agentId.value.slice(0, 8),
 )
 
-const rc = useRemoteControl(agentRef, {
+const rc = useRemoteControl(targetAgent, {
   userId: () => auth.user?.id ?? null,
   silentMonitor: true,
+  monitorTargetSessionId: () => targetSessionId.value || null,
 })
 
 const wrapperRef = ref<HTMLElement | null>(null)
 const stageRef = ref<HTMLElement | null>(null)
 const videoRef = ref<HTMLVideoElement | null>(null)
-const canvasRef = ref<HTMLCanvasElement | null>(null)
 
+// Fresh canvas key per connect/reconnect so a transferred OffscreenCanvas is
+// never reused after teardown or target change.
+const canvasGen = ref(1)
 const toolbarCollapsed = ref(false)
 const isFullscreen = ref(false)
 const takeoverBusy = ref(false)
 const confirmDisconnect = ref(false)
 const disconnectingTarget = ref(false)
 let detachInput: (() => void) | null = null
+let bootGen = 0
+
+const isCanvasRenderer = computed(
+  () => rc.webcodecsActive.value || rc.vp9_444Active.value || rc.hevcActive.value,
+)
+
+function bindWebcodecsCanvas(el: Element | ComponentPublicInstance | null) {
+  rc.webcodecsCanvasEl.value = (el as HTMLCanvasElement | null) ?? null
+}
+function bindVp9Canvas(el: Element | ComponentPublicInstance | null) {
+  rc.vp9_444CanvasEl.value = (el as HTMLCanvasElement | null) ?? null
+}
+function bindHevcCanvas(el: Element | ComponentPublicInstance | null) {
+  rc.hevcCanvasEl.value = (el as HTMLCanvasElement | null) ?? null
+}
+
+// Separate-cursor CSS mapping when admin is actively controlling.
+const cursorUrlCache = new Map<number, string | null>()
+function cursorBitmapUrl(id: number): string | null {
+  if (cursorUrlCache.has(id)) return cursorUrlCache.get(id) ?? null
+  const shape = rc.cursor.value.shapes.get(id)
+  if (!shape?.bitmap) return null
+  try {
+    const c = document.createElement('canvas')
+    c.width = shape.bitmap.width
+    c.height = shape.bitmap.height
+    const ctx = c.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(shape.bitmap, 0, 0)
+    const url = c.toDataURL('image/png')
+    cursorUrlCache.set(id, url)
+    return url
+  } catch {
+    return null
+  }
+}
+
+const stageCursorStyle = computed(() => {
+  if (!rc.adminTakeoverActive.value) return {}
+  return { cursor: localPointerCursorCss(rc.cursor.value, cursorBitmapUrl) }
+})
 
 const mediaStyle = computed(() => {
   if (rc.scaleMode.value === 'fill') {
@@ -318,11 +385,12 @@ const endedNaturally = computed(
 )
 const phaseColor = computed(() => {
   if (rc.phase.value === 'connected') return 'success'
-  if (isConnecting.value) return 'info'
-  if (rc.phase.value === 'error') return 'error'
+  if (isConnecting.value || loadingDevice.value) return 'info'
+  if (rc.phase.value === 'error' || deviceLoadError.value) return 'error'
   return 'default'
 })
 const phaseLabel = computed(() => {
+  if (loadingDevice.value) return t('mh.monitoring.watch.phaseConnecting')
   switch (rc.phase.value) {
     case 'connected':
       return t('mh.monitoring.watch.phaseConnected')
@@ -340,7 +408,8 @@ const phaseLabel = computed(() => {
 })
 
 const overlayTitle = computed(() => {
-  if (isConnecting.value) return t('mh.monitoring.watch.connectingTitle')
+  if (loadingDevice.value || isConnecting.value) return t('mh.monitoring.watch.connectingTitle')
+  if (deviceLoadError.value) return t('mh.monitoring.watch.errorTitle')
   if (rc.errorCode.value === 'target_session_ended') {
     return t('mh.monitoring.watch.targetEndedTitle')
   }
@@ -350,7 +419,8 @@ const overlayTitle = computed(() => {
 
 const overlayMessage = computed(() => {
   if (rc.phase.value === 'connected') return ''
-  if (isConnecting.value) return t('mh.monitoring.watch.connectingDesc')
+  if (loadingDevice.value || isConnecting.value) return t('mh.monitoring.watch.connectingDesc')
+  if (deviceLoadError.value) return deviceLoadError.value
   if (rc.errorCode.value === 'target_session_ended') {
     return t('mh.monitoring.watch.targetEndedDesc')
   }
@@ -358,14 +428,6 @@ const overlayMessage = computed(() => {
   if (rc.phase.value === 'closed') return t('mh.monitoring.watch.closedDesc')
   return ''
 })
-
-watch(
-  canvasRef,
-  (el) => {
-    rc.webcodecsCanvasEl.value = el
-  },
-  { flush: 'post' },
-)
 
 watch(
   [rc.remoteStream, videoRef],
@@ -390,23 +452,20 @@ watch(
 )
 
 async function toggleTakeover(active: boolean) {
-  if (rc.phase.value !== 'connected') return
+  if (rc.phase.value !== 'connected' || !rc.sessionId.value || !tenantId.value) return
   takeoverBusy.value = true
   try {
-    const sent = rc.setAdminTakeover(active)
-    if (!sent) {
-      showError(t('mh.monitoring.watch.takeoverChannelNotReady'))
-      return
-    }
-    if (rc.sessionId.value && tenantId.value) {
-      await setMonitorTakeover(tenantId.value, rc.sessionId.value, active).catch(() => {})
-    }
+    // Authoritative server RBAC check + ServerMsg::AdminTakeover push to agent.
+    // Input only unlocks once the agent confirms ownership in `rc:control.state`.
+    await setMonitorTakeover(tenantId.value, rc.sessionId.value, active)
     if (active) {
       stageRef.value?.focus()
       showSuccess(t('mh.monitoring.watch.takeoverEnabledToast'))
     } else {
       showSuccess(t('mh.monitoring.watch.takeoverReleasedToast'))
     }
+  } catch (e) {
+    showError(e instanceof Error ? e.message : t('mh.monitoring.watch.takeoverFailed'))
   } finally {
     takeoverBusy.value = false
   }
@@ -445,17 +504,49 @@ function onFullscreenChange() {
   isFullscreen.value = Boolean(document.fullscreenElement)
 }
 
-function reconnect() {
-  if (!agentId.value) return
+async function bootTarget() {
+  const gen = ++bootGen
+  await cleanupTakeoverAndDisconnect()
+  if (gen !== bootGen) return
+
+  targetAgent.value = null
+  deviceLoadError.value = ''
+  cursorUrlCache.clear()
+  canvasGen.value += 1
+
+  if (!tenantId.value || !agentId.value) {
+    deviceLoadError.value = t('mh.monitoring.watch.errorTitle')
+    return
+  }
+
+  wsStore.setTenantAffinity(tenantId.value)
+  loadingDevice.value = true
+  try {
+    const dev = await api.get<Agent>(`/tenant/${tenantId.value}/agent/${agentId.value}`)
+    if (gen !== bootGen) return
+    targetAgent.value = dev
+  } catch (e) {
+    if (gen !== bootGen) return
+    deviceLoadError.value = e instanceof Error ? e.message : t('mh.monitoring.watch.errorTitle')
+    return
+  } finally {
+    if (gen === bootGen) loadingDevice.value = false
+  }
+
+  // Default to adaptive scale so coordinate mapping matches letterboxing accurately.
+  if (rc.scaleMode.value !== 'fill' && rc.scaleMode.value !== 'original') {
+    rc.scaleMode.value = 'adaptive'
+  }
   void rc.connect(agentId.value, 'VIEW,INPUT')
 }
 
+function reconnect() {
+  void bootTarget()
+}
+
 async function cleanupTakeoverAndDisconnect() {
-  if (rc.adminTakeoverActive.value) {
-    rc.setAdminTakeover(false)
-    if (rc.sessionId.value && tenantId.value) {
-      await setMonitorTakeover(tenantId.value, rc.sessionId.value, false).catch(() => {})
-    }
+  if (rc.adminTakeoverActive.value && rc.sessionId.value && tenantId.value) {
+    await setMonitorTakeover(tenantId.value, rc.sessionId.value, false).catch(() => {})
   }
   detachInput?.()
   detachInput = null
@@ -475,26 +566,18 @@ async function closeWatch() {
   }
 }
 
-function onBeforeUnload() {
-  if (rc.adminTakeoverActive.value) {
-    rc.setAdminTakeover(false)
-  }
-}
+watch([tenantId, agentId, targetSessionId], () => {
+  void bootTarget()
+})
 
-onMounted(async () => {
+onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  window.addEventListener('beforeunload', onBeforeUnload)
-  if (tenantId.value && !agentRef.value) {
-    await agentStore.fetchAgents(tenantId.value).catch(() => {})
-  }
-  if (agentId.value) {
-    void rc.connect(agentId.value, 'VIEW,INPUT')
-  }
+  void bootTarget()
 })
 
 onBeforeUnmount(() => {
+  bootGen += 1
   document.removeEventListener('fullscreenchange', onFullscreenChange)
-  window.removeEventListener('beforeunload', onBeforeUnload)
   void cleanupTakeoverAndDisconnect()
 })
 </script>

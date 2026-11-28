@@ -126,6 +126,9 @@ struct SessCore {
     /// never emits ghost cursors, never seeds/alters `mode`/`holder`, and is
     /// strictly view-only unless holding `admin_takeover`.
     silent: bool,
+    /// 0.5.0 — Tenant/org scope on multi-enrolled hosts so admin takeover in
+    /// tenant A can never interrupt or notify a controller in tenant B.
+    tenant_id: String,
     held: HashSet<Held>,
     last_input: Instant,
 }
@@ -259,6 +262,28 @@ impl ArbiterState {
         mode_hint: Option<Mode>,
         now: Instant,
     ) {
+        self.open_with_silent_in_tenant(
+            session,
+            name,
+            can_input,
+            silent,
+            String::new(),
+            mode_hint,
+            now,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_silent_in_tenant(
+        &mut self,
+        session: ObjectId,
+        name: String,
+        can_input: bool,
+        silent: bool,
+        tenant_id: String,
+        mode_hint: Option<Mode>,
+        now: Instant,
+    ) {
         if !silent && !self.mode_seeded {
             if let Some(m) = mode_hint {
                 self.mode = m;
@@ -271,6 +296,7 @@ impl ArbiterState {
                 name,
                 can_input,
                 silent,
+                tenant_id,
                 held: HashSet::new(),
                 last_input: now,
             },
@@ -354,8 +380,26 @@ impl ArbiterState {
         if !core.silent || !core.can_input {
             return (false, Vec::new());
         }
+        let admin_tenant = core.tenant_id.clone();
         if active {
             if self.admin_takeover == Some(session) {
+                return (false, Vec::new());
+            }
+            // Single authoritative owner: refuse if another admin already holds takeover.
+            if self.admin_takeover.is_some() {
+                return (false, Vec::new());
+            }
+            // Multi-enrolled host isolation: refuse takeover if any active
+            // non-silent session belongs to a DIFFERENT tenant, so an admin in
+            // tenant A can never interrupt or notify tenant B's controller.
+            if !admin_tenant.is_empty()
+                && self.sessions.iter().any(|(id, other)| {
+                    *id != session
+                        && !other.silent
+                        && !other.tenant_id.is_empty()
+                        && other.tenant_id != admin_tenant
+                })
+            {
                 return (false, Vec::new());
             }
             let mut releases = Vec::new();
@@ -705,6 +749,7 @@ enum Cmd {
         name: String,
         can_input: bool,
         silent: bool,
+        tenant_id: String,
         mode_hint: Option<Mode>,
         control: DcStash,
         cursor: DcStash,
@@ -881,11 +926,36 @@ impl Arbiter {
         control: DcStash,
         cursor: DcStash,
     ) {
+        self.session_open_with_silent_in_tenant(
+            session,
+            name,
+            can_input,
+            silent,
+            String::new(),
+            mode_hint,
+            control,
+            cursor,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_open_with_silent_in_tenant(
+        &self,
+        session: ObjectId,
+        name: String,
+        can_input: bool,
+        silent: bool,
+        tenant_id: String,
+        mode_hint: Option<Mode>,
+        control: DcStash,
+        cursor: DcStash,
+    ) {
         self.send_control(Cmd::Open {
             session,
             name,
             can_input,
             silent,
+            tenant_id,
             mode_hint,
             control,
             cursor,
@@ -1027,11 +1097,20 @@ fn handle_cmd(
                 name,
                 can_input,
                 silent,
+                tenant_id,
                 mode_hint,
                 control,
                 cursor,
             } => {
-                state.open_with_silent(session, name, can_input, silent, mode_hint, Instant::now());
+                state.open_with_silent_in_tenant(
+                    session,
+                    name,
+                    can_input,
+                    silent,
+                    tenant_id,
+                    mode_hint,
+                    Instant::now(),
+                );
                 sinks.insert(
                     session,
                     Sinks {
@@ -1365,9 +1444,9 @@ fn classify_unpermitted(mut inj: Box<dyn super::InputInjector + Send>) -> KbRepl
     }
 }
 
-fn state_payload(state: &ArbiterState) -> String {
+fn state_payload_for(state: &ArbiterState, for_silent: bool) -> String {
     let snap = state.snapshot();
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "t": "rc:control.state",
         "mode": snap.mode.as_str(),
         "holder": snap.holder.map(|h| h.to_hex()),
@@ -1387,8 +1466,14 @@ fn state_payload(state: &ArbiterState) -> String {
             "name": p.name,
         })),
         "admin_takeover": snap.admin_takeover,
-    })
-    .to_string()
+    });
+    // Include the exact takeover owner ID ONLY for silent monitor viewers so
+    // two admins watching the same host know unambiguously who holds control
+    // without leaking monitor session IDs to regular controllers.
+    if for_silent {
+        obj["admin_takeover_holder"] = serde_json::json!(state.admin_takeover.map(|h| h.to_hex()));
+    }
+    obj.to_string()
 }
 
 /// Send `rc:control.state` to a single session (used when a silent monitor
@@ -1402,7 +1487,7 @@ fn send_state_to(
     let Some(s) = sinks.get(&target) else {
         return;
     };
-    let payload = state_payload(state);
+    let payload = state_payload_for(state, state.is_silent(target));
     let stash = s.control.clone();
     handle.spawn(async move {
         if let Some(dc) = stash.lock().await.clone() {
@@ -1417,10 +1502,15 @@ fn broadcast_state(
     sinks: &HashMap<ObjectId, Sinks>,
     handle: &tokio::runtime::Handle,
 ) {
-    let payload = state_payload(state);
-    for s in sinks.values() {
+    let regular_payload = state_payload_for(state, false);
+    let silent_payload = state_payload_for(state, true);
+    for (sid, s) in sinks.iter() {
         let stash = s.control.clone();
-        let payload = payload.clone();
+        let payload = if state.is_silent(*sid) {
+            silent_payload.clone()
+        } else {
+            regular_payload.clone()
+        };
         handle.spawn(async move {
             if let Some(dc) = stash.lock().await.clone() {
                 let _ = dc.send_text(payload).await;
@@ -2348,5 +2438,82 @@ mod tests {
             st.plan(ctrl, &click(true), now),
             EventPlan::Inject { .. }
         ));
+    }
+
+    #[test]
+    fn silent_admin_takeover_enforces_single_owner_and_tenant_isolation() {
+        let mut st = ArbiterState::default();
+        let ctrl_a = sid();
+        let admin_a1 = sid();
+        let admin_a2 = sid();
+        let now = Instant::now();
+
+        st.open_with_silent_in_tenant(
+            ctrl_a,
+            "Alice".into(),
+            true,
+            false,
+            "org-a".into(),
+            Some(Mode::Exclusive),
+            now,
+        );
+        st.open_with_silent_in_tenant(
+            admin_a1,
+            "Admin1".into(),
+            true,
+            true,
+            "org-a".into(),
+            None,
+            now,
+        );
+        st.open_with_silent_in_tenant(
+            admin_a2,
+            "Admin2".into(),
+            true,
+            true,
+            "org-a".into(),
+            None,
+            now,
+        );
+
+        // First admin takes over cleanly.
+        assert!(st.set_admin_takeover(admin_a1, true).0);
+
+        // Second admin CANNOT steal or release first admin's takeover.
+        assert_eq!(st.set_admin_takeover(admin_a2, true), (false, Vec::new()));
+        assert_eq!(st.set_admin_takeover(admin_a2, false), (false, Vec::new()));
+        assert_eq!(st.plan(admin_a2, &click(true), now), EventPlan::Deny);
+        assert!(matches!(
+            st.plan(admin_a1, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+
+        // Silent monitors see `admin_takeover_holder`; regular controllers NEVER do.
+        let silent_json: serde_json::Value =
+            serde_json::from_str(&state_payload_for(&st, true)).unwrap();
+        let regular_json: serde_json::Value =
+            serde_json::from_str(&state_payload_for(&st, false)).unwrap();
+        assert_eq!(silent_json["admin_takeover"], true);
+        assert_eq!(silent_json["admin_takeover_holder"], admin_a1.to_hex());
+        assert_eq!(regular_json["admin_takeover"], true);
+        assert!(regular_json.get("admin_takeover_holder").is_none());
+
+        // Release takeover, then open a regular session in a DIFFERENT tenant (`org-b`).
+        assert!(st.set_admin_takeover(admin_a1, false).0);
+        let ctrl_b = sid();
+        st.open_with_silent_in_tenant(
+            ctrl_b,
+            "Bob".into(),
+            true,
+            false,
+            "org-b".into(),
+            None,
+            now,
+        );
+
+        // Multi-enrolled host isolation: org-a admin MUST NOT take over while
+        // an org-b regular controller is active.
+        assert_eq!(st.set_admin_takeover(admin_a1, true), (false, Vec::new()));
+        assert!(!st.snapshot().admin_takeover);
     }
 }

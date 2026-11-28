@@ -1399,6 +1399,14 @@ pub enum ClientMsg {
         /// validated by the remote authz gate and passed via `DispatchCtx`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         silent_monitor: bool,
+        /// 0.5.0 — Specific active regular session ID selected by the admin
+        /// for silent watch/takeover (binds monitor lifecycle to this session).
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "option_oid_hex"
+        )]
+        monitor_target_session_id: Option<ObjectId>,
     },
 
     /// Controller sends an SDP offer (after consent granted).
@@ -3225,9 +3233,18 @@ pub enum ServerMsg {
         /// 0.5.0 — Admin silent monitoring session: skip consent prompt, host
         /// indicator/banner/LocalAPI registration, lock_on_end, and
         /// tell_the_screen; open InputArbiter in silent view-only mode until
-        /// the admin explicitly sends `rc:admin.takeover`.
+        /// the server authorizes takeover via `ServerMsg::AdminTakeover`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         silent_monitor: bool,
+    },
+
+    /// 0.5.0 — Server-authorized admin takeover toggle sent ONLY over the
+    /// authenticated server→agent WebSocket after live RBAC verification.
+    #[serde(rename = "rc:admin.takeover")]
+    AdminTakeover {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        active: bool,
     },
 
     /// Server forwards SDP offer from controller → agent.
@@ -6750,6 +6767,7 @@ mod tests {
             replaces: None,
             continues_from: None,
             silent_monitor: false,
+            monitor_target_session_id: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(!s.contains("$oid"));
@@ -6779,6 +6797,7 @@ mod tests {
             replaces: None,
             continues_from: None,
             silent_monitor: false,
+            monitor_target_session_id: None,
         };
         let s = serde_json::to_string(&req_with_t).unwrap();
         assert!(s.contains("\"preferred_transport\":\"data-channel-vp9-444\""));
@@ -6812,6 +6831,7 @@ mod tests {
             replaces: None,
             continues_from: None,
             silent_monitor: false,
+            monitor_target_session_id: None,
         };
         let s = serde_json::to_string(&req_lr).unwrap();
         assert!(
@@ -7177,6 +7197,7 @@ mod tests {
             replaces: None,
             continues_from: None,
             silent_monitor: false,
+            monitor_target_session_id: None,
         };
         let server_req = |initial_resolution| ServerMsg::Request {
             two_factor_code: None,
@@ -10945,6 +10966,7 @@ mod fr130_wire_tests {
             replaces,
             continues_from: None,
             silent_monitor: false,
+            monitor_target_session_id: None,
         }
     }
 
@@ -11225,6 +11247,7 @@ mod fr130_wire_tests {
             replaces: None,
             continues_from: Some(sid),
             silent_monitor: false,
+            monitor_target_session_id: None,
         };
         let req_json = serde_json::to_string(&req).unwrap();
         assert!(req_json.contains(r#""continues_from":"507f1f77bcf86cd799439011""#));

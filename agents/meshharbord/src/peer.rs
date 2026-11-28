@@ -501,6 +501,7 @@ impl AgentPeer {
             rc_sessions,
             carrier_ready_tx,
             false,
+            String::new(),
         )
         .await
     }
@@ -573,12 +574,8 @@ impl AgentPeer {
         // delegation channel to the daemon, never the worker's own WS.
         carrier_ready_tx: mpsc::Sender<bson::oid::ObjectId>,
         silent_monitor: bool,
+        tenant_id: String,
     ) -> Result<Self> {
-        if silent_monitor
-            && let Ok(mut set) = SILENT_MONITOR_SESSIONS.lock()
-        {
-            set.insert(session_id);
-        }
         let mut engine = MediaEngine::default();
         engine
             .register_default_codecs()
@@ -926,11 +923,12 @@ impl AgentPeer {
         // canonical teardown signal display-match restore uses).
         {
             use meshharbor_remote_control::permissions::Permissions;
-            crate::input::arbiter::global().session_open_with_silent(
+            crate::input::arbiter::global().session_open_with_silent_in_tenant(
                 session_id,
                 controller_name,
                 permissions.contains(Permissions::INPUT),
                 silent_monitor,
+                tenant_id,
                 input_mode
                     .as_deref()
                     .and_then(crate::input::arbiter::Mode::parse),
@@ -1980,6 +1978,13 @@ impl AgentPeer {
 
         // FR-93 P5h — told when this computer goes to sleep.
         let sleep_notice = crate::sleep_notice::register(session_id, control_dc.clone());
+        // Register in SILENT_MONITOR_SESSIONS only AFTER every fallible setup
+        // step has succeeded so a failed constructor can never leak an ID.
+        if silent_monitor
+            && let Ok(mut set) = SILENT_MONITOR_SESSIONS.lock()
+        {
+            set.insert(session_id);
+        }
         Ok(Self {
             file_child_authorization,
             ice_servers: ice_servers.clone(),
@@ -12044,27 +12049,22 @@ fn attach_control_handler(
                 return;
             };
             // 0.5.0 — Silent admin monitors are strictly restricted to
-            // non-disruptive stream health probes + explicit `rc:admin.takeover`
-            // so watching never changes host display mode, encoder resolution,
-            // keep-busy, layout, or floor arbitration for the original user.
+            // non-disruptive stream health probes so watching never changes host
+            // display mode, encoder resolution, keep-busy, layout, or floor
+            // arbitration for the original user. Browser-originated
+            // `rc:admin.takeover` is NEVER accepted on the WebRTC DC — takeover
+            // is authorized exclusively by the server over the authenticated
+            // control WebSocket (`ServerMsg::AdminTakeover`).
             if silent_monitor
-                && !matches!(
-                    t,
-                    "rc:admin.takeover" | "rc:clock" | "rc:keyframe" | "rc:decodestat"
-                )
+                && !matches!(t, "rc:clock" | "rc:keyframe" | "rc:decodestat")
             {
-                debug!(%session_id, tag = t, "control: silent monitor dropped host-mutating verb");
+                debug!(%session_id, tag = t, "control: silent monitor dropped untrusted or host-mutating verb");
                 return;
             }
             match t {
                 "rc:admin.takeover" => {
-                    if !silent_monitor {
-                        warn!(%session_id, "control: non-monitor session attempted rc:admin.takeover — dropped");
-                        return;
-                    }
-                    let active = val.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-                    info!(%session_id, active, "control: rc:admin.takeover updated");
-                    crate::input::arbiter::global().set_admin_takeover(session_id, active);
+                    warn!(%session_id, "control: browser-originated rc:admin.takeover dropped (server-only)");
+                    return;
                 }
                 "rc:quality" => {
                     let Some(q_str) = val.get("quality").and_then(|v| v.as_str()) else {

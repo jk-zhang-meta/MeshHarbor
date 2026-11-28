@@ -7560,5 +7560,29 @@ describe('0.5.0 silent admin takeover in rc:control.state', () => {
         adminTakeover: false,
       },
     })
+
+    // Silent monitors also receive authoritative `admin_takeover_holder`; regular
+    // controllers omit it so the admin session id is never leaked.
+    const silentMonitorState = parseControlInbound(
+      JSON.stringify({
+        t: 'rc:control.state',
+        mode: 'exclusive',
+        holder: 's1',
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        admin_takeover: true,
+        admin_takeover_holder: 'admin-s1',
+      }),
+    )
+    expect(silentMonitorState).toEqual({
+      kind: 'control_state',
+      state: {
+        mode: 'exclusive',
+        holder: 's1',
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        pendingRequest: null,
+        adminTakeover: true,
+        adminTakeoverHolder: 'admin-s1',
+      },
+    })
   })
 })

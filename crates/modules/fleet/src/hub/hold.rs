@@ -584,6 +584,7 @@ mod tests {
                 replaces: None,
                 continues_from: None,
                 silent_monitor: false,
+                monitor_target_session_id: None,
             };
             hub.dispatch(&controller_ctx(user, tx), request).unwrap();
         };

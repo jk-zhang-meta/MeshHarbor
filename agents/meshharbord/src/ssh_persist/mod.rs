@@ -1150,8 +1150,19 @@ pub async fn terminate_session_in_org(
 ) -> usize {
     #[cfg(feature = "ssh-server")]
     {
-        let q = sid_hex.trim().to_ascii_lowercase();
-        terminate_where(|d| d.org_id == org_id && d.sid.to_hex() == q, reason).await
+        let raw = sid_hex.trim();
+        let q = raw.to_ascii_lowercase();
+        terminate_where(
+            |d| {
+                d.org_id == org_id
+                    && (d.sid.to_hex() == q
+                        || d.grant_id
+                            .as_deref()
+                            .is_some_and(|g| g.eq_ignore_ascii_case(raw)))
+            },
+            reason,
+        )
+        .await
     }
     #[cfg(not(feature = "ssh-server"))]
     {
