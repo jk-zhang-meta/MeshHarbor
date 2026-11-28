@@ -3744,6 +3744,75 @@ static LIVE_CLASSIC_SSH: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u64, LiveClassicSshEntry>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// 0.5.0 — Short-lived revocation tombstones closing the TOCTOU gap between
+/// `take_grant_for` (auth) and `register_live_classic_session` / persistent PTY
+/// spawn (post-consent). Bounded by `GRANT_TTL_SECS + 60s`.
+#[cfg(feature = "ssh-server")]
+static REVOKED_SSH_GRANTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(feature = "ssh-server")]
+static REVOKED_SSH_PRINCIPALS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(String, String), std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(feature = "ssh-server")]
+fn revoked_tombstone_ttl() -> std::time::Duration {
+    std::time::Duration::from_secs(meshharbor_remote_control::models::ssh_limits::GRANT_TTL_SECS + 60)
+}
+
+#[cfg(feature = "ssh-server")]
+fn caller_matches_principal_target(principal: &str, caller: &str, target: &str) -> bool {
+    if principal == target || caller == target {
+        return true;
+    }
+    // `keylist:<user>` also matches display caller `ssh:<user>@<peer> (key-list)`.
+    if let Some(user) = target.strip_prefix("keylist:")
+        && caller.ends_with(" (key-list)")
+        && caller
+            .strip_prefix("ssh:")
+            .and_then(|rest| rest.split('@').next())
+            == Some(user)
+    {
+        return true;
+    }
+    false
+}
+
+#[cfg(feature = "ssh-server")]
+pub(crate) fn is_grant_or_principal_revoked(
+    org_id: &str,
+    grant_id: Option<&str>,
+    principal: &str,
+    caller: &str,
+) -> bool {
+    let now = std::time::Instant::now();
+    if let Some(gid) = grant_id {
+        let mut map = REVOKED_SSH_GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, exp| *exp > now);
+        if map.contains_key(&(org_id.to_string(), gid.to_string())) {
+            return true;
+        }
+    }
+    let mut pmap = REVOKED_SSH_PRINCIPALS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    pmap.retain(|_, exp| *exp > now);
+    pmap.keys()
+        .any(|(o, p)| o == org_id && caller_matches_principal_target(principal, caller, p))
+}
+
+#[cfg(not(feature = "ssh-server"))]
+pub(crate) fn is_grant_or_principal_revoked(
+    _org_id: &str,
+    _grant_id: Option<&str>,
+    _principal: &str,
+    _caller: &str,
+) -> bool {
+    false
+}
+
 #[cfg(feature = "ssh-server")]
 pub(crate) fn register_live_classic_session(
     org_id: String,
@@ -3753,21 +3822,27 @@ pub(crate) fn register_live_classic_session(
     cancel: tokio_util::sync::CancellationToken,
     handle: std::sync::Arc<std::sync::Mutex<Option<russh::server::Handle>>>,
 ) -> u64 {
-    let id = NEXT_CLASSIC_SSH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    LIVE_CLASSIC_SSH
+    let mut map = LIVE_CLASSIC_SSH
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(
-            id,
-            LiveClassicSshEntry {
-                org_id,
-                grant_id,
-                principal,
-                caller,
-                cancel,
-                handle,
-            },
-        );
+        .unwrap_or_else(|e| e.into_inner());
+    // Atomic check under `LIVE_CLASSIC_SSH` lock: if a revoke raced between
+    // `take_grant_for` and here, cancel the connection immediately!
+    if is_grant_or_principal_revoked(&org_id, grant_id.as_deref(), &principal, &caller) {
+        cancel.cancel();
+        return 0;
+    }
+    let id = NEXT_CLASSIC_SSH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    map.insert(
+        id,
+        LiveClassicSshEntry {
+            org_id,
+            grant_id,
+            principal,
+            caller,
+            cancel,
+            handle,
+        },
+    );
     id
 }
 
@@ -3793,6 +3868,30 @@ pub fn revoke_classic_sessions(
     sid_or_grant: Option<&str>,
     reason: Option<&str>,
 ) -> usize {
+    // 0.5.0 — Record revocation tombstone BEFORE scanning `GRANTS` and
+    // `LIVE_CLASSIC_SSH` so a grant currently in flight inside `auth_publickey`
+    // or awaiting PTY consent is caught atomically at registration/spawn time.
+    let exp = std::time::Instant::now() + revoked_tombstone_ttl();
+    match scope {
+        "session" => {
+            if let Some(target) = sid_or_grant {
+                let mut map = REVOKED_SSH_GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+                map.retain(|_, d| *d > std::time::Instant::now());
+                map.insert((org_id.to_string(), target.to_string()), exp);
+            }
+        }
+        "principal" => {
+            if let Some(p) = principal {
+                let mut map = REVOKED_SSH_PRINCIPALS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                map.retain(|_, d| *d > std::time::Instant::now());
+                map.insert((org_id.to_string(), p.to_string()), exp);
+            }
+        }
+        _ => {}
+    }
+
     // 0.5.0 — Also atomically cancel matching PENDING unredeemed grants so a
     // session disconnected while in `granted` phase can never authenticate
     // afterward with the revoked grant.
@@ -3806,7 +3905,11 @@ pub fn revoke_classic_sessions(
             let matches = match scope {
                 "session" => sid_or_grant.is_some_and(|target| g.grant_id == target),
                 "principal" => principal.is_some_and(|p| {
-                    g.principal_id.as_deref() == Some(p) || g.caller == p
+                    caller_matches_principal_target(
+                        g.principal_id.as_deref().unwrap_or(""),
+                        &g.caller,
+                        p,
+                    )
                 }),
                 _ => true,
             };
@@ -3826,8 +3929,9 @@ pub fn revoke_classic_sessions(
                     "session" => {
                         sid_or_grant.is_some_and(|target| e.grant_id.as_deref() == Some(target))
                     }
-                    "principal" => principal
-                        .is_some_and(|p| e.principal == p || e.caller == p),
+                    "principal" => principal.is_some_and(|p| {
+                        caller_matches_principal_target(&e.principal, &e.caller, p)
+                    }),
                     _ => true,
                 }
             })
@@ -6758,6 +6862,54 @@ mod tests {
             super::take_grant_for(&parsed2, "org-b").is_some(),
             "org-b pending grant must remain redeemable"
         );
+    }
+
+    #[test]
+    fn revoke_classic_sessions_catches_in_flight_auth_registration_race() {
+        // Simulate revocation landing AFTER `take_grant_for` removed the grant
+        // from `GRANTS` and BEFORE `register_live_classic_session` runs.
+        assert_eq!(
+            super::revoke_classic_sessions(
+                "org-race",
+                "session",
+                None,
+                Some("grant-race-1"),
+                Some("admin"),
+            ),
+            0
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let id = super::register_live_classic_session(
+            "org-race".into(),
+            Some("grant-race-1".into()),
+            "user-race".into(),
+            "ssh:alice@100.64.0.9".into(),
+            cancel.clone(),
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
+        );
+        assert_eq!(id, 0, "revoked in-flight grant must not register as live");
+        assert!(
+            cancel.is_cancelled(),
+            "revoked in-flight grant must immediately cancel its connection token"
+        );
+
+        // Also verify `keylist:<user>` principal revocation matches display caller.
+        assert_eq!(
+            super::revoke_classic_sessions(
+                "org-race",
+                "principal",
+                Some("keylist:bob"),
+                None,
+                Some("admin"),
+            ),
+            0
+        );
+        assert!(super::is_grant_or_principal_revoked(
+            "org-race",
+            None,
+            "keylist:bob",
+            "ssh:bob@100.64.0.10 (key-list)",
+        ));
     }
 
     #[test]

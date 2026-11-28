@@ -3590,6 +3590,7 @@ mod tests {
             initial_resolution: None,
             keepable: true,
             silent_monitor: false,
+            tenant_id: String::new(),
         }
     }
 

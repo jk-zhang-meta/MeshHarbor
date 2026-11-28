@@ -483,6 +483,10 @@ pub struct SessionParams {
     /// registry entry, lock_on_end, tell_the_screen, and register silent arbiter.
     #[serde(default, skip_serializing_if = "is_false")]
     pub silent_monitor: bool,
+    /// 0.5.0 — Originating enrollment's tenant ID so delegated peers on a GUI
+    /// worker enforce the exact same multi-tenant arbiter boundary as the daemon.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tenant_id: String,
 }
 
 /// FR-85 P1e-mac — what a delegated session's `record` channel needs, carried
@@ -2586,6 +2590,7 @@ mod params_tests {
             initial_resolution: None,
             keepable: false,
             silent_monitor: false,
+            tenant_id: String::new(),
         };
         let wire = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params)))
             .expect("serialises");
@@ -2631,6 +2636,7 @@ mod params_tests {
             initial_resolution: None,
             keepable: false,
             silent_monitor: false,
+            tenant_id: String::new(),
         };
         let track = serde_json::to_string(&p).unwrap();
         p.transport = Some("data-channel-h264".into());
@@ -2661,6 +2667,7 @@ mod params_tests {
             initial_resolution: None,
             keepable: false,
             silent_monitor: false,
+            tenant_id: String::new(),
         }
     }
 
@@ -2996,6 +3003,7 @@ mod shared_lease_delegation_tests {
                 initial_resolution: None,
                 keepable: false,
                 silent_monitor: false,
+            tenant_id: String::new(),
             }))
         };
         assert!(!host.send_params(params()));
@@ -3071,6 +3079,7 @@ mod shared_lease_params_scope_regressions {
             initial_resolution: None,
             keepable: false,
             silent_monitor: false,
+            tenant_id: String::new(),
         };
         let raw = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params))).unwrap();
         let DelegateFrame::SessionParams(p) = serde_json::from_str(&raw).unwrap() else {
@@ -3219,6 +3228,7 @@ mod p2b_delegation_tests {
             initial_resolution: None,
             keepable: true,
             silent_monitor: false,
+            tenant_id: String::new(),
         };
         let wire = serde_json::to_value(&p).unwrap();
         assert_eq!(wire["keepable"], json!(true));

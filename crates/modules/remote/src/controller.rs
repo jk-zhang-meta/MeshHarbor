@@ -944,9 +944,15 @@ async fn resolve_session_authz_with_origin(
     {
         let effective_perms = if silent_monitor {
             // Effective monitor grant is strictly a subset of `VIEW | INPUT`
-            // (never widened beyond what the caller requested).
-            permissions & (meshharbor_remote_control::permissions::Permissions::VIEW
-                | meshharbor_remote_control::permissions::Permissions::INPUT)
+            // (never widened beyond what the caller requested) and MUST retain
+            // `VIEW` so an empty grant can never start a video stream.
+            let clamped = permissions
+                & (meshharbor_remote_control::permissions::Permissions::VIEW
+                    | meshharbor_remote_control::permissions::Permissions::INPUT);
+            if !clamped.contains(meshharbor_remote_control::permissions::Permissions::VIEW) {
+                return Err("silent monitoring requires VIEW permission".into());
+            }
+            clamped
         } else {
             permissions
         };

@@ -177,32 +177,32 @@
         autoplay
         playsinline
         muted
-        class="mw-media rc-video-canvas"
+        class="mw-media remote-video rc-video-canvas"
         :style="mediaStyle"
       />
       <canvas
         v-if="rc.webcodecsActive.value"
         :key="`wc-${canvasGen}`"
         :ref="bindWebcodecsCanvas"
-        class="mw-media rc-video-canvas"
+        class="mw-media remote-video rc-video-canvas"
         :style="mediaStyle"
       />
       <canvas
         v-if="rc.vp9_444Active.value"
         :key="`vp9-${canvasGen}`"
         :ref="bindVp9Canvas"
-        class="mw-media rc-video-canvas"
+        class="mw-media remote-video rc-video-canvas"
         :style="mediaStyle"
       />
       <canvas
         v-if="rc.hevcActive.value"
         :key="`hevc-${canvasGen}`"
         :ref="bindHevcCanvas"
-        class="mw-media rc-video-canvas"
+        class="mw-media remote-video rc-video-canvas"
         :style="mediaStyle"
       />
 
-      <!-- Connecting / Ended / Error overlay -->
+      <!-- Connecting / Ended / Error / Device-2FA overlay -->
       <div v-if="overlayMessage" class="mw-overlay">
         <v-card max-width="460" class="pa-5 text-center" color="surface">
           <v-progress-circular
@@ -210,6 +210,13 @@
             indeterminate
             color="primary"
             size="36"
+            class="mb-3"
+          />
+          <v-icon
+            v-else-if="needsTwoFactorCode"
+            icon="mdi-shield-key-outline"
+            color="warning"
+            size="40"
             class="mb-3"
           />
           <v-icon
@@ -221,7 +228,36 @@
           />
           <div class="text-subtitle-1 font-weight-medium mb-2">{{ overlayTitle }}</div>
           <div class="text-body-2 text-medium-emphasis mb-4">{{ overlayMessage }}</div>
-          <div class="d-flex justify-center ga-2">
+          <v-form
+            v-if="needsTwoFactorCode"
+            class="mb-3 text-left"
+            @submit.prevent="submitTwoFactorAndReconnect"
+          >
+            <v-text-field
+              v-model="twoFactorInput"
+              :label="t('mh.tfa.code.label')"
+              variant="outlined"
+              density="compact"
+              autocomplete="one-time-code"
+              autofocus
+              hide-details="auto"
+              class="mb-3"
+            />
+            <div class="d-flex justify-center ga-2">
+              <v-btn
+                type="submit"
+                color="primary"
+                variant="flat"
+                :disabled="!twoFactorReady"
+              >
+                {{ t('mh.tfa.prompt.connect') }}
+              </v-btn>
+              <v-btn variant="outlined" @click="closeWatch">
+                {{ t('mh.monitoring.watch.backToMonitoring') }}
+              </v-btn>
+            </div>
+          </v-form>
+          <div v-else class="d-flex justify-center ga-2">
             <v-btn
               v-if="!isConnecting && !loadingDevice && !endedNaturally"
               color="primary"
@@ -268,6 +304,7 @@ import type { Agent } from '@/stores/agents'
 import { useRemoteControl, localPointerCursorCss } from '@/composables/useRemoteControl'
 import { disconnectLiveSession, setMonitorTakeover } from '@/api/monitoring'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { asksForCode, asTwoFactorRefusal, codeForWire, twoFactorRefusalText } from '@/utils/twoFactor'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -320,8 +357,15 @@ const isFullscreen = ref(false)
 const takeoverBusy = ref(false)
 const confirmDisconnect = ref(false)
 const disconnectingTarget = ref(false)
+const twoFactorInput = ref('')
 let detachInput: (() => void) | null = null
 let bootGen = 0
+
+const twoFactorRefusal = computed(() => asTwoFactorRefusal(rc.errorCode.value))
+const needsTwoFactorCode = computed(
+  () => !loadingDevice.value && !isConnecting.value && asksForCode(twoFactorRefusal.value),
+)
+const twoFactorReady = computed(() => Boolean(codeForWire(twoFactorInput.value)))
 
 const isCanvasRenderer = computed(
   () => rc.webcodecsActive.value || rc.vp9_444Active.value || rc.hevcActive.value,
@@ -381,11 +425,14 @@ const isConnecting = computed(() =>
   ['requesting', 'awaiting_consent', 'negotiating'].includes(rc.phase.value),
 )
 const endedNaturally = computed(
-  () => rc.errorCode.value === 'target_session_ended' || rc.phase.value === 'closed',
+  () =>
+    rc.errorCode.value === 'target_session_ended' ||
+    (!deviceLoadError.value && !needsTwoFactorCode.value && rc.phase.value === 'closed'),
 )
 const phaseColor = computed(() => {
   if (rc.phase.value === 'connected') return 'success'
   if (isConnecting.value || loadingDevice.value) return 'info'
+  if (needsTwoFactorCode.value) return 'warning'
   if (rc.phase.value === 'error' || deviceLoadError.value) return 'error'
   return 'default'
 })
@@ -409,6 +456,7 @@ const phaseLabel = computed(() => {
 
 const overlayTitle = computed(() => {
   if (loadingDevice.value || isConnecting.value) return t('mh.monitoring.watch.connectingTitle')
+  if (needsTwoFactorCode.value) return t('mh.tfa.prompt.title')
   if (deviceLoadError.value) return t('mh.monitoring.watch.errorTitle')
   if (rc.errorCode.value === 'target_session_ended') {
     return t('mh.monitoring.watch.targetEndedTitle')
@@ -420,6 +468,7 @@ const overlayTitle = computed(() => {
 const overlayMessage = computed(() => {
   if (rc.phase.value === 'connected') return ''
   if (loadingDevice.value || isConnecting.value) return t('mh.monitoring.watch.connectingDesc')
+  if (needsTwoFactorCode.value) return twoFactorRefusalText(twoFactorRefusal.value)
   if (deviceLoadError.value) return deviceLoadError.value
   if (rc.errorCode.value === 'target_session_ended') {
     return t('mh.monitoring.watch.targetEndedDesc')
@@ -451,19 +500,24 @@ watch(
   { flush: 'post' },
 )
 
+// Announce takeover / release ONLY after the agent confirms ownership via
+// authoritative `rc:control.state` (never prematurely on HTTP enqueue).
+watch(rc.adminTakeoverActive, (active, prev) => {
+  if (active && !prev) {
+    stageRef.value?.focus()
+    showSuccess(t('mh.monitoring.watch.takeoverEnabledToast'))
+  } else if (!active && prev && rc.phase.value === 'connected') {
+    showSuccess(t('mh.monitoring.watch.takeoverReleasedToast'))
+  }
+})
+
 async function toggleTakeover(active: boolean) {
   if (rc.phase.value !== 'connected' || !rc.sessionId.value || !tenantId.value) return
   takeoverBusy.value = true
   try {
     // Authoritative server RBAC check + ServerMsg::AdminTakeover push to agent.
-    // Input only unlocks once the agent confirms ownership in `rc:control.state`.
+    // Input + toast only fire once the agent confirms ownership in `rc:control.state`.
     await setMonitorTakeover(tenantId.value, rc.sessionId.value, active)
-    if (active) {
-      stageRef.value?.focus()
-      showSuccess(t('mh.monitoring.watch.takeoverEnabledToast'))
-    } else {
-      showSuccess(t('mh.monitoring.watch.takeoverReleasedToast'))
-    }
   } catch (e) {
     showError(e instanceof Error ? e.message : t('mh.monitoring.watch.takeoverFailed'))
   } finally {
@@ -504,13 +558,23 @@ function onFullscreenChange() {
   isFullscreen.value = Boolean(document.fullscreenElement)
 }
 
+function submitTwoFactorAndReconnect() {
+  const wire = codeForWire(twoFactorInput.value)
+  if (!wire || !agentId.value) return
+  twoFactorInput.value = ''
+  canvasGen.value += 1
+  rc.twoFactorCode.value = wire
+  void rc.connect(agentId.value, 'VIEW,INPUT')
+}
+
 async function bootTarget() {
   const gen = ++bootGen
-  await cleanupTakeoverAndDisconnect()
+  await cleanupTakeoverAndDisconnect(gen)
   if (gen !== bootGen) return
 
   targetAgent.value = null
   deviceLoadError.value = ''
+  twoFactorInput.value = ''
   cursorUrlCache.clear()
   canvasGen.value += 1
 
@@ -544,10 +608,13 @@ function reconnect() {
   void bootTarget()
 }
 
-async function cleanupTakeoverAndDisconnect() {
-  if (rc.adminTakeoverActive.value && rc.sessionId.value && tenantId.value) {
-    await setMonitorTakeover(tenantId.value, rc.sessionId.value, false).catch(() => {})
+async function cleanupTakeoverAndDisconnect(expectedGen?: number) {
+  const activeSid = rc.adminTakeoverActive.value ? rc.sessionId.value : null
+  const activeTid = tenantId.value
+  if (activeSid && activeTid) {
+    await setMonitorTakeover(activeTid, activeSid, false).catch(() => {})
   }
+  if (expectedGen !== undefined && expectedGen !== bootGen) return
   detachInput?.()
   detachInput = null
   rc.disconnect()

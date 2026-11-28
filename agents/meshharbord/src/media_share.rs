@@ -291,6 +291,19 @@ impl Pipeline {
         self.inner.lock().unwrap().followers.len()
     }
 
+    /// 0.5.0 — Non-silent viewers on this pipeline beyond the owner, used for
+    /// `rc:video-info` so a passive silent admin monitor joining a shared
+    /// pipeline NEVER increments the regular controller's viewer badge.
+    pub fn visible_follower_count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .followers
+            .iter()
+            .filter(|f| !crate::peer::is_silent_monitor(f.sink.session_id))
+            .count()
+    }
+
     /// FR-93 P6c — the sessions following this pipeline. An owner whose
     /// capture was stopped at the screen ends them before itself: had it gone
     /// first, they would detach, re-dispatch, and open the capture the person

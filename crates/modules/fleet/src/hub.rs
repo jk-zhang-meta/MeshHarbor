@@ -2591,8 +2591,14 @@ impl Hub {
             share_grant_id,
             monitor_target_session_id,
         ) = if silent_monitor {
+            let clamped = permissions & (Permissions::VIEW | Permissions::INPUT);
+            if !clamped.contains(Permissions::VIEW) {
+                return Err(Error::PermissionDenied(
+                    "silent monitoring requires VIEW permission",
+                ));
+            }
             (
-                permissions & (Permissions::VIEW | Permissions::INPUT),
+                clamped,
                 false,
                 ConsentMode::Auto,
                 None,
@@ -2723,6 +2729,7 @@ impl Hub {
             let is_dup = s.agent_id == agent_id
                 && s.controller_user_id == controller_user_id
                 && s.silent_monitor == silent_monitor
+                && s.monitor_target_session_id == monitor_target_session_id
                 && s.matches_file_child_controller_scope(&controller_scope)
                 && s.device_share_scope() == device_share_scope
                 && s.controller_tx
@@ -2904,12 +2911,22 @@ impl Hub {
             agent_honours_lock,
             agent_window,
             agent_rc_continue,
+            target_agent_tx,
         ) = {
             let mut agent = self
                 .inner
                 .agents
                 .get_mut(&agent_id)
                 .ok_or_else(|| Error::AgentOffline(agent_id.to_hex()))?;
+            // 0.5.0 — Bind the silent-monitor capability check to the EXACT
+            // connected agent handle (`agent.tx`) that will receive `Request`
+            // so a replacement connection can never receive a silent request
+            // on the strength of its predecessor's capabilities.
+            if silent_monitor && !agent.supports_silent_monitor {
+                return Err(Error::PermissionDenied(
+                    "target agent version does not support silent monitoring",
+                ));
+            }
             // FR-130 — a claim not answered yet holds its place: a new request
             // cannot slip into a slot a kept session holds. Silent monitors
             // bypass regular user capacity so monitoring works even when
@@ -2935,6 +2952,7 @@ impl Hub {
                 agent.resume_window,
                 // FR-141 — whether this agent honours `Request.continues`.
                 agent.supports_rc_continue,
+                agent.tx.clone(),
             )
         };
 
@@ -3244,8 +3262,7 @@ impl Hub {
             s.pending_request = Some(request.clone());
             s.transition(SessionPhase::AwaitingConsent)
         })?;
-        let agent_tx = self.agent_tx(agent_id)?;
-        let _ = agent_tx.try_send(request);
+        let _ = target_agent_tx.try_send(request);
 
         self.audit(
             session_id,
@@ -3736,6 +3753,19 @@ impl Hub {
         self.terminate_with_limit(session_id, reason, None)
     }
 
+    /// 0.5.0 — Terminate a live session and report whether `ServerMsg::Terminate`
+    /// was actually enqueued onto the target agent's live WebSocket channel.
+    pub fn terminate_and_report_delivery(
+        &self,
+        session_id: ObjectId,
+        reason: EndReason,
+    ) -> Result<bool> {
+        let Some((_, arc)) = self.inner.sessions.remove(&session_id) else {
+            return Ok(false);
+        };
+        Ok(self.end_removed_delivery(session_id, &arc, reason, None, EndWrite::Asked))
+    }
+
     /// FR-101 P4b — [`Self::terminate`], naming the limit that ended the
     /// session (`max_duration`) on `rc:terminate` and in the audit row, so a
     /// viewer and a reader of the audit can tell it from idleness.
@@ -3778,7 +3808,7 @@ impl Hub {
         let Some((_, arc)) = self.inner.sessions.remove(&session_id) else {
             return Ok(()); // already gone, idempotent
         };
-        self.end_removed(session_id, &arc, reason, limit, write);
+        let _ = self.end_removed_delivery(session_id, &arc, reason, limit, write);
         Ok(())
     }
 
@@ -3793,6 +3823,17 @@ impl Hub {
         limit: Option<&'static str>,
         write: EndWrite,
     ) {
+        let _ = self.end_removed_delivery(session_id, arc, reason, limit, write);
+    }
+
+    fn end_removed_delivery(
+        &self,
+        session_id: ObjectId,
+        arc: &Arc<Mutex<LiveSession>>,
+        reason: EndReason,
+        limit: Option<&'static str>,
+        write: EndWrite,
+    ) -> bool {
         // FR-115 P3b — the session's slot goes back with it.
         if let Some((_, lease)) = self.inner.slotted.remove(&session_id) {
             self.release_slot(lease);
@@ -3827,9 +3868,9 @@ impl Hub {
         if let Some(tx) = controller_tx {
             let _ = tx.try_send(msg.clone());
         }
-        if let Ok(agent_tx) = self.agent_tx(agent_id) {
-            let _ = agent_tx.try_send(msg);
-        }
+        let agent_delivered = self
+            .agent_tx(agent_id)
+            .is_ok_and(|agent_tx| agent_tx.try_send(msg).is_ok());
 
         // 0.5.0 — When a regular session ends, cleanly tear down:
         // 1. Any silent monitor specifically bound to `session_id`, AND
@@ -3878,7 +3919,7 @@ impl Hub {
             EndWrite::Asked => None,
             EndWrite::Own => Some(attach_seq),
             // FR-130 — the row already holds the end this one follows.
-            EndWrite::Nothing => return,
+            EndWrite::Nothing => return agent_delivered,
         };
         let end_kind = AuditKind::SessionEnded {
             reason,
@@ -3896,6 +3937,7 @@ impl Hub {
                 .audit
                 .record(session_id, agent_id, tenant_id, end_kind);
         }
+        agent_delivered
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
@@ -4300,7 +4342,15 @@ impl Hub {
                     k == target || s.grant_id.as_deref() == Some(target)
                 }),
                 "principal" => !principal.is_some_and(|p| {
-                    s.user_id.is_some_and(|u| u.to_hex() == p) || s.caller == p
+                    s.user_id.is_some_and(|u| u.to_hex() == p)
+                        || s.caller == p
+                        || p.strip_prefix("keylist:").is_some_and(|user| {
+                            s.caller.ends_with(" (key-list)")
+                                && s.caller
+                                    .strip_prefix("ssh:")
+                                    .and_then(|rest| rest.split('@').next())
+                                    == Some(user)
+                        })
                 }),
                 _ => false,
             }
@@ -5178,11 +5228,20 @@ impl Hub {
             }
         }
         // Push server-authorized takeover frame to the agent BEFORE committing
-        // local state so an offline/unreachable agent never fakes success.
-        self.send_to_agent(
-            agent_id,
-            ServerMsg::AdminTakeover { session_id, active },
-        )?;
+        // local state when ACTIVATING so an offline/unreachable agent never
+        // fakes success. When RELEASING (`active == false`), still clear local
+        // takeover ownership if the agent went offline so the slot never deadlocks.
+        let send_err = self
+            .send_to_agent(
+                agent_id,
+                ServerMsg::AdminTakeover { session_id, active },
+            )
+            .err();
+        if active
+            && let Some(e) = send_err
+        {
+            return Err(e);
+        }
         let arc = self
             .inner
             .sessions
@@ -5196,6 +5255,9 @@ impl Hub {
             return Err(Error::PermissionDenied("not your silent monitor session"));
         }
         s.admin_takeover_active = active;
+        if let Some(e) = send_err {
+            return Err(e);
+        }
         info!(
             tenant = %tenant_id,
             agent = %agent_id,

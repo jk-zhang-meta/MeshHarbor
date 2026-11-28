@@ -261,6 +261,27 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 ring_bytes: DEFAULT_RING_BYTES as u32,
             };
 
+            // 0.5.0 — Re-check revocation AFTER consent wait and right before
+            // spawning the persistent PTY so an admin disconnect during consent
+            // or auth can never create a surviving resumable shell.
+            if crate::ssh::is_grant_or_principal_revoked(
+                &ctx.org_id,
+                auth.grant_id.as_deref(),
+                &auth.principal,
+                &auth.caller_label,
+            ) {
+                let _ = send_wire(
+                    &ctx.handle,
+                    ctx.channel,
+                    &WireFrame::Refused(RefuseReason::Policy {
+                        detail: "session revoked by administrator".into(),
+                    }),
+                )
+                .await;
+                let _ = ctx.handle.close(ctx.channel).await;
+                return;
+            }
+
             let spawned = match spawn_session(descriptor, spec).await {
                 Ok(s) => s,
                 Err(reason) => {

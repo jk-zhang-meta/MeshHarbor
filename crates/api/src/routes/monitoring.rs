@@ -1125,11 +1125,11 @@ pub async fn history(
         (Vec::new(), HashMap::new())
     };
 
-    let live_ssh_keys: HashSet<String> = fleet
+    let live_ssh_keys: HashSet<(ObjectId, String)> = fleet
         .rc_hub
         .live_ssh_sessions(tid)
         .into_iter()
-        .map(|s| s.key)
+        .map(|s| (s.agent_id, s.key))
         .collect();
     let live_rc_ids: HashSet<ObjectId> = fleet
         .rc_hub
@@ -1270,7 +1270,7 @@ pub async fn history(
         let is_live = s
             .grant_id
             .as_deref()
-            .is_some_and(|gid| live_ssh_keys.contains(gid));
+            .is_some_and(|gid| live_ssh_keys.contains(&(s.agent_id, gid.to_string())));
         let start = env.and_then(|(o, _, _)| o).unwrap_or(s.at);
         let start_ms = start.timestamp_millis();
         let closed_at = env.and_then(|(_, c, _)| c);
@@ -1402,19 +1402,18 @@ pub async fn ssh_grant_activities(
     let items = if let Some(network) = state.modules.network.as_ref() {
         // Pin the authoritative target agent_id from `ssh_audit` so a report
         // from a different agent claiming the same `grant_id` cannot pollute
-        // this session's activity timeline.
-        let audit_agent: Option<ObjectId> = network
+        // this session's activity timeline. Fail closed (404) if no audit row
+        // exists in this tenant rather than dropping the agent filter.
+        let audit_agent = network
             .ssh_audit
             .base
             .collection()
             .find_one(doc! { "tenant_id": tid, "grant_id": &grant_id })
             .await
             .map_err(db_err)?
-            .map(|r| r.agent_id);
-        let mut filter = doc! { "tenant_id": tid, "grant_id": &grant_id };
-        if let Some(aid) = audit_agent {
-            filter.insert("agent_id", aid);
-        }
+            .map(|r| r.agent_id)
+            .ok_or_else(|| ApiError::NotFound("SSH grant not found in tenant".into()))?;
+        let filter = doc! { "tenant_id": tid, "grant_id": &grant_id, "agent_id": audit_agent };
         let opts = mongodb::options::FindOptions::builder()
             .sort(doc! { "at": 1 })
             .limit(200)
@@ -1452,6 +1451,21 @@ pub async fn ssh_grant_activities(
     Ok(Json(SshGrantActivitiesResponse { grant_id, items }))
 }
 
+/// Extract the authentication principal `keylist:<user>` from a key-list
+/// display caller string (`ssh:<user>@<peer> (key-list)`), matching both
+/// classic `russh` (`ssh.rs`) and persistent PTY descriptors (`ssh_persist`).
+fn parse_keylist_principal(caller: &str) -> Option<String> {
+    if caller.starts_with("keylist:") {
+        return Some(caller.to_string());
+    }
+    let user = caller
+        .strip_prefix("ssh:")?
+        .split('@')
+        .next()
+        .filter(|u| !u.is_empty())?;
+    Some(format!("keylist:{user}"))
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // POST /api/tenant/{tenant_id}/monitoring/disconnect
 // ────────────────────────────────────────────────────────────────────────────
@@ -1486,11 +1500,11 @@ pub async fn disconnect(
             {
                 return Err(ApiError::NotFound("Session not found".into()));
             }
-            let terminated_local = live.is_some()
+            let delivered_local = live.is_some()
                 && fleet
                     .rc_hub
-                    .terminate(sid, EndReason::AdminTerminated)
-                    .is_ok();
+                    .terminate_and_report_delivery(sid, EndReason::AdminTerminated)
+                    .unwrap_or(false);
             #[cfg(feature = "remote")]
             let row_end_written = if live.is_none()
                 && let Some(remote) = state.modules.remote.as_ref()
@@ -1527,17 +1541,18 @@ pub async fn disconnect(
             } else {
                 false
             };
-            if !terminated_local && !row_end_written && !broadcast {
+            if !delivered_local && !row_end_written && !broadcast {
                 return Err(ApiError::NotFound(
                     "Remote control session is no longer active on this server".into(),
                 ));
             }
             Ok(Json(serde_json::json!({
-                "disconnected": terminated_local || row_end_written,
-                "accepted": true,
+                "disconnected": delivered_local,
+                "accepted": delivered_local || broadcast || row_end_written,
                 "kind": "remote",
                 "id": sid.to_hex(),
-                "delivered_local": terminated_local,
+                "delivered_local": delivered_local,
+                "row_end_written": row_end_written,
                 "broadcast": broadcast,
             })))
         }
@@ -1553,15 +1568,22 @@ pub async fn disconnect(
                 .filter(|r| !r.trim().is_empty())
                 .unwrap_or_else(|| "admin_disconnect".to_string());
 
-            // Verify any caller-supplied agent_id belongs to `tid` (prevents
-            // cross-tenant probing or misdirected revokes).
+            // Verify any caller-supplied (or keylist-encoded) agent_id belongs
+            // to `tid` so single-device disconnects never widen to tenant-wide
+            // revokes and cannot probe another tenant's device IDs.
+            let keylist_encoded_aid = body
+                .id
+                .strip_prefix("keylist:")
+                .and_then(|rest| rest.split(':').next())
+                .filter(|s| !s.is_empty());
+            let raw_agent_id = body
+                .agent_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .or(keylist_encoded_aid);
             let verified_agent_id = match live.as_ref().map(|l| l.agent_id) {
                 Some(aid) => Some(aid),
-                None => match body
-                    .agent_id
-                    .as_deref()
-                    .filter(|s| !s.trim().is_empty())
-                {
+                None => match raw_agent_id {
                     Some(raw) => {
                         let aid = ObjectId::parse_str(raw)
                             .map_err(|_| ApiError::BadRequest("Invalid agent_id".into()))?;
@@ -1576,20 +1598,20 @@ pub async fn disconnect(
                 },
             };
 
+            let shared_sid = live.as_ref().and_then(|l| l.shared_session_id).or_else(|| {
+                body.shared_session_id
+                    .as_deref()
+                    .and_then(|s| ObjectId::parse_str(s).ok())
+            });
+
             // 1. Shared SSH bridge teardown if applicable.
-            let mut delivered_local = false;
+            let mut closed_shared_bridge = false;
             #[cfg(feature = "network")]
-            if let Some(network) = state.modules.network.as_ref() {
-                let shared_sid = live.as_ref().and_then(|l| l.shared_session_id).or_else(|| {
-                    body.shared_session_id
-                        .as_deref()
-                        .and_then(|s| ObjectId::parse_str(s).ok())
-                });
-                if let Some(ssid) = shared_sid
-                    && meshharbor_mod_network::shared_ssh::admin_terminate(network, tid, ssid)
-                {
-                    delivered_local = true;
-                }
+            if let Some(network) = state.modules.network.as_ref()
+                && let Some(ssid) = shared_sid
+                && meshharbor_mod_network::shared_ssh::admin_terminate(network, tid, ssid)
+            {
+                closed_shared_bridge = true;
             }
 
             // 2. Determine target scope for `ServerMsg::SshRevoke`.
@@ -1597,15 +1619,21 @@ pub async fn disconnect(
                 if let Some(gid) = entry.grant_id.clone() {
                     ("session", None, Some(gid))
                 } else {
-                    ("principal", Some(entry.caller.clone()), None)
+                    let p = parse_keylist_principal(&entry.caller)
+                        .unwrap_or_else(|| entry.caller.clone());
+                    ("principal", Some(p), None)
                 }
             } else if body.id.starts_with("keylist:") {
-                let caller = body.id.splitn(3, ':').nth(2).map(str::to_string);
-                ("principal", caller, None)
+                let caller = body.id.splitn(3, ':').nth(2).unwrap_or("");
+                let p = parse_keylist_principal(caller).or_else(|| {
+                    (!caller.is_empty()).then(|| caller.to_string())
+                });
+                ("principal", p, None)
             } else {
                 ("session", None, Some(body.id.clone()))
             };
 
+            let mut queued_to_agent = false;
             if let Some(aid) = verified_agent_id {
                 if fleet.rc_hub.push_ssh_revoke_agent(
                     tid,
@@ -1615,7 +1643,7 @@ pub async fn disconnect(
                     sid.clone(),
                     Some(reason.clone()),
                 ) {
-                    delivered_local = true;
+                    queued_to_agent = true;
                 }
             } else {
                 let n = fleet.rc_hub.push_ssh_revoke_org_scoped(
@@ -1626,7 +1654,7 @@ pub async fn disconnect(
                     Some(reason.clone()),
                 );
                 if n > 0 {
-                    delivered_local = true;
+                    queued_to_agent = true;
                 }
             }
 
@@ -1641,6 +1669,9 @@ pub async fn disconnect(
                 if let Some(aid) = verified_agent_id {
                     payload["agent_id"] = serde_json::json!(aid.to_hex());
                 }
+                if let Some(ssid) = shared_sid {
+                    payload["shared_session_id"] = serde_json::json!(ssid.to_hex());
+                }
                 meshharbor_mod_fleet::ctrl::publish_rc_ctrl_checked(&state, "ssh_revoke", payload)
                     .await
                     .map_err(|e| {
@@ -1653,7 +1684,9 @@ pub async fn disconnect(
                 false
             };
 
-            if !delivered_local && !broadcast {
+            let matched_local = live.is_some() || closed_shared_bridge;
+            let delivered_local = closed_shared_bridge || (queued_to_agent && matched_local);
+            if !queued_to_agent && !closed_shared_bridge && !broadcast {
                 return Err(ApiError::ServiceUnavailable(
                     "Target device is offline and did not receive SSH disconnect".into(),
                 ));
@@ -1661,10 +1694,12 @@ pub async fn disconnect(
 
             Ok(Json(serde_json::json!({
                 "disconnected": delivered_local,
-                "accepted": true,
+                "accepted": queued_to_agent || closed_shared_bridge || broadcast,
                 "kind": "ssh",
                 "id": body.id,
                 "delivered_local": delivered_local,
+                "matched_local": matched_local,
+                "queued_to_agent": queued_to_agent,
                 "broadcast": broadcast,
             })))
         }

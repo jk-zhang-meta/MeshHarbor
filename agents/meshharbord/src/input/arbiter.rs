@@ -432,6 +432,36 @@ impl ArbiterState {
         }
     }
 
+    /// 0.5.0 — When a regular session from a different tenant joins a
+    /// multi-enrolled host while an admin from another tenant holds takeover,
+    /// immediately release that takeover so tenant A can never block tenant B.
+    pub fn revoke_cross_tenant_takeover_for(&mut self, incoming_tenant: &str) -> (bool, Vec<InputMsg>) {
+        if incoming_tenant.is_empty() {
+            return (false, Vec::new());
+        }
+        let Some(admin_id) = self.admin_takeover else {
+            return (false, Vec::new());
+        };
+        let foreign = self.sessions.get(&admin_id).is_some_and(|c| {
+            !c.tenant_id.is_empty() && c.tenant_id != incoming_tenant
+        });
+        if !foreign {
+            return (false, Vec::new());
+        }
+        let releases = self
+            .sessions
+            .get_mut(&admin_id)
+            .map(|c| {
+                let r: Vec<InputMsg> = c.held.iter().map(Held::release_msg).collect();
+                c.held.clear();
+                r
+            })
+            .unwrap_or_default();
+        self.admin_takeover = None;
+        self.last_injector = None;
+        (true, releases)
+    }
+
     /// Release everything one session holds WITHOUT deregistering it — the
     /// input DC died (browser hiccup) but the session may live on.
     pub fn release_held(&mut self, session: ObjectId) -> Vec<InputMsg> {
@@ -453,10 +483,10 @@ impl ArbiterState {
         if matches!(msg, InputMsg::Heartbeat { .. }) {
             return EventPlan::Inject { pre: Vec::new() };
         }
-        let Some((can_input, silent)) = self
+        let Some((can_input, silent, session_tenant)) = self
             .sessions
             .get(&session)
-            .map(|c| (c.can_input, c.silent))
+            .map(|c| (c.can_input, c.silent, c.tenant_id.as_str()))
         else {
             return EventPlan::Deny;
         };
@@ -464,7 +494,29 @@ impl ArbiterState {
             return EventPlan::Deny;
         }
         if let Some(admin_id) = self.admin_takeover {
-            if session != admin_id {
+            let admin_tenant = self
+                .sessions
+                .get(&admin_id)
+                .map(|c| c.tenant_id.as_str())
+                .unwrap_or("");
+            let foreign_session =
+                !admin_tenant.is_empty() && !session_tenant.is_empty() && admin_tenant != session_tenant;
+            if session == admin_id {
+                // Multi-enrolled host safety: if a foreign-tenant non-silent
+                // session is active, never inject on behalf of this admin.
+                if !admin_tenant.is_empty()
+                    && self.sessions.iter().any(|(id, other)| {
+                        *id != admin_id
+                            && !other.silent
+                            && !other.tenant_id.is_empty()
+                            && other.tenant_id != admin_tenant
+                    })
+                {
+                    return EventPlan::Deny;
+                }
+            } else if !foreign_session {
+                return EventPlan::Deny;
+            } else if silent {
                 return EventPlan::Deny;
             }
         } else {
@@ -1102,6 +1154,7 @@ fn handle_cmd(
                 control,
                 cursor,
             } => {
+                let incoming_tenant = tenant_id.clone();
                 state.open_with_silent_in_tenant(
                     session,
                     name,
@@ -1111,6 +1164,13 @@ fn handle_cmd(
                     mode_hint,
                     Instant::now(),
                 );
+                if !silent && !incoming_tenant.is_empty() {
+                    let (revoked, releases) =
+                        state.revoke_cross_tenant_takeover_for(&incoming_tenant);
+                    if revoked && !releases.is_empty() {
+                        inject_all(injector, &releases);
+                    }
+                }
                 sinks.insert(
                     session,
                     Sinks {
@@ -1444,6 +1504,74 @@ fn classify_unpermitted(mut inj: Box<dyn super::InputInjector + Send>) -> KbRepl
     }
 }
 
+fn state_payload_for_session(state: &ArbiterState, target: ObjectId) -> String {
+    let (for_silent, target_tenant) = state
+        .sessions
+        .get(&target)
+        .map(|c| (c.silent, c.tenant_id.as_str()))
+        .unwrap_or((false, ""));
+    let same_tenant = |other_tenant: &str| {
+        target_tenant.is_empty() || other_tenant.is_empty() || other_tenant == target_tenant
+    };
+    let snap = state.snapshot();
+    let participants: Vec<serde_json::Value> = snap
+        .participants
+        .iter()
+        .filter(|p| {
+            state
+                .sessions
+                .get(&p.session)
+                .is_none_or(|c| same_tenant(&c.tenant_id))
+        })
+        .map(|p| {
+            serde_json::json!({
+                "session": p.session.to_hex(),
+                "name": p.name,
+                "input": p.input,
+            })
+        })
+        .collect();
+    let holder = snap.holder.filter(|h| {
+        state
+            .sessions
+            .get(h)
+            .is_none_or(|c| same_tenant(&c.tenant_id))
+    });
+    let pending_request = snap.pending_request.as_ref().filter(|p| {
+        state
+            .sessions
+            .get(&p.session)
+            .is_none_or(|c| same_tenant(&c.tenant_id))
+    });
+    let takeover_holder = state.admin_takeover.filter(|h| {
+        state
+            .sessions
+            .get(h)
+            .is_none_or(|c| same_tenant(&c.tenant_id))
+    });
+    let mut obj = serde_json::json!({
+        "t": "rc:control.state",
+        "mode": snap.mode.as_str(),
+        "holder": holder.map(|h| h.to_hex()),
+        "participants": participants,
+        // FR-27 — who is waiting for the floor. Omitted when nothing is, so a
+        // viewer that ignores the key behaves exactly as before.
+        "pending_request": pending_request.map(|p| serde_json::json!({
+            "session": p.session.to_hex(),
+            "name": p.name,
+        })),
+        "admin_takeover": takeover_holder.is_some(),
+    });
+    // Include the exact takeover owner ID ONLY for silent monitor viewers so
+    // two admins watching the same host know unambiguously who holds control
+    // without leaking monitor session IDs to regular controllers.
+    if for_silent {
+        obj["admin_takeover_holder"] = serde_json::json!(takeover_holder.map(|h| h.to_hex()));
+    }
+    obj.to_string()
+}
+
+#[cfg(test)]
 fn state_payload_for(state: &ArbiterState, for_silent: bool) -> String {
     let snap = state.snapshot();
     let mut obj = serde_json::json!({
@@ -1459,17 +1587,12 @@ fn state_payload_for(state: &ArbiterState, for_silent: bool) -> String {
                 "input": p.input,
             }))
             .collect::<Vec<_>>(),
-        // FR-27 — who is waiting for the floor. Omitted when nothing is, so a
-        // viewer that ignores the key behaves exactly as before.
         "pending_request": snap.pending_request.as_ref().map(|p| serde_json::json!({
             "session": p.session.to_hex(),
             "name": p.name,
         })),
         "admin_takeover": snap.admin_takeover,
     });
-    // Include the exact takeover owner ID ONLY for silent monitor viewers so
-    // two admins watching the same host know unambiguously who holds control
-    // without leaking monitor session IDs to regular controllers.
     if for_silent {
         obj["admin_takeover_holder"] = serde_json::json!(state.admin_takeover.map(|h| h.to_hex()));
     }
@@ -1487,7 +1610,7 @@ fn send_state_to(
     let Some(s) = sinks.get(&target) else {
         return;
     };
-    let payload = state_payload_for(state, state.is_silent(target));
+    let payload = state_payload_for_session(state, target);
     let stash = s.control.clone();
     handle.spawn(async move {
         if let Some(dc) = stash.lock().await.clone() {
@@ -1496,21 +1619,16 @@ fn send_state_to(
     });
 }
 
-/// `rc:control.state` fan-out to every session's control DC.
+/// `rc:control.state` fan-out to every session's control DC (tenant-scoped so
+/// multi-enrolled hosts never leak another tenant's participants or takeover).
 fn broadcast_state(
     state: &ArbiterState,
     sinks: &HashMap<ObjectId, Sinks>,
     handle: &tokio::runtime::Handle,
 ) {
-    let regular_payload = state_payload_for(state, false);
-    let silent_payload = state_payload_for(state, true);
     for (sid, s) in sinks.iter() {
         let stash = s.control.clone();
-        let payload = if state.is_silent(*sid) {
-            silent_payload.clone()
-        } else {
-            regular_payload.clone()
-        };
+        let payload = state_payload_for_session(state, *sid);
         handle.spawn(async move {
             if let Some(dc) = stash.lock().await.clone() {
                 let _ = dc.send_text(payload).await;
@@ -2514,6 +2632,44 @@ mod tests {
         // Multi-enrolled host isolation: org-a admin MUST NOT take over while
         // an org-b regular controller is active.
         assert_eq!(st.set_admin_takeover(admin_a1, true), (false, Vec::new()));
+        assert!(!st.snapshot().admin_takeover);
+
+        // Tenant-scoped control.state payload for org-a silent monitor NEVER
+        // leaks org-b's participant (`Bob` / `ctrl_b`).
+        let scoped_a: serde_json::Value =
+            serde_json::from_str(&state_payload_for_session(&st, admin_a1)).unwrap();
+        let names_a: Vec<&str> = scoped_a["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        assert_eq!(names_a, vec!["Alice"]);
+
+        // Reverse connection order: org-a holds takeover FIRST, then org-b
+        // joins AFTERWARD — org-b MUST NOT be blocked by org-a's takeover,
+        // org-a's admin stops injecting, and cross-tenant revoke clears it.
+        st.close(ctrl_b);
+        assert!(st.set_admin_takeover(admin_a1, true).0);
+        let ctrl_b2 = sid();
+        st.open_with_silent_in_tenant(
+            ctrl_b2,
+            "Bob2".into(),
+            true,
+            false,
+            "org-b".into(),
+            None,
+            now,
+        );
+        assert_eq!(st.plan(admin_a1, &click(true), now), EventPlan::Deny);
+        assert!(matches!(
+            st.plan(ctrl_b2, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+        let scoped_b: serde_json::Value =
+            serde_json::from_str(&state_payload_for_session(&st, ctrl_b2)).unwrap();
+        assert_eq!(scoped_b["admin_takeover"], false);
+        assert!(st.revoke_cross_tenant_takeover_for("org-b").0);
         assert!(!st.snapshot().admin_takeover);
     }
 }

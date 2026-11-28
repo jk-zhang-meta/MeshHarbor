@@ -282,6 +282,22 @@ impl Modules {
         if let Some(fleet) = &self.fleet {
             meshharbor_mod_fleet::ctrl::apply_rc_ctrl_on(fleet, ctrl);
         }
+        // 0.5.0 — Cross-pod shared SSH bridge teardown on `ssh_revoke` when the
+        // HTTP disconnect landed on another pod than the bridge owner.
+        #[cfg(feature = "network")]
+        if ctrl.get("evt").and_then(|v| v.as_str()) == Some("ssh_revoke")
+            && let Some(network) = &self.network
+            && let Some(tid) = ctrl
+                .get("tenant_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| bson::oid::ObjectId::parse_str(s).ok())
+            && let Some(ssid) = ctrl
+                .get("shared_session_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| bson::oid::ObjectId::parse_str(s).ok())
+        {
+            meshharbor_mod_network::shared_ssh::admin_terminate(network, tid, ssid);
+        }
     }
 
     /// P7b — the sender the host's Redis ctrl subscriber feeds cross-pod

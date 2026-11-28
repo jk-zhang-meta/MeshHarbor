@@ -250,6 +250,7 @@ type SessionMeta = (
     Option<PendingFileChildParent>,
     Option<meshharbor_remote_control::signaling::InitialResolution>,
     bool,
+    String,
 );
 
 /// A candidate from the server Request, never a claim from control/proof JSON.
@@ -3560,6 +3561,7 @@ async fn connect_once(
                                         None,
                                         p.initial_resolution,
                                         p.silent_monitor,
+                                        p.tenant_id,
                                     ),
                                 );
                                 info!(session_id = %sid, "delegation: session params received");
@@ -4862,6 +4864,7 @@ async fn handle_server_msg(
                         initial_resolution.clone()
                     },
                     silent_monitor,
+                    agent_cfg.tenant_id.clone(),
                 ),
             );
             info!(
@@ -5100,6 +5103,7 @@ async fn handle_server_msg(
                             external_consent.is_some() || shared_lease.is_some() || silent_monitor,
                         ),
                         silent_monitor,
+                        tenant_id: agent_cfg.tenant_id.clone(),
                     }),
                 ));
                 if !sent {
@@ -5484,9 +5488,10 @@ async fn handle_server_msg(
                 pending_file_child_parent,
                 initial_resolution,
                 silent_monitor,
+                session_tenant_id,
             ) = match pending_session_meta.remove(&session_id) {
                 Some(meta) => meta,
-                None if peers.is_worker() => {
+                None if peers.is_worker() || delegated.is_some() => {
                     warn!(
                         %session_id,
                         "delegated worker received rc:sdp.offer without SessionParams — refusing fail-closed"
@@ -5514,6 +5519,7 @@ async fn handle_server_msg(
                     None,
                     None,
                     false,
+                    agent_cfg.tenant_id.clone(),
                 ),
             };
             // FR-121 — the route the hub settled at the offer supersedes the
@@ -5609,7 +5615,11 @@ async fn handle_server_msg(
                 // loop that holds it (the clone drops with the peer).
                 carrier_ready_tx.clone(),
                 silent_monitor,
-                agent_cfg.tenant_id.clone(),
+                if session_tenant_id.is_empty() {
+                    agent_cfg.tenant_id.clone()
+                } else {
+                    session_tenant_id
+                },
             )
             .await
             {

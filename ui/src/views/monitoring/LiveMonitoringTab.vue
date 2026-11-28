@@ -350,6 +350,7 @@ const disconnecting = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let tickTimer: ReturnType<typeof setInterval> | null = null
 let inFlight = false
+let pendingReload = false
 let requestSeq = 0
 
 const effectiveTenantId = computed(() => props.tenantId)
@@ -393,9 +394,14 @@ function sourceLabel(row: LiveMonitoringItem): string {
 
 async function loadLive(showSpinner = false, force = false) {
   if (!effectiveTenantId.value) return
-  if (!force && inFlight) return
+  if (!force && inFlight) {
+    // Queue one immediate follow-up when an explicit refresh/filter overlaps a poll.
+    if (showSpinner) pendingReload = true
+    return
+  }
   const seq = ++requestSeq
   inFlight = true
+  pendingReload = false
   if (showSpinner) loading.value = true
   try {
     const res = await fetchLiveMonitoring(effectiveTenantId.value, {
@@ -418,6 +424,10 @@ async function loadLive(showSpinner = false, force = false) {
     if (seq === requestSeq) {
       loading.value = false
       inFlight = false
+      if (pendingReload) {
+        pendingReload = false
+        void loadLive(false, true)
+      }
     }
   }
 }
