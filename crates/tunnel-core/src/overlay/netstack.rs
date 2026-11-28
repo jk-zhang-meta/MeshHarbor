@@ -141,6 +141,17 @@ const SLEEP_BACKSTOP: Duration = Duration::from_millis(50);
 /// Default connect timeout — smoltcp will retransmit SYNs for far longer, but
 /// an app expects a bounded failure when the peer is unreachable.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum time a passive listener may stay in `SynReceived` waiting for the
+/// client's final ACK before it is aborted and the port is re-armed. Prevents a
+/// single half-open handshake from wedging inbound SSH/p2pctl acceptance.
+const PASSIVE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Grace window to flush queued outbound bytes + FIN when the app writes a
+/// final reply (e.g. `p2pctl::serve_conn`) and immediately drops `NsTcpStream`.
+const CLOSE_LINGER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default TCP keepalive probe interval and dead-peer timeout so orphaned
+/// half-open sockets (each holding up to 16 MiB of buffers) are reaped.
+const TCP_KEEPALIVE_SECS: u64 = 30;
+const TCP_TIMEOUT_SECS: u64 = 120;
 /// Per-UDP-socket payload ring (each direction). A UDP association funnels every
 /// datagram the app addresses through one socket, so give it a healthy buffer;
 /// datagrams past it are dropped at the IP layer (UDP is lossy).
@@ -571,6 +582,9 @@ impl AsyncWrite for NsTcpStream {
 struct Conn {
     /// Stack → app. `None` after we've signalled EOF (dropped to close it).
     to_app: Option<mpsc::Sender<Vec<u8>>>,
+    /// True once the remote peer half-closed and all inbound bytes were drained
+    /// (distinguishes clean peer EOF from the app dropping its read half early).
+    peer_eof: bool,
     /// App → stack.
     from_app: mpsc::Receiver<Vec<u8>>,
     /// A chunk pulled from `from_app` but not yet fully written into smoltcp.
@@ -579,6 +593,10 @@ struct Conn {
     write_waker: Arc<AtomicWaker>,
     app_write_closed: bool,
     fin_sent: bool,
+    /// Set once the app dropped both halves while outbound bytes were still
+    /// queued in smoltcp, so we flush gracefully up to [`CLOSE_LINGER_TIMEOUT`]
+    /// instead of aborting and dropping the final reply.
+    app_drop_linger_since: Option<Instant>,
 }
 
 /// A connect awaiting its handshake; fires `resp` on Established / failure.
@@ -586,6 +604,7 @@ struct Conn {
 struct PendingConnect {
     resp: Option<oneshot::Sender<io::Result<NsTcpStream>>>,
     dst: SocketAddr,
+    started: Instant,
 }
 
 /// A listening socket; each accepted connection is sent on `accepted`, then a
@@ -594,6 +613,7 @@ struct PendingConnect {
 struct PendingListen {
     port: u16,
     accepted: mpsc::Sender<NsTcpStream>,
+    syn_received_since: Option<Instant>,
 }
 
 /// Stack-side bookkeeping for one UDP socket (keyed by its [`SocketHandle`] in
@@ -763,6 +783,8 @@ impl PollLoop {
         sock.set_pacing_enabled(pacing);
         sock.set_sack_recovery_enabled(sack);
         sock.set_min_rto(smoltcp::time::Duration::from_millis(min_rto_ms));
+        sock.set_keep_alive(Some(smoltcp::time::Duration::from_secs(TCP_KEEPALIVE_SECS)));
+        sock.set_timeout(Some(smoltcp::time::Duration::from_secs(TCP_TIMEOUT_SECS)));
         sock
     }
 
@@ -786,6 +808,7 @@ impl PollLoop {
                     PendingConnect {
                         resp: Some(resp),
                         dst,
+                        started: Instant::now(),
                     },
                 );
             }
@@ -827,8 +850,14 @@ impl PollLoop {
             return;
         }
         let handle = self.sockets.add(sock);
-        self.pending_listen
-            .insert(handle, PendingListen { port, accepted });
+        self.pending_listen.insert(
+            handle,
+            PendingListen {
+                port,
+                accepted,
+                syn_received_since: None,
+            },
+        );
     }
 
     fn do_udp_bind(&mut self, resp: oneshot::Sender<io::Result<NsUdpSocket>>) {
@@ -942,12 +971,14 @@ impl PollLoop {
         let write_waker = Arc::new(AtomicWaker::new());
         let conn = Conn {
             to_app: Some(to_app),
+            peer_eof: false,
             from_app,
             pending: None,
             pending_off: 0,
             write_waker: write_waker.clone(),
             app_write_closed: false,
             fin_sent: false,
+            app_drop_linger_since: None,
         };
         let stream = NsTcpStream {
             from_stack,
@@ -961,19 +992,43 @@ impl PollLoop {
         (conn, stream)
     }
 
-    /// Promote pending connects/listens whose sockets have established, and fail
-    /// connects whose sockets died during the handshake.
+    /// Promote pending connects/listens whose sockets have established, fail
+    /// connects whose sockets died during the handshake, and reap canceled /
+    /// timed-out active and passive handshakes so sockets cannot leak or wedge
+    /// a listening port.
     fn promote_pending(&mut self) {
+        let now = Instant::now();
         // Connects.
         let mut established = Vec::new();
         let mut failed = Vec::new();
+        let mut canceled = Vec::new();
         for (h, pc) in self.pending_connect.iter() {
+            let caller_gone = pc.resp.as_ref().is_none_or(oneshot::Sender::is_closed);
+            let expired = now.saturating_duration_since(pc.started)
+                > CONNECT_TIMEOUT + Duration::from_secs(2);
+            if caller_gone || expired {
+                canceled.push((*h, pc.dst));
+                continue;
+            }
             let s = self.sockets.get::<tcp::Socket>(*h);
             match s.state() {
                 tcp::State::Established => established.push(*h),
                 tcp::State::Closed => failed.push((*h, pc.dst)),
                 _ => {}
             }
+        }
+        for (h, dst) in canceled {
+            if let Some(mut pc) = self.pending_connect.remove(&h) {
+                if let Some(resp) = pc.resp.take() {
+                    let _ = resp.send(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("netstack connect to {dst} timed out"),
+                    )));
+                }
+            }
+            self.sockets.get_mut::<tcp::Socket>(h).abort();
+            self.sockets.remove(h);
+            trace!(peer = %dst, "netstack: reaped canceled/timed-out pending connect");
         }
         for h in established {
             let mut pc = self.pending_connect.remove(&h).unwrap();
@@ -1000,18 +1055,45 @@ impl PollLoop {
         // one segment takes it SYN-RECEIVED → ESTABLISHED → CLOSE-WAIT
         // before this runs, and waiting for ESTABLISHED alone never re-armed
         // the port (field 2026-10-27, rf-a728a26325a1: after a lossy phase
-        // every new connect to it was refused). One back at CLOSED is re-armed.
-        let ready: Vec<SocketHandle> = self
-            .pending_listen
-            .iter()
-            .filter(|(h, _)| {
-                !matches!(
-                    self.sockets.get::<tcp::Socket>(**h).state(),
-                    tcp::State::Listen | tcp::State::SynReceived
-                )
-            })
-            .map(|(h, _)| *h)
-            .collect();
+        // every new connect to it was refused). One back at CLOSED — or stuck
+        // in SYN-RECEIVED past `PASSIVE_HANDSHAKE_TIMEOUT` — is re-armed.
+        let mut stale_listens = Vec::new();
+        let mut ready = Vec::new();
+        for (h, pl) in self.pending_listen.iter_mut() {
+            let state = self.sockets.get::<tcp::Socket>(*h).state();
+            match state {
+                tcp::State::Listen => {
+                    pl.syn_received_since = None;
+                    if pl.accepted.is_closed() {
+                        stale_listens.push(*h);
+                    }
+                }
+                tcp::State::SynReceived => {
+                    let since = *pl.syn_received_since.get_or_insert(now);
+                    if pl.accepted.is_closed()
+                        || now.saturating_duration_since(since) > PASSIVE_HANDSHAKE_TIMEOUT
+                    {
+                        stale_listens.push(*h);
+                    }
+                }
+                _ => {
+                    ready.push(*h);
+                }
+            }
+        }
+        for h in stale_listens {
+            let pl = self.pending_listen.remove(&h).unwrap();
+            let listening = !pl.accepted.is_closed();
+            self.sockets.get_mut::<tcp::Socket>(h).abort();
+            self.sockets.remove(h);
+            if listening {
+                debug!(
+                    port = pl.port,
+                    "netstack: reaped half-open passive listener; re-arming"
+                );
+                self.arm_listener(pl.port, pl.accepted);
+            }
+        }
         for h in ready {
             let pl = self.pending_listen.remove(&h).unwrap();
             // A listener whose `NsListener` was dropped is not re-armed, so the
@@ -1050,19 +1132,12 @@ impl PollLoop {
     fn service_conns(&mut self) -> bool {
         let mut progressed = false;
         let mut dead = Vec::new();
+        let now = Instant::now();
 
         let handles: Vec<SocketHandle> = self.conns.keys().copied().collect();
         for h in handles {
             let sock = self.sockets.get_mut::<tcp::Socket>(h);
             let conn = self.conns.get_mut(&h).unwrap();
-
-            // App dropped the whole stream (both halves gone) ⇒ abort.
-            let app_gone = conn.to_app.as_ref().is_none_or(mpsc::Sender::is_closed)
-                && conn.from_app.is_closed()
-                && conn.pending.is_none();
-            if app_gone && sock.is_open() {
-                sock.abort();
-            }
 
             // Stack → app.
             while sock.can_recv() {
@@ -1084,11 +1159,14 @@ impl PollLoop {
             }
             // Peer half-closed and the buffer is drained ⇒ signal EOF to the app.
             if conn.to_app.is_some() && !sock.may_recv() && !sock.can_recv() {
+                conn.peer_eof = true;
                 conn.to_app = None; // dropping the sender = EOF for the reader
                 progressed = true;
             }
 
-            // App → stack.
+            // App → stack (always drain before evaluating app-drop teardown so
+            // write-then-drop handlers like `p2pctl::serve_conn` flush cleanly
+            // instead of aborting with RST and losing their final reply).
             loop {
                 if conn.pending.is_none() {
                     match conn.from_app.try_recv() {
@@ -1128,9 +1206,48 @@ impl PollLoop {
             // A drained queue may unblock a backpressured writer.
             conn.write_waker.wake();
 
-            // App finished writing and we've flushed everything ⇒ FIN.
-            if conn.app_write_closed && conn.pending.is_none() && !conn.fin_sent && sock.may_send()
+            let reader_dropped =
+                !conn.peer_eof && conn.to_app.as_ref().is_none_or(mpsc::Sender::is_closed);
+            let app_dropped_both = reader_dropped && conn.app_write_closed && conn.pending.is_none();
+
+            if app_dropped_both && sock.is_open() {
+                if sock.send_queue() > 0 {
+                    // App wrote a final payload and dropped the stream: send
+                    // FIN and linger briefly so the peer receives the payload
+                    // instead of an abrupt RST (`early eof`).
+                    if !conn.fin_sent && sock.may_send() {
+                        sock.close();
+                        conn.fin_sent = true;
+                        progressed = true;
+                    }
+                    let since = *conn.app_drop_linger_since.get_or_insert(now);
+                    if now.saturating_duration_since(since) >= CLOSE_LINGER_TIMEOUT {
+                        sock.abort();
+                    }
+                } else if let Some(since) = conn.app_drop_linger_since {
+                    // Outbound reply drained cleanly; once FIN-WAIT completes
+                    // or linger expires (or unread peer bytes pile up for a
+                    // gone reader), abort so the socket cannot linger forever.
+                    if !sock.may_recv() && matches!(sock.state(), tcp::State::Closed) {
+                        // Already closed cleanly.
+                    } else if sock.can_recv()
+                        || now.saturating_duration_since(since) >= CLOSE_LINGER_TIMEOUT
+                    {
+                        sock.abort();
+                    }
+                } else {
+                    // Both halves dropped with nothing left to flush (e.g. an
+                    // abrupt SOCKS reset): emit RST immediately so the peer
+                    // tears down instead of waiting out idle timeouts.
+                    sock.abort();
+                }
+            } else if conn.app_write_closed
+                && conn.pending.is_none()
+                && !conn.fin_sent
+                && sock.may_send()
             {
+                // App finished writing (clean shutdown / half-close) and we've
+                // flushed everything ⇒ FIN.
                 sock.close();
                 conn.fin_sent = true;
                 progressed = true;
@@ -1329,12 +1446,13 @@ impl PollLoop {
                     Some(Control::Ping { dst, resp }) => self.do_ping(dst, resp),
                     None => break, // handle dropped ⇒ shut down
                 },
-                pkt = self.in_rx.recv() => {
-                    // `None` ⇒ the TUN write half is gone; keep serving app-side.
-                    if let Some(p) = pkt {
-                        self.device.rx.push_back(p);
-                    }
-                }
+                pkt = self.in_rx.recv() => match pkt {
+                    Some(p) => self.device.rx.push_back(p),
+                    // TUN write half dropped (e.g. SplitTun retired): exit
+                    // cleanly so we never busy-spin on `None` and so every
+                    // `NsListener` accept queue closes instead of leaking.
+                    None => break,
+                },
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(delay) => {}
             }
@@ -3026,5 +3144,55 @@ mod tests {
         .expect("v6 ping succeeds");
         assert!(rtt < Duration::from_secs(3), "rtt within the timeout");
         let _keep = b;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retired_netstack_exits_poll_loop_and_closes_listener() {
+        let ns = Netstack::start(Ipv4Addr::new(10, 6, 0, 1), 24, 1280);
+        let mut listener = ns.handle.listen(2222).await.unwrap();
+        // Dropping the Netstack (and its NetstackTun `in_tx`) while a listener
+        // still exists must cause PollLoop::run to exit cleanly instead of
+        // spinning forever on `in_rx.recv() == None`, closing the accept queue.
+        drop(ns);
+        let accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("listener accept must return promptly after NetstackTun drop");
+        assert!(accepted.is_none(), "retired stack must close accept queue");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_then_drop_delivers_reply_without_rst() {
+        let a_ip = Ipv4Addr::new(10, 7, 0, 1);
+        let b_ip = Ipv4Addr::new(10, 7, 0, 2);
+        let a = Netstack::start(a_ip, 24, 1280);
+        let b = Netstack::start(b_ip, 24, 1280);
+        cross_link(&a, &b);
+
+        let mut listener = b.handle.listen(2224).await.unwrap();
+        let server = tokio::spawn(async move {
+            let mut stream = listener.accept().await.expect("accept conn");
+            let mut req = [0u8; 4];
+            stream.read_exact(&mut req).await.unwrap();
+            assert_eq!(&req, b"ping");
+            // Mirror `p2pctl::serve_conn`: write final reply and drop the
+            // stream immediately without awaiting peer close.
+            stream.write_all(b"pong-reply-payload").await.unwrap();
+            stream.flush().await.unwrap();
+            drop(stream);
+        });
+
+        let mut client = a
+            .handle
+            .connect(SocketAddr::new(IpAddr::V4(b_ip), 2224))
+            .await
+            .unwrap();
+        client.write_all(b"ping").await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut reply))
+            .await
+            .expect("reply must arrive within 5s")
+            .expect("clean EOF, not RST");
+        assert_eq!(reply, b"pong-reply-payload");
+        server.await.unwrap();
     }
 }

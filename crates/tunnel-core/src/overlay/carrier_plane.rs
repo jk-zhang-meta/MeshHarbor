@@ -53,11 +53,9 @@ use tracing::{debug, info, warn};
 
 use super::direct;
 use super::disco::DiscoInbound;
-#[cfg(target_os = "linux")]
-use super::wg::decap_inbound;
 use super::wg::{
     Carrier, DirectInbound, Ingress, UNKNOWN_INIT_MAX_SOURCES, UNKNOWN_INIT_MIN_INTERVAL, WgSender,
-    authenticate_init_with, is_wg_shaped, process_inbound,
+    authenticate_init_with, decap_inbound, deliver_inbound, is_wg_shaped,
 };
 use crate::transport::stun::StunInbound;
 
@@ -1125,8 +1123,11 @@ impl CarrierPlane {
                 tun_tx,
             } => {
                 let reply = Carrier::direct(sock.clone(), src);
-                let mut t = tunn.lock().await;
-                process_inbound(&mut t, n, buf, &reply, &tun_tx, &ingress).await;
+                let packet = {
+                    let mut t = tunn.lock().await;
+                    decap_inbound(&mut t, n, buf, &reply, &ingress).1
+                };
+                deliver_inbound(packet, &tun_tx, &ingress).await;
             }
             Routed::SessionRoam {
                 tunn,
@@ -1136,12 +1137,13 @@ impl CarrierPlane {
                 new_src,
             } => {
                 // A3 — reply to the OBSERVED source, process, and commit the
-                // roam ONLY on cryptographic success (process_inbound → true).
+                // roam ONLY on cryptographic success (decap_inbound → true).
                 let reply = Carrier::direct(sock.clone(), new_src);
-                let authenticated = {
+                let (authenticated, packet) = {
                     let mut t = tunn.lock().await;
-                    process_inbound(&mut t, n, buf, &reply, &tun_tx, &ingress).await
+                    decap_inbound(&mut t, n, buf, &reply, &ingress)
                 };
+                deliver_inbound(packet, &tun_tx, &ingress).await;
                 if authenticated {
                     self.commit_roam(idx, new_src);
                 }

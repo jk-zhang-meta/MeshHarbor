@@ -608,10 +608,17 @@ async fn dial_and_attach_inner(
     rows: u16,
     last_rx_override: Option<u64>,
 ) -> AttachResult {
+    // Re-discover the local daemon's current SOCKS5 port on each reconnect so
+    // a local daemon restart (new ephemeral port) never breaks resume retries.
+    let live_socks_port = crate::localclient::overlay_socks_port()
+        .await
+        .ok()
+        .flatten()
+        .or(stored.socks_port);
     let handle = connect_and_auth(
         &stored.address,
         stored.port,
-        stored.socks_port,
+        live_socks_port,
         expected_host_key,
         session_key,
         Duration::from_secs(5),
@@ -1350,14 +1357,42 @@ async fn run_interactive_loop(
                                 filter.clear_ctrl_c_arm();
                                 if cold_resume {
                                     cold_resume = false;
-                                    // Reset local rx cursor to 0 so replayed bytes /
-                                    // snapshot from host paint onto the fresh terminal.
-                                    stored.last_rx = 0;
+                                    // Reset local rx cursor to 0 (plus any host-declared ring gap)
+                                    // so replayed bytes / snapshot paint onto the fresh terminal.
+                                    stored.last_rx = if attached_info.replay
+                                        == meshharbor_node_core::pty_resume::ReplayKind::Bytes
+                                    {
+                                        attached_info.gap_bytes
+                                    } else {
+                                        0
+                                    };
                                     // Rebase c2s seq to host's `c2s_acked` so new
                                     // input is NEVER dropped by host dedup!
                                     c2s_queue.rebase(attached_info.c2s_acked);
                                 } else {
                                     c2s_queue.ack(attached_info.c2s_acked);
+                                    if attached_info.replay
+                                        == meshharbor_node_core::pty_resume::ReplayKind::Bytes
+                                        && attached_info.gap_bytes > 0
+                                    {
+                                        // Host ring wrapped without snapshot: honor the declared
+                                        // gap so the first replayed Data frame does not trip an
+                                        // endless `seq > stored.last_rx` reconnect loop.
+                                        stored.last_rx =
+                                            stored.last_rx.saturating_add(attached_info.gap_bytes);
+                                        let notice = if zh {
+                                            format!(
+                                                "\r\n\x1b[2m[meshharbor: 断线期间输出缓冲已回绕，跳过 {} 字节历史输出]\x1b[0m\r\n",
+                                                attached_info.gap_bytes
+                                            )
+                                        } else {
+                                            format!(
+                                                "\r\n\x1b[2m[meshharbor: output ring wrapped while offline, skipped {} bytes]\x1b[0m\r\n",
+                                                attached_info.gap_bytes
+                                            )
+                                        };
+                                        write_stdout_all(notice.as_bytes());
+                                    }
                                 }
                                 stored.c2s_next = c2s_queue.next_seq();
                                 for (seq, chunk) in c2s_queue.unacked_chunks(MAX_DATA_CHUNK) {
@@ -1664,9 +1699,11 @@ async fn send_wire_to_channel(
     frame: &WireFrame,
 ) -> Result<()> {
     let raw = frame.encode().context("encoding wire frame")?;
-    channel
-        .data(&raw[..])
+    // Bound channel writes so a stalled SSH flow-control window cannot freeze
+    // the interactive loop's reconnect watchdog or local `~.` escape key.
+    tokio::time::timeout(Duration::from_secs(3), channel.data(&raw[..]))
         .await
+        .map_err(|_| anyhow!("sending wire frame over SSH channel timed out"))?
         .map_err(|e| anyhow!("sending wire frame over SSH channel: {e}"))
 }
 

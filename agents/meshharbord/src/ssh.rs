@@ -1284,15 +1284,14 @@ pub(crate) mod sshd {
         /// Whether the session-deadline watchdog is running; armed on the
         /// first channel open so multiplexed channels share one timer.
         deadline_armed: bool,
-        /// Terminal type and geometry from `pty_request`, held until the shell
-        /// starts. `Some` is also what distinguishes an interactive session
-        /// from a one-shot command.
-        pty_req: Option<(String, crate::pty::WinSize)>,
-        /// Sink for client keystrokes, live only while a terminal is. Cleared
-        /// on EOF so the shell sees end-of-input.
-        channel_input: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
-        /// Resize half of the live terminal.
-        pty_handle: Option<crate::pty::PtyHandle>,
+        /// Terminal type and geometry from `pty_request`, keyed by channel so
+        /// multiplexed SSH sessions never clobber each other's PTY state.
+        pty_reqs: std::collections::HashMap<ChannelId, (String, crate::pty::WinSize)>,
+        /// Sink for client keystrokes/stdin, keyed by channel. Cleared on EOF
+        /// or channel close so the channel's process sees end-of-input.
+        channel_inputs: std::collections::HashMap<ChannelId, tokio::sync::mpsc::Sender<Vec<u8>>>,
+        /// Resize half of each live terminal, keyed by channel.
+        pty_handles: std::collections::HashMap<ChannelId, crate::pty::PtyHandle>,
         /// FR-89 — one abort per exec channel (FR-97 P4b: and per Windows console-user
         /// sftp channel), fired when the client closes that channel
         /// ([`channel_close`](russh::server::Handler::channel_close)) or when the session
@@ -1368,9 +1367,9 @@ pub(crate) mod sshd {
                 _session_task: generation.tasks.token(),
                 stream_grant: None,
                 deadline_armed: false,
-                pty_req: None,
-                channel_input: None,
-                pty_handle: None,
+                pty_reqs: std::collections::HashMap::new(),
+                channel_inputs: std::collections::HashMap::new(),
+                pty_handles: std::collections::HashMap::new(),
                 exec_aborts: std::collections::HashMap::new(),
                 _awake: awake,
                 asker,
@@ -1658,7 +1657,7 @@ pub(crate) mod sshd {
             // streaming a large upload must not grow the daemon's memory
             // faster than sftp-server drains it.
             let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-            self.channel_input = Some(tx);
+            self.channel_inputs.insert(channel, tx);
 
             let mut stdin = child.stdin.take().expect("stdin was piped");
             let cancel = self.cancellation();
@@ -1785,7 +1784,7 @@ pub(crate) mod sshd {
             caller: String,
         ) {
             let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-            self.channel_input = Some(tx);
+            self.channel_inputs.insert(channel, tx);
             let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<crate::exec::Chunk>(4);
             let abort = self.cancellation().child_token();
             self.exec_aborts.insert(channel, abort.clone());
@@ -1866,7 +1865,7 @@ pub(crate) mod sshd {
             command: Option<String>,
             session: &mut Session,
         ) -> Result<(), russh::Error> {
-            let Some((term, size)) = self.pty_req.clone() else {
+            let Some((term, size)) = self.pty_reqs.get(&channel).cloned() else {
                 return refuse(
                     session,
                     channel,
@@ -1967,8 +1966,8 @@ pub(crate) mod sshd {
             // A bounded queue: an operator holding a key down must not be able
             // to grow the daemon's memory faster than the shell drains it.
             let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-            self.channel_input = Some(tx);
-            self.pty_handle = Some(pty.handle());
+            self.channel_inputs.insert(channel, tx);
+            self.pty_handles.insert(channel, pty.handle());
 
             let writer = pty.handle();
             let cancel = self.cancellation();
@@ -2449,7 +2448,7 @@ pub(crate) mod sshd {
             // SSH flow control rather than by the daemon's memory. Bytes that
             // arrive while consent is pending wait here; a refusal drops them.
             let (tx, stdin) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-            self.channel_input = Some(tx);
+            self.channel_inputs.insert(channel, tx);
             // FR-89 — minted HERE, before the consent wait, so a channel that
             // closes while the operator is being asked leaves nothing to run.
             let abort = self
@@ -2506,7 +2505,7 @@ pub(crate) mod sshd {
                     "this session was granted one command, not a shell.",
                 );
             }
-            if self.pty_req.is_some() {
+            if self.pty_reqs.contains_key(&channel) {
                 // The shell's CONTENTS are never recorded; this row exists so
                 // a reader can see that an interactive session happened.
                 self.report(SshActivityKind::Shell, None, None, true);
@@ -2550,13 +2549,16 @@ pub(crate) mod sshd {
             // is known and when consent has been settled. Allocating here
             // would leave a pty (and later a shell) alive for a session
             // that is about to be refused.
-            self.pty_req = Some((
-                term.to_string(),
-                crate::pty::WinSize {
-                    cols: col_width as u16,
-                    rows: row_height as u16,
-                },
-            ));
+            self.pty_reqs.insert(
+                channel,
+                (
+                    term.to_string(),
+                    crate::pty::WinSize {
+                        cols: col_width as u16,
+                        rows: row_height as u16,
+                    },
+                ),
+            );
             info!(peer = %self.peer, %term, cols = col_width, rows = row_height, "ssh: pty requested");
             session.channel_success(channel)?;
             Ok(())
@@ -2568,11 +2570,11 @@ pub(crate) mod sshd {
         /// session has ended) the send fails and the data is dropped.
         async fn data(
             &mut self,
-            _channel: ChannelId,
+            channel: ChannelId,
             data: &[u8],
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
-            if let Some(tx) = &self.channel_input {
+            if let Some(tx) = self.channel_inputs.get(&channel) {
                 let _ = tx.send(data.to_vec()).await;
             }
             Ok(())
@@ -2584,14 +2586,14 @@ pub(crate) mod sshd {
         /// redraw; ConPTY delivers the equivalent through the console host.
         async fn window_change_request(
             &mut self,
-            _channel: ChannelId,
+            channel: ChannelId,
             col_width: u32,
             row_height: u32,
             _pix_width: u32,
             _pix_height: u32,
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
-            if let Some(h) = &self.pty_handle {
+            if let Some(h) = self.pty_handles.get(&channel) {
                 let size = crate::pty::WinSize {
                     cols: col_width as u16,
                     rows: row_height as u16,
@@ -2608,10 +2610,10 @@ pub(crate) mod sshd {
         /// killed — a shell that exits normally runs its logout hooks.
         async fn channel_eof(
             &mut self,
-            _channel: ChannelId,
+            channel: ChannelId,
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
-            self.channel_input = None;
+            self.channel_inputs.remove(&channel);
             Ok(())
         }
 
@@ -2626,6 +2628,9 @@ pub(crate) mod sshd {
             channel: ChannelId,
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
+            self.channel_inputs.remove(&channel);
+            self.pty_handles.remove(&channel);
+            self.pty_reqs.remove(&channel);
             if let Some(abort) = self.exec_aborts.remove(&channel) {
                 abort.cancel();
             }
@@ -2726,7 +2731,7 @@ pub(crate) mod sshd {
                 });
                 session.channel_success(channel)?;
                 let (in_tx, in_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
-                self.channel_input = Some(in_tx);
+                self.channel_inputs.insert(channel, in_tx);
                 let sub_ctx = crate::ssh_persist::subsystem::SubsystemContext {
                     handle: session.handle(),
                     channel,

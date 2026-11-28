@@ -148,6 +148,9 @@ pub fn spawn(
     mux: &Arc<DerpMux>,
     outbound_rx: mpsc::Receiver<tunnel_core::transport::derp::OutboundFrame>,
 ) {
+    // Do not report alive until the first WS connection completes and registers
+    // our pubkey (`run` calls `mark_up` after registration).
+    mux.mark_down();
     let reg_frame = mux.registration_frame();
     let weak = Arc::downgrade(mux);
     tokio::spawn(run(
@@ -181,6 +184,8 @@ pub fn spawn_regional(
         .unwrap_or(derp_url)
         .to_string();
     let tid = crate::signaling::urlencode(tenant_id);
+    // Do not report alive until the regional WS connects and registers.
+    mux.mark_down();
     let reg_frame = mux.registration_frame();
     let weak = Arc::downgrade(mux);
     tokio::spawn(run(
@@ -379,7 +384,15 @@ async fn run(
                                     }
                                     continue;
                                 }
-                                if tx.send(Message::Binary(frame.into())).await.is_err() {
+                                if !matches!(
+                                    tokio::time::timeout(
+                                        Duration::from_secs(15),
+                                        tx.send(Message::Binary(frame.into())),
+                                    )
+                                    .await,
+                                    Ok(Ok(()))
+                                ) {
+                                    warn!(%relay, "overlay derp: /derp WS binary send failed or timed out; reconnecting");
                                     break;
                                 }
                             }
@@ -401,7 +414,17 @@ async fn run(
                             // Keep the corp middlebox happy; ignore text.
                             Some(Ok(Message::Ping(p))) => {
                                 last_rx = std::time::Instant::now();
-                                let _ = tx.send(Message::Pong(p)).await;
+                                if !matches!(
+                                    tokio::time::timeout(
+                                        Duration::from_secs(15),
+                                        tx.send(Message::Pong(p)),
+                                    )
+                                    .await,
+                                    Ok(Ok(()))
+                                ) {
+                                    warn!(%relay, "overlay derp: /derp WS pong send failed or timed out; reconnecting");
+                                    break;
+                                }
                             }
                             // Pong (auto-reply to our keepalive) et al. — any
                             // inbound frame proves the link is alive.

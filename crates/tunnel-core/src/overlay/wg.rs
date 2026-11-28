@@ -3932,8 +3932,11 @@ impl WgDevice {
                     }
                     continue;
                 }
-                let mut t = recv_tunn.lock().await;
-                process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &recv_ingress).await;
+                let packet = {
+                    let mut t = recv_tunn.lock().await;
+                    decap_inbound(&mut t, n, &mut buf, &recv_carrier, &recv_ingress).1
+                };
+                deliver_inbound(packet, &tun_tx, &recv_ingress).await;
             }
         })
     }
@@ -4315,7 +4318,7 @@ impl WgDevice {
         false
     }
 
-    fn restore_org_floor(&mut self, public: &[u8; 32]) -> bool {
+    pub(crate) fn restore_org_floor(&mut self, public: &[u8; 32]) -> bool {
         let Some(mut floor) = self.org_floor_receivers.remove(public) else {
             return false;
         };
@@ -5162,8 +5165,11 @@ impl WgDevice {
         let reply = Carrier::direct(sock, src);
         let mut buf = packet.to_vec();
         let n = buf.len();
-        let mut t = tunn.lock().await;
-        process_inbound(&mut t, n, &mut buf, &reply, &self.tun_tx, &ingress).await;
+        let packet = {
+            let mut t = tunn.lock().await;
+            decap_inbound(&mut t, n, &mut buf, &reply, &ingress).1
+        };
+        deliver_inbound(packet, &self.tun_tx, &ingress).await;
     }
 
     /// rc.134 — install a peer reached over the SHARED direct socket. Its
@@ -5636,9 +5642,9 @@ impl WgDevice {
         let reply = Carrier::direct(sock.clone(), src);
         let mut buf = packet.to_vec();
         let n = buf.len();
-        let authenticated = {
+        let (authenticated, packet) = {
             let mut t = tunn.lock().await;
-            let ok = process_inbound(&mut t, n, &mut buf, &reply, &self.tun_tx, &ingress).await;
+            let (ok, packet) = decap_inbound(&mut t, n, &mut buf, &reply, &ingress);
             if ok && in_probes {
                 // Clear the probe handshake latch inside the Tunn critical
                 // section so a follow-up packet processed immediately after
@@ -5646,8 +5652,9 @@ impl WgDevice {
                 ingress.stats.handshake.store(false, Ordering::Relaxed);
                 ingress.stats.handshake_at.store(0, Ordering::Relaxed);
             }
-            ok
+            (ok, packet)
         };
+        deliver_inbound(packet, &self.tun_tx, &ingress).await;
         if !authenticated {
             return false;
         }
@@ -6999,9 +7006,11 @@ impl WgDevice {
                     {
                         break;
                     }
-                    let mut t = recv_tunn.lock().await;
-                    process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &leg_ingress)
-                        .await;
+                    let packet = {
+                        let mut t = recv_tunn.lock().await;
+                        decap_inbound(&mut t, n, &mut buf, &recv_carrier, &leg_ingress).1
+                    };
+                    deliver_inbound(packet, &tun_tx, &leg_ingress).await;
                 }
             });
             tasks.push(recv_task);
@@ -7161,15 +7170,14 @@ pub(crate) async fn send_wg_recorded(
 /// or a keepalive — the same predicate `rx_any` liveness keys on). This is
 /// the roaming gate: an endpoint is adopted only on cryptographic proof,
 /// never on packet shape.
-pub(crate) async fn process_inbound(
-    t: &mut Tunn,
-    n: usize,
-    buf: &mut [u8],
-    carrier: &Arc<Carrier>,
+/// Deliver decrypted inbound IP packets to the TUN channel AFTER the peer's
+/// `Tunn` mutex has been dropped so TUN backpressure can never block the WG
+/// timer task or org-relay bind challenge handling.
+pub(crate) async fn deliver_inbound(
+    packet: Option<Vec<u8>>,
     tun_tx: &mpsc::Sender<Vec<u8>>,
     ingress: &Ingress,
-) -> bool {
-    let (authenticated, packet) = decap_inbound(t, n, buf, carrier, ingress);
+) {
     if let Some(p) = packet {
         let _ = tun_tx.send(p).await;
     }
@@ -7178,15 +7186,11 @@ pub(crate) async fn process_inbound(
             let _ = tun_tx.send(extra).await;
         }
     }
-    authenticated
 }
 
-/// [`process_inbound`] without the delivery: whether the datagram
-/// authenticated, and the decrypted IP packet it carried (a WireGuard
-/// datagram carries at most one) for the caller to hand to the TUN channel.
-/// A batched receive path decrypts a whole run of datagrams this way under one
-/// `Tunn` lock, then delivers the packets back to back once the lock is
-/// released.
+/// Decapsulate one WireGuard datagram without delivering it (`decap_inbound` +
+/// `deliver_inbound` are split so callers drop the `Tunn` lock before awaiting
+/// `tun_tx.send`).
 /// F2 — decapsulate one STANDBY copy into the peer's session: WG data only,
 /// through the same ingress gate as [`decap_inbound`], and counted in NO rx
 /// stat. A copy is not evidence that the direct carrier works, so the business
@@ -7842,9 +7846,11 @@ async fn run_direct_demux(
                         if let Some(leg_id) = ingress.multipath.leg_id_for_direct_src(src) {
                             let reply = Carrier::direct(sock.clone(), src);
                             let leg_ingress = ingress.with_leg_id(leg_id);
-                            let mut t = tunn.lock().await;
-                            process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &leg_ingress)
-                                .await;
+                            let packet = {
+                                let mut t = tunn.lock().await;
+                                decap_inbound(&mut t, n, &mut buf, &reply, &leg_ingress).1
+                            };
+                            deliver_inbound(packet, &tun_tx, &leg_ingress).await;
                             continue;
                         }
                         if super::direct::roam_enabled()
@@ -7853,11 +7859,11 @@ async fn run_direct_demux(
                             && last.is_none_or(|t| t.elapsed() >= super::direct::ROAM_MIN_INTERVAL)
                         {
                             let reply = Carrier::direct(sock.clone(), src);
-                            let authenticated = {
+                            let (authenticated, packet) = {
                                 let mut t = tunn.lock().await;
-                                process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &ingress)
-                                    .await
+                                decap_inbound(&mut t, n, &mut buf, &reply, &ingress)
                             };
+                            deliver_inbound(packet, &tun_tx, &ingress).await;
                             if authenticated {
                                 ingress.multipath_path_changed();
                                 {
@@ -7924,8 +7930,11 @@ async fn run_direct_demux(
             continue;
         };
         let reply = Carrier::direct(sock.clone(), src);
-        let mut t = tunn.lock().await;
-        process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &ingress).await;
+        let packet = {
+            let mut t = tunn.lock().await;
+            decap_inbound(&mut t, n, &mut buf, &reply, &ingress).1
+        };
+        deliver_inbound(packet, &tun_tx, &ingress).await;
     }
 }
 

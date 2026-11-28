@@ -140,6 +140,13 @@ async fn gates_changed(w: &mut GateWatch) {
     std::future::pending::<()>().await
 }
 
+/// Consecutive immediate refusals (connected to the delegation socket, sent our
+/// secret, and the daemon closed the stream before greeting) after which a
+/// `--supervised` worker concludes its secret was superseded by a newer daemon
+/// restart and triggers graceful self-shutdown so the supervisor can respawn a
+/// fresh worker without hitting the single-instance lock.
+const MAX_CONSECUTIVE_REFUSALS: u32 = 4;
+
 /// Run the worker's side of the channel for the process lifetime.
 ///
 /// Returns immediately unless this process was started as `run --supervised`,
@@ -158,6 +165,7 @@ pub async fn run(
         tokio::sync::mpsc::Sender<WorkerOrder>,
     )>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
     // FR-43 P3 — this process's live-session registry: listed to the daemon,
     // which answers the person's desktop app, and the target of the daemon's
     // `Disconnect`.
@@ -184,6 +192,7 @@ pub async fn run(
 
     let mut backoff = BACKOFF_MIN;
     let mut last_error: Option<String> = None;
+    let mut consecutive_refusals: u32 = 0;
     loop {
         let mut lane = OrdersLane::new(&orders_tx);
         let attach = attach_once(
@@ -205,8 +214,15 @@ pub async fn run(
                 tracing::info!("delegation: channel closed by the daemon");
                 backoff = BACKOFF_MIN;
                 last_error = None;
+                consecutive_refusals = 0;
             }
             Err(e) => {
+                let refused = e.kind() == std::io::ErrorKind::PermissionDenied;
+                if refused {
+                    consecutive_refusals = consecutive_refusals.saturating_add(1);
+                } else {
+                    consecutive_refusals = 0;
+                }
                 let msg = e.to_string();
                 // Log the transition, not every retry: this loop runs for the
                 // worker's whole life and a daemon that is simply absent would
@@ -215,9 +231,18 @@ pub async fn run(
                     tracing::warn!(
                         error = %msg,
                         retry_in_secs = backoff.as_secs(),
+                        consecutive_refusals,
                         "delegation: attach failed"
                     );
                     last_error = Some(msg);
+                }
+                if consecutive_refusals >= MAX_CONSECUTIVE_REFUSALS {
+                    tracing::warn!(
+                        consecutive_refusals,
+                        "delegation: attach refused repeatedly — secret superseded by a restarted daemon; stopping orphaned supervised worker"
+                    );
+                    let _ = shutdown_tx.send(true);
+                    return;
                 }
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
@@ -312,7 +337,8 @@ async fn attach_once(
     let greeting = match lines.next_line().await? {
         Some(line) => line,
         None => {
-            return Err(std::io::Error::other(
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
                 "daemon refused the attach (no greeting)",
             ));
         }

@@ -491,6 +491,10 @@ struct Installed {
     /// Consecutive sweeps where we sent but received nothing (tx grew, rx
     /// flat). A few in a row ⇒ the direct carrier is one-way / dead.
     bad_sweeps: u32,
+    /// When `bad_sweeps` was last sampled against `primary_traffic` (paced to
+    /// ~`FALLBACK_TICK` so another peer's 100 ms business-poke recheck cannot
+    /// accelerate unrelated peers' passive one-way conviction to ~300 ms).
+    last_one_way_sample_at: Option<Instant>,
     /// Stage 2 — the active-revalidation poke (a forced WG rekey) the sweep
     /// last armed for this carrier; `None` = none pending. Cleared when the
     /// poke is answered (an initiator-role handshake completed at-or-after it
@@ -650,6 +654,7 @@ impl Installed {
             last_traffic: (0, 0),
             primary_traffic: (0, 0),
             bad_sweeps: 0,
+            last_one_way_sample_at: None,
             poke: None,
             early_standby: false,
             early_standby_logged: None,

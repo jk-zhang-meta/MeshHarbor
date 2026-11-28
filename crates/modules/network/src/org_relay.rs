@@ -5398,22 +5398,43 @@ pub async fn maybe_mint_fallback(
             return;
         }
         if authorized && !bindable && mode != PeerRelayMode::Warn {
-            // The member is asking again, so this session never gave it a
-            // link (one-way or dead carrier): rank its relay last for the
-            // pair, so the re-mint below tries another one first.
-            if session.hops.is_empty() {
-                state.org_relay.demote_unbound(
-                    &pk,
-                    session.relay.node_id,
-                    Instant::now() + UNBOUND_DEMOTE,
+            // Proactive make-before-break line renewal (`renew_expiring_lines`
+            // asks ahead of `expires_at` while riding the live session): do NOT
+            // demote the healthy relay or broadcast premature `OverlayRelayRevoke`
+            // (which tears down the live carrier into `blocked` before the
+            // replacement VNI is minted). Retire only the server's active slot
+            // locally so minting below issues a fresh VNI seamlessly while the
+            // old VNI continues carrying traffic until expiry.
+            const RENEW_AHEAD_WINDOW: Duration = Duration::from_secs(120);
+            let expiring_soon =
+                session.expires_at.saturating_duration_since(Instant::now()) <= RENEW_AHEAD_WINDOW;
+            if expiring_soon {
+                state.org_relay.sessions.remove_if(&pk, |_, current| {
+                    current.vni == session.vni && current.generation == session.generation
+                });
+                info!(
+                    %tenant_id, %pk, vni = session.vni, generation = session.generation,
+                    "org-relay: retiring expiring session locally for make-before-break renewal (no premature revoke or relay demotion)"
                 );
+            } else {
+                // The member is asking again mid-lease, so this session never
+                // gave it a working link (one-way or dead carrier): rank its
+                // relay last for the pair, so the re-mint below tries another
+                // one first.
+                if session.hops.is_empty() {
+                    state.org_relay.demote_unbound(
+                        &pk,
+                        session.relay.node_id,
+                        Instant::now() + UNBOUND_DEMOTE,
+                    );
+                }
+                revoke_where(state, "org-fallback-bind-window-passed", |current| {
+                    current.pair_key == pk
+                        && current.vni == session.vni
+                        && current.generation == session.generation
+                })
+                .await;
             }
-            revoke_where(state, "org-fallback-bind-window-passed", |current| {
-                current.pair_key == pk
-                    && current.vni == session.vni
-                    && current.generation == session.generation
-            })
-            .await;
         }
         if !authorized {
             revoke_where(state, "org-fallback-reauthorization", |current| {

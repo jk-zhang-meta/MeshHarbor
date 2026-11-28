@@ -2483,6 +2483,19 @@ impl RelayCoordinator {
     /// ladder unchanged — TURNS:443 and wss:/derp are different transports
     /// and corp middleboxes split them, so pair formation must never couple
     /// to `/derp` health.
+    /// Read-only check matching [`build_floor`]: is a live, authorized `/derp`
+    /// floor currently available to absorb an in-place direct carrier demotion
+    /// for `node_id` without dropping the peer to `blocked`?
+    pub fn can_rehome_direct(&self, node_id: &ObjectId, peer: &PeerConfig) -> bool {
+        !peer.backbone_only
+            && self.derp_floor
+            && self.derp
+            && peer.supports_derp
+            && peer.supports_derp_floor
+            && self.mux_for(node_id).is_some_and(|mux| mux.is_alive())
+    }
+
+    /// Build the `/derp` floor for `node_id` (if allowed and alive).
     pub fn build_floor(&mut self, node_id: ObjectId, peer: &PeerConfig) -> Option<ReadyLink> {
         // MeshHarbor #21 — a cross-border peer rides its line alone: DERP is
         // refused across the line whatever the peer's flags say, so there is
@@ -2507,10 +2520,10 @@ impl RelayCoordinator {
         } else if !self.derp {
             Some("DERP is not enabled on THIS node")
         } else if !peer.supports_derp {
-            Some("the PEER does not advertise supports_derp (pre-DERP build?)")
+            Some("the PEER does not advertise supports_derp (zone/policy-withheld central relay or pre-DERP build)")
         } else if !peer.supports_derp_floor {
             Some(
-                "the PEER does not advertise supports_derp_floor (build predates the floor — it holds no mux, so a floor toward it would blackhole)",
+                "the PEER does not advertise supports_derp_floor (zone/policy-withheld floor or build predating the floor)",
             )
         } else {
             None

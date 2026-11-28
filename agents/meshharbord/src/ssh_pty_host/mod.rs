@@ -263,6 +263,10 @@ struct HostCore {
     /// Bounded non-blocking channel to dedicated PTY stdin writer task so full
     /// PTY stdin buffers NEVER stall `Terminate` or deadline ticks!
     stdin_tx: Option<mpsc::Sender<(u64, u64, Vec<u8>)>>,
+    /// Spillover queue when `stdin_tx` is momentarily full: prevents silently
+    /// dropping an in-order input chunk (which would leave a permanent hole in
+    /// `C2sHostDedup` and freeze all subsequent typing).
+    pending_stdin: std::collections::VecDeque<(u64, u64, Vec<u8>)>,
     pty_kill_tx: Option<tokio::sync::oneshot::Sender<u32>>,
     child_pid: Option<u32>,
     exit_status: Option<ExitStatusInfo>,
@@ -312,6 +316,7 @@ impl HostCore {
             dedup: C2sHostDedup::new(),
             pty_handle: None,
             stdin_tx: None,
+            pending_stdin: std::collections::VecDeque::new(),
             pty_kill_tx: None,
             child_pid: None,
             exit_status: None,
@@ -605,8 +610,12 @@ impl HostCore {
         let is_active = self.is_active_conn(conn_id);
         match wf {
             WireFrame::Data { stream, seq, bytes } if stream == STREAM_STDIN && is_active => {
-                if let Some(tx) = &self.stdin_tx {
-                    if let Ok(permit) = tx.try_reserve() {
+                if self.stdin_tx.is_some() {
+                    self.drain_pending_stdin();
+                    if self.pending_stdin.is_empty()
+                        && let Some(tx) = &self.stdin_tx
+                        && let Ok(permit) = tx.try_reserve()
+                    {
                         let fresh = self.dedup.accept(seq, &bytes).to_vec();
                         let upto = self.dedup.next_expected();
                         if fresh.is_empty() {
@@ -621,6 +630,20 @@ impl HostCore {
                         } else {
                             permit.send((conn_id, upto, fresh));
                         }
+                    } else if self.pending_stdin.len() < 256 {
+                        self.pending_stdin.push_back((conn_id, seq, bytes));
+                        self.drain_pending_stdin();
+                    } else {
+                        // Overflow past bounded spillover: do NOT advance dedup
+                        // past the rejected chunk — echo current watermark so
+                        // the client knows what has not been accepted yet.
+                        self.send_to_conn(
+                            conn_id,
+                            IpcFrame::Wire(WireFrame::Ack {
+                                stream: STREAM_STDIN,
+                                upto: self.dedup.next_expected(),
+                            }),
+                        );
                     }
                 } else {
                     self.send_to_conn(
@@ -670,8 +693,37 @@ impl HostCore {
         false
     }
 
+    fn drain_pending_stdin(&mut self) {
+        while let Some((conn_id, seq, bytes)) = self.pending_stdin.front() {
+            let Some(tx) = &self.stdin_tx else {
+                self.pending_stdin.clear();
+                break;
+            };
+            let Ok(permit) = tx.try_reserve() else {
+                break;
+            };
+            let fresh = self.dedup.accept(*seq, bytes).to_vec();
+            let upto = self.dedup.next_expected();
+            let cid = *conn_id;
+            self.pending_stdin.pop_front();
+            if fresh.is_empty() {
+                drop(permit);
+                self.send_to_conn(
+                    cid,
+                    IpcFrame::Wire(WireFrame::Ack {
+                        stream: STREAM_STDIN,
+                        upto,
+                    }),
+                );
+            } else {
+                permit.send((cid, upto, fresh));
+            }
+        }
+    }
+
     fn terminate_child(&mut self, grace_ms: u32) {
         self.stdin_tx = None;
+        self.pending_stdin.clear();
         if let Some(kill_tx) = self.pty_kill_tx.take() {
             let _ = kill_tx.send(grace_ms);
         }
@@ -847,6 +899,7 @@ async fn run_host(meta: HostBootstrapMeta) -> Result<(), String> {
                                 upto,
                             }),
                         );
+                        core.drain_pending_stdin();
                     }
                     InternalEvent::ConnDropped(conn_id) => {
                         core.conns.remove(&conn_id);

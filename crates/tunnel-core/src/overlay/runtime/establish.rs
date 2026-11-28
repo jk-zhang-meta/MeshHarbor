@@ -281,10 +281,15 @@ pub(super) fn gather_lan_candidates(
     }
     // 3. Same-host loopback (`127.0.0.1`) candidates on Windows hosts and
     //    Mirrored WSL2 guests via unpinned wildcard `public_sock` (Disco-gated).
+    //    Only emit when the peer plausibly lives on THIS host (shares a host
+    //    LAN IP or our public srflx IP, or our own addresses are unknown in a
+    //    synthetic test) — avoids flooding 18-24 dead 127.0.0.1 probes at
+    //    remote peers across the internet.
     if direct::loopback_direct_enabled()
         && ctx.loopback_eligible
         && !ctx.public_sock_pinned
         && let Some(ps) = &ctx.public_sock
+        && peer_possibly_same_host(ctx, cfg)
     {
         let my_pub_port = ps.local_addr().ok().map(|a| a.port());
         for cand in super::super::candidates::loopback_candidates(
@@ -299,6 +304,39 @@ pub(super) fn gather_lan_candidates(
         }
     }
     out
+}
+
+/// True when `cfg` could plausibly be running on the same physical host as
+/// `ctx` (e.g. Windows host + Mirrored WSL2 guest sharing host LAN IPs or the
+/// same NAT public IPv4). When `ctx` has neither local LAN IPs nor a gathered
+/// srflx (synthetic tests or early startup), falls back to `true`.
+fn peer_possibly_same_host(ctx: &DirectCtx, cfg: &PeerConfig) -> bool {
+    let self_ips = ctx.all_self_ips();
+    let my_srflx_ip = ctx
+        .punch
+        .as_ref()
+        .and_then(|(s, _)| s.parse::<std::net::SocketAddr>().ok())
+        .map(|sa| sa.ip());
+    if self_ips.is_empty() && my_srflx_ip.is_none() {
+        return true;
+    }
+    if cfg.lan_endpoints.iter().any(|ep| {
+        ep.parse::<std::net::SocketAddr>().ok().is_some_and(|sa| {
+            matches!(sa.ip(), std::net::IpAddr::V4(v4) if self_ips.contains(&v4))
+        })
+    }) {
+        return true;
+    }
+    if let Some(my_pub) = my_srflx_ip
+        && cfg.srflx_endpoints.iter().any(|ep| {
+            ep.parse::<std::net::SocketAddr>()
+                .ok()
+                .is_some_and(|sa| sa.ip() == my_pub)
+        })
+    {
+        return true;
+    }
+    false
 }
 
 /// FR-139 — classify an authenticated inbound Disco ping source into a
@@ -1032,6 +1070,7 @@ impl OverlayRuntime {
         // escalation table does, at the same moment.
         let mbb = crate::overlay::direct::make_before_break_enabled();
         let mut dead: Vec<(ObjectId, DirectTier, DeathReason)> = Vec::new();
+        let one_way_step = FALLBACK_TICK.saturating_sub(Duration::from_millis(500));
         for (nid, e) in by_node.iter_mut() {
             let Some((tx, rx)) = wg.peer_primary_traffic(&e.pubkey) else {
                 continue;
@@ -1041,8 +1080,28 @@ impl OverlayRuntime {
             } else {
                 e.last_traffic
             };
-            e.primary_traffic = (tx, rx);
-            e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
+            let tx_unanswered = tx > last_tx && rx == last_rx;
+            let cadence_elapsed = e
+                .last_one_way_sample_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= one_way_step);
+            // Allow an immediate 0 → 1 transition on the first unanswered
+            // business packet so verification pokes arm without delay, while
+            // throttling subsequent strikes (1 → 2 → 3) to the normal ~5 s
+            // health-sweep cadence so 100 ms accelerated sweeps for another
+            // peer cannot falsely convict an unrelated carrier in 300 ms.
+            let sample_one_way = (e.bad_sweeps == 0 && tx_unanswered) || cadence_elapsed;
+            if rx > last_rx {
+                e.primary_traffic = (tx, rx);
+                e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
+                e.last_one_way_sample_at = None;
+            } else if sample_one_way && tx_unanswered {
+                e.primary_traffic = (tx, rx);
+                e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
+                e.last_one_way_sample_at = Some(now);
+            } else if cadence_elapsed {
+                e.primary_traffic = (tx, rx);
+                e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
+            }
             // P3b-3 / rc.206 — "last heard from this peer" advances on ANY
             // authenticated inbound packet, INCLUDING content-free WG keepalives.
             // The IP-data `rx` counter alone froze on a mostly-idle-but-alive
@@ -1166,6 +1225,19 @@ impl OverlayRuntime {
             // refresh holdoff. This loop only gathers inputs and applies the
             // verdict.
             let since_last_rx = now.saturating_duration_since(e.last_rx_at);
+            let has_live_floor = !e.is_direct
+                || match (
+                    relay.as_ref(),
+                    current_peers.get(nid).and_then(peer_config_from_netmap),
+                ) {
+                    (Some(r), Some(cfg)) => r.can_rehome_direct(nid, &cfg),
+                    // Real runtimes always install peers from `current_peers`
+                    // and hold a `RelayCoordinator` in `CarrierMode::Relay`.
+                    // Only standalone sweep unit tests call `sweep_carrier_health`
+                    // with `relay=None` and an empty `current_peers` map.
+                    (None, None) => true,
+                    _ => false,
+                };
             let v = carrier_tick(&HealthInputs {
                 business_poke_window: super::business_poke_window(),
                 tier: e.tier,
@@ -1185,6 +1257,8 @@ impl OverlayRuntime {
                         .get(nid)
                         .is_some_and(|&until| until > now),
                 poke,
+                has_live_floor,
+                sample_one_way,
             });
             // Diagnostic — per-carrier health/poke trace (see
             // `OVERLAY_SESSION_TRACE`). Shows why a uni-directional carrier
@@ -1320,8 +1394,14 @@ impl OverlayRuntime {
             let business_rearm =
                 unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
             // #280 — beside the one transition: an answered handshake the
-            // initiator never confirmed on this direct carrier.
-            let unconfirmed = if v.death.is_none() && super::responder_confirm() && !hard_dead {
+            // initiator never confirmed on this direct carrier. Without a live
+            // fallback floor (`!has_live_floor`), never convict on a single lost
+            // confirmation keepalive directly — require active verification.
+            let unconfirmed = if v.death.is_none()
+                && super::responder_confirm()
+                && (has_live_floor || super::responder_verify())
+                && !hard_dead
+            {
                 let age = wg.peer_responder_unconfirmed_age(&e.pubkey);
                 crate::overlay::lifecycle::responder_unconfirmed(
                     e.is_direct,
@@ -1517,14 +1597,32 @@ impl OverlayRuntime {
             // for (lab 2026-11-12, 40/40 breaks). The floor is built here
             // rather than by the carrier-loss walk that follows, which then
             // finds a relay incumbent and goes straight to its upgrade probe.
-            let rehomed = tier.is_direct()
-                && e.hs_done
-                && self
-                    .rehome_dead_direct(wg, by_node, relay, current_peers, &nid, &e)
-                    .await;
+            let rehomed = if tier.is_direct() && e.hs_done {
+                self.rehome_dead_direct(wg, by_node, relay, current_peers, &nid, &e)
+                    .await
+            } else if !tier.is_direct()
+                && e.relay_kind == Some(crate::overlay::relay_link::RelayKind::Org)
+                && wg.restore_org_floor(&e.pubkey)
+            {
+                let traffic = wg.peer_traffic(&e.pubkey).unwrap_or((0, 0));
+                by_node.insert(
+                    nid,
+                    Installed {
+                        initiated: true,
+                        hs_done: true,
+                        last_traffic: traffic,
+                        primary_traffic: wg.peer_primary_traffic(&e.pubkey).unwrap_or(traffic),
+                        relay_kind: Some(crate::overlay::relay_link::RelayKind::Derp),
+                        ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, now)
+                    },
+                );
+                true
+            } else {
+                false
+            };
             if rehomed {
                 info!(peer = %nid, tier = ?tier, reason = reason.as_str(),
-                    "overlay: direct carrier convicted — live session moved onto the /derp floor in place (no new handshake)");
+                    "overlay: carrier convicted — live session kept on /derp floor in place (no new handshake)");
             } else {
                 wg.remove_peer(&e.pubkey).await;
                 // A carrier REPAIR, not an eviction (the relay is re-requested

@@ -384,6 +384,9 @@ enum Command {
         /// window PICKER; nothing here chooses the window.
         #[arg(long)]
         window: bool,
+        /// Target capture max FPS negotiated with PipeWire when streaming.
+        #[arg(long)]
+        fps: Option<u32>,
         /// FR-92 P9 — answer keep busy's questions about this GNOME session
         /// (Mutter's idle clock and monitor layout), one line per question on
         /// stdin, until the daemon closes it. Reads no input, sends none.
@@ -2839,6 +2842,7 @@ async fn daemon_main() -> Result<()> {
             input,
             mutter,
             window,
+            fps,
             keep_busy,
             notify,
             notify_probe,
@@ -2867,7 +2871,7 @@ async fn daemon_main() -> Result<()> {
                     meshharbord::keep_busy::session_helper::serve();
                 } else {
                     meshharbord::capture::portal::helper::run(
-                        screencast, stream, input, mutter, window,
+                        screencast, stream, input, mutter, window, fps,
                     );
                 }
                 Ok(())
@@ -2884,6 +2888,7 @@ async fn daemon_main() -> Result<()> {
                     input,
                     mutter,
                     window,
+                    fps,
                     keep_busy,
                     notify,
                     notify_probe,
@@ -5886,6 +5891,7 @@ async fn run_cmd(
         supervised,
         worker_channels,
         shutdown_rx.clone(),
+        shutdown_tx.clone(),
         rc_sessions.clone(),
     ));
     #[cfg(not(unix))]

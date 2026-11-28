@@ -530,12 +530,21 @@ async fn relay_loop(
                             wf,
                             WireFrame::Notice(meshharbor_node_core::pty_resume::NoticeKind::Superseded)
                         );
-                        if let WireFrame::Exited(ref st) = wf {
-                            mark_ended(&sid, st.clone());
-                            terminated_or_exited = true;
-                        }
+                        let exited_status = if let WireFrame::Exited(ref st) = wf {
+                            Some(st.clone())
+                        } else {
+                            None
+                        };
                         if send_wire(&ctx.handle, ctx.channel, &wf).await.is_err() {
+                            // Do NOT mark_ended before `Exited` actually wrote
+                            // to the SSH channel — a drop right here leaves the
+                            // session replayable so the client can reconnect and
+                            // receive its final output + exit status.
                             break;
+                        }
+                        if let Some(st) = exited_status {
+                            mark_ended(&sid, st);
+                            terminated_or_exited = true;
                         }
                         if superseded {
                             superseded_flag = true;

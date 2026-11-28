@@ -444,6 +444,18 @@ pub(crate) struct HealthInputs {
     pub(crate) relay_refresh_held: bool,
     /// Stage 2 — the pending active-revalidation poke, if one is armed.
     pub(crate) poke: Option<PokeState>,
+    /// True when a live authorized fallback floor (e.g. `/derp`) can absorb a
+    /// direct carrier conviction in place. When `false` (strict zone with
+    /// central relay withheld, or `/derp` mux down), tearing down a live
+    /// direct carrier drops the peer to `blocked`, so aggressive 2 s single-
+    /// or double-packet poke windows must NOT convict — wait out the full
+    /// proof-grade tier handshake deadline instead.
+    pub(crate) has_live_floor: bool,
+    /// True when enough time has elapsed since this peer's last one-way
+    /// sample to count a new `bad_sweeps` strike. Prevents an accelerated
+    /// global sweep (e.g. 100 ms tick for another peer's business poke) from
+    /// accumulating 3 passive one-way strikes on an unrelated peer in ~300 ms.
+    pub(crate) sample_one_way: bool,
 }
 
 /// [`carrier_tick`]'s result: the updated one-way counter (store back into
@@ -489,7 +501,13 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
             // and convicts on `MAJOR_POKE_DEADLINE` instead. Both windows are
             // chosen here so the deadline policy stays in one place.
             i.poke.as_ref().is_some_and(|p| {
-                let window = if p.from_major {
+                let window = if !i.has_live_floor && i.is_direct {
+                    // Without a live fallback floor, a false conviction hard-
+                    // removes the live direct Tunn into `blocked` instead of
+                    // failing over onto /derp. Require the full tier deadline
+                    // (multiple boringtun retries) before convicting.
+                    i.tier.handshake_deadline()
+                } else if p.from_major {
                     MAJOR_POKE_DEADLINE
                 } else if p.from_business && i.is_direct {
                     i.business_poke_window
@@ -526,10 +544,17 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
     // that's genuinely RECEIVING clears its tier's strikes (CC1).
     let (tx, rx) = i.traffic;
     let (last_tx, last_rx) = i.last_traffic;
-    let (bad_sweeps, clear_tier_strikes) = if tx > last_tx && rx == last_rx {
+    let (bad_sweeps, clear_tier_strikes) = if rx > last_rx {
+        (0, i.is_direct)
+    } else if !i.sample_one_way {
+        // Accelerated global sweep (e.g. 100 ms business-poke recheck for
+        // another peer): preserve the existing strike count without adding a
+        // synthetic strike or prematurely resetting it.
+        (i.bad_sweeps, false)
+    } else if tx > last_tx && rx == last_rx {
         (i.bad_sweeps + 1, false)
     } else {
-        (0, i.is_direct && rx > last_rx)
+        (0, false)
     };
 
     let tripped = bad_sweeps >= BAD_SWEEPS_TO_FALLBACK
@@ -748,6 +773,8 @@ mod tests {
             bad_sweeps: 0,
             relay_refresh_held: false,
             poke: None,
+            has_live_floor: true,
+            sample_one_way: true,
         }
     }
 
@@ -1579,5 +1606,73 @@ mod tests {
             ..established()
         };
         assert_eq!(carrier_tick(&i).death, Some(DeathReason::RekeyUnanswered));
+    }
+
+    #[test]
+    fn no_live_floor_widens_direct_poke_to_tier_deadline() {
+        for tier in [DirectTier::Lan, DirectTier::Srflx, DirectTier::Public] {
+            let tier_deadline = tier.handshake_deadline();
+            for (from_major, from_business) in [(true, false), (false, true)] {
+                let input = |age| HealthInputs {
+                    tier,
+                    is_direct: true,
+                    has_live_floor: false,
+                    poke: Some(PokeState {
+                        since_poke: age,
+                        answered: false,
+                        from_major,
+                        from_business,
+                        data_pending: false,
+                    }),
+                    ..established()
+                };
+                // Must NOT convict on the 2 s fast window when no floor exists
+                // to absorb a false conviction (would hard-drop to `blocked`).
+                assert!(
+                    carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1)))
+                        .death
+                        .is_none(),
+                    "{tier:?} without live floor must survive past 2 s window"
+                );
+                assert!(
+                    carrier_tick(&input(tier_deadline - Duration::from_millis(1)))
+                        .death
+                        .is_none(),
+                    "{tier:?} without live floor must survive inside tier deadline"
+                );
+                assert_eq!(
+                    carrier_tick(&input(tier_deadline + Duration::from_millis(1))).death,
+                    Some(DeathReason::RekeyUnanswered),
+                    "{tier:?} without live floor must still convict past tier deadline"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accelerated_sweep_does_not_increment_one_way_strikes() {
+        let i = HealthInputs {
+            traffic: (20, 10),
+            last_traffic: (10, 10),
+            bad_sweeps: 1,
+            sample_one_way: false,
+            ..established()
+        };
+        let v = carrier_tick(&i);
+        assert_eq!(v.bad_sweeps, 1);
+        assert!(v.death.is_none());
+
+        // Real rx progress still clears immediately even on an accelerated sweep.
+        let i = HealthInputs {
+            traffic: (20, 11),
+            last_traffic: (10, 10),
+            bad_sweeps: 2,
+            sample_one_way: false,
+            ..established()
+        };
+        let v = carrier_tick(&i);
+        assert_eq!(v.bad_sweeps, 0);
+        assert!(v.clear_tier_strikes);
+        assert!(v.death.is_none());
     }
 }

@@ -1135,7 +1135,10 @@ pub async fn maybe_start(
         return None;
     }
 
-    let (evt_tx, evt_rx) = overlay_event_channel(64);
+    // Widen droppable event queue (64 -> 512) so netmap delta / org-relay
+    // session bursts during a slow install_peers pass do not silently drop
+    // peer updates.
+    let (evt_tx, evt_rx) = overlay_event_channel(512);
 
     // Pick the overlay surface: the userspace netstack (+ loopback SOCKS front)
     // when `MESHHARBORD_OVERLAY_NETSTACK_SOCKS` names a port or when OS TUN
