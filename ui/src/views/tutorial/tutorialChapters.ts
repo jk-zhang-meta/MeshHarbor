@@ -6,27 +6,18 @@ import heroPrivateNetwork from '@/assets/tutorial/private-network.svg'
 import heroDevices from '@/assets/tutorial/devices.svg'
 import heroTunnels from '@/assets/tutorial/tunnels.svg'
 import heroAcl from '@/assets/tutorial/acl.svg'
-import heroRooms from '@/assets/tutorial/rooms.svg'
-import heroCalls from '@/assets/tutorial/calls.svg'
 import stepEnroll from '@/assets/tutorial/step-enroll.svg'
 import stepConnect from '@/assets/tutorial/step-connect.svg'
 import stepForward from '@/assets/tutorial/step-forward.svg'
 import stepAcl from '@/assets/tutorial/step-acl.svg'
 import stepMagicDns from '@/assets/tutorial/step-magicdns.svg'
-import stepCall from '@/assets/tutorial/step-call.svg'
-import stepRooms from '@/assets/tutorial/step-rooms.svg'
 import videoTourPoster from '@/assets/tutorial/video-C1YdfmhbAKM.jpg'
 import { FEATURED_VIDEO_ID } from '@/utils/videos'
 
 /**
  * FR-12 (#788) — the tour's content, kept OUT of the view so it stays
- * readable, diffable and unit-testable (a chapter whose deep link names a
- * route that doesn't exist is a broken promise, and a test can catch it).
- *
- * Voice and substance come from the LANDING PAGE and README, deliberately:
- * a user who arrived through meshharbor.itachi.fans should meet the same three
- * promises, in the same words, once they are inside. `**bold**` marks
- * emphasis — rendered as segments, never through v-html.
+ * readable, diffable and unit-testable. `**bold**` marks emphasis —
+ * rendered as segments, never through v-html.
  */
 
 export interface TutorialStep {
@@ -70,17 +61,12 @@ export interface TutorialChapter {
    *  poster), drawn by `VideoFacade.vue` above the hero. */
   video?: { id: string; poster: string; caption?: string }
   lead: string
-  /** The decorated three-bullet promise. */
+  /** The decorated promise bullets. */
   badges?: TutorialBadge[]
   steps: TutorialStep[]
   /** Landing pillar features — the "gems", as cards. */
   highlights?: TutorialBadge[]
-  /** FR-12 P2 — a spotlight tour that runs on the real page for this chapter.
-   *  ⚠️ Only for chapters whose route needs no id beyond the tenant: the
-   *  viewer tour exists (`TOURS.viewer`) but its route wants an agentId, so it
-   *  has no entry here — it starts from `?tour=viewer` once you are on a
-   *  device. Giving it a fake entry would land people on a page with nothing
-   *  to point at. */
+  /** FR-12 P2 — a spotlight tour that runs on the real page for this chapter. */
   tour?: { id: string; routeName: string; label: string }
   detail: Array<{ label: string; text: string }>
 }
@@ -98,7 +84,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
     tagline: {
       headline: 'Every device you own,',
       accent: 'one secure network',
-      sub: 'Remote desktop from any browser and a private WireGuard-style mesh between your machines — with team chat and video included.',
+      sub: 'Remote desktop from any browser and a private WireGuard-style mesh between your machines — self-hostable and end-to-end encrypted.',
     },
     chips: [
       'Remote desktop',
@@ -106,7 +92,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
       'Tunnels & SOCKS5',
       'Exit nodes',
       'MagicDNS',
-      'Chat & video included',
+      'Zero-config SSH',
     ],
     video: {
       id: FEATURED_VIDEO_ID,
@@ -118,7 +104,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
     heroAlt:
       'Machines joined in a direct encrypted mesh with stable private addresses, crossing NATs and firewalls',
     lead:
-      'Three products on **one small daemon**: remote control of your machines, a private network that joins them wherever they are, and rooms for chat, files and calls. You install **one agent per machine** — everything else happens in this browser. Traffic between your machines is **end-to-end encrypted** and goes peer-to-peer whenever a path exists: the server coordinates, it never carries your pixels, keystrokes or files.',
+      'Remote desktop, private mesh networking, tunnels and SSH on **one small daemon**. You install **one agent per machine** — everything else happens in this browser. Traffic between your machines is **end-to-end encrypted** and goes peer-to-peer whenever a path exists: the server coordinates, it never carries your pixels, keystrokes or files.',
     badges: [
       {
         icon: 'mdi-monitor-eye',
@@ -133,10 +119,10 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
         text: 'for your machines in different geographic locations, with stable addresses and names.',
       },
       {
-        icon: 'mdi-video-outline',
+        icon: 'mdi-transit-connection-variant',
         color: DEEP,
-        title: 'HD video conferencing and chat',
-        text: 'for remote team collaboration — included in every plan, not an add-on.',
+        title: 'Tunnels, SSH and access control',
+        text: 'forward ports, run SOCKS5 proxies, and reach machines without opening inbound ports.',
       },
     ],
     steps: [
@@ -191,8 +177,8 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
         text: 'Hotel Wi-Fi, NAT, corporate firewall: the connection cascade finds the fastest path that works and keeps re-trying for a better one.',
       },
       {
-        label: 'Free to start',
-        text: 'Up to 10 users and 100 devices on the free plan, commercial use included — remote desktop, private mesh, tunnels, chat and calls.',
+        label: 'Self-hostable',
+        text: 'Run the full stack on your own server — remote desktop, private mesh, tunnels, SSH and fleet management.',
       },
     ],
   },
@@ -252,7 +238,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
     detail: [
       {
         label: 'Install',
-        text: 'One line per platform, or the meshharbor-setup wizard for a GUI. Windows MSI (per-user or per-machine, signed), Linux .deb/tarball with systemd, macOS .pkg.',
+        text: 'One line per platform. Windows MSI (per-user or per-machine, signed), Linux .deb/tarball with systemd, macOS .pkg.',
       },
       {
         label: 'Status',
@@ -561,144 +547,6 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
       {
         label: 'Scope',
         text: 'Every rule, device and log line is scoped to this organization — nothing leaks across orgs.',
-      },
-    ],
-  },
-  {
-    id: 'rooms',
-    title: 'Rooms & chat',
-    icon: 'mdi-forum-outline',
-    blurb: 'Conversations, files and threads',
-    hero: heroRooms,
-    heroAlt:
-      'A channel list with one unread channel next to a threaded conversation where someone is mentioned and a colleague is typing',
-    lead:
-      'Rooms are where the people side lives: **threaded chat** with mentions and reactions, **files shared in context**, and a call one click away. Rooms nest, so a team can keep a general room with focused children under it, and each room can be **open to the org** or **private to its members**.',
-    badges: [
-      {
-        icon: 'mdi-pound',
-        color: TEAL,
-        title: 'Rooms, chat and threads',
-        text: 'Organized rooms with threaded messaging, reactions, mentions and file attachments.',
-      },
-      {
-        icon: 'mdi-file-document-outline',
-        color: DEEP,
-        title: 'Files in context',
-        text: 'Drop a file where the conversation is, then find everything the org shared in one searchable place.',
-      },
-      {
-        icon: 'mdi-eye-off-outline',
-        color: CORAL,
-        title: 'Private when it matters',
-        text: 'Open rooms anyone can join; private rooms only their members can even see.',
-      },
-    ],
-    steps: [
-      {
-        icon: 'mdi-plus-box-outline',
-        text: 'Create your first room and **post something**.',
-        to: { name: 'rooms' },
-        linkLabel: 'Open Rooms',
-        graphic: stepRooms,
-        graphicAlt: 'Nested rooms with threaded chat, mentions, reactions and a shared file',
-      },
-      {
-        icon: 'mdi-compass-outline',
-        text: 'Browse what already exists in the org and **join what is relevant** to you.',
-        to: { name: 'explore' },
-        linkLabel: 'Explore rooms',
-      },
-      {
-        icon: 'mdi-email-fast-outline',
-        text: 'Invite the people who belong in it — by link, or straight to their email.',
-        to: { name: 'invites' },
-        linkLabel: 'Invites',
-      },
-      {
-        icon: 'mdi-folder-multiple-outline',
-        text: 'Everything anyone shared in the org, **searchable in one place**.',
-        to: { name: 'files' },
-        linkLabel: 'Files',
-      },
-    ],
-    detail: [
-      {
-        label: 'Chat',
-        text: 'Markdown, mentions, emoji and reactions, threads, editing and pinning, with unread counts per room.',
-      },
-      {
-        label: 'Files',
-        text: 'Drag into a room or upload from the Files page; type is detected from the bytes, not from what the browser claimed.',
-      },
-      {
-        label: 'Visibility',
-        text: 'Open rooms anyone in the org can join; private rooms only their members can see.',
-      },
-    ],
-  },
-  {
-    id: 'calls',
-    title: 'Calls',
-    icon: 'mdi-video-outline',
-    blurb: 'Video, audio and screen sharing',
-    hero: heroCalls,
-    heroAlt:
-      'A shared screen filling the call, with a filmstrip of participants showing who is speaking, whose camera is off and who is muted',
-    lead:
-      'Any room can become a call. Video and audio run through a **media server built for group calls**, so a dozen people in one room is routine, and you can **share a screen** while you talk. A call in progress is visible from the app bar, so nobody has to be told twice that it started.',
-    badges: [
-      {
-        icon: 'mdi-video-high-definition',
-        color: CORAL,
-        title: 'HD video conferencing',
-        text: 'A built-in SFU for crisp meetings — participants scale without every browser encoding for everyone.',
-      },
-      {
-        icon: 'mdi-monitor-share',
-        color: TEAL,
-        title: 'Screen sharing',
-        text: 'Share a screen or a window alongside camera and microphone, from the in-call toolbar.',
-      },
-      {
-        icon: 'mdi-record-circle-outline',
-        color: DEEP,
-        title: 'Recordings',
-        text: 'Calls can be recorded per room where your plan allows it.',
-      },
-    ],
-    steps: [
-      {
-        icon: 'mdi-video-plus-outline',
-        text: 'Open a room and **start a call** from its header — anyone in the room can join.',
-        to: { name: 'rooms' },
-        linkLabel: 'Open Rooms',
-        graphic: stepCall,
-        graphicAlt: 'A room call with several participants and a shared screen',
-      },
-      {
-        icon: 'mdi-monitor-share',
-        text: 'Share your screen from the in-call toolbar **while you talk**.',
-      },
-      {
-        icon: 'mdi-chart-line',
-        text: 'Watch how the fleet and its calls are **actually behaving** over time.',
-        to: { name: 'analytics' },
-        linkLabel: 'Analytics',
-      },
-    ],
-    detail: [
-      {
-        label: 'Group calls',
-        text: 'A selective forwarding media server, not a mesh — participants scale without every browser encoding for everyone.',
-      },
-      {
-        label: 'In the room',
-        text: 'A call belongs to its room: the members are the invite list, and the app bar shows one is running.',
-      },
-      {
-        label: 'Recording',
-        text: 'Calls can be recorded per room where your plan allows it.',
       },
     ],
   },

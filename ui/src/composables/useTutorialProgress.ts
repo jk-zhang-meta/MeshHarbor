@@ -73,20 +73,18 @@ export function writeTourProgress(userId: string, done: string[]): void {
  * Should the tour auto-open for this user right now?
  *
  * Deliberately narrow: an established org never surprises its members. The
- * "fresh" heuristic is the org having no devices AND at most one room —
- * i.e. nothing has been set up yet. `devices`/`rooms` are counts the
- * caller already has; pass `null` for a count that hasn't loaded, which
- * suppresses the auto-open (we only navigate on positive evidence).
+ * "fresh" heuristic is the org having no devices yet. Pass `null` for a count
+ * that hasn't loaded, which suppresses the auto-open (we only navigate on
+ * positive evidence).
  */
 export function shouldAutoOpenTour(opts: {
   userId: string | undefined
   devices: number | null
-  rooms: number | null
 }): boolean {
   if (!opts.userId) return false
-  if (opts.devices == null || opts.rooms == null) return false
+  if (opts.devices == null) return false
   if (hasSeenTour(opts.userId)) return false
-  return opts.devices === 0 && opts.rooms <= 1
+  return opts.devices === 0
 }
 
 /**

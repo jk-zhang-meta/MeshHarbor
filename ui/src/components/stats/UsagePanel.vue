@@ -43,28 +43,21 @@
 
         <v-card-text>
           <v-row dense class="mb-2">
-            <v-col cols="6" md="3">
+            <v-col cols="6" md="4">
               <div class="text-caption text-medium-emphasis">Remote desktop</div>
               <div class="text-h6">{{ fmtMinutes(detail.totals?.rc_minutes) }}</div>
               <div class="text-caption text-medium-emphasis">
                 {{ detail.totals?.rc_bytes ? fmtBytes(detail.totals.rc_bytes) : '—' }}
               </div>
             </v-col>
-            <v-col cols="6" md="3">
-              <div class="text-caption text-medium-emphasis">Calls</div>
-              <div class="text-h6">{{ fmtMinutes(detail.totals?.call_minutes) }}</div>
-              <div class="text-caption text-medium-emphasis">
-                {{ detail.totals?.call_bytes ? fmtBytes(detail.totals.call_bytes) : '—' }}
-              </div>
-            </v-col>
-            <v-col cols="6" md="3">
+            <v-col cols="6" md="4">
               <div class="text-caption text-medium-emphasis">Tunnel</div>
               <div class="text-h6">{{ fmtMinutes(detail.totals?.tunnel_minutes) }}</div>
               <div class="text-caption text-medium-emphasis">
                 {{ detail.totals?.tunnel_bytes ? fmtBytes(detail.totals.tunnel_bytes) : '—' }}
               </div>
             </v-col>
-            <v-col cols="6" md="3">
+            <v-col cols="6" md="4">
               <div class="text-caption text-medium-emphasis">Devices viewed</div>
               <div class="text-h6">{{ devicesViewed }}</div>
             </v-col>
@@ -83,33 +76,6 @@
             :show-org="scope === 'platform'"
             :watchers-complete="detail.watchers_complete !== false"
           />
-
-          <template v-if="(detail.calls ?? []).length">
-            <v-divider class="my-4" />
-            <div class="text-subtitle-1 mb-2">Calls</div>
-            <!-- FR-120 P4 — a card per row below 600 px (table-stack-xs): the
-                 duration and the traffic sat past the right edge. -->
-            <v-table density="compact" class="table-stack-xs table-stack-xs--compact">
-              <thead>
-                <tr>
-                  <th>Room</th>
-                  <th v-if="scope === 'platform'">Org</th>
-                  <th>From</th>
-                  <th>Until</th>
-                  <th class="text-right">Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(c, i) in detail.calls" :key="i">
-                  <td class="font-weight-medium">{{ c.room_name || c.room_id.slice(-6) }}</td>
-                  <td v-if="scope === 'platform'" data-label="Org">{{ c.tenant_name || '—' }}</td>
-                  <td data-label="From">{{ fmtTime(c.started_at) }}</td>
-                  <td data-label="Until">{{ c.ended_at ? fmtTime(c.ended_at) : 'still in call' }}</td>
-                  <td data-label="Duration" class="text-right">{{ fmtDuration(c.seconds) }}</td>
-                </tr>
-              </tbody>
-            </v-table>
-          </template>
 
           <template v-if="(detail.tunnels ?? []).length">
             <v-divider class="my-4" />

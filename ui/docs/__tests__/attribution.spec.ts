@@ -14,8 +14,9 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CARRIED_KEYS } from '../../src/utils/attribution.ts'
 import { AUTHORS, BASE, INSTALL_PAGES } from '../site.ts'
+
+const CARRIED_KEYS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'ref', 'referrer_host', 'landing_path'] as const
 import { renderPost } from '../theme/blog-layout.ts'
 import { carryScript, INSTALL_PAGES_PLACEHOLDER, installPageErrors } from '../theme/carry.ts'
 import { renderHome } from '../theme/home-layout.ts'
@@ -296,22 +297,12 @@ describe('attribution.js — with a campaign', () => {
     expect(u.searchParams.get('utm_campaign')).toBe('c'.repeat(64))
   })
 
-  it('changes nothing but hrefs (and the newsletter source): no layout can shift', () => {
+  it('changes nothing but hrefs: no layout can shift', () => {
     const html = homeHtml()
     const strip = (s: string) => s.replace(/\shref="[^"]*"/g, ' href').replace(/\sdata-source="[^"]*"/g, '')
     const doc = run(html, `https://meshharbor.itachi.fans/?${CAMPAIGN}`, 'https://www.youtube.com/')
     const pristine = new DOMParser().parseFromString(html, 'text/html')
     expect(strip(doc.documentElement.outerHTML)).toBe(strip(pristine.documentElement.outerHTML))
-  })
-
-  it('hands the newsletter form the campaign as its source, cleaned as the server cleans it', () => {
-    const src = (qs: string) => run(homeHtml(), `https://meshharbor.itachi.fans/?${qs}`).querySelector('form[data-subscribe]')!.getAttribute('data-source')
-    expect(src(CAMPAIGN)).toBe('fr88-test')
-    expect(src('utm_campaign=a%20b%3Cc%3E')).toBe('abc')
-    expect(src(`utm_campaign=${'x'.repeat(40)}`)).toBe('x'.repeat(32))
-    // A source without a campaign, or a campaign that cleans to nothing, leaves the form's own.
-    expect(src('utm_source=youtube')).toBeNull()
-    expect(src('utm_campaign=%F0%9F%8E%89')).toBeNull()
   })
 
   it('reads and writes no storage in its source at all', () => {

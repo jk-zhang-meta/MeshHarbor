@@ -860,19 +860,6 @@
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
     "orRegisterWith": "Or register with",
-    "heardAbout": "How did you hear about MeshHarbor?",
-    "heardAboutHint": "Optional. It tells us which channels work.",
-    "heardAboutOptions": {
-      "search": "A search engine",
-      "youtube": "YouTube",
-      "tiktok": "TikTok",
-      "instagram": "Instagram",
-      "facebook": "Facebook",
-      "reddit": "Reddit",
-      "hacker_news": "Hacker News",
-      "friend": "A friend or colleague",
-      "other": "Other"
-    },
     "nativeSession": {
       "completing": "Completing desktop session handoff…",
       "failedTitle": "Could not open desktop web session",
@@ -883,9 +870,6 @@
   "nav": {
     "dashboard": "Dashboard",
     "devices": "Devices",
-    "agentSessions": "Agent sessions",
-    "agentMemory": "Agent memory",
-    "agentCopies": "Agent copies",
     "network": "Network",
     "tunnelAcl": "ACL",
     "subnetRoutes": "Overlay routes",
@@ -893,90 +877,18 @@
     "netInventory": "Network inventory",
     "managedForwards": "Managed forwards",
     "serverTopology": "Zone backbone",
-    "analytics": "Analytics",
     "observability": "Observability",
-    "growth": "Growth",
-    "collaboration": "Collaboration",
-    "rooms": "Rooms",
-    "explore": "Explore",
-    "files": "Files",
     "invites": "Invites",
     "tutorial": "Tutorial",
     "admin": "Admin",
     "settings": "Settings",
     "members": "Members",
     "roles": "Roles",
-    "billing": "Billing",
     "audit": "Audit",
     "execAudit": "Command audit",
     "sshAudit": "SSH audit",
     "sshActivity": "SSH activity",
     "gpuServers": "GPU Servers"
-  },
-  "room": {
-    "create": "Create Room",
-    "name": "Room Name",
-    "private": "Private",
-    "open": "Open (public)",
-    "hasMedia": "Enable calls",
-    "join": "Join",
-    "leave": "Leave",
-    "members": "Members",
-    "noMessages": "No messages yet. Start the conversation!",
-    "parent": "Parent Room (optional)",
-    "none": "None (root room)",
-    "createChild": "Create Sub-Room",
-    "startCall": "Start Call",
-    "callStarted": "Call started in {room}",
-    "joinCall": "Join"
-  },
-  "message": {
-    "placeholder": "Type a message...",
-    "edit": "Edit",
-    "delete": "Delete",
-    "pin": "Pin",
-    "unpin": "Unpin",
-    "reply": "Reply",
-    "thread": "Thread"
-  },
-  "call": {
-    "start": "Start Meeting",
-    "join": "Join Meeting",
-    "leave": "Leave",
-    "end": "End Meeting",
-    "mute": "Mute",
-    "unmute": "Unmute",
-    "videoOn": "Camera On",
-    "videoOff": "Camera Off",
-    "shareScreen": "Share Screen",
-    "participants": "Participants",
-    "chat": "Chat",
-    "chatPlaceholder": "Type a message...",
-    "noChatMessages": "No messages yet",
-    "layout": "Layout",
-    "layoutAuto": "Auto",
-    "layoutTiled": "Tiled",
-    "layoutSpotlight": "Spotlight",
-    "layoutSidebar": "Sidebar",
-    "tileCount": "Number of tiles",
-    "hideNonVideo": "Hide participants without video",
-    "selfView": "Self-view",
-    "selfViewCropped": "In grid (cropped)",
-    "selfViewUncropped": "In grid (uncropped)",
-    "selfViewFloating": "Floating",
-    "pin": "Pin",
-    "unpin": "Unpin",
-    "pinLimit": "Maximum 6 pins reached",
-    "pip": "Picture-in-Picture",
-    "files": "Files",
-    "noFiles": "No files uploaded yet",
-    "uploadFile": "Upload File"
-  },
-  "files": {
-    "upload": "Upload",
-    "download": "Download",
-    "delete": "Delete",
-    "noFiles": "No files uploaded yet."
   },
   "common": {
     "save": "Save",
@@ -993,377 +905,6 @@
   "grid": {
     "columns": "Columns",
     "reset": "Reset"
-  },
-  "vault": {
-    "approval": {
-      "status": {
-        "pending": "Waiting for a driver",
-        "approved": "Approved",
-        "denied": "Denied",
-        "used": "Approved, and used",
-        "expired": "Expired",
-        "withdrawn": "Withdrawn",
-        "unknown": "Approval"
-      },
-      "answerBy": "Answer by {time}",
-      "approve": "Approve",
-      "deny": "Deny",
-      "notAccepted": "The vault's policies do not accept your approval of this use"
-    }
-  },
-  "hive": {
-    "title": "Agent sessions",
-    "stop": "Stop",
-    "stopMirroring": "Stop mirroring",
-    "rowActions": "Session actions",
-    "adopted": "Adopted",
-    "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from MeshHarbor.",
-    "empty": {
-      "title": "No agent sessions yet",
-      "body": "Start one on a device whose owner has turned agent sessions on (hive_enabled). It runs there, as the account the device maps you to, and its transcript stays on the device."
-    },
-    "start": {
-      "button": "Start a session",
-      "title": "Start an agent session",
-      "device": "Device",
-      "noDevices": "No online devices",
-      "folder": "Folder on the device",
-      "folderHint": "It must be inside one of the device's hive_roots.",
-      "sessionTitle": "Title (optional)",
-      "submit": "Start",
-      "refused": "The session was refused: {reason}"
-    },
-    "state": {
-      "starting": "Starting",
-      "idle": "Idle",
-      "running": "Running",
-      "awaiting_approval": "Needs approval",
-      "stopping": "Stopping",
-      "ended": "Ended",
-      "refused": "Refused",
-      "lost": "Lost"
-    },
-    "viewer": {
-      "toggle": "Show the session's transcript",
-      "status": {
-        "idle": "Not connected",
-        "opening": "Asking the device…",
-        "connecting": "Connecting…",
-        "open": "Live from the device",
-        "openCopy": "Reading a copy",
-        "closed": "Disconnected",
-        "refused": "Not available"
-      },
-      "reconnect": "Reconnect",
-      "loadEarlier": "Load earlier",
-      "empty": "Nothing in this session yet.",
-      "someone": "Someone",
-      "inTerminal": "In the terminal",
-      "thinking": "Thinking",
-      "truncated": "The output was cut to the device's limit; its start and end are kept.",
-      "turnDone": "Turn done",
-      "turnError": "Turn ended with an error",
-      "started": "Session started — model {model}, in {cwd}",
-      "compacted": "The agent compacted its context.",
-      "checkpoint": "Checkpoint {n}: {changed} of {files} of the agent's files changed",
-      "checkpointFolderCommitted": "the folder committed",
-      "checkpointFolderSame": "the folder unchanged",
-      "checkpointFolderSkipped": "the folder not kept ({why})",
-      "unknownKind": "An event this version cannot show ({kind}).",
-      "tool": {
-        "background": "Runs in the background",
-        "replaceAll": "Every occurrence",
-        "unchanged": "Unchanged lines: {count}",
-        "tooLong": "Too long to compare line by line.",
-        "before": "Before",
-        "after": "After",
-        "writes": "Lines written: {count}",
-        "moreLines": "More lines not shown: {count}",
-        "lines": "lines {from}–{to}",
-        "fromLine": "from line {from}",
-        "output": "Output · lines: {count}",
-        "subagent": "Sub-agent: {agent}",
-        "prompt": "Its instructions",
-        "todo": {
-          "pending": "To do",
-          "in_progress": "In progress",
-          "completed": "Done"
-        }
-      },
-      "askPlaceholder": "Ask the agent…",
-      "askFailed": "The prompt did not reach the agent.",
-      "readOnly": "You can read this session and talk in its room. Only its drivers can prompt the agent.",
-      "adoptedReadOnly": "This session runs in a terminal on its device, so it is read-only here: nobody prompts it from MeshHarbor.",
-      "copyReadOnly": "You are reading a copy another device holds, because the device that runs this session cannot serve it now. It is read-only: only that device takes prompts.",
-      "drivingRefused": "You drive this session, but its device does not let you act there: {why}",
-      "approval": {
-        "asks": "{tool} needs approval to run",
-        "allow": "Allow",
-        "deny": "Deny",
-        "denyPlaceholder": "Why not? (optional — the agent reads it)",
-        "waiting": "Waiting for one of the session's drivers to answer.",
-        "unanswered": "Not answered.",
-        "allowed": "Allowed by {by}",
-        "denied": "Denied by {by}",
-        "deniedWith": "Denied by {by}: {message}",
-        "expired": "Nobody answered in time, so it did not run.",
-        "withdrawn": "Withdrawn before anyone answered.",
-        "other": "Ended: {outcome}",
-        "failed": "The answer did not reach the device."
-      }
-    },
-    "people": {
-      "button": "People",
-      "title": "Who takes part",
-      "explain": "Drivers prompt the agent and answer its approvals. Readers read the session and talk in its room — nothing they write reaches the agent. Only the session's owner changes who takes part.",
-      "role": {
-        "owner": "Owner",
-        "driver": "Driver",
-        "reader": "Reader"
-      },
-      "add": "Add someone from the organization",
-      "noMatch": "No one else matches",
-      "addReader": "Add as reader",
-      "addDriver": "Add as driver",
-      "remove": "Take them out of the session",
-      "adoptedReadersOnly": "It runs in a terminal, so it takes readers only."
-    },
-    "roomCopies": {
-      "button": "Copies",
-      "title": "Copies of this session",
-      "explain": "Each device listed holds a copy of this session, its transcript and checkpoints, so it stays readable, and can move, while the device it runs on is offline.",
-      "someDevice": "A device of your organization",
-      "runsIt": "Runs it · {n} events",
-      "upToDate": "Up to date · {n} events",
-      "behind": "{k} events behind · {n} events",
-      "holds": "{n} events",
-      "noTip": "No copy reported yet",
-      "role": {
-        "primary": "Runs it",
-        "owner": "Owner's device",
-        "archive": "Archive replica",
-        "teleport": "Being moved to"
-      },
-      "state": {
-        "pending": "Joining",
-        "joined": "Holds a copy",
-        "refused": "Refused",
-        "leaving": "Letting go"
-      },
-      "short": {
-        "adopted": "A session adopted from a terminal is copied nowhere but the device it runs on.",
-        "restricted": "Fewer copies than the policy asks: a device that would hold one lacks a tag this session is restricted to.",
-        "no_device": "Fewer copies than the policy asks: no other device offers to hold one."
-      },
-      "moving": "Moving to {device}: {step}.",
-      "step": {
-        "preparing": "the device is getting ready",
-        "joining": "the device is taking its copy",
-        "draining": "the device it runs on is finishing its turn",
-        "syncing": "the copy is catching up",
-        "moving": "starting there"
-      },
-      "moveTitle": "Move it to another device",
-      "moveExplain": "It stops where it runs and goes on there, from the copy that device holds. The copy that holds the most is picked: a move to one that holds less is refused.",
-      "folder": "Folder there",
-      "folderHint": "Where it runs on that device: the same folder unless you say otherwise.",
-      "move": "Move",
-      "ahead": "{device} holds more of this session than any device it can move to: a move is refused until one catches up.",
-      "noTarget": "No other device that runs sessions holds a copy yet.",
-      "notRunning": "Only a running session moves.",
-      "alreadyMoving": "It is being moved already.",
-      "adoptedStays": "A session adopted from a terminal stays where it runs.",
-      "outcome": {
-        "promoting": "Moving: the device is ready, and the one it runs on is finishing its turn.",
-        "teleporting": "Moving: the device is taking its copy while the session still runs.",
-        "pending": "Asked: the device has not answered yet. Its room says how it goes on."
-      },
-      "refused": "The move was refused: {reason}",
-      "actions": {
-        "move": "Move",
-        "teleport": "Move elsewhere",
-        "fork": "Fork"
-      },
-      "teleportExplain": "Moves it to a device that holds no copy: that device takes one while the session still runs, then it moves there as a move to a copy does. The device it runs on must be online.",
-      "noTeleport": "No other online device that runs sessions can take it.",
-      "forkExplain": "Makes a new session from this one's conversation, in a folder of its own. This session goes on as it is.",
-      "forkFromCopy": "{device} · from its copy",
-      "forkTakesCopy": "{device} · takes a copy first",
-      "forkFolder": "Folder for the fork",
-      "forkFolderHint": "Its own folder on that device: a fork cannot share the folder the session runs in.",
-      "forkName": "Name (optional)",
-      "forkNameDefault": "Fork of {title}",
-      "fork": "Fork",
-      "noFork": "No online device that runs sessions can make a fork.",
-      "adoptedNoFork": "A session adopted from a terminal is not forked.",
-      "forkWhileMoving": "It is being moved: fork it once it settles.",
-      "forkOutcome": {
-        "accepted": "Forked: the new session starts on that device.",
-        "pending": "Asked: the device has not answered yet. The fork's room says how it goes on.",
-        "joining": "Forking: the device is taking a copy first."
-      },
-      "openFork": "Open the fork's room"
-    },
-    "purge": {
-      "open": "Delete for good",
-      "title": "Delete this session for good",
-      "explain": "\"{title}\" is deleted from every device that held it: where it runs, each copy, and where it ran before. On each, the account's part goes too, its history and its checkpoints, never the folder it worked in.",
-      "atOnce": "Its room, its core memory snapshot and its approvals are deleted at once. This cannot be undone.",
-      "forksKeep": "A session forked from it keeps its conversation up to its fork.",
-      "confirm": "Type {title} to confirm",
-      "submit": "Delete for good",
-      "refused": "The purge was refused: {reason}",
-      "sent": "Purging.",
-      "going": "Purging: {done} of {total} devices have answered. One offline is purged when it next connects.",
-      "done": "Purged from every device that held it.",
-      "forks": "Sessions forked from it keep its conversation up to their fork: {n}.",
-      "someDevice": "A device of your organization",
-      "state": {
-        "pending": "Waiting for it",
-        "done": "Purged",
-        "closed": "Closed"
-      },
-      "part": {
-        "done": "purged",
-        "not_there": "held nothing",
-        "failed": "failed",
-        "unknown": "not said"
-      },
-      "parts": "Its copy: {store} · the account's part: {account}",
-      "pendingDetail": "It is purged when it next connects.",
-      "closed": {
-        "device_removed": "The device was removed, and purged everything it held",
-        "holds_nothing": "It held nothing to purge",
-        "other": "Closed"
-      }
-    },
-    "manage": {
-      "button": "Make it managed",
-      "title": "Make it a managed session",
-      "explain": "Its terminal session ended. MeshHarbor can carry it on as a managed session on {device}: the same conversation, resumed from its terminal's own history, then run, copied and driven like any session started here.",
-      "folder": "Folder on {device}",
-      "folderHint": "Where its terminal ran, unless you name another",
-      "submit": "Make it managed",
-      "lastRefused": "Its device refused the last asking: {why}",
-      "accepted": "It is a managed session now, on {device}.",
-      "pending": "Asked. Its device has not answered yet: this room shows how it goes.",
-      "refused": "Not made managed: {why}",
-      "inProgress": "Being made a managed session"
-    },
-    "memory": {
-      "title": "Agent memory",
-      "revision": "Revision {rev}",
-      "about": "Facts kept here reach agent sessions as standing instructions. A session gets a copy when it starts and keeps that copy: a fact added later reaches the next session, not a running one. Only devices whose owner turned on hive_core_memory pass them to the agent.",
-      "scope": {
-        "org": "Organization",
-        "user": "Yours",
-        "device": "A device"
-      },
-      "scopeHint": {
-        "org": "Every session in the organization. Its administrators keep these.",
-        "user": "Only sessions you start.",
-        "device": "Only sessions on that device. Device managers keep these."
-      },
-      "device": "Device",
-      "budget": "{used} of {budget} characters",
-      "empty": "No facts here yet.",
-      "newFact": "A fact the agent should know",
-      "kindLabel": "Kind",
-      "kind": {
-        "preference": "Preference",
-        "convention": "Convention",
-        "path": "Path",
-        "gotcha": "Gotcha",
-        "decision": "Decision",
-        "warning": "Warning"
-      },
-      "add": "Keep it",
-      "edit": "Edit",
-      "editTitle": "Edit the fact",
-      "archive": "Archive — out of every future session's memory"
-    },
-    "copies": {
-      "title": "Agent copies",
-      "about": "Each agent session runs on one device and is copied to the devices your organization's policy places it on, so it stays readable, and can move, while that device is offline. A copy is plaintext on the device that holds it.",
-      "off": "Sessions are not copied on this server: an operator turns on hive.replicaset.",
-      "policy": {
-        "title": "The policy",
-        "defaults": "Defaults",
-        "copies": "{min} to {max} copies of each session, its own device's among them",
-        "archive": "Archive replicas join every session the rules allow",
-        "archiveOff": "Archive replicas join no session",
-        "prefer": "Then the session owner's own devices",
-        "restricted": "A session on a device tagged {tags} is copied only to devices with that tag",
-        "retention": "Kept {days} days after a session ends",
-        "retentionForever": "Kept for good after a session ends"
-      },
-      "rules": {
-        "edit": "Edit the policy",
-        "min": "At least",
-        "max": "At most",
-        "copiesHint": "Copies of each session, its own device's among them: 1 to {max}",
-        "maxBelowMin": "At most is fewer than at least",
-        "archive": "Archive replicas join every session the rules allow",
-        "prefer": "Then the session owner's own devices",
-        "restricted": "Restricted tags",
-        "restrictedHint": "A session on a device with one of these tags is copied only to devices with that tag too. Press Enter to add one.",
-        "retention": "Days kept after a session ends",
-        "retentionHint": "0 keeps it for good, and at most {max}",
-        "retentionInvalid": "A whole number of days, from 0 to {max}",
-        "saved": "Saved. The organization's live sessions are placed again under it.",
-        "stale": "The policy changed since you read it. It is shown as it is now: make your change again."
-      },
-      "archive": {
-        "title": "Archive replicas",
-        "hint": "An always-on device of your organization that keeps a copy of every session the rules allow, for their retention, and serves a session while no other member is online. It runs no session. Your organization runs it, on its own machines.",
-        "none": "No device offers itself as an archive replica yet.",
-        "unreadable": "Until an archive replica is online, a session is readable only while one of its members is.",
-        "offers": "Offers itself as an archive replica",
-        "notOffering": "Does not offer itself: its owner turned hive_archive off, or it has not connected since",
-        "gone": "No longer a device of this organization",
-        "designated": "Designated",
-        "add": "Add an archive replica",
-        "stale": "The policy changed since it was read. It is shown again: try once more."
-      },
-      "add": {
-        "title": "Add an archive replica",
-        "intro": "Run the archive replica image on a machine of your organization's that stays on. Its first start enrolls it with a token from here; every later start runs from its volume, and needs no token.",
-        "volume": "The volume is the device: it holds the device's credentials and every session copied to it, in plaintext. Keep it as you would the sessions themselves.",
-        "hostname": "Give the container a fixed hostname: the device's identity depends on it, and two archive replicas must not share one.",
-        "mint": "Get an enrollment token",
-        "token": "The token works once, for {minutes} minutes, and only the first start needs it.",
-        "docker": "docker run",
-        "compose": "docker compose",
-        "copy": "Copy",
-        "copied": "Copied",
-        "next": "Once it runs it appears under Archive replicas: turn on Designated to make it one.",
-        "close": "Close"
-      }
-    },
-    "search": {
-      "label": "Search the agent sessions you can read",
-      "hint": "Searched on your organization's archive replica: what you type, and what it finds, never reach the server.",
-      "none": "Nothing found.",
-      "scope": "Sessions searched: {n}",
-      "otherSession": "A session you can read",
-      "noRoom": "That session has no room to open.",
-      "openFailed": "Could not open that session: {message}",
-      "failed": "The search failed: {error}",
-      "refusedOther": "The search was refused: {reason}",
-      "refused": {
-        "not_found": "Agent sessions cannot be searched in this organization.",
-        "no_archive_replica": "No archive replica that searches is online right now.",
-        "no_session": "The archive replica holds none of the sessions you can read yet.",
-        "rate_limited": "Too many searches were opened in the last minute. Wait a moment, then type again.",
-        "too_many_views": "This tab holds as many agent session peers as it may. Type again in a moment.",
-        "device_offline": "The archive replica went offline.",
-        "device_unsupported": "The archive replica runs a build that cannot search.",
-        "no_answer": "The archive replica did not answer.",
-        "unavailable": "The server could not prepare the search. Type again in a moment.",
-        "at_capacity": "The archive replica serves as many searches as it can right now.",
-        "hive_disabled": "The archive replica does not serve searches."
-      }
-    }
   },
   "keepBusy": {
     "defaultPattern": {
@@ -2776,31 +2317,6 @@
       "noInput": "No input access",
       "noInputTip": "The OS has not granted this device input-injection permission, so remote keyboard and mouse will do nothing. On macOS: System Settings → Privacy & Security → Accessibility."
     },
-    "chat": {
-      "react": "React with emoji",
-      "reactShort": "React",
-      "replyInThread": "Reply in thread",
-      "editMessage": "Edit message",
-      "deleteMessage": "Delete message",
-      "actions": "Message actions",
-      "editPlaceholder": "Edit message...",
-      "replyOne": "{n} reply",
-      "replyMany": "{n} replies",
-      "viewThread": "View thread",
-      "deleteTitle": "Delete message?",
-      "cannotUndo": "This action cannot be undone.",
-      "writePlaceholder": "Write a message...",
-      "uploadFailed": "File upload failed. Please try again.",
-      "send": "Send",
-      "searchMembers": "Search members...",
-      "noMembers": "No members found",
-      "searchFiles": "Search files...",
-      "noFiles": "No files in this room",
-      "gifs": "GIFs",
-      "trending": "Trending",
-      "searchGifs": "Search GIFs...",
-      "poweredByGiphy": "Powered by GIPHY"
-    },
     "notif": {
       "title": "Notifications",
       "markAllRead": "Mark all read",
@@ -2853,15 +2369,6 @@
       "titleChat": "Chat",
       "titleCall": "Call"
     },
-    "chatView": {
-      "files": "Files",
-      "members": "Members",
-      "panels": "Room panels",
-      "agentSession": "Agent session",
-      "closeTranscript": "Close the transcript",
-      "thread": "Thread",
-      "replyPlaceholder": "Reply in thread..."
-    },
     "notFound": {
       "title": "Page Not Found",
       "body": "The page you are looking for does not exist or has been moved.",
@@ -2871,36 +2378,8 @@
       "back": "Back to login",
       "failed": "Failed to complete OAuth login"
     },
-    "rooms": {
-      "discover": "Discover and join open rooms",
-      "noTopic": "No topic set",
-      "noMatch": "No rooms found matching \"{query}\"",
-      "noOpen": "No open rooms available. Try creating one!",
-      "empty": "No rooms yet",
-      "emptyBody": "Create your first room to start chatting, sharing files, or hosting calls with your team.",
-      "walkThrough": "Walk me through it",
-      "created": "Room created",
-      "deleteTitle": "Delete \"{name}\"?",
-      "deleteBody": "This will permanently delete the room and all its messages, files, and members. This cannot be undone.",
-      "assignRole": "Assign Role",
-      "role": "Role",
-      "roleAssigned": "Role assigned",
-      "assignFailed": "Failed to assign role"
-    },
     "files": {
-      "search": "Search files",
-      "columns": "Configure columns",
-      "all": "All Files",
-      "room": "Room Files",
-      "uploading": "Uploading files...",
-      "col": {
-        "name": "Name",
-        "room": "Room",
-        "type": "Type",
-        "size": "Size",
-        "uploaded": "Uploaded",
-        "actions": "Actions"
-      }
+      "columns": "Configure columns"
     },
     "settings": {
       "workspace": "Workspace Settings",
@@ -3051,12 +2530,6 @@
       "thisMember": "this member"
     },
     "permFlag": {
-      "VIEW_CHANNELS": {
-        "label": "View channels"
-      },
-      "MANAGE_CHANNELS": {
-        "label": "Manage channels"
-      },
       "MANAGE_ROLES": {
         "label": "Manage roles"
       },
@@ -3070,59 +2543,11 @@
         "label": "Administrator",
         "description": "Bypasses ALL permission checks — grants everything below implicitly."
       },
-      "SEND_MESSAGES": {
-        "label": "Send messages"
-      },
-      "SEND_THREADS": {
-        "label": "Create threads"
-      },
-      "EMBED_LINKS": {
-        "label": "Embed links"
-      },
-      "ATTACH_FILES": {
-        "label": "Attach files"
-      },
-      "READ_HISTORY": {
-        "label": "Read history"
-      },
-      "MENTION_EVERYONE": {
-        "label": "Mention {everyone}"
-      },
-      "MANAGE_MESSAGES": {
-        "label": "Manage messages"
-      },
-      "ADD_REACTIONS": {
-        "label": "Add reactions"
-      },
-      "CONNECT_VOICE": {
-        "label": "Connect to voice"
-      },
-      "SPEAK": {
-        "label": "Speak"
-      },
-      "STREAM_VIDEO": {
-        "label": "Stream video"
-      },
-      "MANAGE_MEETINGS": {
-        "label": "Manage meetings"
-      },
       "KICK_MEMBERS": {
         "label": "Kick members"
       },
       "BAN_MEMBERS": {
         "label": "Ban members"
-      },
-      "MUTE_MEMBERS": {
-        "label": "Mute members"
-      },
-      "DEAFEN_MEMBERS": {
-        "label": "Deafen members"
-      },
-      "MOVE_MEMBERS": {
-        "label": "Move members"
-      },
-      "MANAGE_DOCUMENTS": {
-        "label": "Manage documents"
       },
       "MANAGE_AGENTS": {
         "label": "Manage devices",
@@ -3155,17 +2580,10 @@
       "RECORD_REMOTE_SCREEN": {
         "label": "Record remote screens",
         "description": "Record a device’s screen during a remote-control session. The device must allow it, and the person there sees it. A recording outlives the session, so no role gets this by default."
-      },
-      "HIVE_RUN": {
-        "label": "Run agent sessions",
-        "description": "Start and drive AI agent sessions on a device. A session runs as the account the device maps you to — never SYSTEM or root — and only where the device allows it. It runs commands on that device, so no role gets this by default."
       }
     },
     "permGroup": {
       "general": "General",
-      "messaging": "Messaging",
-      "voice": "Voice & video",
-      "moderation": "Moderation",
       "remote": "Remote control",
       "fleet": "Fleet access"
     },
@@ -3385,20 +2803,6 @@
       "mixed": "{created} created, {failed} failed.",
       "batchFailed": "Failed to send batch invites.",
       "batchFailedShort": "Failed to send batch invites"
-    },
-    "news": {
-      "getUpdates": "Get product updates",
-      "blurbTo": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe, straight to {email}.",
-      "blurb": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe.",
-      "keepPosted": "Keep me posted",
-      "noThanks": "No thanks",
-      "subscribedToast": "Subscribed — product updates only, never more than monthly",
-      "subscribeFailed": "Could not subscribe — please try again",
-      "productUpdates": "Product updates",
-      "subscribeAria": "Subscribe to product updates",
-      "subscribed": "Subscribed to product updates",
-      "unsubscribed": "Unsubscribed from product updates",
-      "prefFailed": "Could not update your newsletter preference"
     },
     "dash": {
       "firstWorkspace": "Create Your First Workspace",
@@ -3646,44 +3050,6 @@
         "offline": "offline"
       }
     },
-    "conf": {
-      "call": "Call",
-      "ready": "Ready to join?",
-      "microphone": "Microphone",
-      "camera": "Camera",
-      "closeChat": "Close chat",
-      "alreadyTitle": "Already in a call",
-      "alreadyBody": "You are already in a call in \"{room}\". Leave that call and join this one?",
-      "switch": "Switch Call",
-      "device": "Device {n}",
-      "notOnScreen": "That video is not on screen right now",
-      "denied": "Camera/microphone access denied. Please allow permissions in your browser settings.",
-      "noDevice": "No camera or microphone found. Please connect a device and try again.",
-      "joinFailed": "Failed to join call: {error}",
-      "shareFailed": "Screen share failed: {error}",
-      "status": {
-        "in_progress": "in_progress",
-        "scheduled": "scheduled",
-        "ended": "ended"
-      },
-      "you": "You",
-      "youSuffix": " (You)",
-      "leavePip": "Leave picture-in-picture",
-      "pip": "Picture-in-picture",
-      "exitFullscreen": "Exit fullscreen",
-      "fullscreen": "Fullscreen",
-      "returnToCall": "Return to call",
-      "upload": "Upload a file",
-      "closeFiles": "Close files",
-      "whiteboard": "Whiteboard",
-      "whiteboardFailed": "The whiteboard could not be opened.",
-      "whiteboardRetry": "Try again",
-      "record": "Record",
-      "stopRecording": "Stop recording",
-      "recordingBy": "Recording: {names}",
-      "recordingSaved": "Recording part {part} saved to the room's files",
-      "recordingFailed": "Recording failed: {error}"
-    },
     "connect": {
       "title": "Connect to a device",
       "intro": "Enter the connect code and the password the device's owner gave you. The device checks the password itself — this server never sees it — and whoever is at the device may still be asked to approve.",
@@ -3721,32 +3087,6 @@
       "skip": "Skip",
       "done": "Done",
       "next": "Next"
-    },
-    "nl": {
-      "confirmTitle": "One click to confirm",
-      "confirmBody": "Confirm you want MeshHarbor product updates at this address. Never more than monthly, one-click unsubscribe in every email.",
-      "confirmBtn": "Confirm my subscription",
-      "onList": "You're on the list",
-      "onListBody": "Thanks for confirming. Product updates only, never more than monthly — and a one-click unsubscribe in every email.",
-      "home": "Go to meshharbor.itachi.fans",
-      "badLink": "That link didn't work",
-      "badLinkBody": "It may already have been used — if you confirmed before, you're set. Otherwise you can sign up again from the home page.",
-      "noServer": "Could not reach the server",
-      "noServerBody": "Nothing was changed. Check your connection and try again.",
-      "retry": "Try again",
-      "invalidBody": "It is no longer valid — it may already have been used. If you meant to subscribe, you can sign up again from the home page.",
-      "unsubscribed": "You're unsubscribed",
-      "unsubscribedBody": "No more product updates will be sent to your address. Changed your mind? Subscribe again any time from the home page — it will ask you to confirm again.",
-      "lede": "Not ready to sign up? Get an email when something notable ships.",
-      "yourEmail": "Your email address",
-      "keepPosted": "Keep me posted",
-      "thanks": "Thanks — check your inbox for a confirmation link.",
-      "fine": "Product updates only, and never more than monthly. One-click unsubscribe in every email. We do not share your address.",
-      "privacy": "Privacy Policy",
-      "serverFailed": "Could not reach the server. Please try again.",
-      "promptTitle": "Get an email when something notable ships",
-      "signup": "Newsletter signup",
-      "dismiss": "Dismiss"
     },
     "video": {
       "fromYoutube": "Plays from YouTube when you press play.",
@@ -4119,7 +3459,6 @@
     "nav": {
       "features": "Features",
       "download": "Download",
-      "pricing": "Pricing",
       "docs": "Docs",
       "login": "Log In",
       "getStarted": "Get Started Free",
@@ -4135,13 +3474,6 @@
       "orTerminal": "Or from a terminal:",
       "terminal": "From a terminal:"
     },
-    "pricing": {
-      "popular": "Most Popular",
-      "commercial": "Free for commercial use",
-      "perUserMonth": "per user / month",
-      "forever": "forever",
-      "startNow": "Start Now"
-    },
     "footer": {
       "tagline": "Remote access, private networking, and collaboration for your devices and your team.",
       "product": "Product",
@@ -4152,7 +3484,6 @@
       "privacy": "Privacy Policy",
       "terms": "Terms of Service",
       "imprint": "Imprint",
-      "stayInTouch": "Stay in touch",
       "copyright": "© {year} G ROX EOOD — Roomler. All rights reserved. MeshHarbor · 织港 is based on Roomler."
     },
     "arch": {

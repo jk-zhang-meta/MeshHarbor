@@ -354,31 +354,6 @@ describe('useAuthStore', () => {
         invite_code: 'invite-123',
       })
     })
-
-    // FR-88 (#1790) §3a — attribution travels once, with the account.
-    it('sends the attribution object when there is one', async () => {
-      mockApi.post.mockResolvedValueOnce({ message: 'check your email' })
-      const store = useAuthStore()
-      await store.register('e@e.com', 'p', 'D', undefined, { source: 'youtube', campaign: 'c1', self_reported: 'friend' })
-
-      expect(mockApi.post).toHaveBeenCalledWith('/auth/register', {
-        email: 'e@e.com',
-        password: 'p',
-        display_name: 'D',
-        attribution: { source: 'youtube', campaign: 'c1', self_reported: 'friend' },
-      })
-    })
-
-    it('omits the attribution key when there is nothing to say — never `{}`', async () => {
-      mockApi.post.mockResolvedValue({ message: 'check your email' })
-      const store = useAuthStore()
-      await store.register('e@e.com', 'p', 'D', undefined, undefined)
-      await store.register('e@e.com', 'p', 'D', undefined, {})
-
-      for (const [, body] of mockApi.post.mock.calls) {
-        expect(body).not.toHaveProperty('attribution')
-      }
-    })
   })
 
   // FR-12 P3, field-caught on prod. The seed lived in

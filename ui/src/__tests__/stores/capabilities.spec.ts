@@ -19,6 +19,10 @@ import { api } from '@/api/client'
 const mockApi = vi.mocked(api)
 
 describe('modules/registry', () => {
+  it('contains only the 0.5.0 core modules', () => {
+    expect(ALL_MODULES).toEqual(['fleet', 'remote', 'network'])
+  })
+
   it('an unset VITE_MODULES builds every module', () => {
     expect(parseBuiltModules(undefined)).toEqual(ALL_MODULES)
     expect(parseBuiltModules('')).toEqual(ALL_MODULES)
@@ -27,7 +31,7 @@ describe('modules/registry', () => {
 
   it('a list prunes to the named modules, in graph order, ignoring unknown names', () => {
     expect(parseBuiltModules('network, fleet')).toEqual(['fleet', 'network'])
-    expect(parseBuiltModules('chat,does-not-exist')).toEqual(['chat'])
+    expect(parseBuiltModules('remote,does-not-exist')).toEqual(['remote'])
   })
 
   it('a list naming nothing known keeps everything (misconfiguration, not an empty product)', () => {
@@ -39,7 +43,7 @@ describe('modules/registry', () => {
 
   it('withDependencies closes over the graph edges', () => {
     expect(withDependencies(['remote'])).toEqual(['fleet', 'remote'])
-    expect(withDependencies(['conference'])).toEqual(['chat', 'conference'])
+    expect(withDependencies(['network'])).toEqual(['fleet', 'network'])
     expect(withDependencies(['network', 'remote'])).toEqual(['fleet', 'remote', 'network'])
   })
 })
@@ -53,13 +57,14 @@ describe('useCapabilitiesStore', () => {
   it('fails OPEN before the server has answered', () => {
     const store = useCapabilitiesStore()
     expect(store.loaded).toBe(false)
-    expect(store.has('chat')).toBe(true)
+    expect(store.has('fleet')).toBe(true)
+    expect(store.has('remote')).toBe(true)
     expect(store.has('network')).toBe(true)
   })
 
   it('gates on the mounted set once loaded', async () => {
     mockApi.get.mockResolvedValueOnce({
-      version: '0.4.70',
+      version: '0.5.0',
       modules: ['fleet', 'network'],
       compiled: ['fleet', 'network'],
       switched_off: [],
@@ -70,38 +75,10 @@ describe('useCapabilitiesStore', () => {
     expect(store.loaded).toBe(true)
     expect(store.has('fleet')).toBe(true)
     expect(store.has('network')).toBe(true)
-    expect(store.has('chat')).toBe(false)
-    expect(store.has('conference')).toBe(false)
     expect(store.has('remote')).toBe(false)
-    expect(store.version).toBe('0.4.70')
+    expect(store.version).toBe('0.5.0')
   })
 
-  /** FR-90 — a default-OFF module fails CLOSED: before the answer, and when
-   *  the request fails, a server that probably does not run it shows no link
-   *  to it. Present only once the server names it. */
-  it('keeps a default-off module hidden until the server names it', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const store = useCapabilitiesStore()
-    expect(store.has('hive')).toBe(false)
-    expect(store.has('chat')).toBe(true)
-
-    mockApi.get.mockRejectedValueOnce(new Error('503'))
-    await store.load()
-    expect(store.failed).toBe(true)
-    // A failed answer is not a yes.
-    expect(store.has('hive')).toBe(false)
-
-    store.reset()
-    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['chat', 'fleet', 'hive'] })
-    await store.load()
-    expect(store.has('hive')).toBe(true)
-    warn.mockRestore()
-  })
-
-  /** FR-102 P9b — a feature is something the client OFFERS, so it fails
-   *  CLOSED: before the answer, after a failed request, on a server that
-   *  sends no `features`, and for a name it never sent. Only a boolean
-   *  `true` the server sent switches it on. */
   it('a feature is on only when the server said true', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const store = useCapabilitiesStore()
@@ -133,12 +110,12 @@ describe('useCapabilitiesStore', () => {
     warn.mockRestore()
   })
 
-  it('ignores module names it does not know (a newer server)', async () => {
-    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['chat', 'holograms'] })
+  it('ignores module names it does not know (a newer or legacy server)', async () => {
+    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['fleet', 'holograms', 'chat'] })
     const store = useCapabilitiesStore()
     await store.load()
-    expect(store.modules).toEqual(['chat'])
-    expect(store.has('chat')).toBe(true)
+    expect(store.modules).toEqual(['fleet'])
+    expect(store.has('fleet')).toBe(true)
   })
 
   it('fails OPEN, loudly, when the request fails', async () => {
@@ -148,13 +125,13 @@ describe('useCapabilitiesStore', () => {
     await store.load()
     expect(store.loaded).toBe(true)
     expect(store.failed).toBe(true)
-    expect(store.has('conference')).toBe(true)
+    expect(store.has('remote')).toBe(true)
     expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })
 
   it('shares one in-flight request and does not refetch once loaded', async () => {
-    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['chat'] })
+    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['fleet'] })
     const store = useCapabilitiesStore()
     await Promise.all([store.load(), store.ready(), store.load()])
     await store.ready()
@@ -162,11 +139,11 @@ describe('useCapabilitiesStore', () => {
   })
 
   it('reset forgets the answer and fails open again', async () => {
-    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['chat'] })
+    mockApi.get.mockResolvedValueOnce({ version: 'x', modules: ['fleet'] })
     const store = useCapabilitiesStore()
     await store.load()
-    expect(store.has('fleet')).toBe(false)
+    expect(store.has('network')).toBe(false)
     store.reset()
-    expect(store.has('fleet')).toBe(true)
+    expect(store.has('network')).toBe(true)
   })
 })

@@ -44,15 +44,6 @@
         </span>
       </template>
 
-      <template #item.call_minutes="{ item }">
-        {{ fmtMinutes(item.call.minutes) }}
-      </template>
-      <template #item.call_bytes="{ item }">
-        <span :class="{ 'text-medium-emphasis': !item.call.bytes_known }">
-          {{ item.call.bytes_known ? fmtBytes(item.call.bytes) : '—' }}
-        </span>
-      </template>
-
       <template #item.tunnel_minutes="{ item }">
         {{ fmtMinutes(item.tunnel.minutes) }}
       </template>
@@ -127,8 +118,6 @@ const headers = computed(() => {
     { title: 'User', key: 'name', sortable: true },
     { title: 'Remote desktop', key: 'rc_minutes', value: (i: UsageUserRow) => i.rc.minutes },
     { title: '', key: 'rc_bytes', value: (i: UsageUserRow) => i.rc.bytes, sortable: true },
-    { title: 'Calls', key: 'call_minutes', value: (i: UsageUserRow) => i.call.minutes },
-    { title: '', key: 'call_bytes', value: (i: UsageUserRow) => i.call.bytes, sortable: true },
     { title: 'Tunnel', key: 'tunnel_minutes', value: (i: UsageUserRow) => i.tunnel.minutes },
     { title: '', key: 'tunnel_bytes', value: (i: UsageUserRow) => i.tunnel.bytes, sortable: true },
     { title: 'Total', key: 'total_minutes' },

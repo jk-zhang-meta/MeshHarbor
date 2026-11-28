@@ -185,8 +185,8 @@ export function renderTopbar(nav: ShellNav = DOCS_NAV, logo?: string): string {
   // goes there. The link hub's brand goes to `/`, so it keeps the link.
   const links =
     current === 'home'
-      ? `<a href="#features">Features</a>\n      <a href="#pricing">Pricing</a>\n      ${docsLink}${blogLink}<a href="/login">Log in</a>`
-      : `${nav.hasBlog || current === 'links' ? `${docsLink}${blogLink}` : ''}<a href="/">Product</a>\n      <a href="/#pricing">Pricing</a>`
+      ? `<a href="#features">Features</a>\n      <a href="#download">Download</a>\n      ${docsLink}${blogLink}<a href="/login">Log in</a>`
+      : `${nav.hasBlog || current === 'links' ? `${docsLink}${blogLink}` : ''}<a href="/">Product</a>`
   return `<header class="topbar">
   <div class="topbar__inner">
     ${brand}
@@ -213,7 +213,7 @@ export function renderFooter(nav: ShellNav = DOCS_NAV): string {
   <div class="site-footer__inner">
     <div>
       <p class="site-footer__brand">MeshHarbor</p>
-      <p class="site-footer__blurb">Remote desktop in a browser tab, a private WireGuard-style mesh, and team chat and video — on one agent you can self-host.</p>
+      <p class="site-footer__blurb">Remote desktop in a browser tab and a private WireGuard-style mesh — on one agent you can self-host.</p>
     </div>
     <div>
       <p class="site-footer__head">Docs</p>
@@ -225,7 +225,6 @@ export function renderFooter(nav: ShellNav = DOCS_NAV): string {
     <div>
       <p class="site-footer__head">Product</p>
       <a href="/">Overview</a>
-      <a href="/#pricing">Pricing</a>
       <a href="${BASE}/start/self-hosting/">Self-hosting</a>${blogLinks}
     </div>
     <div>

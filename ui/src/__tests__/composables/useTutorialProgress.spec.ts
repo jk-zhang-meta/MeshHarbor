@@ -56,21 +56,18 @@ describe('tutorial seen flag', () => {
 
 describe('shouldAutoOpenTour', () => {
   it('fires exactly once for a never-seen user in an empty org', () => {
-    expect(shouldAutoOpenTour({ userId: USER, devices: 0, rooms: 0 })).toBe(true)
-    expect(shouldAutoOpenTour({ userId: USER, devices: 0, rooms: 1 })).toBe(true)
+    expect(shouldAutoOpenTour({ userId: USER, devices: 0 })).toBe(true)
     markTourSeen(USER)
-    expect(shouldAutoOpenTour({ userId: USER, devices: 0, rooms: 0 })).toBe(false)
+    expect(shouldAutoOpenTour({ userId: USER, devices: 0 })).toBe(false)
   })
 
   it('never fires for an org that has been set up', () => {
-    expect(shouldAutoOpenTour({ userId: USER, devices: 3, rooms: 0 })).toBe(false)
-    expect(shouldAutoOpenTour({ userId: USER, devices: 0, rooms: 2 })).toBe(false)
+    expect(shouldAutoOpenTour({ userId: USER, devices: 3 })).toBe(false)
   })
 
   it('does not navigate on missing evidence (counts not loaded, or no user)', () => {
-    expect(shouldAutoOpenTour({ userId: USER, devices: null, rooms: 0 })).toBe(false)
-    expect(shouldAutoOpenTour({ userId: USER, devices: 0, rooms: null })).toBe(false)
-    expect(shouldAutoOpenTour({ userId: undefined, devices: 0, rooms: 0 })).toBe(false)
+    expect(shouldAutoOpenTour({ userId: USER, devices: null })).toBe(false)
+    expect(shouldAutoOpenTour({ userId: undefined, devices: 0 })).toBe(false)
   })
 })
 
@@ -85,11 +82,11 @@ describe('chapter progress', () => {
     expect(p.done.value).toEqual(['devices'])
     expect(readTourProgress(USER)).toEqual(['devices'])
 
-    p.toggle('rooms')
+    p.toggle('acl')
     expect(p.doneCount.value).toBe(2)
 
     p.toggle('devices', false)
-    expect(p.done.value).toEqual(['rooms'])
+    expect(p.done.value).toEqual(['acl'])
 
     p.reset()
     expect(p.doneCount.value).toBe(0)
@@ -112,11 +109,7 @@ describe('tutorial chapters (FR-12 content contract)', () => {
   const ROUTE_NAMES = new Set([
     'tenant-dashboard',
     'devices',
-    'rooms',
-    'explore',
-    'files',
     'invites',
-    'analytics',
     'network-acl',
     'network-dns',
     'network-subnet-routes',
@@ -138,8 +131,6 @@ describe('tutorial chapters (FR-12 content contract)', () => {
       'network',
       'tunnels',
       'acl',
-      'rooms',
-      'calls',
     ])
     expect(new Set(ids).size).toBe(ids.length)
   })
@@ -189,10 +180,10 @@ describe('tutorial chapters (FR-12 content contract)', () => {
     const titles = start.badges!.map((b) => b.title)
     expect(titles[0]).toMatch(/remote desktop/i)
     expect(titles[1]).toMatch(/mesh network/i)
-    expect(titles[2]).toMatch(/video conferencing/i)
+    expect(titles[2]).toMatch(/tunnels/i)
     // The landing capability strip carries over verbatim.
     expect(start.chips).toContain('Remote desktop')
-    expect(start.chips).toContain('Chat & video included')
+    expect(start.chips).toContain('Zero-config SSH')
   })
 
   it('every badge and highlight is fully populated (icon, colour, title, text)', () => {
@@ -303,11 +294,11 @@ describe('server-side mirror (FR-12 P3)', () => {
   })
 
   it('an absent or empty server state changes nothing', () => {
-    writeTourProgress(USER, ['rooms'])
+    writeTourProgress(USER, ['acl'])
     seedTutorialFromServer(USER, undefined)
     seedTutorialFromServer(USER, {})
     seedTutorialFromServer(USER, { done: [] })
-    expect(readTourProgress(USER)).toEqual(['rooms'])
+    expect(readTourProgress(USER)).toEqual(['acl'])
     expect(hasSeenTour(USER)).toBe(false)
   })
 

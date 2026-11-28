@@ -54,32 +54,6 @@
             </v-btn>
           </div>
         </v-form>
-
-        <v-divider class="my-6" />
-
-        <!-- FR-58 P4 — deliberately OUTSIDE the Save form: the toggle takes
-             effect immediately (it writes the `subscribers` store, not the
-             profile), and coupling it to Save would make "toggled but never
-             saved" a silent no-op. Disabled until the state actually loaded —
-             a switch rendered from a guess would invert someone's consent. -->
-        <div class="d-flex align-center justify-space-between ga-4">
-          <div>
-            <div class="text-subtitle-2">{{ t('mh.news.productUpdates') }}</div>
-            <div class="text-caption text-medium-emphasis">
-              {{ t('mh.news.blurb') }}
-            </div>
-          </div>
-          <v-switch
-            :model-value="nlSubscribed === true"
-            :loading="nlBusy"
-            :disabled="nlSubscribed === null || nlBusy"
-            color="primary"
-            hide-details
-            density="compact"
-            :aria-label="t('mh.news.subscribeAria')"
-            @update:model-value="toggleNewsletter"
-          />
-        </div>
       </v-card-text>
     </v-card>
     <EmailAccountChange />
@@ -92,7 +66,6 @@ import { reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUserStore } from '@/stores/user'
-import { useNewsletterPref } from '@/composables/useNewsletterPref'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { useI18n } from 'vue-i18n'
 
@@ -101,17 +74,7 @@ const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const userStore = useUserStore()
-const { subscribed: nlSubscribed, busy: nlBusy, load: nlLoad, set: nlSet } = useNewsletterPref()
 const { showSuccess, showError } = useSnackbar()
-
-async function toggleNewsletter(value: unknown) {
-  const want = value === true
-  if (await nlSet(want)) {
-    showSuccess(want ? t('mh.news.subscribed') : t('mh.news.unsubscribed'))
-  } else {
-    showError(t('mh.news.prefFailed'))
-  }
-}
 
 const saving = ref(false)
 const form = reactive({
@@ -149,7 +112,6 @@ async function save() {
 }
 
 onMounted(async () => {
-  nlLoad()
   const userId = authStore.user?.id
   if (userId) {
     const profile = await userStore.fetchProfile(userId)

@@ -35,8 +35,9 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { resolveDates } from './dates.ts'
-import { ATTRIBUTION_ENABLED } from '../src/utils/attribution.ts'
 import { FEATURED_VIDEO_ID, videoById } from '../src/utils/videos.ts'
+
+const ATTRIBUTION_ENABLED = true
 import {
   ANALYTICS,
   BASE,

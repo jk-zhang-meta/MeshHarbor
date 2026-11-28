@@ -4,7 +4,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { looksSignedIn } from '@/api/session'
 import { useCapabilitiesStore } from '@/stores/capabilities'
-import { useHiveStore } from '@/stores/hive'
 import type { ModuleId } from '@/modules/registry'
 
 declare module 'vue-router' {
@@ -34,12 +33,6 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/landing',
     name: 'landing',
-    component: () => import('@/views/LandingView.vue'),
-    meta: { guest: true },
-  },
-  {
-    path: '/pricing',
-    name: 'pricing',
     component: () => import('@/views/LandingView.vue'),
     meta: { guest: true },
   },
@@ -101,34 +94,6 @@ const routes: RouteRecordRaw[] = [
     meta: { module: 'fleet' },
   },
   {
-    // FR-58 follow-up — the confirm PAGE: the email links here and the
-    // button's POST is what confirms. A confirming GET is prefetch-bait:
-    // Gmail's link scanner burned the first field subscriber's single-use
-    // token before any human clicked. No meta.auth AND no meta.guest — the
-    // token in the path is the capability (the consent-route shape).
-    path: '/newsletter/confirm/:token',
-    name: 'newsletter-confirm',
-    component: () => import('@/views/newsletter/NewsletterConfirmView.vue'),
-  },
-  {
-    // FR-58 — where the subscribe confirm link lands (the API 303s here with
-    // ?status=ok|invalid). No meta.auth AND no meta.guest: the page must render
-    // identically for signed-in and signed-out — `meta.guest` would bounce a
-    // signed-in user to the dashboard, which is how the previous target
-    // (`/?subscribe=…`, auth-gated) showed the outcome to nobody.
-    path: '/newsletter/confirmed',
-    name: 'newsletter-confirmed',
-    component: () => import('@/views/newsletter/NewsletterOutcomeView.vue'),
-    props: { kind: 'confirmed' },
-  },
-  {
-    // FR-58 — where the unsubscribe link lands. Same rules as above.
-    path: '/newsletter/unsubscribed',
-    name: 'newsletter-unsubscribed',
-    component: () => import('@/views/newsletter/NewsletterOutcomeView.vue'),
-    props: { kind: 'unsubscribed' },
-  },
-  {
     path: '/',
     component: () => import('@/components/layout/AppLayout.vue'),
     meta: { auth: true },
@@ -168,19 +133,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/profile/ProfileEditView.vue'),
       },
       {
-        // Stats PR-4 — platform-operator observability (relay fleet,
-        // orgs, calls). Client-gated by user.is_platform_admin; the
-        // server 404s everyone else.
+        // Stats PR-4 — platform-operator observability (relay fleet, orgs).
+        // Client-gated by user.is_platform_admin; the server 404s everyone else.
         path: 'observability',
         name: 'observability',
         component: () => import('@/views/observability/ObservabilityView.vue'),
-      },
-      {
-        // FR-102 P1d — the growth digest (platform operators; the server
-        // 404s everyone else, so the client gate is a courtesy).
-        path: 'observability/growth',
-        name: 'observability-growth',
-        component: () => import('@/views/observability/GrowthView.vue'),
       },
       {
         path: 'profile/:userId',
@@ -218,36 +175,6 @@ const routes: RouteRecordRaw[] = [
             component: () => import('@/views/dashboard/TenantDashboard.vue'),
           },
           {
-            path: 'room/:roomId',
-            name: 'room-chat',
-            component: () => import('@/views/chat/ChatView.vue'),
-            meta: { module: 'chat' },
-          },
-          {
-            path: 'room/:roomId/call',
-            name: 'room-call',
-            component: () => import('@/views/conference/ConferenceView.vue'),
-            meta: { module: 'conference' },
-          },
-          {
-            path: 'rooms',
-            name: 'rooms',
-            component: () => import('@/views/rooms/RoomList.vue'),
-            meta: { module: 'chat' },
-          },
-          {
-            path: 'explore',
-            name: 'explore',
-            component: () => import('@/views/rooms/ExploreView.vue'),
-            meta: { module: 'chat' },
-          },
-          {
-            path: 'files',
-            name: 'files',
-            component: () => import('@/views/files/FilesBrowser.vue'),
-            meta: { module: 'chat' },
-          },
-          {
             path: 'invites',
             name: 'invites',
             component: () => import('@/views/invite/InviteManageView.vue'),
@@ -260,15 +187,6 @@ const routes: RouteRecordRaw[] = [
             path: 'tutorial',
             name: 'tutorial',
             component: () => import('@/views/tutorial/TutorialView.vue'),
-          },
-          {
-            // Stats PR-4 — org analytics (machines/calls/tunnels over
-            // time). The component fail-closes on membership permissions
-            // before firing any query.
-            path: 'analytics',
-            name: 'analytics',
-            props: true,
-            component: () => import('@/views/analytics/AnalyticsView.vue'),
           },
           {
             // S4 pivot — the fleet page, promoted out of Admin. The old
@@ -284,31 +202,6 @@ const routes: RouteRecordRaw[] = [
             name: 'gpu-servers',
             component: () => import('@/views/gpu/GpuServersView.vue'),
             meta: { module: 'fleet' },
-          },
-          {
-            // FR-90 — your agent sessions. A session's own page is its
-            // chat room (`room/:roomId`), where the transcript is read.
-            path: 'sessions',
-            name: 'hive-sessions',
-            component: () => import('@/views/hive/HiveSessionsView.vue'),
-            meta: { module: 'hive' },
-          },
-          {
-            // FR-90 P1e — the facts people keep for the org's agent
-            // sessions (core memory).
-            path: 'memory',
-            name: 'hive-memory',
-            component: () => import('@/views/hive/HiveMemoryView.vue'),
-            meta: { module: 'hive' },
-          },
-          {
-            // FR-90 P2h-2 — where the org's agent sessions are copied, and
-            // its archive replicas. The page says so itself where the
-            // server copies none (`hive.replicaset` off).
-            path: 'copies',
-            name: 'hive-copies',
-            component: () => import('@/views/hive/HiveCopiesView.vue'),
-            meta: { module: 'hive' },
           },
           {
             // T8b — full-page interactive 3D device globe; supports `?embed=1&lang=&theme=`
@@ -389,12 +282,6 @@ const routes: RouteRecordRaw[] = [
               { path: 'ssh',          name: 'audit-ssh',          props: true, meta: { module: 'network' }, component: () => import('@/components/admin/SshAuditSection.vue') },
               { path: 'ssh-activity', name: 'audit-ssh-activity', props: true, meta: { module: 'network' }, component: () => import('@/components/admin/SshActivitySection.vue') },
             ],
-          },
-          {
-            path: 'billing',
-            name: 'billing',
-            component: () => import('@/views/billing/BillingView.vue'),
-            meta: { module: 'saas' },
           },
           {
             path: 'agent/:agentId/remote',
@@ -481,13 +368,6 @@ router.beforeEach(async (to) => {
   const caps = useCapabilitiesStore()
   await caps.ready()
   if (caps.has(wanted)) {
-    // FR-90 P1g — agent sessions may serve some organizations and not
-    // others: a deep link into one they do not serve goes to its dashboard.
-    const tid = to.params.tenantId
-    if (wanted === 'hive' && typeof tid === 'string' && tid !== '' && !(await useHiveStore().checkServed(tid))) {
-      console.warn(`[modules] agent sessions do not serve organization ${tid}`)
-      return { name: 'tenant-dashboard', params: { tenantId: tid } }
-    }
     return true
   }
   console.warn(

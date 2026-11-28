@@ -32,7 +32,7 @@ import { routeViewKey } from '@/plugins/routeViewKey'
 // remount is one of each, a reuse is neither.
 const { counters, stubModule } = vi.hoisted(() => {
   const make = () => ({ setups: 0, unmounts: 0 })
-  const counters = { remote: make(), chat: make(), profile: make(), dashboard: make() }
+  const counters = { remote: make(), devices: make(), profile: make(), dashboard: make() }
   async function stubModule(which: keyof typeof counters) {
     const { defineComponent, h, onUnmounted } = await import('vue')
     return {
@@ -52,7 +52,7 @@ const { counters, stubModule } = vi.hoisted(() => {
 })
 
 vi.mock('@/views/remote/RemoteControl.vue', () => stubModule('remote'))
-vi.mock('@/views/chat/ChatView.vue', () => stubModule('chat'))
+vi.mock('@/views/devices/DevicesView.vue', () => stubModule('devices'))
 vi.mock('@/views/profile/ProfileView.vue', () => stubModule('profile'))
 // The `/` child. Never navigated to here (the first target is pushed before
 // the app mounts), but the real view needs Pinia and would wreck the render
@@ -122,13 +122,13 @@ describe('KeyedRouterView over the real route records (#1631)', () => {
     expect(counters.remote).toEqual({ setups: 1, unmounts: 0 })
   })
 
-  it('leaves a route without remountOn on the plain reuse: room r1 → r2 is one setup, no unmount', async () => {
-    const mem = await mountKeyed('/tenant/t1/room/r1')
-    expect(counters.chat).toEqual({ setups: 1, unmounts: 0 })
-    await go(mem, '/tenant/t1/room/r2')
-    // ChatView watches roomId itself; a remount here would be a regression
+  it('leaves a route without remountOn on the plain reuse: devices t1 → t2 is one setup, no unmount', async () => {
+    const mem = await mountKeyed('/tenant/t1/devices')
+    expect(counters.devices).toEqual({ setups: 1, unmounts: 0 })
+    await go(mem, '/tenant/t2/devices')
+    // DevicesView watches tenantId itself; a remount here would be a regression
     // for every view that manages its own param changes.
-    expect(counters.chat).toEqual({ setups: 1, unmounts: 0 })
+    expect(counters.devices).toEqual({ setups: 1, unmounts: 0 })
   })
 
   it('remounts the profile view when the userId changes', async () => {
@@ -138,7 +138,7 @@ describe('KeyedRouterView over the real route records (#1631)', () => {
     expect(counters.profile).toEqual({ setups: 2, unmounts: 1 })
   })
 
-  it('the record itself carries the contract: agent-remote keys on agentId, profile on userId, room-chat on nothing', () => {
+  it('the record itself carries the contract: agent-remote keys on agentId, profile on userId, devices on nothing', () => {
     const byName = new Map<string, RouteRecordRaw>()
     const walk = (rs: readonly RouteRecordRaw[]) => {
       for (const r of rs) {
@@ -149,7 +149,6 @@ describe('KeyedRouterView over the real route records (#1631)', () => {
     walk(router.options.routes)
     expect(byName.get('agent-remote')?.meta?.remountOn).toBe('agentId')
     expect(byName.get('profile')?.meta?.remountOn).toBe('userId')
-    expect(byName.get('room-chat')?.meta?.remountOn).toBeUndefined()
     expect(byName.get('devices')?.meta?.remountOn).toBeUndefined()
   })
 })

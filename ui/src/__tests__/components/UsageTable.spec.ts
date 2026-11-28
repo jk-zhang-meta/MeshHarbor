@@ -76,7 +76,7 @@ describe('UsageTable (FR-116 P6a)', () => {
 
   it('from 600 px up: every column, as before', () => {
     const w = mountAt('wide')
-    expect(headerTitles(w)).toEqual(['User', 'Remote desktop', 'Calls', 'Tunnel', 'Total'])
+    expect(headerTitles(w)).toEqual(['User', 'Remote desktop', 'Tunnel', 'Total'])
     expect(w.text()).not.toContain('tap one for the breakdown')
   })
 })

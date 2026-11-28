@@ -16,7 +16,7 @@ import * as directives from 'vuetify/directives'
 
 const hoisted = vi.hoisted(() => ({
   roles: [
-    { id: 'r1', name: 'Remote Operator', description: 'Support fleet', permissions: 1 | (1 << 7), position: 10, is_managed: false, is_default: false },
+    { id: 'r1', name: 'Remote Operator', description: 'Support fleet', permissions: (1 << 24) | (1 << 25), position: 10, is_managed: false, is_default: false },
     { id: 'r2', name: 'Administrator', permissions: 1 << 23, position: 0, is_managed: true, is_default: false },
   ],
 }))
@@ -95,15 +95,15 @@ describe('RolesSection — what a role grants (FR-116 P3c)', () => {
     const w = mountRoles()
     const toggle = w.find('[data-testid="role-grants-r1"]')
     expect(toggle.text()).toBe('2 permissions')
-    expect(w.text()).not.toContain('Send messages')
+    expect(w.text()).not.toContain('Remote control')
 
     await toggle.trigger('click')
     expect(toggle.attributes('aria-expanded')).toBe('true')
-    expect(w.text()).toContain('View channels')
-    expect(w.text()).toContain('Send messages')
+    expect(w.text()).toContain('Manage devices')
+    expect(w.text()).toContain('Remote control')
 
     await toggle.trigger('click')
-    expect(w.text()).not.toContain('Send messages')
+    expect(w.text()).not.toContain('Remote control')
   })
 
   it('Enter opens them too — the count is a button', async () => {
@@ -112,7 +112,7 @@ describe('RolesSection — what a role grants (FR-116 P3c)', () => {
     const toggle = w.find('[data-testid="role-grants-r1"]')
     expect(toggle.attributes('role')).toBe('button')
     await toggle.trigger('keydown', { key: 'Enter' })
-    expect(w.text()).toContain('Send messages')
+    expect(w.text()).toContain('Remote control')
   })
 
   it('an administrator role says "all" and has nothing to expand', () => {

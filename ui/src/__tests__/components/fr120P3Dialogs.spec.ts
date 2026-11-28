@@ -7,23 +7,14 @@
 // no scrim to tap. A question that names a device wraps, because the name is
 // the one thing to read before confirming; a title row with buttons wraps.
 //
-// The views that own most of these are too large to mount for one dialog
+// The views that own these are too large to mount for one dialog
 // each, so their templates are parsed and the structure is locked, as
-// rcRatingMount.spec.ts does. GiphyPicker is mounted at 360 and 1024 px to
-// prove the binding itself flips at 600 px.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+// rcRatingMount.spec.ts does.
+import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parse as parseSfc } from '@vue/compiler-sfc'
 import { NodeTypes, type ElementNode, type TemplateChildNode } from '@vue/compiler-dom'
-import { flushPromises, mount } from '@vue/test-utils'
-import { createVuetify } from 'vuetify'
-import * as components from 'vuetify/components'
-import * as directives from 'vuetify/directives'
-
-vi.mock('@/api/client', () => ({ api: { get: vi.fn() } }))
-
-import GiphyPicker from '@/components/chat/GiphyPicker.vue'
 
 // Vitest runs from `ui/` (where its config lives); under jsdom
 // `import.meta.url` is not a `file:` URL, so the SFCs are resolved from there.
@@ -97,7 +88,6 @@ const DIALOGS = [
   { file: AGENTS, model: 'joinOrgDialogOpen', bound: 'fullscreen' },
   { file: AGENTS, model: 'routesDialogOpen', bound: 'fullscreen' },
   { file: 'src/components/admin/MembersSection.vue', model: 'rolesDialog', bound: 'fullscreen' },
-  { file: 'src/components/chat/GiphyPicker.vue', model: 'open', bound: 'fullscreen' },
 ]
 
 describe.each(DIALOGS)('$file, the dialog on $model (FR-120 P3)', ({ file, model, bound }) => {
@@ -139,58 +129,5 @@ describe('a title row with buttons wraps (FR-120 P3)', () => {
   ])('%s', (file, gap) => {
     const first = below(templateOf(file), (e) => e.tag === 'v-card-title')[0]
     expect(classes(first)).toEqual(expect.arrayContaining(['d-flex', 'flex-wrap', gap]))
-  })
-})
-
-describe('GiphyPicker covers the screen below 600 px (FR-120 P3)', () => {
-  let opened: ReturnType<typeof mount> | null = null
-  // An overlay measures itself against the viewport; jsdom has neither of these.
-  beforeEach(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    )
-    vi.stubGlobal('visualViewport', {
-      width: 360,
-      height: 780,
-      offsetLeft: 0,
-      offsetTop: 0,
-      pageLeft: 0,
-      pageTop: 0,
-      scale: 1,
-      addEventListener() {},
-      removeEventListener() {},
-    })
-  })
-  afterEach(() => {
-    opened?.unmount()
-    opened = null
-    window.innerWidth = 1024
-    vi.unstubAllGlobals()
-  })
-
-  /** Vuetify reads the window's width when the plugin is made. */
-  async function openAt(width: number) {
-    window.innerWidth = width
-    const vuetify = createVuetify({ components, directives })
-    opened = mount(GiphyPicker, { props: { modelValue: true }, global: { plugins: [vuetify] }, attachTo: document.body })
-    await flushPromises()
-    return document.body.querySelector('.v-dialog.v-overlay--active') as HTMLElement | null
-  }
-
-  it('at 360 px', async () => {
-    const d = await openAt(360)
-    expect(d?.classList.contains('v-dialog--fullscreen')).toBe(true)
-    expect(d?.querySelector('.v-card-title [aria-label="Close"]')).toBeTruthy()
-  })
-
-  it('and stays a centred card at 1024 px', async () => {
-    const d = await openAt(1024)
-    expect(d).toBeTruthy()
-    expect(d?.classList.contains('v-dialog--fullscreen')).toBe(false)
   })
 })

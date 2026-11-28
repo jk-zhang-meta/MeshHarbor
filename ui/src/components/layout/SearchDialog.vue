@@ -40,42 +40,6 @@
           {{ t('mh.search.noResults', { query }) }}
         </div>
         <div v-else>
-          <!-- Messages -->
-          <div v-if="results.messages.length > 0">
-            <div class="text-overline px-4 pt-2">{{ t('mh.search.messages') }}</div>
-            <v-list density="compact">
-              <v-list-item
-                v-for="msg in results.messages"
-                :key="msg.id"
-                @click="goToMessage(msg)"
-              >
-                <template #prepend>
-                  <v-icon size="small">mdi-message-text</v-icon>
-                </template>
-                <v-list-item-title class="text-body-2">{{ msg.content_preview }}</v-list-item-title>
-                <v-list-item-subtitle>
-                  {{ t('mh.search.inRoom', { author: msg.author_name, room: msg.room_name }) }} &middot; {{ formatDate(msg.created_at) }}
-                </v-list-item-subtitle>
-              </v-list-item>
-            </v-list>
-          </div>
-          <!-- Rooms -->
-          <div v-if="results.rooms.length > 0">
-            <div class="text-overline px-4 pt-2">{{ t('mh.search.rooms') }}</div>
-            <v-list density="compact">
-              <v-list-item
-                v-for="room in results.rooms"
-                :key="room.id"
-                @click="goToRoom(room)"
-              >
-                <template #prepend>
-                  <v-icon size="small">mdi-pound</v-icon>
-                </template>
-                <v-list-item-title>{{ room.name }}</v-list-item-title>
-                <v-list-item-subtitle v-if="room.purpose">{{ room.purpose }}</v-list-item-subtitle>
-              </v-list-item>
-            </v-list>
-          </div>
           <!-- People -->
           <div v-if="results.users.length > 0">
             <div class="text-overline px-4 pt-2">{{ t('mh.search.people') }}</div>
@@ -111,23 +75,6 @@ import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
-interface SearchMessageResult {
-  id: string
-  room_id: string
-  room_name: string
-  author_id: string
-  author_name: string
-  content_preview: string
-  created_at: string
-}
-
-interface SearchRoomResult {
-  id: string
-  name: string
-  purpose?: string
-  member_count: number
-}
-
 interface SearchUserResult {
   id: string
   display_name: string
@@ -136,8 +83,6 @@ interface SearchUserResult {
 }
 
 interface SearchResultsData {
-  messages: SearchMessageResult[]
-  rooms: SearchRoomResult[]
   users: SearchUserResult[]
 }
 
@@ -163,8 +108,6 @@ const loading = ref(false)
 const searchInput = ref<HTMLInputElement | null>(null)
 
 const results = ref<SearchResultsData>({
-  messages: [],
-  rooms: [],
   users: [],
 })
 
@@ -172,8 +115,6 @@ const noResults = computed(() => {
   return (
     query.value.trim().length > 0 &&
     !loading.value &&
-    results.value.messages.length === 0 &&
-    results.value.rooms.length === 0 &&
     results.value.users.length === 0
   )
 })
@@ -184,7 +125,7 @@ watch(query, (val) => {
   if (debounceTimer) clearTimeout(debounceTimer)
   const q = val.trim()
   if (!q) {
-    results.value = { messages: [], rooms: [], users: [] }
+    results.value = { users: [] }
     loading.value = false
     return
   }
@@ -194,11 +135,10 @@ watch(query, (val) => {
   }, 300)
 })
 
-// Reset state when dialog opens/closes
 watch(dialogModel, (val) => {
   if (!val) {
     query.value = ''
-    results.value = { messages: [], rooms: [], users: [] }
+    results.value = { users: [] }
     loading.value = false
   }
 })
@@ -210,53 +150,17 @@ async function doSearch(q: string) {
     return
   }
   try {
-    const data = await api.get<SearchResultsData>(
+    const data = await api.get<Partial<SearchResultsData>>(
       `/tenant/${tenantId}/search?q=${encodeURIComponent(q)}&limit=20`,
     )
-    // Only apply results if query hasn't changed
     if (query.value.trim() === q) {
-      results.value = data
+      results.value = { users: data.users ?? [] }
     }
   } catch {
-    // silently ignore search errors
-    results.value = { messages: [], rooms: [], users: [] }
+    results.value = { users: [] }
   } finally {
     loading.value = false
   }
-}
-
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso)
-    const now = new Date()
-    const diffMs = now.getTime() - d.getTime()
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-    if (diffDays === 0) {
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }
-    if (diffDays < 7) {
-      return t('mh.ago.d', { n: diffDays })
-    }
-    return d.toLocaleDateString()
-  } catch {
-    return iso
-  }
-}
-
-function goToMessage(msg: SearchMessageResult) {
-  const tenantId = tenantStore.current?.id
-  if (tenantId) {
-    router.push(`/tenant/${tenantId}/room/${msg.room_id}`)
-  }
-  dialogModel.value = false
-}
-
-function goToRoom(room: SearchRoomResult) {
-  const tenantId = tenantStore.current?.id
-  if (tenantId) {
-    router.push(`/tenant/${tenantId}/room/${room.id}`)
-  }
-  dialogModel.value = false
 }
 
 function goToProfile(user: SearchUserResult) {

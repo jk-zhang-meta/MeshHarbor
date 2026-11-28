@@ -9,14 +9,9 @@ import i18n, { setLocale } from '@/plugins/i18n'
 import ArchitectureGraphic from '@/components/landing/ArchitectureGraphic.vue'
 import {
   CAPABILITIES,
-  FALLBACK_PLANS,
   HERO,
   PILLARS,
-  annualLine,
   landingCopy,
-  planFeature,
-  planName,
-  type Plan,
 } from '@/utils/landing'
 
 describe('the landing copy', () => {
@@ -38,29 +33,6 @@ describe('the landing copy', () => {
       expect(p.features.map((f) => [f.icon, f.color])).toEqual(PILLARS[i]!.features.map((f) => [f.icon, f.color]))
       for (const f of p.features) expect(f.title).toMatch(/[一-鿿]/)
     })
-  })
-
-  it('has a Chinese line for every plan line and name the page can show before the server answers', () => {
-    for (const plan of FALLBACK_PLANS) {
-      expect(planName(plan, 'zh-CN')).not.toBe(plan.name)
-      for (const line of plan.features) expect(planFeature(line, 'zh-CN'), line).not.toBe(line)
-    }
-  })
-
-  it('keeps a line it does not know as the server sent it, and English as it is', () => {
-    expect(planFeature('A new line from a newer server', 'zh-CN')).toBe('A new line from a newer server')
-    expect(planFeature('10 users', 'en')).toBe('10 users')
-    expect(planName({ id: 'team', name: 'Team', price_cents: 0, features: [] }, 'zh-CN')).toBe('Team')
-  })
-
-  it('says the annual price in the page language', () => {
-    const pro: Plan = {
-      ...FALLBACK_PLANS[1]!,
-      prices: [{ interval: 'year', currency: 'usd', unit_amount: 8000 }],
-    }
-    expect(annualLine(pro)).toBe('or $80 per user per year (two months free)')
-    expect(annualLine(pro, 'zh-CN')).toBe('或 $80 每用户每年（相当于送两个月）')
-    expect(annualLine(FALLBACK_PLANS[0]!, 'zh-CN')).toBeNull()
   })
 })
 

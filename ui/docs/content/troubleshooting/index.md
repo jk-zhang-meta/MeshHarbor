@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Start here when something is not working — a device is offline, a session will not connect, a screen is black, or a call has no video.
+description: Start here when something is not working — a device is offline, a session will not connect, or a screen is black.
 tags: [troubleshooting, support, diagnostics]
 order: 0
 ---
@@ -12,7 +12,6 @@ occur, most common first.
 - **[Device is offline or stale](/docs/troubleshooting/device-offline/)** icon:monitor — It was there, and now it is not — or it says "stale".
 - **[Cannot connect, or the session is slow](/docs/troubleshooting/cannot-connect/)** icon:network — Sessions fail, or they work but feel sluggish.
 - **[Black screen](/docs/troubleshooting/black-screen/)** icon:warning — It connects, and you see nothing, or only wallpaper.
-- **[Calls have no video](/docs/troubleshooting/calls-no-media/)** icon:video — Everyone joins, nobody appears.
 - **[Install problems](/docs/troubleshooting/install-problems/)** icon:download — It will not install, or it never appears afterwards.
 - **[Collecting diagnostics](/docs/troubleshooting/collecting-diagnostics/)** icon:terminal — What to gather before asking for help.
 :::

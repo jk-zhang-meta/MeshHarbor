@@ -296,16 +296,9 @@ export const SECTIONS: SectionDef[] = [
     accent: 'teal',
   },
   {
-    dir: 'collaboration',
-    title: 'Chat & video',
-    blurb: 'Rooms, threaded chat, HD calls and file sharing',
-    icon: 'video',
-    accent: 'deep',
-  },
-  {
     dir: 'architecture',
     title: 'Architecture',
-    blurb: 'How the control plane and the three data planes fit together',
+    blurb: 'How the control plane and the data planes fit together',
     icon: 'blueprint',
     accent: 'coral',
   },
@@ -319,7 +312,7 @@ export const SECTIONS: SectionDef[] = [
   {
     dir: 'troubleshooting',
     title: 'Troubleshooting',
-    blurb: 'When a device is offline, a screen is black, or a call has no media',
+    blurb: 'When a device is offline, a screen is black, or a session fails to connect',
     icon: 'wrench',
     accent: 'coral',
   },

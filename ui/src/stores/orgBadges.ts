@@ -8,10 +8,7 @@ import { api } from '@/api/client'
 export interface OrgUnreadSummary {
   tenant_id: string
   name: string
-  unread_messages: number
-  unread_rooms: number
   notifications: number
-  mentions: number
   consents: number
 }
 
@@ -22,14 +19,14 @@ export interface OrgUnreadSummary {
  *  - `summaries` — server truth from `/api/user/unread-summary`, refetched
  *    (debounced) on mount, `ws:reconnected`, switcher open and org switch.
  *  - live deltas — ws.ts routes events carrying a NON-active `tenant_id`
- *    here (`message:create`, `notification:new`, `device:presence`) so the
+ *    here (`notification:new`, `device:presence`) so the
  *    badge moves in realtime between fetches. `deviceEvents` counts
  *    offline/stale transitions noticed while the user was parked on another
  *    org; it clears when they visit that org (it's an attention marker, not
  *    server state).
  *
  * There is no event replay in this app — a summary refetch is always the
- *  convergence path; deltas only bridge the gap between fetches.
+ * convergence path; deltas only bridge the gap between fetches.
  */
 export const useOrgBadgesStore = defineStore('orgBadges', () => {
   const summaries = ref<Record<string, OrgUnreadSummary>>({})
@@ -41,10 +38,7 @@ export const useOrgBadgesStore = defineStore('orgBadges', () => {
       s = {
         tenant_id: tenantId,
         name: '',
-        unread_messages: 0,
-        unread_rooms: 0,
         notifications: 0,
-        mentions: 0,
         consents: 0,
       }
       summaries.value[tenantId] = s
@@ -78,17 +72,10 @@ export const useOrgBadgesStore = defineStore('orgBadges', () => {
     }, 2000)
   }
 
-  /** A `message:create` for an org the UI is not showing. */
-  function noteForeignMessage(tenantId: string) {
-    const s = ensure(tenantId)
-    s.unread_messages++
-  }
-
   /** A `notification:new` for a non-active org. */
   function noteForeignNotification(tenantId: string, notificationType?: string) {
     const s = ensure(tenantId)
     s.notifications++
-    if (notificationType === 'mention') s.mentions++
     if (notificationType === 'consent_request') s.consents++
   }
 
@@ -107,11 +94,11 @@ export const useOrgBadgesStore = defineStore('orgBadges', () => {
     fetchSummary()
   }
 
-  /** Numeric badge for one org's switcher row (messages + notifications). */
+  /** Numeric badge for one org's switcher row (notifications). */
   function badgeCount(tenantId: string): number {
     const s = summaries.value[tenantId]
     if (!s) return 0
-    return s.unread_messages + s.notifications
+    return s.notifications
   }
 
   function hasDeviceEvents(tenantId: string): boolean {
@@ -123,7 +110,7 @@ export const useOrgBadgesStore = defineStore('orgBadges', () => {
   const anyForeignActivity = computed(() => (activeTenantId: string | null) => {
     for (const [tid, s] of Object.entries(summaries.value)) {
       if (tid === activeTenantId) continue
-      if (s.unread_messages + s.notifications > 0) return true
+      if (s.notifications > 0) return true
     }
     for (const [tid, n] of Object.entries(deviceEvents.value)) {
       if (tid === activeTenantId) continue
@@ -137,7 +124,6 @@ export const useOrgBadgesStore = defineStore('orgBadges', () => {
     deviceEvents,
     fetchSummary,
     fetchSummaryNow,
-    noteForeignMessage,
     noteForeignNotification,
     noteDevicePresence,
     clearForTenant,

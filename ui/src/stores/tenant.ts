@@ -4,13 +4,6 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
 
-interface TenantBilling {
-  status?: string
-  cancel_at_period_end?: boolean
-  current_period_end?: string | number | Date
-  customer_id?: string
-}
-
 interface Tenant {
   id: string
   name: string
@@ -20,8 +13,6 @@ interface Tenant {
   owner_id?: string
   description?: string
   icon?: string
-  plan?: string
-  billing?: TenantBilling
 }
 
 interface MyMembership {

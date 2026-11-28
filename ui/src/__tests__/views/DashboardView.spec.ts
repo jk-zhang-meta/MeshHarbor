@@ -14,12 +14,6 @@ const hoisted = vi.hoisted(() => ({
     fetchTenants: vi.fn(),
     createTenant: vi.fn(),
   },
-  newsletter: {
-    subscribed: { value: true },
-    busy: { value: false },
-    load: vi.fn(),
-    set: vi.fn(),
-  },
   snackbar: {
     showSuccess: vi.fn(),
     showError: vi.fn(),
@@ -32,17 +26,6 @@ vi.mock('@/stores/auth', () => ({
 vi.mock('@/stores/tenant', () => ({
   useTenantStore: () => hoisted.tenant,
 }))
-vi.mock('@/composables/useNewsletterPref', async () => {
-  const { ref } = await import('vue')
-  return {
-    useNewsletterPref: () => ({
-      subscribed: ref(true),
-      busy: ref(false),
-      load: hoisted.newsletter.load,
-      set: hoisted.newsletter.set,
-    }),
-  }
-})
 vi.mock('@/composables/useSnackbar', () => ({
   useSnackbar: () => hoisted.snackbar,
 }))
