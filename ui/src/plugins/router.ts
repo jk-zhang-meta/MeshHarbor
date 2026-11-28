@@ -94,6 +94,14 @@ const routes: RouteRecordRaw[] = [
     meta: { module: 'fleet' },
   },
   {
+    // 0.5.0 — Chromeless admin silent watch & takeover viewer (100vw × 100dvh,
+    // outside AppLayout so no sidebar/app-bar obscures the monitored screen).
+    path: '/tenant/:tenantId/monitoring/watch/:agentId',
+    name: 'monitoring-watch',
+    component: () => import('@/views/monitoring/MonitorWatchView.vue'),
+    meta: { auth: true, module: 'remote', remountOn: 'agentId' },
+  },
+  {
     path: '/',
     component: () => import('@/components/layout/AppLayout.vue'),
     meta: { auth: true },
@@ -270,17 +278,25 @@ const routes: RouteRecordRaw[] = [
             ],
           },
           {
-            // Audit trails, OUT of Admin/Settings (2026-08-26): reviewing
-            // who ran/held what is a different job from configuring the
-            // org, and the sections were buried at the bottom of a long
-            // settings page. Same child-route shell as /admin.
-            path: 'audit',
-            redirect: { name: 'audit-exec' },
-            component: () => import('@/views/admin/AuditPanel.vue'),
+            // 0.5.0 — Unified SSH & Remote Control Monitoring Console
+            // (`监控中` live + `监控历史` history + `命令审计` exec).
+            path: 'monitoring',
+            redirect: { name: 'monitoring-live' },
+            component: () => import('@/views/monitoring/MonitoringPanel.vue'),
             children: [
-              { path: 'exec',         name: 'audit-exec',         props: true, meta: { module: 'fleet' },   component: () => import('@/components/admin/ExecAuditSection.vue') },
-              { path: 'ssh',          name: 'audit-ssh',          props: true, meta: { module: 'network' }, component: () => import('@/components/admin/SshAuditSection.vue') },
-              { path: 'ssh-activity', name: 'audit-ssh-activity', props: true, meta: { module: 'network' }, component: () => import('@/components/admin/SshActivitySection.vue') },
+              { path: 'live',    name: 'monitoring-live',    props: true, meta: { module: 'fleet' }, component: () => import('@/views/monitoring/LiveMonitoringTab.vue') },
+              { path: 'history', name: 'monitoring-history', props: true, meta: { module: 'fleet' }, component: () => import('@/views/monitoring/MonitoringHistoryTab.vue') },
+              { path: 'exec',    name: 'monitoring-exec',    props: true, meta: { module: 'fleet' }, component: () => import('@/components/admin/ExecAuditSection.vue') },
+            ],
+          },
+          {
+            // Legacy `/audit/*` bookmarks redirect cleanly to `/monitoring/*`.
+            path: 'audit',
+            redirect: { name: 'monitoring-live' },
+            children: [
+              { path: 'exec',         name: 'audit-exec',         redirect: { name: 'monitoring-exec' } },
+              { path: 'ssh',          name: 'audit-ssh',          redirect: { name: 'monitoring-history' } },
+              { path: 'ssh-activity', name: 'audit-ssh-activity', redirect: { name: 'monitoring-history' } },
             ],
           },
           {

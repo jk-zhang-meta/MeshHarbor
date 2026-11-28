@@ -7518,3 +7518,47 @@ describe('rc:desktop_note', () => {
     expect(parseControlInbound(JSON.stringify({ t: 'rc:desktop_note', code: 'x', text: '' }))).toBeNull()
   })
 })
+
+describe('0.5.0 silent admin takeover in rc:control.state', () => {
+  it('parses admin_takeover flag cleanly while preserving participants list', () => {
+    const taken = parseControlInbound(
+      JSON.stringify({
+        t: 'rc:control.state',
+        mode: 'free',
+        holder: null,
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        admin_takeover: true,
+      }),
+    )
+    expect(taken).toEqual({
+      kind: 'control_state',
+      state: {
+        mode: 'free',
+        holder: null,
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        pendingRequest: null,
+        adminTakeover: true,
+      },
+    })
+
+    const released = parseControlInbound(
+      JSON.stringify({
+        t: 'rc:control.state',
+        mode: 'free',
+        holder: 's1',
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        admin_takeover: false,
+      }),
+    )
+    expect(released).toEqual({
+      kind: 'control_state',
+      state: {
+        mode: 'free',
+        holder: 's1',
+        participants: [{ session: 's1', name: 'Alice', input: true }],
+        pendingRequest: null,
+        adminTakeover: false,
+      },
+    })
+  })
+})

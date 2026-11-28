@@ -683,6 +683,11 @@ pub struct HubInner {
     /// Live sessions (anything not yet `Closed`).
     sessions: DashMap<ObjectId, Arc<Mutex<LiveSession>>>,
 
+    /// 0.5.0 — Live SSH sessions (classic, persistent PTY, and shared SSH),
+    /// keyed by `grant_id` (or synthetic key-list key) for the unified
+    /// real-time monitoring console and active admin disconnect.
+    live_ssh: DashMap<String, LiveSshSessionInfo>,
+
     /// Per-controller-user connections (one user may have multiple browser tabs).
     controllers: DashMap<ObjectId, Vec<ClientTx>>,
 
@@ -973,6 +978,7 @@ impl Hub {
             inner: Arc::new(HubInner {
                 agents: DashMap::new(),
                 sessions: DashMap::new(),
+                live_ssh: DashMap::new(),
                 controllers: DashMap::new(),
                 turn,
                 relay_load,
@@ -2077,6 +2083,11 @@ impl Hub {
             Some(window_secs) => self.detach_agent_sessions(agent_id, window_secs),
             None => self.end_agent_sessions(agent_id),
         }
+        // 0.5.0 — drop non-resumable live SSH sessions on the departed agent so
+        // the real-time monitoring view never holds ghost rows after disconnect.
+        self.inner
+            .live_ssh
+            .retain(|_, s| s.agent_id != agent_id || s.resume_allowed);
         true
     }
 
@@ -2474,6 +2485,7 @@ impl Hub {
             None,
             None,
             None,
+            false,
         )
     }
 
@@ -2544,10 +2556,57 @@ impl Hub {
         // FR-141 — validated prior session id when the viewer is auto-continuing
         // after an agent restart (`DispatchCtx::continues`).
         continues: Option<ObjectId>,
+        // 0.5.0 — server-validated admin silent monitor (`DispatchCtx::silent_monitor`).
+        silent_monitor: bool,
     ) -> Result<ObjectId> {
+        // 0.5.0 — clamp silent monitoring parameters defensively inside the Hub:
+        // silent monitors never record, never lock on end, never idle-out, never
+        // carry audio/clipboard/files, and always auto-consent on an active host.
+        let (
+            permissions,
+            audio_enabled,
+            consent_mode,
+            override_reason,
+            may_record,
+            max_duration,
+            idle_secs,
+            lock_on_end,
+            org_session_cap,
+            continues,
+            share_grant_id,
+        ) = if silent_monitor {
+            (
+                Permissions::VIEW | Permissions::INPUT,
+                false,
+                ConsentMode::Auto,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        } else {
+            (
+                permissions,
+                audio_enabled,
+                consent_mode,
+                override_reason,
+                may_record,
+                max_duration,
+                idle_secs,
+                lock_on_end,
+                org_session_cap,
+                continues,
+                share_grant_id,
+            )
+        };
         // Positive provenance requires the dedicated, post-PDP local entry.
         // Optional scopes below only veto it; their absence never creates it.
-        let controller_scope = if matches!(origin, SessionCreationOrigin::LocalPdp)
+        let controller_scope = if !silent_monitor
+            && matches!(origin, SessionCreationOrigin::LocalPdp)
             && share_grant_id.is_none()
             && external.is_none()
             && override_reason.is_none()
@@ -2645,6 +2704,7 @@ impl Hub {
             let s = e.value().lock();
             let is_dup = s.agent_id == agent_id
                 && s.controller_user_id == controller_user_id
+                && s.silent_monitor == silent_monitor
                 && s.matches_file_child_controller_scope(&controller_scope)
                 && s.device_share_scope() == device_share_scope
                 && s.controller_tx
@@ -2734,7 +2794,7 @@ impl Hub {
             let mut holder: Option<(ObjectId, ObjectId)> = None;
             for e in self.inner.sessions.iter() {
                 let s = e.value().lock();
-                if s.tenant_id == org && s.phase != SessionPhase::Closed {
+                if s.tenant_id == org && !s.silent_monitor && s.phase != SessionPhase::Closed {
                     live = live.saturating_add(1);
                     holder.get_or_insert((s.controller_user_id, s.agent_id));
                 }
@@ -2751,6 +2811,33 @@ impl Hub {
                     holder_user: holder_user.to_hex(),
                     holder_agent: holder_agent.to_hex(),
                 });
+            }
+        }
+
+        // 0.5.0 — Silent admin monitoring requires an active non-monitor remote
+        // control session on this device and uses its own bounded monitor cap (2)
+        // instead of consuming regular user session slots.
+        if silent_monitor {
+            let mut has_active_target = false;
+            let mut active_monitors = 0usize;
+            for e in self.inner.sessions.iter() {
+                let s = e.value().lock();
+                if s.agent_id != agent_id || s.phase == SessionPhase::Closed {
+                    continue;
+                }
+                if s.silent_monitor {
+                    active_monitors += 1;
+                } else {
+                    has_active_target = true;
+                }
+            }
+            if !has_active_target {
+                return Err(Error::PermissionDenied(
+                    "no active remote control session on this device",
+                ));
+            }
+            if active_monitors >= 2 {
+                return Err(Error::AgentBusy);
             }
         }
 
@@ -2772,13 +2859,17 @@ impl Hub {
                 .get_mut(&agent_id)
                 .ok_or_else(|| Error::AgentOffline(agent_id.to_hex()))?;
             // FR-130 — a claim not answered yet holds its place: a new request
-            // cannot slip into a slot a kept session holds.
-            if usize::from(agent.active_sessions) + agent.pending_claims.len()
-                >= usize::from(agent.max_sessions)
-            {
-                return Err(Error::AgentBusy);
+            // cannot slip into a slot a kept session holds. Silent monitors
+            // bypass regular user capacity so monitoring works even when
+            // max_sessions == 1.
+            if !silent_monitor {
+                if usize::from(agent.active_sessions) + agent.pending_claims.len()
+                    >= usize::from(agent.max_sessions)
+                {
+                    return Err(Error::AgentBusy);
+                }
+                agent.active_sessions += 1;
             }
-            agent.active_sessions += 1;
             (
                 agent.tenant_id,
                 agent.input_arbiter,
@@ -2903,6 +2994,8 @@ impl Hub {
             controller_tx.clone(),
             controller_scope,
         );
+        live.controller_name = controller_name.clone();
+        live.silent_monitor = silent_monitor;
         if let Some(scope) = device_share_scope {
             live.bind_device_share(scope)?;
             live.set_shared_lease_epoch(uuid::Uuid::new_v4().to_string())?;
@@ -2961,7 +3054,11 @@ impl Hub {
         // FR-130 — its viewer may hold it through a socket's loss for the
         // window the device's connection holds (a positive one); never an
         // outsider's.
-        let resume_secs = agent_window.filter(|&w| w > 0 && !live_external);
+        let resume_secs = if silent_monitor {
+            None
+        } else {
+            agent_window.filter(|&w| w > 0 && !live_external)
+        };
         live.resume_secs = resume_secs;
         // Multi-region relay: freeze the session's region NOW — a load-aware
         // pick over the agent's home + its RTT-ordered prefs — so Ready/
@@ -3084,6 +3181,7 @@ impl Hub {
             external,
             initial_resolution,
             continues: continues.filter(|_| agent_rc_continue && !live_external),
+            silent_monitor,
         };
         // Keep the Request while consent is pending so `register_agent` can
         // re-push it if the agent's control WS flaps before `rc:consent`
@@ -3647,7 +3745,7 @@ impl Hub {
             self.release_slot(lease);
         }
 
-        let (agent_id, tenant_id, controller_tx, attach_seq) = {
+        let (agent_id, tenant_id, controller_tx, attach_seq, silent_monitor) = {
             let mut s = arc.lock();
             // Best-effort transition; ignore if already closed.
             let _ = s.transition(SessionPhase::Closed);
@@ -3656,11 +3754,14 @@ impl Hub {
                 s.tenant_id,
                 s.controller_tx.clone(),
                 s.attach_seq,
+                s.silent_monitor,
             )
         };
 
-        // Decrement agent session counter.
-        if let Some(mut a) = self.inner.agents.get_mut(&agent_id) {
+        // Decrement agent session counter (only for non-monitor sessions).
+        if !silent_monitor
+            && let Some(mut a) = self.inner.agents.get_mut(&agent_id)
+        {
             a.active_sessions = a.active_sessions.saturating_sub(1);
         }
 
@@ -3677,24 +3778,57 @@ impl Hub {
             let _ = agent_tx.try_send(msg);
         }
 
+        // 0.5.0 — When the last regular session on an agent ends, cleanly tear
+        // down any active silent admin monitors so monitoring never lingers on
+        // an idle device after the watched session closes.
+        if !silent_monitor {
+            let mut has_regular = false;
+            let mut orphan_monitors = Vec::new();
+            for e in self.inner.sessions.iter() {
+                let s = e.value().lock();
+                if s.agent_id != agent_id || s.phase == SessionPhase::Closed {
+                    continue;
+                }
+                if s.silent_monitor {
+                    orphan_monitors.push(*e.key());
+                } else {
+                    has_regular = true;
+                }
+            }
+            if !has_regular {
+                for mid in orphan_monitors {
+                    let _ = self.end_session(
+                        mid,
+                        EndReason::ControllerHangup,
+                        Some("target_session_ended"),
+                        EndWrite::Asked,
+                    );
+                }
+            }
+        }
+
         let attach_seq = match write {
             EndWrite::Asked => None,
             EndWrite::Own => Some(attach_seq),
             // FR-130 — the row already holds the end this one follows.
             EndWrite::Nothing => return,
         };
-        self.audit(
-            session_id,
-            agent_id,
-            tenant_id,
-            AuditKind::SessionEnded {
-                reason,
-                limit: limit.map(str::to_string),
-                attach_seq,
-                ended_at: None,
-                end_source: None,
-            },
-        );
+        let end_kind = AuditKind::SessionEnded {
+            reason,
+            limit: limit.map(str::to_string),
+            attach_seq,
+            ended_at: None,
+            end_source: None,
+        };
+        if silent_monitor {
+            self.inner
+                .audit
+                .record_trail(session_id, agent_id, tenant_id, end_kind);
+        } else {
+            self.inner
+                .audit
+                .record(session_id, agent_id, tenant_id, end_kind);
+        }
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
@@ -3973,8 +4107,9 @@ impl Hub {
         self.push_ssh_revoke_org_scoped(tenant_id, "org", None, None, Some(reason.to_string()))
     }
 
-    /// FR-141 — push a scoped `rc:ssh.revoke` (`"org"`, `"principal"`, etc.) to
-    /// every `ssh-resume`-capable agent in `tenant_id` connected to THIS pod.
+    /// Push a scoped `rc:ssh.revoke` (`"org"`, `"principal"`, `"session"`, etc.)
+    /// to every online agent in `tenant_id` connected to THIS pod, and prune
+    /// matching entries from the live SSH monitoring table.
     pub fn push_ssh_revoke_org_scoped(
         &self,
         tenant_id: ObjectId,
@@ -3983,11 +4118,12 @@ impl Hub {
         sid: Option<String>,
         reason: Option<String>,
     ) -> usize {
+        self.prune_live_ssh_by_revoke(tenant_id, None, scope, principal.as_deref(), sid.as_deref());
         let targets: Vec<ObjectId> = self
             .inner
             .agents
             .iter()
-            .filter(|a| a.tenant_id == tenant_id && a.supports_ssh_resume)
+            .filter(|a| a.tenant_id == tenant_id)
             .map(|a| a.agent_id)
             .collect();
         targets
@@ -4007,9 +4143,9 @@ impl Hub {
             .count()
     }
 
-    /// FR-141 — push `rc:ssh.revoke` to one `ssh-resume`-capable agent in
-    /// `tenant_id` connected to THIS pod (e.g. device SSH policy turned off or
-    /// principal/session revoked).
+    /// Push `rc:ssh.revoke` to one online agent in `tenant_id` connected to
+    /// THIS pod (e.g. device SSH policy turned off, principal removed, or
+    /// administrator force-disconnecting a live SSH session).
     pub fn push_ssh_revoke_agent(
         &self,
         tenant_id: ObjectId,
@@ -4019,11 +4155,18 @@ impl Hub {
         sid: Option<String>,
         reason: Option<String>,
     ) -> bool {
+        self.prune_live_ssh_by_revoke(
+            tenant_id,
+            Some(agent_id),
+            scope,
+            principal.as_deref(),
+            sid.as_deref(),
+        );
         let eligible = self
             .inner
             .agents
             .get(&agent_id)
-            .is_some_and(|a| a.tenant_id == tenant_id && a.supports_ssh_resume);
+            .is_some_and(|a| a.tenant_id == tenant_id);
         if !eligible {
             return false;
         }
@@ -4037,6 +4180,35 @@ impl Hub {
             },
         )
         .is_ok()
+    }
+
+    fn prune_live_ssh_by_revoke(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: Option<ObjectId>,
+        scope: &str,
+        principal: Option<&str>,
+        sid: Option<&str>,
+    ) {
+        self.inner.live_ssh.retain(|k, s| {
+            if s.tenant_id != tenant_id {
+                return true;
+            }
+            if let Some(aid) = agent_id
+                && s.agent_id != aid
+            {
+                return true;
+            }
+            match scope {
+                "session" => !sid.is_some_and(|target| {
+                    k == target || s.grant_id.as_deref() == Some(target)
+                }),
+                "principal" => !principal.is_some_and(|p| {
+                    s.user_id.is_some_and(|u| u.to_hex() == p) || s.caller == p
+                }),
+                _ => false,
+            }
+        });
     }
 
     /// FR-92 — push an org's keep-busy policy to every agent of `tenant_id`
@@ -4840,10 +5012,206 @@ impl Hub {
     }
 
     fn audit(&self, sid: ObjectId, aid: ObjectId, oid: ObjectId, k: AuditKind) {
-        self.inner.audit.record(sid, aid, oid, k);
+        let silent = self
+            .inner
+            .sessions
+            .get(&sid)
+            .is_some_and(|s| s.value().lock().silent_monitor);
+        if silent {
+            self.inner.audit.record_trail(sid, aid, oid, k);
+        } else {
+            self.inner.audit.record(sid, aid, oid, k);
+        }
     }
 
-    // ─── introspection (for /api/sessions and admin) ─────────────────
+    // ─── introspection (for /api/sessions and admin monitoring) ──────
+
+    /// 0.5.0 — Mirror admin takeover status onto a live silent monitor session
+    /// (verified against the caller's `user_id` so only the watching admin can
+    /// flip their own session's takeover indicator).
+    pub fn set_silent_monitor_takeover(
+        &self,
+        session_id: ObjectId,
+        controller_user_id: ObjectId,
+        active: bool,
+    ) -> Result<ObjectId> {
+        let arc = self
+            .inner
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_hex()))?;
+        let mut s = arc.value().lock();
+        if !s.silent_monitor || s.controller_user_id != controller_user_id {
+            return Err(Error::PermissionDenied("not your silent monitor session"));
+        }
+        s.admin_takeover_active = active;
+        Ok(s.agent_id)
+    }
+
+    /// 0.5.0 — Live non-monitor RC sessions for a tenant, enriched with whether
+    /// an administrator is currently watching or has taken over each target.
+    pub fn live_rc_sessions(&self, tenant_id: ObjectId) -> Vec<LiveRcSessionInfo> {
+        let mut monitor_state: std::collections::HashMap<ObjectId, (usize, bool)> =
+            std::collections::HashMap::new();
+        for e in self.inner.sessions.iter() {
+            let s = e.value().lock();
+            if s.tenant_id == tenant_id && s.silent_monitor && s.phase != SessionPhase::Closed {
+                let entry = monitor_state.entry(s.agent_id).or_insert((0, false));
+                entry.0 += 1;
+                if s.admin_takeover_active {
+                    entry.1 = true;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for e in self.inner.sessions.iter() {
+            let s = e.value().lock();
+            if s.tenant_id != tenant_id || s.silent_monitor || s.phase == SessionPhase::Closed {
+                continue;
+            }
+            let (watcher_count, admin_taken_over) =
+                monitor_state.get(&s.agent_id).copied().unwrap_or((0, false));
+            out.push(LiveRcSessionInfo {
+                session_id: s.id,
+                agent_id: s.agent_id,
+                tenant_id: s.tenant_id,
+                controller_user_id: s.controller_user_id,
+                controller_name: s.controller_name.clone(),
+                phase: s.phase,
+                created_at: s.created_at,
+                started_at: s.started_at,
+                stats: s.stats.clone(),
+                external: s.external,
+                share_grant_id: s.device_share_scope().map(|sc| sc.grant_id),
+                permissions: s.permissions(),
+                admin_watching: watcher_count > 0,
+                admin_watcher_count: watcher_count,
+                admin_taken_over,
+            });
+        }
+        out
+    }
+
+    /// 0.5.0 — Record a newly issued SSH grant (or live shared SSH bridge) in
+    /// the in-memory live SSH monitoring table.
+    pub fn note_ssh_grant_issued(&self, info: LiveSshSessionInfo) {
+        self.prune_stale_live_ssh();
+        self.inner.live_ssh.insert(info.key.clone(), info);
+    }
+
+    /// 0.5.0 — Update live SSH session state from device-reported
+    /// `ClientMsg::SshActivity` envelopes (`SessionOpen`, `SessionClose`, etc.).
+    pub fn note_ssh_activity(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        grant_id: Option<&str>,
+        caller: &str,
+        kind: meshharbor_remote_control::models::SshActivityKind,
+    ) {
+        use meshharbor_remote_control::models::SshActivityKind;
+        let key = grant_id
+            .filter(|g| !g.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("keylist:{agent_id}:{caller}"));
+        if matches!(kind, SshActivityKind::SessionClose) {
+            self.inner.live_ssh.remove(&key);
+            return;
+        }
+        let now = bson::DateTime::now();
+        if let Some(mut entry) = self.inner.live_ssh.get_mut(&key) {
+            if entry.tenant_id == tenant_id && entry.agent_id == agent_id {
+                if matches!(kind, SshActivityKind::SessionOpen) && entry.phase != "active" {
+                    entry.started_at = now;
+                }
+                entry.phase = "active";
+                entry.last_activity_at = now;
+                if !matches!(kind, SshActivityKind::SessionOpen) {
+                    entry.activity_count = entry.activity_count.saturating_add(1);
+                }
+            }
+            return;
+        }
+        // Key-list session (no server grant) or session reopened after pod roll.
+        let is_key_list = grant_id.is_none();
+        self.inner.live_ssh.insert(
+            key.clone(),
+            LiveSshSessionInfo {
+                key,
+                tenant_id,
+                agent_id,
+                user_id: None,
+                origin_agent_id: None,
+                grant_id: grant_id.map(str::to_string),
+                shared_session_id: None,
+                share_grant_id: None,
+                source: if is_key_list {
+                    "key_list".to_string()
+                } else {
+                    "cli".to_string()
+                },
+                caller: caller.to_string(),
+                account_mode: None,
+                ran_as: None,
+                resume_allowed: false,
+                phase: "active",
+                started_at: now,
+                last_activity_at: now,
+                expires_at_ms: None,
+                session_secs: None,
+                activity_count: if matches!(kind, SshActivityKind::SessionOpen) {
+                    0
+                } else {
+                    1
+                },
+            },
+        );
+    }
+
+    pub fn remove_live_ssh(&self, key: &str) -> Option<LiveSshSessionInfo> {
+        self.inner.live_ssh.remove(key).map(|(_, v)| v)
+    }
+
+    pub fn get_live_ssh(&self, tenant_id: ObjectId, key: &str) -> Option<LiveSshSessionInfo> {
+        self.inner
+            .live_ssh
+            .get(key)
+            .filter(|e| e.tenant_id == tenant_id)
+            .map(|e| e.clone())
+    }
+
+    fn prune_stale_live_ssh(&self) {
+        let now_ms = bson::DateTime::now().timestamp_millis().max(0) as u64;
+        self.inner.live_ssh.retain(|_, s| {
+            let started_ms = s.started_at.timestamp_millis().max(0) as u64;
+            if s.phase == "granted" {
+                // An unredeemed grant expires cleanly at `expires_at_ms` (+5 s grace).
+                if let Some(exp) = s.expires_at_ms {
+                    return now_ms <= exp.saturating_add(5_000);
+                }
+                return now_ms.saturating_sub(started_ms) <= 120_000;
+            }
+            // Active session bound: drop if past `started + session_secs + 60s`
+            // (or 24 h fallback when unbounded, e.g. key-list).
+            let max_ms = s
+                .session_secs
+                .map(|secs| secs.saturating_mul(1_000).saturating_add(60_000))
+                .unwrap_or(24 * 3600 * 1_000);
+            now_ms.saturating_sub(started_ms) <= max_ms
+        });
+    }
+
+    /// 0.5.0 — Live SSH sessions in `tenant_id` (classic, persistent PTY, and
+    /// shared SSH), pruning expired unredeemed grants first.
+    pub fn live_ssh_sessions(&self, tenant_id: ObjectId) -> Vec<LiveSshSessionInfo> {
+        self.prune_stale_live_ssh();
+        self.inner
+            .live_ssh
+            .iter()
+            .filter(|e| e.tenant_id == tenant_id)
+            .map(|e| e.clone())
+            .collect()
+    }
 
     pub fn online_agents(&self) -> Vec<ObjectId> {
         self.inner.agents.iter().map(|e| *e.key()).collect()
@@ -4956,6 +5324,57 @@ pub struct DispatchCtx {
     /// continues after a graceful target daemon restart (<= 120 s ago).
     /// Never trusted directly from `ClientMsg::SessionRequest::continues_from`.
     pub continues: Option<ObjectId>,
+    /// 0.5.0 — server-validated admin silent monitoring session (watch +
+    /// optional takeover of an active RC session). Never trusted directly from
+    /// `ClientMsg::SessionRequest::silent_monitor`.
+    pub silent_monitor: bool,
+}
+
+/// Snapshot of one active non-monitor RC session for the unified live
+/// monitoring console (`GET /api/tenant/{id}/monitoring/live`).
+#[derive(Debug, Clone)]
+pub struct LiveRcSessionInfo {
+    pub session_id: ObjectId,
+    pub agent_id: ObjectId,
+    pub tenant_id: ObjectId,
+    pub controller_user_id: ObjectId,
+    pub controller_name: String,
+    pub phase: SessionPhase,
+    pub created_at: bson::DateTime,
+    pub started_at: Option<bson::DateTime>,
+    pub stats: meshharbor_remote_control::models::SessionStats,
+    pub external: bool,
+    pub share_grant_id: Option<ObjectId>,
+    pub permissions: Permissions,
+    pub admin_watching: bool,
+    pub admin_watcher_count: usize,
+    pub admin_taken_over: bool,
+}
+
+/// 0.5.0 — Snapshot of one active SSH session (classic overlay, persistent
+/// PTY, key-list, or device-shared SSH) tracked by the Hub for unified live
+/// monitoring and active admin disconnect.
+#[derive(Debug, Clone)]
+pub struct LiveSshSessionInfo {
+    pub key: String,
+    pub tenant_id: ObjectId,
+    pub agent_id: ObjectId,
+    pub user_id: Option<ObjectId>,
+    pub origin_agent_id: Option<ObjectId>,
+    pub grant_id: Option<String>,
+    pub shared_session_id: Option<ObjectId>,
+    pub share_grant_id: Option<ObjectId>,
+    pub source: String,
+    pub caller: String,
+    pub account_mode: Option<String>,
+    pub ran_as: Option<String>,
+    pub resume_allowed: bool,
+    pub phase: &'static str,
+    pub started_at: bson::DateTime,
+    pub last_activity_at: bson::DateTime,
+    pub expires_at_ms: Option<u64>,
+    pub session_secs: Option<u64>,
+    pub activity_count: u64,
 }
 
 impl Hub {
@@ -5091,6 +5510,9 @@ impl Hub {
                     // FR-141 — validated against MongoDB by the remote module
                     // and passed via `ctx.continues`; raw wire field ignored.
                     continues_from: _,
+                    // 0.5.0 — validated by the remote authz gate and passed via
+                    // `ctx.silent_monitor`; raw wire field ignored.
+                    silent_monitor: _,
                 },
             ) => {
                 // Forward browser codec caps verbatim to the agent in
@@ -5146,6 +5568,7 @@ impl Hub {
                     initial_resolution,
                     two_factor_code,
                     ctx.continues,
+                    ctx.silent_monitor,
                 )?;
                 *created = Some(session_id);
                 Ok(())
@@ -6320,6 +6743,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         hub.dispatch(
             &device,
@@ -6474,6 +6898,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         let offer = || ClientMsg::SdpOffer {
             session_id: sid,
@@ -6590,6 +7015,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         assert!(matches!(
             ctl_rx.recv().await,
@@ -6653,6 +7079,7 @@ mod tests {
             initial_resolution: None,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         }
     }
 
@@ -6766,6 +7193,7 @@ mod tests {
                 slot: None,
                 share_files_account: None,
                 continues: None,
+                silent_monitor: false,
             }
         }
         fn ctx(&self) -> DispatchCtx {
@@ -7244,6 +7672,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         let owner_ctx = context(Role::Controller, Some(owner), None, Some(ctl_tx.clone()));
         hub.dispatch_local_pdp_session_request(&owner_ctx, file_child_session_request(agent), None)
@@ -7542,6 +7971,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         f.hub
             .dispatch(
@@ -7927,6 +8357,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         let stranger = ctx_for(Role::Controller, Some(ObjectId::new()), None);
         let owner_ctx = ctx_for(Role::Controller, Some(owner), None);
@@ -8103,6 +8534,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         let device = ctx_for(Role::Agent, None, Some(agent_id));
         let viewer = ctx_for(Role::Controller, Some(owner), None);
@@ -11007,5 +11439,245 @@ mod ice_zone_gate_tests {
         hub.unregister_agent(gw_1, Some(&gw_tx));
         assert!(hub.management_entry_device_counts(tenant_a).is_empty());
         assert_eq!(hub.agent_management_entry_port(gw_1), None);
+    }
+
+    #[tokio::test]
+    async fn silent_admin_monitor_gate_takeover_and_auto_teardown() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let tenant = ObjectId::new();
+        let owner = ObjectId::new();
+        let controller = ObjectId::new();
+        let admin = ObjectId::new();
+        let other_admin = ObjectId::new();
+        let agent = ObjectId::new();
+        let (_agent_tx, _cancel, mut agent_rx) =
+            hub.register_agent(agent, tenant, owner, OsKind::Linux, 1, true, false);
+        let (ctrl_tx, _ctrl_rx) = mpsc::channel(32);
+        let (admin_tx, mut admin_rx) = mpsc::channel(32);
+        let full_perms =
+            Permissions::VIEW | Permissions::INPUT | Permissions::CLIPBOARD | Permissions::FILES;
+
+        // Gate: silent monitor cannot attach when no regular session is active.
+        let denied = hub.create_session_full_scoped(
+            agent,
+            admin,
+            "Admin".into(),
+            admin_tx.clone(),
+            full_perms,
+            Vec::new(),
+            None,
+            None,
+            None,
+            true,
+            ConsentMode::Prompt,
+            None,
+            None,
+            false,
+            None,
+            None,
+            false,
+            OrgPolicy::Read(SessionPolicy::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            SessionCreationOrigin::Unknown,
+            None,
+            None,
+            None,
+            true,
+        );
+        assert!(denied.is_err(), "silent monitor requires an active regular session");
+
+        // Open a regular RC session (fills agent.max_sessions == 1).
+        let reg_id = hub
+            .create_session_full_scoped(
+                agent,
+                controller,
+                "Alice".into(),
+                ctrl_tx.clone(),
+                Permissions::VIEW | Permissions::INPUT,
+                Vec::new(),
+                None,
+                None,
+                None,
+                false,
+                ConsentMode::Auto,
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                OrgPolicy::Read(SessionPolicy::default()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                SessionCreationOrigin::Unknown,
+                None,
+                None,
+                None,
+                false,
+            )
+            .expect("regular session");
+        let _ = agent_rx.try_recv();
+
+        // Silent monitor attaches even though max_sessions == 1 (does not consume slot).
+        let mon_id = hub
+            .create_session_full_scoped(
+                agent,
+                admin,
+                "Admin".into(),
+                admin_tx.clone(),
+                full_perms,
+                Vec::new(),
+                None,
+                None,
+                None,
+                true,
+                ConsentMode::Prompt,
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                OrgPolicy::Read(SessionPolicy::default()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                SessionCreationOrigin::Unknown,
+                None,
+                None,
+                None,
+                true,
+            )
+            .expect("silent monitor attaches");
+        // Verify Request sent to agent carried silent_monitor: true and clamped perms.
+        let req = agent_rx.try_recv().expect("agent request");
+        match req {
+            ServerMsg::Request {
+                silent_monitor,
+                permissions,
+                ..
+            } => {
+                assert!(silent_monitor);
+                assert_eq!(permissions, Permissions::VIEW | Permissions::INPUT);
+            }
+            other => panic!("unexpected agent msg: {other:?}"),
+        }
+
+        // live_rc_sessions lists ONLY the regular session, annotated with admin_watching.
+        let live = hub.live_rc_sessions(tenant);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].session_id, reg_id);
+        assert!(live[0].admin_watching);
+        assert_eq!(live[0].admin_watcher_count, 1);
+        assert!(!live[0].admin_taken_over);
+
+        // Takeover mirror rejects a different user, accepts the watching admin.
+        assert!(hub.set_silent_monitor_takeover(mon_id, other_admin, true).is_err());
+        assert_eq!(
+            hub.set_silent_monitor_takeover(mon_id, admin, true).unwrap(),
+            agent
+        );
+        let live = hub.live_rc_sessions(tenant);
+        assert!(live[0].admin_taken_over);
+
+        // Terminating the regular session auto-closes the silent monitor too.
+        hub.terminate(reg_id, EndReason::ControllerHangup)
+            .expect("end regular");
+        assert!(hub.live_rc_sessions(tenant).is_empty());
+        assert!(hub.session_snapshot(mon_id).is_none());
+        let mut saw_target_ended = false;
+        while let Ok(msg) = admin_rx.try_recv() {
+            if matches!(
+                msg,
+                ServerMsg::Terminate { session_id, limit: Some(ref l), .. }
+                    if session_id == mon_id && l == "target_session_ended"
+            ) {
+                saw_target_ended = true;
+            }
+        }
+        assert!(saw_target_ended, "silent monitor must receive target_session_ended");
+    }
+
+    #[tokio::test]
+    async fn live_ssh_registry_tracks_lifecycle_and_universal_revoke() {
+        let (audit, _ev) = AuditSink::channel_for_tests();
+        let hub = Hub::new(audit, None);
+        let tenant = ObjectId::new();
+        let owner = ObjectId::new();
+        let agent = ObjectId::new();
+        // supports_ssh_resume defaults to false; push_ssh_revoke_agent MUST still deliver!
+        let (_tx, _cancel, mut rx) =
+            hub.register_agent(agent, tenant, owner, OsKind::Linux, 1, false, false);
+
+        let now = bson::DateTime::now();
+        let exp = (now.timestamp_millis().max(0) as u64) + 60_000;
+        hub.note_ssh_grant_issued(LiveSshSessionInfo {
+            key: "grant-abc".into(),
+            tenant_id: tenant,
+            agent_id: agent,
+            user_id: Some(owner),
+            origin_agent_id: None,
+            grant_id: Some("grant-abc".into()),
+            shared_session_id: None,
+            share_grant_id: None,
+            source: "cli".into(),
+            caller: "Alice".into(),
+            account_mode: Some("console_user".into()),
+            ran_as: Some("worker".into()),
+            resume_allowed: false,
+            phase: "granted",
+            started_at: now,
+            last_activity_at: now,
+            expires_at_ms: Some(exp),
+            session_secs: Some(3600),
+            activity_count: 0,
+        });
+        assert_eq!(hub.live_ssh_sessions(tenant).len(), 1);
+        assert_eq!(hub.live_ssh_sessions(tenant)[0].phase, "granted");
+
+        hub.note_ssh_activity(
+            tenant,
+            agent,
+            Some("grant-abc"),
+            "ssh:Alice@100.64.0.1",
+            meshharbor_remote_control::models::SshActivityKind::SessionOpen,
+        );
+        assert_eq!(hub.live_ssh_sessions(tenant)[0].phase, "active");
+
+        assert!(hub.push_ssh_revoke_agent(
+            tenant,
+            agent,
+            "session",
+            None,
+            Some("grant-abc".into()),
+            Some("admin_disconnect".into()),
+        ));
+        assert!(hub.live_ssh_sessions(tenant).is_empty());
+        match rx.try_recv().expect("agent receives SshRevoke") {
+            ServerMsg::SshRevoke { scope, sid, .. } => {
+                assert_eq!(scope, "session");
+                assert_eq!(sid.as_deref(), Some("grant-abc"));
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
     }
 }

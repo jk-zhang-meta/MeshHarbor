@@ -350,6 +350,35 @@ pub async fn dispatch(
                 confirmed_after_ms = ?g.confirmed_after_ms, ran_as = g.ran_as,
                 "ssh: grant issued"
             );
+            let now = bson::DateTime::now();
+            state
+                .fleet
+                .rc_hub
+                .note_ssh_grant_issued(meshharbor_mod_fleet::hub::LiveSshSessionInfo {
+                    key: g.grant_id.clone(),
+                    tenant_id,
+                    agent_id,
+                    user_id: Some(caller.user_id),
+                    origin_agent_id: caller.origin_agent_id,
+                    grant_id: Some(g.grant_id.clone()),
+                    shared_session_id: None,
+                    share_grant_id: None,
+                    source: if caller.origin_agent_id.is_some() {
+                        "cli".to_string()
+                    } else {
+                        "api".to_string()
+                    },
+                    caller: caller.display.clone(),
+                    account_mode: Some(account_mode_wire(g.account_mode).to_string()),
+                    ran_as: Some(g.ran_as.to_string()),
+                    resume_allowed: g.resume_allowed,
+                    phase: "granted",
+                    started_at: now,
+                    last_activity_at: now,
+                    expires_at_ms: Some(g.expires_at_ms),
+                    session_secs: Some(g.session_secs),
+                    activity_count: 0,
+                });
             SshResponseBody {
                 address: Some(g.address),
                 // The worker's port is agent-side config, and the server does

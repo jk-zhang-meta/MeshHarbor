@@ -878,6 +878,9 @@ struct RuntimeSlot {
     /// `ActivitySink` onto the fresh control-WS sender and flushes offline
     /// queued events.
     activity_sink: Option<crate::ssh::ActivitySink>,
+    /// 0.5.0 — always-on lightweight SSH lifecycle sink, repointed alongside
+    /// `activity_sink` on control-WS reconnect.
+    lifecycle_sink: Option<crate::ssh::ActivitySink>,
 }
 
 /// FR-139 — drop a tenant's persistent runtime slot (e.g. on `Goodbye` or
@@ -1066,15 +1069,19 @@ pub async fn maybe_start(
                     s.evt_tx.clone(),
                     s.fingerprint.lan_ips == fingerprint.lan_ips,
                     s.activity_sink.clone(),
+                    s.lifecycle_sink.clone(),
                 )
             })
     };
-    if let Some((evt_tx, lan_ips_same, activity_sink)) = existing {
+    if let Some((evt_tx, lan_ips_same, activity_sink, lifecycle_sink)) = existing {
         match evt_tx.send_reliable(OverlayEvent::Reattach {
             outbound: outbound.clone(),
         }) {
             Ok(()) => {
                 if let Some(sink) = activity_sink {
+                    sink.repoint(outbound.clone());
+                }
+                if let Some(sink) = lifecycle_sink {
                     sink.repoint(outbound.clone());
                 }
                 // FR-140 — if this runtime was cold-seeded offline before DNS
@@ -1169,6 +1176,7 @@ pub async fn maybe_start(
     // same on a server, a multi-org host and a locked-down corp laptop.
     // No-op (and byte-for-byte the old path) unless `ssh_enabled` is on.
     let activity_sink_for_slot = services.activity.clone();
+    let lifecycle_sink_for_slot = services.lifecycle.clone();
     let control_ws_attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let p2p_ctx = crate::p2pctl::enabled(cfg).then(|| {
         crate::p2pctl::ServerCtx::new(cfg, keypair.clone(), services.clone(), remote_cfg.clone())
@@ -1313,6 +1321,7 @@ pub async fn maybe_start(
                 fingerprint,
                 evt_tx: evt_tx.clone(),
                 activity_sink: activity_sink_for_slot,
+                lifecycle_sink: lifecycle_sink_for_slot,
             },
         );
     Some(evt_tx)

@@ -101,6 +101,17 @@
            stays hidden and the experience falls back to the
            overlay-only state. -->
       <v-chip
+        v-if="rc.phase.value === 'connected' && rc.adminTakenOver.value"
+        size="small"
+        color="warning"
+        variant="flat"
+        prepend-icon="mdi-shield-account"
+        class="mr-2 rc-tb-status"
+        data-testid="rc-admin-takeover-chip"
+      >
+        {{ t('remote.viewer.takeover.chip') }}
+      </v-chip>
+      <v-chip
         v-if="rc.phase.value === 'connected' && rc.hostLocked.value"
         size="small"
         color="warning"
@@ -344,6 +355,7 @@
         variant="text"
         size="small"
         class="mr-1"
+        :disabled="rc.adminTakenOver.value"
         :aria-label="t('remote.viewer.tb.sendCad')"
         :title="sasTitle"
         data-testid="rc-ctrl-alt-del"
@@ -360,6 +372,7 @@
         variant="text"
         size="small"
         class="mr-1"
+        :disabled="rc.adminTakenOver.value"
         :color="rc.relativeMouse.value ? 'primary' : undefined"
         :aria-label="t('remote.viewer.tb.relativeMouse')"
         :title="t('remote.viewer.tb.relativeMouseTitle')"
@@ -488,7 +501,7 @@
           size="small"
           class="mr-1"
           :loading="clipboardBusy"
-          :disabled="!!clipboardRefusal"
+          :disabled="!!clipboardRefusal || rc.adminTakenOver.value"
           :aria-label="t('remote.viewer.clip.sendAria')"
           :title="clipboardRefusal ?? t('remote.viewer.clip.send')"
           data-testid="rc-clipboard-send"
@@ -553,7 +566,7 @@
       <KeepBusyMenu
         v-if="rc.phase.value === 'connected' && (agentSupportsKeepBusy || rc.keepBusy.value)"
         :state="rc.keepBusy.value"
-        :can-control="rc.inputGranted.value"
+        :can-control="rc.inputGranted.value && !rc.adminTakenOver.value"
         :agent-id="agentId"
         :default-pattern="orgKeepBusyDefault"
         @set="rc.setKeepBusy"
@@ -1038,6 +1051,21 @@
            (and rebuilt the agent's encoder) in Fit mode. Here the frame keeps
            its size; only the alerts themselves take a click. -->
       <div class="rc-stage-alerts">
+      <!-- 0.5.0 — Admin takeover notice: informs the controller immediately
+           when an administrator takes over control and switches them to
+           read-only viewing until control is released. -->
+      <v-alert
+        v-if="rc.phase.value === 'connected' && rc.adminTakenOver.value"
+        type="warning"
+        variant="flat"
+        density="compact"
+        icon="mdi-shield-account"
+        class="ma-3"
+        data-testid="rc-admin-takeover-banner"
+      >
+        <strong>{{ t('remote.viewer.takeover.bannerTitle') }}</strong>
+        {{ t('remote.viewer.takeover.bannerBody') }}
+      </v-alert>
       <v-alert
         v-if="rc.error.value"
         type="error"
@@ -5023,7 +5051,19 @@ const remoteCursorCss = computed(() => remoteCursorCssFor(rc.cursor.value))
 // The host-positioned overlay stays for watching without control, relative
 // mode, and the pointer outside the picture.
 const localPointer = computed(
-  () => rc.inputGranted.value && !rc.relativeMouse.value && cursorVisible.value,
+  () =>
+    rc.inputGranted.value &&
+    !rc.adminTakenOver.value &&
+    !rc.relativeMouse.value &&
+    cursorVisible.value,
+)
+watch(
+  () => rc.adminTakenOver.value,
+  (takenOver, prev) => {
+    if (prev === true && !takenOver && rc.phase.value === 'connected') {
+      showSuccess(t('remote.viewer.takeover.releasedToast'))
+    }
+  },
 )
 // A shape id is the host's hash of the image, so a data URL made once serves
 // every later sighting. Browsers ignore cursor images over 128 px.

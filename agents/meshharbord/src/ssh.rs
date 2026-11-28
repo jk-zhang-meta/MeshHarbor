@@ -254,6 +254,12 @@ pub struct SessionServices {
     /// builds a new sink; reports that raced the teardown are dropped, which
     /// is the right trade for a log line that must never block a session.
     pub activity: Option<ActivitySink>,
+    /// 0.5.0 — always-on lightweight session lifecycle envelope sink.
+    /// When `activity` is `None` (`ssh_activity_log = false`), ONLY
+    /// `SessionOpen` and `SessionClose` with `detail: None` (zero command or
+    /// PTY content) are emitted here so live SSH monitoring and history
+    /// duration tracking stay accurate without turning on command logging.
+    pub lifecycle: Option<ActivitySink>,
 }
 
 /// Who asks the person at the device before a session runs anything.
@@ -313,12 +319,20 @@ impl ActivitySink {
         cfg: &crate::config::AgentConfig,
         tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
     ) -> Option<Self> {
-        cfg.ssh_activity_log.then(|| Self {
+        cfg.ssh_activity_log.then(|| Self::always(tx))
+    }
+
+    /// 0.5.0 — unconditional sink for lightweight `SessionOpen`/`SessionClose`
+    /// envelopes (never commands or PTY output).
+    pub fn always(
+        tx: tokio::sync::mpsc::Sender<meshharbor_remote_control::signaling::ClientMsg>,
+    ) -> Self {
+        Self {
             inner: std::sync::Arc::new(std::sync::Mutex::new(ActivitySinkInner {
                 tx,
                 queued: std::collections::VecDeque::new(),
             })),
-        })
+        }
     }
 
     /// FR-139 — swap the underlying control-WS sender on reconnect/reattach and
@@ -1326,6 +1340,12 @@ pub(crate) mod sshd {
         /// Counts in `CLASSIC_CONNECTIONS` until dropped or upgraded to a
         /// restart-survivable `meshharbor-pty@v1` session.
         classic_counted: Arc<std::sync::atomic::AtomicBool>,
+        /// 0.5.0 — entry id in `LIVE_CLASSIC_SSH` once authenticated, removed on Drop.
+        classic_live_id: Option<u64>,
+        /// 0.5.0 — russh session handle stashed on first channel open so
+        /// `ServerMsg::SshRevoke` can actively disconnect live classic sessions.
+        disconnect_handle: Arc<std::sync::Mutex<Option<russh::server::Handle>>>,
+        revoke_watcher_armed: bool,
     }
 
     /// FR-90 P3-8-2a — a one-command session's one channel and one `exec`.
@@ -1379,6 +1399,9 @@ pub(crate) mod sshd {
                 resume_only: None,
                 resume_channel_opened: false,
                 classic_counted: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                classic_live_id: None,
+                disconnect_handle: Arc::new(std::sync::Mutex::new(None)),
+                revoke_watcher_armed: false,
             }
         }
 
@@ -1431,17 +1454,94 @@ pub(crate) mod sshd {
             exit_code: Option<i32>,
             allowed: bool,
         ) {
-            let (Some(sink), Some(policy)) = (&self.ctx.services.activity, &self.policy) else {
+            let Some(policy) = &self.policy else {
                 return;
             };
-            sink.report(
-                policy.grant_id.clone(),
-                &policy.caller,
+            if let Some(sink) = &self.ctx.services.activity {
+                sink.report(
+                    policy.grant_id.clone(),
+                    &policy.caller,
+                    kind,
+                    detail,
+                    exit_code,
+                    allowed,
+                );
+            } else if matches!(
                 kind,
-                detail,
-                exit_code,
-                allowed,
+                SshActivityKind::SessionOpen | SshActivityKind::SessionClose
+            ) && let Some(sink) = &self.ctx.services.lifecycle
+            {
+                // Lightweight lifecycle envelope only — never ship commands,
+                // paths, or PTY content when `ssh_activity_log` is off.
+                sink.report(
+                    policy.grant_id.clone(),
+                    &policy.caller,
+                    kind,
+                    None,
+                    None,
+                    allowed,
+                );
+            }
+        }
+
+        fn register_live_classic(&mut self) {
+            if self.classic_live_id.is_some() {
+                return;
+            }
+            let Some(policy) = &self.policy else {
+                return;
+            };
+            let id = super::register_live_classic_session(
+                self.ctx.org_id.clone(),
+                policy.grant_id.clone(),
+                policy.principal.clone(),
+                policy.caller.clone(),
+                self.cancellation(),
+                self.disconnect_handle.clone(),
             );
+            self.classic_live_id = Some(id);
+        }
+
+        fn attach_session_handle(&mut self, session: &mut Session) {
+            let handle = session.handle();
+            {
+                let mut guard = self
+                    .disconnect_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *guard = Some(handle.clone());
+            }
+            let cancel = self.cancellation();
+            if cancel.is_cancelled() {
+                self.tasks.spawn(async move {
+                    let _ = handle
+                        .disconnect(
+                            russh::Disconnect::ByApplication,
+                            "meshharbor-ssh: session disconnected by administrator".to_string(),
+                            String::new(),
+                        )
+                        .await;
+                });
+                return;
+            }
+            if self.revoke_watcher_armed {
+                return;
+            }
+            self.revoke_watcher_armed = true;
+            let slot = self.disconnect_handle.clone();
+            self.tasks.spawn(async move {
+                cancel.cancelled().await;
+                let h = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(h) = h {
+                    let _ = h
+                        .disconnect(
+                            russh::Disconnect::ByApplication,
+                            "meshharbor-ssh: session disconnected by administrator".to_string(),
+                            String::new(),
+                        )
+                        .await;
+                }
+            });
         }
 
         fn arm_session_deadline(&mut self, session: &mut Session) {
@@ -2041,6 +2141,16 @@ pub(crate) mod sshd {
     /// runtime either.
     impl Drop for Handler {
         fn drop(&mut self) {
+            if let Some(id) = self.classic_live_id.take() {
+                super::unregister_live_classic_session(id);
+            }
+            // Clear the disconnect handle BEFORE cancelling `shared_cancel` so
+            // normal client teardown does not trigger a spurious admin-revoke
+            // disconnect task.
+            *self
+                .disconnect_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             super::release_classic_connection_slot(&self.classic_counted);
             self.cancellation().cancel();
             self.report(SshActivityKind::SessionClose, None, None, true);
@@ -2111,6 +2221,7 @@ pub(crate) mod sshd {
                     policy = policy.within_service_ceiling(ceiling);
                 }
                 self.policy = Some(policy);
+                self.register_live_classic();
                 self.report(SshActivityKind::SessionOpen, None, None, true);
                 return Ok(Auth::Accept);
             }
@@ -2163,6 +2274,7 @@ pub(crate) mod sshd {
                 self.policy = Some(ResolvedSessionPolicy::from_key_list(
                     &self.ctx, user, self.peer,
                 ));
+                self.register_live_classic();
                 self.report(SshActivityKind::SessionOpen, None, None, true);
                 Ok(Auth::Accept)
             } else {
@@ -2211,6 +2323,7 @@ pub(crate) mod sshd {
                 self.used.channel = true;
             }
             reply.accept().await;
+            self.attach_session_handle(session);
             self.arm_session_deadline(session);
             Ok(())
         }
@@ -2239,7 +2352,7 @@ pub(crate) mod sshd {
             _originator_address: &str,
             _originator_port: u32,
             reply: russh::server::ChannelOpenHandle,
-            _session: &mut Session,
+            session: &mut Session,
         ) -> Result<(), Self::Error> {
             use russh::ChannelOpenFailure;
             if self.shared_stream || self.resume_only.is_some() {
@@ -2248,6 +2361,7 @@ pub(crate) mod sshd {
                     .await;
                 return Ok(());
             }
+            self.attach_session_handle(session);
             let host = host_to_connect.to_string();
             // A u32 on the wire; anything above 65535 is a malformed request,
             // not a port we should try.
@@ -3456,6 +3570,7 @@ pub async fn serve_for_service<S>(
         power_activity: None,
         asker: Asker::Worker(relay),
         activity: None,
+        lifecycle: None,
     };
     let Some(ctx) = sshd::Ctx::for_service(host_key_pem, ceiling, services) else {
         return;
@@ -3607,6 +3722,131 @@ pub(crate) fn release_classic_connection_slot(counted: &std::sync::atomic::Atomi
     if counted.swap(false, std::sync::atomic::Ordering::SeqCst) {
         CLASSIC_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// 0.5.0 — Live authenticated classic SSH sessions so `ServerMsg::SshRevoke`
+/// disconnects active russh sessions (not only FR-141 persistent PTYs).
+#[cfg(feature = "ssh-server")]
+struct LiveClassicSshEntry {
+    org_id: String,
+    grant_id: Option<String>,
+    principal: String,
+    caller: String,
+    cancel: tokio_util::sync::CancellationToken,
+    handle: std::sync::Arc<std::sync::Mutex<Option<russh::server::Handle>>>,
+}
+
+#[cfg(feature = "ssh-server")]
+static NEXT_CLASSIC_SSH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(feature = "ssh-server")]
+static LIVE_CLASSIC_SSH: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, LiveClassicSshEntry>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(feature = "ssh-server")]
+pub(crate) fn register_live_classic_session(
+    org_id: String,
+    grant_id: Option<String>,
+    principal: String,
+    caller: String,
+    cancel: tokio_util::sync::CancellationToken,
+    handle: std::sync::Arc<std::sync::Mutex<Option<russh::server::Handle>>>,
+) -> u64 {
+    let id = NEXT_CLASSIC_SSH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    LIVE_CLASSIC_SSH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            id,
+            LiveClassicSshEntry {
+                org_id,
+                grant_id,
+                principal,
+                caller,
+                cancel,
+                handle,
+            },
+        );
+    id
+}
+
+#[cfg(feature = "ssh-server")]
+pub(crate) fn unregister_live_classic_session(id: u64) {
+    LIVE_CLASSIC_SSH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
+}
+
+/// 0.5.0 — Actively disconnect matching classic `russh` sessions within `org_id`.
+///
+/// Scopes:
+/// - `"session"`: match `grant_id == sid_or_grant` (requires `Some`)
+/// - `"principal"`: match `principal == p || caller == p` (requires `Some`)
+/// - anything else (`"org"`, `"agent"`, etc.): disconnect all classic sessions in `org_id`.
+#[cfg(feature = "ssh-server")]
+pub fn revoke_classic_sessions(
+    org_id: &str,
+    scope: &str,
+    principal: Option<&str>,
+    sid_or_grant: Option<&str>,
+    reason: Option<&str>,
+) -> usize {
+    let matched: Vec<LiveClassicSshEntry> = {
+        let mut map = LIVE_CLASSIC_SSH.lock().unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<u64> = map
+            .iter()
+            .filter(|(_, e)| {
+                if e.org_id != org_id {
+                    return false;
+                }
+                match scope {
+                    "session" => {
+                        sid_or_grant.is_some_and(|target| e.grant_id.as_deref() == Some(target))
+                    }
+                    "principal" => principal
+                        .is_some_and(|p| e.principal == p || e.caller == p),
+                    _ => true,
+                }
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        keys.into_iter().filter_map(|k| map.remove(&k)).collect()
+    };
+    let count = matched.len();
+    let msg = format!(
+        "meshharbor-ssh: session disconnected ({})",
+        reason.unwrap_or("revoked")
+    );
+    for entry in matched {
+        let handle = entry
+            .handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        entry.cancel.cancel();
+        if let (Some(h), Ok(rt)) = (handle, tokio::runtime::Handle::try_current()) {
+            let m = msg.clone();
+            rt.spawn(async move {
+                let _ = h
+                    .disconnect(russh::Disconnect::ByApplication, m, String::new())
+                    .await;
+            });
+        }
+    }
+    count
+}
+
+#[cfg(not(feature = "ssh-server"))]
+pub fn revoke_classic_sessions(
+    _org_id: &str,
+    _scope: &str,
+    _principal: Option<&str>,
+    _sid_or_grant: Option<&str>,
+    _reason: Option<&str>,
+) -> usize {
+    0
 }
 
 /// Pending grants, oldest first.
@@ -4195,6 +4435,7 @@ mod tests {
             // Reporting off in tests unless a case opts in — the default a
             // device ships with.
             activity: None,
+            lifecycle: None,
         }
     }
 
@@ -6377,5 +6618,95 @@ mod tests {
             .channel_open_direct_tcpip("127.0.0.1", 22, "127.0.0.1", 5555)
             .await;
         assert!(opened.is_err(), "a forward through the SYSTEM service");
+    }
+
+    #[test]
+    fn revoke_classic_sessions_is_org_and_scope_isolated() {
+        let c1 = tokio_util::sync::CancellationToken::new();
+        let c2 = tokio_util::sync::CancellationToken::new();
+        let c3 = tokio_util::sync::CancellationToken::new();
+        let h = || std::sync::Arc::new(std::sync::Mutex::new(None));
+        let id1 = super::register_live_classic_session(
+            "org-a".into(),
+            Some("grant-1".into()),
+            "user-1".into(),
+            "ssh:alice@100.64.0.1".into(),
+            c1.clone(),
+            h(),
+        );
+        let id2 = super::register_live_classic_session(
+            "org-a".into(),
+            Some("grant-2".into()),
+            "user-2".into(),
+            "ssh:bob@100.64.0.2".into(),
+            c2.clone(),
+            h(),
+        );
+        let id3 = super::register_live_classic_session(
+            "org-b".into(),
+            Some("grant-1".into()),
+            "user-1".into(),
+            "ssh:alice@100.64.0.1".into(),
+            c3.clone(),
+            h(),
+        );
+
+        // Session-scoped revoke in org-a kills only grant-1 in org-a, not org-b or grant-2.
+        assert_eq!(
+            super::revoke_classic_sessions("org-a", "session", None, Some("grant-1"), Some("admin")),
+            1
+        );
+        assert!(c1.is_cancelled());
+        assert!(!c2.is_cancelled());
+        assert!(!c3.is_cancelled());
+
+        // Principal-scoped revoke in org-a kills user-2 only.
+        assert_eq!(
+            super::revoke_classic_sessions("org-a", "principal", Some("user-2"), None, None),
+            1
+        );
+        assert!(c2.is_cancelled());
+        assert!(!c3.is_cancelled());
+
+        // Org-scoped revoke in org-b cleans up the last entry.
+        assert_eq!(
+            super::revoke_classic_sessions("org-b", "org", None, None, None),
+            1
+        );
+        assert!(c3.is_cancelled());
+        super::unregister_live_classic_session(id1);
+        super::unregister_live_classic_session(id2);
+        super::unregister_live_classic_session(id3);
+    }
+
+    #[test]
+    fn activity_sink_always_emits_lifecycle_even_when_activity_log_off() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sink = super::ActivitySink::always(tx);
+        sink.report(
+            Some("g-123".into()),
+            "ssh:alice@100.64.0.1",
+            meshharbor_remote_control::models::SshActivityKind::SessionOpen,
+            None,
+            None,
+            true,
+        );
+        let msg = rx.try_recv().expect("lifecycle envelope queued");
+        match msg {
+            meshharbor_remote_control::signaling::ClientMsg::SshActivity {
+                grant_id,
+                kind,
+                detail,
+                ..
+            } => {
+                assert_eq!(grant_id.as_deref(), Some("g-123"));
+                assert_eq!(
+                    kind,
+                    meshharbor_remote_control::models::SshActivityKind::SessionOpen
+                );
+                assert!(detail.is_none());
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
     }
 }

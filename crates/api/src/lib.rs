@@ -323,6 +323,23 @@ pub fn build_router(state: AppState) -> Router {
         Router::new().route("/", get(routes::device::list_devices)),
     );
 
+    // 0.5.0 — Unified SSH & Remote Control monitoring console (live + history,
+    // dual-party account/invite/share attribution, active disconnect, and
+    // silent admin RC watch/takeover status).
+    #[cfg(feature = "fleet")]
+    let api = api.nest(
+        "/tenant/{tenant_id}/monitoring",
+        Router::new()
+            .route("/live", get(routes::monitoring::live))
+            .route("/history", get(routes::monitoring::history))
+            .route(
+                "/ssh-grant/{grant_id}/activities",
+                get(routes::monitoring::ssh_grant_activities),
+            )
+            .route("/disconnect", post(routes::monitoring::disconnect))
+            .route("/takeover", post(routes::monitoring::takeover)),
+    );
+
     // User-only personal directory: actual ownership + nonpending membership,
     // never a tenant-wide/platform-admin device inventory.
     #[cfg(feature = "fleet")]

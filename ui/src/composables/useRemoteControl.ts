@@ -1446,6 +1446,9 @@ export interface RcControlState {
    *  window. Absent from pre-FR-27 agents, which is indistinguishable from
    *  "nothing pending" — the correct degradation. */
   pendingRequest: { session: string; name: string } | null
+  /** 0.5.0 — true while an administrator has actively taken over control of
+   *  this host; regular controllers enter view-only mode until cleared. */
+  adminTakeover?: boolean
 }
 
 /** P6 — a ghost cursor: another session's pointer, rebroadcast by the
@@ -1807,6 +1810,7 @@ export function parseControlInbound(data: unknown): RcControlInbound {
         holder: typeof obj.holder === 'string' ? obj.holder : null,
         participants,
         pendingRequest,
+        ...(typeof obj.admin_takeover === 'boolean' ? { adminTakeover: obj.admin_takeover } : {}),
       },
     }
   }
@@ -5125,9 +5129,16 @@ export function useRemoteControl(
      * `'file-child-upload'` in `browser_caps`. Independent from download.
      */
     childUploadConnections?: number
+    /**
+     * 0.5.0 — Admin silent monitoring mode (watch + optional takeover of an
+     * active RC session). Suppresses host-mutating resolution/display-match
+     * requests and keeps input disabled until `setAdminTakeover(true)`.
+     */
+    silentMonitor?: boolean
   },
 ) {
   const ws = useWsStore()
+  const silentMonitor = opts?.silentMonitor === true
   const phase = ref<RcPhase>('idle')
 
   // X14 — concurrent download child connections (0..4, default 0 = OFF) and
@@ -6095,6 +6106,22 @@ export function useRemoteControl(
    *  holder). Null until the first `rc:control.state` broadcast; old
    *  agents never send it, so the multi-user UI self-hides. */
   const controlState = ref<RcControlState | null>(null)
+  /** 0.5.0 — On a silent monitor viewer: whether THIS admin currently holds
+   *  active takeover control (defaults to view-only false). */
+  const adminTakeoverActive = ref(false)
+  /** 0.5.0 — On a regular controller: true while an administrator has taken
+   *  over control, switching this controller to view-only mode. */
+  const adminTakenOver = computed(
+    () => !silentMonitor && controlState.value?.adminTakeover === true,
+  )
+  watch(
+    () => controlState.value?.adminTakeover,
+    (active) => {
+      if (silentMonitor && active === false) {
+        adminTakeoverActive.value = false
+      }
+    },
+  )
   /** P6 — ghost cursors: other sessions' pointers keyed by session hex. */
   const peerCursors = ref<Record<string, PeerCursor>>({})
   /**
@@ -7577,6 +7604,11 @@ export function useRemoteControl(
     // input DC is in drop-only mode anyway; suppressing here saves the
     // wire and makes the state observable (`inputGranted` export).
     if (!inputGranted.value) return
+    // 0.5.0 — Admin takeover / silent monitor view-only client-side guard:
+    // regular controllers stop sending wire input while an admin holds control,
+    // and silent monitors stay strictly view-only until takeover is toggled on.
+    if (adminTakenOver.value) return
+    if (silentMonitor && !adminTakeoverActive.value) return
     // Route stateful transitions (key edges, text, mouse button edges) over
     // the reliable ordered `input-reliable` DC when open so packet loss or
     // reordering cannot leave a key or mouse button stuck down; keep coalesced
@@ -8057,7 +8089,24 @@ export function useRemoteControl(
    *  Safe to call while the channel is closed — no-op until open; the
    *  `channels.control.onopen` handler calls this automatically so a
    *  page reload re-emits the stored preference without user action. */
+  /** 0.5.0 — Silent admin monitor toggles active control takeover on/off.
+   *  Sends `rc:admin.takeover` directly over the session's control DC so the
+   *  agent's InputArbiter fences held inputs and notifies regular controllers. */
+  function setAdminTakeover(active: boolean): boolean {
+    if (!silentMonitor) return false
+    const ch = channels.control
+    if (!ch || ch.readyState !== 'open') return false
+    try {
+      ch.send(JSON.stringify({ t: 'rc:admin.takeover', active }))
+      adminTakeoverActive.value = active
+      return true
+    } catch {
+      return false
+    }
+  }
+
   function sendResolutionPreference() {
+    if (silentMonitor) return
     const ch = channels.control
     if (!ch || ch.readyState !== 'open') return
     const msg = resolutionWireMessage(resolution.value)
@@ -8074,6 +8123,7 @@ export function useRemoteControl(
    *  in physical px) and restores on `null` / channel close. Held while
    *  the channel is not open yet, and sent from its `onopen` (#2638). */
   function sendDisplayMatch(dims: { width: number; height: number } | null) {
+    if (silentMonitor) return
     const ch = channels.control
     if (!ch || ch.readyState !== 'open') {
       // #2638 - not open yet: `channels.control.onopen` sends it.
@@ -9814,6 +9864,13 @@ export function useRemoteControl(
         cancelReconnect()
         lastConnectArgs = null
       }
+      if (msg.limit === 'target_session_ended') {
+        cancelReconnect()
+        lastConnectArgs = null
+        errorCode.value = 'target_session_ended'
+        teardown()
+        return
+      }
       if (msg.reason) {
         // FR-27 - a non-nominal end gets a sentence, not the enum name. The
         // mapping returns null for every nominal reason, so the set of
@@ -10415,6 +10472,7 @@ export function useRemoteControl(
     featuresRefused.value = {}
     // P6 — fresh session, fresh multi-user state.
     controlState.value = null
+    adminTakeoverActive.value = false
     peerCursors.value = {}
     phase.value = 'requesting'
 
@@ -12150,8 +12208,13 @@ export function useRemoteControl(
         : {
             t: 'rc:session.request',
             agent_id: agentId,
-            permissions: sharedMode ? permissions : withPrivacyAsked(permissions, askedCaps),
-            ...(sharedMode ? { share_grant_id: opts?.shareGrantId?.() } : {}),
+            permissions: silentMonitor
+              ? 'VIEW|INPUT'
+              : sharedMode
+                ? permissions
+                : withPrivacyAsked(permissions, askedCaps),
+            ...(sharedMode && !silentMonitor ? { share_grant_id: opts?.shareGrantId?.() } : {}),
+            ...(silentMonitor ? { silent_monitor: true } : {}),
             browser_caps: browserCaps,
           }
     // loopback-TURN corp-relay (Phase 2): forward the probed descriptor so the
@@ -12167,7 +12230,7 @@ export function useRemoteControl(
     if (localRelayState.desc) {
       requestPayload.local_relay = localRelayState.desc
     }
-    if (!externalMode && isRcInitialResolutionOptEnabled()) {
+    if (!externalMode && !silentMonitor && isRcInitialResolutionOptEnabled()) {
       const initRes = initialResolutionWireField(resolution.value)
       if (initRes) {
         requestPayload.initial_resolution = initRes
@@ -13647,10 +13710,23 @@ export function useRemoteControl(
     const stopScaleModeWatch = watch(scaleMode, () => {
       releaseHeldInputs()
     })
+    // 0.5.0 — Immediately release held keys/buttons & pointer lock when an
+    // admin takes over control from a regular controller, or when an admin
+    // releases takeover back to read-only watch.
+    const stopTakeoverWatch = watch(
+      () => (silentMonitor ? !adminTakeoverActive.value : adminTakenOver.value),
+      (blocked) => {
+        if (blocked) {
+          releaseHeldInputs()
+          exitRelativeMouse()
+        }
+      },
+    )
 
     return () => {
       stopPauseWatch()
       stopScaleModeWatch()
+      stopTakeoverWatch()
       if (benchSurface === surface) benchSurface = null
       surface.removeEventListener('pointermove', onPointerMove)
       if ('onpointerrawupdate' in surface) {
@@ -15691,6 +15767,9 @@ export function useRemoteControl(
    *  the lock and sign-in screens answer; to any other, the three keys
    *  in the native order (`ctrlAltDelFrames`). */
   function sendCtrlAltDel() {
+    if (!inputGranted.value || adminTakenOver.value || (silentMonitor && !adminTakeoverActive.value)) {
+      return
+    }
     const ch = channels.input
     if (!ch || ch.readyState !== 'open') return
     for (const frame of ctrlAltDelFrames(agent?.value?.capabilities?.input)) {
@@ -15809,6 +15888,9 @@ export function useRemoteControl(
     dcDecoderCodec,
     // P6 — multi-user: arbiter state, ghost cursors, floor control.
     controlState,
+    adminTakenOver,
+    adminTakeoverActive,
+    setAdminTakeover,
     peerCursors,
     requestControl,
     grantControl,

@@ -122,6 +122,10 @@ struct SessCore {
     /// The session's INPUT grant (rail display + a defense-in-depth inject
     /// gate behind the per-DC enforcement).
     can_input: bool,
+    /// 0.5.0 — Admin silent monitoring session: hidden from `participants`,
+    /// never emits ghost cursors, never seeds/alters `mode`/`holder`, and is
+    /// strictly view-only unless holding `admin_takeover`.
+    silent: bool,
     held: HashSet<Held>,
     last_input: Instant,
 }
@@ -186,6 +190,10 @@ pub struct ArbiterState {
     /// during the holder's idle window. Carried in the snapshot so both ends
     /// can render it.
     pending_request: Option<ObjectId>,
+    /// 0.5.0 — Silent admin monitoring session that currently took over control.
+    /// While `Some(admin_id)`, ONLY `admin_id` may inject input; all regular
+    /// controllers are blocked and told via `rc:control.state` (`admin_takeover: true`).
+    admin_takeover: Option<ObjectId>,
     sessions: HashMap<ObjectId, SessCore>,
 }
 
@@ -198,6 +206,9 @@ pub struct Snapshot {
     /// FR-27 — who is waiting for the floor, if anyone. `None` in free mode
     /// and whenever nothing is outstanding.
     pub pending_request: Option<Participant>,
+    /// 0.5.0 — true while an administrator has actively taken over control.
+    /// Regular controllers enter view-only mode until cleared.
+    pub admin_takeover: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,13 +226,14 @@ impl Default for ArbiterState {
             last_injector: None,
             mode_seeded: false,
             pending_request: None,
+            admin_takeover: None,
             sessions: HashMap::new(),
         }
     }
 }
 
 impl ArbiterState {
-    /// Register a session. `mode_hint` = the device's `AccessPolicy.input_mode`
+    /// Register a regular session. `mode_hint` = the device's `AccessPolicy.input_mode`
     /// (server-resolved) — applied only while no session has toggled the mode.
     /// In exclusive mode the first INPUT-capable session becomes the holder.
     pub fn open(
@@ -232,7 +244,22 @@ impl ArbiterState {
         mode_hint: Option<Mode>,
         now: Instant,
     ) {
-        if !self.mode_seeded {
+        self.open_with_silent(session, name, can_input, false, mode_hint, now);
+    }
+
+    /// Register a session, optionally as an admin silent monitor (`silent == true`).
+    /// Silent sessions never seed/alter arbitration mode, never claim the normal
+    /// exclusive floor, and are omitted from `snapshot().participants`.
+    pub fn open_with_silent(
+        &mut self,
+        session: ObjectId,
+        name: String,
+        can_input: bool,
+        silent: bool,
+        mode_hint: Option<Mode>,
+        now: Instant,
+    ) {
+        if !silent && !self.mode_seeded {
             if let Some(m) = mode_hint {
                 self.mode = m;
             }
@@ -243,13 +270,18 @@ impl ArbiterState {
             SessCore {
                 name,
                 can_input,
+                silent,
                 held: HashSet::new(),
                 last_input: now,
             },
         );
-        if self.mode == Mode::Exclusive && self.holder.is_none() && can_input {
+        if !silent && self.mode == Mode::Exclusive && self.holder.is_none() && can_input {
             self.holder = Some(session);
         }
+    }
+
+    pub fn is_silent(&self, session: ObjectId) -> bool {
+        self.sessions.get(&session).is_some_and(|s| s.silent)
     }
 
     /// FR-93 P4c — whether `session` is registered with an input grant.
@@ -260,8 +292,15 @@ impl ArbiterState {
     /// Deregister a session. Returns the key/button releases to inject
     /// (its whole held set). Reassigns the exclusive holder if it left.
     pub fn close(&mut self, session: ObjectId) -> Vec<InputMsg> {
+        self.close_with_impact(session).0
+    }
+
+    /// Deregister a session, also returning whether regular sessions need an
+    /// `rc:control.state` broadcast (`false` when a passive silent monitor
+    /// leaves without ever holding takeover).
+    pub fn close_with_impact(&mut self, session: ObjectId) -> (Vec<InputMsg>, bool) {
         let Some(core) = self.sessions.remove(&session) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         if self.last_injector == Some(session) {
             self.last_injector = None;
@@ -269,26 +308,84 @@ impl ArbiterState {
         if self.pending_request == Some(session) {
             self.pending_request = None;
         }
+        let was_takeover = if self.admin_takeover == Some(session) {
+            self.admin_takeover = None;
+            true
+        } else {
+            false
+        };
         if self.holder == Some(session) {
-            // Hand the floor to a remaining INPUT-capable session — the
-            // LOWEST session id, not whatever `HashMap` iteration happened to
-            // yield first. Two viewers watching the same handover should see
-            // the same outcome, and a nondeterministic one is untestable.
+            // Hand the floor to a remaining non-silent INPUT-capable session —
+            // the LOWEST session id, deterministic across viewers.
             self.holder = self
                 .sessions
                 .iter()
-                .filter(|(_, c)| c.can_input)
+                .filter(|(_, c)| c.can_input && !c.silent)
                 .map(|(id, _)| *id)
                 .min();
         }
-        // FR-27 — with the last session gone there is no in-session decision
-        // left to preserve, so let the device policy seed the next one. See
-        // the field on `mode_seeded`.
-        if self.sessions.is_empty() {
+        // FR-27 — with the last regular session gone there is no in-session
+        // decision left to preserve, so let the device policy seed the next one.
+        if !self.sessions.values().any(|c| !c.silent) {
             self.mode_seeded = false;
             self.pending_request = None;
         }
-        core.held.iter().map(Held::release_msg).collect()
+        let notify_normals = !core.silent || was_takeover;
+        (core.held.iter().map(Held::release_msg).collect(), notify_normals)
+    }
+
+    /// 0.5.0 — Silent admin monitor toggles active control takeover.
+    ///
+    /// - `active = true`: fences ALL held keys/buttons of every other session
+    ///   (so the original controller cannot leave stuck modifiers/drags) and
+    ///   grants exclusive input control to `session`.
+    /// - `active = false`: releases ALL held keys/buttons of `session` and
+    ///   seamlessly returns control to the regular controller(s).
+    ///
+    /// Returns `(state_changed, releases_to_inject)`.
+    pub fn set_admin_takeover(
+        &mut self,
+        session: ObjectId,
+        active: bool,
+    ) -> (bool, Vec<InputMsg>) {
+        let Some(core) = self.sessions.get(&session) else {
+            return (false, Vec::new());
+        };
+        if !core.silent || !core.can_input {
+            return (false, Vec::new());
+        }
+        if active {
+            if self.admin_takeover == Some(session) {
+                return (false, Vec::new());
+            }
+            let mut releases = Vec::new();
+            for (id, other) in self.sessions.iter_mut() {
+                if *id == session {
+                    continue;
+                }
+                releases.extend(other.held.iter().map(Held::release_msg));
+                other.held.clear();
+            }
+            self.admin_takeover = Some(session);
+            self.last_injector = None;
+            (true, releases)
+        } else {
+            if self.admin_takeover != Some(session) {
+                return (false, Vec::new());
+            }
+            let releases = self
+                .sessions
+                .get_mut(&session)
+                .map(|c| {
+                    let r: Vec<InputMsg> = c.held.iter().map(Held::release_msg).collect();
+                    c.held.clear();
+                    r
+                })
+                .unwrap_or_default();
+            self.admin_takeover = None;
+            self.last_injector = None;
+            (true, releases)
+        }
     }
 
     /// Release everything one session holds WITHOUT deregistering it — the
@@ -312,21 +409,33 @@ impl ArbiterState {
         if matches!(msg, InputMsg::Heartbeat { .. }) {
             return EventPlan::Inject { pre: Vec::new() };
         }
-        let can_input = self
+        let Some((can_input, silent)) = self
             .sessions
             .get(&session)
-            .map(|c| c.can_input)
-            .unwrap_or(false);
+            .map(|c| (c.can_input, c.silent))
+        else {
+            return EventPlan::Deny;
+        };
         if !can_input {
             return EventPlan::Deny;
         }
-        if self.mode == Mode::Exclusive {
-            if self.holder.is_none() {
-                // No holder yet (e.g. mode toggled with none) — first event wins.
-                self.holder = Some(session);
-            }
-            if self.holder != Some(session) {
+        if let Some(admin_id) = self.admin_takeover {
+            if session != admin_id {
                 return EventPlan::Deny;
+            }
+        } else {
+            // Passive silent monitor is strictly view-only until it takes over.
+            if silent {
+                return EventPlan::Deny;
+            }
+            if self.mode == Mode::Exclusive {
+                if self.holder.is_none() {
+                    // No holder yet (e.g. mode toggled with none) — first event wins.
+                    self.holder = Some(session);
+                }
+                if self.holder != Some(session) {
+                    return EventPlan::Deny;
+                }
             }
         }
 
@@ -389,6 +498,9 @@ impl ArbiterState {
     /// Floor request. Returns `(granted, releases)` — on a takeover the
     /// previous holder's held set is released (their chord is over).
     pub fn request_floor(&mut self, session: ObjectId, now: Instant) -> (bool, Vec<InputMsg>) {
+        if self.admin_takeover.is_some() || self.is_silent(session) {
+            return (false, Vec::new());
+        }
         if self.mode == Mode::Free {
             // Nothing to hold in free mode — trivially granted.
             return (true, Vec::new());
@@ -494,6 +606,9 @@ impl ArbiterState {
     /// the mode actually changed. Flipping to exclusive makes the toggling
     /// session the holder; flipping to free clears the floor.
     pub fn set_mode(&mut self, session: ObjectId, mode: Mode) -> bool {
+        if self.admin_takeover.is_some() || self.is_silent(session) {
+            return false;
+        }
         if !self
             .sessions
             .get(&session)
@@ -534,8 +649,11 @@ impl ArbiterState {
             .sessions
             .get(&session)
             .ok_or(KeepBusyRefusal::Unknown)?;
-        if !core.can_input {
+        if !core.can_input || core.silent {
             return Err(KeepBusyRefusal::NoInput);
+        }
+        if self.admin_takeover.is_some() {
+            return Err(KeepBusyRefusal::NotFloorHolder);
         }
         if self.mode == Mode::Exclusive && self.holder.is_some_and(|h| h != session) {
             return Err(KeepBusyRefusal::NotFloorHolder);
@@ -545,10 +663,15 @@ impl ArbiterState {
 
     pub fn snapshot(&self) -> Snapshot {
         let participant = |id: &ObjectId| -> Option<Participant> {
-            self.sessions.get(id).map(|c| Participant {
-                session: *id,
-                name: c.name.clone(),
-                input: c.can_input,
+            self.sessions.get(id).and_then(|c| {
+                if c.silent {
+                    return None;
+                }
+                Some(Participant {
+                    session: *id,
+                    name: c.name.clone(),
+                    input: c.can_input,
+                })
             })
         };
         let mut participants: Vec<Participant> =
@@ -563,6 +686,7 @@ impl ArbiterState {
             pending_request: (self.mode == Mode::Exclusive)
                 .then(|| self.pending_request.as_ref().and_then(participant))
                 .flatten(),
+            admin_takeover: self.admin_takeover.is_some(),
         }
     }
 
@@ -580,9 +704,14 @@ enum Cmd {
         session: ObjectId,
         name: String,
         can_input: bool,
+        silent: bool,
         mode_hint: Option<Mode>,
         control: DcStash,
         cursor: DcStash,
+    },
+    SetAdminTakeover {
+        session: ObjectId,
+        active: bool,
     },
     Close {
         session: ObjectId,
@@ -738,14 +867,34 @@ impl Arbiter {
         control: DcStash,
         cursor: DcStash,
     ) {
+        self.session_open_with_silent(session, name, can_input, false, mode_hint, control, cursor);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_open_with_silent(
+        &self,
+        session: ObjectId,
+        name: String,
+        can_input: bool,
+        silent: bool,
+        mode_hint: Option<Mode>,
+        control: DcStash,
+        cursor: DcStash,
+    ) {
         self.send_control(Cmd::Open {
             session,
             name,
             can_input,
+            silent,
             mode_hint,
             control,
             cursor,
         });
+    }
+
+    /// 0.5.0 — Admin silent monitor requests or releases control takeover.
+    pub fn set_admin_takeover(&self, session: ObjectId, active: bool) {
+        self.send_control(Cmd::SetAdminTakeover { session, active });
     }
     pub fn session_closed(&self, session: ObjectId) {
         self.send_control(Cmd::Close { session });
@@ -877,11 +1026,12 @@ fn handle_cmd(
                 session,
                 name,
                 can_input,
+                silent,
                 mode_hint,
                 control,
                 cursor,
             } => {
-                state.open(session, name, can_input, mode_hint, Instant::now());
+                state.open_with_silent(session, name, can_input, silent, mode_hint, Instant::now());
                 sinks.insert(
                     session,
                     Sinks {
@@ -891,14 +1041,37 @@ fn handle_cmd(
                     },
                 );
                 tracing::info!(
-                    %session, can_input, mode = state.snapshot().mode.as_str(),
+                    %session, can_input, silent, mode = state.snapshot().mode.as_str(),
                     sessions = state.session_count(),
                     "input arbiter: session registered"
                 );
-                broadcast_state(&state, &sinks, &handle);
+                if silent {
+                    send_state_to(state, sinks, handle, session);
+                } else {
+                    broadcast_state(state, sinks, handle);
+                }
+            }
+            Cmd::SetAdminTakeover { session, active } => {
+                let (changed, releases) = state.set_admin_takeover(session, active);
+                if !releases.is_empty() {
+                    tracing::info!(
+                        %session,
+                        active,
+                        released = releases.len(),
+                        "input arbiter: released held inputs on admin takeover transition"
+                    );
+                    inject_all(injector, &releases);
+                    crate::keep_busy::note_remote_input();
+                }
+                if changed {
+                    tracing::info!(%session, active, "input arbiter: admin takeover state changed");
+                    broadcast_state(state, sinks, handle);
+                } else {
+                    send_state_to(state, sinks, handle, session);
+                }
             }
             Cmd::Close { session } => {
-                let releases = state.close(session);
+                let (releases, notify_normals) = state.close_with_impact(session);
                 if !releases.is_empty() {
                     tracing::info!(
                         %session,
@@ -911,14 +1084,18 @@ fn handle_cmd(
                     crate::keep_busy::note_remote_input();
                 }
                 sinks.remove(&session);
-                if state.session_count() > 0 {
+                if state.session_count() > 0 && notify_normals {
                     broadcast_state(state, sinks, handle);
                 }
             }
             Cmd::ControlReady { session } => {
                 tracing::debug!(%session, "input arbiter: control DC ready — re-broadcasting state");
-                broadcast_state(state, sinks, handle);
-                if state.can_input(session) {
+                if state.is_silent(session) {
+                    send_state_to(state, sinks, handle, session);
+                } else {
+                    broadcast_state(state, sinks, handle);
+                }
+                if state.can_input(session) && !state.is_silent(session) {
                     warm(injector);
                 }
             }
@@ -1188,14 +1365,9 @@ fn classify_unpermitted(mut inj: Box<dyn super::InputInjector + Send>) -> KbRepl
     }
 }
 
-/// `rc:control.state` fan-out to every session's control DC.
-fn broadcast_state(
-    state: &ArbiterState,
-    sinks: &HashMap<ObjectId, Sinks>,
-    handle: &tokio::runtime::Handle,
-) {
+fn state_payload(state: &ArbiterState) -> String {
     let snap = state.snapshot();
-    let payload = serde_json::json!({
+    serde_json::json!({
         "t": "rc:control.state",
         "mode": snap.mode.as_str(),
         "holder": snap.holder.map(|h| h.to_hex()),
@@ -1214,8 +1386,38 @@ fn broadcast_state(
             "session": p.session.to_hex(),
             "name": p.name,
         })),
+        "admin_takeover": snap.admin_takeover,
     })
-    .to_string();
+    .to_string()
+}
+
+/// Send `rc:control.state` to a single session (used when a silent monitor
+/// joins so regular controllers receive zero unsolicited messages).
+fn send_state_to(
+    state: &ArbiterState,
+    sinks: &HashMap<ObjectId, Sinks>,
+    handle: &tokio::runtime::Handle,
+    target: ObjectId,
+) {
+    let Some(s) = sinks.get(&target) else {
+        return;
+    };
+    let payload = state_payload(state);
+    let stash = s.control.clone();
+    handle.spawn(async move {
+        if let Some(dc) = stash.lock().await.clone() {
+            let _ = dc.send_text(payload).await;
+        }
+    });
+}
+
+/// `rc:control.state` fan-out to every session's control DC.
+fn broadcast_state(
+    state: &ArbiterState,
+    sinks: &HashMap<ObjectId, Sinks>,
+    handle: &tokio::runtime::Handle,
+) {
+    let payload = state_payload(state);
     for s in sinks.values() {
         let stash = s.control.clone();
         let payload = payload.clone();
@@ -1238,6 +1440,11 @@ fn ghost_broadcast(
     y: f32,
     mon: u8,
 ) {
+    // 0.5.0 — Silent admin monitors NEVER broadcast a ghost cursor to regular
+    // controllers (watching must stay 100% imperceptible).
+    if state.is_silent(from) {
+        return;
+    }
     let now = Instant::now();
     let Some(own) = sinks.get_mut(&from) else {
         return;
@@ -2056,5 +2263,90 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Cmd::Event { .. })));
         assert!(matches!(rx.try_recv(), Ok(Cmd::Event { .. })));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn silent_admin_watch_is_invisible_and_takeover_fences_and_restores() {
+        let mut st = ArbiterState::default();
+        let ctrl = sid();
+        let admin = sid();
+        let now = Instant::now();
+
+        st.open(ctrl, "Alice".into(), true, Some(Mode::Exclusive), now);
+        // Silent admin joins: invisible in participants, does not alter holder/mode.
+        st.open_with_silent(admin, "Admin".into(), true, true, Some(Mode::Free), now);
+        let snap = st.snapshot();
+        assert_eq!(snap.mode, Mode::Exclusive);
+        assert_eq!(snap.holder, Some(ctrl));
+        assert_eq!(snap.participants.len(), 1);
+        assert_eq!(snap.participants[0].session, ctrl);
+        assert!(!snap.admin_takeover);
+
+        // Passive silent watch cannot inject; regular controller injects normally.
+        assert_eq!(st.plan(admin, &click(true), now), EventPlan::Deny);
+        assert!(matches!(
+            st.plan(ctrl, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+        assert!(matches!(
+            st.plan(
+                ctrl,
+                &InputMsg::Key {
+                    code: 0xe1,
+                    down: true,
+                    mods: 0,
+                },
+                now
+            ),
+            EventPlan::Inject { .. }
+        ));
+
+        // Regular session can NEVER trigger admin takeover.
+        assert_eq!(st.set_admin_takeover(ctrl, true), (false, Vec::new()));
+
+        // Admin activates takeover: fences controller's held button + Shift key,
+        // notifies via snapshot.admin_takeover == true, blocks controller, lets admin inject.
+        let (changed, releases) = st.set_admin_takeover(admin, true);
+        assert!(changed);
+        assert_eq!(releases.len(), 2, "must release both held button and key");
+        assert!(st.snapshot().admin_takeover);
+        assert_eq!(st.plan(ctrl, &click(true), now), EventPlan::Deny);
+        assert!(matches!(
+            st.plan(admin, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+
+        // Admin releases takeover: releases admin's held button, restores controller.
+        let (changed, admin_releases) = st.set_admin_takeover(admin, false);
+        assert!(changed);
+        assert_eq!(admin_releases.len(), 1);
+        assert!(!st.snapshot().admin_takeover);
+        assert_eq!(st.plan(admin, &click(true), now), EventPlan::Deny);
+        assert!(matches!(
+            st.plan(ctrl, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+
+        // Passive close of silent monitor does NOT trigger broadcast to normals.
+        let (rel, notify_normals) = st.close_with_impact(admin);
+        assert!(rel.is_empty());
+        assert!(!notify_normals);
+
+        // Closing silent monitor WHILE holding takeover DOES notify normals and clears flag.
+        let admin2 = sid();
+        st.open_with_silent(admin2, "Admin2".into(), true, true, None, now);
+        assert!(st.set_admin_takeover(admin2, true).0);
+        assert!(matches!(
+            st.plan(admin2, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
+        let (rel2, notify_normals2) = st.close_with_impact(admin2);
+        assert_eq!(rel2.len(), 1);
+        assert!(notify_normals2);
+        assert!(!st.snapshot().admin_takeover);
+        assert!(matches!(
+            st.plan(ctrl, &click(true), now),
+            EventPlan::Inject { .. }
+        ));
     }
 }

@@ -232,6 +232,7 @@ mod tests {
                 indicator: crate::indicator::ViewerIndicator::disabled(),
             },
             activity: None,
+            lifecycle: None,
         };
         SharedSshStream::prepare(&cfg, services, spec(key)).unwrap()
     }

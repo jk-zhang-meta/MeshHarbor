@@ -496,6 +496,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         }
     }
 
@@ -582,6 +583,7 @@ mod tests {
                 initial_resolution: None,
                 replaces: None,
                 continues_from: None,
+                silent_monitor: false,
             };
             hub.dispatch(&controller_ctx(user, tx), request).unwrap();
         };

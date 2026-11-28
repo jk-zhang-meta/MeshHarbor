@@ -1289,6 +1289,7 @@ async fn file_child_local_controller_source_requires_http_authentication_and_act
             initial_resolution: None,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         })
         .unwrap()
     }
@@ -1478,6 +1479,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 initial_resolution: None,
                 replaces: None,
                 continues_from: None,
+                silent_monitor: false,
             })
             .unwrap()
             .into(),
@@ -1564,6 +1566,7 @@ async fn file_child_upload_direction_default_off_opt_in_kill_switch_and_revocati
                 initial_resolution: None,
                 replaces: None,
                 continues_from: None,
+                silent_monitor: false,
             })
             .unwrap()
             .into(),

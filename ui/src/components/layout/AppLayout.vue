@@ -111,12 +111,17 @@
 
       <v-divider />
 
-      <!-- Navigation — fleet first (Devices, GPU), then the overlay/tunnel Network group,
-           Invites, Observability (platform operators), Admin, Audit. -->
-      <v-list v-if="tenantId" v-model:opened="openGroups" density="compact" nav>
+      <!-- 0.5.0 Reorganized sidebar: clear domain sections, zero duplicate
+           icons, direct access to Live Monitoring & History, clean personal &
+           platform separation. -->
+      <v-list v-if="tenantId" v-model:opened="openGroups" density="compact" nav class="nav-main-list">
+        <!-- 1. Workspace -->
+        <v-list-subheader v-if="!railActive" class="nav-section-header">
+          {{ $t('nav.sectionWorkspace') }}
+        </v-list-subheader>
         <v-list-item
           :to="`/tenant/${tenantId}`"
-          prepend-icon="mdi-view-dashboard"
+          prepend-icon="mdi-view-dashboard-outline"
           :title="$t('nav.dashboard')"
           exact
         />
@@ -199,72 +204,102 @@
           <v-list-item :to="`/tenant/${tenantId}/network/forwards`" prepend-icon="mdi-transit-connection-variant" :title="$t('nav.managedForwards')" />
           <v-list-item :to="`/tenant/${tenantId}/network/servers`" prepend-icon="mdi-earth" :title="$t('nav.serverTopology')" />
         </v-list-group>
-        <v-list-item
-          v-if="canInvite"
-          :to="`/tenant/${tenantId}/invites`"
-          prepend-icon="mdi-account-plus"
-          :title="$t('nav.invites')"
-        />
 
-        <!-- ── Platform insights section ────────────────────────── -->
-        <v-divider v-if="isPlatformAdmin" class="my-1" />
-        <v-list-item
-          v-if="isPlatformAdmin"
-          to="/observability"
-          prepend-icon="mdi-chart-timeline-variant-shimmer"
-          :title="$t('nav.observability')"
-        />
-
-        <!-- ── Administration section ───────────────────────────── -->
-        <v-divider class="my-1" />
-        <v-list-group value="admin">
-          <template #activator="{ props: groupProps }">
-            <v-list-item v-bind="groupProps" prepend-icon="mdi-cog" :title="$t('nav.admin')" />
-          </template>
-          <v-list-item :to="`/tenant/${tenantId}/admin/members`" prepend-icon="mdi-account-group" :title="$t('nav.members')" />
-          <v-list-item :to="`/tenant/${tenantId}/admin/roles`" prepend-icon="mdi-shield-account" :title="$t('nav.roles')" />
-        </v-list-group>
-        <v-list-group v-if="canSeeExecAudit || canSeeSshAudit" value="audit">
-          <template #activator="{ props: groupProps }">
-            <v-list-item v-bind="groupProps" prepend-icon="mdi-clipboard-text-clock" :title="$t('nav.audit')" />
-          </template>
+        <!-- 2. Monitoring & Audit -->
+        <template v-if="canSeeMonitoring || canSeeExecAudit">
+          <v-divider class="my-2" />
+          <v-list-subheader v-if="!railActive" class="nav-section-header">
+            {{ $t('nav.sectionMonitoring') }}
+          </v-list-subheader>
+          <v-list-item
+            v-if="canSeeMonitoring"
+            :to="`/tenant/${tenantId}/monitoring/live`"
+            prepend-icon="mdi-radar"
+            :title="$t('nav.monitoringLive')"
+            data-testid="nav-monitoring-live"
+          />
+          <v-list-item
+            v-if="canSeeMonitoring"
+            :to="`/tenant/${tenantId}/monitoring/history`"
+            prepend-icon="mdi-history"
+            :title="$t('nav.monitoringHistory')"
+            data-testid="nav-monitoring-history"
+          />
           <v-list-item
             v-if="canSeeExecAudit"
-            :to="`/tenant/${tenantId}/audit/exec`"
+            :to="`/tenant/${tenantId}/monitoring/exec`"
             prepend-icon="mdi-console-line"
             :title="$t('nav.execAudit')"
           />
+        </template>
+
+        <!-- 3. Organization -->
+        <v-divider class="my-2" />
+        <v-list-subheader v-if="!railActive" class="nav-section-header">
+          {{ $t('nav.sectionOrganization') }}
+        </v-list-subheader>
+        <v-list-item
+          :to="`/tenant/${tenantId}/admin/members`"
+          prepend-icon="mdi-account-group-outline"
+          :title="$t('nav.members')"
+        />
+        <v-list-item
+          :to="`/tenant/${tenantId}/admin/roles`"
+          prepend-icon="mdi-shield-account-outline"
+          :title="$t('nav.roles')"
+        />
+        <v-list-item
+          v-if="canInvite"
+          :to="`/tenant/${tenantId}/invites`"
+          prepend-icon="mdi-account-plus-outline"
+          :title="$t('nav.invites')"
+        />
+        <v-list-item
+          :to="`/tenant/${tenantId}/admin/settings`"
+          prepend-icon="mdi-tune-variant"
+          :title="$t('nav.orgSettings')"
+        />
+      </v-list>
+
+      <!-- 4. Personal Space -->
+      <v-divider class="my-1" />
+      <v-list density="compact" nav class="nav-secondary-list">
+        <v-list-subheader v-if="!railActive" class="nav-section-header">
+          {{ $t('nav.sectionPersonal') }}
+        </v-list-subheader>
+        <v-list-item
+          :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }"
+          prepend-icon="mdi-laptop"
+          :title="$t('mh.nav.myDevices')"
+          data-testid="personal-devices-nav"
+        />
+        <v-list-item
+          :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }"
+          prepend-icon="mdi-share-variant-outline"
+          :title="$t('mh.nav.deviceShares')"
+          data-testid="device-shares-nav"
+        />
+      </v-list>
+
+      <!-- 5. Platform Operations (global; visible only to platform admins / approval owner) -->
+      <template v-if="isPlatformAdmin || accountApproval.isOwner">
+        <v-divider class="my-1" />
+        <v-list density="compact" nav class="nav-secondary-list">
+          <v-list-subheader v-if="!railActive" class="nav-section-header">
+            {{ $t('nav.sectionPlatform') }}
+          </v-list-subheader>
           <v-list-item
-            v-if="canSeeSshAudit"
-            :to="`/tenant/${tenantId}/audit/ssh`"
-            prepend-icon="mdi-key-chain"
-            :title="$t('nav.sshAudit')"
+            v-if="isPlatformAdmin"
+            to="/observability"
+            prepend-icon="mdi-chart-timeline-variant-shimmer"
+            :title="$t('nav.observability')"
           />
           <v-list-item
-            v-if="canSeeSshAudit"
-            :to="`/tenant/${tenantId}/audit/ssh-activity`"
-            prepend-icon="mdi-pulse"
-            :title="$t('nav.sshActivity')"
-          />
-        </v-list-group>
-      </v-list>
-
-      <v-list density="compact">
-        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" :title="$t('mh.nav.myDevices')" data-testid="personal-devices-nav" />
-        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" :title="$t('mh.nav.deviceShares')" data-testid="device-shares-nav" />
-      </v-list>
-
-      <!-- Central approval is global; never hide it behind tenant membership. -->
-      <v-list v-if="accountApproval.isOwner" density="compact">
-        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" :title="$t('mh.nav.accountApprovals')" data-testid="account-approval-nav" />
-      </v-list>
-
-      <template #append>
-        <v-list density="compact">
-          <v-list-item
-            prepend-icon="mdi-cog"
-            :title="t('nav.settings')"
-            :to="settingsRoute"
+            v-if="accountApproval.isOwner"
+            to="/account-approval"
+            prepend-icon="mdi-account-check-outline"
+            :title="$t('mh.nav.accountApprovals')"
+            data-testid="account-approval-nav"
           />
         </v-list>
       </template>
@@ -466,7 +501,7 @@ import {
   canManageInvites,
   canSeeFleetNav,
   canViewExecAudit,
-  canViewSshAudit,
+  canViewMonitoring,
 } from '@/utils/permissions'
 import { useAgentStore } from '@/stores/agents'
 import { useCappedSearchList } from '@/composables/useCappedSearchList'
@@ -660,8 +695,8 @@ const canInvite = computed(() =>
 const canSeeExecAudit = computed(() =>
   canViewExecAudit(tenantStore.myPermissions, tenantStore.isOwner),
 )
-const canSeeSshAudit = computed(() =>
-  canViewSshAudit(tenantStore.myPermissions, tenantStore.isOwner),
+const canSeeMonitoring = computed(() =>
+  canViewMonitoring(tenantStore.myPermissions, tenantStore.isOwner),
 )
 const isPlatformAdmin = computed(() => auth.user?.is_platform_admin === true)
 
@@ -710,10 +745,6 @@ async function maybeAutoOpenTour() {
 }
 watch([tenantId, showFleetNav] as const, () => void maybeAutoOpenTour(), { immediate: true })
 
-const settingsRoute = computed(() =>
-  tenantId.value ? `/tenant/${tenantId.value}/admin` : '/',
-)
-
 const { t, locale: currentLocale } = useI18n()
 const pageTitle = computed(() => {
   const name = route.name as string
@@ -721,6 +752,9 @@ const pageTitle = computed(() => {
   if (name === 'device-shares' || name === 'shared-remote') return t('mh.nav.deviceShares')
   if (name === 'account-approval') return t('mh.nav.accountApprovals')
   if (name === 'network-globe') return t('mh.globeV2.deviceNetworkTitle')
+  if (name === 'monitoring-live') return t('nav.monitoringLive')
+  if (name === 'monitoring-history') return t('nav.monitoringHistory')
+  if (name === 'monitoring-exec') return t('nav.execAudit')
   return (route.meta.title as string) || PRODUCT_TITLE
 })
 
@@ -861,6 +895,24 @@ onUnmounted(() => {
 
 .nav-entity-group :deep(.v-list-group__items .v-list-item) {
   padding-inline-start: 20px !important;
+}
+
+.nav-section-header {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  min-height: 24px !important;
+  height: 24px !important;
+  padding-top: 4px !important;
+  padding-bottom: 2px !important;
+  color: rgba(var(--v-theme-on-surface), 0.54) !important;
+}
+
+.nav-main-list,
+.nav-secondary-list {
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
 }
 
 .app-layout-root :deep(.v-application__wrap) {

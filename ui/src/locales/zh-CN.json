@@ -510,6 +510,12 @@
         "scrollAutoHint": "在原始大小或自定义放大模式下，移动鼠标即可自动滚动画布查看完整桌面",
         "hint": "自适应：保持比例适应窗口；铺满屏幕：画面撑满整个窗口消除黑边；原始大小：按 CSS 像素 1:1 显示；自定义：自由设置缩放比例"
       },
+      "takeover": {
+        "chip": "管理员已接管 · 仅观看",
+        "bannerTitle": "控制权已被管理员接管。",
+        "bannerBody": "当前仅可观看远程画面，无法操作键盘和鼠标；管理员释放后将自动恢复控制。",
+        "releasedToast": "管理员已释放控制权，已恢复操作"
+      },
       "match": {
         "unavailable": "匹配远程显示：{why}",
         "tooOld": "匹配远程显示：设备端版本太旧，无法判断它的显示模式能否切换",
@@ -894,7 +900,15 @@
     "execAudit": "命令审计",
     "sshAudit": "SSH 审计",
     "sshActivity": "SSH 活动",
-    "gpuServers": "GPU 服务器"
+    "gpuServers": "GPU 服务器",
+    "sectionWorkspace": "工作区",
+    "sectionMonitoring": "监控与审计",
+    "sectionOrganization": "组织管理",
+    "sectionPersonal": "个人空间",
+    "sectionPlatform": "平台运维",
+    "monitoringLive": "实时监控",
+    "monitoringHistory": "监控历史",
+    "orgSettings": "组织设置"
   },
   "common": {
     "save": "保存",
@@ -905,6 +919,7 @@
     "close": "关闭",
     "loadMore": "加载更多",
     "refresh": "刷新",
+    "retry": "重试",
     "yes": "是",
     "no": "否"
   },
@@ -1017,6 +1032,142 @@
       "myDevices": "我的设备与分享",
       "deviceShares": "设备分享",
       "accountApprovals": "账号审批"
+    },
+    "monitoring": {
+      "title": "连接监控与审计",
+      "subtitle": "实时查看所有 SSH 与远程控制活动、归属账号/邀请，支持主动断开以及无感查看并接管远控。",
+      "tabs": {
+        "live": "监控中",
+        "history": "监控历史"
+      },
+      "kind": {
+        "remote": "远程控制",
+        "ssh": "SSH"
+      },
+      "filter": {
+        "all": "全部"
+      },
+      "col": {
+        "type": "类型",
+        "initiator": "发起方 / 主控端",
+        "target": "目标设备 / 被控端",
+        "statusTelemetry": "状态与统计",
+        "timeDuration": "开始时间 / 时长",
+        "actions": "操作"
+      },
+      "attribution": {
+        "account": "组织账号",
+        "member_invite": "成员邀请",
+        "device_invite": "设备邀请",
+        "device_share": "设备共享",
+        "external": "外部访问",
+        "key_list": "本地密钥",
+        "invitedBy": "邀请人：{name}",
+        "sharedBy": "共享人：{name}"
+      },
+      "phase": {
+        "active": "连接中",
+        "negotiating": "协商中",
+        "pending": "等待同意",
+        "granted": "已授权待连"
+      },
+      "source": {
+        "webrtc": "WebRTC 桌面",
+        "cli": "CLI 叠加网",
+        "api": "API 授权",
+        "device_share": "设备共享",
+        "external": "外部连接",
+        "key_list": "本地公钥"
+      },
+      "activityCount": "{count} 条活动",
+      "disconnectAction": "断开",
+      "disconnectConfirmTitle": "确认断开活动连接",
+      "disconnectSuccess": "已向目标发送断开指令",
+      "disconnectFailed": "断开连接失败",
+      "live": {
+        "heading": "正在监控",
+        "lastSync": "上次同步 {time}",
+        "autoRefresh": "自动刷新",
+        "searchPlaceholder": "按设备、账号、邀请或会话 ID 搜索",
+        "adminWatching": "监控中 ({count})",
+        "adminTakenOver": "管理员已接管",
+        "watchTakeover": "查看 / 接管",
+        "emptyTitle": "当前没有活动中的 SSH 或远程控制连接",
+        "emptyHint": "新会话建立后将自动出现在此列表（每 2 秒刷新）。",
+        "unavailable": "实时监控数据暂时不可用",
+        "disconnectRemoteConfirm": "确定立即断开该远程控制会话？主控端和被控端连接将立即终止。",
+        "disconnectSshConfirm": "确定立即断开该 SSH 会话？正在运行的终端及转发通道将被强制终止。"
+      },
+      "history": {
+        "heading": "监控历史",
+        "summaryLine": "{devices} 台设备 · 远程控制 {remote} · SSH {ssh}（拒绝 {denied}）",
+        "viewGrouped": "按设备分组",
+        "viewFlat": "时间列表",
+        "searchPlaceholder": "按设备、账号、邀请、共享或原因筛选",
+        "statusLabel": "状态",
+        "statusAll": "全部状态",
+        "statusCompleted": "已结束",
+        "statusLive": "进行中",
+        "statusDenied": "已拒绝",
+        "statusOutcome": "状态 / 原因",
+        "dateFrom": "起始日期",
+        "dateTo": "终止日期",
+        "minDuration": "最短时长",
+        "maxDuration": "最长时长",
+        "unitSec": "秒",
+        "unitMin": "分钟",
+        "unitHour": "小时",
+        "last7d": "近 7 天",
+        "last14d": "近 14 天",
+        "last30d": "近 30 天",
+        "resetFilters": "重置",
+        "sessionCount": "{count} 次连接",
+        "totalDuration": "累计 {dur}",
+        "details": "详情 / 轨迹",
+        "emptyTitle": "当前筛选条件下暂无历史记录",
+        "loadFailed": "加载监控历史失败",
+        "viewSshActivities": "查看活动轨迹",
+        "viewSshActivitiesCount": "活动轨迹 ({count})",
+        "sshTimelineTitle": "SSH 会话活动轨迹",
+        "sshTimelineEmpty": "该 SSH 会话未记录额外活动事件。",
+        "timelineAt": "时间",
+        "timelineKind": "类型",
+        "timelineDetail": "详情",
+        "timelineResult": "结果"
+      },
+      "watch": {
+        "watchingBadge": "无感监控中（只读）",
+        "takingOverBadge": "已接管控制（原主控仅可观看）",
+        "controllerLabel": "原主控：{name}",
+        "takeOver": "接管控制",
+        "releaseControl": "释放控制权",
+        "disconnectTarget": "断开原会话",
+        "disconnectTargetConfirm": "确定断开目标设备「{device}」上正在进行的原始远程控制会话？",
+        "hideToolbar": "收起工具栏",
+        "showToolbar": "展开监控工具栏",
+        "close": "结束监控",
+        "backToMonitoring": "返回实时监控",
+        "scaleFit": "自适应窗口",
+        "scaleFitShort": "适应",
+        "scaleFill": "铺满屏幕",
+        "scaleFillShort": "铺满",
+        "scaleOriginal": "原始像素 1:1",
+        "fullscreen": "全屏显示",
+        "phaseConnected": "实时同步中",
+        "phaseConnecting": "接入中…",
+        "phaseClosed": "已关闭",
+        "phaseError": "连接异常",
+        "connectingTitle": "正在无感接入监控画面",
+        "connectingDesc": "正在建立加密通道，被控端与原主控端均无弹窗干扰。",
+        "targetEndedTitle": "原远程控制会话已结束",
+        "targetEndedDesc": "被监控的原始远控会话已经断开，无感监控已自动退出。",
+        "closedTitle": "监控已结束",
+        "closedDesc": "您已退出本次画面监控。",
+        "errorTitle": "无法建立监控画面",
+        "takeoverChannelNotReady": "控制通道尚未就绪，请稍候重试",
+        "takeoverEnabledToast": "已接管控制权，原主控端已切换为仅观看模式",
+        "takeoverReleasedToast": "已释放控制权，原主控端已恢复操作权限"
+      }
     },
     "approval": {
       "title": "账号审批",

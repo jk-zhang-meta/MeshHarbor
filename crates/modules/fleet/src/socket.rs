@@ -811,6 +811,7 @@ pub async fn handle_agent_socket(
         slot: None,
         share_files_account: None,
         continues: None,
+        silent_monitor: false,
     };
 
     // Phase A-1 — server-side receive-liveness, symmetric to the agent's

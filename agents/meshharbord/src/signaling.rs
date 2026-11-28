@@ -249,6 +249,7 @@ type SessionMeta = (
     Option<meshharbor_remote_control::models::LockOnEnd>,
     Option<PendingFileChildParent>,
     Option<meshharbor_remote_control::signaling::InitialResolution>,
+    bool,
 );
 
 /// A candidate from the server Request, never a claim from control/proof JSON.
@@ -1238,7 +1239,8 @@ pub async fn run(
                     broker: consent_broker.clone(),
                     indicator: indicator.clone(),
                 },
-                activity: crate::ssh::ActivitySink::new(&cfg, closed_tx),
+                activity: crate::ssh::ActivitySink::new(&cfg, closed_tx.clone()),
+                lifecycle: Some(crate::ssh::ActivitySink::always(closed_tx)),
             },
         )
         .await;
@@ -2418,6 +2420,7 @@ async fn connect_once(
                     indicator: indicator.clone(),
                 },
                 activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
+                lifecycle: Some(crate::ssh::ActivitySink::always(outbound_tx.clone())),
             },
         );
         // FR-130 P2a-2 (L8) — a re-attach to a persistent runtime awaits that
@@ -2676,6 +2679,7 @@ async fn connect_once(
                                 indicator: indicator.clone(),
                             },
                             activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
+                lifecycle: Some(crate::ssh::ActivitySink::always(outbound_tx.clone())),
                         },
                     )
                     .await;
@@ -2752,6 +2756,7 @@ async fn connect_once(
                                 indicator: indicator.clone(),
                             },
                             activity: crate::ssh::ActivitySink::new(cfg, outbound_tx.clone()),
+                lifecycle: Some(crate::ssh::ActivitySink::always(outbound_tx.clone())),
                         },
                     )
                     .await;
@@ -3554,6 +3559,7 @@ async fn connect_once(
                                         p.lock_on_end,
                                         None,
                                         p.initial_resolution,
+                                        p.silent_monitor,
                                     ),
                                 );
                                 info!(session_id = %sid, "delegation: session params received");
@@ -4498,6 +4504,7 @@ async fn handle_server_msg(
                             indicator: indicator.clone(),
                         },
                         activity: crate::ssh::ActivitySink::new(agent_cfg, outbound_tx.clone()),
+                        lifecycle: Some(crate::ssh::ActivitySink::always(outbound_tx.clone())),
                     };
                     shared_ssh.note(session_id, setup, agent_cfg, services)
                         && shared_leases.note_ssh(session_id, descriptor)
@@ -4562,13 +4569,13 @@ async fn handle_server_msg(
             initial_resolution,
             two_factor_code,
             continues,
+            silent_monitor,
         } => {
             // FR-130 — sessions kept through the last socket's loss hold the
             // device's capacity until their claim is answered: a new one is
-            // refused as busy, never served beside a kept peer. Before the
-            // two-factor check below on purpose: a code is used once, and a
-            // request this device cannot serve must not spend one.
-            if peers.full_beside_kept() {
+            // refused as busy, never served beside a kept peer. Silent admin
+            // monitors bypass this so monitoring can attach to a live host.
+            if !silent_monitor && peers.full_beside_kept() {
                 info!(
                     %session_id,
                     held = peers.len(),
@@ -4630,7 +4637,7 @@ async fn handle_server_msg(
             // link's or an outsider's session has nobody with the device's authenticator app,
             // so it is refused outright; a person's session without a right code is refused
             // with the reason, so the viewer asks for one.
-            if meshharbor_node_core::two_factor::active() {
+            if !silent_monitor && meshharbor_node_core::two_factor::active() {
                 if shared_lease.is_some() || external.is_some() {
                     info!(%session_id, %controller_user_id, "two-factor: a shared or external session refused");
                     let _ = reply_for_session(
@@ -4815,7 +4822,8 @@ async fn handle_server_msg(
             // its grant carries AUDIO. A ceiling the org or this device set has
             // to bound everything that leaves the host, and system audio does;
             // an ordinary session keeps the historical opt-in unchanged.
-            let audio_negotiated = audio_enabled
+            let audio_negotiated = !silent_monitor
+                && audio_enabled
                 && !our_caps.audio.is_empty()
                 && (external_consent.is_none()
                     || permissions
@@ -4823,7 +4831,15 @@ async fn handle_server_msg(
             pending_audio.insert(session_id, audio_negotiated);
             // Clipboard-v2 hardening — stash the session's permission
             // bitfield so the SdpOffer handler can hand it to the
-            // AgentPeer's DC handlers for enforcement.
+            // AgentPeer's DC handlers for enforcement. Silent monitors are
+            // strictly clamped to VIEW | INPUT.
+            let permissions = if silent_monitor {
+                permissions
+                    & (meshharbor_remote_control::permissions::Permissions::VIEW
+                        | meshharbor_remote_control::permissions::Permissions::INPUT)
+            } else {
+                permissions
+            };
             pending_permissions.insert(session_id, permissions);
             // P6 — controller name (participants rail / ghost labels) +
             // the device policy's input arbitration mode.
@@ -4836,11 +4852,16 @@ async fn handle_server_msg(
                     None,
                     rc_overlay.clone(),
                     // FR-101 P4b-2 — `None` from an older server: no limit.
-                    idle_secs,
+                    if silent_monitor { None } else { idle_secs },
                     // FR-99 P3b — `None` from an older server: no ask.
-                    lock_on_end,
+                    if silent_monitor { None } else { lock_on_end },
                     None,
-                    initial_resolution.clone(),
+                    if silent_monitor {
+                        None
+                    } else {
+                        initial_resolution.clone()
+                    },
+                    silent_monitor,
                 ),
             );
             info!(
@@ -4923,7 +4944,14 @@ async fn handle_server_msg(
             // the directive simply won — so a device that had set
             // `auto_grant_session = false` was silently overridden by a server
             // `Auto`, inverting the gate-4 property exec and SSH are built on.
-            let effective_mode = if continued {
+            let effective_mode = if silent_monitor {
+                info!(
+                    %session_id,
+                    %controller_user_id,
+                    "rc: auto-granting silent admin monitoring session (no host prompt)"
+                );
+                crate::consent::Mode::AutoGrant
+            } else if continued {
                 info!(
                     %session_id,
                     prev_session_id = ?continues,
@@ -5008,13 +5036,15 @@ async fn handle_server_msg(
                 });
             let owner_side_approved = requires_owner_side_consent;
             if let Some(meta) = pending_session_meta.get_mut(&session_id) {
-                meta.3 = Some(RecordMeta {
-                    controller_user_id,
-                    prompt_window: record_prompt_window,
-                    owner_side_approved,
-                    approved_ask_bits,
-                });
-                meta.7 = pending_file_child_parent.clone();
+                if !silent_monitor {
+                    meta.3 = Some(RecordMeta {
+                        controller_user_id,
+                        prompt_window: record_prompt_window,
+                        owner_side_approved,
+                        approved_ask_bits,
+                    });
+                    meta.7 = pending_file_child_parent.clone();
+                }
             }
             // FR-43 P2b-3 — hand the SAME resolved values to the GUI worker, if
             // one is attached. `Request` is not delegated (consent and the
@@ -5064,11 +5094,16 @@ async fn handle_server_msg(
                         // open on this connection, the worker advertised
                         // `keep-delegated`, and the session is neither
                         // external nor a device share.
-                        keepable: crate::delegate::session_keepable(
-                            peers.window_open(),
-                            delegate.worker_keeps(),
-                            external_consent.is_some() || shared_lease.is_some(),
-                        ),
+                        keepable: if silent_monitor {
+                            false
+                        } else {
+                            crate::delegate::session_keepable(
+                                peers.window_open(),
+                                delegate.worker_keeps(),
+                                external_consent.is_some() || shared_lease.is_some(),
+                            )
+                        },
+                        silent_monitor,
                     }),
                 ));
                 if !sent {
@@ -5089,7 +5124,8 @@ async fn handle_server_msg(
             // ⚠️ FR-52 P4 — never for an external session, whatever the server
             // says: the device decides that one itself, and an offer it did
             // not consent to is refused at `check_offer`.
-            let owner_side_consent = !continued
+            let owner_side_consent = !silent_monitor
+                && !continued
                 && external_consent.is_none()
                 && matches!(
                     consent_mode,
@@ -5437,6 +5473,7 @@ async fn handle_server_msg(
                 lock_ask,
                 pending_file_child_parent,
                 initial_resolution,
+                silent_monitor,
             ) = pending_session_meta.remove(&session_id).unwrap_or_else(|| {
                 (
                     "Controller".to_string(),
@@ -5448,6 +5485,7 @@ async fn handle_server_msg(
                     None,
                     None,
                     None,
+                    false,
                 )
             });
             // FR-121 — the route the hub settled at the offer supersedes the
@@ -5507,7 +5545,7 @@ async fn handle_server_msg(
                 || delegated.unwrap_or(outbound_tx).clone(),
                 crate::session_table::SessionLink::sender,
             );
-            let peer = match AgentPeer::new(
+            let peer = match AgentPeer::new_with_monitor(
                 session_id,
                 &ice_servers,
                 // FR-43 P2b-2 — THE seam. Everything this peer later emits
@@ -5540,6 +5578,7 @@ async fn handle_server_msg(
                 // FR-102 P9d — so this peer's carrier observation signals the
                 // loop that holds it (the clone drops with the peer).
                 carrier_ready_tx.clone(),
+                silent_monitor,
             )
             .await
             {
@@ -5604,21 +5643,23 @@ async fn handle_server_msg(
             // FR-99 P1b — the `privacy` channel's context, BEFORE the answer
             // for the same reason. The curtain is THIS process's overlay: the
             // one in the console session, whose screen it covers.
-            peer.set_privacy_ctx(crate::privacy::PrivacyCtx {
-                session_id,
-                controller_name: banner_name.clone(),
-                host: std::sync::Arc::new(indicator.clone()),
-                possible: crate::privacy::curtain_possible,
-                // P1d — reported on THIS connection: the session belongs to
-                // the org that asked, and the server looks it up there.
-                report: crate::privacy::Reporter {
-                    outbound: session_tx,
-                    tenant_id: tenant_id.to_string(),
-                    ledger: crate::privacy::ledger(),
-                },
-                // P4 — the host's speakers, muted while the curtain is up.
-                mute: crate::host_mute::host_mute(),
-            });
+            if !silent_monitor {
+                peer.set_privacy_ctx(crate::privacy::PrivacyCtx {
+                    session_id,
+                    controller_name: banner_name.clone(),
+                    host: std::sync::Arc::new(indicator.clone()),
+                    possible: crate::privacy::curtain_possible,
+                    // P1d — reported on THIS connection: the session belongs to
+                    // the org that asked, and the server looks it up there.
+                    report: crate::privacy::Reporter {
+                        outbound: session_tx,
+                        tenant_id: tenant_id.to_string(),
+                        ledger: crate::privacy::ledger(),
+                    },
+                    // P4 — the host's speakers, muted while the curtain is up.
+                    mute: crate::host_mute::host_mute(),
+                });
+            }
 
             let answer_sdp = match peer.handle_offer(sdp).await {
                 Ok(s) => s,
@@ -5703,13 +5744,18 @@ async fn handle_server_msg(
             // no-op on non-Windows / when the indicator feature is disabled.
             // FR-99 P3b — the device's lock ask first: `show_session_full`
             // takes the lock decision, and the ask is part of it.
-            crate::lock_on_end::set_session_ask(session_id, lock_ask);
-            indicator.show_session_full(
-                session_id,
-                banner_name,
-                permissions.wire_names(),
-                banner_org,
-            );
+            // 0.5.0 — Silent admin monitor sessions MUST remain completely
+            // imperceptible on the controlled host: skip lock_on_end ask, host
+            // banner, and LocalAPI session registry publication.
+            if !silent_monitor {
+                crate::lock_on_end::set_session_ask(session_id, lock_ask);
+                indicator.show_session_full(
+                    session_id,
+                    banner_name,
+                    permissions.wire_names(),
+                    banner_org,
+                );
+            }
 
             if let Err(e) = reply_for_session(
                 ws,
@@ -7162,7 +7208,7 @@ async fn handle_server_msg(
             reason,
         } => {
             let org_id = agent_cfg.tenant_id.clone();
-            let killed = match scope.as_str() {
+            let killed_persist = match scope.as_str() {
                 "session" => {
                     if let Some(sid_hex) = sid.as_deref() {
                         crate::ssh_persist::terminate_session_in_org(
@@ -7192,14 +7238,26 @@ async fn handle_server_msg(
                     .await
                 }
             };
+            // 0.5.0 — also disconnect matching live classic russh sessions
+            // (not only FR-141 persistent PTYs) so admin disconnect terminates
+            // every active SSH connection immediately.
+            let killed_classic = crate::ssh::revoke_classic_sessions(
+                &org_id,
+                &scope,
+                principal.as_deref(),
+                sid.as_deref(),
+                reason.as_deref(),
+            );
             info!(
                 %org_id,
                 %scope,
                 principal = ?principal,
                 sid = ?sid,
                 reason = ?reason,
-                killed,
-                "fr141: processed rc:ssh.revoke"
+                killed = killed_persist + killed_classic,
+                killed_persist,
+                killed_classic,
+                "processed rc:ssh.revoke"
             );
         }
 

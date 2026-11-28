@@ -465,6 +465,7 @@ async fn verify_remote_target(
         initial_resolution: None,
         replaces: None,
         continues_from: None,
+        silent_monitor: false,
     };
     let raw = serde_json::to_string(&msg)
         .map_err(|_| ApiError::Internal("Failed to encode PDP request".into()))?;
@@ -551,6 +552,7 @@ async fn verify_share_remote_target(
         initial_resolution: None,
         replaces: None,
         continues_from: None,
+        silent_monitor: false,
     };
     let raw = serde_json::to_string(&msg)
         .map_err(|_| ApiError::Internal("Failed to encode share PDP request".into()))?;

@@ -234,6 +234,7 @@ mod tests {
                 indicator: crate::indicator::ViewerIndicator::disabled(),
             },
             activity: None,
+            lifecycle: None,
         };
         let mut targets = SharedSshTargets::default();
         assert!(targets.note(sid, setup, &cfg, services));

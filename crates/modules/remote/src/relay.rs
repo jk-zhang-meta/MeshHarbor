@@ -170,6 +170,10 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     .get("org_session_cap")
                     .and_then(|v| v.as_u64())
                     .and_then(|n| u32::try_from(n).ok());
+                let silent_monitor = body
+                    .get("silent_monitor")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let frame: ClientMsg = serde_json::from_value(
                     body.get("frame")
                         .cloned()
@@ -238,6 +242,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                 if let ClientMsg::SessionRequest {
                     agent_id, replaces, ..
                 } = &frame
+                    && !silent_monitor
                 {
                     crate::row_end::before_request(&state, user_id, *agent_id, *replaces).await;
                 }
@@ -316,6 +321,7 @@ pub fn wire_rc_relay(state: &RemoteState) {
                     // Shared requests never cross pods (refused above).
                     share_files_account: None,
                     continues,
+                    silent_monitor,
                 };
                 let dispatched = state.fleet.rc_hub.dispatch(&ctx, frame);
                 if let Some(lease) = &slot {
@@ -482,6 +488,7 @@ pub async fn relay_rc_frame(
     // hub counts the org's live sessions against it. ⚠️ Without it a
     // session landing on the other pod would skip the cap.
     org_session_cap: Option<u32>,
+    silent_monitor: bool,
     raw_frame: &serde_json::Value,
 ) -> Result<Option<(String, String)>, ()> {
     let Some(bus) = state.cluster_bus.clone() else {
@@ -506,6 +513,7 @@ pub async fn relay_rc_frame(
         "idle_secs": idle_secs,
         "lock_on_end": lock_on_end,
         "org_session_cap": org_session_cap,
+        "silent_monitor": silent_monitor,
         "frame": raw_frame,
     });
     match bus.request(owner_pod, "rc.cmd", body).await {

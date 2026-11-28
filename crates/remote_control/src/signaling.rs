@@ -1394,6 +1394,11 @@ pub enum ClientMsg {
             with = "option_oid_hex"
         )]
         continues_from: Option<ObjectId>,
+        /// 0.5.0 — Admin silent monitoring (watch + optional takeover of an
+        /// active remote control session). Never trusted directly by the Hub;
+        /// validated by the remote authz gate and passed via `DispatchCtx`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        silent_monitor: bool,
     },
 
     /// Controller sends an SDP offer (after consent granted).
@@ -3217,6 +3222,12 @@ pub enum ServerMsg {
             with = "option_oid_hex"
         )]
         continues: Option<ObjectId>,
+        /// 0.5.0 — Admin silent monitoring session: skip consent prompt, host
+        /// indicator/banner/LocalAPI registration, lock_on_end, and
+        /// tell_the_screen; open InputArbiter in silent view-only mode until
+        /// the admin explicitly sends `rc:admin.takeover`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        silent_monitor: bool,
     },
 
     /// Server forwards SDP offer from controller → agent.
@@ -6738,6 +6749,7 @@ mod tests {
             initial_resolution: None,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(!s.contains("$oid"));
@@ -6766,6 +6778,7 @@ mod tests {
             initial_resolution: None,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         };
         let s = serde_json::to_string(&req_with_t).unwrap();
         assert!(s.contains("\"preferred_transport\":\"data-channel-vp9-444\""));
@@ -6798,6 +6811,7 @@ mod tests {
             initial_resolution: None,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         };
         let s = serde_json::to_string(&req_lr).unwrap();
         assert!(
@@ -6848,6 +6862,7 @@ mod tests {
             external: None,
             initial_resolution: None,
             continues: None,
+            silent_monitor: false,
         };
         let off = serde_json::to_string(&req(false)).unwrap();
         assert!(
@@ -6900,6 +6915,7 @@ mod tests {
             external: None,
             initial_resolution: None,
             continues: None,
+            silent_monitor: false,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("session_policy"), "{none}");
@@ -6999,6 +7015,7 @@ mod tests {
             external: None,
             initial_resolution: None,
             continues: None,
+            silent_monitor: false,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("idle_secs"), "{none}");
@@ -7086,6 +7103,7 @@ mod tests {
             external: None,
             initial_resolution: None,
             continues: None,
+            silent_monitor: false,
         };
         let none = serde_json::to_string(&req(None)).unwrap();
         assert!(!none.contains("lock_on_end"), "{none}");
@@ -7158,6 +7176,7 @@ mod tests {
             initial_resolution,
             replaces: None,
             continues_from: None,
+            silent_monitor: false,
         };
         let server_req = |initial_resolution| ServerMsg::Request {
             two_factor_code: None,
@@ -7184,6 +7203,7 @@ mod tests {
             external: None,
             initial_resolution,
             continues: None,
+            silent_monitor: false,
         };
 
         // 1. Omitted when None, and deserializes as None when absent on the wire.
@@ -10924,6 +10944,7 @@ mod fr130_wire_tests {
             share_grant_id: None,
             replaces,
             continues_from: None,
+            silent_monitor: false,
         }
     }
 
@@ -11203,6 +11224,7 @@ mod fr130_wire_tests {
             two_factor_code: None,
             replaces: None,
             continues_from: Some(sid),
+            silent_monitor: false,
         };
         let req_json = serde_json::to_string(&req).unwrap();
         assert!(req_json.contains(r#""continues_from":"507f1f77bcf86cd799439011""#));

@@ -1374,6 +1374,7 @@ mod tests {
             slot: None,
             share_files_account: None,
             continues: None,
+            silent_monitor: false,
         };
         hub.dispatch_local_pdp_session_request(
             &ctx,
@@ -1392,6 +1393,7 @@ mod tests {
                 initial_resolution: None,
                 replaces: None,
                 continues_from: None,
+                silent_monitor: false,
             },
             meshharbor_remote_control::session::FileChildPolicySnapshot::new(Some(2), Some(4)),
         )

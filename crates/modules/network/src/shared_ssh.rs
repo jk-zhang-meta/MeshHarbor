@@ -51,6 +51,8 @@ enum SessionAuth {
 #[derive(Clone)]
 pub(crate) struct SharedSshSession {
     pub id: ObjectId,
+    pub tenant_id: ObjectId,
+    pub ssh_grant_id: String,
     pub device: ObjectId,
     pub recipient: ObjectId,
     pub grant: ObjectId,
@@ -497,12 +499,26 @@ fn terminate(state: &NetworkState, sid: ObjectId, s: &SharedSshSession) {
     if let Some(mut set) = state.tunnel_sessions_by_target_agent.get_mut(&s.device) {
         set.remove(&sid);
     }
+    state.fleet.rc_hub.remove_live_ssh(&s.ssh_grant_id);
     let msg = ServerMsg::TunnelTerminate {
         session_id: sid,
         reason: CloseReason::IoError,
     };
     let _ = s.outbound.try_send(msg.clone());
     let _ = state.fleet.rc_hub.send_to_agent(s.device, msg);
+}
+
+/// 0.5.0 — Force-disconnect a live shared SSH bridge on this pod, fenced to
+/// `tenant_id` so one tenant's admin can never disconnect another tenant's share.
+pub fn admin_terminate(state: &NetworkState, tenant_id: ObjectId, sid: ObjectId) -> bool {
+    let Some(s) = state.shared_ssh_sessions.get(&sid).map(|e| e.clone()) else {
+        return false;
+    };
+    if s.tenant_id != tenant_id {
+        return false;
+    }
+    terminate(state, sid, &s);
+    true
 }
 /// The authenticated agent must confirm this exact prepared stream; no user ACK.
 pub(crate) async fn prepared(state: &NetworkState, ctx: &AgentCtx, sid: ObjectId, accepted: bool) {
@@ -614,8 +630,11 @@ async fn run(
         // An SSH stream carries its account in `SharedSshSetup`, not here.
         account: None,
     };
+    let ssh_grant_id = ObjectId::new().to_hex();
     let s = SharedSshSession {
         id: sid,
+        tenant_id: access.agent.tenant_id,
+        ssh_grant_id: ssh_grant_id.clone(),
         authority,
         device: access.grant.device_id,
         recipient: user,
@@ -668,7 +687,7 @@ async fn run(
         owner_user_id: access.grant.owner_user_id,
         recipient_user_id: user,
         shared_lease: lease.clone(),
-        ssh_grant_id: ObjectId::new().to_hex(),
+        ssh_grant_id: ssh_grant_id.clone(),
         public_key: q.public_key,
         caller,
         account_mode: SshAccountMode::Named,
@@ -740,7 +759,34 @@ async fn run(
         }
         return;
     }
-    let _ = state.ssh_audit.record(audit).await;
+    let _ = state.ssh_audit.record(audit.clone()).await;
+    let now = bson::DateTime::now();
+    state
+        .fleet
+        .rc_hub
+        .note_ssh_grant_issued(meshharbor_mod_fleet::hub::LiveSshSessionInfo {
+            key: ssh_grant_id.clone(),
+            tenant_id: access.agent.tenant_id,
+            agent_id: s.device,
+            user_id: Some(user),
+            origin_agent_id: None,
+            grant_id: Some(ssh_grant_id.clone()),
+            shared_session_id: Some(sid),
+            share_grant_id: Some(grant),
+            source: "device_share".into(),
+            caller: audit.caller,
+            account_mode: audit.account_mode,
+            ran_as: audit.ran_as,
+            resume_allowed: false,
+            phase: "active",
+            started_at: now,
+            last_activity_at: now,
+            expires_at_ms: Some(
+                (now.timestamp_millis().max(0) as u64) + session_secs.saturating_mul(1_000),
+            ),
+            session_secs: Some(session_secs),
+            activity_count: 0,
+        });
     let mut opened = false;
     let mut flow = None;
     let mut offered = false;

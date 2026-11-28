@@ -262,6 +262,7 @@ pub(crate) async fn session_authz(
         ),
         lock_on_end: access.agent.access_policy.lock_on_end_ask(),
         org_session_cap: cap,
+        silent_monitor: false,
     })
 }
 /// Re-read all mutable sharing gates, not only the ledger row. Whole check is bounded.

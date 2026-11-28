@@ -49,6 +49,13 @@ pub async fn record_ssh_activity(
 ) {
     use meshharbor_remote_control::models::SshActivityEvent;
 
+    state.fleet.rc_hub.note_ssh_activity(
+        tenant_id,
+        agent_id,
+        grant_id.as_deref(),
+        &caller,
+        kind,
+    );
     let detail = detail.map(|mut d| {
         if d.chars().count() > SshActivityEvent::MAX_DETAIL {
             d = d.chars().take(SshActivityEvent::MAX_DETAIL).collect();

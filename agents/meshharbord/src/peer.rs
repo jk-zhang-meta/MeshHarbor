@@ -449,7 +449,62 @@ pub struct SessionTelemetry {
     pub carrier: Option<crate::session_carrier::SessionCarrier>,
 }
 
+/// 0.5.0 — Live silent admin monitoring sessions on this process. Kept here so
+/// `tell_the_screen` suppresses host notifications without plumbing an extra
+/// flag through every media-pump sub-function. Removed on `AgentPeer::drop`.
+static SILENT_MONITOR_SESSIONS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<bson::oid::ObjectId>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub(crate) fn is_silent_monitor(session_id: bson::oid::ObjectId) -> bool {
+    SILENT_MONITOR_SESSIONS
+        .lock()
+        .map(|s| s.contains(&session_id))
+        .unwrap_or(false)
+}
+
 impl AgentPeer {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
+        session_id: bson::oid::ObjectId,
+        ice_servers: &[IceServer],
+        outbound: mpsc::Sender<ClientMsg>,
+        encoder_preference: encode::EncoderPreference,
+        chosen_codec: String,
+        track_codec: String,
+        negotiated_transport: Option<String>,
+        chroma_pref: Option<String>,
+        chunk_framing: bool,
+        audio_enabled: bool,
+        permissions: meshharbor_remote_control::permissions::Permissions,
+        controller_name: String,
+        input_mode: Option<String>,
+        rc_overlay: crate::rc_overlay::RcOverlay,
+        rc_sessions: crate::rc_sessions::RcSessionRegistry,
+        carrier_ready_tx: mpsc::Sender<bson::oid::ObjectId>,
+    ) -> Result<Self> {
+        Self::new_with_monitor(
+            session_id,
+            ice_servers,
+            outbound,
+            encoder_preference,
+            chosen_codec,
+            track_codec,
+            negotiated_transport,
+            chroma_pref,
+            chunk_framing,
+            audio_enabled,
+            permissions,
+            controller_name,
+            input_mode,
+            rc_overlay,
+            rc_sessions,
+            carrier_ready_tx,
+            false,
+        )
+        .await
+    }
+
     /// Phase Y.3: `negotiated_transport` is the video transport
     /// chosen by signalling (`AgentCaps.transports` ∩ browser
     /// `preferred_transport`). `None` → legacy WebRTC video track.
@@ -465,7 +520,7 @@ impl AgentPeer {
     /// of the agent's `MESHHARBORD_VP9_CHROMA` env var. `None` →
     /// fall back to env var (= operator default).
     #[allow(clippy::too_many_arguments)]
-    pub async fn new(
+    pub async fn new_with_monitor(
         session_id: bson::oid::ObjectId,
         ice_servers: &[IceServer],
         outbound: mpsc::Sender<ClientMsg>,
@@ -517,7 +572,13 @@ impl AgentPeer {
         // peer's own sender (the seam), which for a delegated session is the
         // delegation channel to the daemon, never the worker's own WS.
         carrier_ready_tx: mpsc::Sender<bson::oid::ObjectId>,
+        silent_monitor: bool,
     ) -> Result<Self> {
+        if silent_monitor
+            && let Ok(mut set) = SILENT_MONITOR_SESSIONS.lock()
+        {
+            set.insert(session_id);
+        }
         let mut engine = MediaEngine::default();
         engine
             .register_default_codecs()
@@ -865,10 +926,11 @@ impl AgentPeer {
         // canonical teardown signal display-match restore uses).
         {
             use meshharbor_remote_control::permissions::Permissions;
-            crate::input::arbiter::global().session_open(
+            crate::input::arbiter::global().session_open_with_silent(
                 session_id,
                 controller_name,
                 permissions.contains(Permissions::INPUT),
+                silent_monitor,
                 input_mode
                     .as_deref()
                     .and_then(crate::input::arbiter::Mode::parse),
@@ -1522,6 +1584,7 @@ impl AgentPeer {
                             viewer_report_for_dc,
                             priority_for_dc,
                             file_child_authorization,
+                            silent_monitor,
                         )
                     }
                     "cursor" => {
@@ -2763,6 +2826,9 @@ impl Drop for AgentPeer {
         self.session_end.cancel();
         close_file_child_control(&self.file_child_authorization);
         crate::input::arbiter::global().session_closed(session_id);
+        if let Ok(mut set) = SILENT_MONITOR_SESSIONS.lock() {
+            set.remove(&session_id);
+        }
         // Wave 2 — release this session's telemetry counters; a
         // long-lived agent must not accumulate one entry per session.
         crate::session_telemetry::forget(session_id);
@@ -6805,6 +6871,9 @@ fn tell_the_screen(
     arm: Option<crate::capture::CaptureArm>,
     rc_sessions: &crate::rc_sessions::RcSessionRegistry,
 ) {
+    if is_silent_monitor(session_id) {
+        return;
+    }
     #[cfg(all(target_os = "linux", feature = "portal-capture"))]
     if arm == Some(crate::capture::CaptureArm::Drm) {
         crate::indicator::notify::viewing(session_id, rc_sessions.clone());
@@ -11886,6 +11955,7 @@ fn attach_control_handler(
     // rc.199 — per-session Priority dial; the `rc:priority` match arm writes it.
     priority: Arc<std::sync::atomic::AtomicU8>,
     file_child_authorization: Arc<std::sync::Mutex<FileChildAuthorization>>,
+    silent_monitor: bool,
 ) {
     // A handle the on_message closure sends replies through (e.g.
     // rc:logs-fetch.reply) over the same DC. #1740 — WEAK: the closure is
@@ -11973,7 +12043,29 @@ fn attach_control_handler(
                 debug!(%session_id, "control: message missing 't' tag, dropped");
                 return;
             };
+            // 0.5.0 — Silent admin monitors are strictly restricted to
+            // non-disruptive stream health probes + explicit `rc:admin.takeover`
+            // so watching never changes host display mode, encoder resolution,
+            // keep-busy, layout, or floor arbitration for the original user.
+            if silent_monitor
+                && !matches!(
+                    t,
+                    "rc:admin.takeover" | "rc:clock" | "rc:keyframe" | "rc:decodestat"
+                )
+            {
+                debug!(%session_id, tag = t, "control: silent monitor dropped host-mutating verb");
+                return;
+            }
             match t {
+                "rc:admin.takeover" => {
+                    if !silent_monitor {
+                        warn!(%session_id, "control: non-monitor session attempted rc:admin.takeover — dropped");
+                        return;
+                    }
+                    let active = val.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+                    info!(%session_id, active, "control: rc:admin.takeover updated");
+                    crate::input::arbiter::global().set_admin_takeover(session_id, active);
+                }
                 "rc:quality" => {
                     let Some(q_str) = val.get("quality").and_then(|v| v.as_str()) else {
                         debug!(%session_id, "control: rc:quality missing quality field");

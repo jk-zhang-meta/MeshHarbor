@@ -281,6 +281,16 @@ export function canViewSshAudit(mask: number | null, isOwner: boolean): boolean 
   return hasPermission(mask, byKeys(['VIEW_SSH_AUDIT']))
 }
 
+export function canViewRemoteAudit(mask: number | null, isOwner: boolean): boolean {
+  if (isOwner) return true
+  if (mask === null) return false
+  return hasPermission(mask, byKeys(['VIEW_REMOTE_AUDIT']))
+}
+
+export function canViewMonitoring(mask: number | null, isOwner: boolean): boolean {
+  return canViewRemoteAudit(mask, isOwner) || canViewSshAudit(mask, isOwner)
+}
+
 /**
  * May this caller ask a device to turn exec / SSH ON?
  * Mirrors `remote_config::decide` server-side. FAIL-CLOSED on `mask === null`.

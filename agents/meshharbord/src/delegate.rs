@@ -478,6 +478,10 @@ pub struct SessionParams {
     /// external or shared session; absent (an older daemon) reads `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub keepable: bool,
+    /// 0.5.0 — Admin silent monitoring session: suppress host banner, LocalAPI
+    /// registry entry, lock_on_end, tell_the_screen, and register silent arbiter.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub silent_monitor: bool,
 }
 
 /// FR-85 P1e-mac — what a delegated session's `record` channel needs, carried
@@ -2575,6 +2579,7 @@ mod params_tests {
             lock_on_end: None,
             initial_resolution: None,
             keepable: false,
+            silent_monitor: false,
         };
         let wire = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params)))
             .expect("serialises");
@@ -2619,6 +2624,7 @@ mod params_tests {
             lock_on_end: None,
             initial_resolution: None,
             keepable: false,
+            silent_monitor: false,
         };
         let track = serde_json::to_string(&p).unwrap();
         p.transport = Some("data-channel-h264".into());
@@ -2648,6 +2654,7 @@ mod params_tests {
             lock_on_end: None,
             initial_resolution: None,
             keepable: false,
+            silent_monitor: false,
         }
     }
 
@@ -2982,6 +2989,7 @@ mod shared_lease_delegation_tests {
                 lock_on_end: None,
                 initial_resolution: None,
                 keepable: false,
+                silent_monitor: false,
             }))
         };
         assert!(!host.send_params(params()));
@@ -3056,6 +3064,7 @@ mod shared_lease_params_scope_regressions {
             lock_on_end: None,
             initial_resolution: None,
             keepable: false,
+            silent_monitor: false,
         };
         let raw = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params))).unwrap();
         let DelegateFrame::SessionParams(p) = serde_json::from_str(&raw).unwrap() else {
@@ -3203,6 +3212,7 @@ mod p2b_delegation_tests {
             lock_on_end: None,
             initial_resolution: None,
             keepable: true,
+            silent_monitor: false,
         };
         let wire = serde_json::to_value(&p).unwrap();
         assert_eq!(wire["keepable"], json!(true));

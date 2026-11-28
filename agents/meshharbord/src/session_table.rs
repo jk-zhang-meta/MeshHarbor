@@ -3589,6 +3589,7 @@ mod tests {
             lock_on_end: None,
             initial_resolution: None,
             keepable: true,
+            silent_monitor: false,
         }
     }
 

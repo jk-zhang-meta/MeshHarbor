@@ -510,6 +510,12 @@
         "scrollAutoHint": "In Original or Custom zoom mode, moving the pointer smoothly pans across the full remote desktop",
         "hint": "Adaptive keeps aspect ratio; Fill stretches edge-to-edge with no black bars; Original is 1:1 CSS pixels; Custom sets zoom"
       },
+      "takeover": {
+        "chip": "Admin takeover · View-only",
+        "bannerTitle": "Control has been taken over by an administrator.",
+        "bannerBody": "You are now in view-only mode and cannot send keyboard or mouse input until the administrator releases control.",
+        "releasedToast": "Administrator released control — input restored"
+      },
       "match": {
         "unavailable": "Match remote display — {why}",
         "tooOld": "Match remote display — this agent is too old to say whether its display can be switched",
@@ -894,7 +900,15 @@
     "execAudit": "Command audit",
     "sshAudit": "SSH audit",
     "sshActivity": "SSH activity",
-    "gpuServers": "GPU Servers"
+    "gpuServers": "GPU Servers",
+    "sectionWorkspace": "Workspace",
+    "sectionMonitoring": "Monitoring & Audit",
+    "sectionOrganization": "Organization",
+    "sectionPersonal": "Personal",
+    "sectionPlatform": "Platform",
+    "monitoringLive": "Live monitoring",
+    "monitoringHistory": "Monitoring history",
+    "orgSettings": "Org settings"
   },
   "common": {
     "save": "Save",
@@ -905,6 +919,7 @@
     "close": "Close",
     "loadMore": "Load more",
     "refresh": "Refresh",
+    "retry": "Retry",
     "yes": "Yes",
     "no": "No"
   },
@@ -1017,6 +1032,142 @@
       "myDevices": "My devices & sharing",
       "deviceShares": "Device shares",
       "accountApprovals": "Account approvals"
+    },
+    "monitoring": {
+      "title": "Connection Monitoring & Audit",
+      "subtitle": "Monitor all live and historical SSH and remote control sessions with dual-party account/invite attribution, active disconnect, and silent remote watch & takeover.",
+      "tabs": {
+        "live": "Live",
+        "history": "History"
+      },
+      "kind": {
+        "remote": "Remote Control",
+        "ssh": "SSH"
+      },
+      "filter": {
+        "all": "All"
+      },
+      "col": {
+        "type": "Type",
+        "initiator": "Initiator / Controller",
+        "target": "Target / Controlled",
+        "statusTelemetry": "Status & Telemetry",
+        "timeDuration": "Started / Duration",
+        "actions": "Actions"
+      },
+      "attribution": {
+        "account": "Org account",
+        "member_invite": "Member invite",
+        "device_invite": "Device invite",
+        "device_share": "Device share",
+        "external": "External access",
+        "key_list": "Local key",
+        "invitedBy": "Invited by {name}",
+        "sharedBy": "Shared by {name}"
+      },
+      "phase": {
+        "active": "Active",
+        "negotiating": "Negotiating",
+        "pending": "Pending consent",
+        "granted": "Granted"
+      },
+      "source": {
+        "webrtc": "WebRTC desktop",
+        "cli": "CLI overlay",
+        "api": "API grant",
+        "device_share": "Device share",
+        "external": "External",
+        "key_list": "Local key-list"
+      },
+      "activityCount": "{count} events",
+      "disconnectAction": "Disconnect",
+      "disconnectConfirmTitle": "Disconnect active session",
+      "disconnectSuccess": "Disconnect request sent",
+      "disconnectFailed": "Failed to disconnect session",
+      "live": {
+        "heading": "Active Sessions",
+        "lastSync": "Synced {time}",
+        "autoRefresh": "Auto refresh",
+        "searchPlaceholder": "Search by device, account, invite, or session ID",
+        "adminWatching": "Watching ({count})",
+        "adminTakenOver": "Admin control",
+        "watchTakeover": "Watch / Take over",
+        "emptyTitle": "No active SSH or remote control sessions",
+        "emptyHint": "New sessions appear automatically (refreshed every 2s).",
+        "unavailable": "Live monitoring data unavailable",
+        "disconnectRemoteConfirm": "Disconnect this active remote control session immediately? Both controller and host will be disconnected.",
+        "disconnectSshConfirm": "Disconnect this active SSH session immediately? Running shells and tunnels will be terminated."
+      },
+      "history": {
+        "heading": "Monitoring History",
+        "summaryLine": "{devices} target devices · {remote} remote · {ssh} SSH ({denied} denied)",
+        "viewGrouped": "By device",
+        "viewFlat": "Chronological",
+        "searchPlaceholder": "Filter by device, account, invite, share, or reason",
+        "statusLabel": "Status",
+        "statusAll": "All statuses",
+        "statusCompleted": "Completed",
+        "statusLive": "Live",
+        "statusDenied": "Denied",
+        "statusOutcome": "Status / Outcome",
+        "dateFrom": "From date",
+        "dateTo": "To date",
+        "minDuration": "Min duration",
+        "maxDuration": "Max duration",
+        "unitSec": "sec",
+        "unitMin": "min",
+        "unitHour": "hr",
+        "last7d": "Last 7d",
+        "last14d": "Last 14d",
+        "last30d": "Last 30d",
+        "resetFilters": "Reset",
+        "sessionCount": "{count} sessions",
+        "totalDuration": "Total {dur}",
+        "details": "Details / Timeline",
+        "emptyTitle": "No matching monitoring history",
+        "loadFailed": "Failed to load monitoring history",
+        "viewSshActivities": "Activity timeline",
+        "viewSshActivitiesCount": "Timeline ({count})",
+        "sshTimelineTitle": "SSH Session Activity Timeline",
+        "sshTimelineEmpty": "No extra activity events recorded for this SSH session.",
+        "timelineAt": "Time",
+        "timelineKind": "Kind",
+        "timelineDetail": "Detail",
+        "timelineResult": "Result"
+      },
+      "watch": {
+        "watchingBadge": "Silent watch (View-only)",
+        "takingOverBadge": "Control taken over (Controller view-only)",
+        "controllerLabel": "Controller: {name}",
+        "takeOver": "Take over",
+        "releaseControl": "Release control",
+        "disconnectTarget": "Disconnect session",
+        "disconnectTargetConfirm": "Disconnect the active remote control session on \"{device}\"?",
+        "hideToolbar": "Hide toolbar",
+        "showToolbar": "Show watch toolbar",
+        "close": "Close watch",
+        "backToMonitoring": "Back to monitoring",
+        "scaleFit": "Fit to window",
+        "scaleFitShort": "Fit",
+        "scaleFill": "Fill screen",
+        "scaleFillShort": "Fill",
+        "scaleOriginal": "Original 1:1",
+        "fullscreen": "Fullscreen",
+        "phaseConnected": "Connected",
+        "phaseConnecting": "Connecting…",
+        "phaseClosed": "Closed",
+        "phaseError": "Error",
+        "connectingTitle": "Attaching silent monitor",
+        "connectingDesc": "Establishing encrypted view stream with zero notification on host or controller.",
+        "targetEndedTitle": "Original session ended",
+        "targetEndedDesc": "The monitored remote control session has ended; silent watch closed automatically.",
+        "closedTitle": "Monitoring ended",
+        "closedDesc": "You left this monitoring session.",
+        "errorTitle": "Unable to attach monitor",
+        "takeoverChannelNotReady": "Control channel is not ready yet",
+        "takeoverEnabledToast": "Control taken over — original controller is now view-only",
+        "takeoverReleasedToast": "Control released — original controller can operate again"
+      }
     },
     "approval": {
       "title": "Account approvals",

@@ -40,6 +40,8 @@ pub mod device_share;
 pub mod account_devices;
 #[cfg(feature = "fleet")]
 pub mod local_accounts;
+#[cfg(feature = "fleet")]
+pub mod monitoring;
 
 pub mod email_change;
 pub mod native_session;

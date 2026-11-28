@@ -2222,6 +2222,7 @@ mod tests {
                 indicator: crate::indicator::ViewerIndicator::disabled(),
             },
             activity: None,
+            lifecycle: None,
         };
         let remote_cfg = crate::remote_config::RemoteConfigServices::new(
             cfg_path,

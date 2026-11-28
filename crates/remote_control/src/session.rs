@@ -138,6 +138,15 @@ pub struct LiveSession {
     pub agent_id: ObjectId,
     pub tenant_id: ObjectId,
     pub controller_user_id: ObjectId,
+    /// Display name of the controller captured at session create (for live
+    /// monitoring UI before/alongside DB user lookup).
+    pub controller_name: String,
+    /// 0.5.0 — Admin silent monitoring session (watch/takeover). Excluded from
+    /// regular user session lists, host capacity, and `remote_sessions` history.
+    pub silent_monitor: bool,
+    /// 0.5.0 — True while this silent monitoring session currently holds
+    /// active takeover control over the target device.
+    pub admin_takeover_active: bool,
     permissions: Permissions,
     file_children_opted_in: bool,
     file_children_enabled: bool,
@@ -387,6 +396,9 @@ impl LiveSession {
             agent_id,
             tenant_id,
             controller_user_id,
+            controller_name: String::new(),
+            silent_monitor: false,
+            admin_takeover_active: false,
             permissions,
             file_children_opted_in: false,
             file_children_enabled: false,
@@ -1023,6 +1035,9 @@ impl LiveSession {
             agent_id,
             tenant_id,
             controller_user_id,
+            controller_name: String::new(),
+            silent_monitor: false,
+            admin_takeover_active: false,
             permissions,
             file_children_opted_in: false,
             file_children_enabled: false,

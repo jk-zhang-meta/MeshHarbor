@@ -146,6 +146,7 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
                 ..
             },
         ) if local_pdp_verified
+            && !authz.silent_monitor
             && matches!(authz.mode, ConsentMode::Auto | ConsentMode::Prompt)
             && authz.override_reason.is_none() =>
         {
@@ -176,6 +177,7 @@ pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame
         authz.idle_secs,
         authz.lock_on_end,
         authz.org_session_cap,
+        authz.silent_monitor,
         frame.dialed_tid,
         frame.conn_established_ms,
         frame.connection_id,
@@ -216,6 +218,8 @@ async fn dispatch_controller_rc(
     lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     // FR-115 P3 — the device org's concurrent-session cap (the same gate).
     org_session_cap: Option<u32>,
+    // 0.5.0 — server-validated admin silent monitor (watch + optional takeover).
+    silent_monitor: bool,
     // PR-1 rehome direction inputs: the affinity key this conn DIALED
     // with (None = key-less legacy/racy dial) and when it established.
     dialed_tid: Option<&str>,
@@ -323,7 +327,7 @@ async fn dispatch_controller_rc(
         }
         ClientMsg::SessionRequest {
             agent_id, replaces, ..
-        } => {
+        } if !silent_monitor => {
             crate::row_end::before_request(state, user_id, *agent_id, *replaces).await;
         }
         ClientMsg::Terminate {
@@ -405,6 +409,7 @@ async fn dispatch_controller_rc(
         // Set below by the share gate, and only for a shared request.
         share_files_account: None,
         continues,
+        silent_monitor,
     };
     // …and so does the cross-pod relay, for the same reason.
     let relay_tenant_name = tenant_name;
@@ -529,6 +534,7 @@ async fn dispatch_controller_rc(
                     idle_secs,
                     lock_on_end,
                     org_session_cap,
+                    silent_monitor,
                     &frame_val,
                 )
                 .await
@@ -652,6 +658,7 @@ async fn dispatch_controller_rc(
                         idle_secs,
                         lock_on_end,
                         org_session_cap,
+                        silent_monitor,
                         &frame_val,
                     )
                     .await
@@ -808,6 +815,9 @@ pub struct SessionAuthz {
     /// for an unlimited plan, with the kill switch off, on the early-out
     /// paths, and when the tenant row could not be read.
     pub org_session_cap: Option<u32>,
+    /// 0.5.0 — server-validated admin silent monitoring session (watch +
+    /// optional takeover of an active RC session on this device).
+    pub silent_monitor: bool,
 }
 
 impl SessionAuthz {
@@ -824,6 +834,7 @@ impl SessionAuthz {
             idle_secs: None,
             lock_on_end: None,
             org_session_cap: None,
+            silent_monitor: false,
         }
     }
     fn allow_with_input(
@@ -845,6 +856,7 @@ impl SessionAuthz {
             idle_secs: None,
             lock_on_end: None,
             org_session_cap: None,
+            silent_monitor: false,
         }
     }
     /// FR-85 P3 — set whether this allowed controller may record.
@@ -946,19 +958,25 @@ async fn resolve_session_authz_with_origin(
     if let Ok(
         msg @ ClientMsg::SessionRequest {
             share_grant_id: Some(_),
+            silent_monitor,
             ..
         },
     ) = serde_json::from_str::<ClientMsg>(text)
     {
+        if silent_monitor {
+            return Err("silent monitoring cannot be combined with a device share".to_string());
+        }
         return crate::device_share::session_authz(state, controller_user_id, &msg).await;
     }
 
-    let (agent_id, override_reason) = match serde_json::from_str::<ClientMsg>(text) {
+    let (agent_id, override_reason, silent_monitor) = match serde_json::from_str::<ClientMsg>(text)
+    {
         Ok(ClientMsg::SessionRequest {
             agent_id,
             override_reason,
+            silent_monitor,
             ..
-        }) => (agent_id, override_reason),
+        }) => (agent_id, override_reason, silent_monitor),
         // Not a session request → the mode is unused; allow through.
         _ => return Ok(SessionAuthz::allow(ConsentMode::Prompt)),
     };
@@ -1032,6 +1050,39 @@ async fn resolve_session_authz_with_origin(
         )
     });
     let tenant_name = tenant.map(|t| t.name);
+
+    // 0.5.0 — Admin silent monitoring (watch + optional takeover of an active
+    // remote control session). Requires org ADMINISTRATOR or both
+    // VIEW_REMOTE_AUDIT and REMOTE_CONTROL in the device's org. The Hub then
+    // enforces that an active non-monitor RC session actually exists on the
+    // target device before admitting the monitor.
+    if silent_monitor {
+        let perms = state
+            .tenants
+            .get_member_permissions(agent.tenant_id, controller_user_id)
+            .await
+            .unwrap_or(0);
+        let allowed = permissions::has(perms, permissions::ADMINISTRATOR)
+            || (permissions::has(perms, permissions::VIEW_REMOTE_AUDIT)
+                && permissions::has(perms, permissions::REMOTE_CONTROL));
+        if !allowed {
+            return Err("you don't have permission to monitor remote sessions".to_string());
+        }
+        return Ok(SessionAuthz {
+            mode: ConsentMode::Auto,
+            override_reason: None,
+            input_mode,
+            tenant_name,
+            may_record: false,
+            rc_overlay,
+            session_policy: OrgPolicy::Read(Default::default()),
+            max_duration: None,
+            idle_secs: None,
+            lock_on_end: None,
+            org_session_cap: None,
+            silent_monitor: true,
+        });
+    }
 
     // Controlling your OWN device is always allowed. Whether it also
     // auto-consents is now the DEVICE's call (FR-27): `prompt_owner` unset —
@@ -1132,6 +1183,7 @@ async fn resolve_session_authz_with_origin(
                 // session like any other, and the refusal names the session
                 // holding the slot, which an ADMINISTRATOR can end.
                 org_session_cap,
+                silent_monitor: false,
             });
         }
         *local_pdp_verified = true;
