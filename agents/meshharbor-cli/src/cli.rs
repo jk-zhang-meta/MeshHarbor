@@ -244,10 +244,6 @@ enum Command {
         #[command(subcommand)]
         action: RouteAction,
     },
-    /// Read a multi-forward config from disk and run all forwards as
-    /// persistent listeners. Superseded by daemon-supervised declared
-    /// routes — use `route add` instead; never wired.
-    Run {},
     /// Probe path-MTU, ICE candidate reachability, and TURN-relay status
     /// against the named agent. Prints a structured diagnostic dump.
     /// T3 implementation.
@@ -1227,10 +1223,6 @@ where
                 .await
             }
         },
-        Command::Run {} => bail!(
-            "`run` was superseded by daemon-supervised declared routes — use `route add` \
-             (persisted in the daemon config, restarts with the daemon)"
-        ),
         Command::Diagnose { agent } => {
             bail!("T3: diagnose not yet wired (agent={:?})", agent);
         }

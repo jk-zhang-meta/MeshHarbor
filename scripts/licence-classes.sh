@@ -46,11 +46,9 @@ CLIENT_PATHS=(
   agents/meshharbord
   agents/meshharbor-desktop
   agents/meshharbor-cli-shim
-  agents/meshharbor-setup
   agents/meshharbor-cli
   crates/agent-core
   crates/hive-node
-  crates/meshharbor-setup-core
   crates/tunnel-core
   crates/remote_control
   crates/localapi
@@ -100,11 +98,9 @@ CLIENT_CRATES=(
   meshharbord
   meshharbor-desktop
   meshharbor-cli-shim
-  meshharbor-setup
   meshharbor-cli
   meshharbor-node-core
   meshharbor-hive-node
-  meshharbor-setup-core
   meshharbor-tunnel-core
   meshharbor-remote-control
   meshharbor-localapi
@@ -119,7 +115,6 @@ SHIPPED_AGENT_CRATES=(
   meshharbor-cli
   meshharbor-cli-shim
   meshharbor-desktop
-  meshharbor-setup
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

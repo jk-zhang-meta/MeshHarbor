@@ -12,11 +12,10 @@ use std::path::{Path, PathBuf};
 
 const MARKER: &str = "fr-134: allowed";
 
-const ROOTS: [&str; 8] = [
+const ROOTS: [&str; 7] = [
     "agents",
     "crates/agent-core",
     "crates/tunnel-core",
-    "crates/meshharbor-setup-core",
     "crates/hive-node",
     "crates/localapi",
     "crates/tcp-turn-conn",

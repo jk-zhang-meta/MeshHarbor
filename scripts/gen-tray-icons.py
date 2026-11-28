@@ -2,7 +2,6 @@
 """Install X18 product icons and derive the desktop recording indicator.
 
     python3 scripts/gen-tray-icons.py                   # desktop (default)
-    python3 scripts/gen-tray-icons.py --target setup    # setup wizard
     python3 scripts/gen-tray-icons.py --output-dir /tmp/meshharbor-icons
 
 Product PNG/ICO and the transparent tray template are copied byte-for-byte
@@ -28,7 +27,6 @@ import struct
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGETS = {
     "desktop": ROOT / "agents/meshharbor-desktop/icons",
-    "setup": ROOT / "agents/meshharbor-setup/icons",
 }
 PRODUCT = "linux/hicolor/512x512/apps/meshharbor-desktop.png"
 ICO = "windows/meshharbor.ico"
