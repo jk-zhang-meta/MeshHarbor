@@ -2014,15 +2014,22 @@ impl Hub {
         // agent handles a duplicate Request idempotently (its consent broker
         // re-runs; a second `rc:consent` for an already-resolved slot is a
         // benign "consent already delivered" warn).
+        let mut pending_silent_reap = Vec::new();
         for e in self.inner.sessions.iter() {
-            let request = {
+            let (is_silent, request) = {
                 let s = e.value().lock();
                 if s.agent_id == agent_id && s.phase == SessionPhase::AwaitingConsent {
-                    s.pending_request.clone()
+                    (s.silent_monitor, s.pending_request.clone())
                 } else {
-                    None
+                    (false, None)
                 }
             };
+            if is_silent {
+                // 0.5.0 — Never replay a silent monitor `Request` onto a freshly
+                // connected agent before it re-advertises `supports_silent_monitor`.
+                pending_silent_reap.push(*e.key());
+                continue;
+            }
             if let Some(req) = request {
                 info!(
                     session = %e.key().to_hex(),
@@ -2031,6 +2038,9 @@ impl Hub {
                 );
                 let _ = tx.try_send(req);
             }
+        }
+        for sid in pending_silent_reap {
+            let _ = self.end_own(sid, EndReason::AgentDisconnect, None);
         }
         Registration {
             tx,
@@ -5229,17 +5239,29 @@ impl Hub {
         }
         // Push server-authorized takeover frame to the agent BEFORE committing
         // local state when ACTIVATING so an offline/unreachable agent never
-        // fakes success. When RELEASING (`active == false`), still clear local
-        // takeover ownership if the agent went offline so the slot never deadlocks.
+        // fakes success. When RELEASING (`active == false`), clear local
+        // takeover ownership on `AgentOffline` so a disconnected device never
+        // deadlocks the slot, while preserving state on transient `SendFailed`
+        // (queue full) so hub & agent never diverge.
         let send_err = self
             .send_to_agent(
                 agent_id,
                 ServerMsg::AdminTakeover { session_id, active },
             )
             .err();
-        if active
-            && let Some(e) = send_err
-        {
+        if let Some(e) = send_err {
+            if active || !matches!(e, Error::AgentOffline(_)) {
+                return Err(e);
+            }
+            if let Some(arc) = self.inner.sessions.get(&session_id) {
+                let mut s = arc.value().lock();
+                if s.tenant_id == tenant_id
+                    && s.silent_monitor
+                    && s.controller_user_id == controller_user_id
+                {
+                    s.admin_takeover_active = false;
+                }
+            }
             return Err(e);
         }
         let arc = self
@@ -5255,9 +5277,6 @@ impl Hub {
             return Err(Error::PermissionDenied("not your silent monitor session"));
         }
         s.admin_takeover_active = active;
-        if let Some(e) = send_err {
-            return Err(e);
-        }
         info!(
             tenant = %tenant_id,
             agent = %agent_id,

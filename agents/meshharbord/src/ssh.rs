@@ -3758,6 +3758,11 @@ static REVOKED_SSH_PRINCIPALS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[cfg(feature = "ssh-server")]
+static REVOKED_SSH_ORGS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(feature = "ssh-server")]
 fn revoked_tombstone_ttl() -> std::time::Duration {
     std::time::Duration::from_secs(meshharbor_remote_control::models::ssh_limits::GRANT_TTL_SECS + 60)
 }
@@ -3769,11 +3774,11 @@ fn caller_matches_principal_target(principal: &str, caller: &str, target: &str) 
     }
     // `keylist:<user>` also matches display caller `ssh:<user>@<peer> (key-list)`.
     if let Some(user) = target.strip_prefix("keylist:")
-        && caller.ends_with(" (key-list)")
-        && caller
+        && let Some(inner) = caller.strip_suffix(" (key-list)")
+        && let Some((parsed_user, _peer)) = inner
             .strip_prefix("ssh:")
-            .and_then(|rest| rest.split('@').next())
-            == Some(user)
+            .and_then(|rest| rest.rsplit_once('@'))
+        && parsed_user == user
     {
         return true;
     }
@@ -3788,6 +3793,13 @@ pub(crate) fn is_grant_or_principal_revoked(
     caller: &str,
 ) -> bool {
     let now = std::time::Instant::now();
+    {
+        let mut omap = REVOKED_SSH_ORGS.lock().unwrap_or_else(|e| e.into_inner());
+        omap.retain(|_, exp| *exp > now);
+        if omap.contains_key(org_id) {
+            return true;
+        }
+    }
     if let Some(gid) = grant_id {
         let mut map = REVOKED_SSH_GRANTS.lock().unwrap_or_else(|e| e.into_inner());
         map.retain(|_, exp| *exp > now);
@@ -3889,7 +3901,11 @@ pub fn revoke_classic_sessions(
                 map.insert((org_id.to_string(), p.to_string()), exp);
             }
         }
-        _ => {}
+        _ => {
+            let mut map = REVOKED_SSH_ORGS.lock().unwrap_or_else(|e| e.into_inner());
+            map.retain(|_, d| *d > std::time::Instant::now());
+            map.insert(org_id.to_string(), exp);
+        }
     }
 
     // 0.5.0 — Also atomically cancel matching PENDING unredeemed grants so a

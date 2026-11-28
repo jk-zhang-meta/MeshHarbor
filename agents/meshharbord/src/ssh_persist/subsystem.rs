@@ -291,6 +291,33 @@ pub async fn run_subsystem(mut ctx: SubsystemContext, mut in_rx: mpsc::Receiver<
                 }
             };
 
+            // 0.5.0 — Post-spawn tombstone re-check closes the async spawn
+            // window: if revocation landed while `spawn_session` was starting
+            // the PTY host, immediately terminate the newly created session.
+            if crate::ssh::is_grant_or_principal_revoked(
+                &ctx.org_id,
+                auth.grant_id.as_deref(),
+                &auth.principal,
+                &auth.caller_label,
+            ) {
+                let _ = super::terminate_session_in_org(
+                    &ctx.org_id,
+                    &sid.to_hex(),
+                    meshharbor_node_core::pty_resume::TerminateReason::Revoked,
+                )
+                .await;
+                let _ = send_wire(
+                    &ctx.handle,
+                    ctx.channel,
+                    &WireFrame::Refused(RefuseReason::Policy {
+                        detail: "session revoked by administrator".into(),
+                    }),
+                )
+                .await;
+                let _ = ctx.handle.close(ctx.channel).await;
+                return;
+            }
+
             let attach_gen = spawned.attach_gen;
             let opened = WireFrame::Opened(OpenedFrame {
                 session_id: sid,

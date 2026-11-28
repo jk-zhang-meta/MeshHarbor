@@ -5542,8 +5542,9 @@ async fn media_pump_vp9_444_dc(
         // rebuilds and transport flips clear `video_info_sent`.
         // P5 — a viewer joining/leaving the shared pipeline refreshes the
         // badge (its "viewers" count changed for everyone).
-        // 0.5.0 — Exclude passive silent admin monitors from the reported count.
-        let viewers = 1 + pipeline.visible_follower_count();
+        // 0.5.0 — Exclude passive silent admin monitors (owner or follower) from the count.
+        let viewers = (if is_silent_monitor(session_id) { 0 } else { 1 })
+            + pipeline.visible_follower_count();
         if viewers != last_viewers {
             last_viewers = viewers;
             video_info_sent = false;
@@ -8798,8 +8799,9 @@ async fn media_pump_ffmpeg_dc(
 
         // P5 — a viewer joining/leaving the shared pipeline refreshes the
         // badge (its "viewers" count changed for everyone).
-        // 0.5.0 — Exclude passive silent admin monitors from the reported count.
-        let viewers = 1 + pipeline.visible_follower_count();
+        // 0.5.0 — Exclude passive silent admin monitors (owner or follower) from the count.
+        let viewers = (if is_silent_monitor(session_id) { 0 } else { 1 })
+            + pipeline.visible_follower_count();
         if viewers != last_viewers {
             last_viewers = viewers;
             video_info_sent = false;

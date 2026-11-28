@@ -1458,11 +1458,11 @@ fn parse_keylist_principal(caller: &str) -> Option<String> {
     if caller.starts_with("keylist:") {
         return Some(caller.to_string());
     }
-    let user = caller
-        .strip_prefix("ssh:")?
-        .split('@')
-        .next()
-        .filter(|u| !u.is_empty())?;
+    let inner = caller.strip_suffix(" (key-list)").unwrap_or(caller);
+    let (user, _peer) = inner.strip_prefix("ssh:")?.rsplit_once('@')?;
+    if user.is_empty() {
+        return None;
+    }
     Some(format!("keylist:{user}"))
 }
 
@@ -1541,6 +1541,12 @@ pub async fn disconnect(
             } else {
                 false
             };
+            if live.is_some() && !delivered_local && !broadcast {
+                return Err(ApiError::ServiceUnavailable(
+                    "Remote control session closed on server, but target agent was unreachable"
+                        .into(),
+                ));
+            }
             if !delivered_local && !row_end_written && !broadcast {
                 return Err(ApiError::NotFound(
                     "Remote control session is no longer active on this server".into(),
@@ -1571,6 +1577,7 @@ pub async fn disconnect(
             // Verify any caller-supplied (or keylist-encoded) agent_id belongs
             // to `tid` so single-device disconnects never widen to tenant-wide
             // revokes and cannot probe another tenant's device IDs.
+            let is_keylist = body.id.starts_with("keylist:");
             let keylist_encoded_aid = body
                 .id
                 .strip_prefix("keylist:")
@@ -1597,12 +1604,16 @@ pub async fn disconnect(
                     None => None,
                 },
             };
+            if is_keylist && verified_agent_id.is_none() {
+                return Err(ApiError::BadRequest(
+                    "Key-list SSH disconnect requires a valid target agent_id".into(),
+                ));
+            }
 
-            let shared_sid = live.as_ref().and_then(|l| l.shared_session_id).or_else(|| {
-                body.shared_session_id
-                    .as_deref()
-                    .and_then(|s| ObjectId::parse_str(s).ok())
-            });
+            // Only trust a shared SSH bridge ID when bound to the authoritative
+            // live SSH entry on this pod (never allow an arbitrary caller-supplied
+            // `shared_session_id` unbound to `body.id` to tear down another bridge).
+            let shared_sid = live.as_ref().and_then(|l| l.shared_session_id);
 
             // 1. Shared SSH bridge teardown if applicable.
             let mut closed_shared_bridge = false;
@@ -1623,7 +1634,7 @@ pub async fn disconnect(
                         .unwrap_or_else(|| entry.caller.clone());
                     ("principal", Some(p), None)
                 }
-            } else if body.id.starts_with("keylist:") {
+            } else if is_keylist {
                 let caller = body.id.splitn(3, ':').nth(2).unwrap_or("");
                 let p = parse_keylist_principal(caller).or_else(|| {
                     (!caller.is_empty()).then(|| caller.to_string())
